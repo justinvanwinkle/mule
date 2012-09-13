@@ -75,7 +75,7 @@ class CLVisitor(NodeVisitor):
 
     def visit_Assign(self, node):
         self.start_paren()
-        self.p('setq')
+        self.p('setf')
         self.visit(node.targets[0])
         self.visit(node.value)
         self.end_paren()
