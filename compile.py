@@ -24,6 +24,10 @@ class CLVisitor(NodeVisitor):
         self._indent -= 2
 
     def start_paren(self):
+        if self.s.tell() > 0:
+            self.s.seek(self.s.tell() - 1)
+            if self.s.read(1) == '\n':
+                print(' ' * self._indent, end='', file=self.s)
         print('(', end='', file=self.s)
 
     def end_paren(self):
