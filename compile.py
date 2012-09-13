@@ -126,6 +126,33 @@ class CLVisitor(NodeVisitor):
     def visit_Module(self, node):
         self.visit_children(node)
 
+    def visit_Dict(self, node):
+        self.start_paren()
+        self.p('let')
+        self.indent()
+        self.start_paren()
+        self.start_paren()
+        self.p('_h')
+        self.start_paren()
+        self.p("make-hash-table :test 'equal")
+        self.end_paren()
+        self.end_paren()
+        self.end_paren()
+        self.start_paren()
+        self.p('setf')
+        self.indent()
+        for key, value in zip(node.keys, node.values):
+            self.start_paren()
+            self.p('gethash')
+            self.visit(key)
+            self.p('_h')
+            self.end_paren()
+            self.visit(value)
+        self.end_paren()
+        self.dedent()
+        self.p('_h')
+        self.end_paren()
+        self.dedent()
 
 if __name__ == '__main__':
     import argparse
