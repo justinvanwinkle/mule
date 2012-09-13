@@ -1,0 +1,10 @@
+dist/
+mynt.egg-info/
+*.pyc
+*.sublime-project
+*.sublime-workspace
+*.bak
+\#*\#
+*.DS_Store
+.coverage
+*~
