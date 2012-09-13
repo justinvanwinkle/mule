@@ -154,6 +154,30 @@ class CLVisitor(NodeVisitor):
         self.end_paren()
         self.dedent()
 
+    def visit_List(self, node):
+        self.start_paren()
+        for elt in node.elts:
+            self.visit(elt)
+        self.end_paren()
+
+    def visit_For(self, node):
+        '''
+        Simplest CL case:
+        (loop for i in '(1 2 3) do (print i))
+        '''
+        self.start_paren()
+        self.p('loop for')
+        self.p(node.target.id)
+        self.p("in '")
+        self.visit(node.iter)
+        self.p('do')
+        self.indent()
+        for elt in node.body:
+            self.visit(elt)
+        self.dedent()
+        self.end_paren()
+
+
 if __name__ == '__main__':
     import argparse
 
