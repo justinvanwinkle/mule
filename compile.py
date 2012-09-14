@@ -82,7 +82,11 @@ class CLVisitor(NodeVisitor):
 
     def visit_Call(self, node):
         self.start_paren()
-        self.visit_children(node)
+        # range_builtin
+        if node.func.id == 'range':
+            self.builtin_range(node)
+        else:
+            self.visit_children(node)
         self.end_paren()
 
     def visit_FunctionDef(self, node):
@@ -103,7 +107,7 @@ class CLVisitor(NodeVisitor):
 
     def visit_Return(self, node):
         self.start_paren()
-        self.p('return')
+        #self.p('return')
         self.visit_children(node)
         self.end_paren()
 
@@ -164,11 +168,17 @@ class CLVisitor(NodeVisitor):
         '''
         Simplest CL case:
         (loop for i in '(1 2 3) do (print i))
+
+        Range type loops:
+        (loop for x in (loop for i from 1 to 3 collect i)
+            do (print x)))
         '''
         self.start_paren()
         self.p('loop for')
         self.p(node.target.id)
-        self.p("in '")
+        self.p("in")
+        if node.iter.__class__.__name__ == 'List':
+            self.p("'")
         self.visit(node.iter)
         self.p('do')
         self.indent()
@@ -176,6 +186,14 @@ class CLVisitor(NodeVisitor):
             self.visit(elt)
         self.dedent()
         self.end_paren()
+
+    def builtin_range(self, node):
+        self.p('loop for i from')
+        args = node.args
+        self.visit(args[0])
+        self.p('below')
+        self.visit(args[1])
+        self.p('collect i')
 
 
 if __name__ == '__main__':

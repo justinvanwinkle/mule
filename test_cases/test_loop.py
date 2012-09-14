@@ -1,9 +1,14 @@
-
-
-def loopy_loop():
+def simple_loop():
     for x in [1, 2, 3]:
         print(x)
-        print(x + x)
+        print(x+x)
 
-loopy_loop()
 
+def range_loop():
+    for x in range(0, 10):
+        print(x)
+        print(x+x)
+
+
+simple_loop()
+range_loop()

@@ -1,6 +1,11 @@
-(defun loopy_loop ()
+(defun simple_loop ()
   (loop for x in ' (1 2 3)
   do (print x)
     (print (+ x x))))
-(loopy_loop)
+(defun range_loop ()
+  (loop for x in (loop for i from 0 below 10 collect i)
+  do (print x)
+    (print (+ x x))))
+(simple_loop)
+(range_loop)
 
