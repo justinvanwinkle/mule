@@ -127,6 +127,15 @@ class CLVisitor(NodeVisitor):
     def visit_Add(self, node):
         self.p('+')
 
+    def visit_Mult(self, node):
+        self.p('*')
+
+    def visit_Sub(self, node):
+        self.p('-')
+
+    def visit_Div(self, node):
+        self.p('/')
+
     def visit_Module(self, node):
         self.visit_children(node)
 
