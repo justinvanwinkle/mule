@@ -199,9 +199,14 @@ class CLVisitor(NodeVisitor):
     def builtin_range(self, node):
         self.p('loop for i from')
         args = node.args
-        self.visit(args[0])
-        self.p('below')
-        self.visit(args[1])
+        if len(args) == 1:
+            self.p('0')
+            self.p('below')
+            self.visit(args[0])
+        else:
+            self.visit(args[0])
+            self.p('below')
+            self.visit(args[1])
         self.p('collect i')
 
 
