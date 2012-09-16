@@ -1,1 +1,5 @@
-x + y
+def test():
+    x = 1
+    y = 2
+
+    x + y

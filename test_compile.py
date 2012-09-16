@@ -21,5 +21,5 @@ def test_run_test_cases():
         parser.visit(tree)
         if parser.code().strip() != lisp_code.strip():
             print(parser.code())
-
+        print(test_fn, lisp_fn)
         assert parser.code().strip() == lisp_code.strip()

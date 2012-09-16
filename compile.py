@@ -7,21 +7,66 @@ from ast import NodeVisitor
 from io import StringIO
 
 
+class Namespace(object):
+    def __init__(self):
+        self.s = set()
+        self.let_count = 0
+
+    def add(self, name):
+        self.s.add(name)
+
+    def __contains__(self, name):
+        return name in self.s
+
+
+class NamespaceStack(object):
+    def __init__(self):
+        self.stack = []
+        self.cns = None
+
+    def push_new_namespace(self):
+        ns = Namespace()
+        self.cns = ns
+        self.stack.append(ns)
+
+    def pop_namespace(self):
+        lost_namespace = self.stack[-1]
+        self.stack = self.stack[:-1]
+        self.cns = self.stack[-1]
+        return lost_namespace
+
+    def add(self, name):
+        self.cns.add(name)
+
+    def __contains__(self, name):
+        for ns in self.stack:
+            if name in ns:
+                return True
+        return False
+
+
 class CLVisitor(NodeVisitor):
     def __init__(self):
         super(CLVisitor, self).__init__()
         self._indent = 0
         self.s = StringIO()
         self.space_needed = False
+        self.nss = NamespaceStack()
 
     def code(self):
         return self.s.getvalue()
 
-    def indent(self):
+    def indent(self, ns=False):
         self._indent += 2
+        if ns:
+            self.nss.push_new_namespace()
 
-    def dedent(self):
+    def dedent(self, ns=False):
         self._indent -= 2
+        if ns:
+            namespace = self.nss.pop_namespace()
+            for _ in range(namespace.let_count):
+                self.end_paren()
 
     def start_paren(self):
         if self.s.tell() > 0:
@@ -74,11 +119,25 @@ class CLVisitor(NodeVisitor):
         self.visit_children(node)
 
     def visit_Assign(self, node):
-        self.start_paren()
-        self.p('setf')
-        self.visit(node.targets[0])
-        self.visit(node.value)
-        self.end_paren()
+        name = node.targets[0].id
+        seen = name in self.nss
+        if not seen:
+            self.nss.add(node.targets[0].id)
+            self.start_paren()
+            self.p('let')
+            self.start_paren()
+            self.start_paren()
+            self.visit(node.targets[0])
+            self.visit(node.value)
+            self.end_paren()
+            self.end_paren()
+            self.nss.cns.let_count += 1
+        elif seen:
+            self.start_paren()
+            self.p('setf')
+            self.visit(node.targets[0])
+            self.visit(node.value)
+            self.end_paren()
 
     def visit_Call(self, node):
         self.start_paren()
@@ -92,9 +151,9 @@ class CLVisitor(NodeVisitor):
     def visit_FunctionDef(self, node):
         self.start_paren()
         self.p('defun', node.name)
-        self.indent()
+        self.indent(ns=True)
         self.visit_children(node)
-        self.dedent()
+        self.dedent(ns=True)
         self.end_paren()
 
     def visit_arguments(self, node):
@@ -107,7 +166,7 @@ class CLVisitor(NodeVisitor):
 
     def visit_Return(self, node):
         self.start_paren()
-        #self.p('return')
+        self.p('return')
         self.visit_children(node)
         self.end_paren()
 
@@ -137,6 +196,7 @@ class CLVisitor(NodeVisitor):
         self.p('/')
 
     def visit_Module(self, node):
+        self.nss.push_new_namespace()
         self.visit_children(node)
 
     def visit_Dict(self, node):
