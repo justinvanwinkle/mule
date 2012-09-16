@@ -163,7 +163,6 @@ class CLVisitor(NodeVisitor):
         self.end_paren()
 
     def visit_ClassDef(self, node):
-        #self.d(node)
         self.start_paren()
         self.p('defclass')
         self.p(node.name)
@@ -173,11 +172,12 @@ class CLVisitor(NodeVisitor):
         for base in node.bases:
             self.visit(base)
         self.end_paren()
+        self.start_paren()
+        self.end_paren()
         self.end_paren()
         self.dedent()
         for node in node.body:
             self.visit(node)
-        #self.d(node)
 
     def visit_Pass(self, node):
         pass
