@@ -52,6 +52,7 @@ class CLVisitor(NodeVisitor):
         self.s = StringIO()
         self.space_needed = False
         self.nss = NamespaceStack()
+        self.in_classdef = False
 
     def code(self):
         return self.s.getvalue()
@@ -67,6 +68,7 @@ class CLVisitor(NodeVisitor):
             namespace = self.nss.pop_namespace()
             for _ in range(namespace.let_count):
                 self.end_paren()
+                self.dedent()
 
     def start_paren(self):
         if self.s.tell() > 0:
@@ -125,6 +127,7 @@ class CLVisitor(NodeVisitor):
             self.nss.add(node.targets[0].id)
             self.start_paren()
             self.p('let')
+            self.indent()
             self.start_paren()
             self.start_paren()
             self.visit(node.targets[0])
@@ -150,17 +153,42 @@ class CLVisitor(NodeVisitor):
 
     def visit_FunctionDef(self, node):
         self.start_paren()
-        self.p('defun', node.name)
+        if self.in_classdef:
+            self.p('defmethod', node.name)
+        else:
+            self.p('defun', node.name)
         self.indent(ns=True)
         self.visit_children(node)
         self.dedent(ns=True)
         self.end_paren()
 
+    def visit_ClassDef(self, node):
+        self.start_paren()
+        self.p('defclass')
+        self.p(node.name)
+        self.in_classdef = node.name
+        self.indent()
+        self.start_paren()
+        for base in node.bases:
+            self.visit(base)
+        self.end_paren()
+        self.end_paren()
+        self.dedent()
+        self.visit_children(node)
+        #self.d(node)
+
+    def visit_Pass(self, node):
+        pass
+
     def visit_arguments(self, node):
         self.indent()
         self.start_paren()
         for arg in node.args:
-            self.p(arg.arg)
+            if self.in_classdef and arg.arg == 'self':
+                self.p('self')
+                self.p(self.in_classdef)
+            else:
+                self.p(arg.arg)
         self.end_paren()
         self.dedent()
 

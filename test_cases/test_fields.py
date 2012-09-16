@@ -1,3 +1,3 @@
-x = {'test': 'testval', 'other': 'otherval'}
+# x = {'test': 'testval', 'other': 'otherval'}
 
-y = x['test']
+# y = x['test']
