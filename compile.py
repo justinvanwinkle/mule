@@ -167,7 +167,7 @@ class CLVisitor(NodeVisitor):
         self.p('defclass')
         self.p(node.name)
         self.in_classdef = node.name
-        self.indent()
+        self.indent(ns=True)
         self.start_paren()
         for base in node.bases:
             self.visit(base)
@@ -175,9 +175,10 @@ class CLVisitor(NodeVisitor):
         self.start_paren()
         self.end_paren()
         self.end_paren()
-        self.dedent()
+        self.dedent(ns=True)
         for node in node.body:
             self.visit(node)
+        self.in_classdef = None
 
     def visit_Pass(self, node):
         pass
