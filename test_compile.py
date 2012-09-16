@@ -6,7 +6,10 @@ from compile import CLVisitor
 
 def pytest_generate_tests(metafunc):
     test_fns = glob('test_cases/*.py')
+    test_fns.sort()
     for test_fn in test_fns:
+        if test_fn.startswith('test_cases/_'):
+            continue
         lisp_fn = test_fn[:-3] + '.lisp'
 
         f = open(test_fn)
