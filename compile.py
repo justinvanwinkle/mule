@@ -1,6 +1,4 @@
-import sys
-import readline
-
+"""Compile Python Like language to Common Lisp"""
 import ply.yacc as yacc
 
 
@@ -10,19 +8,9 @@ precedence = (
 )
 
 
-def flatten(x):
-    result = []
-    for el in x:
-        if hasattr(el, "__iter__") and not isinstance(el, basestring):
-            result.extend(flatten(el))
-        else:
-            result.append(el)
-    return result
-
-
 def p_error(p):
     print '***** Syntax Error in input! ******'
-    
+
 
 def p_10(p):
     '''statement : NEWLINE'''
@@ -32,7 +20,6 @@ def p_10(p):
 def p_6(p):
     '''statement : assignment NEWLINE'''
     p[0] = p[1]
-    pass
 
 
 def p_7(p):
@@ -47,8 +34,7 @@ def p_8(p):
 
 def p_11(p):
     '''statement : RETURN expression NEWLINE'''
-    #p[0] = ('return', p[2])
-    # Note: We need to figure out what to do with return
+    # Todo: We need to figure out what to do with return
     p[0] = p[2]
 
 
@@ -148,6 +134,7 @@ def p_23(p):
 
 
 def lispify(node):
+    '''Translate an AST node to Common Lisp'''
     if type(node) == type(1):
         return '{}'.format(node)
     if node == 'END':
@@ -155,15 +142,15 @@ def lispify(node):
     retval = '('
     leave_open = False
     for x in node:
-        if type(x) == type((1,2,3)):
+        if type(x) == type((1, 2, 3)):
             retval += lispify(x)
-        elif x == 'DROPNEXT': # TODO: remove newline mode
-            leave_open = True;
+        elif x == 'DROPNEXT':  # TODO: remove newline mode
+            leave_open = True
         else:
             retval += ' {} '.format(x)
     if not leave_open:
         # This is a very lame situation
-        # arising out of using line by line 
+        # arising out of using line by line
         # mode. It will be removed in
         # next iteration
         retval += ')'
@@ -184,9 +171,7 @@ if __name__ == '__main__':
 
     with open(args.fn) as f:
         for i, line in enumerate(f.readlines()):
-            
             result = parser.parse(line)
             if not result:
                 continue
             print lispify(result)
-

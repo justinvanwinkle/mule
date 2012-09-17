@@ -57,8 +57,9 @@ t_EQUALS  = r'='
 # A regular expression rule with some action code
 def t_NUMBER(t):
     r'\d+'
-    t.value = int(t.value)    
+    t.value = int(t.value)
     return t
+
 
 # Rule for ident to change token type for reserved words
 def t_IDENT(t):
@@ -66,28 +67,27 @@ def t_IDENT(t):
     t.type = reserved.get(t.value, 'IDENT')
     return t
 
-# Define a rule so we can track line numbers
-#def t_newline(t):
-#    r'\n+'
-#    t.lexer.lineno += len(t.value)
 
 def t_NEWLINE(t):
     r'\n+'
     return t
+
 
 # Ignore comments
 def t_COMMENT(t):
     '\#.*'
     pass
 
+
 # A string containing ignored characters (spaces and tabs)
 t_ignore  = ' \t'
+
 
 # Error handling rule
 def t_error(t):
     print "Illegal character '%s'" % t.value[0]
     t.lexer.skip(1)
 
+
 # Build the lexer
 lexer = lex.lex(debug=0)
-
