@@ -3,15 +3,18 @@
 
 (asdf:operate 'asdf:load-op 'clpython)
 
+
+(defpackage :pycl.compile
+  (:use
+   :common-lisp
+   :clpython.ast.node
+   :clpython.ast.token
+   :clpython.user))
+
+
 (defun swap-symbol (s)
   (case s
-    ((clpython.ast.node:|module-stmt|) 'module-stmt)
-    ((clpython.ast.node:|suite-stmt|) 'suite-stmt)
-    ((clpython.ast.node:|assign-stmt|) 'assign-stmt)
-    ((clpython.ast.node:|binary-expr|) 'binary-expr)
-    ((clpython.ast.token:|literal-expr|) 'literal-expr)
-    ((clpython.ast.node:|identifier-expr|) 'identifier-expr)
-    ((clpython.ast.operator:+) '+)
+    ((clpython.ast.operator:+) 'plus)
     (otherwise s)))
 
 
@@ -23,24 +26,27 @@
     (translate (cdr tree)))
   tree)
 
-(defmacro module-stmt (&body body)
+(defmacro |module-stmt| (&body body)
+  (car body))
+
+(defmacro |suite-stmt| (&rest (body))
   `(progn ,@body))
 
-(defmacro suite-stmt (&body body)
-  `(progn ,@(car body)))
+(defmacro |assign-stmt| (&rest body)
+  `(destructuring-bind ,(mapcar #'second (second body)) (list ,(car body))))
 
-(defmacro assign-stmt (&rest body)
-  `( ,@body))
-
-(defmacro  binary-expr (&rest body)
+(defmacro |binary-expr| (&rest body)
   body)
 
-(defmacro literal-expr (&rest body)
+(defmacro |literal-expr| (&rest body)
   (when (eql :number (car body))
     (second body)))
 
-(defmacro identifier-expr (&rest body)
+(defmacro |identifier-expr| (&rest body)
   (car body))
+
+(defmacro plus (&rest body)
+  `(+ ,@body))
 
 (defun pycl (filename)
   (let ((tree (clpython.parser:parse
@@ -53,4 +59,12 @@
 
 (eval-pycl #p"/home/jvanwink/repos/pycl/test_cases/test_assign.py")
 
-(translate (pycl #p"/home/jvanwink/repos/pycl/test_cases/test_assign.py"))
+;(translate (pycl #p"/home/jvanwink/repos/pycl/test_cases/test_assign.py"))
+;; (MODULE-STMT
+;;   (SUITE-STMT
+;;    ((ASSIGN-STMT
+;;      (BINARY-EXPR #1=# (LITERAL-EXPR :NUMBER 1) (LITERAL-EXPR :NUMBER 1))
+;;      ((IDENTIFIER-EXPR CLPYTHON.USER::|x|)))
+;;     (ASSIGN-STMT
+;;      (BINARY-EXPR #1# (LITERAL-EXPR :NUMBER 2) (LITERAL-EXPR :NUMBER 2))
+;;      ((IDENTIFIER-EXPR CLPYTHON.USER::|y|))))))
