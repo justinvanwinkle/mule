@@ -18,7 +18,7 @@
 (defun visit (node)
   (let* ((func (gethash (car node) dispatch-table 'id))
          (result (funcall func node)))
-    (format t "using: ~a to visit ~%~a~%giving~%~a~%" func node result)
+    ; (format t "using: ~a to visit ~%~a~%giving~%~a~%" func node result)
     result))
 
 (defun module-v (node)
@@ -33,7 +33,7 @@
         (if (eql (car current) 'clpython.ast.node::|assign-stmt|)
             (assign-v current (suite-eat rest))
             (if (null rest)
-                (list 'progn (visit current))
+                (visit current)
                 (list 'progn (visit current) (suite-eat rest)))))))
 
 (defun suite-v (node)
@@ -43,7 +43,7 @@
 (defun assign-v (node body)
   (let ((assign-form (third node))
         (assign-expr (second node)))
-    (format t "ASSIGN ~a~%~a~%" assign-form assign-expr)
+    ; (format t "ASSIGN ~a~%~a~%" assign-form assign-expr)
     (if (eql (length assign-form) 1)
         (list 'let (list (list (visit (first assign-form)) (visit assign-expr))) body)
         (error "multiple assignment"))))
@@ -75,6 +75,17 @@
 (defun return-v (node)
   (list 'return (visit (second node))))
 (setf (gethash 'CLPYTHON.AST.NODE:|return-stmt| dispatch-table) 'return-v)
+
+(defun call-v (node)
+  (let ((form (list (visit (second node)))))
+    (dolist (x (third node))
+      (push (visit x) form))
+    (reverse form)))
+(setf (gethash 'CLPYTHON.AST.NODE:|call-expr| dispatch-table) 'call-v)
+
+(defun print-v (node)
+  (list 'format 't "~a~%" (visit (car (third node)))))
+(setf (gethash 'CLPYTHON.AST.NODE:|print-stmt| dispatch-table) 'print-v)
 
 (defun pycl (filename)
   (let ((tree (clpython.parser:parse
