@@ -3,4 +3,6 @@ y = 2 + 1
 
 
 def foo(x, y):
-    return x + y
+    z = x + y
+    z = z + 1
+    return z

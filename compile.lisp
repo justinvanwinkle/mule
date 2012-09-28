@@ -3,15 +3,6 @@
 
 (asdf:operate 'asdf:load-op 'clpython)
 
-;; (MODULE-STMT
-;;   (SUITE-STMT
-;;    ((ASSIGN-STMT
-;;      (BINARY-EXPR #1=# (LITERAL-EXPR :NUMBER 1) (LITERAL-EXPR :NUMBER 1))
-;;      ((IDENTIFIER-EXPR CLPYTHON.USER::|x|)))
-;;     (ASSIGN-STMT
-;;      (BINARY-EXPR #1# (LITERAL-EXPR :NUMBER 2) (LITERAL-EXPR :NUMBER 2))
-;;      ((IDENTIFIER-EXPR CLPYTHON.USER::|y|))))))
-
 (defpackage :pycl.compile
   (:use
    :common-lisp
@@ -41,7 +32,9 @@
             (rest (cdr nodes)))
         (if (eql (car current) 'clpython.ast.node::|assign-stmt|)
             (assign-v current (suite-eat rest))
-            (list 'progn (visit current) (suite-eat rest))))))
+            (if (null rest)
+                (list 'progn (visit current))
+                (list 'progn (visit current) (suite-eat rest)))))))
 
 (defun suite-v (node)
   (suite-eat (second node)))
@@ -50,8 +43,9 @@
 (defun assign-v (node body)
   (let ((assign-form (third node))
         (assign-expr (second node)))
+    (format t "ASSIGN ~a~%~a~%" assign-form assign-expr)
     (if (eql (length assign-form) 1)
-        (list 'let (list (second assign-form) (visit assign-expr)) body)
+        (list 'let (list (list (visit (first assign-form)) (visit assign-expr))) body)
         (error "multiple assignment"))))
 (setf (gethash 'clpython.ast.node::|assign-stmt| dispatch-table) 'assign-v)
 
@@ -68,8 +62,19 @@
 (setf (gethash 'clpython.ast.token::|literal-expr| dispatch-table) 'literal-v)
 
 (defun identifier-v (node)
-  (
+  (second node))
 (setf (gethash 'CLPYTHON.AST.NODE:|identifier-expr| dispatch-table) 'identifier-v)
+
+(defun funcdef-v (node)
+  (let ((funcname (visit (third node)))
+        (arglist (mapcar 'visit (first (fourth node))))
+        (body (visit (fifth node))))
+    (list 'defun funcname arglist (list 'block nil body))))
+(setf (gethash 'CLPYTHON.AST.NODE:|funcdef-stmt| dispatch-table) 'funcdef-v)
+
+(defun return-v (node)
+  (list 'return (visit (second node))))
+(setf (gethash 'CLPYTHON.AST.NODE:|return-stmt| dispatch-table) 'return-v)
 
 (defun pycl (filename)
   (let ((tree (clpython.parser:parse
