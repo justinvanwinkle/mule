@@ -4,88 +4,150 @@
 (asdf:operate 'asdf:load-op 'clpython)
 
 (defpackage :pycl.compile
-  (:use
-   :common-lisp
+  (:use :common-lisp
    :clpython.ast.node
    :clpython.ast.token
    :clpython.user))
 
-(defvar dispatch-table (make-hash-table))
 
-(defun id (node)
-  node)
+(defclass node-visitor ()
+  ((namespace-stack
+    :initform nil)))
 
-(defun visit (node)
-  (let* ((func (gethash (car node) dispatch-table 'id))
-         (result (funcall func node)))
-    ; (format t "using: ~a to visit ~%~a~%giving~%~a~%" func node result)
-    result))
+(defgeneric push-namespace (node-v)
+  (:method ((node-v node-visitor))
+    (with-slots (namespace-stack) node-v
+      (push nil namespace-stack))))
 
-(defun module-v (node)
-  (visit (second node)))
-(setf (gethash 'clpython.ast.node::|module-stmt| dispatch-table) 'module-v)
+(defgeneric pop-namespace (node-v)
+  (:method ((node-v node-visitor))
+    (with-slots (namespace-stack) node-v
+      (pop namespace-stack))))
 
-(defun suite-eat (nodes)
+(defgeneric create-name (node-v name)
+  (:method ((node-v node-visitor) name)
+    (with-slots (namespace-stack) node-v
+      (push name (car namespace-stack)))))
+
+(defgeneric name-exists (node-v name)
+  (:method ((node-v node-visitor) name)
+    (with-slots (namespace-stack) node-v
+      (mapcan (lambda (x) (member name x)) namespace-stack))))
+
+(defgeneric namespace-depth (node-v)
+  (:method ((node-v node-visitor))
+    (with-slots (namespace-stack) node-v
+      (length namespace-stack))))
+
+(defgeneric visit (node-v node)
+  (:method ((node-v node-visitor) node)
+    (let* ((tag (car node))
+           (result (compile-form node-v tag node)))
+      ; (format t "~%using: ~a to visit ~%~a~%giving~%~a~%" tag node result)
+      result)))
+
+(defun python-plus (&optional args)
+  (if (every #'numberp args)
+      (reduce #'+ args)))
+
+(defun assign-names (node-v node)
+  (visit node-v (first (third node))))
+
+(defun use-let (node-v node)
+  (if (= (namespace-depth node-v) 1)
+      nil
+      t))
+
+(defun assign-stmt (node-v node &optional body)
+  (let ((assign-form (third node))
+        (assign-expr (second node)))
+    (dolist (name assign-form)
+      (create-name node-v (second name)))
+    (if (eql (length assign-form) 1)
+        (if (use-let node-v node)
+            (list 'let (list (list (visit node-v (first assign-form))
+                                   (visit node-v assign-expr)))
+                             body)
+            (list 'defparameter (visit node-v (first assign-form))
+                  (visit node-v assign-expr)))
+
+        (error "multiple assignment"))))
+
+(defun recurse-suite (node-v nodes)
+  (format t "RECURSE ~%~a~%" nodes)
   (if (null nodes)
       nil
       (let ((current (car nodes))
             (rest (cdr nodes)))
-        (if (eql (car current) 'clpython.ast.node::|assign-stmt|)
-            (assign-v current (suite-eat rest))
+        (if (eql (car current) 'clpython.ast.node:|assign-stmt|)
+            (if (use-let node-v current)
+                (assign-stmt node-v current (recurse-suite node-v rest))
+                (append (list (assign-stmt node-v current)) (recurse-suite node-v rest)))
             (if (null rest)
-                (visit current)
-                (list 'progn (visit current) (suite-eat rest)))))))
+                (visit node-v current)
+                (list (visit node-v current) (recurse-suite node-v rest)))))))
 
-(defun suite-v (node)
-  (suite-eat (second node)))
-(setf (gethash 'clpython.ast.node::|suite-stmt| dispatch-table) 'suite-v)
+(defgeneric compile-form (node-v tag node)
+  (:method ((node-v node-visitor) tag node)
+    node)
 
-(defun assign-v (node body)
-  (let ((assign-form (third node))
-        (assign-expr (second node)))
-    ; (format t "ASSIGN ~a~%~a~%" assign-form assign-expr)
-    (if (eql (length assign-form) 1)
-        (list 'let (list (list (visit (first assign-form)) (visit assign-expr))) body)
-        (error "multiple assignment"))))
-(setf (gethash 'clpython.ast.node::|assign-stmt| dispatch-table) 'assign-v)
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.node:|module-stmt|)) node)
+    (push-namespace node-v)
+    (let ((result (visit node-v (second node))))
+      (pop-namespace node-v)
+      result))
 
-(defun binary-v (node)
-  (let ((op (second node))
-        (x (third node))
-        (y (fourth node)))
-    (list (gethash op dispatch-table) (visit x) (visit y))))
-(setf (gethash 'clpython.ast.node::|binary-expr| dispatch-table) 'binary-v)
-(setf (gethash 'clpython.ast.operator:+ dispatch-table) '+)
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.node:|binary-expr|)) node)
+    (let ((op (second node))
+          (x (third node))
+          (y (fourth node)))
+      (list op (visit node-v x) (visit node-v y))))
 
-(defun literal-v (node)
-  (third node))
-(setf (gethash 'clpython.ast.token::|literal-expr| dispatch-table) 'literal-v)
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.token:|literal-expr|)) node)
+    (third node))
 
-(defun identifier-v (node)
-  (second node))
-(setf (gethash 'CLPYTHON.AST.NODE:|identifier-expr| dispatch-table) 'identifier-v)
+  (:method :before
+    ((node-v node-visitor) (tag (eql 'clpython.ast.node:|funcdef-stmt|)) node)
+    (push-namespace node-v))
 
-(defun funcdef-v (node)
-  (let ((funcname (visit (third node)))
-        (arglist (mapcar 'visit (first (fourth node))))
-        (body (visit (fifth node))))
-    (list 'defun funcname arglist (list 'block nil body))))
-(setf (gethash 'CLPYTHON.AST.NODE:|funcdef-stmt| dispatch-table) 'funcdef-v)
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.node:|funcdef-stmt|)) node)
+    (let ((funcname (visit node-v (third node)))
+          (arglist (mapcar (lambda (x) (visit node-v x)) (first (fourth node))))
+          (body (visit node-v (fifth node))))
+      (list 'defun funcname arglist (list 'block nil body))))
 
-(defun return-v (node)
-  (list 'return (visit (second node))))
-(setf (gethash 'CLPYTHON.AST.NODE:|return-stmt| dispatch-table) 'return-v)
+  (:method :after
+    ((node-v node-visitor) (tag (eql 'clpython.ast.node:|funcdef-stmt|)) node)
+    (pop-namespace node-v))
 
-(defun call-v (node)
-  (let ((form (list (visit (second node)))))
-    (dolist (x (third node))
-      (push (visit x) form))
-    (reverse form)))
-(setf (gethash 'CLPYTHON.AST.NODE:|call-expr| dispatch-table) 'call-v)
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.node:|identifier-expr|)) node)
+    (second node))
 
-(defun print-v (node)
-  (list 'format 't "~a~%" (visit (car (third node)))))
-(setf (gethash 'CLPYTHON.AST.NODE:|print-stmt| dispatch-table) 'print-v)
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.node:|return-stmt|)) node)
+    (list 'return (visit node-v (second node))))
+
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.node:|call-expr|)) node)
+    (let ((form (list (visit node-v (second node)))))
+      (dolist (x (third node))
+        (push (visit node-v x) form))
+      (reverse form)))
+
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.node:|print-stmt|)) node)
+    (list 'format 't "~a~%" (visit node-v (car (third node)))))
+
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.node:|suite-stmt|)) node)
+    (recurse-suite node-v (second node)))
+
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.node:|assign-stmt|)) node)
+    (let ((assign-form (third node))
+          (assign-expr (second node)))
+      (if (= (length assign-form) 1)
+          (list 'let (list (list (visit node-v (first assign-form))
+                                 (visit node-v assign-expr))))
+          (error "multiple assignment"))))
+
+  (:method ((node-v node-visitor) (tag (eql 'CLPYTHON.AST.OPERATOR:+)) node)
+    (list 'python-plus (cdr node))))
 
 (defun pycl (filename)
   (let ((tree (clpython.parser:parse
@@ -98,4 +160,4 @@
 
 ;(eval-pycl #p"/home/jvanwink/repos/pycl/test_cases/test_assign.py")
 
-(visit (pycl #p"/home/jvanwink/repos/pycl/test_cases/test_assign.py"))
+;(visit (make-instance 'node-visitor) (pycl #p"/home/jvanwink/repos/pycl/test_cases/test_assign.py"))

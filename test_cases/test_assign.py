@@ -1,15 +1,10 @@
 x = 1 + 1
-y = 2 + 1
+y = x + 1
+x = 1 + 2
 
+def baz(x):
+    x = 5
+    print x
+    return 5
 
-def foo(x, y):
-    z = x + y
-    z = z + 1
-    return z
-
-
-def bar(x, y):
-    return x + y
-
-y = bar(5, 25)
-print y
+baz(1)
