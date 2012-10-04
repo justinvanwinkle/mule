@@ -1,5 +1,8 @@
 (require 'asdf)
-(pushnew "/home/jvanwink/repos/cl-python/" asdf:*central-registry*)
+
+(pushnew "/home/mrw/src/cl/cl-python/" asdf:*central-registry*)
+(pushnew "/home/mrw/src/cl/closer-mop/" asdf:*central-registry*)
+(pushnew "/home/mrw/src/cl/cl-yacc/" asdf:*central-registry*)
 
 (asdf:operate 'asdf:load-op 'clpython)
 
@@ -8,7 +11,6 @@
    :clpython.ast.node
    :clpython.ast.token
    :clpython.user))
-
 
 (defclass node-visitor ()
   ((namespace-stack
@@ -41,10 +43,8 @@
 
 (defgeneric visit (node-v node)
   (:method ((node-v node-visitor) node)
-    (let* ((tag (car node))
-           (result (compile-form node-v tag node)))
-      (format t "~%using: ~a to visit ~%~a~%giving~%~a~%" tag node result)
-      result)))
+    (compile-form node-v (first node) node)))
+
 
 (defun python-plus (&optional args)
   (if (every #'numberp args)
@@ -65,16 +65,15 @@
       (create-name node-v (visit node-v name)))
     (if (eql (length assign-target) 1)
         (if (use-let node-v node)
-            (list 'let (list (list (visit node-v (car assign-target))
-                                   (visit node-v assign-expr)))
-                             body)
+            (nconc (list 'let (list (list (visit node-v (car assign-target))
+                                   (visit node-v assign-expr))))
+                  body)
             (list 'defparameter (visit node-v (car assign-target))
                   (visit node-v assign-expr)))
 
         (error "multiple assignment"))))
 
 (defun recurse-suite (node-v nodes)
-  (format t "RECURSE ~%~a~%" nodes)
   (if (null nodes)
       nil
       (let ((current (car nodes))
@@ -84,8 +83,8 @@
                 (assign-stmt node-v current (recurse-suite node-v rest))
                 (append (list (assign-stmt node-v current)) (recurse-suite node-v rest)))
             (if (null rest)
-                (visit node-v current)
-                (list (visit node-v current) (recurse-suite node-v rest)))))))
+                (list (visit node-v current))
+                (cons (visit node-v current) (recurse-suite node-v rest)))))))
 
 (defgeneric compile-form (node-v tag node)
   (:method ((node-v node-visitor) tag node)
@@ -101,7 +100,7 @@
     (let ((op (second node))
           (x (third node))
           (y (fourth node)))
-      (list op (visit node-v x) (visit node-v y))))
+      (list (visit node-v (list op)) (visit node-v x) (visit node-v y))))
 
   (:method ((node-v node-visitor) (tag (eql 'clpython.ast.token:|literal-expr|)) node)
     (third node))
@@ -146,8 +145,9 @@
                                  (visit node-v assign-expr))))
           (error "multiple assignment"))))
 
-  (:method ((node-v node-visitor) (tag (eql 'CLPYTHON.AST.OPERATOR:+)) node)
-    (list 'python-plus (cdr node))))
+  ;; nope
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.operator:+)) node)
+    '+))
 
 (defun pycl (filename)
   (let ((tree (clpython.parser:parse
@@ -158,6 +158,7 @@
   (let ((tree (pycl filename)))
     (eval (translate tree))))
 
-;(eval-pycl #p"/home/jvanwink/repos/pycl/test_cases/test_assign.py")
+(defparameter *pysrc* #p"/home/mrw/src/cl/pycl/test_cases/test_assign.py")
+;; (defparameter *pysrc* #p"/home/mrw/src/cl/pycl/test_cases/test_global_scope.py")
+(visit (make-instance 'node-visitor) (pycl *pysrc*))
 
-;(visit (make-instance 'node-visitor) (pycl #p"/home/jvanwink/repos/pycl/test_cases/test_assign.py"))
