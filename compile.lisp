@@ -1,8 +1,8 @@
 (require 'asdf)
 
-(pushnew "/home/mrw/src/cl/cl-python/" asdf:*central-registry*)
-(pushnew "/home/mrw/src/cl/closer-mop/" asdf:*central-registry*)
-(pushnew "/home/mrw/src/cl/cl-yacc/" asdf:*central-registry*)
+(pushnew "/home/jvanwink/repos/cl-python/" asdf:*central-registry*)
+;(pushnew "/home/mrw/src/cl/closer-mop/" asdf:*central-registry*)
+;(pushnew "/home/mrw/src/cl/cl-yacc/" asdf:*central-registry*)
 
 (asdf:operate 'asdf:load-op 'clpython)
 
@@ -44,7 +44,6 @@
 (defgeneric visit (node-v node)
   (:method ((node-v node-visitor) node)
     (compile-form node-v (first node) node)))
-
 
 (defun python-plus (&optional args)
   (if (every #'numberp args)
@@ -92,7 +91,7 @@
 
   (:method ((node-v node-visitor) (tag (eql 'clpython.ast.node:|module-stmt|)) node)
     (push-namespace node-v)
-    (let ((result (visit node-v (second node))))
+    (let ((result (cons 'progn (visit node-v (second node)))))
       (pop-namespace node-v)
       result))
 
@@ -154,11 +153,13 @@
                (open filename))))
     tree))
 
+(defun pycl-compile (filename)
+  (visit (make-instance 'node-visitor) (pycl filename)))
+
 (defun eval-pycl (filename)
   (let ((tree (pycl filename)))
     (eval (translate tree))))
 
-(defparameter *pysrc* #p"/home/mrw/src/cl/pycl/test_cases/test_assign.py")
+;(defparameter *pysrc* #p"/home/jvanwink/repos/pycl/test_cases/test_assign.py")
 ;; (defparameter *pysrc* #p"/home/mrw/src/cl/pycl/test_cases/test_global_scope.py")
-(visit (make-instance 'node-visitor) (pycl *pysrc*))
-
+;(visit (make-instance 'node-visitor) (pycl *pysrc*))

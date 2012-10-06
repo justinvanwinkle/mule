@@ -1,0 +1,16 @@
+(load "compile.lisp")
+
+(defun file-string (path)
+  (with-open-file (stream path)
+    (let ((data (make-string (file-length stream))))
+      (read-sequence data stream)
+      data)))
+
+(dolist (fn (directory "test_cases/*.py"))
+  (let ((pycode (file-string fn))
+        (lispcode (file-string (make-pathname :directory (pathname-directory fn)
+                                              :name (pathname-name fn)
+                                              :type "lisp"))))
+    (let ((compiled (pycl-compile fn)))
+      (if (not (equal compiled (read-from-string lispcode)))
+          (format t "~a has failed~%~%~a~%~a" fn compiled lispcode)))))
