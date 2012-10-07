@@ -45,10 +45,6 @@
   (:method ((node-v node-visitor) node)
     (compile-form node-v (first node) node)))
 
-(defun python-plus (&optional args)
-  (if (every #'numberp args)
-      (reduce #'+ args)))
-
 (defun assign-names (node-v node)
   (visit node-v (first (third node))))
 
@@ -64,26 +60,30 @@
       (create-name node-v (visit node-v name)))
     (if (eql (length assign-target) 1)
         (if (use-let node-v node)
-            (nconc (list 'let (list (list (visit node-v (car assign-target))
-                                   (visit node-v assign-expr))))
+            (list 'let (list (list (visit node-v (car assign-target))
+                                   (visit node-v assign-expr)))
                   body)
             (list 'defparameter (visit node-v (car assign-target))
                   (visit node-v assign-expr)))
 
         (error "multiple assignment"))))
 
-(defun recurse-suite (node-v nodes)
+(defun recurse-suite (node-v nodes &optional inside)
   (if (null nodes)
       nil
       (let ((current (car nodes))
             (rest (cdr nodes)))
         (if (eql (car current) 'clpython.ast.node:|assign-stmt|)
             (if (use-let node-v current)
-                (assign-stmt node-v current (recurse-suite node-v rest))
-                (append (list (assign-stmt node-v current)) (recurse-suite node-v rest)))
+                (append (assign-stmt node-v current (recurse-suite node-v rest)))
+                (append (list (assign-stmt node-v current))
+                        (recurse-suite node-v rest)))
             (if (null rest)
-                (list (visit node-v current))
-                (cons (visit node-v current) (recurse-suite node-v rest)))))))
+                (if inside
+                    (list (visit node-v current))
+                    (visit node-v current))
+                (append (list (visit node-v current))
+                        (recurse-suite node-v rest t)))))))
 
 (defgeneric compile-form (node-v tag node)
   (:method ((node-v node-visitor) tag node)
@@ -112,7 +112,7 @@
     (let ((funcname (visit node-v (third node)))
           (arglist (mapcar (lambda (x) (visit node-v x)) (first (fourth node))))
           (body (visit node-v (fifth node))))
-      (list 'defun funcname arglist (list 'block nil body))))
+      (list (list 'defun funcname arglist (list 'block nil body)))))
 
   (:method :after
     ((node-v node-visitor) (tag (eql 'clpython.ast.node:|funcdef-stmt|)) node)
@@ -146,7 +146,14 @@
 
   ;; nope
   (:method ((node-v node-visitor) (tag (eql 'clpython.ast.operator:+)) node)
-    '+))
+    '+)
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.operator:*)) node)
+    '*)
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.operator:/)) node)
+    '/)
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.operator:-)) node)
+    '-))
+
 
 (defun pycl (filename)
   (let ((tree (clpython.parser:parse
