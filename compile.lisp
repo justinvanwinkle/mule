@@ -82,8 +82,7 @@
                 (if inside
                     (list (visit node-v current))
                     (visit node-v current))
-                (append (list (visit node-v current))
-                        (recurse-suite node-v rest t)))))))
+                (list* (visit node-v current) (recurse-suite node-v rest t)))))))
 
 (defgeneric compile-form (node-v tag node)
   (:method ((node-v node-visitor) tag node)
@@ -103,6 +102,18 @@
 
   (:method ((node-v node-visitor) (tag (eql 'clpython.ast.token:|literal-expr|)) node)
     (third node))
+
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.node:|pass-stmt|)) node)
+    nil)
+
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.node:|tuple-expr|)) node)
+    (if (null (second node))
+        ()
+        (mapcar (lambda (x) (print x) (visit node-v (car x))) (cdr node))))
+
+  (:method ((node-v node-visitor) (tag (eql 'clpython.ast.node:|classdef-stmt|)) node)
+    (destructuring-bind (tag classname superclasses body) node
+      (list 'defclass (visit node-v classname) (visit node-v superclasses))))
 
   (:method :before
     ((node-v node-visitor) (tag (eql 'clpython.ast.node:|funcdef-stmt|)) node)
@@ -167,6 +178,6 @@
   (let ((tree (pycl filename)))
     (eval (translate tree))))
 
-;(defparameter *pysrc* #p"/home/jvanwink/repos/pycl/test_cases/test_assign.py")
+(defparameter *pysrc* #p"/home/jvanwink/repos/pycl/test_cases/test_class.py")
 ;; (defparameter *pysrc* #p"/home/mrw/src/cl/pycl/test_cases/test_global_scope.py")
-;(visit (make-instance 'node-visitor) (pycl *pysrc*))
+(visit (make-instance 'node-visitor) (pycl *pysrc*))
