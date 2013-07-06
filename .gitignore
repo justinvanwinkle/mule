@@ -1,11 +1,8 @@
-*.fasl
-dist/
-mynt.egg-info/
+*~
 *.pyc
-*.sublime-project
-*.sublime-workspace
-*.bak
+*.pyo
 \#*\#
 *.DS_Store
 .coverage
-*~
+htmlcov/
+.cache/

@@ -1,6 +1,6 @@
 (require 'asdf)
 
-(pushnew "/home/jvanwink/repos/cl-python/" asdf:*central-registry*)
+(pushnew "/Users/jvanwink/checkout/cl-python/" asdf:*central-registry*)
 ;(pushnew "/home/mrw/src/cl/closer-mop/" asdf:*central-registry*)
 ;(pushnew "/home/mrw/src/cl/cl-yacc/" asdf:*central-registry*)
 
@@ -178,6 +178,6 @@
   (let ((tree (pycl filename)))
     (eval (translate tree))))
 
-(defparameter *pysrc* #p"/home/jvanwink/repos/pycl/test_cases/test_class.py")
+(defparameter *pysrc* #p"/Users/jvanwink/repos/pycl/test_cases/test_class.py")
 ;; (defparameter *pysrc* #p"/home/mrw/src/cl/pycl/test_cases/test_global_scope.py")
 (visit (make-instance 'node-visitor) (pycl *pysrc*))

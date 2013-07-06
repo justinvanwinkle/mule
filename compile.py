@@ -3,6 +3,7 @@ from __future__ import unicode_literals
 
 from ast import parse
 from ast import iter_child_nodes
+from ast import iter_fields
 from ast import NodeVisitor
 from io import StringIO
 
@@ -45,260 +46,123 @@ class NamespaceStack(object):
         return False
 
 
+class Node(object):
+    def __init__(self, node):
+        self.node = node
+        self.fields = dict(iter_fields(node))
+
+    def map_field(self, field_name):
+        value = self.fields[field_name]
+        if isinstance(value, (str, int, float)):
+            return value
+
+        try:
+            return map_nodes(value)
+        except TypeError:
+            return map_node(value)
+
+    def render(self):
+        return "Can't render %s ::: %s" % (self.node,
+                                           list(iter_fields(self.node)))
+
+    def children(self):
+        return ()
+
+    def __str__(self):
+        return '\n'.join(self.render())
+
+
+class Module(Node):
+    def __init__(self, node):
+        super(Module, self).__init__(node)
+        self.body = self.map_field('body')
+
+    def render(self):
+        return [x.render() for x in self.body]
+
+
+class Assign(Node):
+    def __init__(self, node):
+        super(Assign, self).__init__(node)
+        self.targets = self.map_field('targets')
+        self.value = self.map_field('value')
+
+    def render(self):
+        value_body = self.value.render()
+
+        if isinstance(self.targets, tuple):
+            var_list = ' '.join(t.render() for t in self.targets)
+            s = '(multiple-value-bind (' + var_list + ') ' + value_body + ')'
+            s = s % self.targets
+
+        template = '(setf %s %s)'
+        rendered_targets = self.targets[0].render()
+        return template % (rendered_targets, value_body)
+
+
+class Tuple(Node):
+    def __init__(self, node):
+        super(Tuple, self).__init__(node)
+        self.elts = self.map_field('elts')
+        self.ctx = self.map_field('ctx')
+
+    def render(self):
+        return '(' + ' '.join(str(elt) for elt in self.elts) + ')'
+
+
+class Name(Node):
+    def __init__(self, node):
+        super(Name, self).__init__(node)
+        self.ctx = self.map_field('ctx')
+        self.id = self.map_field('id')
+
+    def render(self):
+        return self.id
+
+
+class Store(Node):
+    pass
+
+
+class Num(Node):
+    def __init__(self, node):
+        super(Num, self).__init__(node)
+        self.n = self.map_field('n')
+
+    def render(self):
+        return self.n
+
+node_mapping = dict((cls.__name__, cls) for cls in
+                    (Module, Assign, Tuple, Name, Store, Num))
+
+
+def map_node(node):
+    return node_mapping.get(node.__class__.__name__, Node)(node)
+
+
+def map_nodes(nodes):
+    result = []
+    for node in nodes:
+        result.append(map_node(node))
+    return result
+
+
 class CLVisitor(NodeVisitor):
     def __init__(self):
         super(CLVisitor, self).__init__()
-        self._indent = 0
-        self.s = StringIO()
-        self.space_needed = False
-        self.nss = NamespaceStack()
-        self.in_classdef = False
 
-    def code(self):
-        return self.s.getvalue()
+    def visit(self, node):
+        cls = node_mapping.get(node.__class__.__name__, Node)
+        self.visit_children(node)
 
-    def indent(self, ns=False):
-        self._indent += 2
-        if ns:
-            self.nss.push_new_namespace()
-
-    def dedent(self, ns=False):
-        self._indent -= 2
-        if ns:
-            namespace = self.nss.pop_namespace()
-            for _ in range(namespace.let_count):
-                self.end_paren()
-                self.dedent()
-
-    def start_paren(self):
-        if self.s.tell() > 0:
-            self.s.seek(self.s.tell() - 1)
-            if self.s.read(1) == '\n':
-                print(' ' * self._indent, end='', file=self.s)
-        print('(', end='', file=self.s)
-
-    def end_paren(self):
-        self.s.seek(self.s.tell() - 1)
-        if self.s.read(1) in ' \n':
-            self.s.seek(self.s.tell() - 1)
-        print(')', end='\n', file=self.s)
-
-    def p(self, *args):
-        self.s.seek(self.s.tell() - 1)
-        if self.s.read(1) == '\n':
-            print(' ' * self._indent, end='', file=self.s)
-        print(*args, end=' ', file=self.s)
-
-    def nl(self):
-        print(file=self.s)
-
-    def d(self, node):
-        print(' ' * self._indent,
-              type(node).__name__,
-              vars(node),
-              file=self.s)
+        return cls(node)
 
     def generic_visit(self, node):
-        self.d(node)
         NodeVisitor.generic_visit(self, node)
 
     def visit_children(self, node):
         for child in iter_child_nodes(node):
             self.visit(child)
-
-    def visit_Name(self, node):
-        if node.id == 'True':
-            self.p('t')
-        elif node.id == 'False':
-            self.p('nil')
-        else:
-            self.p(node.id)
-
-    def visit_Load(self, node):
-        self.d(node)
-
-    def visit_Expr(self, node):
-        self.visit_children(node)
-
-    def visit_Assign(self, node):
-        name = node.targets[0].id
-        seen = name in self.nss
-        if not seen:
-            self.nss.add(node.targets[0].id)
-            self.start_paren()
-            self.p('let')
-            self.indent()
-            self.start_paren()
-            self.start_paren()
-            self.visit(node.targets[0])
-            self.visit(node.value)
-            self.end_paren()
-            self.end_paren()
-            self.nss.cns.let_count += 1
-        elif seen:
-            self.start_paren()
-            self.p('setf')
-            self.visit(node.targets[0])
-            self.visit(node.value)
-            self.end_paren()
-
-    def visit_Call(self, node):
-        self.start_paren()
-        # range_builtin
-        if node.func.id == 'range':
-            self.builtin_range(node)
-        else:
-            self.visit_children(node)
-        self.end_paren()
-
-    def visit_FunctionDef(self, node):
-        self.start_paren()
-        if self.in_classdef:
-            self.p('defmethod', node.name)
-        else:
-            self.p('defun', node.name)
-        self.indent(ns=True)
-        self.visit_children(node)
-        self.dedent(ns=True)
-        self.end_paren()
-
-    def visit_ClassDef(self, node):
-        self.start_paren()
-        self.p('defclass')
-        self.p(node.name)
-        self.in_classdef = node.name
-        self.indent(ns=True)
-        self.start_paren()
-        for base in node.bases:
-            self.visit(base)
-        self.end_paren()
-        self.start_paren()
-        self.end_paren()
-        self.end_paren()
-        self.dedent(ns=True)
-        for node in node.body:
-            self.visit(node)
-        self.in_classdef = None
-
-    def visit_Pass(self, node):
-        pass
-
-    def visit_arguments(self, node):
-        self.indent()
-        self.start_paren()
-        for arg in node.args:
-            if self.in_classdef and arg.arg == 'self':
-                self.p('self')
-                self.p(self.in_classdef)
-            else:
-                self.p(arg.arg)
-        self.end_paren()
-        self.dedent()
-
-    def visit_Return(self, node):
-        self.start_paren()
-        self.p('return')
-        self.visit_children(node)
-        self.end_paren()
-
-    def visit_Str(self, node):
-        self.p('"' + node.s + '"')
-
-    def visit_Num(self, node):
-        self.p(node.n)
-
-    def visit_BinOp(self, node):
-        self.start_paren()
-        self.visit(node.op)
-        self.visit(node.left)
-        self.visit(node.right)
-        self.end_paren()
-
-    def visit_Add(self, node):
-        self.p('+')
-
-    def visit_Mult(self, node):
-        self.p('*')
-
-    def visit_Sub(self, node):
-        self.p('-')
-
-    def visit_Div(self, node):
-        self.p('/')
-
-    def visit_Module(self, node):
-        self.nss.push_new_namespace()
-        self.visit_children(node)
-
-    def visit_Dict(self, node):
-        self.start_paren()
-        self.p('let')
-        self.indent()
-        self.start_paren()
-        self.start_paren()
-        self.p('_h')
-        self.start_paren()
-        self.p("make-hash-table :test 'equal")
-        self.end_paren()
-        self.end_paren()
-        self.end_paren()
-        self.start_paren()
-        self.p('setf')
-        self.indent()
-        for key, value in zip(node.keys, node.values):
-            self.start_paren()
-            self.p('gethash')
-            self.visit(key)
-            self.p('_h')
-            self.end_paren()
-            self.visit(value)
-        self.end_paren()
-        self.dedent()
-        self.dedent()
-        self.p('_h')
-        self.end_paren()
-
-    def visit_List(self, node):
-        self.start_paren()
-        for elt in node.elts:
-            self.visit(elt)
-        self.end_paren()
-
-    def visit_For(self, node):
-        '''
-        Simplest CL case:
-        (loop for i in '(1 2 3) do (print i))
-
-        Range type loops:
-        (loop for x in (loop for i from 1 to 3 collect i)
-            do (print x)))
-        '''
-        self.start_paren()
-        self.p('loop for')
-        self.p(node.target.id)
-        self.p("in")
-        if node.iter.__class__.__name__ == 'List':
-            self.p("'")
-        self.visit(node.iter)
-        self.p('do')
-        self.indent()
-        for elt in node.body:
-            self.visit(elt)
-        self.dedent()
-        self.end_paren()
-
-    def builtin_range(self, node):
-        self.p('loop for i from')
-        args = node.args
-        if len(args) == 1:
-            self.p('0')
-            self.p('below')
-            self.visit(args[0])
-        else:
-            self.visit(args[0])
-            self.p('below')
-            self.visit(args[1])
-        self.p('collect i')
 
 
 if __name__ == '__main__':
@@ -315,6 +179,7 @@ if __name__ == '__main__':
     syntax_tree = parse(code)
 
     parser = CLVisitor()
-    parser.visit(syntax_tree)
-
-    print(parser.code())
+    module = parser.visit(syntax_tree)
+    for el in module.render():
+        print(el)
+    #print(parser.code())
