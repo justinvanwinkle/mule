@@ -9,7 +9,7 @@ from pprint import pprint
 def _get_test_params():
     params = []
     for test_fn in sorted(glob('test_cases/*.py')):
-        params.append((test_fn,))
+        params.append(test_fn)
     return params
 
 

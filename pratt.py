@@ -146,8 +146,38 @@ class PyclParser(Parser):
 
     @staticmethod
     def handle_whitespace(tokens):
-        def next_useful_token(pos):
-            for name, value in tokens[pos:]
+        def is_significant(pos):
+            if pos > 0:
+                prev_token = tokens[pos - 1]
+                if prev_token[0] != 'NEWLINE':
+                    return False
+            else:
+                return False
+
+            next_token = tokens[pos + 1]
+            if next_token[0] != 'NEWLINE':
+                return True
+            return False
+
+        new_tokens = []
+        current_indent = 0
+        for index, (name, value) in enumerate(tokens):
+            if name == 'WHITESPACE':
+                if not is_significant(index):
+                    continue
+
+                new_indent = len(value) / 4
+                if new_indent > current_indent + 1:
+                    raise Exception('Indented too much %s' % index)
+                elif new_indent == current_indent + 1:
+                    new_tokens.append(('INDENT', ''))
+                if new_indent < current_indent:
+                    for _ in range(current_indent - new_indent):
+                        new_tokens.append(('DEDENT', ''))
+                current_indent = new_indent
+            else:
+                new_tokens.append((name, value))
+        return new_tokens
 
     @property
     def tokens(self):

@@ -8,7 +8,7 @@ def range_loop():
     for x in range(0, 10):
         print(x)
         print(x + x)
-        
+
     for x in range(10):
         print(x)
         print(x * x)
