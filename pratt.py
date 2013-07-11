@@ -147,9 +147,10 @@ class PyclParser(Parser):
     @staticmethod
     def handle_whitespace(tokens):
         def is_significant(pos):
-            if pos > 0:
+            if pos > 1:
                 prev_token = tokens[pos - 1]
-                if prev_token[0] != 'NEWLINE':
+                prev2_token = tokens[pos - 2]
+                if prev_token[0] != 'NEWLINE' or prev2_token[0] != 'COLON':
                     return False
             else:
                 return False
@@ -182,7 +183,6 @@ class PyclParser(Parser):
     @property
     def tokens(self):
         return self.handle_whitespace(super(PyclParser, self).tokens)
-
 
 
 class Op(object):
