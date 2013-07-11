@@ -186,6 +186,7 @@ class PyclParser(Parser):
                     continue
                 new_indent = len(value) / 4
             elif name == 'NEWLINE':
+                new_tokens.append((name, value))
                 if next_tok(index) not in ('NEWLINE', 'WHITESPACE'):
                     new_indent = 0
             else:
