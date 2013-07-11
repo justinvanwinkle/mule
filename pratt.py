@@ -146,38 +146,53 @@ class PyclParser(Parser):
 
     @staticmethod
     def handle_whitespace(tokens):
+        def next_tok(pos):
+            if pos + 1 >= len(tokens):
+                return None
+            return tokens[pos + 1][0]
+
+        def prev_tok(pos):
+            if pos < 1:
+                return None
+            return tokens[pos - 1][0]
+
         def is_significant(pos):
             if pos > 1:
-                prev_token = tokens[pos - 1]
-                prev2_token = tokens[pos - 2]
-                if prev_token[0] != 'NEWLINE' or prev2_token[0] != 'COLON':
+                if prev_tok(pos) != 'NEWLINE' or prev_tok(pos - 1) != 'COLON':
                     return False
             else:
                 return False
 
-            next_token = tokens[pos + 1]
-            if next_token[0] != 'NEWLINE':
+            if next_tok(pos) != 'NEWLINE':
                 return True
             return False
 
         new_tokens = []
         current_indent = 0
+
+        def change_indent(new_indent):
+            if new_indent > current_indent + 1:
+                raise Exception('Indented too much %s' % index)
+            elif new_indent == current_indent + 1:
+                new_tokens.append(('INDENT', ''))
+            elif new_indent < current_indent:
+                for _ in range(current_indent - new_indent):
+                    new_tokens.append(('DEDENT', ''))
+
         for index, (name, value) in enumerate(tokens):
+            new_indent = current_indent
             if name == 'WHITESPACE':
                 if not is_significant(index):
                     continue
-
                 new_indent = len(value) / 4
-                if new_indent > current_indent + 1:
-                    raise Exception('Indented too much %s' % index)
-                elif new_indent == current_indent + 1:
-                    new_tokens.append(('INDENT', ''))
-                if new_indent < current_indent:
-                    for _ in range(current_indent - new_indent):
-                        new_tokens.append(('DEDENT', ''))
-                current_indent = new_indent
+            elif name == 'NEWLINE':
+                if next_tok(index) not in ('NEWLINE', 'WHITESPACE'):
+                    new_indent = 0
             else:
                 new_tokens.append((name, value))
+            change_indent(new_indent)
+            current_indent = new_indent
+
         return new_tokens
 
     @property
