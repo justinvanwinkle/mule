@@ -3,7 +3,6 @@ from __future__ import unicode_literals
 
 import sre_parse
 import sre_compile
-import re
 
 
 class Scanner(object):
@@ -86,7 +85,7 @@ class Parser(object):
             else:
                 raise Exception('No regex for op %s' % op.name)
 
-        scanner = Scanner(lexicon, flags=re.MULTILINE)
+        scanner = Scanner(lexicon)
         scan = scanner.scan(self.code)
         if scan[1]:
             raise Exception(scan[1])
@@ -212,6 +211,11 @@ class Op(object):
     name = None
 
 
+class Node(object):
+    kind = 'node'
+    pass
+
+
 class Class(Op):
     lbp = 10
     regex = 'class'
@@ -225,6 +229,10 @@ class Class(Op):
         return left + right
 
 
+class ClassNode(Node):
+    kind = 'class'
+
+
 class Def(Op):
     lbp = 10
     regex = 'def'
@@ -232,9 +240,6 @@ class Def(Op):
 
     def nud(self):
         return -expression(100)
-
-    def led(self, left):
-        return left - expression(10)
 
 
 class For(Op):
