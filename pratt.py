@@ -3,6 +3,7 @@ from __future__ import unicode_literals
 
 import sre_parse
 import sre_compile
+import re
 
 
 class Scanner(object):
@@ -85,11 +86,11 @@ class Parser(object):
             else:
                 raise Exception('No regex for op %s' % op.name)
 
-        scanner = Scanner(lexicon)
+        scanner = Scanner(lexicon, flags=re.MULTILINE)
         scan = scanner.scan(self.code)
         if scan[1]:
             raise Exception(scan[1])
-        return scan[0]
+        return scan[0] + [('EOF', '')]
 
     def next(self):
         for type, token in self.tokens:
@@ -189,6 +190,9 @@ class PyclParser(Parser):
                 new_tokens.append((name, value))
                 if next_tok(index) not in ('NEWLINE', 'WHITESPACE'):
                     new_indent = 0
+            elif name == 'EOF':
+                new_tokens.append((name, value))
+                new_indent = 0
             else:
                 new_tokens.append((name, value))
             change_indent(new_indent)
