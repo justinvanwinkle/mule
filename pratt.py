@@ -61,14 +61,22 @@ def tokenize_file(fn):
         return tokenize(f.read())
 
 
+def parse_file(fn):
+    p = PyclParser(open(fn).read().decode('utf8'))
+    return p.parse()
+
+
 class Parser(object):
     def __init__(self, code):
         self.code = code
         self.registered = []
         self.token = None
+        self.token_position = 0
+        self.token_map = {}
 
     def register(self, op):
         self.registered.append(op)
+        self.token_map[op.name] = op
 
     @property
     def tokens(self):
@@ -89,60 +97,62 @@ class Parser(object):
         scan = scanner.scan(self.code)
         if scan[1]:
             raise Exception(scan[1])
-        return scan[0] + [('EOF', '')]
+        return scan[0]
 
-    def next(self):
-        for type, token in self.tokens:
-            self.token = type, token
-            yield None
+    def feed(self):
+        if self.token_position < len(self.tokens):
+            self.token = self.token_map[self.tokens[self.token_position][0]]
+            self.token_position += 1
 
     def match(self, tok=None):
         if tok is not None and tok != type(self.token):
             raise SyntaxError('Expected %s' % tok)
-        self.next()
+        self.feed()
 
     def parse(self):
-        self.next()
+        self.feed()
         return self.expression()
 
     def expression(self, rbp=0):
         t = self.token
-        self.next()
-        left = t.nud()
+        self.feed()
+        left = t.nud(self.expression)
         while rbp < self.token.lbp:
             t = self.token
-            self.next()
-            left = t.led(left)
+            self.feed()
+            left = t.led(left, self.expression)
         return left
 
 
 class PyclParser(Parser):
     def __init__(self, code):
         Parser.__init__(self, code)
-        self.registered = [
-            Class(),
-            Def(),
-            For(),
-            While(),
-            Name(),
-            LParen(),
-            RParen(),
-            LBracket(),
-            RBracket(),
-            LBrace(),
-            RBrace(),
-            Comma(),
-            Assign(),
-            Colon(),
-            Float(),
-            Integer(),
-            Plus(),
-            Minus(),
-            Multiply(),
-            Divide(),
-            String(),
-            Newline(),
-            Whitespace()]
+        for op in [
+                Class(),
+                Def(),
+                For(),
+                While(),
+                In(),
+                Name(),
+                LParen(),
+                RParen(),
+                LBracket(),
+                RBracket(),
+                LBrace(),
+                RBrace(),
+                Comma(),
+                Assign(),
+                Colon(),
+                Float(),
+                Integer(),
+                Plus(),
+                Minus(),
+                Multiply(),
+                Divide(),
+                String(),
+                Newline(),
+                Whitespace()]:
+            self.register(op)
 
     @staticmethod
     def handle_whitespace(tokens):
@@ -186,12 +196,8 @@ class PyclParser(Parser):
                     continue
                 new_indent = len(value) / 4
             elif name == 'NEWLINE':
-                new_tokens.append((name, value))
                 if next_tok(index) not in ('NEWLINE', 'WHITESPACE'):
                     new_indent = 0
-            elif name == 'EOF':
-                new_tokens.append((name, value))
-                new_indent = 0
             else:
                 new_tokens.append((name, value))
             change_indent(new_indent)
@@ -211,9 +217,8 @@ class Op(object):
     name = None
 
 
-class Node(object):
+class LispNode(object):
     kind = 'node'
-    pass
 
 
 class Class(Op):
@@ -229,8 +234,15 @@ class Class(Op):
         return left + right
 
 
-class ClassNode(Node):
+class ClassNode(LispNode):
     kind = 'class'
+
+
+class DefunNode(LispNode):
+    kind = 'defun'
+
+    def __init__(self, name, args, body):
+        pass
 
 
 class Def(Op):
@@ -239,7 +251,7 @@ class Def(Op):
     name = 'DEF'
 
     def nud(self):
-        return -expression(100)
+        return DefunNode()
 
 
 class For(Op):
@@ -257,13 +269,26 @@ class While(Op):
         return left * expression(20)
 
 
+class In(Op):
+    lbp = 10
+    regex = r'in'
+    name = 'IN'
+
+
+class SymbolNode(LispNode):
+    kind = 'symbol'
+
+    def __init__(self, name):
+        self.name = name
+
+
 class Name(Op):
     lbp = 20
     regex = r"[^\W\d]\w*"
     name = 'NAME'
 
-    def led(self, left):
-        return left / expression(20)
+    def nud(self, expression):
+        return expression(20)
 
 
 class LParen(Op):
@@ -313,11 +338,21 @@ class Assign(Op):
     regex = '='
     name = 'ASSIGN'
 
+    def nud(self, expression):
+        return expression(20)
+
 
 class Colon(Op):
     lbp = 10
     regex = ':'
     name = 'COLON'
+
+
+class NumberNode(LispNode):
+    kind = 'number'
+
+    def __init__(self, value):
+        self.value = value
 
 
 class Float(Op):
@@ -330,6 +365,9 @@ class Integer(Op):
     lbp = 10
     regex = r"-?[0-9]+"
     name = 'INTEGER'
+
+    def nud(self, expression):
+        return
 
 
 class Plus(Op):
