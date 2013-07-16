@@ -8,5 +8,6 @@ if __name__ == '__main__':
     parser.add_argument('fn', help='Filename')
 
     args = parser.parse_args()
-
-    print parse_file(args.fn)
+    result = parse_file(args.fn)
+    print '*' * 50
+    print result

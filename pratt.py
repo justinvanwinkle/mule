@@ -4,6 +4,10 @@ from __future__ import unicode_literals
 import sre_parse
 import sre_compile
 
+from werkzeug import cached_property
+
+debug = True
+
 
 class Scanner(object):
     def __init__(self, lexicon, flags=0):
@@ -70,7 +74,8 @@ class Parser(object):
     def __init__(self, code):
         self.code = code
         self.registered = []
-        self.token = None
+        self.token_handler = None
+        self.token_value = None
         self.token_position = 0
         self.token_map = {}
 
@@ -78,7 +83,7 @@ class Parser(object):
         self.registered.append(op)
         self.token_map[op.name] = op
 
-    @property
+    @cached_property
     def tokens(self):
         lexicon = []
 
@@ -101,8 +106,13 @@ class Parser(object):
 
     def feed(self):
         if self.token_position < len(self.tokens):
-            self.token = self.token_map[self.tokens[self.token_position][0]]
+            kind, value = self.tokens[self.token_position]
+            token_handler = self.token_map[kind]
             self.token_position += 1
+            self.token_handler = token_handler
+            self.token_value = value
+            if debug:
+                print 'Feeding %s :: %s' % (token_handler, value)
 
     def match(self, tok=None):
         if tok is not None and tok != type(self.token):
@@ -114,13 +124,23 @@ class Parser(object):
         return self.expression()
 
     def expression(self, rbp=0):
-        t = self.token
+        t = self.token_handler
+        v = self.token_value
         self.feed()
-        left = t.nud(self.expression)
-        while rbp < self.token.lbp:
-            t = self.token
+        left = t.nud(self, v)
+        if debug:
+            print 'starting with left %s' % left
+            print 'looping? %s rbp %s lbp %s' % (self.token_handler,
+                                                 rbp,
+                                                 self.token_handler.lbp)
+        while rbp < self.token_handler.lbp:
+            t = self.token_handler
             self.feed()
-            left = t.led(left, self.expression)
+            left = t.led(self, left)
+            if debug:
+                print 'left is %s' % left
+                print 'rbp %s lbp %s' % (rbp, self.token_handler.lbp)
+
         return left
 
 
@@ -131,6 +151,7 @@ class PyclParser(Parser):
                 Class(),
                 Def(),
                 For(),
+                If(),
                 While(),
                 In(),
                 Name(),
@@ -196,6 +217,7 @@ class PyclParser(Parser):
                     continue
                 new_indent = len(value) / 4
             elif name == 'NEWLINE':
+                new_tokens.append((name, value))
                 if next_tok(index) not in ('NEWLINE', 'WHITESPACE'):
                     new_indent = 0
             else:
@@ -205,7 +227,7 @@ class PyclParser(Parser):
 
         return new_tokens
 
-    @property
+    @cached_property
     def tokens(self):
         return self.handle_whitespace(super(PyclParser, self).tokens)
 
@@ -227,11 +249,10 @@ class Class(Op):
     name = 'CLASS'
 
     def nud(self):
-        return expression(100)
+        pass
 
     def led(self, left):
-        right = expression(10)
-        return left + right
+        pass
 
 
 class ClassNode(LispNode):
@@ -255,22 +276,28 @@ class Def(Op):
 
 
 class For(Op):
-    lbp = 10
+    lbp = 20
     regex = 'for'
     name = 'FOR'
 
 
+class If(Op):
+    lbp = 20
+    regex = 'if'
+    name = 'IF'
+
+
 class While(Op):
-    lbp = 10
+    lbp = 20
     regex = 'while'
     name = 'WHILE'
 
-    def led(self, left):
-        return left * expression(20)
+    def led(self, parser, left):
+        return left * parser.expression(20)
 
 
 class In(Op):
-    lbp = 10
+    lbp = 60
     regex = r'in'
     name = 'IN'
 
@@ -281,14 +308,17 @@ class SymbolNode(LispNode):
     def __init__(self, name):
         self.name = name
 
+    def __repr__(self):
+        return '(symbol %s)' % self.name
+
 
 class Name(Op):
-    lbp = 20
+    lbp = 0
     regex = r"[^\W\d]\w*"
     name = 'NAME'
 
-    def nud(self, expression):
-        return expression(20)
+    def nud(self, parser, value):
+        return SymbolNode(value)
 
 
 class LParen(Op):
@@ -333,13 +363,22 @@ class Comma(Op):
     name = 'COMMA'
 
 
+class AssignNode(LispNode):
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+    def __repr__(self):
+        return '(assign %s %s)' % (self.left, self.right)
+
+
 class Assign(Op):
-    lbp = 50
+    lbp = 30
     regex = '='
     name = 'ASSIGN'
 
-    def nud(self, expression):
-        return expression(20)
+    def led(self, parser, left):
+        return AssignNode(left, parser.expression(50))
 
 
 class Colon(Op):
@@ -354,24 +393,27 @@ class NumberNode(LispNode):
     def __init__(self, value):
         self.value = value
 
+    def __repr__(self):
+        return '(number %s)' % self.value
+
 
 class Float(Op):
-    lbp = 10
+    lbp = 0
     regex = r"-?[0-9]+\.[0-9]+([eE]-?[0-9]+)?"
     name = 'FLOAT'
 
 
 class Integer(Op):
-    lbp = 10
+    lbp = 0
     regex = r"-?[0-9]+"
     name = 'INTEGER'
 
-    def nud(self, expression):
-        return
+    def nud(self, parser, value):
+        return NumberNode(value)
 
 
 class Plus(Op):
-    lbp = 10
+    lbp = 110
     regex = r'\+'
     name = 'PLUS'
 
@@ -404,9 +446,12 @@ class String(Op):
 
 
 class Newline(Op):
-    lbp = 10
+    lbp = 0
     regex = r'\n'
     name = 'NEWLINE'
+
+    def led(self, parser, left):
+        return left
 
 
 class Whitespace(Op):
