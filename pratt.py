@@ -446,12 +446,15 @@ class String(Op):
 
 
 class Newline(Op):
-    lbp = 0
+    lbp = 100
     regex = r'\n'
     name = 'NEWLINE'
 
     def led(self, parser, left):
-        return left
+        return parser.expression()
+
+    def nud(self, parser, value):
+        return parser.expression()
 
 
 class Whitespace(Op):
