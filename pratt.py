@@ -240,9 +240,8 @@ class PyclParser(Parser):
                     continue
                 new_indent = len(value) / 4
             elif name == 'NEWLINE':
-                if prev_tok(index) == 'NEWLINE':
-                    continue
-                new_tokens.append((name, value))
+                if prev_tok(index) != 'NEWLINE':
+                    new_tokens.append((name, value))
                 if next_tok(index) not in ('NEWLINE', 'WHITESPACE'):
                     new_indent = 0
             else:
@@ -356,7 +355,6 @@ class Def(Op):
             parser.maybe_match('COMMA')
         parser.match('COLON')
         parser.match('NEWLINE')
-
         body = parser.expression(10)
         return DefunNode(name, arg_names, body)
 
