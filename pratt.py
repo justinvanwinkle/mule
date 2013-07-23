@@ -10,6 +10,10 @@ from werkzeug import cached_property
 debug = True
 
 
+def log(s, *args):
+    print >> sys.stderr, s % tuple([repr(x) for x in args])
+
+
 class Scanner(object):
     def __init__(self, lexicon, flags=0):
         from sre_constants import BRANCH, SUBPATTERN
@@ -111,8 +115,7 @@ class Parser(object):
             self.token_handler = token_handler
             self.token_value = value
             if debug:
-                print >> sys.stderr, 'Feeding %s :: %s' % (
-                    token_handler, value)
+                log('Feeding %s :: %s', token_handler, value)
 
     def maybe_match(self, token_name):
         if token_name == self.token_handler.name:
@@ -125,13 +128,13 @@ class Parser(object):
             raise SyntaxError('Expected %s, Got %s' % (
                 token_name, self.token_handler.name))
         if debug:
-            print >> sys.stderr, 'MATCHED: %s' % token_name
+            log('MATCHED: %s', token_name)
         self.feed()
 
     def watch(self, token_name):
         if token_name == self.token_handler.name:
             if debug:
-                print >> sys.stderr, 'SAW A %s' % token_name
+                log('SAW A %s', token_name)
             self.feed()
             return False
         return True
@@ -146,19 +149,23 @@ class Parser(object):
         self.feed()
         left = t.nud(self, v)
         if debug:
-            print >> sys.stderr, 'starting with left %s' % left
-            print >> sys.stderr, 'looping? %s rbp %s lbp %s' % (
+            log('starting with left %s', left)
+            log('looping? %s rbp %s lbp %s',
                 self.token_handler,
                 rbp,
                 self.token_handler.lbp)
         while rbp < self.token_handler.lbp:
+            if debug:
+                log('looping!')
             t = self.token_handler
             self.feed()
             left = t.led(self, left)
             if debug:
-                print >> sys.stderr, 'left is %s' % left
-                print >> sys.stderr, 'rbp %s lbp %s' % (
-                    rbp, self.token_handler.lbp)
+                log('left is %s', left)
+                log('rbp %s lbp %s', rbp, self.token_handler.lbp)
+        else:
+            if debug:
+                log('no loop')
 
         return left
 
@@ -262,9 +269,15 @@ class Op(object):
     regexes = None
     name = None
 
+    def __repr__(self):
+        return '|%s|' % self.name
+
 
 class LispNode(object):
     kind = 'node'
+
+    def __repr__(self):
+        return '(%s XXXXXXXXXX)' % self.kind
 
 
 class LispPackage(LispNode):
@@ -347,7 +360,7 @@ class Def(Op):
     name = 'DEF'
 
     def nud(self, parser, value):
-        name = parser.expression(10)
+        name = parser.expression(100)
         parser.match('LPAREN')
         arg_names = []
         while parser.watch('RPAREN'):
@@ -433,14 +446,32 @@ class TupleNode(LispNode):
             '%s' % x for x in self.values)
 
 
+class CallNode(LispNode):
+    kind = 'call'
+
+    def __init__(self, name, args):
+        self.name = name
+        self.args = args
+
+    def __repr__(self):
+        return '(call %s (%s))' % (
+            self.name,
+            ' '.join('%s' % x for x in self.args))
+
+
 class LParen(Op):
-    lbp = 0
+    lbp = 80
     regex = r'\('
     name = 'LPAREN'
 
     def led(self, parser, left):
         if left.kind == 'symbol':
-            return left
+            name = left
+            args = []
+            while parser.watch('RPAREN'):
+                args.append(parser.expression(10))
+                parser.maybe_match('COMMA')
+            return CallNode(name, args)
 
     def nud(self, parser, value):
         values = []
