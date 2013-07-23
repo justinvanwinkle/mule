@@ -5,7 +5,8 @@ def test(x):
 def test2(x, y):
     z = x + y
 
-    def something(meh):
-        return meh
+    return z
 
-    return x + y * z
+test(5)
+
+test2(1, 2)

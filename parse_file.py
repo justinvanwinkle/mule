@@ -9,5 +9,4 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     result = parse_file(args.fn)
-    print '*' * 50
     print result

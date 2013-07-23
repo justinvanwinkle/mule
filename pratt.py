@@ -3,6 +3,7 @@ from __future__ import unicode_literals
 
 import sre_parse
 import sre_compile
+import sys
 
 from werkzeug import cached_property
 
@@ -110,24 +111,27 @@ class Parser(object):
             self.token_handler = token_handler
             self.token_value = value
             if debug:
-                print 'Feeding %s :: %s' % (token_handler, value)
+                print >> sys.stderr, 'Feeding %s :: %s' % (
+                    token_handler, value)
 
     def maybe_match(self, token_name):
         if token_name == self.token_handler.name:
             self.feed()
+            return True
+        return False
 
     def match(self, token_name=None):
         if token_name != self.token_handler.name:
             raise SyntaxError('Expected %s, Got %s' % (
                 token_name, self.token_handler.name))
         if debug:
-            print 'MATCHED: %s' % token_name
+            print >> sys.stderr, 'MATCHED: %s' % token_name
         self.feed()
 
     def watch(self, token_name):
         if token_name == self.token_handler.name:
             if debug:
-                print 'SAW A %s' % token_name
+                print >> sys.stderr, 'SAW A %s' % token_name
             self.feed()
             return False
         return True
@@ -142,17 +146,19 @@ class Parser(object):
         self.feed()
         left = t.nud(self, v)
         if debug:
-            print 'starting with left %s' % left
-            print 'looping? %s rbp %s lbp %s' % (self.token_handler,
-                                                 rbp,
-                                                 self.token_handler.lbp)
+            print >> sys.stderr, 'starting with left %s' % left
+            print >> sys.stderr, 'looping? %s rbp %s lbp %s' % (
+                self.token_handler,
+                rbp,
+                self.token_handler.lbp)
         while rbp < self.token_handler.lbp:
             t = self.token_handler
             self.feed()
             left = t.led(self, left)
             if debug:
-                print 'left is %s' % left
-                print 'rbp %s lbp %s' % (rbp, self.token_handler.lbp)
+                print >> sys.stderr, 'left is %s' % left
+                print >> sys.stderr, 'rbp %s lbp %s' % (
+                    rbp, self.token_handler.lbp)
 
         return left
 
@@ -301,7 +307,7 @@ class Block(Op):
 
 
 class EndBlock(Op):
-    lbp = -1
+    lbp = 0
     name = 'ENDBLOCK'
 
 
@@ -418,14 +424,39 @@ class Name(Op):
         return SymbolNode(value)
 
 
+class TupleNode(LispNode):
+    kind = 'tuple'
+
+    def __init__(self, values):
+        self.values = values
+
+    def __repr__(self):
+        return '(tuple %s)' % ' '.join(
+            '%s' % x for x in self.values)
+
+
 class LParen(Op):
-    lbp = -1
+    lbp = 0
     regex = r'\('
     name = 'LPAREN'
 
+    def led(self, parser, left):
+        if left.kind == 'symbol':
+            return left
+
+    def nud(self, parser, value):
+        values = []
+        while parser.watch('RPAREN'):
+            values.append(parser.expression())
+            parser.maybe_match('COMMA')
+
+        if len(values) > 1:
+            return TupleNode(values)
+        return values[0]
+
 
 class RParen(Op):
-    lbp = -1
+    lbp = 0
     regex = r'\)'
     name = 'RPAREN'
 
@@ -455,7 +486,7 @@ class RBrace(Op):
 
 
 class Comma(Op):
-    lbp = -1
+    lbp = 0
     regex = ','
     name = 'COMMA'
 
@@ -475,11 +506,11 @@ class Assign(Op):
     name = 'ASSIGN'
 
     def led(self, parser, left):
-        return AssignNode(left, parser.expression(10))
+        return AssignNode(left, parser.expression(20))
 
 
 class Colon(Op):
-    lbp = -1
+    lbp = 0
     regex = ':'
     name = 'COLON'
 
@@ -556,7 +587,7 @@ class Divide(Op):
 
 
 class String(Op):
-    lbp = 20
+    lbp = 0
     regexes = [r"'''(.*?)'''",
                r"'''(.*?)'''",
                r"'(.*?)'",
@@ -565,7 +596,7 @@ class String(Op):
 
 
 class Newline(Op):
-    lbp = -1
+    lbp = 0
     regex = r'\n'
     name = 'NEWLINE'
 
