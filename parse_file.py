@@ -6,7 +6,11 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Python to CL compiler')
     parser.add_argument('fn', help='Filename')
+    parser.add_argument('--ast', action='store_true', help='Dump ast')
 
     args = parser.parse_args()
     result = parse_file(args.fn)
-    print result
+    if args.ast:
+        print result
+    else:
+        print result.cl()

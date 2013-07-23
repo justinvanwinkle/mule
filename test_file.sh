@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-python parse_file.py $1 | sbcl --script pretty-print.lisp
+python parse_file.py $@ | sbcl --script pretty-print.lisp
