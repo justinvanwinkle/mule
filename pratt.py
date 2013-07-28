@@ -176,10 +176,11 @@ class Parser(object):
 
 
 class Namespace(object):
-    def __init__(self, return_name=None):
+    def __init__(self, return_name=None, current_class=None):
         self.s = set()
         self.let_count = 0
         self.return_name = return_name
+        self.current_class = current_class
 
     def add(self, name):
         self.s.add(name)
@@ -392,9 +393,12 @@ class LispBody(LispNode):
 def parse_rest_of_block(parser):
     forms = []
     while parser.token_handler.name != 'ENDBLOCK':
+        while parser.maybe_match('NEWLINE'):
+            pass
         form = parser.expression(10)
         forms.append(form)
-        parser.maybe_match('NEWLINE')
+        while parser.maybe_match('NEWLINE'):
+            pass
     return forms
 
 
@@ -413,16 +417,64 @@ class EndBlock(Op):
     name = 'ENDBLOCK'
 
 
+class CLOSClassNode(LispNode):
+    kind = 'class'
+
+    def __init__(self, name, bases=(), slots=(), members=(), methods=()):
+        self.name = name
+        self.bases = list(bases)
+        self.slots = list(slots)
+        self.members = list(members)
+        self.methods = list(methods)
+
+    def add_form(self, form):
+        if form.kind == 'defun':
+            self.methods.append(form)
+
+    def __repr__(self):
+        return '(class %s (%s) (%s) (%s))' % (
+            self.name,
+            self.bases,
+            self.members,
+            self.methods)
+
+    def cl_bases(self):
+        return '(%s)' % ' '.join(base.cl() for base in self.bases)
+
+    def cl_slot(self, slot):
+        if slot.kind == 'name':
+            return slot.cl()
+        elif slot.kind == 'assign':
+            return '(%s :initform %s)' % (slot.left.cl(), slot.right.cl())
+
+    def cl_slots(self):
+        ' '.join(self.cl_slot(slot) for slot in self.slots)
+
+    def cl(self):
+        return '(defclass %s %s %s)' % (
+            self.name.cl(),
+            self.cl_bases(),
+            self.cl_slots())
+
+
 class Class(Op):
-    lbp = 10
+    lbp = 0
     regex = 'class'
     name = 'CLASS'
 
-    def nud(self):
-        pass
-
-    def led(self, left):
-        pass
+    def nud(self, parser, value):
+        name = parser.expression(100)
+        cc = CLOSClassNode(name)
+        if parser.maybe_match('LPAREN'):
+            while parser.watch('RPAREN'):
+                cc.bases.append(parser.expression(10))
+                parser.maybe_match('COMMA')
+        parser.match('COLON')
+        parser.match('NEWLINE')
+        body = parser.expression(10)
+        for form in body.forms:
+            cc.add_form(form)
+        return cc
 
 
 class ClassNode(LispNode):
