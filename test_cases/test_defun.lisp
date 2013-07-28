@@ -1,4 +1,7 @@
-(progn
-  (defun clpython.user::|test| (clpython.user::|x| clpython.user::|y|)
-  (block nil
-    (return (+ clpython.user::|x| clpython.user::|y|)))))
+(defun test (x) (return-from test x))
+(defun test2 (x y) (let ((z (+ x y))) (return-from test2 z)))
+(defun test3 (x) (test 1)
+(test2 5 7)
+(return-from test3 55))
+(test 5)
+(test2 1 2)

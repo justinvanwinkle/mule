@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
@@ -17,11 +18,11 @@ if __name__ == '__main__':
     pratt.debug = False
     in_fns = glob('test_cases/*.py')
     for in_fn in in_fns:
-        try:
-            output = pratt.parse_file(in_fn).cl()
-            in_fn_name = splitext(splitpath(in_fn)[1])[0]
-            output_fn = 'OUTPUT/' + in_fn_name + '.lisp'
-            with open(output_fn, 'w') as f:
+        in_fn_name = splitext(splitpath(in_fn)[1])[0]
+        output_fn = 'OUTPUT/' + in_fn_name + '.lisp'
+        with open(output_fn, 'w') as f:
+            try:
+                output = pratt.parse_file(in_fn).cl()
                 f.write(output)
-        except Exception, e:
-            print in_fn, e
+            except Exception, e:
+                print in_fn, e

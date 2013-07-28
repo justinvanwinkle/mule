@@ -1,4 +1,3 @@
-(progn
-  (defparameter clpython.user::|x| 1)
-  (+ clpython.user::|x| 1)
-  (+ clpython.user::|x| 2))
+(defparameter x 1)
+(+ x 1)
+(+ x 2)

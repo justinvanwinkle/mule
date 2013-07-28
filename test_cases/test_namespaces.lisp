@@ -1,0 +1,7 @@
+(defparameter x 1)
+(defun test (y) (setf x 2)
+(+ (return-from test x) y))
+(defun test2 (x) (setf x 3)
+(return-from test2 x))
+(defun test3 () (let ((y 10)) (progn (loop for x being the elements of (range 100) do (setf y x))
+(return-from test3 y))))
