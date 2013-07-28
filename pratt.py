@@ -535,7 +535,7 @@ class InNode(LispNode):
 
 class In(Op):
     lbp = 70
-    regex = r'in'
+    regex = r' in '
     name = 'IN'
 
     def led(self, parser, left):
@@ -563,7 +563,7 @@ class Return(Op):
     name = 'RETURN'
 
     def nud(self, parser, value):
-        return ReturnNode(parser.expression(80), parser.ns.return_name)
+        return ReturnNode(parser.expression(120), parser.ns.return_name)
 
 
 class SymbolNode(LispNode):
