@@ -239,6 +239,7 @@ class PyclParser(Parser):
                 Module(),
                 Block(),
                 EndBlock(),
+                Pass(),
                 Class(),
                 Def(),
                 For(),
@@ -254,10 +255,12 @@ class PyclParser(Parser):
                 LBrace(),
                 RBrace(),
                 Comma(),
+                Equality(),
                 Assign(),
                 Colon(),
                 Float(),
                 Integer(),
+                Dot(),
                 Plus(),
                 Minus(),
                 Multiply(),
@@ -382,7 +385,7 @@ class LispBody(LispNode):
         if implicit_body:
             return '\n'.join(clmap(self.forms))
         elif len(self.forms) > 1 and not implicit_body:
-            return '(progn %s)' % '\n'.join(clmap(self.forms))
+            return '(PROGN %s)' % '\n'.join(clmap(self.forms))
         elif len(self.forms) == 1:
             return self.forms[0].cl()
         else:
@@ -417,6 +420,50 @@ class EndBlock(Op):
     name = 'ENDBLOCK'
 
 
+class NilNode(LispNode):
+    kind = 'nil'
+
+    def __repr__(self):
+        return 'pass'
+
+    def cl(self):
+        return 'NIL'
+
+
+class Pass(Op):
+    lbp = 0
+    regex = 'pass'
+    name = 'PASS'
+
+    def nud(self, parser, value):
+        return NilNode()
+
+
+class MethodNode(LispNode):
+    kind = 'defun'
+
+    def __init__(self, name, class_name, arg_names, body):
+        self.name = name
+        self.class_name = class_name
+        self.arg_names = arg_names
+        self.body = body
+
+    def __repr__(self):
+        return '(method %s %s (%s) \n%s)' % (
+            self.name,
+            self.class_name,
+            ' '.join('%s' % x for x in self.arg_names),
+            self.body)
+
+    def cl(self):
+        return '(DEFMETHOD %s ((%s %s) %s) %s)' % (
+            self.name.cl(),
+            self.arg_names[0].cl(),
+            self.class_name.cl(),
+            ' '.join(clmap(self.arg_names[1:])),
+            self.body.cl(implicit_body=True))
+
+
 class CLOSClassNode(LispNode):
     kind = 'class'
 
@@ -438,6 +485,12 @@ class CLOSClassNode(LispNode):
             self.members,
             self.methods)
 
+    def cl_method(self, defun):
+        return MethodNode(defun.name, self.name, defun.arg_names, defun.body)
+
+    def cl_methods(self):
+        return '\n'.join(self.cl_method(defun).cl() for defun in self.methods)
+
     def cl_bases(self):
         return '(%s)' % ' '.join(base.cl() for base in self.bases)
 
@@ -445,16 +498,22 @@ class CLOSClassNode(LispNode):
         if slot.kind == 'name':
             return slot.cl()
         elif slot.kind == 'assign':
-            return '(%s :initform %s)' % (slot.left.cl(), slot.right.cl())
+            return '(%s :INITFORM %s)' % (slot.left.cl(), slot.right.cl())
 
     def cl_slots(self):
-        ' '.join(self.cl_slot(slot) for slot in self.slots)
+        if self.slots:
+            return ' '.join(self.cl_slot(slot) for slot in self.slots)
+        else:
+            return 'NIL'
 
     def cl(self):
-        return '(defclass %s %s %s)' % (
+        defclass = '(DEFCLASS %s %s %s)' % (
             self.name.cl(),
             self.cl_bases(),
             self.cl_slots())
+        if self.methods:
+            return defclass + self.cl_methods()
+        return defclass
 
 
 class Class(Op):
@@ -477,10 +536,6 @@ class Class(Op):
         return cc
 
 
-class ClassNode(LispNode):
-    kind = 'class'
-
-
 class DefunNode(LispNode):
     kind = 'defun'
 
@@ -490,13 +545,13 @@ class DefunNode(LispNode):
         self.body = body
 
     def __repr__(self):
-        return '(defun %s (%s) \n%s)' % (
+        return '(def %s (%s) \n%s)' % (
             self.name,
             ' '.join('%s' % x for x in self.arg_names),
             self.body)
 
     def cl(self):
-        return '(defun %s (%s) %s)' % (
+        return '(DEFUN %s (%s) %s)' % (
             self.name.cl(),
             ' '.join(clmap(self.arg_names)),
             self.body.cl(implicit_body=True))
@@ -535,7 +590,7 @@ class ForLoopNode(LispNode):
             self.body)
 
     def cl(self):
-        return '(loop for %s being the elements of %s do %s)' % (
+        return '(LOOP FOR %s BEING THE ELEMENTS OF %s DO %s)' % (
             self.var_name.cl(),
             self.domain.cl(),
             self.body.cl())
@@ -582,7 +637,7 @@ class InNode(LispNode):
         self.collection = collection
 
     def __repr__(self):
-        return '(in %s %s)' % (self.thing, self.collection)
+        return '(IN %s %s)' % (self.thing, self.collection)
 
 
 class In(Op):
@@ -605,7 +660,7 @@ class ReturnNode(LispNode):
         return '(return %s)' % self.return_expr
 
     def cl(self):
-        return '(return-from %s %s)' % (self.return_name.cl(),
+        return '(RETURN-FROM %s %s)' % (self.return_name.cl(),
                                         self.return_expr.cl())
 
 
@@ -728,6 +783,29 @@ class Comma(Op):
     name = 'COMMA'
 
 
+class EqualityNode(LispNode):
+    kind = 'equal'
+
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+    def __repr__(self):
+        return '(== %s %s)' % (self.left, self.right)
+
+    def cl(self):
+        return '(EQUALP %s %s)' % (self.left.cl(), self.right.cl())
+
+
+class Equality(Op):
+    lbp = 40
+    regex = '=='
+    name = 'EQUALS'
+
+    def led(self, parser, left):
+        return EqualityNode(left, parser.expression(60))
+
+
 class DefParameterNode(LispNode):
     kind = 'defparameter'
 
@@ -739,7 +817,7 @@ class DefParameterNode(LispNode):
         return '(assign %s %s)' % (self.left, self.right)
 
     def cl(self):
-        return '(defparameter %s %s)' % (self.left.cl(), self.right.cl())
+        return '(DEFPARAMETER %s %s)' % (self.left.cl(), self.right.cl())
 
 
 class SetfNode(LispNode):
@@ -753,7 +831,7 @@ class SetfNode(LispNode):
         return '(assign %s %s)' % (self.left, self.right)
 
     def cl(self):
-        return '(setf %s %s)' % (self.left.cl(), self.right.cl())
+        return '(SETF %s %s)' % (self.left.cl(), self.right.cl())
 
 
 class LetNode(LispNode):
@@ -769,18 +847,18 @@ class LetNode(LispNode):
             self.body)
 
     def cl(self):
-        return '(let (%s) %s)' % (
+        return '(LET (%s) %s)' % (
             ' '.join('(%s %s)' % (l.cl(), r.cl()) for l, r in self.pairs),
             self.body.cl())
 
 
 class Assign(Op):
-    lbp = 80
+    lbp = 20
     regex = '='
     name = 'ASSIGN'
 
     def led(self, parser, left):
-        if left.name in parser.ns:
+        if left.kind == 'attr_lookup' or left.name in parser.ns:
             return SetfNode(left, parser.expression(20))
         elif parser.ns.depth == 0:
             parser.ns.add(left.name)
@@ -845,6 +923,30 @@ class BinaryOperatorNode(LispNode):
 
     def cl(self):
         return '(%s %s %s)' % (self.op, self.left.cl(), self.right.cl())
+
+
+class AttrLookup(LispNode):
+    kind = 'attr_lookup'
+
+    def __init__(self, object_name, attribute_name):
+        self.object_name = object_name
+        self.attribute_name = attribute_name
+
+    def __repr__(self):
+        return '(getattr %s %s)' % (self.object_name, self.attribute_name)
+
+    def cl(self):
+        return "(SLOT-VALUE %s '%s)" % (self.object_name.cl(),
+                                        self.attribute_name.cl())
+
+
+class Dot(Op):
+    lbp = 40
+    regex = r'\.'
+    name = 'DOT'
+
+    def led(self, parser, left):
+        return AttrLookup(left, parser.expression(50))
 
 
 class Plus(Op):

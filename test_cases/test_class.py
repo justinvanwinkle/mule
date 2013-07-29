@@ -1,16 +1,23 @@
 
 
-class Test:
-    pass
+class Class1:
+    def meth(self):
+        pass
 
 
-class SubTest(Test, object):
-    attr = 44
+class AttrTest(Class1):
+    def __init__(self, x, y):
+        self.x = 5
+        self.y = 6
 
     def foo(self):
-        x = 5
-        print(x)
+        self.x = 5
+        return self.x
 
 
 def not_method():
-    pass
+    return 1
+
+
+at = AttrTest()
+assert(at.foo() == 5)

@@ -1,3 +1,3 @@
-(defparameter x 1)
+(DEFPARAMETER x 1)
 (+ x 1)
 (+ x 2)

@@ -1,3 +1,3 @@
-(defclass Test () None)
-(defclass SubTest (Test object) None)
-(defun not_method () pass)
+(DEFCLASS Test () NIL)
+(DEFCLASS SubTest (Test object) NIL)
+(DEFUN not_method () NIL)

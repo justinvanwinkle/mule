@@ -1,2 +1,2 @@
-(defparameter x 1)
-(defparameter y 2)
+(DEFPARAMETER x 1)
+(DEFPARAMETER y 2)

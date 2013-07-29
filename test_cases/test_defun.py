@@ -13,6 +13,5 @@ def test3(x):
     test2(5, 7)
     return 55
 
-test(5)
-
-test2(1, 2)
+assert(test(5) == 5)
+assert(test2(1, 2) == 3)
