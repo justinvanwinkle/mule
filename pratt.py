@@ -941,7 +941,7 @@ class AttrLookup(LispNode):
 
 
 class Dot(Op):
-    lbp = 40
+    lbp = 130
     regex = r'\.'
     name = 'DOT'
 
