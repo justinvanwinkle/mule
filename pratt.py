@@ -946,7 +946,11 @@ class Dot(Op):
     name = 'DOT'
 
     def led(self, parser, left):
-        return AttrLookup(left, parser.expression(50))
+        right = parser.expression(50)
+        if right.kind == 'call':
+            right.args.insert(0, left)
+            return right
+        return AttrLookup(left, right)
 
 
 class Plus(Op):
