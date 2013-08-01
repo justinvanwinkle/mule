@@ -417,7 +417,7 @@ def parse_rest_of_block(parser):
     while parser.token_handler.name != 'ENDBLOCK':
         while parser.maybe_match('NEWLINE'):
             pass
-        form = parser.expression(10)
+        form = parser.expression()
         forms.append(form)
         while parser.maybe_match('NEWLINE'):
             pass
@@ -554,7 +554,9 @@ class CLOSClassNode(LispNode):
             self.cl_bases(),
             self.cl_slots())
         if self.methods:
+            defclass += '\n'
             defclass += self.cl_methods()
+        defclass += '\n'
         defclass += self.cl_constructor()
 
         return defclass
@@ -566,11 +568,11 @@ class Class(Op):
     name = 'CLASS'
 
     def nud(self, parser, value):
-        name = parser.expression(100)
+        name = parser.expression()
         cc = CLOSClassNode(name)
         if parser.maybe_match('LPAREN'):
             while parser.watch('RPAREN'):
-                cc.bases.append(parser.expression(10))
+                cc.bases.append(parser.expression(0))
                 parser.maybe_match('COMMA')
         parser.match('COLON')
         parser.match('NEWLINE')
@@ -604,7 +606,7 @@ class DefunNode(LispNode):
 
 
 class Def(Op):
-    lbp = 10
+    lbp = 0
     regex = 'def'
     name = 'DEF'
 
@@ -735,7 +737,7 @@ class ReturnNode(LispNode):
 
 
 class Return(Op):
-    lbp = 110
+    lbp = 10
     regex = 'return'
     name = 'RETURN'
 
@@ -793,7 +795,7 @@ class CallNode(LispNode):
 
 
 class LParen(Op):
-    lbp = 80
+    lbp = 70
     regex = r'\('
     name = 'LPAREN'
 
@@ -802,7 +804,7 @@ class LParen(Op):
             name = left
             args = []
             while parser.watch('RPAREN'):
-                args.append(parser.expression(10))
+                args.append(parser.expression())
                 parser.maybe_match('COMMA')
             return CallNode(name, args)
 
@@ -873,7 +875,7 @@ class Equality(Op):
     name = 'EQUALS'
 
     def led(self, parser, left):
-        return EqualityNode(left, parser.expression(60))
+        return EqualityNode(left, parser.expression())
 
 
 class DefParameterNode(LispNode):
@@ -923,19 +925,17 @@ class LetNode(LispNode):
 
 
 class Assign(Op):
-    lbp = 30
+    lbp = 10
     regex = '='
     name = 'ASSIGN'
 
     def led(self, parser, left):
-        log('NAMESPACESTACK %s', parser.ns)
-        log('%s', parser.ns.cns)
-        if left.kind == 'attr_lookup' or left.name in parser.ns or \
-           parser.ns.cns.class_top_level:
-            return SetfNode(left, parser.expression(20))
+        if ((left.kind == 'attr_lookup' or left.name in parser.ns or
+             parser.ns.cns.class_top_level)):
+            return SetfNode(left, parser.expression(10))
         elif parser.ns.depth == 0:
             parser.ns.add(left.name)
-            return DefParameterNode(left, parser.expression(20))
+            return DefParameterNode(left, parser.expression(10))
         else:
             right = parser.expression(10)
             log('RIGHT %s', right)
@@ -1015,12 +1015,12 @@ class AttrLookup(LispNode):
 
 
 class Dot(Op):
-    lbp = 130
+    lbp = 80
     regex = r'\.'
     name = 'DOT'
 
     def led(self, parser, left):
-        right = parser.expression(50)
+        right = parser.expression()
         if right.kind == 'call':
             right.args.insert(0, left)
             return right
@@ -1028,25 +1028,25 @@ class Dot(Op):
 
 
 class LessThan(Op):
-    lbp = 120
+    lbp = 130
     regex = '<'
     name = 'LESSTHAN'
 
     def led(self, parser, left):
-        return BinaryOperatorNode('<', left, parser.expression(120))
+        return BinaryOperatorNode('<', left, parser.expression())
 
 
 class Plus(Op):
-    lbp = 110
+    lbp = 50
     regex = r'\+'
     name = 'PLUS'
 
     def led(self, parser, left):
-        return BinaryOperatorNode('+', left, parser.expression(110))
+        return BinaryOperatorNode('+', left, parser.expression())
 
 
 class Minus(Op):
-    lbp = 110
+    lbp = 50
     regex = r'\-'
     name = 'MINUS'
 
@@ -1055,7 +1055,7 @@ class Minus(Op):
 
 
 class Multiply(Op):
-    lbp = 120
+    lbp = 60
     regex = r'\*'
     name = 'MULTIPLY'
 
@@ -1064,7 +1064,7 @@ class Multiply(Op):
 
 
 class Divide(Op):
-    lbp = 120
+    lbp = 60
     regex = r'\/'
     name = 'DIVIDE'
 

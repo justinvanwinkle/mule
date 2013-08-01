@@ -1,5 +1,5 @@
 def test(x):
-    return x
+    return x + 1
 
 
 def test2(x, y):
@@ -11,7 +11,8 @@ def test2(x, y):
 def test3(x):
     test(1)
     test2(5, 7)
-    return 55
+    return test(1) + 55
 
-assert(test(5) == 5)
+assert(test(5) == 6)
 assert(test2(1, 2) == 3)
+assert(test3(1) == 57)
