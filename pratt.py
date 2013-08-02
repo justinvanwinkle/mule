@@ -124,6 +124,8 @@ class Parser(object):
 
     def maybe_match(self, token_name):
         if token_name == self.token_handler.name:
+            if debug:
+                self.log('MAYBE-MATCHED: %s', token_name)
             self.feed()
             return True
         return False
@@ -139,7 +141,7 @@ class Parser(object):
     def watch(self, token_name, consume=True):
         if token_name == self.token_handler.name:
             if debug:
-                self.log('SAW A %s', token_name)
+                self.log('WATCH finds %s', token_name)
             if consume:
                 self.feed()
             return False
@@ -162,9 +164,9 @@ class Parser(object):
                      rbp,
                      self.token_handler.lbp)
         while rbp < self.token_handler.lbp:
-            if debug:
-                self.log('looping! left is %s', left)
             t = self.token_handler
+            if debug:
+                self.log('looping into %s.led! left is %s', t, left)
             self.feed()
             left = t.led(self, left)
             if debug:
@@ -635,7 +637,7 @@ class While(Op):
 
     def nud(self, parser, value):
         parser.ns.push_new()
-        test = parser.expression()
+        test = parser.expression(10)
         parser.match('COLON')
         parser.match('NEWLINE')
         body = parser.expression()
@@ -728,12 +730,15 @@ class LParen(Op):
     name = 'LPAREN'
 
     def led(self, parser, left):
-        if left.kind == 'symbol':
+        if left.kind in ('getattr', 'symbol', 'call', 'lookup'):
             name = left
             args = []
             while parser.watch('RPAREN'):
                 args.append(parser.expression())
                 parser.maybe_match('COMMA')
+            if left.kind == 'getattr':
+                name = left.attribute_name
+                args.insert(0, left.object_name)
             return CallNode(name, args)
 
     def nud(self, parser, value):
@@ -834,7 +839,7 @@ class LetNode(LispNode):
     def cl(self):
         return '(LET (%s) %s)' % (
             ' '.join('(%s %s)' % (l.cl(), r.cl()) for l, r in self.pairs),
-            self.body.cl())
+            self.body.cl(implicit_body=True))
 
 
 class Assign(Op):
@@ -845,10 +850,10 @@ class Assign(Op):
     def led(self, parser, left):
         if ((left.kind == 'getattr' or left.name in parser.ns or
              parser.ns.cns.class_top_level)):
-            return SetfNode(left, parser.expression(5))
+            return SetfNode(left, parser.expression(10))
         elif parser.ns.depth == 0:
             parser.ns.add(left.name)
-            return DefParameterNode(left, parser.expression(5))
+            return DefParameterNode(left, parser.expression(10))
         else:
             right = parser.expression(10)
             parser.maybe_match('NEWLINE')
@@ -916,12 +921,12 @@ class AttrLookup(LispNode):
 
 
 class Dot(Op):
-    lbp = 200
+    lbp = 150
     regex = r'\.'
     name = 'DOT'
 
     def led(self, parser, left):
-        right = parser.expression()
+        right = parser.expression(150)
         if right.kind == 'call':
             right.args.insert(0, left)
             return right
@@ -943,7 +948,7 @@ class Plus(Op):
     name = 'PLUS'
 
     def led(self, parser, left):
-        return BinaryOperatorNode('+', left, parser.expression())
+        return BinaryOperatorNode('+', left, parser.expression(50))
 
 
 class Minus(Op):
