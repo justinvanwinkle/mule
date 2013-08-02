@@ -10,10 +10,6 @@ from werkzeug import cached_property
 debug = True
 
 
-def log(s, *args):
-    print >> sys.stderr, s % tuple([repr(x) for x in args])
-
-
 def clmap(forms):
     return [x.cl() for x in forms]
 
@@ -89,6 +85,10 @@ class Parser(object):
         self.token_map = {}
         self.state = {}
 
+    def log(self, s, *args):
+        print >> sys.stderr, '    ' * self.ns.depth + s % tuple(
+            [repr(x) for x in args])
+
     def register(self, op):
         self.registered.append(op)
         self.token_map[op.name] = op
@@ -120,7 +120,7 @@ class Parser(object):
             self.token_handler = token_handler
             self.token_value = value
             if debug:
-                log('Feeding %s :: %s', token_handler, value)
+                self.log('Feeding %s :: %s', token_handler, value)
 
     def maybe_match(self, token_name):
         if token_name == self.token_handler.name:
@@ -133,14 +133,15 @@ class Parser(object):
             raise SyntaxError('Expected %s, Got %s' % (
                 token_name, self.token_handler.name))
         if debug:
-            log('MATCHED: %s', token_name)
+            self.log('MATCHED: %s', token_name)
         self.feed()
 
-    def watch(self, token_name):
+    def watch(self, token_name, consume=True):
         if token_name == self.token_handler.name:
             if debug:
-                log('SAW A %s', token_name)
-            self.feed()
+                self.log('SAW A %s', token_name)
+            if consume:
+                self.feed()
             return False
         return True
 
@@ -155,23 +156,23 @@ class Parser(object):
 
         left = t.nud(self, v)
         if debug:
-            log('starting with left %s', left)
-            log('looping? %s rbp %s lbp %s',
-                self.token_handler,
-                rbp,
-                self.token_handler.lbp)
+            self.log('starting with left %s', left)
+            self.log('looping? %s rbp %s lbp %s',
+                     self.token_handler,
+                     rbp,
+                     self.token_handler.lbp)
         while rbp < self.token_handler.lbp:
             if debug:
-                log('looping! left is %s', left)
+                self.log('looping! left is %s', left)
             t = self.token_handler
             self.feed()
             left = t.led(self, left)
             if debug:
-                log('left is %s', left)
-                log('rbp %s lbp %s', rbp, self.token_handler.lbp)
+                self.log('left is %s', left)
+                self.log('rbp %s lbp %s', rbp, self.token_handler.lbp)
         else:
             if debug:
-                log('no loop')
+                self.log('no loop')
 
         return left
 
@@ -230,15 +231,9 @@ class NamespaceStack(object):
         self.cns.add(name)
 
     def __contains__(self, name):
-        if debug:
-            log('checking NS for %s', name)
         for ns in self.stack:
             if name in ns:
-                if debug:
-                    log('found in NS')
                 return True
-        if debug:
-            log('not found')
         return False
 
     def __repr__(self):
@@ -260,7 +255,6 @@ class PyclParser(Parser):
                 Class(),
                 Def(),
                 For(),
-                While(),
                 If(),
                 While(),
                 In(),
@@ -348,7 +342,7 @@ class PyclParser(Parser):
 
 
 class Op(object):
-    lbp = 10
+    lbp = 0
     regex = None
     regexes = None
     name = None
@@ -361,7 +355,7 @@ class LispNode(object):
     kind = 'node'
 
     def __repr__(self):
-        return '(%s XXXXXXXXXX)' % self.kind
+        return self.cl()
 
     def cl(self):
         return '(%s-XXX XXX)' % self.kind
@@ -373,20 +367,16 @@ class LispPackage(LispNode):
     def __init__(self, block):
         self.block = block
 
-    def __repr__(self):
-        return '(package \n%s)' % self.block
-
     def cl(self):
         return self.block.cl(implicit_body=True)
 
 
 class Module(Op):
-    lbp = 100
     name = 'MODULE'
 
     def nud(self, parser, value):
         parser.ns.push_new()
-        package = LispPackage(parser.expression(0))
+        package = LispPackage(parser.expression())
         parser.ns.pop()
         return package
 
@@ -397,14 +387,11 @@ class LispBody(LispNode):
     def __init__(self, forms):
         self.forms = forms
 
-    def __repr__(self):
-        return '\n'.join(repr(x) for x in self.forms)
-
     def cl(self, implicit_body=False):
         if implicit_body:
-            return '\n'.join(clmap(self.forms))
+            return ' '.join(clmap(self.forms))
         elif len(self.forms) > 1 and not implicit_body:
-            return '(PROGN %s)' % '\n'.join(clmap(self.forms))
+            return '(PROGN %s)' % ' '.join(clmap(self.forms))
         elif len(self.forms) == 1:
             return self.forms[0].cl()
         else:
@@ -412,9 +399,9 @@ class LispBody(LispNode):
             return 'nil'
 
 
-def parse_rest_of_block(parser):
+def parse_rest_of_body(parser):
     forms = []
-    while parser.token_handler.name != 'ENDBLOCK':
+    while parser.watch('ENDBLOCK', consume=False):
         while parser.maybe_match('NEWLINE'):
             pass
         form = parser.expression()
@@ -425,32 +412,27 @@ def parse_rest_of_block(parser):
 
 
 class Block(Op):
-    lbp = 10
+    lbp = 0
     name = 'BLOCK'
 
     def nud(self, parser, value):
-        forms = parse_rest_of_block(parser)
+        forms = parse_rest_of_body(parser)
         parser.match('ENDBLOCK')
         return LispBody(forms)
 
 
 class EndBlock(Op):
-    lbp = 0
     name = 'ENDBLOCK'
 
 
 class NilNode(LispNode):
     kind = 'nil'
 
-    def __repr__(self):
-        return 'pass'
-
     def cl(self):
         return 'NIL'
 
 
 class Pass(Op):
-    lbp = 0
     regex = 'pass'
     name = 'PASS'
 
@@ -466,13 +448,6 @@ class MethodNode(LispNode):
         self.class_name = class_name
         self.arg_names = arg_names
         self.body = body
-
-    def __repr__(self):
-        return '(method %s %s (%s) \n%s)' % (
-            self.name,
-            self.class_name,
-            ' '.join('%s' % x for x in self.arg_names),
-            self.body)
 
     def cl(self):
         return '(DEFMETHOD %s ((%s %s) %s) %s)' % (
@@ -504,18 +479,11 @@ class CLOSClassNode(LispNode):
                 for symbol in form.right.values:
                     self.slots.append(symbol.value)
 
-    def __repr__(self):
-        return '(class %s (%s) (%s) (%s))' % (
-            self.name,
-            self.bases,
-            self.members,
-            self.methods)
-
     def cl_method(self, defun):
         return MethodNode(defun.name, self.name, defun.arg_names, defun.body)
 
     def cl_methods(self):
-        return '\n'.join(self.cl_method(defun).cl() for defun in self.methods)
+        return ' '.join(self.cl_method(defun).cl() for defun in self.methods)
 
     def cl_bases(self):
         return '(%s)' % ' '.join(base.cl() for base in self.bases)
@@ -554,16 +522,15 @@ class CLOSClassNode(LispNode):
             self.cl_bases(),
             self.cl_slots())
         if self.methods:
-            defclass += '\n'
+            defclass += ' '
             defclass += self.cl_methods()
-        defclass += '\n'
+        defclass += ' '
         defclass += self.cl_constructor()
 
         return defclass
 
 
 class Class(Op):
-    lbp = 0
     regex = 'class'
     name = 'CLASS'
 
@@ -572,12 +539,12 @@ class Class(Op):
         cc = CLOSClassNode(name)
         if parser.maybe_match('LPAREN'):
             while parser.watch('RPAREN'):
-                cc.bases.append(parser.expression(0))
+                cc.bases.append(parser.expression())
                 parser.maybe_match('COMMA')
         parser.match('COLON')
         parser.match('NEWLINE')
         parser.ns.push_new(class_top_level=True)
-        body = parser.expression(0)
+        body = parser.expression()
         parser.ns.pop()
         for form in body.forms:
             cc.add_form(form)
@@ -592,12 +559,6 @@ class DefunNode(LispNode):
         self.arg_names = arg_names
         self.body = body
 
-    def __repr__(self):
-        return '(def %s (%s) \n%s)' % (
-            self.name,
-            ' '.join('%s' % x for x in self.arg_names),
-            self.body)
-
     def cl(self):
         return '(DEFUN %s (%s) %s)' % (
             self.name.cl(),
@@ -606,7 +567,6 @@ class DefunNode(LispNode):
 
 
 class Def(Op):
-    lbp = 0
     regex = 'def'
     name = 'DEF'
 
@@ -630,12 +590,6 @@ class ForLoopNode(LispNode):
         self.var_name = var_name
         self.domain = domain
         self.body = body
-
-    def __repr__(self):
-        return '(for (in %s %s) \n%s)' % (
-            self.var_name,
-            self.domain,
-            self.body)
 
     def cl(self):
         return '(LOOP FOR %s BEING THE ELEMENTS OF %s DO %s)' % (
@@ -669,28 +623,22 @@ class WhileLoopNode(LispNode):
         self.test = test
         self.body = body
 
-    def __repr__(self):
-        return '(while %s \n%s)' % (
-            self.test,
-            self.body)
-
     def cl(self):
-        return '(LOOP WHILE %s \ndo %s)' % (
+        return '(LOOP WHILE %s DO %s)' % (
             self.test.cl(),
             self.body.cl())
 
 
 class While(Op):
-    lbp = 0
     regex = 'while '
     name = 'WHILE'
 
     def nud(self, parser, value):
         parser.ns.push_new()
-        test = parser.expression(10)
+        test = parser.expression()
         parser.match('COLON')
         parser.match('NEWLINE')
-        body = parser.expression(10)
+        body = parser.expression()
         parser.ns.pop()
         return WhileLoopNode(test, body)
 
@@ -707,9 +655,6 @@ class InNode(LispNode):
     def __init__(self, thing, collection):
         self.thing = thing
         self.collection = collection
-
-    def __repr__(self):
-        return '(IN %s %s)' % (self.thing, self.collection)
 
 
 class In(Op):
@@ -728,21 +673,17 @@ class ReturnNode(LispNode):
         self.return_expr = return_expr
         self.return_name = return_name
 
-    def __repr__(self):
-        return '(return %s)' % self.return_expr
-
     def cl(self):
         return '(RETURN-FROM %s %s)' % (self.return_name.cl(),
                                         self.return_expr.cl())
 
 
 class Return(Op):
-    lbp = 10
     regex = 'return'
     name = 'RETURN'
 
     def nud(self, parser, value):
-        return ReturnNode(parser.expression(10), parser.ns.return_name)
+        return ReturnNode(parser.expression(5), parser.ns.return_name)
 
 
 class SymbolNode(LispNode):
@@ -751,15 +692,11 @@ class SymbolNode(LispNode):
     def __init__(self, name):
         self.name = name
 
-    def __repr__(self):
-        return '(symbol %s)' % self.name
-
     def cl(self):
         return '%s' % self.name
 
 
 class Name(Op):
-    lbp = 0
     regex = r"[^\W\d]\w*"
     name = 'NAME'
 
@@ -773,10 +710,6 @@ class TupleNode(LispNode):
     def __init__(self, values):
         self.values = values
 
-    def __repr__(self):
-        return '(tuple %s)' % ' '.join(
-            '%s' % x for x in self.values)
-
 
 class CallNode(LispNode):
     kind = 'call'
@@ -784,11 +717,6 @@ class CallNode(LispNode):
     def __init__(self, name, args):
         self.name = name
         self.args = args
-
-    def __repr__(self):
-        return '(call %s (%s))' % (
-            self.name,
-            ' '.join('%s' % x for x in self.args))
 
     def cl(self):
         return '(%s %s)' % (self.name.cl(), ' '.join(clmap(self.args)))
@@ -810,17 +738,17 @@ class LParen(Op):
 
     def nud(self, parser, value):
         values = []
+        comma_seen = False
         while parser.watch('RPAREN'):
             values.append(parser.expression())
-            parser.maybe_match('COMMA')
+            comma_seen = parser.maybe_match('COMMA')
 
-        if len(values) > 1:
+        if comma_seen:
             return TupleNode(values)
         return values[0]
 
 
 class RParen(Op):
-    lbp = 0
     regex = r'\)'
     name = 'RPAREN'
 
@@ -850,7 +778,6 @@ class RBrace(Op):
 
 
 class Comma(Op):
-    lbp = 0
     regex = ','
     name = 'COMMA'
 
@@ -861,9 +788,6 @@ class EqualityNode(LispNode):
     def __init__(self, left, right):
         self.left = left
         self.right = right
-
-    def __repr__(self):
-        return '(== %s %s)' % (self.left, self.right)
 
     def cl(self):
         return '(EQUALP %s %s)' % (self.left.cl(), self.right.cl())
@@ -885,9 +809,6 @@ class DefParameterNode(LispNode):
         self.left = left
         self.right = right
 
-    def __repr__(self):
-        return '(assign %s %s)' % (self.left, self.right)
-
     def cl(self):
         return '(DEFPARAMETER %s %s)' % (self.left.cl(), self.right.cl())
 
@@ -899,9 +820,6 @@ class SetfNode(LispNode):
         self.left = left
         self.right = right
 
-    def __repr__(self):
-        return '(assign %s %s)' % (self.left, self.right)
-
     def cl(self):
         return '(SETF %s %s)' % (self.left.cl(), self.right.cl())
 
@@ -912,11 +830,6 @@ class LetNode(LispNode):
     def __init__(self, left, right, body):
         self.pairs = [(left, right)]
         self.body = body
-
-    def __repr__(self):
-        return '(let (%s) %s)' % (
-            ' '.join('(%s %s)' % (l, r) for l, r in self.pairs),
-            self.body)
 
     def cl(self):
         return '(LET (%s) %s)' % (
@@ -930,28 +843,25 @@ class Assign(Op):
     name = 'ASSIGN'
 
     def led(self, parser, left):
-        if ((left.kind == 'attr_lookup' or left.name in parser.ns or
+        if ((left.kind == 'getattr' or left.name in parser.ns or
              parser.ns.cns.class_top_level)):
-            return SetfNode(left, parser.expression(10))
+            return SetfNode(left, parser.expression(5))
         elif parser.ns.depth == 0:
             parser.ns.add(left.name)
-            return DefParameterNode(left, parser.expression(10))
+            return DefParameterNode(left, parser.expression(5))
         else:
             right = parser.expression(10)
-            log('RIGHT %s', right)
             parser.maybe_match('NEWLINE')
             parser.ns.push_new()
             parser.ns.add(left.name)
-            rest = parse_rest_of_block(parser)
             let_node = LetNode(left,
                                right,
-                               LispBody(rest))
+                               LispBody(parse_rest_of_body(parser)))
             parser.ns.pop()
             return let_node
 
 
 class Colon(Op):
-    lbp = 0
     regex = ':'
     name = 'COLON'
 
@@ -961,9 +871,6 @@ class NumberNode(LispNode):
 
     def __init__(self, value):
         self.value = value
-
-    def __repr__(self):
-        return '(number %s)' % self.value
 
     def cl(self):
         return '%s' % self.value
@@ -992,22 +899,16 @@ class BinaryOperatorNode(LispNode):
         self.left = left
         self.right = right
 
-    def __repr__(self):
-        return '(%s %s %s)' % (self.op, self.left, self.right)
-
     def cl(self):
         return '(%s %s %s)' % (self.op, self.left.cl(), self.right.cl())
 
 
 class AttrLookup(LispNode):
-    kind = 'attr_lookup'
+    kind = 'getattr'
 
     def __init__(self, object_name, attribute_name):
         self.object_name = object_name
         self.attribute_name = attribute_name
-
-    def __repr__(self):
-        return '(getattr %s %s)' % (self.object_name, self.attribute_name)
 
     def cl(self):
         return "(SLOT-VALUE %s '%s)" % (self.object_name.cl(),
@@ -1015,7 +916,7 @@ class AttrLookup(LispNode):
 
 
 class Dot(Op):
-    lbp = 80
+    lbp = 200
     regex = r'\.'
     name = 'DOT'
 
@@ -1078,36 +979,24 @@ class StringNode(LispNode):
     def __init__(self, value):
         self.value = value
 
-    def __repr__(self):
-        return '(string %s)' % self.value
-
     def cl(self):
         return '"%s"' % self.value
 
 
 class String(Op):
-    lbp = 0
-    regexes = [r"'''(.*?)'''",
-               r"'''(.*?)'''",
+    regexes = [#r"'''(.*?)'''",
+               #r"'''(.*?)'''",
                r"'(.*?)'",
                r'"(.*?)"']
     name = 'STRING'
 
     def nud(self, parser, value):
-        for begin in range(3):
-            if value[begin] != value[0]:
-                break
-
-        for end in range(3):
-            if value[-end - 1] != value[-1]:
-                break
-        value = value[begin:end + 1]
+        value = value[1:-1]
 
         return StringNode(value)
 
 
 class Newline(Op):
-    lbp = 0
     regex = r'\n'
     name = 'NEWLINE'
 
