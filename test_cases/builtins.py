@@ -33,14 +33,3 @@ class List(SEQUENCE, `STANDARD-OBJECT`):
 
     def `MAKE-SEQUENCE-ITERATOR`(self, `FROM-END`=None, START=None, END=None):
         return `MAKE-SEQUENCE-ITERATOR`(self.array, `FROM-END`=`FROM-END`, START=START, END=END)
-
-def foo():
-    l = List()
-
-    for x in range(10):
-        l.append(x)
-
-    for x in l:
-        PRINT(x)
-
-TIME(foo())

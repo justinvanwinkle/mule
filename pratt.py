@@ -212,6 +212,14 @@ class NamespaceStack(object):
             return None
 
     @property
+    def top_level(self):
+        return self.depth == 0
+
+    @property
+    def class_top_level(self):
+        return self.cns.class_top_level
+
+    @property
     def return_name(self):
         for ns in reversed(self.stack):
             if ns.return_name is not None:
@@ -601,15 +609,29 @@ class DefunNode(LispNode):
                 splat = '&REST %s' % arg.right
             else:
                 forms.append('%s' % arg)
-        forms = forms[1:]
+        if skip_first:
+            forms = forms[1:]
         return '%s %s %s' % (
             ' '.join(forms), self.cl_kw_args(), splat)
 
     def cl(self):
         return '(DEFUN %s (%s) %s)' % (
-            self.name.cl(),
+            self.name,
             self.cl_args(),
             self.body.cl(implicit_body=True))
+
+
+class FletLambda(DefunNode):
+    def __init__(self, defun, right):
+        self.defun = defun
+        self.right = right
+
+    def cl(self):
+        return '(FLET ((%s (%s) %s)) %s)' % (
+            self.defun.name,
+            self.defun.cl_args(),
+            self.defun.body.cl(implicit_body=True),
+            self.right.cl(implicit_body=True))
 
 
 class Def(Op):
@@ -634,7 +656,16 @@ class Def(Op):
         parser.match('NEWLINE')
         body = parser.expression()
         parser.ns.pop()
-        return DefunNode(name, arg_names, kw_args, body)
+        defun = DefunNode(name, arg_names, kw_args, body)
+        if parser.ns.top_level or parser.ns.class_top_level:
+            return defun
+
+        parser.ns.push_new()
+        parser.ns.add(defun.name)
+        flet_node = FletLambda(defun,
+                               LispBody(parser.parse_rest_of_body()))
+        parser.ns.pop()
+        return flet_node
 
 
 class ForLoopNode(LispNode):

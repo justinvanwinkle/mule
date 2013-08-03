@@ -13,6 +13,13 @@ def test3(x):
     test2(5, 7)
     return test(1) + 55
 
-assert(test(5) == 6)
-assert(test2(1, 2) == 3)
-assert(test3(1) == 57)
+
+def test_outer(x):
+    def test_inner(y):
+        return y + 1
+    return test_inner(x + 1)
+
+ASSERT(test(5) == 6)
+ASSERT(test2(1, 2) == 3)
+ASSERT(test3(1) == 57)
+ASSERT(test_outer(5) == 7)
