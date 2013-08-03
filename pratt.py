@@ -746,8 +746,8 @@ class LParen(Op):
         comma_seen = False
         while parser.watch('RPAREN'):
             values.append(parser.expression())
-            comma_seen = parser.maybe_match('COMMA')
-
+            if parser.maybe_match('COMMA'):
+                comma_seen = True
         if comma_seen:
             return TupleNode(values)
         return values[0]
