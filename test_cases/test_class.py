@@ -13,5 +13,5 @@ class A:
 
 a = A(1)
 
-assert(a.a == 1)
-assert(a.meth() == 2)
+ASSERT(a.a == 1)
+ASSERT(a.meth() == 2)

@@ -13,7 +13,10 @@ def test2(x):
 
 def test3():
     y = 10
-    for x in range(100):
+    for x in range(1, 10, 2):
         y = x
 
     return y
+
+
+ASSERT(test3() == 9)
