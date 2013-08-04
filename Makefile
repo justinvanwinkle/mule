@@ -1,33 +1,18 @@
 CC=bootstrap/pratt.py
-LISPFILES := $(patsubst %.mule,%.lisp,$(wildcard *.mule))
 
-VPATH = src
+SOURCE_DIR = src
+BUILD_DIR = build
 
-all:	build/lib/builtins.lisp
-build/lib/builtins.lisp:    src/lib/builtins.mule
+MULEFILES := $(shell find $(SOURCE_DIR) -name "*.mule")
+LISPFILES := $(MULEFILES:$(SOURCE_DIR)%.mule=$(BUILD_DIR)%.lisp)
+
+
+
+all:	$(LISPFILES)
+$(LISPFILES):  $(MULEFILES)
 	mkdir -p $(dir $@)
-	bootstrap/pratt.py $< $@
-
-%.lisp: %.mule
-	bootstrap/pratt.py -o $@ $<
+	@$(CC) $^ $@
 
 clean:
 	print $(LISPFILES)
 	rm -rf build
-
-
-# CC=bootstrap/pratt.py
-# LISPFILES := $(patsubst %.mule,%.lisp,$(wildcard *.mule))
-
-# VPATH = src
-
-# all:	src
-# src:   $(LISPFILES)
-# 	bootstrap/pratt.py $(LISPFILES)
-
-# %.lisp: %.mule
-# 	bootstrap/pratt.py -o $@ $<
-
-# clean:
-# 	print $(LISPFILES)
-# 	rm -rf build
