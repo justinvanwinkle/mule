@@ -1,7 +1,0 @@
-(DEFUN test (x) (RETURN-FROM test x))
-(DEFUN test2 (x y) (LET ((z (+ x y))) (RETURN-FROM test2 z)))
-(DEFUN test3 (x) (test 1)
-(test2 5 7)
-(RETURN-FROM test3 55))
-(assert (EQUALP (test 5) 5))
-(assert (EQUALP (test2 1 2) 3))

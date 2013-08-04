@@ -1,1 +1,0 @@
-(DEFUN test () (LET ((x 1)) (LET ((y 2)) (+ x y))))

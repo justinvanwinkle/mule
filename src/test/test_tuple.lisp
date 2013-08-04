@@ -1,1 +1,0 @@
-(DEFPARAMETER x (tuple-XXX XXX))

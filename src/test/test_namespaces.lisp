@@ -1,7 +1,0 @@
-(DEFPARAMETER x 1)
-(DEFUN test (y) (SETF x 2)
-(+ (RETURN-FROM test x) y))
-(DEFUN test2 (x) (SETF x 3)
-(RETURN-FROM test2 x))
-(DEFUN test3 () (LET ((y 10)) (PROGN (LOOP FOR x BEING THE ELEMENTS OF (range 100) DO (SETF y x))
-(RETURN-FROM test3 y))))
