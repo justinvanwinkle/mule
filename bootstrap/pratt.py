@@ -1,9 +1,11 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
-
+from __future__ import print_function
 import sre_parse
 import sre_compile
-import sys
+from sys import stderr
+from sys import stdout
 
 from werkzeug import cached_property
 
@@ -87,8 +89,8 @@ class Parser(object):
         self.state = {}
 
     def log(self, s, *args):
-        print >> sys.stderr, '    ' * self.ns.depth + s % tuple(
-            [repr(x) for x in args])
+        print('    ' * self.ns.depth + s % tuple([repr(x) for x in args]),
+              file=stderr)
 
     def register(self, op):
         self.registered.append(op)
@@ -1231,3 +1233,28 @@ class Newline(Op):
 class Whitespace(Op):
     regex = r'[ ]+'
     name = 'WHITESPACE'
+
+
+if __name__ == '__main__':
+    import argparse
+    from os.path import splitext
+    from os.path import split
+
+    parser = argparse.ArgumentParser(description='Python to CL compiler')
+    parser.add_argument('mule_fn', help='input file')
+    parser.add_argument('lisp_fn', nargs='?', help='output file')
+    parser.add_argument('--debug', action='store_true', help='debug output')
+    args = parser.parse_args()
+
+    debug = args.debug
+
+    fn = splitext(split(args.mule_fn)[1])[0]
+    result = parse_file(args.mule_fn, filename=fn)
+    f = stdout
+    if args.lisp_fn:
+        f = open(args.lisp_fn, 'w')
+    else:
+        print('\n\n')
+    print(result.cl(), file=f)
+    if args.lisp_fn:
+        f.close()
