@@ -7,12 +7,19 @@ from os import walk
 from os.path import exists
 from os import mkdir
 from os.path import join
+from os.path import realpath
 from shutil import rmtree
 import sys
+from subprocess import Popen
+from subprocess import PIPE
+import logging
+
 import pratt
 
+pretty_printer = realpath(join(__file__, '../', 'pretty-print'))
 
-def build_tree(in_path, out_path):
+
+def build_tree(in_path, out_path, pretty=False):
     print('removing directory %s' % out_path)
     rmtree(out_path)
     for root, dirs, files in walk(in_path):
@@ -25,11 +32,14 @@ def build_tree(in_path, out_path):
                 out_fn = join(full_out_path, fn[:-5] + '.lisp')
                 with open(out_fn, 'w') as f:
                     try:
-                        output = pratt.parse_file(in_fn).cl()
-                        f.write(output)
+                        lisp_code = pratt.parse_file(in_fn).cl()
+                        if pretty:
+                            p = Popen(['sbcl', '--script', pretty_printer],
+                                      stdin=PIPE, stdout=PIPE)
+                            lisp_code, err = p.communicate(lisp_code)
+                        f.write(lisp_code)
                     except Exception:
-                        import ipdb
-                        ipdb.post_mortem(sys.last_traceback)
+                        logging.exception('Fail')
 
                 print(in_fn, out_fn, sep=' -> ', file=sys.stderr)
 
@@ -42,10 +52,13 @@ def main():
     parser.add_argument("--debug",
                         action='store_true',
                         help="verbose debug logging")
+    parser.add_argument('--pretty',
+                        action='store_true',
+                        help="pretty print lisp forms")
     args = parser.parse_args()
 
     pratt.debug = args.debug
-    build_tree(args.in_path, args.out_path)
+    build_tree(args.in_path, args.out_path, args.pretty)
     return 0
 
 

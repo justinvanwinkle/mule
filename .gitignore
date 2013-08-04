@@ -6,4 +6,4 @@
 .coverage
 htmlcov/
 .cache/
-OUTPUT
+build/
