@@ -9,10 +9,10 @@ LISPFILES := $(MULEFILES:$(SOURCE_DIR)%.mule=$(BUILD_DIR)%.lisp)
 
 
 all:	$(LISPFILES)
-$(LISPFILES):  $(MULEFILES)
+
+$(LISPFILES): $(BUILD_DIR)%.lisp: $(SOURCE_DIR)%.mule
 	mkdir -p $(dir $@)
 	@$(CC) $^ $@
 
 clean:
-	print $(LISPFILES)
 	rm -rf build
