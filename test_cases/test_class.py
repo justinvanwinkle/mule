@@ -5,7 +5,7 @@ a = 1
 class A:
     __slots__ = ('a', 'b')
 
-    def __init__(self, a):
+    def init(self, a):
         self.a = a
 
     def meth(self):

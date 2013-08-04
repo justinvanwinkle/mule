@@ -913,7 +913,7 @@ class LBracket(Op):
         while parser.watch(']'):
             values.append(parser.expression(40))
             parser.maybe_match(',')
-        return AdjustableArrayNode(values)
+        return ListNode(values)
 
     def led(self, parser, left):
         key = parser.expression(40)
@@ -1081,7 +1081,6 @@ class Float(Op):
 
 
 class Integer(Op):
-    lbp = 0
     regex = r"-?[0-9]+"
     name = 'INTEGER'
 
@@ -1150,7 +1149,7 @@ class Minus(Op):
     name = 'MINUS'
 
     def led(self, parser, left):
-        return BinaryOperatorNode('-', left, parser.expression(110))
+        return BinaryOperatorNode('-', left, parser.expression(50))
 
 
 class SplatNode(LispNode):
@@ -1166,7 +1165,7 @@ class Multiply(Op):
     name = 'MULTIPLY'
 
     def led(self, parser, left):
-        return BinaryOperatorNode('*', left, parser.expression(110))
+        return BinaryOperatorNode('*', left, parser.expression(60))
 
     def nud(self, parser, value):
         return SplatNode(parser.expression())

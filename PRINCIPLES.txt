@@ -1,0 +1,2 @@
+T is a strongly typed, dynamically typed language.
+There is no difference between compile time and runtime evaluated code.
