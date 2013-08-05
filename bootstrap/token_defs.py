@@ -42,7 +42,7 @@ class DefpackageNode(LispNode):
         self.name = name
 
     def cl(self):
-        return '(DEFPACKAGE "%s" (:USE "CL" "SB-EXT" "SB-C"))' % self.name
+        return '(DEFPACKAGE "%s" (:USE "CL" "SB-EXT"))' % self.name
 
 
 class LispPackage(LispNode):
@@ -213,28 +213,6 @@ class CLOSClassNode(LispNode):
         return defclass
 
 
-@register
-class Class(Op):
-    regexes = ['class']
-    name = 'CLASS'
-
-    def nud(self, parser, value):
-        name = parser.expression(80)
-        cc = CLOSClassNode(name)
-        if parser.maybe_match('('):
-            while parser.watch(')'):
-                cc.bases.append(parser.expression())
-                parser.maybe_match(',')
-        parser.match(':')
-        parser.match('NEWLINE')
-        parser.ns.push_new(class_top_level=True)
-        body = parser.expression()
-        parser.ns.pop()
-        for form in body.forms:
-            cc.add_form(form)
-        return cc
-
-
 class DefunNode(LispNode):
     kind = 'defun'
 
@@ -285,41 +263,6 @@ class FletLambda(DefunNode):
             self.right.cl(implicit_body=True))
 
 
-@register
-class Def(Op):
-    regexes = ['def']
-    name = 'DEF'
-
-    def nud(self, parser, value):
-        name = parser.expression(100)
-        parser.ns.push_new(return_name=name)
-        parser.match('(')
-        arg_names = []
-        kw_args = []
-
-        while parser.watch(')'):
-            arg_name = parser.expression(10)
-            if parser.maybe_match('='):
-                kw_args.append((arg_name, parser.expression()))
-            else:
-                arg_names.append(arg_name)
-            parser.maybe_match(',')
-        parser.match(':')
-        parser.match('NEWLINE')
-        body = parser.expression()
-        parser.ns.pop()
-        defun = DefunNode(name, arg_names, kw_args, body)
-        if parser.ns.top_level or parser.ns.class_top_level:
-            return defun
-
-        parser.ns.push_new()
-        parser.ns.add(defun.name)
-        flet_node = FletLambda(defun,
-                               LispBody(parser.parse_rest_of_body()))
-        parser.ns.pop()
-        return flet_node
-
-
 class ForLoopNode(LispNode):
     def __init__(self, in_node, body):
         self.in_node = in_node
@@ -350,22 +293,6 @@ class ForLoopNode(LispNode):
             self.body.cl())
 
 
-@register
-class For(Op):
-    regexes = ['for ']
-    name = 'FOR'
-
-    def nud(self, parser, value):
-        in_node = parser.expression(20)
-        parser.ns.push_new()
-        parser.ns.add(in_node.thing.name)
-        parser.match(':')
-        parser.match('NEWLINE')
-        body = parser.expression(10)
-        parser.ns.pop()
-        return ForLoopNode(in_node, body)
-
-
 class WhileLoopNode(LispNode):
     kind = 'while'
 
@@ -377,28 +304,6 @@ class WhileLoopNode(LispNode):
         return '(LOOP WHILE %s DO %s)' % (
             self.test.cl(),
             self.body.cl())
-
-
-@register
-class While(Op):
-    regexes = ['while ']
-    name = 'WHILE'
-
-    def nud(self, parser, value):
-        parser.ns.push_new()
-        test = parser.expression(10)
-        parser.match(':')
-        parser.match('NEWLINE')
-        body = parser.expression()
-        parser.ns.pop()
-        return WhileLoopNode(test, body)
-
-
-@register
-class If(Op):
-    lbp = 20
-    regexes = ['if']
-    name = 'IF'
 
 
 class InNode(LispNode):
@@ -426,16 +331,6 @@ class In(Op):
         return InNode(left, parser.expression())
 
 
-@register
-class NoneOp(Op):
-    lbp = 0
-    regexes = ['None']
-    name = 'None'
-
-    def nud(self, parser, value):
-        return NilNode()
-
-
 class ReturnNode(LispNode):
     kind = 'return'
 
@@ -445,15 +340,6 @@ class ReturnNode(LispNode):
 
     def cl(self):
         return '(RETURN-FROM %s %s)' % (self.return_name, self.return_expr)
-
-
-@register
-class Return(Op):
-    regexes = ['return']
-    name = 'RETURN'
-
-    def nud(self, parser, value):
-        return ReturnNode(parser.expression(5), parser.ns.return_name)
 
 
 class SymbolNode(LispNode):
@@ -472,7 +358,74 @@ class Name(Op):
     name = 'NAME'
 
     def nud(self, parser, value):
-        return SymbolNode(value)
+        if value == 'if':
+            raise Exception('UNHANDLED')
+        elif value == 'while':
+            parser.ns.push_new()
+            test = parser.expression(10)
+            parser.match(':')
+            parser.match('NEWLINE')
+            body = parser.expression()
+            parser.ns.pop()
+            return WhileLoopNode(test, body)
+        elif value == 'None':
+            return NilNode()
+        elif value == 'return':
+            return ReturnNode(parser.expression(5), parser.ns.return_name)
+        elif value == 'class':
+            name = parser.expression(80)
+            cc = CLOSClassNode(name)
+            if parser.maybe_match('('):
+                while parser.watch(')'):
+                    cc.bases.append(parser.expression())
+                    parser.maybe_match(',')
+            parser.match(':')
+            parser.match('NEWLINE')
+            parser.ns.push_new(class_top_level=True)
+            body = parser.expression()
+            parser.ns.pop()
+            for form in body.forms:
+                cc.add_form(form)
+            return cc
+        elif value == 'def':
+            name = parser.expression(100)
+            parser.ns.push_new(return_name=name)
+            parser.match('(')
+            arg_names = []
+            kw_args = []
+
+            while parser.watch(')'):
+                arg_name = parser.expression(10)
+                if parser.maybe_match('='):
+                    kw_args.append((arg_name, parser.expression()))
+                else:
+                    arg_names.append(arg_name)
+                parser.maybe_match(',')
+            parser.match(':')
+            parser.match('NEWLINE')
+            body = parser.expression()
+            parser.ns.pop()
+            defun = DefunNode(name, arg_names, kw_args, body)
+            if parser.ns.top_level or parser.ns.class_top_level:
+                return defun
+
+            parser.ns.push_new()
+            parser.ns.add(defun.name)
+            flet_node = FletLambda(
+                defun, LispBody(parser.parse_rest_of_body()))
+            parser.ns.pop()
+            return flet_node
+        elif value == 'for':
+            in_node = parser.expression(20)
+            parser.ns.push_new()
+            parser.ns.add(in_node.thing.name)
+            parser.match(':')
+            parser.match('NEWLINE')
+            body = parser.expression(10)
+            parser.ns.pop()
+            return ForLoopNode(in_node, body)
+        else:
+            return SymbolNode(value)
 
 
 class TupleNode(LispNode):

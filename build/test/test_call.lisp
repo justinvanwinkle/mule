@@ -1,1 +1,11 @@
-(SETF *READTABLE* (COPY-READTABLE NIL))(SETF (READTABLE-CASE *READTABLE*) :PRESERVE)(DEFPACKAGE "test_call" (:USE "CL" "SB-EXT" "SB-C"))(IN-PACKAGE "test_call")(t  ) (DEFPARAMETER x (t  )) (b a ) (c (SLOT-VALUE a 'b) 1 ) ((x  )  )
+
+(SETF *READTABLE* (COPY-READTABLE NIL))
+(SETF (READTABLE-CASE *READTABLE*) :PRESERVE)
+(DEFPACKAGE "test_call"
+  (:USE "CL" "SB-EXT"))
+(IN-PACKAGE "test_call")
+(t)
+(DEFPARAMETER x (t))
+(b a)
+(c (SLOT-VALUE a 'b) 1)
+((x))

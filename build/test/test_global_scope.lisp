@@ -1,1 +1,9 @@
-(SETF *READTABLE* (COPY-READTABLE NIL))(SETF (READTABLE-CASE *READTABLE*) :PRESERVE)(DEFPACKAGE "test_global_scope" (:USE "CL" "SB-EXT" "SB-C"))(IN-PACKAGE "test_global_scope")(DEFPARAMETER x 1) (+ x 1) (+ x 2)
+
+(SETF *READTABLE* (COPY-READTABLE NIL))
+(SETF (READTABLE-CASE *READTABLE*) :PRESERVE)
+(DEFPACKAGE "test_global_scope"
+  (:USE "CL" "SB-EXT"))
+(IN-PACKAGE "test_global_scope")
+(DEFPARAMETER x 1)
+(+ x 1)
+(+ x 2)
