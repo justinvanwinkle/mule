@@ -4,6 +4,11 @@ from __future__ import unicode_literals
 all_ops = []
 
 
+lisp_prefix = """(EVAL-WHEN (:COMPILE-TOPLEVEL)
+  (SETF *READTABLE* (COPY-READTABLE NIL))
+  (SETF (READTABLE-CASE *READTABLE*) :PRESERVE))"""
+
+
 def register(cls):
     all_ops.append(cls)
     return cls
@@ -37,7 +42,7 @@ class LispNode(object):
         return '(%s-XXX XXX)' % self.kind
 
 
-class DefpackageNode(LispNode):
+class MakePackageNode(LispNode):
     def __init__(self, name):
         self.name = name
 
@@ -54,9 +59,8 @@ class LispPackage(LispNode):
 
     def cl(self):
         forms = []
-        forms.append('(SETF *READTABLE* (COPY-READTABLE NIL))')
-        forms.append('(SETF (READTABLE-CASE *READTABLE*) :PRESERVE)')
-        forms.append(DefpackageNode(self.module_name).cl())
+        forms.append(lisp_prefix)
+        forms.append(MakePackageNode(self.module_name).cl())
         forms.append('(IN-PACKAGE "%s")' % self.module_name)
         forms.append(self.block.cl(implicit_body=True))
         return ''.join(forms)
@@ -355,9 +359,11 @@ class Pass(Op):
 class UsePackageNode(LispNode):
     kind = 'use'
 
-    def nud(self, parser, value):
-        right = parser.expression(10)
-        return '(use-package "%s")' % right.name
+    def __init__(self, right):
+        self.right = right
+
+    def cl(self):
+        return '(use-package "%s")' % self.right.name
 
 
 @register
