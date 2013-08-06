@@ -1,9 +1,9 @@
 
 (SETF *READTABLE* (COPY-READTABLE NIL))
 (SETF (READTABLE-CASE *READTABLE*) :PRESERVE)
-(DEFPACKAGE "test_namespaces"
+(DEFPACKAGE "namespaces"
   (:USE "CL" "SB-EXT"))
-(IN-PACKAGE "test_namespaces")
+(IN-PACKAGE "namespaces")
 (DEFPARAMETER x 1)
 (DEFUN test (y) (SETF x 2) (RETURN-FROM test (+ x y)))
 (DEFUN test2 (x) (SETF x 3) (RETURN-FROM test2 x))

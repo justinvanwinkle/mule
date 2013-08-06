@@ -1,7 +1,8 @@
 
 (SETF *READTABLE* (COPY-READTABLE NIL))
 (SETF (READTABLE-CASE *READTABLE*) :PRESERVE)
-(DEFPACKAGE "test_attribute_access"
+(DEFPACKAGE "assign"
   (:USE "CL" "SB-EXT"))
-(IN-PACKAGE "test_attribute_access")
-(SETF (SLOT-VALUE x 'y) 5)
+(IN-PACKAGE "assign")
+(DEFPARAMETER x 1)
+(DEFPARAMETER y 2)

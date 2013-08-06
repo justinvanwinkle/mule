@@ -1,9 +1,9 @@
 
 (SETF *READTABLE* (COPY-READTABLE NIL))
 (SETF (READTABLE-CASE *READTABLE*) :PRESERVE)
-(DEFPACKAGE "test_call"
+(DEFPACKAGE "call"
   (:USE "CL" "SB-EXT"))
-(IN-PACKAGE "test_call")
+(IN-PACKAGE "call")
 (t)
 (DEFPARAMETER x (t))
 (b a)

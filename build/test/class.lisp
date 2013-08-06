@@ -1,9 +1,9 @@
 
 (SETF *READTABLE* (COPY-READTABLE NIL))
 (SETF (READTABLE-CASE *READTABLE*) :PRESERVE)
-(DEFPACKAGE "test_class"
+(DEFPACKAGE "class"
   (:USE "CL" "SB-EXT"))
-(IN-PACKAGE "test_class")
+(IN-PACKAGE "class")
 (DEFPARAMETER a 1)
 (DEFCLASS A NIL (a b))
 (DEFMETHOD init ((self A) a) (SETF (SLOT-VALUE self 'a) a))

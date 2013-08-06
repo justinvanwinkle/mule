@@ -177,11 +177,19 @@ if __name__ == '__main__':
     argparser = argparse.ArgumentParser(description='Python to CL compiler')
     argparser.add_argument('mule_fn', help='input file')
     argparser.add_argument('lisp_fn', nargs='?', help='output file')
+    argparser.add_argument('-d', '--debug',
+                           action='store_true',
+                           help='debug output')
     args = argparser.parse_args()
+
+    if args.debug:
+        import pratt
+        pratt.debug = True
 
     fn = splitext(split(args.mule_fn)[1])[0]
     with open(args.mule_fn) as f:
         code = f.read()
+
     mule_parser = MuleParser(code, all_ops, filename=fn)
     result = mule_parser.parse()
     f = stdout

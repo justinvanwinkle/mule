@@ -1,9 +1,9 @@
 
 (SETF *READTABLE* (COPY-READTABLE NIL))
 (SETF (READTABLE-CASE *READTABLE*) :PRESERVE)
-(DEFPACKAGE "test_arithmetic_operators"
+(DEFPACKAGE "arithmetic_operators"
   (:USE "CL" "SB-EXT"))
-(IN-PACKAGE "test_arithmetic_operators")
+(IN-PACKAGE "arithmetic_operators")
 (+ (+ 1 1) 1)
 (* 2 2)
 (- 3 3)

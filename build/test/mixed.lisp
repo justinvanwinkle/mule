@@ -1,9 +1,9 @@
 
 (SETF *READTABLE* (COPY-READTABLE NIL))
 (SETF (READTABLE-CASE *READTABLE*) :PRESERVE)
-(DEFPACKAGE "test_mixed"
+(DEFPACKAGE "mixed"
   (:USE "CL" "SB-EXT"))
-(IN-PACKAGE "test_mixed")
+(IN-PACKAGE "mixed")
 (DEFCLASS CounterX NIL (count))
 (DEFMETHOD __init__ ((self CounterX)) (SETF (SLOT-VALUE self 'count) 0))
 (DEFMETHOD incr ((self CounterX))

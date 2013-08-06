@@ -1,9 +1,9 @@
 
 (SETF *READTABLE* (COPY-READTABLE NIL))
 (SETF (READTABLE-CASE *READTABLE*) :PRESERVE)
-(DEFPACKAGE "test_defun"
+(DEFPACKAGE "defun"
   (:USE "CL" "SB-EXT"))
-(IN-PACKAGE "test_defun")
+(IN-PACKAGE "defun")
 (DEFUN test (x) (RETURN-FROM test (+ x 1)))
 (DEFUN test2 (x y)
   (LET ((z (+ x y)))

@@ -1,9 +1,9 @@
 
 (SETF *READTABLE* (COPY-READTABLE NIL))
 (SETF (READTABLE-CASE *READTABLE*) :PRESERVE)
-(DEFPACKAGE "test_add_names"
+(DEFPACKAGE "add_names"
   (:USE "CL" "SB-EXT"))
-(IN-PACKAGE "test_add_names")
+(IN-PACKAGE "add_names")
 (DEFUN test ()
   (LET ((x 1))
     (LET ((y 2))

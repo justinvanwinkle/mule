@@ -1,9 +1,9 @@
 
 (SETF *READTABLE* (COPY-READTABLE NIL))
 (SETF (READTABLE-CASE *READTABLE*) :PRESERVE)
-(DEFPACKAGE "test_splat"
+(DEFPACKAGE "splat"
   (:USE "CL" "SB-EXT"))
-(IN-PACKAGE "test_splat")
+(IN-PACKAGE "splat")
 (DEFUN f (a &REST args)
   (LET ((x a))
     (LOOP FOR arg BEING THE ELEMENTS OF args

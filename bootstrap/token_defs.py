@@ -107,22 +107,6 @@ class EndBlock(Op):
     name = 'ENDBLOCK'
 
 
-class NilNode(LispNode):
-    kind = 'nil'
-
-    def cl(self):
-        return 'NIL'
-
-
-@register
-class Pass(Op):
-    regexes = ['pass']
-    name = 'PASS'
-
-    def nud(self, parser, value):
-        return NilNode()
-
-
 class MethodNode(LispNode):
     kind = 'defun'
 
@@ -293,34 +277,6 @@ class ForLoopNode(LispNode):
             self.body.cl())
 
 
-class WhileLoopNode(LispNode):
-    kind = 'while'
-
-    def __init__(self, test, body):
-        self.test = test
-        self.body = body
-
-    def cl(self):
-        return '(LOOP WHILE %s DO %s)' % (
-            self.test.cl(),
-            self.body.cl())
-
-
-class InNode(LispNode):
-    kind = 'in'
-
-    def __init__(self, thing, collection):
-        self.thing = thing
-        self.collection = collection
-
-
-class FindNode(InNode):
-    kind = 'find'
-
-    def cl(self):
-        return '(find %s %s)' % (self.thing, self.collection)
-
-
 @register
 class In(Op):
     lbp = 150
@@ -350,6 +306,58 @@ class SymbolNode(LispNode):
 
     def cl(self):
         return '%s' % self.name
+
+
+class WhileLoopNode(LispNode):
+    kind = 'while'
+
+    def __init__(self, test, body):
+        self.test = test
+        self.body = body
+
+    def cl(self):
+        return '(LOOP WHILE %s DO %s)' % (
+            self.test.cl(),
+            self.body.cl())
+
+
+class InNode(LispNode):
+    kind = 'in'
+
+    def __init__(self, thing, collection):
+        self.thing = thing
+        self.collection = collection
+
+
+class FindNode(InNode):
+    kind = 'find'
+
+    def cl(self):
+        return '(find %s %s)' % (self.thing, self.collection)
+
+
+class NilNode(LispNode):
+    kind = 'nil'
+
+    def cl(self):
+        return 'NIL'
+
+
+@register
+class Pass(Op):
+    regexes = ['pass']
+    name = 'PASS'
+
+    def nud(self, parser, value):
+        return NilNode()
+
+
+class UsePackageNode(LispNode):
+    kind = 'use'
+
+    def nud(self, parser, value):
+        right = parser.expression(10)
+        return '(use-package "%s")' % right.name
 
 
 @register
@@ -424,6 +432,9 @@ class Name(Op):
             body = parser.expression(10)
             parser.ns.pop()
             return ForLoopNode(in_node, body)
+        elif value == 'use':
+            right = parser.expression(5)
+            return UsePackageNode(right)
         else:
             return SymbolNode(value)
 
