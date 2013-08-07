@@ -7,8 +7,6 @@ from sre_constants import BRANCH, SUBPATTERN
 
 from sys import stderr
 
-debug = False
-
 
 class Scanner(object):
     def __init__(self, lexicon, flags=0):
@@ -55,12 +53,15 @@ class PrattParser(object):
         self.token_value = None
         self.token_position = 0
         self.token_map = {}
-        self.state = {}
         self._tokens = None
+        self.debug = False
+
+    def __repr__(self):
+        return 'Pratt(pos=%s)' % self.token_position
 
     def log(self, s, *args):
-        print('    ' * self.ns.depth + s % tuple([repr(x) for x in args]),
-              file=stderr)
+        if self.debug:
+            print(s % tuple([repr(x) for x in args]), file=stderr)
 
     def register(self, op):
         self.registered.append(op)
@@ -93,13 +94,11 @@ class PrattParser(object):
             self.token_position += 1
             self.token_handler = token_handler
             self.token_value = value
-            if debug:
-                self.log('Feeding %s :: %s', token_handler, value)
+            self.log('Feeding %s :: %s', token_handler, value)
 
     def maybe_match(self, token_name):
         if token_name == self.token_handler.name:
-            if debug:
-                self.log('MAYBE-MATCHED: %s', token_name)
+            self.log('MAYBE-MATCHED: %s', token_name)
             self.feed()
             return True
         return False
@@ -108,14 +107,12 @@ class PrattParser(object):
         if token_name != self.token_handler.name:
             raise SyntaxError('Expected %s, Got %s' % (
                 token_name, self.token_handler.name))
-        if debug:
-            self.log('MATCHED: %s', token_name)
+        self.log('MATCHED: %s', token_name)
         self.feed()
 
     def watch(self, token_name, consume=True):
         if token_name == self.token_handler.name:
-            if debug:
-                self.log('WATCH finds %s', token_name)
+            self.log('WATCH finds %s', token_name)
             if consume:
                 self.feed()
             return False
@@ -131,23 +128,19 @@ class PrattParser(object):
         self.feed()
 
         left = t.nud(self, v)
-        if debug:
-            self.log('starting with left %s', left)
-            self.log('looping? %s rbp %s lbp %s',
-                     self.token_handler,
-                     rbp,
-                     self.token_handler.lbp)
+        self.log('starting with left %s', left)
+        self.log('looping? %s rbp %s lbp %s',
+                 self.token_handler,
+                 rbp,
+                 self.token_handler.lbp)
         while rbp < self.token_handler.lbp:
             t = self.token_handler
-            if debug:
-                self.log('looping into %s.led! left is %s', t, left)
+            self.log('looped into %s.led! left is %s', t, left)
             self.feed()
             left = t.led(self, left)
-            if debug:
-                self.log('left is %s', left)
-                self.log('rbp %s lbp %s', rbp, self.token_handler.lbp)
+            self.log('left is %s', left)
+            self.log('rbp %s lbp %s', rbp, self.token_handler.lbp)
         else:
-            if debug:
-                self.log('no loop')
+            self.log('no loop')
 
         return left
