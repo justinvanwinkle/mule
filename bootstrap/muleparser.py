@@ -45,7 +45,8 @@ class NamespaceStack(object):
 
     @property
     def class_top_level(self):
-        return self.cns.class_top_level
+        if self.cns:
+            return self.cns.class_top_level
 
     @property
     def return_name(self):
@@ -84,76 +85,65 @@ class NamespaceStack(object):
 
 class MuleParser(PrattParser):
     def __init__(self, code, token_defs, filename=None):
-        PrattParser.__init__(self, code, filename=filename)
+        PrattParser.__init__(self, code, token_defs, filename=filename)
         self.ns = NamespaceStack()
-        for op in sorted(token_defs,
-                         key=lambda o: o.rank(),
-                         reverse=True):
-            self.register(op())
 
-    @staticmethod
-    def handle_whitespace(tokens):
+    def _munge_tokens(self, tokens):
+        from token_defs import Block
+        from token_defs import Endblock
+        from token_defs import Module
+
         def next_tok(pos):
             if pos + 1 >= len(tokens):
                 return None
-            return tokens[pos + 1][0]
+            return tokens[pos + 1]
 
         def prev_tok(pos):
             if pos < 1:
                 return None
-            return tokens[pos - 1][0]
+            return tokens[pos - 1]
 
         def is_significant(pos):
             if pos > 1:
-                if prev_tok(pos) != 'NEWLINE':
+                if prev_tok(pos).name != 'NEWLINE':
                     return False
             else:
                 return False
 
-            if next_tok(pos) != 'NEWLINE':
+            if next_tok(pos).name != 'NEWLINE':
                 return True
             return False
-
-        new_tokens = []
-        current_indent = 0
 
         def change_indent(new_indent):
             if new_indent > current_indent + 1:
                 raise Exception('Indented too much %s' % index)
             elif new_indent == current_indent + 1:
-                new_tokens.append(('BLOCK', ''))
+                new_tokens.append(Block())
             elif new_indent < current_indent:
                 for _ in range(current_indent - new_indent):
-                    new_tokens.append(('ENDBLOCK', ''))
+                    new_tokens.append(Endblock())
 
-        for index, (name, value) in enumerate(tokens):
+        new_tokens = [Module(), Block()]
+        current_indent = 0
+
+        for index, token in enumerate(tokens):
             new_indent = current_indent
-            if name == 'WHITESPACE':
+            if token.name == 'WHITESPACE':
                 if not is_significant(index):
                     continue
-                new_indent = len(value) / 4
-            elif name == 'NEWLINE':
-                if prev_tok(index) != 'NEWLINE':
-                    new_tokens.append((name, value))
-                if next_tok(index) not in ('NEWLINE', 'WHITESPACE'):
+                new_indent = len(token.value) / 4
+            elif token.name == 'NEWLINE':
+                if prev_tok(index).name != 'NEWLINE':
+                    new_tokens.append(token)
+                if next_tok(index).name not in ('NEWLINE', 'WHITESPACE'):
                     new_indent = 0
             else:
-                new_tokens.append((name, value))
+                new_tokens.append(token)
             change_indent(new_indent)
             current_indent = new_indent
 
+        new_tokens.append(Endblock())
         return new_tokens
-
-    @property
-    def tokens(self):
-        lines = []
-        for line in self.code.splitlines(True):
-            if not line.strip().startswith('#'):
-                lines.append(line)
-        self.code = ''.join(lines)
-        tokens = self.handle_whitespace(super(MuleParser, self).tokens)
-        self._tokens = tokens
-        return tokens
 
     def parse_rest_of_body(self):
         forms = []
@@ -182,16 +172,20 @@ if __name__ == '__main__':
                            help='debug output')
     args = argparser.parse_args()
 
-    if args.debug:
-        import pratt
-        pratt.debug = True
-
     fn = splitext(split(args.mule_fn)[1])[0]
     with open(args.mule_fn) as f:
         code = f.read()
 
-    mule_parser = MuleParser(code, all_ops, filename=fn)
-    result = mule_parser.parse()
+    try:
+        mule_parser = MuleParser(code, all_ops, filename=fn)
+        if args.debug:
+            mule_parser.debug = True
+        result = mule_parser.parse()
+    except Exception:
+        import tracebackturbo
+        import sys
+        print(tracebackturbo.format_exc(with_vars=True))
+        sys.exit(1)
     f = stdout
     if args.lisp_fn:
         f = open(args.lisp_fn, 'w')

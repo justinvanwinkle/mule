@@ -1,0 +1,8 @@
+def x():
+    def y():
+        def z():
+            return 1
+        return 2 + z()
+    return 3 + y()
+
+ASSERT(x() == 6)

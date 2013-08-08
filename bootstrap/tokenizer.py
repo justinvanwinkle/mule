@@ -5,187 +5,97 @@ from __future__ import print_function
 
 import string
 
-from pratt import PrattParser
-
-atoms = """\
+enumerated_symbols = """\
 ~ |= | ^= ^ >>= >> >= > == <> <= <<= << < /= //= \
 // / -= - += + *= **= ** * &= & %= % != , @ { } \
-( ) , : ' \ [ ] " `""".split()
+( ) , : \ [ ]""".split()
 
 
-class MuleTokenizer(PrattParser):
+class MuleTokenizer(object):
     def __init__(self, code, char_defs):
-        super(MuleTokenizer, self).__init__(code)
+        self.code = code
         self.char_map = {}
 
         for char_def in char_defs:
-            self.register(char_def())
+            self.register(char_def)
 
     def register(self, char_def):
-        super(MuleTokenizer, self).register(char_def)
-        for c in char_def.chars:
+        for c in char_def.start_chars:
             if c in self.char_map:
                 raise Exception('duplicate %s' % c)
             self.char_map[c] = char_def
 
-    @property
-    def tokens(self):
-        tokens = []
-        for c in self.code:
-            name = self.char_map[c].name
-            tokens.append((name, c))
-
-        return tokens
-
-
 all_chars = []
 
 
-def register_char(cls):
+def register_token(cls):
     all_chars.append(cls)
     return cls
 
 
-class Char(object):
+class Token(object):
     name = None
-    chars = None
-    lbp = 0
+    start_chars = set()
+    rest_chars = set()
+
+    def __init__(self, c):
+        self.value = c
+
+    def match(self, c):
+        if c in self.rest_chars:
+            return True
+        return False
+
+    def handle(self, c):
+        self.value += c
 
     def __repr__(self):
-        return '%s-char' % self.name
+        return '|%s|-%s' % (self.value, self.name)
 
 
-# @register_char
-# class File(Char):
-#     name = 'FILE'
-#     chars = set()
-#     lbp = 0
-
-#     def nud(self, parser, c):
-#         tokens = []
-#         while parser.watch('ENDFILE'):
-#             token = parser.expression()
-#             tokens.append(token)
-#             parser.log('TOKENS %s' % tokens)
-
-#         return tokens
-
-
-@register_char
-class EnumChar(Char):
-    lbp = 110
-    name = 'enum'
-    chars = set(''.join(atoms) + '()[]{}<>')
+@register_token
+class EnumToken(Token):
+    start_chars = set(''.join(enumerated_symbols))
     _prefix_map = set()
+    atoms = set(enumerated_symbols)
 
     for atom in atoms:
         for l in range(1, len(atom) + 1):
             _prefix_map.add(atom[:l])
 
-    for char in chars:
+    for char in start_chars:
         if char not in _prefix_map:
             print('MISSING', char)
 
-    def nud(self, parser, c):
-        if c not in self._prefix_map:
-            raise Exception('%r - WHAT??? WHAT!?!?' % c)
-        right = parser.expression(109)
-        return Token('op', c + right.value)
+    def is_prefix(self, s):
+        return s in self._prefix_map
 
-    def led(self, parser, left):
-        test_val = left.value + parser.token_value
-        if test_val in self._prefix_map:
-            left.value = test_val
-            return left
-        return Token('op', parser.token_value, left=left)
+    def is_symbol(self, s):
+        return s in self.atoms
 
+    @property
+    def name(self):
+        return self.value
 
-@register_char
-class DigitChar(Char):
-    lbp = 50
-    name = 'digit'
-    chars = set(string.digits)
-
-    def nud(self, parser, c):
-        return Token('number', c, parser.expression(49))
-
-    def lun(self, parser, left):
-        if left.kind in ('dot', 'number'):
-            left.value += parser.token_value
-            return left
+    def match(self, c):
+        test_val = self.value + c
+        if self.is_prefix(test_val) or self.is_symbol(test_val):
+            return True
+        return False
 
 
-@register_char
-class DotChar(Char):
-    lbp = 40
-    chars = {'.'}
+@register_token
+class NumberToken(Token):
+    name = 'number'
+    start_chars = set(string.digits)
+    rest_chars = start_chars | set('ex')
+
+
+@register_token
+class DotToken(Token):
+    start_chars = {'.'}
     name = 'dot'
 
-
-@register_char
-class WordChar(Char):
-    lbp = 100
-    name = 'word'
-    chars = set(string.letters) | {'_'}
-
-    def nud(self, parser, c):
-        parser.log('nud')
-        right = parser.expression(99)
-        return Token('word', c, right=right.value)
-
-    def led(self, parser, left):
-        parser.log('led')
-        left.value += parser.token_value
-        return left
-
-
-@register_char
-class NewlineChar(Char):
-    lbp = 100
-    name = 'newline'
-    chars = {'\n'}
-
-    def nud(self, parser, c):
-        right = parser.expression()
-        return Token('newline', c, right.value)
-
-    def led(self, parser, left):
-        return Token('newline',
-                     parser.token_value,
-                     left=left,
-                     right=parser.expression())
-
-
-@register_char
-class Space(Char):
-    lbp = 100
-    name = 'space'
-    chars = {' '}
-
-    def nud(self, parser, c):
-        return Token('space', c)
-
-    def led(self, parser, left):
-        return Token('space', ' ', left=left, right=parser.expression())
-
-
-class Token(object):
-    def __init__(self, kind, value, left=None, right=None):
-        self.kind = kind
-        self.value = value
-        self.left = left
-        self.right = right
-
-    def __repr__(self):
-        return '|%r|-%s' % (self.value, self.kind)
-
-
-def unbake_tokens(tok):
-    toks = []
-    while tok is not None:
-        toks.append(tok.value)
-        tok = tok.next
-    return toks
 
 if __name__ == '__main__':
     import argparse
@@ -203,7 +113,6 @@ if __name__ == '__main__':
     try:
         mule_tokenizer = MuleTokenizer(code, all_chars)
         mule_tokenizer.debug = True
-        result = mule_tokenizer.parse()
     except Exception:
         import sys
         import tracebackturbo
@@ -211,4 +120,6 @@ if __name__ == '__main__':
         sys.exit(1)
 
     print()
-    print(unbake_tokens(result))
+    import pprint
+    pprint.pprint([(token.value, token.name)
+                   for token in mule_tokenizer.tokens])
