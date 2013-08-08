@@ -93,14 +93,17 @@ class MuleParser(PrattParser):
         from token_defs import Endblock
         from token_defs import Module
 
+        class Fake:
+            name = None
+
         def next_tok(pos):
             if pos + 1 >= len(tokens):
-                return None
+                return Fake()
             return tokens[pos + 1]
 
         def prev_tok(pos):
             if pos < 1:
-                return None
+                return Fake()
             return tokens[pos - 1]
 
         def is_significant(pos):

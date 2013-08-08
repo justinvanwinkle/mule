@@ -27,6 +27,16 @@ class LispNode(object):
         return '(%s-XXX XXX)' % self.kind
 
 
+class CommentNode(LispNode):
+    kind = 'comment'
+
+    def __init__(self, comment):
+        self.comment = comment
+
+    def cl(self):
+        return '#|%s|#' % self.comment
+
+
 class LispBody(LispNode):
     kind = 'body'
 
@@ -572,9 +582,9 @@ class BinOpToken(EnumeratedToken):
         '-': 50,
         '/': 60,
         '//': 60,
-        '<': 0,
+        '<': 130,
         '<<': 0,
-        '>': 0,
+        '>': 130,
         '>>': 0,
         '^': 0,
         '|': 0,
@@ -585,23 +595,28 @@ class BinOpToken(EnumeratedToken):
                                   left,
                                   parser.expression(self.lbp_map[self.value]))
 
+    def nud(self, parser, value):
+        if value == '*':
+            return SplatNode(parser.expression())
 
-augmented_assignment_symbols = {
-    '!=': 0,
-    '%=': 0,
-    '&=': 0,
-    '*=': 0,
-    '**=': 0,
-    '+=': 0,
-    '-=': 0,
-    '//=': 0,
-    '<<=': 0,
-    '<=': 0,
-    '>>=': 0,
-    '>=': 0,
-    '/=': 0,
-    '^=': 0,
-    '|=': 0}
+
+# class AugAssign(EnumeratedToken):
+#     lbp_map = {
+#         '!=': 0,
+#         '%=': 0,
+#         '&=': 0,
+#         '*=': 0,
+#         '**=': 0,
+#         '+=': 0,
+#         '-=': 0,
+#         '//=': 0,
+#         '<<=': 0,
+#         '<=': 0,
+#         '>>=': 0,
+#         '>=': 0,
+#         '/=': 0,
+#         '^=': 0,
+#         '|=': 0}
 
 
 @register
@@ -664,16 +679,6 @@ class Endblock(Token):
 
 
 @register
-class In(Token):
-    lbp = 150
-    regexes = [r' in ']
-    name = 'IN'
-
-    def led(self, parser, left):
-        return InNode(left, parser.expression())
-
-
-@register
 class Pass(Token):
     regexes = ['pass']
     name = 'PASS'
@@ -684,9 +689,15 @@ class Pass(Token):
 
 @register
 class Name(Token):
+    lbp = 0
     name = 'NAME'
     start_chars = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_')
     rest_chars = start_chars | set('0123456789')
+
+    def complete(self):
+        if self.value == 'in':
+            self.lbp = 150
+        return True
 
     def nud(self, parser, value):
         if value == 'if':
@@ -760,6 +771,10 @@ class Name(Token):
             return UsePackageNode(right)
         else:
             return SymbolNode(value)
+
+    def led(self, parser, left):
+        if self.value == 'in':
+            return InNode(left, parser.expression())
 
 
 @register
@@ -941,7 +956,7 @@ class String(EscapingToken):
 
 
 @register
-class LispLiteral(Token):
+class LispLiteral(String):
     name = '`'
     start_chars = {'`'}
 
@@ -971,3 +986,6 @@ class Comment(EscapingToken):
         if self.value[-1] == '\n':
             return False
         return True
+
+    def nud(self, parser, value):
+        return CommentNode(value[1:])

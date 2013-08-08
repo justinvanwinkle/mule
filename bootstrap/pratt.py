@@ -47,6 +47,7 @@ class PrattParser(object):
             else:
                 if token is not None:
                     assert token.complete()
+                    self.log('APPENDING TOKEN %s', token)
                     tokens.append(token)
                 token_def = self.find_matching_token_def(c)
                 token = token_def()

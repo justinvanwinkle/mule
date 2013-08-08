@@ -3,7 +3,7 @@
 def f(a, *args):
     x = a
     for arg in args:
-        x += arg
+        x = x + arg
 
     return x
 
