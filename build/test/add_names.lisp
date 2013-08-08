@@ -1,11 +1,14 @@
 
-(EVAL-WHEN (:COMPILE-TOPLEVEL)
-  (SETF *READTABLE* (COPY-READTABLE NIL))
-  (SETF (READTABLE-CASE *READTABLE*) :PRESERVE))
 (DEFPACKAGE "add_names"
   (:USE "CL" "SB-EXT"))
 (IN-PACKAGE "add_names")
-(DEFUN test ()
-  (LET ((x 1))
-    (LET ((y 2))
-      (+ x y))))
+(REQUIRE 'ASDF)
+(IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
+    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
+(DEFUN TEST ()
+  (LET ((|x| 1))
+    (LET ((|y| 2))
+      (+ |x| |y|))))
+(LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
+      WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
+      DO (EXPORT S))

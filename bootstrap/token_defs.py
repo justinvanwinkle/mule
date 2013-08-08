@@ -4,9 +4,16 @@ from __future__ import unicode_literals
 all_ops = []
 
 
-lisp_prefix = """(EVAL-WHEN (:COMPILE-TOPLEVEL)
-  (SETF *READTABLE* (COPY-READTABLE NIL))
-  (SETF (READTABLE-CASE *READTABLE*) :PRESERVE))"""
+lisp_prefix = """(require 'asdf)
+(if (not (equal (package-name *package*) "builtins"))
+  (asdf:load-system :mule))
+"""
+
+lisp_postfix = """
+(LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
+   WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
+   DO (EXPORT S))
+"""
 
 
 def register(cls):
@@ -72,10 +79,11 @@ class LispPackage(LispNode):
 
     def cl(self):
         forms = []
-        forms.append(lisp_prefix)
         forms.append(MakePackageNode(self.module_name).cl())
         forms.append('(IN-PACKAGE "%s")' % self.module_name)
+        forms.append(lisp_prefix)
         forms.append(self.block.cl(implicit_body=True))
+        forms.append(lisp_postfix)
         return ''.join(forms)
 
 
@@ -128,7 +136,7 @@ class CLOSClassNode(LispNode):
         return '(%s)' % ' '.join(base.cl() for base in self.bases)
 
     def cl_slot(self, slot):
-        return slot
+        return '|%s|' % slot
 
     def cl_slots(self):
         if self.slots:
@@ -139,7 +147,7 @@ class CLOSClassNode(LispNode):
     def cl_init_call(self):
         if not self.constructor:
             return ''
-        return '(init self %s)' % self.cl_init_args()
+        return '(|init| |self| %s)' % self.cl_init_args()
 
     def cl_init_args(self):
         if not self.constructor:
@@ -148,12 +156,12 @@ class CLOSClassNode(LispNode):
 
     def cl_constructor(self):
         return """(DEFUN %s (%s)
-                    (LET ((self (MAKE-INSTANCE \'%s)))
+                    (LET ((|self| (MAKE-INSTANCE \'%s)))
                        %s
-                       self))""" % (self.name.cl(),
-                                    self.cl_init_args(),
-                                    self.name.cl(),
-                                    self.cl_init_call())
+                       |self|))""" % (self.name.cl(),
+                                      self.cl_init_args(),
+                                      self.name.cl(),
+                                      self.cl_init_call())
 
     def cl(self):
         defclass = '(DEFCLASS %s %s %s)' % (
@@ -200,7 +208,7 @@ class DefunNode(LispNode):
             ' '.join(forms), self.cl_kw_args(), splat)
 
     def cl(self):
-        return '(DEFUN %s (%s) %s)' % (
+        return '(DEFUN |%s| (%s) %s)' % (
             self.name,
             self.cl_args(),
             self.body.cl(implicit_body=True))
@@ -267,7 +275,7 @@ class SymbolNode(LispNode):
         self.name = name
 
     def cl(self):
-        return '%s' % self.name
+        return '|%s|' % self.name
 
 
 class WhileLoopNode(LispNode):
@@ -333,7 +341,7 @@ class GetItemNode(LispNode):
         self.key = key
 
     def cl(self):
-        return '(getitem %s %s)' % (self.left, self.key)
+        return '(|getitem| %s %s)' % (self.left, self.key)
 
 
 class TupleNode(LispNode):
@@ -358,9 +366,9 @@ class CallNode(LispNode):
         return ' '.join(forms)
 
     def cl(self):
-        return '(%s %s %s)' % (self.name.cl(),
-                               ' '.join(self.clmap(self.args)),
-                               self.cl_kw_args())
+        return '(%s %s %s)' % (self.name,
+                                 ' '.join(self.clmap(self.args)),
+                                 self.cl_kw_args())
 
 
 class EqualityNode(LispNode):
@@ -404,7 +412,7 @@ class SetfNode(LispNode):
         self.right = right
 
     def cl(self):
-        return '(SETF %s %s)' % (self.left.cl(), self.right.cl())
+        return '(SETF %s %s)' % (self.left, self.right)
 
 
 class LetNode(LispNode):
@@ -428,7 +436,7 @@ class SetItemNode(LispNode):
         self.right = right
 
     def cl(self):
-        return '(setitem %s %s %s)' % (
+        return '(|setitem| %s %s %s)' % (
             self.left.left, self.left.key, self.right)
 
 
@@ -462,8 +470,8 @@ class AttrLookup(LispNode):
         self.attribute_name = attribute_name
 
     def cl(self):
-        return "(SLOT-VALUE %s '%s)" % (self.object_name.cl(),
-                                        self.attribute_name.cl())
+        return "(SLOT-VALUE %s '%s)" % (self.object_name,
+                                        self.attribute_name)
 
 
 class SplatNode(LispNode):

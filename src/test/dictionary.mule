@@ -1,0 +1,5 @@
+
+(use builtins)
+d = dict()
+d[1] = 2
+ASSERT(d[1] == 2)

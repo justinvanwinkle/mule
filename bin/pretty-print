@@ -1,12 +1,20 @@
-#!sbcl --script
-(IF (> (LENGTH *POSIX-ARGV*) 2)
-  (LET ((IN-FN (ELT *POSIX-ARGV* 1))
-        (OUT-FN (ELT *POSIX-ARGV* 2))
-        (*READTABLE* (COPY-READTABLE NIL)))
-    (SETF (READTABLE-CASE *READTABLE*) :PRESERVE)
-    (WITH-OPEN-FILE (IN IN-FN)
-      (WITH-OPEN-FILE (OUT OUT-FN :DIRECTION :OUTPUT :IF-EXISTS :SUPERSEDE)
-        (LOOP FOR FORM = (READ IN NIL :EOF)
-           UNTIL (EQ FORM :EOF)
-           DO (PPRINT FORM OUT)))))
-  (LOOP (PPRINT (READ))))
+;#!sbcl --script
+(require 'asdf)
+
+(defun safe-read (in)
+   (read in nil :eof))
+
+(defun pretty-copy (in out)
+  (loop for form = (safe-read in)
+     until (eq form :eof)
+     do (pprint form out)))
+
+(defun copy-file-file (in-fn out-fn)
+  (with-open-file (in in-fn)
+    (with-open-file (out out-fn :direction :output :if-exists :supersede)
+      (pretty-copy in out))))
+
+(if (> (length *posix-argv*) 2)
+    (let ((in-fn (elt *posix-argv* 1))
+          (out-fn (elt *posix-argv* 2)))
+      (copy-file-file in-fn out-fn)))

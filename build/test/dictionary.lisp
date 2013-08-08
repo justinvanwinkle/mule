@@ -1,11 +1,14 @@
 
-(DEFPACKAGE "tuple"
+(DEFPACKAGE "dictionary"
   (:USE "CL" "SB-EXT"))
-(IN-PACKAGE "tuple")
+(IN-PACKAGE "dictionary")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
     (ASDF/OPERATE:LOAD-SYSTEM :MULE))
-(DEFPARAMETER |x| (TUPLE-XXX XXX))
+(USE-PACKAGE "builtins")
+(DEFPARAMETER |d| (|dict|))
+(|setitem| |d| 1 2)
+(ASSERT (EQUALP (|getitem| |d| 1) 2))
 (LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
       WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
       DO (EXPORT S))
