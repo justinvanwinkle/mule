@@ -18,6 +18,7 @@ class PrattParser(object):
         self.token_map = {}
         self._tokens = []
         self.debug = False
+        self._char_dispatch_cache = {}
 
         for token_def in token_defs:
             self.register(token_def)
@@ -33,8 +34,12 @@ class PrattParser(object):
         self.registered.append(token_def)
 
     def find_matching_token_def(self, c):
+        token_def = self._char_dispatch_cache.get(c)
+        if token_def is not None:
+            return token_def
         for token_def in self.registered:
             if token_def.can_start(c):
+                self._char_dispatch_cache[c] = token_def
                 return token_def
         raise Exception('No rule to handle %r' % c)
 
@@ -47,7 +52,6 @@ class PrattParser(object):
             else:
                 if token is not None:
                     assert token.complete()
-                    self.log('APPENDING TOKEN %s', token)
                     tokens.append(token)
                 token_def = self.find_matching_token_def(c)
                 token = token_def()
@@ -62,9 +66,6 @@ class PrattParser(object):
         tokens = self._generate_tokens()
         tokens = self._munge_tokens(tokens)
         self._tokens = tokens
-        if self.debug:
-            from pprint import pformat
-            self.log(pformat(self._tokens))
         return self._tokens
 
     def feed(self):
