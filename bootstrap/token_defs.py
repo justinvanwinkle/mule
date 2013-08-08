@@ -4,8 +4,9 @@ from __future__ import unicode_literals
 all_ops = []
 
 
-lisp_prefix = """(require 'asdf)
-(if (not (equal (package-name *package*) "builtins"))
+lisp_prefix = """
+(cl:require 'asdf)
+(cl:if (cl:not (cl:equal (cl:package-name cl:*package*) "builtins"))
   (asdf:load-system :mule))
 """
 
@@ -67,7 +68,7 @@ class MakePackageNode(LispNode):
         self.name = name
 
     def cl(self):
-        return '(DEFPACKAGE "%s" (:USE "CL" "SB-EXT"))' % self.name
+        return '(make-package "%s" :use \'("COMMON-LISP"))' % self.name
 
 
 class LispPackage(LispNode):
@@ -79,8 +80,13 @@ class LispPackage(LispNode):
 
     def cl(self):
         forms = []
+        forms.append('(eval-when (:compile-toplevel :load-toplevel :execute)')
+        forms.append('(unless (find-package "%s")' % self.module_name)
         forms.append(MakePackageNode(self.module_name).cl())
-        forms.append('(IN-PACKAGE "%s")' % self.module_name)
+        forms.append(') ')
+        forms.append(') ')
+        forms.append('(in-package "%s")' % self.module_name)
+        #forms.append('(CL:use-package "COMMON-LISP")')
         forms.append(lisp_prefix)
         forms.append(self.block.cl(implicit_body=True))
         forms.append(lisp_postfix)
@@ -114,7 +120,7 @@ class CLOSClassNode(LispNode):
         self.slots = list(slots)
         self.members = list(members)
         self.methods = list(methods)
-        self.constructor = False
+        self.constructor = None
 
     def add_form(self, form):
         if form.kind == 'defun':
@@ -150,17 +156,17 @@ class CLOSClassNode(LispNode):
         return '(|init| |self| %s)' % self.cl_init_args()
 
     def cl_init_args(self):
-        if not self.constructor:
+        if self.constructor is None:
             return ''
-        return ' '.join(x for x in self.clmap(self.constructor.arg_names[1:]))
+        return self.constructor.cl_args(skip_first=True)
 
     def cl_constructor(self):
         return """(DEFUN %s (%s)
                     (LET ((|self| (MAKE-INSTANCE \'%s)))
                        %s
-                       |self|))""" % (self.name.cl(),
+                       |self|))""" % (self.name,
                                       self.cl_init_args(),
-                                      self.name.cl(),
+                                      self.name,
                                       self.cl_init_call())
 
     def cl(self):
@@ -208,7 +214,7 @@ class DefunNode(LispNode):
             ' '.join(forms), self.cl_kw_args(), splat)
 
     def cl(self):
-        return '(DEFUN |%s| (%s) %s)' % (
+        return '(DEFUN %s (%s) %s)' % (
             self.name,
             self.cl_args(),
             self.body.cl(implicit_body=True))
@@ -350,6 +356,9 @@ class TupleNode(LispNode):
     def __init__(self, values):
         self.values = values
 
+    def cl(self):
+        return '(|tuple| %s)' % ' '.join(self.clmap(self.values))
+
 
 class CallNode(LispNode):
     kind = 'call'
@@ -367,8 +376,8 @@ class CallNode(LispNode):
 
     def cl(self):
         return '(%s %s %s)' % (self.name,
-                                 ' '.join(self.clmap(self.args)),
-                                 self.cl_kw_args())
+                               ' '.join(self.clmap(self.args)),
+                               self.cl_kw_args())
 
 
 class EqualityNode(LispNode):

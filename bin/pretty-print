@@ -16,5 +16,6 @@
 
 (if (> (length *posix-argv*) 2)
     (let ((in-fn (elt *posix-argv* 1))
-          (out-fn (elt *posix-argv* 2)))
+          (out-fn (elt *posix-argv* 2))
+      (setf (readtable-case *readtable*) :preserve)
       (copy-file-file in-fn out-fn)))

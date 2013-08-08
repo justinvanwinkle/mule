@@ -1,14 +1,9 @@
-
-(DEFPACKAGE "dictionary"
-  (:USE "CL" "SB-EXT"))
-(IN-PACKAGE "dictionary")
-(REQUIRE 'ASDF)
-(IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
-(USE-PACKAGE "builtins")
-(DEFPARAMETER |d| (|dict|))
-(|setitem| |d| 1 2)
-(ASSERT (EQUALP (|getitem| |d| 1) 2))
+(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "dictionary")(make-package "dictionary" :use '("COMMON-LISP"))) ) (in-package "dictionary")
+(cl:require 'asdf)
+(cl:if (cl:not (cl:equal (cl:package-name cl:*package*) "builtins"))
+  (asdf:load-system :mule))
+(use-package "builtins") (DEFPARAMETER |d| (|dict|  )) (|setitem| |d| 1 2) (|ASSERT| (EQUALP (|getitem| |d| 1) 2) )
 (LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
-      WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
-      DO (EXPORT S))
+   WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
+   DO (EXPORT S))
+

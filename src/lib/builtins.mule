@@ -34,3 +34,10 @@ class list(SEQUENCE, `STANDARD-OBJECT`):
 
     def `MAKE-SEQUENCE-ITERATOR`(self, `FROM-END`=None, START=None, END=None):
         return `MAKE-SEQUENCE-ITERATOR`(self.array, `FROM-END`=`FROM-END`, START=START, END=END)
+
+
+class tuple(SEQUENCE, `STANDARD-OBJECT`):
+    __slots__ = ('array',)
+
+    def init(self, derp):
+        pass

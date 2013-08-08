@@ -1,11 +1,9 @@
-
-(DEFPACKAGE "literal"
-  (:USE "CL" "SB-EXT"))
-(IN-PACKAGE "literal")
-(REQUIRE 'ASDF)
-(IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
+(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "literal")(make-package "literal" :use '("COMMON-LISP"))) ) (in-package "literal")
+(cl:require 'asdf)
+(cl:if (cl:not (cl:equal (cl:package-name cl:*package*) "builtins"))
+  (asdf:load-system :mule))
 (PRINT "I WORK")
 (LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
-      WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
-      DO (EXPORT S))
+   WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
+   DO (EXPORT S))
+
