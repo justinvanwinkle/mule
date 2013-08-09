@@ -346,7 +346,7 @@ class ListNode(LispNode):
         self.values = values
 
     def cl(self):
-        return ('(List)')
+        return ('(|list| (list %s))' % ' '.join(self.clmap(self.values)))
 
 
 class GetItemNode(LispNode):
@@ -827,7 +827,7 @@ class LParen(Token):
             values.append(parser.expression())
             if parser.maybe_match(','):
                 comma_seen = True
-        if comma_seen:
+        if comma_seen or not values:
             return TupleNode(values)
         return values[0]
 
