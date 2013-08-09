@@ -2,7 +2,7 @@
 (cl:require 'asdf)
 (cl:if (cl:not (cl:equal (cl:package-name cl:*package*) "builtins"))
   (asdf:load-system :mule))
-(DEFUN |f| (|a| &KEY (|b| "yep") ) (RETURN-FROM |f| |b|)) (|ASSERT| (EQUALP (|f| 1 ) "yep") ) (|ASSERT| (EQUALP (|f| 1 :|b| "NO") "NO") )
+(use-package "builtins")(DEFUN |f| (|a| &KEY (|b| "yep") ) (RETURN-FROM |f| |b|)) (|ASSERT| (EQUALP (|f| 1 ) "yep") ) (|ASSERT| (EQUALP (|f| 1 :|b| "NO") "NO") )
 (LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
    WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
    DO (EXPORT S))

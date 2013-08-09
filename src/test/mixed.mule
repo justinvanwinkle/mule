@@ -6,16 +6,17 @@ class CounterX:
     def __init__(self):
         self.count = 0
 
-    def incr(self):
+    def increment(self):
         self.count = self.count + 1
 
 
 def foo():
     c = CounterX()
-    while c.count < 10000000:
-        c.incr()
+    c.increment()
+    while c.count < 1000:
+        c.increment()
     return c.count
 
 x = foo()
 
-print x
+ASSERT(x == 1000)

@@ -86,8 +86,8 @@ class LispPackage(LispNode):
         forms.append(') ')
         forms.append(') ')
         forms.append('(in-package "%s")' % self.module_name)
-        #forms.append('(CL:use-package "COMMON-LISP")')
         forms.append(lisp_prefix)
+        forms.append('(use-package "builtins")')
         forms.append(self.block.cl(implicit_body=True))
         forms.append(lisp_postfix)
         return ''.join(forms)
@@ -124,9 +124,10 @@ class CLOSClassNode(LispNode):
 
     def add_form(self, form):
         if form.kind == 'defun':
-            if form.name.name == 'init':
+            if form.name.name == '__init__':
                 self.constructor = form
-            self.methods.append(form)
+            else:
+                self.methods.append(form)
         if form.kind == 'setf':
             if form.left.name == '__slots__':
                 for symbol in form.right.values:
@@ -161,13 +162,22 @@ class CLOSClassNode(LispNode):
         return self.constructor.cl_args(skip_first=True)
 
     def cl_constructor(self):
-        return """(DEFUN %s (%s)
-                    (LET ((|self| (MAKE-INSTANCE \'%s)))
-                       %s
-                       |self|))""" % (self.name,
-                                      self.cl_init_args(),
-                                      self.name,
-                                      self.cl_init_call())
+        if self.constructor is None:
+            return ''
+
+        forms = list(self.constructor.body.forms) + [SymbolNode('self')]
+        body = LetNode(
+            SymbolNode('self'),
+            LispLiteralNode("(make-instance '%s)" % self.name),
+            LispBody(forms))
+
+        defun = DefunNode(
+            self.name,
+            self.constructor.arg_names[1:],
+            self.constructor.kw_args,
+            LispBody([body]))
+
+        return "%s" % defun
 
     def cl(self):
         defclass = '(DEFCLASS %s %s %s)' % (
@@ -357,7 +367,7 @@ class TupleNode(LispNode):
         self.values = values
 
     def cl(self):
-        return '(|tuple| %s)' % ' '.join(self.clmap(self.values))
+        return "(|tuple| '(%s))" % ' '.join(self.clmap(self.values))
 
 
 class CallNode(LispNode):
@@ -696,15 +706,6 @@ class Endblock(Token):
 
 
 @register
-class Pass(Token):
-    regexes = ['pass']
-    name = 'PASS'
-
-    def nud(self, parser, value):
-        return NilNode()
-
-
-@register
 class Name(Token):
     lbp = 0
     name = 'NAME'
@@ -719,6 +720,8 @@ class Name(Token):
     def nud(self, parser, value):
         if value == 'if':
             raise Exception('UNHANDLED')
+        elif value == 'pass':
+            return NilNode()
         elif value == 'while':
             parser.ns.push_new()
             test = parser.expression(10)

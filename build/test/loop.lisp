@@ -2,7 +2,7 @@
 (cl:require 'asdf)
 (cl:if (cl:not (cl:equal (cl:package-name cl:*package*) "builtins"))
   (asdf:load-system :mule))
-(DEFUN |simple_loop| (  ) (LOOP FOR |x| BEING THE ELEMENTS OF (|tuple| 1 2 3) DO (PROGN (|print| |x| ) (|print| (+ |x| |x|) )))) #| def range_loop():
+(use-package "builtins")(DEFUN |simple_loop| (  ) (LOOP FOR |x| BEING THE ELEMENTS OF (|tuple| '(1 2 3)) DO (PROGN (|print| |x| ) (|print| (+ |x| |x|) )))) #| def range_loop():
 |# #|     for x in range(0, 10):
 |# #|         print(x)
 |# #|         print(x + x)

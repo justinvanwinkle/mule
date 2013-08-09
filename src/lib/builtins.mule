@@ -2,7 +2,7 @@
 class dict:
     __slots__ = ('hash_table',)
 
-    def init(self):
+    def init(self, val):
         self.hash_table = `(MAKE-HASH-TABLE :TEST 'EQUALP)`
 
     def setitem(self, key, value):
@@ -14,7 +14,7 @@ class dict:
 
 class list(SEQUENCE, `STANDARD-OBJECT`):
     __slots__ = ('array',)
-    def init(self):
+    def init(self, val):
         self.array = `(MAKE-ARRAY 0 :ADJUSTABLE T :FILL-POINTER T)`
 
     def setitem(self, key, value):
@@ -39,5 +39,5 @@ class list(SEQUENCE, `STANDARD-OBJECT`):
 class tuple(SEQUENCE, `STANDARD-OBJECT`):
     __slots__ = ('array',)
 
-    def init(self, derp):
+    def init(self, val):
         pass

@@ -184,16 +184,16 @@ if __name__ == '__main__':
         if args.debug:
             mule_parser.debug = True
         result = mule_parser.parse()
+        f = stdout
+        if args.lisp_fn:
+            f = open(args.lisp_fn, 'w')
+        else:
+            print('\n\n')
+        print(result.cl(), file=f)
+        if args.lisp_fn:
+            f.close()
     except Exception:
         import tracebackturbo
         import sys
         print(tracebackturbo.format_exc(with_vars=True))
         sys.exit(1)
-    f = stdout
-    if args.lisp_fn:
-        f = open(args.lisp_fn, 'w')
-    else:
-        print('\n\n')
-    print(result.cl(), file=f)
-    if args.lisp_fn:
-        f.close()

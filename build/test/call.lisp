@@ -2,7 +2,7 @@
 (cl:require 'asdf)
 (cl:if (cl:not (cl:equal (cl:package-name cl:*package*) "builtins"))
   (asdf:load-system :mule))
-(|t|  ) (DEFPARAMETER |x| (|t|  )) (|b| |a| ) (|c| (SLOT-VALUE |a| '|b|) 1 ) ((|x|  )  )
+(use-package "builtins")(|t|  ) (DEFPARAMETER |x| (|t|  )) (|b| |a| ) (|c| (SLOT-VALUE |a| '|b|) 1 ) ((|x|  )  )
 (LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
    WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
    DO (EXPORT S))
