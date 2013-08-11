@@ -14,9 +14,13 @@ class IO
 
 end
 
+CLEAN.include 'build', 'tmp'
+
 PARSER = FileList['bootstrap/**/*']
 SRC = FileList['src/**/*.mule']
-CLEAN.include 'build', 'tmp'
+LISP = SRC.pathmap('%{^src,tmp}X.lisp')
+PRETTY = SRC.pathmap('%{^src,build}X.lisp')
+
 
 SRC.each do |mule_file|
   tmp_lisp_file = mule_file.pathmap('%{^src,tmp}X.lisp')
@@ -35,12 +39,3 @@ SRC.each do |mule_file|
 
   multitask :default => pretty_file
 end
-
-
-
-# Rake::TestTask.new do |t|
-#   t.libs = ["lib"]
-#   t.warning = true
-#   t.verbose = true
-#   t.test_files = FileList['spec/*_spec.rb']
-# end
