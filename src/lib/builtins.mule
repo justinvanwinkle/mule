@@ -3,10 +3,10 @@ class dict:
     __slots__ = ('hash_table',)
 
     def __init__(self, val):
-        self.hash_table = `(MAKE-HASH-TABLE :TEST 'EQUALP)`
+        self.hash_table = `MAKE-HASH-TABLE`(TEST=QUOTE(EQUALP))
 
     def setitem(self, key, value):
-        `(SETF (GETHASH |key| (SLOT-VALUE |self| '|hash_table|)) |value|)`
+        SETF(GETHASH(key, self.hash_table), value)
 
     def getitem(self, key):
         return GETHASH(key, self.hash_table)
@@ -18,13 +18,13 @@ class list(SEQUENCE, `STANDARD-OBJECT`):
         self.array = `MAKE-ARRAY`(0, ADJUSTABLE=True, `FILL-POINTER`=True)
 
     def setitem(self, key, value):
-        `(SETF  (SLOT-VALUE |self| 'array) |value|)`
+        SETF(AREF(self.array, key), value)
 
     def getitem(self, key):
         return AREF(self.array, key)
 
     def append(self, val):
-        `(VECTOR-PUSH-EXTEND |val| (SLOT-VALUE |self| '|array|))`
+        `VECTOR-PUSH-EXTEND`(val, self.array)
 
     def `SEQUENCE:LENGTH`(self):
         return LENGTH(self.array)

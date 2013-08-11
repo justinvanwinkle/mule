@@ -18,7 +18,7 @@
     |self|))
 (DEFCLASS |list| (SEQUENCE STANDARD-OBJECT) (|array|))
 (DEFMETHOD |setitem| ((|self| |list|) |key| |value|)
-  (SETF (SLOT-VALUE |self| 'ARRAY) |value|))
+  (SETF (AREF (SLOT-VALUE |self| '|array|) |key|) |value|))
 (DEFMETHOD |getitem| ((|self| |list|) |key|)
   (RETURN-FROM |getitem| (AREF (SLOT-VALUE |self| '|array|) |key|)))
 (DEFMETHOD |append| ((|self| |list|) |val|)
