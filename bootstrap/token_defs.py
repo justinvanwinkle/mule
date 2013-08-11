@@ -18,7 +18,22 @@ lisp_postfix = """
 
 
 def find_self_assignments(n):
-    print n
+    assignments = []
+    if n.kind == 'body':
+        for form in n.forms:
+            assignments.extend(find_self_assignments(form))
+    elif n.kind in ('defun', 'condclause', 'while', 'for'):
+        assignments.extend(find_self_assignments(n.body))
+    elif n.kind == 'setf':
+        assignments.extend(find_self_assignments(n.left))
+    elif n.kind == 'cond':
+        for clause in n.clauses:
+            assignments.extend(find_self_assignments(clause))
+    elif n.kind == 'getattr':
+        if n.object_name.name == 'self':
+            assignments.append(n.attribute_name.name)
+
+    return assignments
 
 
 def register(cls):
@@ -130,6 +145,7 @@ class CLOSClass(Lisp):
         if form.kind == 'defun':
             if form.name.name == '__init__':
                 self.constructor = form
+                self.slots = find_self_assignments(form)
             else:
                 self.methods.append(form)
         if form.kind == 'setf':
@@ -253,6 +269,8 @@ class FletLambda(Defun):
 
 
 class ForLoop(Lisp):
+    kind = 'for'
+
     def __init__(self, in_node, body):
         self.in_node = in_node
         self.body = body
@@ -283,6 +301,8 @@ class ForLoop(Lisp):
 
 
 class CondClause(Lisp):
+    kind = 'condclause'
+
     def __init__(self, condition, body):
         self.condition = condition
         self.body = body
@@ -292,6 +312,8 @@ class CondClause(Lisp):
 
 
 class Cond(Lisp):
+    kind = 'cond'
+
     def __init__(self, clauses):
         self.clauses = clauses
 

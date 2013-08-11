@@ -8,3 +8,6 @@ class A:
 
         while True:
             self.c = 3
+
+        for x in range(10):
+            self.d = 'xxx'
