@@ -1,0 +1,10 @@
+
+class A:
+    def __init__(self):
+        self.a = 1
+
+        if 1:
+            self.b = 2
+
+        while True:
+            self.c = 3

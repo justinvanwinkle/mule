@@ -14,6 +14,8 @@
 (ASSERT (EQUALP |x| 6))
 (|x_plus| (- 6))
 (ASSERT (EQUALP |x| 0))
+(|x_plus| (- 5 (- 3)))
+(ASSERT (EQUALP |x| 8))
 (LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
       WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
       DO (EXPORT S))

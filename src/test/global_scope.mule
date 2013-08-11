@@ -12,3 +12,7 @@ assert x == 6
 x_plus(-6)
 
 assert x == 0
+
+x_plus(5 - -3)
+
+assert x == 8

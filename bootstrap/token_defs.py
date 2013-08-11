@@ -17,6 +17,10 @@ lisp_postfix = """
 """
 
 
+def find_self_assignments(n):
+    print n
+
+
 def register(cls):
     all_ops.append(cls)
     return cls
@@ -276,6 +280,23 @@ class ForLoop(Lisp):
             self.in_node.thing.cl(),
             domain,
             self.body.cl())
+
+
+class CondClause(Lisp):
+    def __init__(self, condition, body):
+        self.condition = condition
+        self.body = body
+
+    def cl(self):
+        return '(%s %s)' % (self.condition, self.body)
+
+
+class Cond(Lisp):
+    def __init__(self, clauses):
+        self.clauses = clauses
+
+    def cl(self):
+        return '(COND %s)' % ' '.join('%s' % c for c in self.clauses)
 
 
 class Return(Lisp):
@@ -624,8 +645,8 @@ class BinOpToken(EnumeratedToken):
 
     def led(self, parser, left):
         return BinaryOperator(self.value,
-                                  left,
-                                  parser.expression(self.lbp_map[self.value]))
+                              left,
+                              parser.expression(self.lbp_map[self.value]))
 
     def nud(self, parser, value):
         if value == '*':
@@ -724,6 +745,10 @@ class Name(Token):
             self.lbp = 150
         elif self.value == 'is':
             self.lbp = 140
+        elif self.value == 'elif':
+            self.name = 'ELIF'
+        elif self.value == 'else':
+            self.name = 'ELSE'
         return True
 
     def nud(self, parser, value):
@@ -732,7 +757,31 @@ class Name(Token):
         elif value == 'True':
             return LispLiteral('t')
         elif value == 'if':
-            raise Exception('UNHANDLED')
+            cond_clauses = []
+            parser.ns.push_new()
+            condition = parser.expression(10)
+            parser.match(':')
+            parser.match('NEWLINE')
+            body = parser.expression()
+            parser.ns.pop()
+            cond_clauses.append(CondClause(condition, body))
+            while parser.maybe_match('ELIF'):
+                parser.ns.push_new()
+                condition = parser.expression(10)
+                parser.match(':')
+                parser.match('NEWLINE')
+                body = parser.expression()
+                parser.ns.pop()
+                cond_clauses.append(CondClause(condition, body))
+            if parser.maybe_match('ELSE'):
+                parser.ns.push_new()
+                condition = LispLiteral('t')
+                parser.match(':')
+                parser.match('NEWLINE')
+                body = parser.expression()
+                parser.ns.pop()
+                cond_clauses.append(CondClause(condition, body))
+            return Cond(cond_clauses)
         elif value == 'pass':
             return Nil()
         elif value == 'while':
