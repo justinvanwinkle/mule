@@ -2,7 +2,7 @@
 class dict:
     __slots__ = ('hash_table',)
 
-    def __init__(self):
+    def __init__(self, val):
         self.hash_table = `(MAKE-HASH-TABLE :TEST 'EQUALP)`
 
     def setitem(self, key, value):

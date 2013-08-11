@@ -22,7 +22,7 @@ def register(cls):
     return cls
 
 
-class LispNode(object):
+class Lisp(object):
     kind = 'node'
 
     def __repr__(self):
@@ -35,7 +35,7 @@ class LispNode(object):
         return '(%s-XXX XXX)' % self.kind
 
 
-class CommentNode(LispNode):
+class Comment(Lisp):
     kind = 'comment'
 
     def __init__(self, comment):
@@ -45,7 +45,7 @@ class CommentNode(LispNode):
         return '#|%s|#' % self.comment
 
 
-class LispBody(LispNode):
+class LispBody(Lisp):
     kind = 'body'
 
     def __init__(self, forms):
@@ -63,7 +63,7 @@ class LispBody(LispNode):
             return 'nil'
 
 
-class MakePackageNode(LispNode):
+class MakePackage(Lisp):
     def __init__(self, name):
         self.name = name
 
@@ -71,7 +71,7 @@ class MakePackageNode(LispNode):
         return '(make-package "%s" :use \'("COMMON-LISP"))' % self.name
 
 
-class LispPackage(LispNode):
+class LispPackage(Lisp):
     kind = 'package'
 
     def __init__(self, module_name, block):
@@ -82,7 +82,7 @@ class LispPackage(LispNode):
         forms = []
         forms.append('(eval-when (:compile-toplevel :load-toplevel :execute)')
         forms.append('(unless (find-package "%s")' % self.module_name)
-        forms.append(MakePackageNode(self.module_name).cl())
+        forms.append(MakePackage(self.module_name).cl())
         forms.append(') ')
         forms.append(') ')
         forms.append('(in-package "%s")' % self.module_name)
@@ -93,7 +93,7 @@ class LispPackage(LispNode):
         return ''.join(forms)
 
 
-class MethodNode(LispNode):
+class Method(Lisp):
     kind = 'defun'
 
     def __init__(self, class_name, defun):
@@ -111,7 +111,7 @@ class MethodNode(LispNode):
             self.defun.body.cl(implicit_body=True))
 
 
-class CLOSClassNode(LispNode):
+class CLOSClass(Lisp):
     kind = 'class'
 
     def __init__(self, name, bases=(), slots=(), members=(), methods=()):
@@ -134,7 +134,7 @@ class CLOSClassNode(LispNode):
                     self.slots.append(symbol.value)
 
     def cl_method(self, defun):
-        return MethodNode(self.name, defun)
+        return Method(self.name, defun)
 
     def cl_methods(self):
         return ' '.join(self.cl_method(defun).cl() for defun in self.methods)
@@ -165,13 +165,13 @@ class CLOSClassNode(LispNode):
         if self.constructor is None:
             return ''
 
-        forms = list(self.constructor.body.forms) + [SymbolNode('self')]
-        body = LetNode(
-            SymbolNode('self'),
-            LispLiteralNode("(make-instance '%s)" % self.name),
+        forms = list(self.constructor.body.forms) + [Symbol('self')]
+        body = Let(
+            Symbol('self'),
+            LispLiteral("(make-instance '%s)" % self.name),
             LispBody(forms))
 
-        defun = DefunNode(
+        defun = Defun(
             self.name,
             self.constructor.arg_names[1:],
             self.constructor.kw_args,
@@ -193,7 +193,7 @@ class CLOSClassNode(LispNode):
         return defclass
 
 
-class DefunNode(LispNode):
+class Defun(Lisp):
     kind = 'defun'
 
     def __init__(self, name, arg_names, kw_args, body):
@@ -230,7 +230,7 @@ class DefunNode(LispNode):
             self.body.cl(implicit_body=True))
 
 
-class FletLambda(DefunNode):
+class FletLambda(Defun):
     def __init__(self, defun, right):
         self.defun = defun
         self.right = right
@@ -243,7 +243,7 @@ class FletLambda(DefunNode):
             self.right.cl(implicit_body=True))
 
 
-class ForLoopNode(LispNode):
+class ForLoop(Lisp):
     def __init__(self, in_node, body):
         self.in_node = in_node
         self.body = body
@@ -273,7 +273,7 @@ class ForLoopNode(LispNode):
             self.body.cl())
 
 
-class ReturnNode(LispNode):
+class Return(Lisp):
     kind = 'return'
 
     def __init__(self, return_expr, return_name):
@@ -284,7 +284,7 @@ class ReturnNode(LispNode):
         return '(RETURN-FROM %s %s)' % (self.return_name, self.return_expr)
 
 
-class SymbolNode(LispNode):
+class Symbol(Lisp):
     kind = 'symbol'
 
     def __init__(self, name):
@@ -294,7 +294,7 @@ class SymbolNode(LispNode):
         return '|%s|' % self.name
 
 
-class WhileLoopNode(LispNode):
+class WhileLoop(Lisp):
     kind = 'while'
 
     def __init__(self, test, body):
@@ -307,7 +307,7 @@ class WhileLoopNode(LispNode):
             self.body.cl())
 
 
-class InNode(LispNode):
+class In(Lisp):
     kind = 'in'
 
     def __init__(self, thing, collection):
@@ -315,21 +315,21 @@ class InNode(LispNode):
         self.collection = collection
 
 
-class FindNode(InNode):
+class Find(In):
     kind = 'find'
 
     def cl(self):
         return '(find %s %s)' % (self.thing, self.collection)
 
 
-class NilNode(LispNode):
+class Nil(Lisp):
     kind = 'nil'
 
     def cl(self):
         return 'NIL'
 
 
-class UsePackageNode(LispNode):
+class UsePackage(Lisp):
     kind = 'use'
 
     def __init__(self, right):
@@ -339,17 +339,17 @@ class UsePackageNode(LispNode):
         return '(use-package "%s")' % self.right.name
 
 
-class ListNode(LispNode):
+class List(Lisp):
     kind = 'list'
 
     def __init__(self, values):
         self.values = values
 
     def cl(self):
-        return ('(|list| (list %s))' % ' '.join(self.clmap(self.values)))
+        return ("(|list| '(%s))" % ' '.join(self.clmap(self.values)))
 
 
-class GetItemNode(LispNode):
+class GetItem(Lisp):
     kind = 'getitem'
 
     def __init__(self, left, key):
@@ -360,7 +360,7 @@ class GetItemNode(LispNode):
         return '(|getitem| %s %s)' % (self.left, self.key)
 
 
-class TupleNode(LispNode):
+class Tuple(Lisp):
     kind = 'tuple'
 
     def __init__(self, values):
@@ -370,10 +370,10 @@ class TupleNode(LispNode):
         return "(|tuple| '(%s))" % ' '.join(self.clmap(self.values))
 
 
-class CallNode(LispNode):
+class Call(Lisp):
     kind = 'call'
 
-    def __init__(self, name, args, kw_args):
+    def __init__(self, name, args, kw_args=()):
         self.name = name
         self.args = args
         self.kw_args = kw_args
@@ -390,7 +390,7 @@ class CallNode(LispNode):
                                self.cl_kw_args())
 
 
-class EqualityNode(LispNode):
+class Equality(Lisp):
     kind = 'equal'
 
     def __init__(self, left, right):
@@ -401,7 +401,7 @@ class EqualityNode(LispNode):
         return '(EQUALP %s %s)' % (self.left.cl(), self.right.cl())
 
 
-class IncfNode(LispNode):
+class Incf(Lisp):
     kind = 'incf'
 
     def __init__(self, left, right):
@@ -412,7 +412,7 @@ class IncfNode(LispNode):
         return '(INCF %s %s)' % (self.left, self.right)
 
 
-class DefParameterNode(LispNode):
+class DefParameter(Lisp):
     kind = 'defparameter'
 
     def __init__(self, left, right):
@@ -423,7 +423,7 @@ class DefParameterNode(LispNode):
         return '(DEFPARAMETER %s %s)' % (self.left.cl(), self.right.cl())
 
 
-class SetfNode(LispNode):
+class Setf(Lisp):
     kind = 'setf'
 
     def __init__(self, left, right):
@@ -434,7 +434,7 @@ class SetfNode(LispNode):
         return '(SETF %s %s)' % (self.left, self.right)
 
 
-class LetNode(LispNode):
+class Let(Lisp):
     kind = 'let'
 
     def __init__(self, left, right, body):
@@ -447,7 +447,7 @@ class LetNode(LispNode):
             self.body.cl(implicit_body=True))
 
 
-class SetItemNode(LispNode):
+class SetItem(Lisp):
     kind = 'setitem'
 
     def __init__(self, left, right):
@@ -459,7 +459,7 @@ class SetItemNode(LispNode):
             self.left.left, self.left.key, self.right)
 
 
-class NumberNode(LispNode):
+class Number(Lisp):
     kind = 'number'
 
     def __init__(self, value):
@@ -469,7 +469,7 @@ class NumberNode(LispNode):
         return '%s' % self.value
 
 
-class BinaryOperatorNode(LispNode):
+class BinaryOperator(Lisp):
     kind = 'binary_op'
 
     def __init__(self, op, left, right):
@@ -481,7 +481,7 @@ class BinaryOperatorNode(LispNode):
         return '(%s %s %s)' % (self.op, self.left.cl(), self.right.cl())
 
 
-class AttrLookup(LispNode):
+class AttrLookup(Lisp):
     kind = 'getattr'
 
     def __init__(self, object_name, attribute_name):
@@ -493,14 +493,14 @@ class AttrLookup(LispNode):
                                         self.attribute_name)
 
 
-class SplatNode(LispNode):
+class Splat(Lisp):
     kind = 'splat'
 
     def __init__(self, right):
         self.right = right
 
 
-class StringNode(LispNode):
+class String(Lisp):
     kind = 'string'
 
     def __init__(self, value):
@@ -510,7 +510,7 @@ class StringNode(LispNode):
         return '"%s"' % self.value
 
 
-class LispLiteralNode(LispNode):
+class LispLiteral(Lisp):
     kind = 'cl_literal'
 
     def __init__(self, literal):
@@ -618,13 +618,13 @@ class BinOpToken(EnumeratedToken):
         '~': 0}
 
     def led(self, parser, left):
-        return BinaryOperatorNode(self.value,
+        return BinaryOperator(self.value,
                                   left,
                                   parser.expression(self.lbp_map[self.value]))
 
     def nud(self, parser, value):
         if value == '*':
-            return SplatNode(parser.expression())
+            return Splat(parser.expression())
 
 
 # class AugAssign(EnumeratedToken):
@@ -655,26 +655,26 @@ class AssignOrEquals(EnumeratedToken):
     def led(self, parser, left):
         if self.value == '=':
             if left.kind == 'getitem':
-                return SetItemNode(left, parser.expression(10))
+                return SetItem(left, parser.expression(10))
             elif ((left.kind == 'getattr' or
                    left.name in parser.ns or
                    parser.ns.cns.class_top_level)):
-                return SetfNode(left, parser.expression(10))
+                return Setf(left, parser.expression(10))
             elif parser.ns.depth == 0:
                 parser.ns.add(left.name)
-                return DefParameterNode(left, parser.expression(10))
+                return DefParameter(left, parser.expression(10))
             else:
                 right = parser.expression(10)
                 parser.maybe_match('NEWLINE')
                 parser.ns.push_new()
                 parser.ns.add(left.name)
-                let_node = LetNode(left,
+                let_node = Let(left,
                                    right,
                                    LispBody(parser.parse_rest_of_body()))
                 parser.ns.pop()
                 return let_node
         else:
-            return EqualityNode(left, parser.expression())
+            return Equality(left, parser.expression())
 
 
 @register
@@ -715,13 +715,19 @@ class Name(Token):
     def complete(self):
         if self.value == 'in':
             self.lbp = 150
+        elif self.value == 'is':
+            self.lbp = 140
         return True
 
     def nud(self, parser, value):
-        if value == 'if':
+        if value == 'assert':
+            return Call('ASSERT', [parser.expression()])
+        elif value == 'True':
+            return LispLiteral('t')
+        elif value == 'if':
             raise Exception('UNHANDLED')
         elif value == 'pass':
-            return NilNode()
+            return Nil()
         elif value == 'while':
             parser.ns.push_new()
             test = parser.expression(10)
@@ -729,14 +735,14 @@ class Name(Token):
             parser.match('NEWLINE')
             body = parser.expression()
             parser.ns.pop()
-            return WhileLoopNode(test, body)
+            return WhileLoop(test, body)
         elif value == 'None':
-            return NilNode()
+            return Nil()
         elif value == 'return':
-            return ReturnNode(parser.expression(5), parser.ns.return_name)
+            return Return(parser.expression(5), parser.ns.return_name)
         elif value == 'class':
             name = parser.expression(80)
-            cc = CLOSClassNode(name)
+            cc = CLOSClass(name)
             if parser.maybe_match('('):
                 while parser.watch(')'):
                     cc.bases.append(parser.expression())
@@ -767,7 +773,7 @@ class Name(Token):
             parser.match('NEWLINE')
             body = parser.expression()
             parser.ns.pop()
-            defun = DefunNode(name, arg_names, kw_args, body)
+            defun = Defun(name, arg_names, kw_args, body)
             if parser.ns.top_level or parser.ns.class_top_level:
                 return defun
 
@@ -785,16 +791,18 @@ class Name(Token):
             parser.match('NEWLINE')
             body = parser.expression(10)
             parser.ns.pop()
-            return ForLoopNode(in_node, body)
+            return ForLoop(in_node, body)
         elif value == 'use':
             right = parser.expression(5)
-            return UsePackageNode(right)
+            return UsePackage(right)
         else:
-            return SymbolNode(value)
+            return Symbol(value)
 
     def led(self, parser, left):
         if self.value == 'in':
-            return InNode(left, parser.expression())
+            return In(left, parser.expression())
+        elif self.value == 'is':
+            return BinaryOperator('eq', left, parser.expression())
 
 
 @register
@@ -818,7 +826,7 @@ class LParen(Token):
             if left.kind == 'getattr':
                 name = left.attribute_name
                 args.insert(0, left.object_name)
-            return CallNode(name, args, kw_args)
+            return Call(name, args, kw_args)
 
     def nud(self, parser, value):
         values = []
@@ -828,7 +836,7 @@ class LParen(Token):
             if parser.maybe_match(','):
                 comma_seen = True
         if comma_seen or not values:
-            return TupleNode(values)
+            return Tuple(values)
         return values[0]
 
 
@@ -843,13 +851,13 @@ class LBracket(Token):
         while parser.watch(']'):
             values.append(parser.expression(40))
             parser.maybe_match(',')
-        return ListNode(values)
+        return List(values)
 
     def led(self, parser, left):
         key = parser.expression(40)
         parser.match(']')
 
-        return GetItemNode(left, key)
+        return GetItem(left, key)
 
 
 @register
@@ -860,13 +868,13 @@ class LBrace(Token):
 
 
 @register
-class Number(Token):
+class NumberToken(Token):
     start_chars = set('0123456789')
     rest_chars = start_chars | set('ex')
     name = 'NUMBER'
 
     def nud(self, parser, value):
-        return NumberNode(value)
+        return Number(value)
 
 
 @register
@@ -890,7 +898,7 @@ class LessThan(Token):
     name = 'LESSTHAN'
 
     def led(self, parser, left):
-        return BinaryOperatorNode('<', left, parser.expression())
+        return BinaryOperator('<', left, parser.expression())
 
 
 @register
@@ -900,7 +908,7 @@ class Plus(Token):
     name = 'PLUS'
 
     def led(self, parser, left):
-        return BinaryOperatorNode('+', left, parser.expression(50))
+        return BinaryOperator('+', left, parser.expression(50))
 
 
 @register
@@ -910,7 +918,7 @@ class Minus(Token):
     name = 'MINUS'
 
     def led(self, parser, left):
-        return BinaryOperatorNode('-', left, parser.expression(50))
+        return BinaryOperator('-', left, parser.expression(50))
 
 
 @register
@@ -920,10 +928,10 @@ class Multiply(Token):
     name = 'MULTIPLY'
 
     def led(self, parser, left):
-        return BinaryOperatorNode('*', left, parser.expression(60))
+        return BinaryOperator('*', left, parser.expression(60))
 
     def nud(self, parser, value):
-        return SplatNode(parser.expression())
+        return Splat(parser.expression())
 
 
 @register
@@ -933,7 +941,7 @@ class Divide(Token):
     name = 'DIVIDE'
 
     def led(self, parser, left):
-        return BinaryOperatorNode('/', left, parser.expression(110))
+        return BinaryOperator('/', left, parser.expression(110))
 
 
 class EscapingToken(Token):
@@ -943,7 +951,7 @@ class EscapingToken(Token):
 
 
 @register
-class String(EscapingToken):
+class StringToken(EscapingToken):
     start_chars = {'"', "'"}
     name = 'STRING'
 
@@ -972,17 +980,17 @@ class String(EscapingToken):
     def nud(self, parser, value):
         value = value[1:-1]
 
-        return StringNode(value)
+        return String(value)
 
 
 @register
-class LispLiteral(String):
+class Backtick(StringToken):
     name = '`'
     start_chars = {'`'}
 
     def nud(self, parser, value):
         value = value[1:-1]
-        return LispLiteralNode(value)
+        return LispLiteral(value)
 
 
 @register
@@ -999,7 +1007,7 @@ class Whitespace(Token):
 
 
 @register
-class Comment(EscapingToken):
+class CommentToken(EscapingToken):
     start_chars = {'#'}
 
     def match(self, c):
@@ -1008,4 +1016,4 @@ class Comment(EscapingToken):
         return True
 
     def nud(self, parser, value):
-        return CommentNode(value[1:])
+        return Comment(value[1:])

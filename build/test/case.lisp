@@ -1,9 +1,14 @@
-(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "case")(make-package "case" :use '("COMMON-LISP"))) ) (in-package "case")
-(cl:require 'asdf)
-(cl:if (cl:not (cl:equal (cl:package-name cl:*package*) "builtins"))
-  (asdf:load-system :mule))
-(use-package "builtins")(DEFPARAMETER |a| 1) (DEFPARAMETER |A| 2) (|ASSERT| (EQUALP (+ |a| 1) |A|) )
-(LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
-   WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
-   DO (EXPORT S))
 
+(EVAL-WHEN (:COMPILE-TOPLEVEL :LOAD-TOPLEVEL :EXECUTE)
+  (UNLESS (FIND-PACKAGE "case") (MAKE-PACKAGE "case" :USE '("COMMON-LISP"))))
+(IN-PACKAGE "case")
+(REQUIRE 'ASDF)
+(IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
+    (ASDF:LOAD-SYSTEM :MULE))
+(USE-PACKAGE "builtins")
+(DEFPARAMETER |a| 1)
+(DEFPARAMETER A 2)
+(ASSERT (EQUALP (+ |a| 1) A))
+(LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
+      WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
+      DO (EXPORT S))

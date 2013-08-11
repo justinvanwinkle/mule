@@ -1,9 +1,13 @@
-(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "tuple")(make-package "tuple" :use '("COMMON-LISP"))) ) (in-package "tuple")
-(cl:require 'asdf)
-(cl:if (cl:not (cl:equal (cl:package-name cl:*package*) "builtins"))
-  (asdf:load-system :mule))
-(use-package "builtins")(|PRINT| "OH NO" ) (DEFPARAMETER |x| (|tuple| '(1 2 3)))
-(LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
-   WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
-   DO (EXPORT S))
 
+(EVAL-WHEN (:COMPILE-TOPLEVEL :LOAD-TOPLEVEL :EXECUTE)
+  (UNLESS (FIND-PACKAGE "tuple") (MAKE-PACKAGE "tuple" :USE '("COMMON-LISP"))))
+(IN-PACKAGE "tuple")
+(REQUIRE 'ASDF)
+(IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
+    (ASDF:LOAD-SYSTEM :MULE))
+(USE-PACKAGE "builtins")
+(PRINT "OH NO")
+(DEFPARAMETER |x| (|tuple| '(1 2 3)))
+(LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
+      WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
+      DO (EXPORT S))
