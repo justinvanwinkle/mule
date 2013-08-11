@@ -148,10 +148,6 @@ class CLOSClass(Lisp):
                 self.slots = find_self_assignments(form)
             else:
                 self.methods.append(form)
-        if form.kind == 'setf':
-            if form.left.name == '__slots__':
-                for symbol in form.right.values:
-                    self.slots.append(symbol.value)
 
     def cl_method(self, defun):
         return Method(self.name, defun)

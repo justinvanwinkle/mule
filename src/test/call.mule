@@ -1,6 +1,7 @@
 
 class A:
-    __slots__ = ('b',)
+    def __init__(self):
+        self.b = None
 
     def ack(self):
         return 1

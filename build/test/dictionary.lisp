@@ -7,7 +7,6 @@
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
     (ASDF/OPERATE:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
-(USE-PACKAGE "builtins")
 (DEFPARAMETER |d| (|dict|))
 (|setitem| |d| 1 2)
 (ASSERT (EQUALP (|getitem| |d| 1) 2))

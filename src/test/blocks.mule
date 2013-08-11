@@ -5,4 +5,4 @@ def x():
         return 2 + z()
     return 3 + y()
 
-ASSERT(x() == 6)
+assert x() == 6

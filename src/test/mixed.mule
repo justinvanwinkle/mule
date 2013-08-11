@@ -1,8 +1,6 @@
 
 
 class CounterX:
-    __slots__ = ('count', )
-
     def __init__(self):
         self.count = 0
 
@@ -19,4 +17,4 @@ def foo():
 
 x = foo()
 
-ASSERT(x == 1000)
+assert x == 1000

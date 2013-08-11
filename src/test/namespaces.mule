@@ -19,4 +19,4 @@ def test3():
     return y
 
 
-ASSERT(test3() == 9)
+assert test3() == 9

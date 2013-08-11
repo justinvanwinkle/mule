@@ -9,7 +9,7 @@
 (USE-PACKAGE "builtins")
 (DEFUN |f| (|a| &KEY (|b| "yep")) (RETURN-FROM |f| |b|))
 (ASSERT (EQUALP (|f| 1) "yep"))
-(ASSERT (EQUALP (|f| 1 :|b| "NO") "NO"))
+(ASSERT (EQUALP (|tuple| '(1 (DEFPARAMETER |b| "NO"))) "NO"))
 (LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
       WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
       DO (EXPORT S))

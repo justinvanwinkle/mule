@@ -2,6 +2,6 @@ def test():
     x = 1
     y = 2
 
-    ASSERT(x + y == 3)
+    assert x + y == 3
 
 test()

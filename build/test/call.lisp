@@ -10,6 +10,7 @@
 (DEFMETHOD |ack| ((|self| A)) (RETURN-FROM |ack| 1))
 (DEFUN A ()
   (LET ((|self| (MAKE-INSTANCE 'A)))
+    (SETF (SLOT-VALUE |self| '|b|) NIL)
     |self|))
 (DEFCLASS B NIL NIL)
 (DEFMETHOD |c| ((|self| B) |arg|) (RETURN-FROM |c| |arg|))
