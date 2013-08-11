@@ -825,6 +825,7 @@ class Name(Token):
             name = parser.expression(100)
             parser.ns.push_new(return_name=name)
             parser.match('(')
+            parser.maybe_match('NEWLINE')
             arg_names = []
             kw_args = []
 
@@ -834,7 +835,10 @@ class Name(Token):
                     kw_args.append((arg_name, parser.expression()))
                 else:
                     arg_names.append(arg_name)
+                parser.maybe_match('NEWLINE')
                 parser.maybe_match(',')
+                parser.maybe_match('NEWLINE')
+
             parser.match(':')
             parser.match('NEWLINE')
             body = parser.expression()
@@ -884,13 +888,16 @@ class LParen(Token):
             name = left
             args = []
             kw_args = []
+            parser.maybe_match('NEWLINE')
             while parser.watch(')'):
                 arg = parser.expression(10)
                 if parser.maybe_match('='):
                     kw_args.append((arg, parser.expression()))
                 else:
                     args.append(arg)
+                parser.maybe_match('NEWLINE')
                 parser.maybe_match(',')
+                parser.maybe_match('NEWLINE')
             if left.kind == 'getattr':
                 name = left.attribute_name
                 args.insert(0, left.object_name)

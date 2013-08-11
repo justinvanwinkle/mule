@@ -98,12 +98,12 @@ class MuleParser(PrattParser):
 
         def next_tok(pos):
             if pos + 1 >= len(tokens):
-                return Fake()
+                return Fake
             return tokens[pos + 1]
 
         def prev_tok(pos):
             if pos < 1:
-                return Fake()
+                return Fake
             return tokens[pos - 1]
 
         def is_significant(pos):
@@ -117,18 +117,27 @@ class MuleParser(PrattParser):
                 return True
             return False
 
-        def change_indent(new_indent):
+        def maybe_change_indent(current_indent,
+                                new_indent,
+                                after_colon):
             if new_indent > current_indent + 1:
-                raise Exception('Indented too much %s' % index)
-            elif new_indent == current_indent + 1:
+                if not after_colon:
+                    return current_indent
+                else:
+                    raise Exception('Indented too much %s' % index)
+            elif new_indent == current_indent + 1 and after_colon:
                 new_tokens.append(Block())
+                return new_indent
             elif new_indent < current_indent:
                 for _ in range(current_indent - new_indent):
                     new_tokens.append(Endblock())
+                return new_indent
+            return current_indent
 
         new_tokens = [Module(), Block()]
         current_indent = 0
 
+        after_colon = False
         for index, token in enumerate(tokens):
             new_indent = current_indent
             if token.name == 'WHITESPACE':
@@ -142,8 +151,15 @@ class MuleParser(PrattParser):
                     new_indent = 0
             else:
                 new_tokens.append(token)
-            change_indent(new_indent)
-            current_indent = new_indent
+
+            current_indent = maybe_change_indent(current_indent,
+                                                 new_indent,
+                                                 after_colon)
+
+            if token.name == ':':
+                after_colon = True
+            elif token.name not in ('WHITESPACE', 'NEWLINE'):
+                after_colon = False
 
         new_tokens.append(Endblock())
         return new_tokens
