@@ -31,23 +31,23 @@ SRC.each do |mule_file|
 end
 
 
-# SRC.each do |mule_file|
-#   tmp_lisp_file = mule_file.pathmap('%{^src,tmp}X.lisp')
-#   pretty_file = tmp_lisp_file.pathmap('%{^tmp,build}X.lisp')
+SRC.each do |mule_file|
+  tmp_lisp_file = mule_file.pathmap('%{^src,tmp}X.lisp')
+  pretty_file = tmp_lisp_file.pathmap('%{^tmp,build}X.lisp')
 
-#   directory tmp_lisp_file.pathmap('%d')
-#   directory pretty_file.pathmap('%d')
+  directory tmp_lisp_file.pathmap('%d')
+  directory pretty_file.pathmap('%d')
 
-#   file tmp_lisp_file => [mule_file, tmp_lisp_file.pathmap('%d')] + PARSER do
-#     sh "python bootstrap/muleparser.py #{mule_file} #{tmp_lisp_file}"
-#   end
+  file tmp_lisp_file => [mule_file, tmp_lisp_file.pathmap('%d')] + PARSER do
+    sh "python bootstrap/muleparser.py #{mule_file} #{tmp_lisp_file}"
+  end
 
-#   file pretty_file => [tmp_lisp_file, pretty_file.pathmap('%d')] + PARSER do
-#     sh "sbcl --script bin/pretty-print #{tmp_lisp_file} #{pretty_file}"
-#   end
+  file pretty_file => [tmp_lisp_file, pretty_file.pathmap('%d')] + PARSER do
+    sh "sbcl --script bin/pretty-print #{tmp_lisp_file} #{pretty_file}"
+  end
 
-#   multitask :pretty => pretty_file
-# end
+  multitask :pretty => pretty_file
+end
 
 
 
