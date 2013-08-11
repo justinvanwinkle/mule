@@ -1,11 +1,17 @@
 
+class A:
+    __slots__ = ('b',)
 
-t()
+    def ack(self):
+        return 1
 
-x = t()
+class B:
+    def c(self, arg):
+        return arg
 
-a.b()
 
-a.b.c(1)
+a = A()
+a.b = B()
 
-x()()
+assert a.ack() == 1
+assert a.b.c(1) == 1

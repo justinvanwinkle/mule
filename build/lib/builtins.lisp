@@ -12,15 +12,15 @@
   (SETF (GETHASH |key| (SLOT-VALUE |self| '|hash_table|)) |value|))
 (DEFMETHOD |getitem| ((|self| |dict|) |key|)
   (RETURN-FROM |getitem| (GETHASH |key| (SLOT-VALUE |self| '|hash_table|))))
-(DEFUN |dict| (|val|)
+(DEFUN |dict| (&REST |args|)
   (LET ((|self| (MAKE-INSTANCE '|dict|)))
     (SETF (SLOT-VALUE |self| '|hash_table|) (MAKE-HASH-TABLE :TEST 'EQUALP))
     |self|))
 (DEFCLASS |list| (SEQUENCE STANDARD-OBJECT) (|array|))
 (DEFMETHOD |setitem| ((|self| |list|) |key| |value|)
-  (SETF (AREF (SLOT-VALUE |self| '|array|) |key|) |value|))
+  (SETF (ELT (SLOT-VALUE |self| '|array|) |key|) |value|))
 (DEFMETHOD |getitem| ((|self| |list|) |key|)
-  (RETURN-FROM |getitem| (AREF (SLOT-VALUE |self| '|array|) |key|)))
+  (RETURN-FROM |getitem| (ELT (SLOT-VALUE |self| '|array|) |key|)))
 (DEFMETHOD |append| ((|self| |list|) |val|)
   (VECTOR-PUSH-EXTEND |val| (SLOT-VALUE |self| '|array|)))
 (DEFMETHOD SB-SEQUENCE:LENGTH ((|self| |list|))
@@ -32,15 +32,37 @@
   (RETURN-FROM MAKE-SEQUENCE-ITERATOR
     (MAKE-SEQUENCE-ITERATOR (SLOT-VALUE |self| '|array|) :FROM-END FROM-END
      :START START :END END)))
-(DEFUN |list| (|val|)
+(DEFUN |list| (&REST |args|)
   (LET ((|self| (MAKE-INSTANCE '|list|)))
     (SETF (SLOT-VALUE |self| '|array|)
             (MAKE-ARRAY 0 :ADJUSTABLE T :FILL-POINTER T))
+    (LOOP FOR |lst| BEING THE ELEMENTS OF |args|
+          DO (LOOP FOR |x| BEING THE ELEMENTS OF |lst|
+                   DO (|append| |self| |x|)))
     |self|))
 (DEFCLASS |tuple| (SEQUENCE STANDARD-OBJECT) (|array|))
-(DEFUN |tuple| (|val|)
+(DEFMETHOD |setitem| ((|self| |tuple|) |key| |value|)
+  (SETF (ELT (SLOT-VALUE |self| '|array|) |key|) |value|))
+(DEFMETHOD |getitem| ((|self| |tuple|) |key|)
+  (RETURN-FROM |getitem| (ELT (SLOT-VALUE |self| '|array|) |key|)))
+(DEFMETHOD |append| ((|self| |tuple|) |val|)
+  (VECTOR-PUSH-EXTEND |val| (SLOT-VALUE |self| '|array|)))
+(DEFMETHOD SB-SEQUENCE:LENGTH ((|self| |tuple|))
+  (RETURN-FROM SB-SEQUENCE:LENGTH (LENGTH (SLOT-VALUE |self| '|array|))))
+(DEFMETHOD SB-SEQUENCE:ELT ((|self| |tuple|) |index|)
+  (RETURN-FROM SB-SEQUENCE:ELT (|getitem| |self| |index|)))
+(DEFMETHOD MAKE-SEQUENCE-ITERATOR
+           ((|self| |tuple|) &KEY (FROM-END NIL) (START NIL) (END NIL))
+  (RETURN-FROM MAKE-SEQUENCE-ITERATOR
+    (MAKE-SEQUENCE-ITERATOR (SLOT-VALUE |self| '|array|) :FROM-END FROM-END
+     :START START :END END)))
+(DEFUN |tuple| (&REST |args|)
   (LET ((|self| (MAKE-INSTANCE '|tuple|)))
-    NIL
+    (SETF (SLOT-VALUE |self| '|array|)
+            (MAKE-ARRAY 0 :ADJUSTABLE T :FILL-POINTER T))
+    (LOOP FOR |lst| BEING THE ELEMENTS OF |args|
+          DO (LOOP FOR |x| BEING THE ELEMENTS OF |lst|
+                   DO (|append| |self| |x|)))
     |self|))
 (LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
       WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))

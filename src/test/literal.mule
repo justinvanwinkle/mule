@@ -1,2 +1,2 @@
 
-`(PRINT "I WORK")`
+assert `"I WORK"` == "I WORK"

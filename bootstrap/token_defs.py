@@ -162,10 +162,15 @@ class CLOSClass(Lisp):
         return self.constructor.cl_args(skip_first=True)
 
     def cl_constructor(self):
-        if self.constructor is None:
-            return ''
-
-        forms = list(self.constructor.body.forms) + [Symbol('self')]
+        if self.constructor:
+            body_forms = self.constructor.body.forms
+            arg_names = self.constructor.arg_names[1:]
+            kw_args = self.constructor.kw_args
+        else:
+            body_forms = []
+            arg_names = []
+            kw_args = []
+        forms = list(body_forms) + [Symbol('self')]
         body = Let(
             Symbol('self'),
             LispLiteral("(make-instance '%s)" % self.name),
@@ -173,8 +178,8 @@ class CLOSClass(Lisp):
 
         defun = Defun(
             self.name,
-            self.constructor.arg_names[1:],
-            self.constructor.kw_args,
+            arg_names,
+            kw_args,
             LispBody([body]))
 
         return "%s" % defun
@@ -625,6 +630,8 @@ class BinOpToken(EnumeratedToken):
     def nud(self, parser, value):
         if value == '*':
             return Splat(parser.expression())
+        if value == '-':
+            return Call('-', [parser.expression()])
 
 
 # class AugAssign(EnumeratedToken):
@@ -796,6 +803,8 @@ class Name(Token):
             right = parser.expression(5)
             return UsePackage(right)
         else:
+            if value == value.upper():
+                value = value.replace('_', '-')
             return Symbol(value)
 
     def led(self, parser, left):
