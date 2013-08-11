@@ -313,10 +313,13 @@ class Return(Lisp):
 class Symbol(Lisp):
     kind = 'symbol'
 
-    def __init__(self, name):
+    def __init__(self, name, namespace=None):
         self.name = name
+        self.namespace = namespace
 
     def cl(self):
+        if self.namespace is not None:
+            return '|%s|:|%s|' % (self.namespace, self.symbol)
         return '|%s|' % self.name
 
 
@@ -425,17 +428,6 @@ class Equality(Lisp):
 
     def cl(self):
         return '(EQUALP %s %s)' % (self.left.cl(), self.right.cl())
-
-
-class Incf(Lisp):
-    kind = 'incf'
-
-    def __init__(self, left, right):
-        self.left = left
-        self.right = right
-
-    def cl(self):
-        return '(INCF %s %s)' % (self.left, self.right)
 
 
 class DefParameter(Lisp):
@@ -949,63 +941,9 @@ class Dot(Token):
         return AttrLookup(left, right)
 
 
-@register
-class LessThan(Token):
-    lbp = 130
-    regexes = ['<']
-    name = 'LESSTHAN'
-
-    def led(self, parser, left):
-        return BinaryOperator('<', left, parser.expression())
-
-
-@register
-class Plus(Token):
-    lbp = 50
-    regexes = [r'\+']
-    name = 'PLUS'
-
-    def led(self, parser, left):
-        return BinaryOperator('+', left, parser.expression(50))
-
-
-@register
-class Minus(Token):
-    lbp = 50
-    regexes = [r'\-']
-    name = 'MINUS'
-
-    def led(self, parser, left):
-        return BinaryOperator('-', left, parser.expression(50))
-
-
-@register
-class Multiply(Token):
-    lbp = 60
-    regexes = [r'\*']
-    name = 'MULTIPLY'
-
-    def led(self, parser, left):
-        return BinaryOperator('*', left, parser.expression(60))
-
-    def nud(self, parser, value):
-        return Splat(parser.expression())
-
-
-@register
-class Divide(Token):
-    lbp = 60
-    regexes = [r'\/']
-    name = 'DIVIDE'
-
-    def led(self, parser, left):
-        return BinaryOperator('/', left, parser.expression(110))
-
-
 class EscapingToken(Token):
     def __init__(self, c=''):
         super(EscapingToken, self).__init__(c)
-        self.done = False
 
 
 @register

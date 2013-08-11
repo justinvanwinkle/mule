@@ -8,7 +8,6 @@
 (USE-PACKAGE "builtins")
 (DEFPARAMETER |x| 0)
 (DEFUN |foo| ()
-  (PRINT X)
   (COND ((EQUALP |x| 1) (RETURN-FROM |foo| 1))
         ((EQUALP |x| 2) (RETURN-FROM |foo| 2)) (T (RETURN-FROM |foo| NIL))))
 (ASSERT (EQUALP (|foo|) NIL))
