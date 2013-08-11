@@ -1,8 +1,8 @@
 
 (EVAL-WHEN (:COMPILE-TOPLEVEL :LOAD-TOPLEVEL :EXECUTE)
-  (UNLESS (FIND-PACKAGE "namespaces")
-    (MAKE-PACKAGE "namespaces" :USE '("COMMON-LISP"))))
-(IN-PACKAGE "namespaces")
+  (UNLESS (FIND-PACKAGE "namespaces.py")
+    (MAKE-PACKAGE "namespaces.py" :USE '("COMMON-LISP"))))
+(IN-PACKAGE "namespaces.py")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
     (ASDF/OPERATE:LOAD-SYSTEM :MULE))
