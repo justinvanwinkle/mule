@@ -4,7 +4,7 @@
 (IN-PACKAGE "list")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF:LOAD-SYSTEM :MULE))
+    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFPARAMETER |x| (|list| 'NIL))
 (DEFPARAMETER |y| (|list| '(9)))

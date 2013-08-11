@@ -4,7 +4,7 @@
 (IN-PACKAGE "mixed")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF:LOAD-SYSTEM :MULE))
+    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFCLASS |CounterX| NIL (|count|))
 (DEFMETHOD |increment| ((|self| |CounterX|))

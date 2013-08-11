@@ -5,7 +5,7 @@
 (IN-PACKAGE "add_names")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF:LOAD-SYSTEM :MULE))
+    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFUN |test| ()
   (LET ((|x| 1))

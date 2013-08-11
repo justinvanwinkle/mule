@@ -5,7 +5,7 @@
 (IN-PACKAGE "dictionary")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF:LOAD-SYSTEM :MULE))
+    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (USE-PACKAGE "builtins")
 (DEFPARAMETER |d| (|dict|))

@@ -9,19 +9,19 @@ class dict:
         `(SETF (GETHASH |key| (SLOT-VALUE |self| '|hash_table|)) |value|)`
 
     def getitem(self, key):
-        return `(GETHASH |key| (SLOT-VALUE |self| '|hash_table|))`
+        return GETHASH(key, self.hash_table)
 
 
 class list(SEQUENCE, `STANDARD-OBJECT`):
     __slots__ = ('array',)
     def __init__(self, val):
-        self.array = `(MAKE-ARRAY 0 :ADJUSTABLE T :FILL-POINTER T)`
+        self.array = `MAKE-ARRAY`(0, ADJUSTABLE=True, `FILL-POINTER`=True)
 
     def setitem(self, key, value):
         `(SETF  (SLOT-VALUE |self| 'array) |value|)`
 
     def getitem(self, key):
-        `(AREF (SLOT-VALUE |self| '|array|) |key|)`
+        return AREF(self.array, key)
 
     def append(self, val):
         `(VECTOR-PUSH-EXTEND |val| (SLOT-VALUE |self| '|array|))`

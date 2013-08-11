@@ -4,7 +4,7 @@
 (IN-PACKAGE "loop")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF:LOAD-SYSTEM :MULE))
+    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFUN |simple_loop| ()
   (LOOP FOR |x| BEING THE ELEMENTS OF (|tuple| '(1 2 3))
