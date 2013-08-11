@@ -78,8 +78,7 @@ class PrattParser(object):
 
     def maybe_match(self, token_name):
         if token_name == self.token_handler.name:
-            self.log('MAYBE-MATCHED: %s', token_name)
-            self.feed()
+            self.match(token_name)
             return True
         return False
 
@@ -94,7 +93,7 @@ class PrattParser(object):
         if token_name == self.token_handler.name:
             self.log('WATCH finds %s', token_name)
             if consume:
-                self.feed()
+                self.match(token_name)
             return False
         return True
 
