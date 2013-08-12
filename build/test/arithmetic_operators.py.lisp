@@ -5,7 +5,7 @@
 (IN-PACKAGE "arithmetic_operators.py")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
+    (ASDF:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (+ (+ 1 1) 1)
 (* 2 2)

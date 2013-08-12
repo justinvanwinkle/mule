@@ -5,7 +5,7 @@
 (IN-PACKAGE "keyword_params.py")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
+    (ASDF:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFUN |f| (|a| &KEY (|b| "yep")) (RETURN-FROM |f| |b|))
 (ASSERT (EQUALP (|f| 1) "yep"))

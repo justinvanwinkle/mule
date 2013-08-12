@@ -5,7 +5,7 @@
 (IN-PACKAGE "init_scan.py")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
+    (ASDF:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFCLASS A NIL (|a| |b| |c| |d|))
 (DEFUN A ()

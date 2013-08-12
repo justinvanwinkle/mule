@@ -5,7 +5,7 @@
 (IN-PACKAGE "mixed.py")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
+    (ASDF:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFCLASS |CounterX| NIL (|count|))
 (DEFMETHOD |increment| ((|self| |CounterX|))

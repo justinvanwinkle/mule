@@ -48,7 +48,7 @@ class Lisp(object):
         return self.cl()
 
     def clmap(self, forms):
-        return [x.cl() for x in forms]
+        return ['%s' % x for x in forms]
 
     def cl(self):
         return '(%s-XXX XXX)' % self.kind
@@ -274,7 +274,7 @@ class ForLoop(Lisp):
     def cl(self):
         collection = self.in_node.collection
         if ((collection.kind == 'call' and
-             collection.name.name == 'range')):
+             collection.name.name in ('range', 'xrange'))):
             args = collection.args
             if len(args) == 1:
                 start = 0
@@ -290,8 +290,12 @@ class ForLoop(Lisp):
         else:
             domain = 'BEING THE ELEMENTS OF %s' % collection
 
+        if self.in_node.thing.kind == 'type':
+            var = self.in_node.thing.of_type_cl()
+        else:
+            var = self.in_node.thing.cl()
         return '(LOOP FOR %s %s DO %s)' % (
-            self.in_node.thing.cl(),
+            var,
             domain,
             self.body.cl())
 
@@ -437,6 +441,24 @@ class Call(Lisp):
                                self.cl_kw_args())
 
 
+class Type(Lisp):
+    kind = 'type'
+
+    def __init__(self, type, left):
+        self.type = type
+        self.left = left
+
+    @property
+    def name(self):
+        return self.left.name
+
+    def cl(self):
+        return '(the %s %s)' % (self.type, self.left)
+
+    def of_type_cl(self):
+        return '%s of-type %s' % (self.left, self.type)
+
+
 class Equality(Lisp):
     kind = 'equal'
 
@@ -478,8 +500,20 @@ class Let(Lisp):
         self.body = body
 
     def cl(self):
+        declares = []
+        pairs = []
+        for l, r in self.pairs:
+            if l.kind == 'type':
+                declares.append(Call('DECLARE',
+                                     [Call('TYPE', [l.type, l.left])]))
+                pairs.append((l.left, r))
+            else:
+                pairs.append((l, r))
+        for declare in declares:
+            self.body.forms.insert(0, declare)
+
         return '(LET (%s) %s)' % (
-            ' '.join('(%s %s)' % (l.cl(), r.cl()) for l, r in self.pairs),
+            ' '.join('(%s %s)' % (l, r) for l, r in pairs),
             self.body.cl(implicit_body=True))
 
 
@@ -630,7 +664,6 @@ class NoDispatchTokens(EnumeratedToken):
         ')': 0,
         ']': 0,
         '}': 0,
-        ':': 0,
         ',': 0}
 
 
@@ -685,6 +718,16 @@ class BinOpToken(EnumeratedToken):
 
 
 @register
+class Colon(EnumeratedToken):
+    lbp_map = {':': 0,
+               '::': 200}
+
+    def led(self, parser, left):
+        right = parser.expression(200)
+        return Type(right, left)
+
+
+@register
 class AssignOrEquals(EnumeratedToken):
     lbp_map = {
         '==': 40,
@@ -696,7 +739,7 @@ class AssignOrEquals(EnumeratedToken):
                 return SetItem(left, parser.expression(10))
             elif ((left.kind == 'getattr' or
                    left.name in parser.ns or
-                   parser.ns.cns.class_top_level)):
+                   parser.ns.class_top_level)):
                 return Setf(left, parser.expression(10))
             elif parser.ns.depth == 0:
                 parser.ns.add(left.name)
@@ -707,8 +750,8 @@ class AssignOrEquals(EnumeratedToken):
                 parser.ns.push_new()
                 parser.ns.add(left.name)
                 let_node = Let(left,
-                                   right,
-                                   LispBody(parser.parse_rest_of_body()))
+                               right,
+                               LispBody(parser.parse_rest_of_body()))
                 parser.ns.pop()
                 return let_node
         else:
@@ -940,6 +983,15 @@ class LBrace(Token):
     lbp = 40
     start_chars = {'{'}
     name = '{'
+
+    def nud(self, parser, value):
+        key_vals = []
+        while parser.watch('}'):
+            key = parser.expression()
+            parser.match(':')
+            val = parser.expression()
+            key_vals.append(key, val)
+        parser.log('%s', key_vals)
 
 
 @register
