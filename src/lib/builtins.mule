@@ -1,4 +1,6 @@
-#!/usr/bin/env python
+"""
+This is Python syntax.
+"""
 
 class dict:
     def __init__(self, *args):
