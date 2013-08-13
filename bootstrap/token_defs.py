@@ -762,6 +762,8 @@ class Name(Token):
         return True
 
     def nud(self, parser, value):
+        if value == 'load':
+            return ''
         if value == 'assert':
             return Call('ASSERT', [parser.expression()])
         elif value == 'True':

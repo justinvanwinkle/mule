@@ -23,7 +23,7 @@ PRETTY = SRC.pathmap('%{^src,build}X.lisp')
 
 
 SRC.each do |mule_file|
-  tmp_lisp_file = mule_file.pathmap('%{^src,tmp}X.lisp')
+  tmp_lisp_file = mule_file.pathmap('%{^src,tmp}X.herp')
   pretty_file = tmp_lisp_file.pathmap('%{^tmp,build}X.lisp')
 
   directory tmp_lisp_file.pathmap('%d')
