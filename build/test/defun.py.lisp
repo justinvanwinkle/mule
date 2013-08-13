@@ -5,7 +5,7 @@
 (IN-PACKAGE "defun.py")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
+    (ASDF:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFUN |test| (|x|) (RETURN-FROM |test| (+ |x| 1)))
 (DEFUN |test2| (|x| |y|)

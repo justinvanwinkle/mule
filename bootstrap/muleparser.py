@@ -117,6 +117,11 @@ class MuleParser(PrattParser):
                 return True
             return False
 
+        def expression(self, rbp=0):
+            self.eat_whitespace()
+            return super(MuleParser, self).expression(rbp)
+
+
         def maybe_change_indent(current_indent,
                                 new_indent,
                                 after_colon):
@@ -174,6 +179,10 @@ class MuleParser(PrattParser):
             while self.maybe_match('NEWLINE'):
                 pass
         return forms
+
+    def eat_whitespace(self):
+        while self.token_handler.name in ('WHITESPACE', 'NEWLINE'):
+            self.feed()
 
 
 if __name__ == '__main__':

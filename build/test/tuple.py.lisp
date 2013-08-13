@@ -5,7 +5,7 @@
 (IN-PACKAGE "tuple.py")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
+    (ASDF:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFPARAMETER |x| (|tuple| '(1 2 3)))
 (ASSERT (EQUALP (|getitem| |x| 0) 1))

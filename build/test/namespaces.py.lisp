@@ -5,7 +5,7 @@
 (IN-PACKAGE "namespaces.py")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
+    (ASDF:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFPARAMETER |x| 1)
 (DEFUN |test| (|y|) (SETF |x| 2) (RETURN-FROM |test| (+ |x| |y|)))

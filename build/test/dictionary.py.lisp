@@ -5,7 +5,7 @@
 (IN-PACKAGE "dictionary.py")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
+    (ASDF:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFPARAMETER |d| (|dict|))
 (|setitem| |d| 1 2)

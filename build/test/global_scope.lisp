@@ -5,7 +5,7 @@
 (IN-PACKAGE "global_scope")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
+    (ASDF:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFPARAMETER |x| 1)
 (DEFUN |x_plus| (|delta|) (SETF |x| (+ |x| |delta|)))
