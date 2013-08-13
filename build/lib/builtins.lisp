@@ -5,7 +5,7 @@
 (IN-PACKAGE "builtins")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF:LOAD-SYSTEM :MULE))
+    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFCLASS |dict| NIL (|hash_table|))
 (DEFMETHOD |setitem| ((|self| |dict|) |key| |value|)

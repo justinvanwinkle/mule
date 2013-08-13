@@ -5,7 +5,7 @@
 (IN-PACKAGE "call.py")
 (REQUIRE 'ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF:LOAD-SYSTEM :MULE))
+    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
 (USE-PACKAGE "builtins")
 (DEFCLASS A NIL (|b|))
 (DEFMETHOD |ack| ((|self| A)) (RETURN-FROM |ack| 1))
