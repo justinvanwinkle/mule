@@ -121,7 +121,6 @@ class MuleParser(PrattParser):
             self.eat_whitespace()
             return super(MuleParser, self).expression(rbp)
 
-
         def maybe_change_indent(current_indent,
                                 new_indent,
                                 after_colon):

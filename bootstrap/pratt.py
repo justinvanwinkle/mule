@@ -56,7 +56,8 @@ class PrattParser(object):
                 token_def = self.find_matching_token_def(c)
                 token = token_def()
                 token = token.handle(c)
-        assert token.complete()
+        if token is not None:
+            assert token.complete()
         return tokens
 
     @property
