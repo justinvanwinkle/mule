@@ -1,0 +1,12 @@
+
+
+def foo():
+    x = 0
+    lim = 4000000000
+
+    while x < lim:
+        x = (x + 1)
+
+    return x
+
+assert foo() == 4000000000
