@@ -14,14 +14,16 @@ class IO
 
 end
 
+PARSER = FileList['bootstrap/**/*']
+LIB = FileList['src/lib/**/*.mule']
+TEST = FileList['src/test/**/*.mule']
+LISP_LIB = LIB.pathmap('%{^src,build}X.lisp')
+LISP_TEST = TEST.pathmap('%{^src,build}X.lisp')
+CORE = "mule.core"
+
 CLEAN.include 'build', 'mule.core'
 
-PARSER = FileList['bootstrap/**/*']
-SRC = FileList['src/**/*.mule']
-LISP = SRC.pathmap('%{^src,tmp}X.lisp')
-
-
-SRC.each do |mule_file|
+LIB.each do |mule_file|
   lisp_file = mule_file.pathmap('%{^src,build}X.lisp')
 
   directory lisp_file.pathmap('%d')
@@ -30,11 +32,24 @@ SRC.each do |mule_file|
     sh "python bootstrap/muleparser.py #{mule_file} #{lisp_file}"
   end
 
-  multitask :lisp_files => lisp_file
+  multitask :lib_files => lisp_file
 end
 
-file "mule.core" => :lisp_files do
+TEST.each do |mule_file|
+  lisp_file = mule_file.pathmap('%{^src,build}X.lisp')
+
+  directory lisp_file.pathmap('%d')
+
+  file lisp_file => [mule_file, lisp_file.pathmap('%d')] + PARSER do
+    sh "python bootstrap/muleparser.py #{mule_file} #{lisp_file}"
+  end
+
+  multitask :test_files => lisp_file
+end
+
+file CORE => LISP_LIB + ["build-core.lisp"] do
   sh "sbcl --script build-core.lisp"
 end
 
-task :default => "mule.core"
+
+task :default => [:test_files, CORE]

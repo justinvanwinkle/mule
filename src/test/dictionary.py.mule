@@ -1,5 +1,10 @@
 
 d = dict()
 d[1] = 2
+d["hey"] = 3
+d[4.0] = "yup"
 
 assert d[1] == 2
+
+assert len(d) == 3
+assert sorted(d.keys()) == sorted([1, "hey", 4.0])

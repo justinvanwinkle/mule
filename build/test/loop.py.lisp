@@ -1,5 +1,5 @@
-(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "loop.py")(make-package "loop.py" :use '("COMMON-LISP"))) ) (in-package "loop.py")
-(use-package "builtins")(DEFUN |simple_loop| (  ) (LOOP FOR |x| BEING THE ELEMENTS OF (|tuple| '(1 2 3)) DO (PROGN (|print| |x| )
+(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "loop.py")(make-package "loop.py" :use '("COMMON-LISP"))(use-package "builtins")))
+(DEFUN |simple_loop| (  ) (LOOP FOR |x| BEING THE ELEMENTS OF (|tuple| '(1 2 3)) DO (PROGN (|print| |x| )
 (|print| (+ |x| |x|) ))))
 #| def range_loop():
 |#

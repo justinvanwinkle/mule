@@ -3,4 +3,4 @@ def f(a, b='yep'):
     return b
 
 assert f(1) == 'yep'
-assert f(1, b="NO") == 'NO'
+assert f(1, b='NO') == 'NO'

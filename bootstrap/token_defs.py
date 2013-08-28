@@ -113,11 +113,8 @@ class LispPackage(Lisp):
         forms.append('(eval-when (:compile-toplevel :load-toplevel :execute)')
         forms.append('(unless (find-package "%s")' % self.module_name)
         forms.append(MakePackage(self.module_name).cl())
-        forms.append(') ')
-        forms.append(') ')
-        forms.append('(in-package "%s")' % self.module_name)
+        forms.append('(use-package "builtins")))')
         forms.append(lisp_prefix)
-        forms.append('(use-package "builtins")')
         forms.append(self.block.cl(implicit_body=True))
         forms.append(lisp_postfix)
         return ''.join(forms)
@@ -126,18 +123,23 @@ class LispPackage(Lisp):
 class Method(Lisp):
     kind = 'defun'
 
-    def __init__(self, class_name, defun):
+    def __init__(self, defun, class_name=None):
         #import ipdb; ipdb.set_trace()
-        self.class_name = class_name
         self.defun = defun
+        self.class_name = class_name
         self.first_arg = defun.arg_names[0]
 
     def cl(self):
-        return '(DEFMETHOD %s ((%s %s) %s) %s)' % (
+        if self.class_name and self.first_arg.kind != 'type':
+            return '(DEFMETHOD %s ((%s %s) %s) %s)' % (
+                self.defun.name,
+                self.first_arg,
+                self.class_name,
+                self.defun.cl_args(skip_first=True),
+                self.defun.body.cl(implicit_body=True))
+        return '(DEFMETHOD %s (%s) %s)' % (
             self.defun.name,
-            self.first_arg,
-            self.class_name,
-            self.defun.cl_args(skip_first=True),
+            self.defun.cl_args(),
             self.defun.body.cl(implicit_body=True))
 
 
@@ -161,7 +163,7 @@ class CLOSClass(Lisp):
                 self.methods.append(form)
 
     def cl_method(self, defun):
-        return Method(self.name, defun)
+        return Method(defun, self.name)
 
     def cl_methods(self):
         return ' '.join(self.cl_method(defun).cl() for defun in self.methods)
@@ -248,6 +250,8 @@ class Defun(Lisp):
         for arg in self.arg_names:
             if arg.kind == 'splat':
                 splat = '&REST %s' % arg.right
+            elif arg.kind == 'type':
+                forms.append('(%s %s)' % (arg.left, arg.type))
             else:
                 forms.append('%s' % arg)
         if skip_first:
@@ -478,7 +482,18 @@ class Equality(Lisp):
         self.right = right
 
     def cl(self):
-        return '(EQUALP %s %s)' % (self.left.cl(), self.right.cl())
+        return '(|__eq__| %s %s)' % (self.left.cl(), self.right.cl())
+
+
+class NotEquality(Lisp):
+    kind = 'equal'
+
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+    def cl(self):
+        return '(not (|__eq__| %s %s))' % (self.left.cl(), self.right.cl())
 
 
 class DefParameter(Lisp):
@@ -584,11 +599,14 @@ class Splat(Lisp):
 class String(Lisp):
     kind = 'string'
 
-    def __init__(self, value):
+    def __init__(self, value, lisp_string=False):
         self.value = value
+        self.lisp_string = lisp_string
 
     def cl(self):
-        return '"%s"' % self.value
+        if self.lisp_string:
+            return '"%s"' % self.value
+        return '(|str| "%s")' % self.value
 
 
 class LispLiteral(Lisp):
@@ -713,7 +731,6 @@ class BinOpToken(EnumeratedToken):
 @register
 class AugAssign(EnumeratedToken):
     lbp_map = {
-        '!=': 0,
         '%=': 0,
         '&=': 0,
         '*=': 0,
@@ -770,6 +787,14 @@ class AssignOrEquals(EnumeratedToken):
                 return let_node
         else:
             return Equality(left, parser.expression())
+
+
+@register
+class NotEqual(EnumeratedToken):
+    lbp_map = {'!=': 40}
+
+    def led(self, parser, left):
+        return NotEquality(left, parser.expression())
 
 
 @register
@@ -882,7 +907,7 @@ class Name(Token):
             for form in body.forms:
                 cc.add_form(form)
             return cc
-        elif value == 'def':
+        elif value in ('def', 'defmethod'):
             name = parser.expression(100)
             parser.ns.push_new(return_name=name)
             parser.match('(')
@@ -904,6 +929,8 @@ class Name(Token):
             body = parser.expression()
             parser.ns.pop()
             defun = Defun(name, arg_names, kw_args, body)
+            if value == 'defmethod':
+                return Method(defun)
             if parser.ns.top_level or parser.ns.class_top_level:
                 return defun
 
@@ -1072,8 +1099,8 @@ class StringToken(EscapingToken):
 
     def nud(self, parser, value):
         value = value[1:-1]
-
-        return String(value)
+        lisp_string = self.value[0] == '"'
+        return String(value, lisp_string)
 
 
 @register

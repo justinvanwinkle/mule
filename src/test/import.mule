@@ -1,2 +1,2 @@
 
-mload('./dictionary')
+mload("./dictionary")

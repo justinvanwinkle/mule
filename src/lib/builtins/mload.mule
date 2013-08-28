@@ -1,11 +1,10 @@
 REQUIRE("SB-MD5")
-IN_PACKAGE('builtins')
 
-def mload(fn, cache=False):
+def mload(fn, cache=True):
     if PROBE_FILE(fn):
         md5 = FORMAT(None, "~(~{~2,'0X~}~)", COERCE(`SB-MD5:MD5SUM-FILE`(fn),
                                                    QUOTE(LIST)))
-        cache_fn = MAKE_PATHNAME(DIRECTORY=QUOTE(LIST(ABSOLUTE="tmp")),
+        cache_fn = MAKE_PATHNAME(DIRECTORY=`'(:absolute "tmp")`,
                                  NAME=md5,
                                  TYPE="fasl")
         if cache:

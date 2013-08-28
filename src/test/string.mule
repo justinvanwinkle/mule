@@ -1,0 +1,3 @@
+
+# equality of STRING and str
+assert "test" == 'test'

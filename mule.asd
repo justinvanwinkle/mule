@@ -1,5 +1,5 @@
-(defpackage "mule-system" (:use :cl))
-(in-package "mule-system")
+(defpackage "mule" (:use :cl))
+(in-package "mule")
 (asdf:defsystem "mule"
   :serial t
   :version "0.0.1"
@@ -7,6 +7,5 @@
   :author "Justin Van Winkle <justin.vanwinkle@gmail.com>"
   :license "GPLv3"
   :depends-on (:asdf)
-  :components ((:module "build"
-                         :components
-                         ((:file "lib/builtins")))))
+  :components ((:file "build/lib/builtins")
+               (:file "build/lib/mload")))
