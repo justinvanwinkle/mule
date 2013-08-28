@@ -1,15 +1,9 @@
-
-(EVAL-WHEN (:COMPILE-TOPLEVEL :LOAD-TOPLEVEL :EXECUTE)
-  (UNLESS (FIND-PACKAGE "tuple.py")
-    (MAKE-PACKAGE "tuple.py" :USE '("COMMON-LISP"))))
-(IN-PACKAGE "tuple.py")
-(IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (LOAD "/home/jvanwink/repos/mule/build/lib/builtins.fasl"))
-(USE-PACKAGE "builtins")
-(DEFPARAMETER |x| (|tuple| '(1 2 3)))
-(ASSERT (EQUALP (|getitem| |x| 0) 1))
+(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "tuple.py")(make-package "tuple.py" :use '("COMMON-LISP"))) ) (in-package "tuple.py")
+(use-package "builtins")(DEFPARAMETER |x| (|tuple| '(1 2 3)))
+(ASSERT (EQUALP (|getitem| |x| 0) 1) )
 (DEFPARAMETER |y| (|tuple| '(1 2 3)))
-(ASSERT (EQUALP (|getitem| |y| 1) 2))
+(ASSERT (EQUALP (|getitem| |y| 1) 2) )
 (LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
-      WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
-      DO (EXPORT S))
+   WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
+   DO (EXPORT S))
+

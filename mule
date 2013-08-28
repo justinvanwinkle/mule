@@ -1,0 +1,3 @@
+#!/bin/bash
+
+sbcl --core mule.core --script $@

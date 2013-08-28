@@ -14,28 +14,27 @@ class IO
 
 end
 
-CLEAN.include 'build', 'tmp'
+CLEAN.include 'build', 'mule.core'
 
 PARSER = FileList['bootstrap/**/*']
 SRC = FileList['src/**/*.mule']
 LISP = SRC.pathmap('%{^src,tmp}X.lisp')
-PRETTY = SRC.pathmap('%{^src,build}X.lisp')
 
 
 SRC.each do |mule_file|
-  tmp_lisp_file = mule_file.pathmap('%{^src,tmp}X.herp')
-  pretty_file = tmp_lisp_file.pathmap('%{^tmp,build}X.lisp')
+  lisp_file = mule_file.pathmap('%{^src,build}X.lisp')
 
-  directory tmp_lisp_file.pathmap('%d')
-  directory pretty_file.pathmap('%d')
+  directory lisp_file.pathmap('%d')
 
-  file tmp_lisp_file => [mule_file, tmp_lisp_file.pathmap('%d')] + PARSER do
-    sh "python bootstrap/muleparser.py #{mule_file} #{tmp_lisp_file}"
+  file lisp_file => [mule_file, lisp_file.pathmap('%d')] + PARSER do
+    sh "python bootstrap/muleparser.py #{mule_file} #{lisp_file}"
   end
 
-  file pretty_file => [tmp_lisp_file, pretty_file.pathmap('%d')] + PARSER do
-    sh "sbcl --script bin/pretty-print #{tmp_lisp_file} #{pretty_file}"
-  end
-
-  multitask :default => pretty_file
+  multitask :lisp_files => lisp_file
 end
+
+file "mule.core" => :lisp_files do
+  sh "sbcl --script build-core.lisp"
+end
+
+task :default => "mule.core"

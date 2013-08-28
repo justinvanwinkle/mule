@@ -1,16 +1,7 @@
-
-(EVAL-WHEN (:COMPILE-TOPLEVEL :LOAD-TOPLEVEL :EXECUTE)
-  (UNLESS (FIND-PACKAGE "add_names.py")
-    (MAKE-PACKAGE "add_names.py" :USE '("COMMON-LISP"))))
-(IN-PACKAGE "add_names.py")
-(IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (LOAD "/home/jvanwink/repos/mule/build/lib/builtins.fasl"))
-(USE-PACKAGE "builtins")
-(DEFUN |test| ()
-  (LET ((|x| 1))
-    (LET ((|y| 2))
-      (ASSERT (EQUALP (+ |x| |y|) 3)))))
-(|test|)
+(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "add_names.py")(make-package "add_names.py" :use '("COMMON-LISP"))) ) (in-package "add_names.py")
+(use-package "builtins")(DEFUN |test| (  ) (LET ((|x| 1)) (LET ((|y| 2)) (ASSERT (EQUALP (+ |x| |y|) 3) ))))
+(|test|  )
 (LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
-      WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
-      DO (EXPORT S))
+   WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
+   DO (EXPORT S))
+

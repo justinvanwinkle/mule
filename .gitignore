@@ -8,3 +8,4 @@ htmlcov/
 .cache/
 tmp/
 \.\#*
+mule.core

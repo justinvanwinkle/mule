@@ -5,8 +5,6 @@ all_ops = []
 
 
 lisp_prefix = """
-(cl:if (cl:not (cl:equal (cl:package-name cl:*package*) "builtins"))
-  (load "/home/jvanwink/repos/mule/build/lib/builtins.fasl"))
 """
 
 lisp_postfix = """
@@ -827,6 +825,8 @@ class Name(Token):
             return Call('ASSERT', [parser.expression()])
         elif value == 'True':
             return LispLiteral('t')
+        elif value == 'False':
+            return LispLiteral('nil')
         elif value == 'if':
             cond_clauses = []
             parser.ns.push_new()

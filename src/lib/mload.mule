@@ -1,0 +1,15 @@
+REQUIRE("SB-MD5")
+IN_PACKAGE('builtins')
+
+def mload(fn, cache=False):
+    if PROBE_FILE(fn):
+        md5 = FORMAT(None, "~(~{~2,'0X~}~)", COERCE(`SB-MD5:MD5SUM-FILE`(fn),
+                                                   QUOTE(LIST)))
+        cache_fn = MAKE_PATHNAME(DIRECTORY=QUOTE(LIST(ABSOLUTE="tmp")),
+                                 NAME=md5,
+                                 TYPE="fasl")
+        if cache:
+            if PROBE_FILE(cache_fn):
+                LOAD(cache_fn)
+            else:
+                COMPILE_FILE(fn, OUTPUT_FILE=cache_fn)
