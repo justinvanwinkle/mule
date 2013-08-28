@@ -1,12 +1,12 @@
 
 
 def foo():
-    x = 0
-    lim = 4000000000
+    x::FIXNUM = 0
+    lim = 4000
 
-    while x < lim:
-        x = (x + 1)
+    while x::FIXNUM < lim:
+        x = (x + 1)::FIXNUM
 
     return x
 
-assert foo() == 4000000000
+assert foo() == 4000

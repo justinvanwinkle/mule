@@ -5,9 +5,8 @@ all_ops = []
 
 
 lisp_prefix = """
-(cl:require :asdf)
 (cl:if (cl:not (cl:equal (cl:package-name cl:*package*) "builtins"))
-  (asdf:load-system :mule))
+  (load "/home/jvanwink/repos/mule/build/lib/builtins.fasl"))
 """
 
 lisp_postfix = """

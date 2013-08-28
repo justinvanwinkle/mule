@@ -3,9 +3,8 @@
   (UNLESS (FIND-PACKAGE "packages")
     (MAKE-PACKAGE "packages" :USE '("COMMON-LISP"))))
 (IN-PACKAGE "packages")
-(REQUIRE :ASDF)
 (IF (NOT (EQUAL (PACKAGE-NAME *PACKAGE*) "builtins"))
-    (ASDF/OPERATE:LOAD-SYSTEM :MULE))
+    (LOAD "/home/jvanwink/repos/mule/build/lib/builtins.fasl"))
 (USE-PACKAGE "builtins")
 (USE-PACKAGE "COMMON-LISP")
 (LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
