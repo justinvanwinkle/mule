@@ -5,7 +5,7 @@ all_ops = []
 
 
 lisp_prefix = """
-(cl:require 'asdf)
+(cl:require :asdf)
 (cl:if (cl:not (cl:equal (cl:package-name cl:*package*) "builtins"))
   (asdf:load-system :mule))
 """
@@ -34,6 +34,20 @@ def find_self_assignments(n):
             assignments.append(n.attribute_name.name)
 
     return assignments
+
+
+def unbox_arglist(t):
+    args = []
+    kwargs = []
+    if t.kind != 'tuple':
+        t = Tuple([t])
+    for arg in t.values:
+        if arg.kind == 'setf':
+            kwargs.append((arg.left, arg.right))
+        else:
+            args.append(arg)
+
+    return args, kwargs
 
 
 def register(cls):
@@ -72,9 +86,9 @@ class LispBody(Lisp):
 
     def cl(self, implicit_body=False):
         if implicit_body:
-            return ' '.join(self.clmap(self.forms))
+            return '\n'.join(self.clmap(self.forms))
         elif len(self.forms) > 1 and not implicit_body:
-            return '(PROGN %s)' % ' '.join(self.clmap(self.forms))
+            return '(PROGN %s)' % '\n'.join(self.clmap(self.forms))
         elif len(self.forms) == 1:
             return self.forms[0].cl()
         else:
@@ -597,8 +611,10 @@ class Token(object):
     start_chars = set()
     rest_chars = set()
 
-    def __init__(self, value=''):
+    def __init__(self, value='', line=None, column=None):
         self.value = value
+        self.line = line
+        self.column = column
 
     def spawn(self, token_class=None, name=None, lbp=None):
         if token_class is None:
@@ -663,8 +679,7 @@ class NoDispatchTokens(EnumeratedToken):
     lbp_map = {
         ')': 0,
         ']': 0,
-        '}': 0,
-        ',': 0}
+        '}': 0}
 
 
 @register
@@ -698,23 +713,24 @@ class BinOpToken(EnumeratedToken):
             return Call('-', [parser.expression()])
 
 
-# class AugAssign(EnumeratedToken):
-#     lbp_map = {
-#         '!=': 0,
-#         '%=': 0,
-#         '&=': 0,
-#         '*=': 0,
-#         '**=': 0,
-#         '+=': 0,
-#         '-=': 0,
-#         '//=': 0,
-#         '<<=': 0,
-#         '<=': 0,
-#         '>>=': 0,
-#         '>=': 0,
-#         '/=': 0,
-#         '^=': 0,
-#         '|=': 0}
+@register
+class AugAssign(EnumeratedToken):
+    lbp_map = {
+        '!=': 0,
+        '%=': 0,
+        '&=': 0,
+        '*=': 0,
+        '**=': 0,
+        '+=': 0,
+        '-=': 0,
+        '//=': 0,
+        '<<=': 0,
+        '<=': 0,
+        '>>=': 0,
+        '>=': 0,
+        '/=': 0,
+        '^=': 0,
+        '|=': 0}
 
 
 @register
@@ -738,8 +754,9 @@ class AssignOrEquals(EnumeratedToken):
             if left.kind == 'getitem':
                 return SetItem(left, parser.expression(10))
             elif ((left.kind == 'getattr' or
-                   left.name in parser.ns or
-                   parser.ns.class_top_level)):
+                   parser.ns.inside_form or
+                   parser.ns.class_top_level or
+                   left.name in parser.ns)):
                 return Setf(left, parser.expression(10))
             elif parser.ns.depth == 0:
                 parser.ns.add(left.name)
@@ -856,7 +873,7 @@ class Name(Token):
             cc = CLOSClass(name)
             if parser.maybe_match('('):
                 while parser.watch(')'):
-                    cc.bases.append(parser.expression())
+                    cc.bases.append(parser.expression(40))
                     parser.maybe_match(',')
             parser.match(':')
             parser.match('NEWLINE')
@@ -875,15 +892,14 @@ class Name(Token):
             kw_args = []
 
             while parser.watch(')'):
-                arg_name = parser.expression(10)
+                arg_name = parser.expression(40)
                 if parser.maybe_match('='):
-                    kw_args.append((arg_name, parser.expression()))
+                    kw_args.append((arg_name, parser.expression(40)))
                 else:
                     arg_names.append(arg_name)
                 parser.maybe_match('NEWLINE')
                 parser.maybe_match(',')
                 parser.maybe_match('NEWLINE')
-
             parser.match(':')
             parser.match('NEWLINE')
             body = parser.expression()
@@ -930,14 +946,14 @@ class LParen(Token):
 
     def led(self, parser, left):
         if left.kind in ('getattr', 'symbol', 'call', 'lookup', 'cl_literal'):
+            parser.ns.push_new(inside_form=True)
             name = left
             args = []
             kw_args = []
-            parser.maybe_match('NEWLINE')
             while parser.watch(')'):
-                arg = parser.expression(10)
+                arg = parser.expression(40)
                 if parser.maybe_match('='):
-                    kw_args.append((arg, parser.expression()))
+                    kw_args.append((arg, parser.expression(40)))
                 else:
                     args.append(arg)
                 parser.maybe_match('NEWLINE')
@@ -946,6 +962,7 @@ class LParen(Token):
             if left.kind == 'getattr':
                 name = left.attribute_name
                 args.insert(0, left.object_name)
+            parser.ns.pop()
             return Call(name, args, kw_args)
 
     def nud(self, parser, value):
@@ -1021,8 +1038,8 @@ class Dot(Token):
 
 
 class EscapingToken(Token):
-    def __init__(self, c=''):
-        super(EscapingToken, self).__init__(c)
+    def __init__(self, c='', line=None, column=None):
+        super(EscapingToken, self).__init__(c, line, column)
 
 
 @register
@@ -1059,6 +1076,15 @@ class StringToken(EscapingToken):
 
 
 @register
+class Backslash(Token):
+    name = '\\'
+    start_chars = {'\\'}
+
+    def nud(self, parser, value):
+        return parser.expression()
+
+
+@register
 class Backtick(StringToken):
     name = '`'
     start_chars = {'`'}
@@ -1072,6 +1098,23 @@ class Backtick(StringToken):
 class Newline(Token):
     name = 'NEWLINE'
     start_chars = {'\n'}
+
+    def nud(self, parser, value):
+        return parser.expression()
+
+
+@register
+class Comma(Token):
+    name = ','
+    start_chars = ','
+    lbp = 30
+
+    def led(self, parser, left):
+        values = [left, parser.expression(30)]
+        while parser.maybe_match(','):
+            values.append(parser.expression(30))
+
+        return Tuple(values)
 
 
 @register

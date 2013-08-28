@@ -1,4 +1,8 @@
 
+def foo():
+    return 1
+
+
 class A:
     def __init__(self):
         self.b = None
@@ -7,6 +11,9 @@ class A:
         return 1
 
 class B:
+    def __init__(self):
+        self.x = foo()
+
     def c(self, arg):
         return arg
 

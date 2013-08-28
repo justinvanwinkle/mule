@@ -46,6 +46,9 @@ class PrattParser(object):
     def _generate_tokens(self):
         tokens = []
         token = None
+
+        column = 1
+        line = 1
         for c in self.code:
             if token and token.match(c):
                 token = token.handle(c)
@@ -54,8 +57,14 @@ class PrattParser(object):
                     assert token.complete()
                     tokens.append(token)
                 token_def = self.find_matching_token_def(c)
-                token = token_def()
+                token = token_def(line=line, column=column)
                 token = token.handle(c)
+
+            column += 1
+            if c == '\n':
+                column = 1
+                line += 1
+
         if token is not None:
             assert token.complete()
         return tokens
@@ -64,7 +73,10 @@ class PrattParser(object):
     def tokens(self):
         if self._tokens:
             return self._tokens
-        tokens = self._generate_tokens()
+        try:
+            tokens = self._generate_tokens()
+        except Exception:
+            raise SyntaxError()
         tokens = self._munge_tokens(tokens)
         self._tokens = tokens
         return self._tokens

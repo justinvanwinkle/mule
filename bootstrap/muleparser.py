@@ -9,11 +9,15 @@ from sys import stdout
 
 
 class Namespace(object):
-    def __init__(self, return_name=None, class_top_level=False):
+    def __init__(self,
+                 return_name=None,
+                 class_top_level=False,
+                 inside_form=False):
         self.s = set()
         self.let_count = 0
         self.return_name = return_name
         self.class_top_level = class_top_level
+        self.inside_form = inside_form
 
     def add(self, name):
         self.s.add(name)
@@ -49,6 +53,11 @@ class NamespaceStack(object):
             return self.cns.class_top_level
 
     @property
+    def inside_form(self):
+        if self.cns:
+            return self.cns.inside_form
+
+    @property
     def return_name(self):
         for ns in reversed(self.stack):
             if ns.return_name is not None:
@@ -58,9 +67,12 @@ class NamespaceStack(object):
     def depth(self):
         return len(self.stack) - 1
 
-    def push_new(self, return_name=None, class_top_level=False):
+    def push_new(self, return_name=None,
+                 class_top_level=False,
+                 inside_form=False):
         ns = Namespace(return_name=return_name,
-                       class_top_level=class_top_level)
+                       class_top_level=class_top_level,
+                       inside_form=inside_form)
         self.stack.append(ns)
 
     def pop(self):
@@ -138,7 +150,7 @@ class MuleParser(PrattParser):
                 return new_indent
             return current_indent
 
-        new_tokens = [Module(), Block()]
+        new_tokens = [Module(line=0, column=0), Block(line=0, column=0)]
         current_indent = 0
 
         after_colon = False
@@ -165,7 +177,7 @@ class MuleParser(PrattParser):
             elif token.name not in ('WHITESPACE', 'NEWLINE'):
                 after_colon = False
 
-        new_tokens.append(Endblock())
+        new_tokens.append(Endblock(line=len(self.code.splitlines()), column=0))
         return new_tokens
 
     def parse_rest_of_body(self):
@@ -203,8 +215,8 @@ if __name__ == '__main__':
     with open(args.mule_fn) as f:
         code = f.read()
 
+    mule_parser = MuleParser(code, all_ops, filename=fn)
     try:
-        mule_parser = MuleParser(code, all_ops, filename=fn)
         if args.debug:
             mule_parser.debug = True
         result = mule_parser.parse()
@@ -216,6 +228,14 @@ if __name__ == '__main__':
         print(result.cl(), file=f)
         if args.lisp_fn:
             f.close()
+    except SyntaxError:
+        print('on token %s' % mule_parser.token_handler)
+        line_no = mule_parser.token_handler.line
+        column_no = mule_parser.token_handler.column
+        lines = mule_parser.code.splitlines()[max(line_no - 5, 0):line_no]
+        print('line %s column %s\n' % (line_no, column_no))
+        print('\n'.join(lines))
+        print(' ' * (column_no - 1) + '^^^')
     except Exception:
         import tracebackturbo
         import sys
