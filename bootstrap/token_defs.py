@@ -692,9 +692,9 @@ class BinOpToken(EnumeratedToken):
         '-': 50,
         '/': 60,
         '//': 60,
-        '<': 130,
+        '<': 40,
         '<<': 0,
-        '>': 130,
+        '>': 40,
         '>>': 0,
         '^': 0,
         '|': 0,
@@ -1030,6 +1030,8 @@ class Dot(Token):
 
     def led(self, parser, left):
         right = parser.expression(150)
+        if right.kind == 'number' and left.kind == 'number':
+            return Number(float('%s.%s' % (left.value, right.value)))
         if right.kind == 'call':
             right.args.insert(0, left)
             return right
