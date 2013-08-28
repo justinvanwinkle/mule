@@ -1,4 +1,5 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "call.py")(make-package "call.py" :use '("COMMON-LISP"))(use-package "builtins")))
+;(proclaim '(optimize (space 0) (safety 0) (speed 3)))
 (DEFUN |foo| (  ) (RETURN-FROM |foo| 1))
 (DEFCLASS |A| () (|b|)) (DEFMETHOD |ack| ((|self| |A|)   ) (RETURN-FROM |ack| 1)) (DEFUN |A| (  ) (LET ((|self| (make-instance '|A|))) (SETF (SLOT-VALUE |self| '|b|) NIL)
 |self|))

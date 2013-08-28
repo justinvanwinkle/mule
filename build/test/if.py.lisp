@@ -1,4 +1,5 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "if.py")(make-package "if.py" :use '("COMMON-LISP"))(use-package "builtins")))
+;(proclaim '(optimize (space 0) (safety 0) (speed 3)))
 (DEFPARAMETER |x| 0)
 (DEFUN |foo| (  ) (COND ((|__eq__| |x| 1) (RETURN-FROM |foo| 1)) ((|__eq__| |x| 2) (RETURN-FROM |foo| 2)) (t (RETURN-FROM |foo| NIL))))
 (ASSERT (|__eq__| (|foo|  ) NIL) )

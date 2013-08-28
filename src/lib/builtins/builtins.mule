@@ -1,9 +1,26 @@
+`(defgeneric __hash__ (a))`
+`(defgeneric __eq__ (a b))`
+
+defmethod __hash__(a):
+    return SXHASH(a)
+
+defmethod __eq__(a, b):
+    return EQUAL(a, b)
+
+DEFINE_HASH_TABLE_TEST(__eq__, __hash__)
+
+#`(export '(|__eq__| |__hash__|))`
 IN_PACKAGE("builtins")
 
+`(import 'cl-user::|__eq__|)`
+`(import 'cl-user::|__hash__|)`
 
-class dict:
+
+
+
+class dict(SEQUENCE, STANDARD_OBJECT):
     def __init__(self, *args):
-        self.hash_table = MAKE_HASH_TABLE(TEST=QUOTE(EQUALP))
+        self.hash_table = MAKE_HASH_TABLE(TEST=QUOTE(__eq__))
 
     def len(self):
         return HASH_TABLE_COUNT(self.hash_table)
@@ -21,6 +38,11 @@ class dict:
     def getitem(self, key):
         return GETHASH(key, self.hash_table)
 
+    def MAKE_SEQUENCE_ITERATOR(self, FROM_END=None, START=None, END=None):
+        return MAKE_SEQUENCE_ITERATOR(self.hash_table,
+                                      FROM_END=FROM_END,
+                                      START=START,
+                                      END=END)
 
 
 class list(SEQUENCE, STANDARD_OBJECT):
@@ -39,7 +61,7 @@ class list(SEQUENCE, STANDARD_OBJECT):
         return True
 
     def __hash__(self):
-        return SXHASH(self.array)
+        return hash(self.array)
 
     def sort(self, order):
         self.array.STABLE_SORT(order)
@@ -81,6 +103,9 @@ class tuple(SEQUENCE, STANDARD_OBJECT):
 
     def len(self):
         return LENGTH(self.array)
+
+    def __hash__(self):
+        return hash(self.array)
 
     def setitem(self, key, value):
         SETF(ELT(self.array, key), value)
@@ -140,11 +165,9 @@ class str(SEQUENCE, STANDARD_OBJECT):
                                       START=START,
                                       END=END)
 
-defmethod __hash__(a):
-    return SXHASH(a)
 
-defmethod __eq__(a, b):
-    return EQUAL(a, b)
+def hash(a):
+    return a.__hash__()
 
 defmethod sorted(lst):
     return SORT(COPY_SEQ(lst), `#'|__cmp__|`)
@@ -154,3 +177,18 @@ defmethod __cmp__(a, b):
 
 defmethod __cmp__(a::NUMBER, b::NUMBER):
     return a < b
+
+defmethod __eq__(a::REAL, b::FIXNUM):
+    return not (a > b) and not (a < b)
+
+defmethod __eq__(a::FIXNUM, b::REAL):
+    return not (a > b) and not (a < b)
+
+defmethod __hash__(a::FIXNUM):
+    return a
+
+defmethod __hash__(a::REAL):
+    int_part = ROUND(a)
+    if int_part == a:
+        return int_part
+    return SXHASH(a)

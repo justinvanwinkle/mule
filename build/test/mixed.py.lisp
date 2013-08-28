@@ -1,4 +1,5 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "mixed.py")(make-package "mixed.py" :use '("COMMON-LISP"))(use-package "builtins")))
+;(proclaim '(optimize (space 0) (safety 0) (speed 3)))
 (DEFCLASS |CounterX| () (|count|)) (DEFMETHOD |increment| ((|self| |CounterX|)   ) (SETF (SLOT-VALUE |self| '|count|) (+ (SLOT-VALUE |self| '|count|) 1))) (DEFUN |CounterX| (  ) (LET ((|self| (make-instance '|CounterX|))) (SETF (SLOT-VALUE |self| '|count|) 0)
 |self|))
 (DEFUN |foo| (  ) (LET ((|c| (|CounterX|  ))) (|increment| |c| )

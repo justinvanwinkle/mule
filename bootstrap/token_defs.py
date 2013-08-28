@@ -5,6 +5,7 @@ all_ops = []
 
 
 lisp_prefix = """
+;(proclaim '(optimize (space 0) (safety 0) (speed 3)))
 """
 
 lisp_postfix = """
@@ -439,7 +440,7 @@ class Tuple(Lisp):
 class Call(Lisp):
     kind = 'call'
 
-    def __init__(self, name, args, kw_args=()):
+    def __init__(self, name, args=(), kw_args=()):
         self.name = name
         self.args = args
         self.kw_args = kw_args
@@ -841,6 +842,10 @@ class Name(Token):
             self.name = 'ELIF'
         elif self.value == 'else':
             self.name = 'ELSE'
+        elif self.value == 'and':
+            self.lbp = 20
+        elif self.value == 'not':
+            self.lbp = 50
         return True
 
     def nud(self, parser, value):
@@ -952,6 +957,9 @@ class Name(Token):
         elif value == 'use':
             right = parser.expression(5)
             return UsePackage(right)
+        elif value == 'not':
+            right = parser.expression(50)
+            return Call('not', [right])
         else:
             if value == value.upper():
                 value = value.replace('_', '-')
@@ -962,6 +970,8 @@ class Name(Token):
             return In(left, parser.expression())
         elif self.value == 'is':
             return BinaryOperator('eq', left, parser.expression())
+        elif self.value == 'and':
+            return BinaryOperator('AND', left, parser.expression())
 
 
 @register

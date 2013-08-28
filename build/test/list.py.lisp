@@ -1,4 +1,5 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "list.py")(make-package "list.py" :use '("COMMON-LISP"))(use-package "builtins")))
+;(proclaim '(optimize (space 0) (safety 0) (speed 3)))
 (DEFPARAMETER |x| (|list| '()))
 (DEFPARAMETER |y| (|list| '(9)))
 (DEFPARAMETER |z| (|list| '(1 2 3)))

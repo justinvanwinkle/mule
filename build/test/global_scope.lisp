@@ -1,4 +1,5 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "global_scope")(make-package "global_scope" :use '("COMMON-LISP"))(use-package "builtins")))
+;(proclaim '(optimize (space 0) (safety 0) (speed 3)))
 (DEFPARAMETER |x| 1)
 (DEFUN |x_plus| (|delta|  ) (SETF |x| (+ |x| |delta|)))
 (ASSERT (|__eq__| |x| 1) )

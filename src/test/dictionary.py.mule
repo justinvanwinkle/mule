@@ -8,3 +8,21 @@ assert d[1] == 2
 
 assert len(d) == 3
 assert sorted(d.keys()) == sorted([1, "hey", 4.0])
+
+d[4.0] = 1
+d[4] = 2
+
+assert d[4.0] == 2
+
+
+d = dict()
+for x in range(100):
+    d[x] = x
+
+assert len(d) == 100
+
+# d2 = dict()
+# for k in d:
+#     d2[k] = d[k]
+
+# assert d2 == d

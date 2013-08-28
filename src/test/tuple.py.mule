@@ -3,3 +3,9 @@ assert x[0] == 1
 
 y = 1, 2, 3
 assert y[1] == 2
+
+
+x = (1, 2, 3, 4, 5)
+y = (1, 2.0, 3, 4, 5.0)
+
+assert hash(x) == hash(y)

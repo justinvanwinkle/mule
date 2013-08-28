@@ -1,4 +1,5 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "defun.py")(make-package "defun.py" :use '("COMMON-LISP"))(use-package "builtins")))
+;(proclaim '(optimize (space 0) (safety 0) (speed 3)))
 (DEFUN |test| (|x|  ) (RETURN-FROM |test| (+ |x| 1)))
 (DEFUN |test2| (|x| |y|  ) (LET ((|z| (+ |x| |y|))) (RETURN-FROM |test2| |z|)))
 (DEFUN |test3| (|x|  ) (|test| 1 )

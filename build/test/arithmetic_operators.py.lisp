@@ -1,4 +1,5 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "arithmetic_operators.py")(make-package "arithmetic_operators.py" :use '("COMMON-LISP"))(use-package "builtins")))
+;(proclaim '(optimize (space 0) (safety 0) (speed 3)))
 (ASSERT (|__eq__| (+ (+ 1 1) 1) 3) )
 (ASSERT (|__eq__| (* 2 2) 4) )
 (ASSERT (|__eq__| (- 3 3) 0) )
