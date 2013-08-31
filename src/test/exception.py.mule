@@ -1,12 +1,27 @@
 
 
-def foo():
-    x = 0
+def foo(x):
     y = None
+    z = 1
     try:
         y = 1 / x
 
     except DIVISION_BY_ZERO:
         y = 1
 
+    except `CL:CONDITION` as e:
+        y = 3
+
+    finally:
+        y = y + z
+
     return y
+
+
+assert foo(0) == 2
+assert foo("herp") == 4
+
+try:
+    assert 1 == 0
+except AssertionError:
+    pass

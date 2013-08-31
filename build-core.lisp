@@ -1,5 +1,6 @@
 (load "build/lib/builtins/builtins.lisp")
 (load "build/lib/builtins/mload.lisp")
+(load "build/lib/builtins/exceptions.lisp")
 (use-package "builtins")
 
 (print (directory (make-pathname

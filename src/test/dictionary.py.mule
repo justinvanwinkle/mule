@@ -1,39 +1,49 @@
 
-d = dict()
-d[1] = 2
-d["hey"] = 3
-d[4.0] = "yup"
+def foo():
+    d = dict()
+    d[1] = 2
+    d["hey"] = 3
+    d[4.0] = "yup"
 
-assert d[1] == 2
+    assert d[1] == 2
 
-assert len(d) == 3
-assert sorted(d.keys()) == sorted([1, "hey", 4.0])
+    assert len(d) == 3
+    assert sorted(d.keys()) == sorted([1, "hey", 4.0])
 
-d[4.0] = 1
-d[4] = 2
+    d[4.0] = 1
+    d[4] = 2
 
-assert d[4.0] == 2
+    assert d[4.0] == 2
+
+    d = dict()
+    for x in range(100):
+        d[x] = x
+
+    assert len(d) == 100
+
+    d2 = dict()
+    for k in d.keys():
+        d2[k] = d[k]
+
+    assert d2 == d
 
 
-d = dict()
-for x in range(100):
-    d[x] = x
+    d = dict()
+    d[1] = 2
+    d[3] = 4
+    d[2] = 2
 
-assert len(d) == 100
+    l1 = sorted(d.keys())
+    l2 = sorted(d.keys())
 
-# d2 = dict()
-# for k in d:
-#     d2[k] = d[k]
+    assert l1 == l2
 
-# assert d2 == d
+    z = None
+    try:
+        z = d['herp']
+    except KeyError:
+        z = 1
 
+    assert z == 1
 
-d = dict()
-d[1] = 2
-d[3] = 4
-d[2] = 2
-
-l1 = sorted(d.keys())
-l2 = d.keys().sorted()
-
-assert l1 == l2
+foo()

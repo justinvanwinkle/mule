@@ -54,7 +54,8 @@ class PrattParser(object):
                 token = token.handle(c)
             else:
                 if token is not None:
-                    assert token.complete()
+                    complete = token.complete()
+                    assert complete
                     tokens.append(token)
                 token_def = self.find_matching_token_def(c)
                 token = token_def(line=line, column=column)
@@ -66,7 +67,8 @@ class PrattParser(object):
                 line += 1
 
         if token is not None:
-            assert token.complete()
+            complete = token.complete()
+            assert complete
         return tokens
 
     @property
@@ -91,8 +93,7 @@ class PrattParser(object):
 
     def maybe_match(self, token_name):
         if token_name == self.token_handler.name:
-            self.match(token_name)
-            return True
+            return self.match(token_name)
         return False
 
     def match(self, token_name=None):

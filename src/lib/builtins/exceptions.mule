@@ -1,0 +1,76 @@
+
+IN_PACKAGE("builtins")
+
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:condition))
+SETF(FIND_CLASS(:'|ArithmeticError|), FIND_CLASS(:'cl:arithmetic-error))
+SETF(FIND_CLASS(:'|FloatingPointError|), FIND_CLASS(:'cl:floating-point-overflow))
+SETF(FIND_CLASS(:'|TypeError|), FIND_CLASS(:'cl:type-error))
+SETF(FIND_CLASS(:'|AttributeError|), FIND_CLASS(:'cl:simple-error))
+SETF(FIND_CLASS(:'|IOError|), FIND_CLASS(:'cl:file-error))
+SETF(FIND_CLASS(:'|ZeroDivisionError|), FIND_CLASS(:'cl:division-by-zero))
+
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:control-error))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:end-of-file))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:error))
+
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:floating-point-inexact))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:floating-point-invalid-operation))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:floating-point-underflow))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:package-error))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:parse-error))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:print-not-readable))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:program-error))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:reader-error))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:serious-condition))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:simple-condition))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:simple-warning))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:storage-condition))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:stream-error))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:style-warning))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:unbound-slot))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:unbound-variable))
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:undefined-function))
+
+SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:warning))
+
+condition AssertionError(:CL:SIMPLE-ERROR):
+    pass
+
+condition KeyError(:CL:ERROR):
+    pass
+
+# IOError
+# ImportError
+# ImportWarning
+# IndentationError
+# IndexError
+# KeyError
+# KeyboardInterrupt
+# LookupError
+# MemoryError
+# NameError
+# NotImplementedError
+# OSError
+# OverflowError
+# PendingDeprecationWarning
+# ReferenceError
+# RuntimeError
+# RuntimeWarning
+# StandardError
+# StopIteration
+# SyntaxError
+# SyntaxWarning
+# SystemError
+# SystemExit
+# TabError
+# TypeError
+# UnboundLocalError
+# UnicodeDecodeError
+# UnicodeEncodeError
+# UnicodeError
+# UnicodeTranslateError
+# UnicodeWarning
+# UserWarning
+# ValueError
+# Warning
+# ZeroDivisionError

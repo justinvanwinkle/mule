@@ -59,12 +59,12 @@ from CL import SXHASH
 from CL import VECTOR_PUSH_EXTEND
 from CL import T
 from CL import [NIL]
-from CL import `*PACKAGE*`
-from CL import `>`
-from CL import `<`
-from CL import `*`
-from CL import `-`
-from CL import `STRING=`
+from CL import :*PACKAGE*
+from CL import :>
+from CL import :<
+from CL import :*
+from CL import :-
+from CL import :STRING=
 from SEQUENCE import MAKE_SEQUENCE_ITERATOR
 
 from CL_USER import __eq__
@@ -73,6 +73,10 @@ from CL_USER import __hash__
 
 export AND, OR
 
+def muleassert(assertion):
+    if assertion != True:
+        raise AssertionError
+
 def hash(a):
     return a.__hash__()
 
@@ -80,7 +84,7 @@ defmethod len(a):
     return LENGTH(a)
 
 defmethod sorted(lst):
-    return SORT(COPY_SEQ(lst), `#'|__cmp__|`)
+    return SORT(COPY_SEQ(lst), :#'|__cmp__|)
 
 defmethod __cmp__(a, b):
     return SXHASH(a) < SXHASH(b)
@@ -109,7 +113,7 @@ class object(STANDARD_OBJECT):
         return ''
 
 
-
+`(cl:declaim (cl:inline |setitem|))`
 class dict(SEQUENCE, object):
     def __init__(self, *args):
         self.hash_table = MAKE_HASH_TABLE(TEST=QUOTE(__eq__))
@@ -124,17 +128,29 @@ class dict(SEQUENCE, object):
              do (|append| |lst| key))`
         return lst
 
+    def __eq__(self, other):
+        keys = self.keys().sort()
+        if keys != other.keys().sort():
+            return False
+        for key in keys:
+            if self[key] != other[key]:
+                return False
+        return True
+
     def setitem(self, key, value):
         SETF(GETHASH(key, self.hash_table), value)
 
     def getitem(self, key):
-        return GETHASH(key, self.hash_table)
+        value, found = GETHASH(key, self.hash_table)
+        if not found:
+            raise KeyError
+        return value
 
-    def MAKE_SEQUENCE_ITERATOR(self, FROM_END=None, START=0, END=None):
-        return MAKE_SEQUENCE_ITERATOR(self.hash_table,
-                                      FROM_END=FROM_END,
-                                      START=START,
-                                      END=END)
+    # def MAKE_SEQUENCE_ITERATOR(self, FROM_END=None, START=0, END=None):
+    #     return MAKE_SEQUENCE_ITERATOR(self.keys(),
+    #                                   FROM_END=FROM_END,
+    #                                   START=START,
+    #                                   END=END)
 
 
 
@@ -157,7 +173,7 @@ class list(SEQUENCE, object):
     def __hash__(self):
         return 1
 
-    def sort(self, order):
+    def sort(self, order=FUNCTION(__cmp__)):
         self.array.STABLE_SORT(order)
 
     def sorted(self):
@@ -175,10 +191,10 @@ class list(SEQUENCE, object):
     def append(self, val):
         VECTOR_PUSH_EXTEND(val, self.array)
 
-    def `SEQUENCE:LENGTH`(self):
+    def :SEQUENCE:LENGTH(self):
         return LENGTH(self.array)
 
-    def `SEQUENCE:ELT`(self, index):
+    def :SEQUENCE:ELT(self, index):
         return self.getitem(index)
 
     def MAKE_SEQUENCE_ITERATOR(self, FROM_END=None, START=0, END=None):
@@ -218,39 +234,14 @@ class tuple(list):
 
 
 
-class str(SEQUENCE, object):
-    def __init__(self, str):
-        self._str = str
+defmethod getitem(s::STRING, index):
+    return ELT(s, index)
 
-    def len(self):
-        return LENGTH(self._str)
+defmethod setitem(s::STRING, key, value):
+    raise TypeError
 
-    def __eq__(self, other::str):
-        return `STRING=`(self._str, other._str)
+defmethod __eq__(s::STRING, other::STRING):
+    return :STRING=(s, other)
 
-    def __eq__(self, other::STRING):
-        return `STRING=`(self._str, other)
-
-    def __eq__(a::STRING, other::str):
-        return other == a
-
-    def __cmp__(self, other::str):
-        return `STRING<`(self._str, other._str)
-
-    def __cmp__(self, other::STRING):
-        return `STRING<`(self._str, other._str)
-
-    def getitem(self, key):
-        return ELT(self.array, key)
-
-    def `SEQUENCE:LENGTH`(self):
-        return LENGTH(self._str)
-
-    def `SEQUENCE:ELT`(self, index):
-        return self.getitem(index)
-
-    def MAKE_SEQUENCE_ITERATOR(self, FROM_END=None, START=0, END=None):
-        return MAKE_SEQUENCE_ITERATOR(self._str,
-                                      FROM_END=FROM_END,
-                                      START=START,
-                                      END=END)
+defmethod __cmp__(s::STRING, other::STRING):
+    return :STRING<(s, other)

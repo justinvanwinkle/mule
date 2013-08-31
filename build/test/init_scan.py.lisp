@@ -1,11 +1,13 @@
-(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "init_scan.py")(make-package "init_scan.py")(use-package "builtins")))
-;(proclaim '(optimize (space 0) (safety 0) (speed 3)))
-(DEFCLASS |A| () (|a| |b| |c| |d|)) (DEFUN |A| (  ) (LET ((|self| (make-instance '|A|))) (SETF (SLOT-VALUE |self| '|a|) 1)
-(COND (1 (SETF (SLOT-VALUE |self| '|b|) 2)))
-(LOOP WHILE t DO (SETF (SLOT-VALUE |self| '|c|) 3))
-(LOOP FOR |x| FROM 0 BELOW 10 BY 1 DO (SETF (SLOT-VALUE |self| '|d|) (|str| "xxx")))
+(CL:EVAL-WHEN (:compile-toplevel :load-toplevel :execute)(CL:UNLESS (CL:FIND-PACKAGE "init_scan.py")(make-package "init_scan.py")(CL:USE-PACKAGE "builtins")))
+(proclaim '(optimize (space 0) (safety 0) (speed 3)))
+(CL:DEFCLASS |A| () (|a| |b| |c| |d|)) (CL:DEFUN |A| (  ) 
+(CL:LET ((|self| (CL:MAKE-INSTANCE '|A|)))
+(CL:SETF (CL:SLOT-VALUE |self| '|a|) 1)
+(COND (1 (CL:SETF (CL:SLOT-VALUE |self| '|b|) 2)))
+(CL:LOOP WHILE t DO (CL:SETF (CL:SLOT-VALUE |self| '|c|) 3))
+(CL:LOOP FOR |x| FROM 0 BELOW 10 BY 1 DO (CL:SETF (CL:SLOT-VALUE |self| '|d|) "xxx"))
 |self|))
-(LOOP FOR S BEING EACH PRESENT-SYMBOL IN *PACKAGE*
-   WHEN (OR (FBOUNDP S) (BOUNDP S) (FIND-CLASS S NIL))
-   DO (EXPORT S))
+(CL:LOOP FOR S BEING EACH PRESENT-SYMBOL IN CL:*PACKAGE*
+   WHEN (OR (CL:FBOUNDP S) (CL:BOUNDP S) (CL:FIND-CLASS S NIL))
+   DO (CL:EXPORT S))
 
