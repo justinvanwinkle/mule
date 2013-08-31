@@ -1,3 +1,7 @@
 
 # equality of STRING and str
 assert "test" == 'test'
+
+
+assert '' == ""
+assert len('') == 0

@@ -1,173 +1,83 @@
-`(defgeneric __hash__ (a))`
-`(defgeneric __eq__ (a b))`
+# `(defgeneric __hash__ (a))`
+# `(defgeneric __eq__ (a b))`
 
 defmethod __hash__(a):
     return SXHASH(a)
 
 defmethod __eq__(a, b):
-    return EQUAL(a, b)
+    return EQUALP(a, b)
 
 DEFINE_HASH_TABLE_TEST(__eq__, __hash__)
 
-#`(export '(|__eq__| |__hash__|))`
+export __eq__, __hash__
+
 IN_PACKAGE("builtins")
+#use CL
+from CL import AND
+from CL import ASSERT
+from CL import BOUNDP
+from CL import BYTE
+from CL import COND
+from CL import COPY_SEQ
+from CL import DEFCLASS
+from CL import DEFMETHOD
+from CL import DEFPARAMETER
+from CL import DEFUN
+from CL import ELT
+from CL import EXPORT
+from CL import FBOUNDP
+from CL import FIND_CLASS
+from CL import FIXNUM
+from CL import FUNCTION
+from CL import GETHASH
+from CL import HASH_TABLE_COUNT
+from CL import LDB
+from CL import LET
+from CL import LENGTH
+from CL import LIST
+from CL import LOGXOR
+from CL import LOOP
+from CL import MAKE_ARRAY
+from CL import MAKE_HASH_TABLE
+from CL import MAKE_INSTANCE
+from CL import MOD
+from CL import NOT
+from CL import NUMBER
+from CL import OR
+from CL import QUOTE
+from CL import REAL
+from CL import RETURN_FROM
+from CL import ROUND
+from CL import SEQUENCE
+from CL import SETF
+from CL import SORT
+from CL import STABLE_SORT
+from CL import SLOT_VALUE
+from CL import STANDARD_OBJECT
+from CL import STRING
+from CL import SXHASH
+from CL import VECTOR_PUSH_EXTEND
+from CL import T
+from CL import [NIL]
+from CL import `*PACKAGE*`
+from CL import `>`
+from CL import `<`
+from CL import `*`
+from CL import `-`
+from CL import `STRING=`
+from SEQUENCE import MAKE_SEQUENCE_ITERATOR
 
-`(import 'cl-user::|__eq__|)`
-`(import 'cl-user::|__hash__|)`
-
-
-
-
-class dict(SEQUENCE, STANDARD_OBJECT):
-    def __init__(self, *args):
-        self.hash_table = MAKE_HASH_TABLE(TEST=QUOTE(__eq__))
-
-    def len(self):
-        return HASH_TABLE_COUNT(self.hash_table)
-
-    def keys(self):
-        hashtable = self.hash_table
-        lst = list()
-        `(loop for key being the hash-keys of |hashtable|
-             do (|append| |lst| key))`
-        return lst
-
-    def setitem(self, key, value):
-        SETF(GETHASH(key, self.hash_table), value)
-
-    def getitem(self, key):
-        return GETHASH(key, self.hash_table)
-
-    def MAKE_SEQUENCE_ITERATOR(self, FROM_END=None, START=None, END=None):
-        return MAKE_SEQUENCE_ITERATOR(self.hash_table,
-                                      FROM_END=FROM_END,
-                                      START=START,
-                                      END=END)
-
-
-class list(SEQUENCE, STANDARD_OBJECT):
-    def __init__(self, *args):
-        self.array = MAKE_ARRAY(0, ADJUSTABLE=True, FILL_POINTER=True)
-        for lst in args:
-            for x in lst:
-                self.append(x)
-
-    def __eq__(self, other):
-        if len(self) != len(other):
-            return False
-        for i in range(len(self)):
-            if self[i] != other[i]:
-                return False
-        return True
-
-    def __hash__(self):
-        return hash(self.array)
-
-    def sort(self, order):
-        self.array.STABLE_SORT(order)
-
-    def sorted(self):
-        return list(SORT(COPY_SEQ(self.array), `#'|__cmp__|`))
-
-    def len(self):
-        return LENGTH(self.array)
-
-    def setitem(self, key, value):
-        SETF(ELT(self.array, key), value)
-
-    def getitem(self, key):
-        return ELT(self.array, key)
-
-    def append(self, val):
-        VECTOR_PUSH_EXTEND(val, self.array)
-
-    def `SEQUENCE:LENGTH`(self):
-        return LENGTH(self.array)
-
-    def `SEQUENCE:ELT`(self, index):
-        return self.getitem(index)
-
-    def MAKE_SEQUENCE_ITERATOR(self, FROM_END=None, START=None, END=None):
-        return MAKE_SEQUENCE_ITERATOR(self.array,
-                                      FROM_END=FROM_END,
-                                      START=START,
-                                      END=END)
+from CL_USER import __eq__
+from CL_USER import __hash__
 
 
-class tuple(SEQUENCE, STANDARD_OBJECT):
-    def __init__(self, *args):
-        self.array = MAKE_ARRAY(0, ADJUSTABLE=True, FILL_POINTER=True)
-        for lst in args:
-            for x in lst:
-                self.append(x)
-
-    def len(self):
-        return LENGTH(self.array)
-
-    def __hash__(self):
-        return hash(self.array)
-
-    def setitem(self, key, value):
-        SETF(ELT(self.array, key), value)
-
-    def getitem(self, key):
-        return ELT(self.array, key)
-
-    def append(self, val):
-        VECTOR_PUSH_EXTEND(val, self.array)
-
-    def `SEQUENCE:LENGTH`(self):
-        return LENGTH(self.array)
-
-    def `SEQUENCE:ELT`(self, index):
-        return self.getitem(index)
-
-    def MAKE_SEQUENCE_ITERATOR(self, FROM_END=None, START=None, END=None):
-        return MAKE_SEQUENCE_ITERATOR(self.array,
-                                      FROM_END=FROM_END,
-                                      START=START,
-                                      END=END)
-
-class str(SEQUENCE, STANDARD_OBJECT):
-    def __init__(self, str):
-        self._str = str
-
-    def len(self):
-        return LENGTH(self._str)
-
-    def __eq__(self, other::str):
-        return self == other._str
-
-    def __eq__(self, other::STRING):
-        return `STRING=`(self._str, other)
-
-    def __eq__(a::STRING, other::str):
-        return other == a
-
-    def __cmp__(self, other::str):
-        return `STRING<`(self._str, other._str)
-
-    def __cmp__(self, other::STRING):
-        return `STRING<`(self._str, other._str)
-
-    def getitem(self, key):
-        return ELT(self.array, key)
-
-    def `SEQUENCE:LENGTH`(self):
-        return LENGTH(self._str)
-
-    def `SEQUENCE:ELT`(self, index):
-        return self.getitem(index)
-
-    def MAKE_SEQUENCE_ITERATOR(self, FROM_END=None, START=None, END=None):
-        return MAKE_SEQUENCE_ITERATOR(self.array,
-                                      FROM_END=FROM_END,
-                                      START=START,
-                                      END=END)
-
+export AND, OR
 
 def hash(a):
     return a.__hash__()
+
+defmethod len(a):
+    return LENGTH(a)
 
 defmethod sorted(lst):
     return SORT(COPY_SEQ(lst), `#'|__cmp__|`)
@@ -192,3 +102,155 @@ defmethod __hash__(a::REAL):
     if int_part == a:
         return int_part
     return SXHASH(a)
+
+
+class object(STANDARD_OBJECT):
+    def __repr__(self):
+        return ''
+
+
+
+class dict(SEQUENCE, object):
+    def __init__(self, *args):
+        self.hash_table = MAKE_HASH_TABLE(TEST=QUOTE(__eq__))
+
+    def len(self):
+        return HASH_TABLE_COUNT(self.hash_table)
+
+    def keys(self):
+        hashtable = self.hash_table
+        lst = list()
+        `(loop for key being the hash-keys of |hashtable|
+             do (|append| |lst| key))`
+        return lst
+
+    def setitem(self, key, value):
+        SETF(GETHASH(key, self.hash_table), value)
+
+    def getitem(self, key):
+        return GETHASH(key, self.hash_table)
+
+    def MAKE_SEQUENCE_ITERATOR(self, FROM_END=None, START=0, END=None):
+        return MAKE_SEQUENCE_ITERATOR(self.hash_table,
+                                      FROM_END=FROM_END,
+                                      START=START,
+                                      END=END)
+
+
+
+
+class list(SEQUENCE, object):
+    def __init__(self, *args):
+        self.array = MAKE_ARRAY(0, ADJUSTABLE=True, FILL_POINTER=True)
+        for lst in args:
+            for x in lst:
+                self.append(x)
+
+    def __eq__(self, other):
+        if len(self) != len(other):
+            return False
+        for i in range(len(self)):
+            if self[i] != other[i]:
+                return False
+        return True
+
+    def __hash__(self):
+        return 1
+
+    def sort(self, order):
+        self.array.STABLE_SORT(order)
+
+    def sorted(self):
+        return list(SORT(COPY_SEQ(self.array), FUNCTION(__cmp__)))
+
+    def len(self):
+        return LENGTH(self.array)
+
+    def setitem(self, key, value):
+        SETF(ELT(self.array, key), value)
+
+    def getitem(self, key):
+        return ELT(self.array, key)
+
+    def append(self, val):
+        VECTOR_PUSH_EXTEND(val, self.array)
+
+    def `SEQUENCE:LENGTH`(self):
+        return LENGTH(self.array)
+
+    def `SEQUENCE:ELT`(self, index):
+        return self.getitem(index)
+
+    def MAKE_SEQUENCE_ITERATOR(self, FROM_END=None, START=0, END=None):
+        return MAKE_SEQUENCE_ITERATOR(self.array,
+                                      FROM_END=FROM_END,
+                                      START=START,
+                                      END=END)
+
+
+
+class tuple(list):
+    def __init__(self, *args):
+        self.array = MAKE_ARRAY(0, ADJUSTABLE=True, FILL_POINTER=True)
+        for lst in args:
+            for x in lst:
+                self.append(x)
+
+    def __hash__(self):
+        value = 0x345678
+        for item in self.array:
+            value = value % 295147905179352825856
+            value = (1000003 * value % 295147905179352825856) ^ item.__hash__()
+        value = value ^ len(self)
+        if value == -1:
+            value = -2
+        value = value % 295147905179352825856
+        return LDB(BYTE(62, 0), value)
+
+    def setitem(self, key, value):
+        SETF(ELT(self.array, key), value)
+
+    def getitem(self, key):
+        return ELT(self.array, key)
+
+    def append(self, val):
+        VECTOR_PUSH_EXTEND(val, self.array)
+
+
+
+class str(SEQUENCE, object):
+    def __init__(self, str):
+        self._str = str
+
+    def len(self):
+        return LENGTH(self._str)
+
+    def __eq__(self, other::str):
+        return `STRING=`(self._str, other._str)
+
+    def __eq__(self, other::STRING):
+        return `STRING=`(self._str, other)
+
+    def __eq__(a::STRING, other::str):
+        return other == a
+
+    def __cmp__(self, other::str):
+        return `STRING<`(self._str, other._str)
+
+    def __cmp__(self, other::STRING):
+        return `STRING<`(self._str, other._str)
+
+    def getitem(self, key):
+        return ELT(self.array, key)
+
+    def `SEQUENCE:LENGTH`(self):
+        return LENGTH(self._str)
+
+    def `SEQUENCE:ELT`(self, index):
+        return self.getitem(index)
+
+    def MAKE_SEQUENCE_ITERATOR(self, FROM_END=None, START=0, END=None):
+        return MAKE_SEQUENCE_ITERATOR(self._str,
+                                      FROM_END=FROM_END,
+                                      START=START,
+                                      END=END)

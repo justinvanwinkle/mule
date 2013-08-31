@@ -1,4 +1,4 @@
-(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "case.py")(make-package "case.py" :use '("COMMON-LISP"))(use-package "builtins")))
+(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "case.py")(make-package "case.py")(use-package "builtins")))
 ;(proclaim '(optimize (space 0) (safety 0) (speed 3)))
 (DEFPARAMETER |a| 1)
 (DEFPARAMETER |A| 2)

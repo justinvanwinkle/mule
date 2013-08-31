@@ -1,3 +1,24 @@
+def test_no_return(x):
+    return
+
+
+def test_implicit_return(x):
+    pass
+
+
+def test_both(x):
+    if x == 1:
+        return x
+    elif x == 2:
+        return
+
+assert test_no_return(1) == None
+assert test_implicit_return(1) == None
+assert test_both(1) == 1
+assert test_both(2) == None
+assert test_both(3) == None
+
+
 def test(x):
     return x + 1
 

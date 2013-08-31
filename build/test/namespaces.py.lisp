@@ -1,4 +1,4 @@
-(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "namespaces.py")(make-package "namespaces.py" :use '("COMMON-LISP"))(use-package "builtins")))
+(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "namespaces.py")(make-package "namespaces.py")(use-package "builtins")))
 ;(proclaim '(optimize (space 0) (safety 0) (speed 3)))
 (DEFPARAMETER |x| 1)
 (DEFUN |test| (|y|  ) (SETF |x| 2)

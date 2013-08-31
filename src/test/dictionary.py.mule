@@ -26,3 +26,14 @@ assert len(d) == 100
 #     d2[k] = d[k]
 
 # assert d2 == d
+
+
+d = dict()
+d[1] = 2
+d[3] = 4
+d[2] = 2
+
+l1 = sorted(d.keys())
+l2 = d.keys().sorted()
+
+assert l1 == l2

@@ -86,7 +86,7 @@ class LispBody(Lisp):
         if implicit_body:
             return '\n'.join(self.clmap(self.forms))
         elif len(self.forms) > 1 and not implicit_body:
-            return '(PROGN %s)' % '\n'.join(self.clmap(self.forms))
+            return '(CL:PROGN %s)' % '\n'.join(self.clmap(self.forms))
         elif len(self.forms) == 1:
             return self.forms[0].cl()
         else:
@@ -99,7 +99,7 @@ class MakePackage(Lisp):
         self.name = name
 
     def cl(self):
-        return '(make-package "%s" :use \'("COMMON-LISP"))' % self.name
+        return '(make-package "%s")' % self.name
 
 
 class LispPackage(Lisp):
@@ -243,14 +243,14 @@ class Defun(Lisp):
         forms = []
         for key, default in self.kw_args:
             forms.append('(%s %s)' % (key, default))
-        return '&KEY %s' % ''.join(forms)
+        return 'CL:&KEY %s' % ''.join(forms)
 
     def cl_args(self, skip_first=False):
         forms = []
         splat = ''
         for arg in self.arg_names:
             if arg.kind == 'splat':
-                splat = '&REST %s' % arg.right
+                splat = 'CL:&REST %s' % arg.right
             elif arg.kind == 'type':
                 forms.append('(%s %s)' % (arg.left, arg.type))
             else:
@@ -278,6 +278,28 @@ class FletLambda(Defun):
             self.defun.cl_args(),
             self.defun.body.cl(implicit_body=True),
             self.right.cl(implicit_body=True))
+
+
+class Import(Lisp):
+    kind = 'import'
+
+    def __init__(self, module, symbols):
+        self.module = module
+        self.symbols = symbols
+
+    def cl(self):
+        symbols = ' '.join('%s:%s' % (self.module, s) for s in self.symbols)
+        return "(CL:IMPORT '(%s))" % symbols
+
+
+class Export(Lisp):
+    kind = 'export'
+
+    def __init__(self, values):
+        self.values = values
+
+    def cl(self):
+        return "(CL:EXPORT '(%s))" % ' '.join(self.clmap(self.values))
 
 
 class ForLoop(Lisp):
@@ -403,7 +425,7 @@ class UsePackage(Lisp):
         self.right = right
 
     def cl(self):
-        return '(use-package "%s")' % self.right.name
+        return '(CL:USE-PACKAGE "%s")' % self.right.name
 
 
 class List(Lisp):
@@ -701,7 +723,7 @@ class NoDispatchTokens(EnumeratedToken):
 @register
 class BinOpToken(EnumeratedToken):
     lbp_map = {
-        '%': 0,
+        '%': 60,
         '&': 0,
         '*': 60,
         '**': 0,
@@ -713,19 +735,24 @@ class BinOpToken(EnumeratedToken):
         '<<': 0,
         '>': 40,
         '>>': 0,
-        '^': 0,
+        '^': 45,
         '|': 0,
         '~': 0}
 
+    op_map = {
+        '^': 'LOGXOR',
+        '%': 'MOD'}
+
     def led(self, parser, left):
-        return BinaryOperator(self.value,
+        op = self.op_map.get(self.value, self.value)
+        return BinaryOperator(op,
                               left,
                               parser.expression(self.lbp_map[self.value]))
 
     def nud(self, parser, value):
         if value == '*':
             return Splat(parser.expression())
-        if value == '-':
+        elif value == '-':
             return Call('-', [parser.expression()])
 
 
@@ -842,6 +869,12 @@ class Name(Token):
             self.name = 'ELIF'
         elif self.value == 'else':
             self.name = 'ELSE'
+        elif self.value == 'try':
+            self.name = 'TRY'
+        elif self.value == 'except':
+            self.name = 'EXCEPT'
+        elif self.value == 'FINALLY':
+            self.name = 'FINALLY'
         elif self.value == 'and':
             self.lbp = 20
         elif self.value == 'not':
@@ -849,9 +882,45 @@ class Name(Token):
         return True
 
     def nud(self, parser, value):
-        if value == 'load':
+        if value == 'try':
+            parser.match(':')
+            parser.ns.push_new()
+            try_body = parser.expression()
+            parser.ns.pop()
+            while parser.maybe_match('EXCEPT'):
+                parser.ns.push_new()
+                exc_class = parser.maybe_match('NAME')
+                if parser.maybe_match('as'):
+                    exc_name = parser.expression(80)
+                parser.match(':')
+                body = parser.expression()
+                parser.ns.pop()
+            if parser.maybe_match('finally'):
+                parser.ns.push_new()
+                parser.match(':')
+                body = parser.expression()
+                parser.ns.pop()
+        elif value == 'from':
+            module = parser.expression(80)
+            import_ = parser.match('NAME')
+            assert import_.value == 'import'
+            seq = parser.expression()
+            if seq.kind in ('symbol', 'cl_literal'):
+                values = [seq]
+            else:
+                values = seq.values
+            parser.match('NEWLINE')
+            return Import(module, values)
+        elif value == 'export':
+            seq = parser.expression()
+            if seq.kind in ('symbol', 'cl_literal'):
+                values = [seq]
+            else:
+                values = seq.values
+            return Export(values)
+        elif value == 'load':
             return ''
-        if value == 'assert':
+        elif value == 'assert':
             return Call('ASSERT', [parser.expression()])
         elif value == 'True':
             return LispLiteral('t')
@@ -896,7 +965,11 @@ class Name(Token):
         elif value == 'None':
             return Nil()
         elif value == 'return':
-            return Return(parser.expression(5), parser.ns.return_name)
+            if parser.maybe_match('NEWLINE'):
+                return_expr = Nil()
+            else:
+                return_expr = parser.expression(5)
+            return Return(return_expr, parser.ns.return_name)
         elif value == 'class':
             name = parser.expression(80)
             cc = CLOSClass(name)
@@ -959,7 +1032,7 @@ class Name(Token):
             return UsePackage(right)
         elif value == 'not':
             right = parser.expression(50)
-            return Call('not', [right])
+            return Call('NOT', [right])
         else:
             if value == value.upper():
                 value = value.replace('_', '-')
@@ -1056,6 +1129,8 @@ class NumberToken(Token):
     name = 'NUMBER'
 
     def nud(self, parser, value):
+        if value.startswith('0x'):
+            value = '#' + value[1:]
         return Number(value)
 
 
@@ -1085,16 +1160,15 @@ class StringToken(EscapingToken):
     start_chars = {'"', "'"}
     name = 'STRING'
 
-    @property
-    def multiline(self):
-        if len(self.value) < 3:
+    def multiline(self, c):
+        if c in self.start_chars and len(self.value) < 3:
             return True
         elif self.value.startswith(self.value[0] * 3):
             return True
         return False
 
     def match(self, c):
-        if self.multiline:
+        if self.multiline(c):
             min_len, escape_pos, slice_size = (6, -4, 3)
         else:
             min_len, escape_pos, slice_size = (2, -2, 1)
@@ -1108,8 +1182,8 @@ class StringToken(EscapingToken):
             return False
 
     def nud(self, parser, value):
+        lisp_string = value[0] == '"'
         value = value[1:-1]
-        lisp_string = self.value[0] == '"'
         return String(value, lisp_string)
 
 

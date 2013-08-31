@@ -1,4 +1,4 @@
-(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "assign.py")(make-package "assign.py" :use '("COMMON-LISP"))(use-package "builtins")))
+(eval-when (:compile-toplevel :load-toplevel :execute)(unless (find-package "assign.py")(make-package "assign.py")(use-package "builtins")))
 ;(proclaim '(optimize (space 0) (safety 0) (speed 3)))
 (DEFPARAMETER |x| 1)
 (DEFPARAMETER |y| 2)

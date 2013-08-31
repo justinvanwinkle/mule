@@ -8,4 +8,13 @@ assert y[1] == 2
 x = (1, 2, 3, 4, 5)
 y = (1, 2.0, 3, 4, 5.0)
 
+d = dict()
+d[x] = 1
+d[y] = 2
+
+assert x == y
 assert hash(x) == hash(y)
+assert d[x] == 2
+
+#PRINT(d[x])
+#PRINT(d[y])

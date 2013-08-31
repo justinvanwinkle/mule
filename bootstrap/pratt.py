@@ -100,7 +100,9 @@ class PrattParser(object):
             raise SyntaxError('Expected %s, Got %s' % (
                 token_name, self.token_handler.name))
         self.log('MATCHED: %s', token_name)
+        token = self.token_handler
         self.feed()
+        return token
 
     def watch(self, token_name, consume=True):
         if token_name == self.token_handler.name:
