@@ -807,8 +807,7 @@ class BinOpToken(EnumeratedToken):
         '>': 40,
         '>>': 0,
         '^': 45,
-        '|': 0,
-        '~': 0}
+        '|': 0}
 
     op_map = {
         '^': 'LOGXOR',
@@ -1293,7 +1292,7 @@ class EscapingToken(Token):
 
 @register
 class StringToken(EscapingToken):
-    start_chars = {'"', "'"}
+    start_chars = {'"', "'", '`'}
     name = 'STRING'
 
     def multiline(self, c):
@@ -1318,8 +1317,28 @@ class StringToken(EscapingToken):
             return False
 
     def nud(self, parser, value):
-        value = value[1:-1]
+        start = value[0]
+        if self.multiline(None):
+            value = value[3:-3]
+        else:
+            value = value[1:-1]
+        if start == '`':
+            return LispLiteral(value)
         return String(value)
+
+
+@register
+class Tilde(EscapingToken):
+    start_chars = {'~'}
+    name = 'TILDE'
+
+    def match(self, c):
+        if self.value.endswith('\n~~'):
+            return False
+        return True
+
+    def nud(self, parser, value):
+        return LispLiteral(''.join(value.splitlines()[1:-1]))
 
 
 @register
@@ -1329,16 +1348,6 @@ class Backslash(Token):
 
     def nud(self, parser, value):
         return parser.expression()
-
-
-@register
-class Backtick(StringToken):
-    name = '`'
-    start_chars = {'`'}
-
-    def nud(self, parser, value):
-        value = value[1:-1]
-        return LispLiteral(value)
 
 
 @register

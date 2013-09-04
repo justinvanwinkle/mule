@@ -73,9 +73,10 @@ from CL_USER import __hash__
 
 export AND, OR
 
-def muleassert(assertion):
-    if assertion != True:
-        raise AssertionError
+~cl
+(cl:defmacro |muleassert| (form)
+ `(cl:assert ,form nil '|AssertionError|))
+~~
 
 def hash(a):
     return a.__hash__()

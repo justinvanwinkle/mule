@@ -1,3 +1,10 @@
+(let ((quicklisp-init (merge-pathnames ".quicklisp/setup.lisp"
+                                       (user-homedir-pathname))))
+  (when (probe-file quicklisp-init)
+    (load quicklisp-init)))
+
+(ql:quickload "chanl")
+
 (load "build/lib/builtins/builtins.lisp")
 (load "build/lib/builtins/mload.lisp")
 (load "build/lib/builtins/exceptions.lisp")

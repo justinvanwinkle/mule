@@ -71,8 +71,7 @@
 (CL:IMPORT '(|CL-USER|:|__eq__|))
 (CL:IMPORT '(|CL-USER|:|__hash__|))
 (CL:EXPORT '(|AND| |OR|))
-(CL:DEFUN |muleassert| (|assertion|  ) 
-(COND ((CL:NOT (|__eq__| |assertion| t)) (CL:ERROR '|AssertionError| ))))
+(cl:defmacro |muleassert| (form) `(cl:assert ,form nil '|AssertionError|))
 (CL:DEFUN |hash| (|a|  ) 
 (CL:RETURN-FROM |hash| (|__hash__| |a| )))
 
