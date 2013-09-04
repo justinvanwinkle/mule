@@ -1,2 +1,10 @@
 
 assert `"I WORK"` == "I WORK"
+
+x = 5
+
+~cl
+(setf |x| 3)
+~~
+
+assert x == 3

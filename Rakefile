@@ -2,6 +2,8 @@ require 'rake/clean'
 require 'rake/testtask'
 require 'thread'
 
+verbose(true)
+
 class IO
   alias_method :old_puts, :puts
 

@@ -78,7 +78,7 @@ class PrattParser(object):
         try:
             tokens = self._generate_tokens()
         except Exception:
-            raise SyntaxError()
+            raise #SyntaxError()
         tokens = self._munge_tokens(tokens)
         self._tokens = tokens
         return self._tokens

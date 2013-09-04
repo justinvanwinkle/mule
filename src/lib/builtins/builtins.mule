@@ -1,6 +1,7 @@
 # `(defgeneric __hash__ (a))`
 # `(defgeneric __eq__ (a b))`
 
+
 defmethod __hash__(a):
     return SXHASH(a)
 
@@ -72,6 +73,13 @@ from CL_USER import __hash__
 
 
 export AND, OR
+```
+(cl:defmacro with-locals ((&rest names) &body body)
+  (if (null names)
+      (first body)
+      `(symbol-macrolet ,(loop for n in names
+                            collect `(,n (error '|NameError|))) ,@body)))
+```
 
 ~cl
 (cl:defmacro |muleassert| (form)

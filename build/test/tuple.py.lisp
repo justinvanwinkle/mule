@@ -1,5 +1,5 @@
 (CL:EVAL-WHEN (:compile-toplevel :load-toplevel :execute)(CL:UNLESS (CL:FIND-PACKAGE "tuple.py")(make-package "tuple.py")(CL:USE-PACKAGE "builtins")))
-(proclaim '(optimize (space 0) (safety 0) (speed 3)))
+;(proclaim '(optimize (speed 3)))
 (CL:DEFPARAMETER |x| (|tuple| '(1 2 3)))
 (|muleassert| (|__eq__| (|getitem| |x| 0) 1) )
 (CL:DEFPARAMETER |y| (|tuple| '(1 2 3)))
@@ -15,6 +15,8 @@
 #|PRINT(d[x])
 |#
 (CL:LOOP FOR S BEING EACH PRESENT-SYMBOL IN CL:*PACKAGE*
-   WHEN (OR (CL:FBOUNDP S) (CL:BOUNDP S) (CL:FIND-CLASS S NIL))
+   WHEN (OR (CL:FBOUNDP S)
+            (CL:BOUNDP S)
+            (CL:FIND-CLASS S NIL))
    DO (CL:EXPORT S))
 

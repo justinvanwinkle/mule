@@ -1,5 +1,5 @@
 (CL:EVAL-WHEN (:compile-toplevel :load-toplevel :execute)(CL:UNLESS (CL:FIND-PACKAGE "exceptions")(make-package "exceptions")(CL:USE-PACKAGE "builtins")))
-(proclaim '(optimize (space 0) (safety 0) (speed 3)))
+;(proclaim '(optimize (speed 3)))
 (|IN-PACKAGE| "builtins" )
 (|SETF| (|FIND-CLASS| '|Exception| ) (|FIND-CLASS| 'cl:condition ) )
 (|SETF| (|FIND-CLASS| '|ArithmeticError| ) (|FIND-CLASS| 'cl:arithmetic-error ) )
@@ -26,7 +26,7 @@
 (|SETF| (|FIND-CLASS| '|Exception| ) (|FIND-CLASS| 'cl:stream-error ) )
 (|SETF| (|FIND-CLASS| '|Exception| ) (|FIND-CLASS| 'cl:style-warning ) )
 (|SETF| (|FIND-CLASS| '|Exception| ) (|FIND-CLASS| 'cl:unbound-slot ) )
-(|SETF| (|FIND-CLASS| '|Exception| ) (|FIND-CLASS| 'cl:unbound-variable ) )
+(|SETF| (|FIND-CLASS| '|NameError| ) (|FIND-CLASS| 'cl:unbound-variable ) )
 (|SETF| (|FIND-CLASS| '|Exception| ) (|FIND-CLASS| 'cl:undefined-function ) )
 (|SETF| (|FIND-CLASS| '|Exception| ) (|FIND-CLASS| 'cl:warning ) )
 (CL:DEFINE-CONDITION |AssertionError| (CL:SIMPLE-ERROR) NIL)
@@ -100,6 +100,8 @@
 #| Warning
 |#
 (CL:LOOP FOR S BEING EACH PRESENT-SYMBOL IN CL:*PACKAGE*
-   WHEN (OR (CL:FBOUNDP S) (CL:BOUNDP S) (CL:FIND-CLASS S NIL))
+   WHEN (OR (CL:FBOUNDP S)
+            (CL:BOUNDP S)
+            (CL:FIND-CLASS S NIL))
    DO (CL:EXPORT S))
 

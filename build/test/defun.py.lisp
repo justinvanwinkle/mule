@@ -1,5 +1,5 @@
 (CL:EVAL-WHEN (:compile-toplevel :load-toplevel :execute)(CL:UNLESS (CL:FIND-PACKAGE "defun.py")(make-package "defun.py")(CL:USE-PACKAGE "builtins")))
-(proclaim '(optimize (space 0) (safety 0) (speed 3)))
+;(proclaim '(optimize (speed 3)))
 (CL:DEFUN |test_no_return| (|x|  ) 
 (CL:RETURN-FROM |test_no_return| NIL))
 (CL:DEFUN |test_implicit_return| (|x|  ) 
@@ -27,6 +27,8 @@ NIL)
 (|muleassert| (|__eq__| (|test3| 1 ) 57) )
 (|muleassert| (|__eq__| (|test_outer| 5 ) 7) )
 (CL:LOOP FOR S BEING EACH PRESENT-SYMBOL IN CL:*PACKAGE*
-   WHEN (OR (CL:FBOUNDP S) (CL:BOUNDP S) (CL:FIND-CLASS S NIL))
+   WHEN (OR (CL:FBOUNDP S)
+            (CL:BOUNDP S)
+            (CL:FIND-CLASS S NIL))
    DO (CL:EXPORT S))
 

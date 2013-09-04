@@ -1,18 +1,21 @@
+x = 1
+
 def simple_loop():
+    y = 0
     for x in (1, 2, 3):
-        print(x)
-        print(x + x)
+        y = y + x
+    return y
 
 
-# def range_loop():
-#     for x in range(0, 10):
-#         print(x)
-#         print(x + x)
+def range_loop():
+    y = 0
+    for x in range(0, 10):
+        y = y + x
 
-#     for x in range(10):
-#         print(x)
-#         print(x * x)
+    for x in range(10):
+        y = y + x
 
+    return y
 
-# simple_loop()
-# range_loop()
+assert simple_loop() == 6
+assert range_loop() == 90

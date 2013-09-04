@@ -1,5 +1,5 @@
 (CL:EVAL-WHEN (:compile-toplevel :load-toplevel :execute)(CL:UNLESS (CL:FIND-PACKAGE "list.py")(make-package "list.py")(CL:USE-PACKAGE "builtins")))
-(proclaim '(optimize (space 0) (safety 0) (speed 3)))
+;(proclaim '(optimize (speed 3)))
 (CL:DEFPARAMETER |y| (|list| '(9)))
 (CL:DEFPARAMETER |z| (|list| '(1 2 3)))
 (CL:DEFUN |foo| (  ) 
@@ -21,6 +21,8 @@
 (|muleassert| (|__eq__| (|list| '(1 2 3)) (|list| '(1 2.0 3.0))) )
 (|muleassert| (CL:NOT (|__eq__| (|list| '(1 2 3.1)) (|list| '(1 2 3)))) )
 (CL:LOOP FOR S BEING EACH PRESENT-SYMBOL IN CL:*PACKAGE*
-   WHEN (OR (CL:FBOUNDP S) (CL:BOUNDP S) (CL:FIND-CLASS S NIL))
+   WHEN (OR (CL:FBOUNDP S)
+            (CL:BOUNDP S)
+            (CL:FIND-CLASS S NIL))
    DO (CL:EXPORT S))
 

@@ -1,8 +1,7 @@
 x = 1
 
 
-def test(y):
-    x = 2
+def test1(y):
     return x + y
 
 
@@ -18,5 +17,14 @@ def test3():
 
     return y
 
+def test4():
+    y = 0
+    for x in range(10):
+        y = x
+    return y
 
+
+assert test1(4) == 5
+assert test2(55) == 3
 assert test3() == 9
+assert test4() == 9

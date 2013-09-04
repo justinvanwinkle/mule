@@ -5,12 +5,14 @@ all_ops = []
 
 
 lisp_prefix = """
-(proclaim '(optimize (space 0) (safety 0) (speed 3)))
+;(proclaim '(optimize (speed 3)))
 """
 
 lisp_postfix = """
 (CL:LOOP FOR S BEING EACH PRESENT-SYMBOL IN CL:*PACKAGE*
-   WHEN (OR (CL:FBOUNDP S) (CL:BOUNDP S) (CL:FIND-CLASS S NIL))
+   WHEN (OR (CL:FBOUNDP S)
+            (CL:BOUNDP S)
+            (CL:FIND-CLASS S NIL))
    DO (CL:EXPORT S))
 """
 
@@ -281,10 +283,11 @@ class Defun(Lisp):
             ' '.join(forms), self.cl_kw_args(), splat)
 
     def cl(self):
-        return '(CL:DEFUN %s (%s) \n%s)' % (
+        defun = '(CL:DEFUN %s (%s) \n%s)' % (
             self.name,
             self.cl_args(),
             self.body.cl(implicit_body=True))
+        return defun
 
 
 class FletLambda(Defun):
@@ -1087,12 +1090,12 @@ class Name(Token):
         elif value == 'pass':
             return Nil()
         elif value == 'while':
-            parser.ns.push_new()
+            #parser.ns.push_new()
             test = parser.expression(10)
             parser.match(':')
             parser.match('NEWLINE')
             body = parser.expression()
-            parser.ns.pop()
+            #parser.ns.pop()
             return WhileLoop(test, body)
         elif value == 'None':
             return Nil()
@@ -1155,12 +1158,12 @@ class Name(Token):
             return flet_node
         elif value == 'for':
             in_node = parser.expression(20)
-            parser.ns.push_new()
+            #parser.ns.push_new()
             parser.ns.add(in_node.thing.name)
             parser.match(':')
             parser.match('NEWLINE')
             body = parser.expression(10)
-            parser.ns.pop()
+            #parser.ns.pop()
             return ForLoop(in_node, body)
         elif value == 'use':
             right = parser.expression(5)
@@ -1285,6 +1288,19 @@ class Dot(Token):
         return AttrLookup(left, right)
 
 
+@register
+class At(EnumeratedToken):
+    lbp_map = {
+        '@': 0}
+    name = '@'
+
+    def nud(self, parser, value):
+        decorator_call = parser.expression()
+        parser.match('NEWLINE')
+        wrapped = parser.expression()
+        return LispBody([wrapped])
+
+
 class EscapingToken(Token):
     def __init__(self, c='', line=None, column=None):
         super(EscapingToken, self).__init__(c, line, column)
@@ -1292,10 +1308,10 @@ class EscapingToken(Token):
 
 @register
 class StringToken(EscapingToken):
-    start_chars = {'"', "'", '`'}
+    start_chars = {'"', "'", "`"}
     name = 'STRING'
 
-    def multiline(self, c):
+    def multiline(self, c=None):
         if c in self.start_chars and len(self.value) < 3:
             return True
         elif self.value.startswith(self.value[0] * 3):
@@ -1317,12 +1333,11 @@ class StringToken(EscapingToken):
             return False
 
     def nud(self, parser, value):
-        start = value[0]
-        if self.multiline(None):
-            value = value[3:-3]
-        else:
-            value = value[1:-1]
-        if start == '`':
+        slice_off = 1
+        if self.multiline():
+            slice_off = 3
+        value = value[slice_off:-slice_off]
+        if self.value[0] == '`':
             return LispLiteral(value)
         return String(value)
 
@@ -1339,15 +1354,6 @@ class Tilde(EscapingToken):
 
     def nud(self, parser, value):
         return LispLiteral(''.join(value.splitlines()[1:-1]))
-
-
-@register
-class Backslash(Token):
-    name = '\\'
-    start_chars = {'\\'}
-
-    def nud(self, parser, value):
-        return parser.expression()
 
 
 @register

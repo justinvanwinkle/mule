@@ -1,5 +1,5 @@
 (CL:EVAL-WHEN (:compile-toplevel :load-toplevel :execute)(CL:UNLESS (CL:FIND-PACKAGE "builtins")(make-package "builtins")(CL:USE-PACKAGE "builtins")))
-(proclaim '(optimize (space 0) (safety 0) (speed 3)))
+;(proclaim '(optimize (speed 3)))
 #| `(defgeneric __hash__ (a))`
 |#
 #| `(defgeneric __eq__ (a b))`
@@ -71,6 +71,13 @@
 (CL:IMPORT '(|CL-USER|:|__eq__|))
 (CL:IMPORT '(|CL-USER|:|__hash__|))
 (CL:EXPORT '(|AND| |OR|))
+
+(cl:defmacro with-locals ((&rest names) &body body)
+  (if (null names)
+      (first body)
+      `(symbol-macrolet ,(loop for n in names
+                            collect `(,n (error '|NameError|))) ,@body)))
+
 (cl:defmacro |muleassert| (form) `(cl:assert ,form nil '|AssertionError|))
 (CL:DEFUN |hash| (|a|  ) 
 (CL:RETURN-FROM |hash| (|__hash__| |a| )))
@@ -190,6 +197,8 @@
 (CL:DEFMETHOD |__cmp__| ((|s| |STRING|) (|other| |STRING|)  ) 
 (CL:RETURN-FROM |__cmp__| (STRING< |s| |other| )))
 (CL:LOOP FOR S BEING EACH PRESENT-SYMBOL IN CL:*PACKAGE*
-   WHEN (OR (CL:FBOUNDP S) (CL:BOUNDP S) (CL:FIND-CLASS S NIL))
+   WHEN (OR (CL:FBOUNDP S)
+            (CL:BOUNDP S)
+            (CL:FIND-CLASS S NIL))
    DO (CL:EXPORT S))
 

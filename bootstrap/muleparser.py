@@ -22,6 +22,10 @@ class Namespace(object):
     def add(self, name):
         self.s.add(name)
 
+    @property
+    def names(self):
+        return self.s
+
     def __contains__(self, name):
         return name in self.s
 
@@ -42,6 +46,10 @@ class NamespaceStack(object):
             return self.stack[-1]
         else:
             return None
+
+    @property
+    def names(self):
+        return self.cns.names
 
     @property
     def top_level(self):
@@ -214,8 +222,13 @@ if __name__ == '__main__':
     fn = splitext(split(args.mule_fn)[1])[0]
     with open(args.mule_fn) as f:
         code = f.read()
-
-    mule_parser = MuleParser(code, all_ops, filename=fn)
+    try:
+        mule_parser = MuleParser(code, all_ops, filename=fn)
+    except Exception:
+        import tracebackturbo
+        import sys
+        print(tracebackturbo.format_exc(with_vars=True))
+        sys.exit(1)
     try:
         if args.debug:
             mule_parser.debug = True
@@ -229,6 +242,9 @@ if __name__ == '__main__':
         if args.lisp_fn:
             f.close()
     except SyntaxError:
+        import tracebackturbo
+        import sys
+        print(tracebackturbo.format_exc(with_vars=True))
         print('on token %s' % mule_parser.token_handler)
         line_no = mule_parser.token_handler.line
         column_no = mule_parser.token_handler.column

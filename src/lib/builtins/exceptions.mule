@@ -28,7 +28,7 @@ SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:storage-condition))
 SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:stream-error))
 SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:style-warning))
 SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:unbound-slot))
-SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:unbound-variable))
+SETF(FIND_CLASS(:'|NameError|), FIND_CLASS(:'cl:unbound-variable))
 SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:undefined-function))
 
 SETF(FIND_CLASS(:'|Exception|), FIND_CLASS(:'cl:warning))

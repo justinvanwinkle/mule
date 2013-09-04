@@ -1,0 +1,14 @@
+
+
+def add1(fun):
+    def inner():
+        return fun() + 1
+    return :#'inner
+
+
+@add1
+def f():
+    return 1
+
+
+assert f() == 2
