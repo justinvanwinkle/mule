@@ -1,4 +1,4 @@
 #!/usr/bin/env zsh
 
-echo src/test/**/*.py.mule | xargs -t -n1 -P5 python
-echo build/test/**/*.lisp | xargs -t -n1 -P5 ./mule
+parallel -t -n1 python ::: src/test/**/*.py.mule
+parallel -t -n1 ./mule ::: build/test/**/*.lisp
