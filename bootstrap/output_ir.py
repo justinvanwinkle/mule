@@ -2,6 +2,8 @@ import ast as _ast
 from sys import stdout
 from sys import stderr
 
+import llvmlite.ir as ll
+
 from namespace import LinkedNamespace
 
 
@@ -101,6 +103,11 @@ class Expression(Compiler):
 
 class Module(Compiler):
     'Module(stmt* body)'
+    def _init(self):
+        self.module = ll.Module()
+
+    def layout_nodes(self):
+        pass
 
     def _compile(self):
         for stmt in self.body:

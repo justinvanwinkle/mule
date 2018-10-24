@@ -1,53 +1,28 @@
-#include <iostream>
-
+//#include <iostream>
+#include <atomic>
 
 class PyObj {
-
-};
-
-
-union py_number {
-    long n;
-    double d;
-};
-
-template <class T>
-class PyNumber : public PyObj {
-protected:
+    std::atomic<long> refcount {0};
 
 public:
-    T value;
-
-    PyNumber(T val=0) {
-        value = val;
+    long incr() {
+        return ++refcount;
     }
 
-    virtual PyNumber<double> __add__(PyNumber<double>* other) {
-        return PyNumber<double>(other->value + value);
+    long decr() {
+        return --refcount;
     }
-
-    virtual PyNumber<T> __add__(PyNumber<long>* other) {
-        return PyNumber<T>(other->value + value);
-    }
-
-    virtual ~PyNumber() {}
-
 };
 
+extern "C" {
+    void Py_DECR(PyObj* py_obj) {
+        long count = py_obj->decr();
+        if (count == 0) {
+            delete py_obj;
+        }
+    }
 
-int main() {
-
-    auto p1 = new PyNumber<double>(3.3);
-    auto p2 = new PyNumber<long>(4);
-
-    std::cout << p1->__add__(p2).value << std::endl;
-
-
-    delete p1;
-    delete p2;
-}
-
-
-PyNumber<>* add(PyNumber* a, PyNumber* b) {
-    return a->__add__(b);
+    void Py_INCR(PyObj* py_obj) {
+        py_obj->incr();
+    }
 }

@@ -206,6 +206,7 @@ class MuleParser(PrattParser):
 
 if __name__ == '__main__':
     import argparse
+    import sys
     from os.path import splitext
     from os.path import split
 
@@ -224,10 +225,8 @@ if __name__ == '__main__':
         code = f.read()
     try:
         mule_parser = MuleParser(code, all_ops, filename=fn)
-    except Exception:
-        import tracebackturbo
-        import sys
-        print(tracebackturbo.format_exc(with_vars=True))
+    except Exception as e:
+        print(e)
         sys.exit(1)
     try:
         if args.debug:
@@ -252,8 +251,6 @@ if __name__ == '__main__':
         print('line %s column %s\n' % (line_no, column_no))
         print('\n'.join(lines))
         print(' ' * (column_no - 1) + '^^^')
-    except Exception:
-        import tracebackturbo
-        import sys
-        print(tracebackturbo.format_exc(with_vars=True))
+    except Exception as e:
+        print(e)
         sys.exit(1)
