@@ -1,0 +1,19 @@
+[project]
+name = "mule"
+version = "0.1.0"
+description = "A Python compiler with an LLVM backend"
+requires-python = ">=3.14"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8.4", "ruff>=0.14"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py314"
