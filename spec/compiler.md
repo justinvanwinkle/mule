@@ -1,36 +1,31 @@
-# Compiler scope and open decisions
+# Compiler design reference
 
-Status: current implementation boundary and future work, not an approved backend
-design.
+Status: documentation of SBCL's compiler and the changes required to compile
+Python. The active Mule implementation currently ends at parsing into its own AST.
 
-## Implemented today
+Mule is to follow SBCL's compiler architecture, implemented in Python 3.14,
+compiling Python source, with LLVM as its only backend. The reference is SBCL's
+compiler historically called **Python**; that compiler compiles Common Lisp and
+is unrelated to the Python programming language.
 
-The active `mule/` package performs lexical scanning and parsing into Mule AST
-objects. It exposes parsing as a Python API. `pyproject.toml` describes the project
-as a Python compiler with an LLVM backend, but the active package contains no
-semantic analysis, intermediate representation, LLVM emission, runtime, or
-executable compiler entry point.
+## Documents
 
-`old/` contains earlier compiler/runtime experiments and generated outputs. Their
-presence does not establish support in the active implementation or commit the
-new implementation to their architecture.
+1. [SBCL compiler](sbcl-compiler.md): the existing compiler's conversion, IR1,
+   inference, optimization, environments, IR2, native backend, and compiled output.
+2. [Changes for Python and LLVM](python-changes.md): what carries over, what Lisp
+   facilities do not apply, and what Python semantics require.
+3. [CPython C extension interface](cpython-interface.md): compatibility requirements
+   for objects, ownership, calls, exceptions, loading, and extension builds.
 
-## Decisions still required
+The SBCL document describes existing behavior, with references pinned to the
+inspected checkout. The adaptation documents describe requirements for Mule and
+mark unresolved choices explicitly. They do not choose a runtime library, LLVM
+binding, compilation mode, or artifact format without further discussion.
 
-Before implementing subsequent stages, specify:
+## Existing frontend boundary
 
-- Semantic validation: scope, binding, control-flow context, and pattern capture
-  rules, including how failures report original source positions.
-- Language/runtime compatibility: which Python behaviors and standard-library
-  facilities are required, and which differences are intentional.
-- Type and object model: how values, calls, exceptions, and object lifetimes are
-  represented and handled.
-- Lowering and LLVM integration: intermediate representation, backend dependency,
-  supported targets, and compilation/linking boundaries.
-- User interface: compilation inputs/outputs, executable or library usage, and
-  diagnostic behavior.
-- Verification: reference programs and observable results for compiler/runtime
-  correctness, beyond successful parsing.
-
-The current parser's separation of syntax and semantic validation is an existing
-boundary. It is not a completed specification of those later stages.
+The handwritten lexer and Pratt parser produce `mule.ast` objects without the
+host Python parser or its `ast` module. See [parser](parser.md), [AST](ast.md),
+and [lexing](lexing.md). Semantic validation, compiler IRs, optimization, LLVM
+emission, runtime support, and a C extension interface are not implemented yet.
+Earlier experiments under `old/` do not define the new compiler's contracts.
