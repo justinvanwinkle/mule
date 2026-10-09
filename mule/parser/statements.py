@@ -385,9 +385,7 @@ class StatementParserMixin:
             node.finally_body = self.suite()
         if not node.handlers and not node.finally_body:
             self.error("try requires except or finally")
-        final_suite = (
-            node.finally_body or node.else_body or node.handlers[-1].body
-        )
+        final_suite = node.finally_body or node.else_body or node.handlers[-1].body
         return self.finish(node, start, end=final_suite[-1].span.end)
 
     def decorated_definition(self):

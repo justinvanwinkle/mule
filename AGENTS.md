@@ -1,0 +1,103 @@
+# Mule
+
+Mule is a Python compiler project with an LLVM backend as its stated goal.
+The current implementation is a handwritten Python parser and a custom syntax
+tree. The active package does not yet provide compilation, an LLVM backend,
+or a command-line runner.
+
+This file is both the project overview and repository guidance for coding agents.
+`README.md` is a relative symlink to `AGENTS.md`; edit this file, not a separate
+README copy.
+
+## Setup and use
+
+Use Python 3.14 and `uv`. `.python-version` selects 3.14; `pyproject.toml`
+requires Python >=3.14. Runtime dependencies are currently empty. Development
+dependencies are pytest and Ruff, resolved in `uv.lock`.
+
+```sh
+uv sync
+uv run pytest
+uv run ruff check mule test
+uv run ruff format --check mule test
+```
+
+The project uses `tool.uv.package = false`: run from the repository rather than
+assuming an installed distribution or console entry point.
+
+```python
+from mule.parser import parse
+
+module = parse("answer = 40 + 2\n", filename="example.py")
+expression = parse("40 + 2", mode="eval")
+```
+
+Parsing returns Mule AST objects; it does not execute the source.
+
+## Repository map
+
+- `mule/ast.py`: syntax node dataclasses, operator enums, source coordinates,
+  and tree traversal.
+- `mule/parser/__init__.py`: public `parse` export.
+- `mule/parser/core.py`: entry points, token cursor, diagnostics, identifier
+  normalization, and shared parser state.
+- `mule/parser/lexer.py`: handwritten scanner, indentation, tokens, and lexical
+  source positions.
+- `mule/parser/expressions.py`: expression grammar and precedence.
+- `mule/parser/statements.py`: statements, suites, definitions, and type parameters.
+- `mule/parser/patterns.py`: structural pattern matching grammar.
+- `mule/parser/strings.py`: literal decoding and formatted/template interpolation.
+- `test/mule/parser/`: parser and AST tests, fixtures, and AST query helpers.
+- `spec/`: initial specifications and explicit boundaries of implemented behavior.
+- `old/`: earlier implementations, including Python bootstrap code, Common Lisp,
+  LLVM experiments, a C++ runtime, and generated artifacts. Treat these as
+  historical reference, not the active build or a specification for new behavior.
+
+## Contracts to preserve
+
+- The parser builds `mule.ast` nodes directly, independently of the host Python
+  parser. Do not substitute `ast.parse`, `compile`, or host-AST conversion for
+  Mule's parser.
+- Python 3.14 grammar is the current syntax reference. Coverage includes modern
+  syntax, but the existing suite does not establish complete CPython parity.
+- `parse` supports `exec`, `eval`, and `single`; preserve their distinct root
+  types and input boundaries. See `spec/parser.md`.
+- Lines start at one, columns at zero, and columns count Unicode characters,
+  not UTF-8 bytes. Spans exclude the end position. See `spec/ast.md`.
+- Assignment targets and values share expression node types. Target grammar is
+  checked by the parser; scope and other semantic compiler validation are a
+  separate responsibility.
+- Source errors carry the supplied filename and source location. Do not recover
+  from invalid syntax by returning a partial or empty tree.
+- Keep shared token state in `Parser`; grammar mixins operate on that state.
+  Interpolation fragments must retain coordinates relative to the original source.
+
+## Change and verification workflow
+
+Read the relevant specification, implementation, and nearby tests before changing
+a contract. Keep changes in the active package unless the task explicitly concerns
+`old/`. Preserve unrelated worktree edits.
+
+Use pytest-native functions and parameterization. Existing tests construct
+expected Mule trees by hand; use `test/mule/parser/ast_query.py` for structural
+comparisons and targeted node/span queries. Do not make the parser under test
+generate its own expected tree. Test valid syntax and relevant rejection
+boundaries, including source positions when the change affects them.
+
+Run focused tests while developing, then the full suite for parser or AST changes:
+
+```sh
+uv run pytest test/mule/parser/test_entry_points.py
+uv run pytest
+```
+
+Check changed Python files with Ruff; format only intended files. Documentation
+changes do not require rerunning parser tests unless behavior also changes.
+Update affected specifications when changing behavior. Separate implemented
+contracts from proposals, and do not describe future compilation stages as available.
+
+## Specifications
+
+Start with `spec/index.md`. The initial files describe the current frontend and
+record open decisions for future compiler stages; they are not a complete language
+specification or a commitment to a backend design.
