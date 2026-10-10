@@ -6,6 +6,52 @@ and pass. General unittest support remains incomplete.
 
 ## SBCL correspondence and required adaptations
 
+### Initial sys module
+
+`sys` is compiled from `stdlib/sys.py`; the compiler-private `_mule_os` module is
+compiled from `stdlib/_mule_os.py`. These two exact module identifiers resolve to
+the repository sources before source-local files or packages, matching Python's
+built-in module precedence. Ordinary modules retain their existing resolution
+order. Only `_mule_os` receives bindings for the private process primitives;
+those identifiers are not application builtins.
+
+Generated native `main(argc, argv)` publishes borrowed, process-lifetime argument
+pointers before any compiled module initialization. Rust exposes the argument
+count and indexed access, producing an owned text value for an argument. Compiled
+Python constructs the mutable `sys.argv` list. The module cache owns it through
+normal module globals: repeated imports share mutations and reassignment, and
+each executable invocation constructs its own state. `argv[0]` is the native
+executable invocation string, not a canonical path or the compiler's source path.
+An empty native argument vector produces an empty list.
+
+SBCL `src/runtime/runtime.c`, `main`, publishes `options.argv` as `posix_argv`
+before entering Lisp. `src/code/common-os.lisp`, `os-cold-init-or-reinit`, uses
+foreign pointer access to construct the language-level `*posix-argv*` list. Mule
+keeps that boundary: the OS storage is native, while the list and module state
+are compiled Python. Python requires a mutable list in a module rather than a
+Lisp special variable. LLVM's executable entry receives the platform argc/argv
+ABI directly because Mule has no separate native launcher processing options.
+
+Initial decoding is strictly UTF-8. Invalid sequences fail with the existing
+native `UnicodeDecodeError` kind/message mechanism; no bytes are replaced or
+ignored. Unlike Python's POSIX filesystem decoding, this does not yet implement
+surrogateescape or locale-derived encoding, and the exception does not yet have
+Python's structured encoding/object/start/end/reason payload. These are explicit
+compatibility gaps, not complete argv decoding parity. Validation is a low-level
+text-storage boundary check; list construction stays in Python. Supporting
+surrogateescape needs consistent surrogate-capable text and codec behavior rather
+than publishing invalid text storage that existing Unicode operations cannot use.
+Strict validation has linear cost in argument byte length and copies each
+argument once into its owned language value during module initialization.
+
+Only `argv` is available in this increment. Standard streams, descriptor access,
+buffering, text codecs, and `detach` remain work to enable the existing compiled
+Python `_pyio` implementation. This increment does not add a second stream
+hierarchy or extend Rust with stream algorithms, and does not establish that
+the unmodified Benchmarks Game programs compile or execute.
+
+### Compiled initialization and imports
+
 SBCL `src/compiler/main.lisp`, `sub-compile-file`, processes top-level forms
 through IR1 and emits compiled functions and load-time initialization. Its
 `src/code/load.lisp`, `load-as-fasl` and `fop-funcall*`, loads artifacts and invokes

@@ -37,20 +37,29 @@ _COMPARE = {
 
 
 def lower_module(compilation) -> ir.Module:
-    functions = [lower_lambda(lambda_) for lambda_ in compilation.lambdas]
+    functions = [
+        lower_lambda(lambda_, compilation.facts[lambda_] if compilation.facts else None)
+        for lambda_ in compilation.lambdas
+    ]
     return ir.Module(functions, compilation.entry.name)
 
 
-def lower_lambda(lambda_: Lambda) -> ir.Function:
+def lower_lambda(lambda_: Lambda, facts=None) -> ir.Function:
     component = lambda_.component
     # The return node is deleted with its block when no path returns normally.
-    return_block = lambda_.return_.block if lambda_.return_ is not None else None
-    blocks = [block for block in component.blocks() if block is not return_block]
+    # A block holding only the return node has no instructions of its own: each
+    # predecessor ends in a Return terminator instead.
+    returned = lambda_.return_
+    blocks = [
+        block
+        for block in component.blocks()
+        if not (returned is not None and block.start.next is returned)
+    ]
     lowering = _Lowering(lambda_, blocks)
     for block in blocks:
         lowering.lower_block(block)
     signature = lambda_.signature
-    return ir.Function(
+    function = ir.Function(
         lambda_.name,
         lambda_.parameters,
         tuple(var.name for var in lambda_.locals),
@@ -69,6 +78,21 @@ def lower_lambda(lambda_: Lambda) -> ir.Function:
         default_parameters=signature.default_parameters,
         binding=lambda_.binding,
     )
+    if facts is not None:
+        function.facts = lowering.named_types(facts.types)
+        function.targets = lowering.named_targets(facts.targets)
+        function.return_type = facts.return_type
+        function.variants = tuple(
+            ir.Context(
+                context.id,
+                context.parameters,
+                lowering.named_types(context.types),
+                lowering.named_targets(context.targets),
+                context.return_type,
+            )
+            for context in facts.variants
+        )
+    return function
 
 
 class _Lowering(NodeVisitor):
@@ -76,6 +100,7 @@ class _Lowering(NodeVisitor):
         self.lambda_ = lambda_
         self.labels = {block: f"b{index}" for index, block in enumerate(blocks)}
         self.names: dict[int, str] = {}
+        self.node_names: dict[object, str] = {}
         self.range_states: dict[int, int] = {}
         self.result: list[ir.Block] = []
         self.serial = 0
@@ -91,10 +116,27 @@ class _Lowering(NodeVisitor):
         name = self.names.get(id(node))
         if name is None:
             name = self.names[id(node)] = self.fresh()
+            self.node_names[node] = name
         return name
 
     def operand(self, lvar) -> str:
         return self.name(lvar.use())
+
+    def named_types(self, types) -> dict[str, object]:
+        """Facts keyed by the result names this lowering assigned."""
+        from .ctype import UNKNOWN
+
+        named = {}
+        for node, name in self.node_names.items():
+            named[name] = types.get(node, UNKNOWN)
+        return named
+
+    def named_targets(self, targets) -> dict[str, str]:
+        return {
+            self.node_names[node]: lambda_.name
+            for node, lambda_ in targets.items()
+            if node in self.node_names
+        }
 
     def state(self, range_state) -> int:
         index = self.range_states.get(id(range_state))
@@ -154,9 +196,14 @@ class _Lowering(NodeVisitor):
             if name == "%unwind":
                 return ir.Propagate()
         returned = self.lambda_.return_
-        if returned is not None and block.succ == [returned.block]:
-            result = returned.result
-            use = next(use for use in result.uses if use.block is block)
+        if returned is not None and (
+            last is returned
+            or (
+                block.succ == [returned.block]
+                and returned.block.start.next is returned
+            )
+        ):
+            use = next(use for use in returned.result.uses if use.block is block)
             return ir.Return(self.name(use))
         if len(block.succ) != 1:
             raise ValueError(f"{block!r} has no lowering for its control transfer")
@@ -192,12 +239,12 @@ class _Lowering(NodeVisitor):
                 self.operand(node.value),
                 node.contract,
                 node.location,
-                node.safety,
+                node.safety if node.type_check else 0,
             ),
         )
 
     def visit_Combination(self, node: Combination):
-        if node.kind is CallKind.FULL:
+        if node.kind in (CallKind.FULL, CallKind.GUARDED):
             info = node.info
             self.produce(
                 node,

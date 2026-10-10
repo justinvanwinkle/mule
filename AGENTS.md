@@ -189,11 +189,12 @@ uv run python -m mule examples/benchmarks-game/nbody/nbody.py \
   -o build/benchmarks-game/nbody-mule --emit-llvm build/benchmarks-game/nbody-mule.ll
 ```
 
-The current nbody attempt stops at `import sys` with
-`no compilable Python module named 'sys'`. There is no Mule timing result for
-this program yet. Once it compiles, validate the executable against the same
-upstream output before including it in comparisons. No compiler or runtime
-behavior was changed to import these examples.
+There is no validated Mule timing result for this program yet. An initial
+compiled `sys.argv` implementation is in `stdlib/sys.py`; its native startup
+boundary and remaining compatibility gaps are documented in
+`spec/compiled-modules.md`. Other compiler and standard-library prerequisites
+remain. Once a reference program compiles, validate the executable against the
+same upstream output before including it in comparisons.
 
 ## Mandatory SBCL architecture
 

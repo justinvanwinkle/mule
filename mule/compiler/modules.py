@@ -23,6 +23,11 @@ class ModuleCompiler:
         self.functions = []
 
     def path_for(self, name):
+        # Built-in implementation sources precede user modules. In particular,
+        # source-local code must not acquire the private OS primitive bindings.
+        if name in ("sys", "_mule_os"):
+            path = STDLIB / f"{name}.py"
+            return path if path.is_file() else None
         relative = Path(*name.split("."))
         parent, _, child = name.rpartition(".")
         if parent in self.modules:

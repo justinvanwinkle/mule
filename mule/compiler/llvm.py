@@ -17,10 +17,12 @@ from mule.compiler import (
     llvm_ops,
     native,
     native_protocol,
+    os_protocol,
     sequence_protocol,
 )
 from mule.compiler import ir as ir1
-from mule.compiler.analysis import UNKNOWN, Context, ValueType, analyze
+from mule.compiler.ctype import UNKNOWN, ValueType
+from mule.compiler.ir import Context
 from mule.compiler.protocols import CompiledCall
 
 _BINARY = {
@@ -167,6 +169,9 @@ declare ptr @mule_raise_pending(ptr)
 declare ptr @mule_invalid_raise()
 declare ptr @mule_install_builtin(ptr, ptr)
 declare ptr @mule_install_storage(ptr, ptr, ptr, ptr)
+declare void @mule_set_process_arguments(i32, ptr)
+declare ptr @mule_process_argument_count()
+declare ptr @mule_process_argument(ptr)
 declare i32 @mule_run(ptr)
 declare void @llvm.assume(i1)
 """
@@ -234,9 +239,11 @@ class _ModuleEmitter:
         calls, references = format_protocol.prepare(module)
         self.protocol_calls.update(calls)
         self.protocol_references.update(references)
+        calls, references = os_protocol.prepare(module)
+        self.protocol_calls.update(calls)
+        self.protocol_references.update(references)
         ir1.verify(module)
-        self.analysis = analyze(module)
-        self.native_plans = native.select(module, self.layouts, self.analysis)
+        self.native_plans = native.select(module, self.layouts)
         self.functions = {
             function.name: f"@mule.fn.{index}"
             for index, function in enumerate(module.functions)
@@ -248,7 +255,7 @@ class _ModuleEmitter:
         self.specialized = {
             (function.name, context.id): f"@mule.body.{index}.spec.{variant}"
             for index, function in enumerate(module.functions)
-            for variant, context in enumerate(self.analysis.variants[function.name])
+            for variant, context in enumerate(function.variants)
         }
         self.data: dict[bytes, str] = {}
         self.auxiliary: list[str] = []
@@ -298,7 +305,7 @@ class _ModuleEmitter:
         functions.extend(
             _FunctionEmitter(self, function, context).emit()
             for function in self.module.functions
-            for context in self.analysis.variants[function.name]
+            for context in function.variants
         )
         functions.extend(
             native.Emitter(self, plan).emit() for plan in self.native_plans.values()
@@ -338,8 +345,9 @@ class _ModuleEmitter:
                 "  ret ptr %result\n}"
             )
         main = (
-            "define i32 @main() {\n"
+            "define i32 @main(i32 %argc, ptr %argv) {\n"
             "entry:\n"
+            "  call void @mule_set_process_arguments(i32 %argc, ptr %argv)\n"
             + (
                 "  call void @mule_set_argument_constructor(ptr @mule.arguments.construct)\n"
                 if self.argument_constructor is not None
@@ -586,10 +594,8 @@ class _FunctionEmitter(ir1.Visitor):
         self.module = module
         self.function = function
         self.context = context
-        self.facts = context.types if context else module.analysis.types[function.name]
-        self.targets = (
-            context.targets if context else module.analysis.targets[function.name]
-        )
+        self.facts = context.types if context else function.facts
+        self.targets = context.targets if context else function.targets
         self.body = (
             module.specialized[function.name, context.id]
             if context
@@ -1634,7 +1640,7 @@ class _FunctionEmitter(ir1.Visitor):
             incoming.append((result, entered))
 
         contexts = sorted(
-            self.module.analysis.variants[function.name],
+            function.variants,
             key=lambda context: sum(
                 fact.maximum - fact.minimum if fact.is_fixnum else 2**64
                 for fact in context.parameters

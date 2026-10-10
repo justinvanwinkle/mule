@@ -12,8 +12,9 @@ from dataclasses import dataclass
 
 from mule.parser import parse
 
+from . import checkgen, ir1opt, locall
 from .debug import check_ir1_consistency
-from .dfo import find_initial_dfo
+from .dfo import find_dfo, find_initial_dfo
 from .ir1tran import (
     Converter,
     _AnnotationShadows,
@@ -21,6 +22,7 @@ from .ir1tran import (
     _ImportBindings,
 )
 from .ir1tran_lambda import convert_module, lambda_blocks
+from .ir1util import join_blocks_if_possible
 from .node import Component, Lambda
 
 
@@ -30,6 +32,47 @@ class Compilation:
     entry: Lambda
     components: list[Component]
     converter: Converter
+    facts: dict[Lambda, locall.LambdaFacts] | None = None
+
+
+REOPTIMIZE_LIMIT = 10
+
+
+def ir1_phases(compilation: Compilation) -> None:
+    """Run the IR1 phases over a module's lambdas (``ir1-phases``).
+
+    Simplification, local-call analysis, and flow propagation interact: a
+    rewrite can expose a constant branch, and settled facts decide which casts
+    become checks. Check generation can introduce code, so the phases repeat
+    until no cast changes state.
+    """
+    while True:
+        _ir1_optimize_phase_1(compilation)
+        if not any(
+            checkgen.generate_type_checks(lambda_, compilation.facts[lambda_].types)
+            for lambda_ in compilation.lambdas
+        ):
+            break
+    for component in compilation.components:
+        join_blocks_if_possible(component)
+        if component.reanalyze:
+            find_dfo(component)
+    check_ir1_consistency(compilation.components)
+
+
+def _ir1_optimize_phase_1(compilation: Compilation) -> None:
+    for _ in range(REOPTIMIZE_LIMIT):
+        reoptimized = False
+        for component in compilation.components:
+            reoptimized |= ir1opt.ir1_optimize_until_done(component)
+            if component.reanalyze:
+                find_dfo(component)
+        compilation.facts = locall.analyze(compilation.lambdas)
+        if not reoptimized and not any(
+            component.reoptimize for component in compilation.components
+        ):
+            return
+    # The reoptimize limit was reached; the facts computed last remain valid.
 
 
 def compile_toplevel(

@@ -741,57 +741,42 @@ class Function:
     parameter_kinds: tuple[ast.ParameterKind, ...] = ()
     default_parameters: tuple[int, ...] = ()
     binding: str | None = None
+    # Facts established by the IR1 phases, keyed by result name: value types,
+    # predicted call targets, guarded entry contexts, and the return type.
+    facts: dict[str, object] = field(default_factory=dict)
+    targets: dict[str, str] = field(default_factory=dict)
+    variants: tuple = ()
+    return_type: object = None
 
     def positional_body(self):
-        return (
-            not self.variadic
-            and ast.ParameterKind.KEYWORD_ONLY not in self.parameter_kinds
+        return self.signature.positional_body
+
+    @property
+    def signature(self):
+        from .node import Signature
+
+        return Signature(
+            kinds=self.parameter_kinds,
+            default_parameters=self.default_parameters,
+            variadic=self.variadic,
         )
 
     def call_order(self, keywords, count, *, receiver=False):
         """Normalize a complete static call; incomplete calls use the external entry."""
-        if self.variadic:
-            return None
-        kinds = self.parameter_kinds or (ast.ParameterKind.POSITIONAL_ONLY,) * len(
-            self.parameters
+        return self.signature.call_order(
+            self.parameters, keywords, count, receiver=receiver
         )
-        order = [None] * len(self.parameters)
-        positional = int(receiver)
-        if receiver:
-            if not order:
-                return None
-            if kinds[0] == ast.ParameterKind.KEYWORD_ONLY:
-                return None
-            order[0] = -1
-        for index, keyword in enumerate(keywords or (None,) * count):
-            if keyword is None:
-                target = positional
-                positional += 1
-                if (
-                    target >= len(order)
-                    or kinds[target] == ast.ParameterKind.KEYWORD_ONLY
-                ):
-                    return None
-            else:
-                try:
-                    target = self.parameters.index(keyword)
-                except ValueError:
-                    return None
-                if kinds[target] == ast.ParameterKind.POSITIONAL_ONLY:
-                    return None
-            if order[target] is not None:
-                return None
-            order[target] = index
-        defaults = {
-            parameter: offset
-            for offset, parameter in enumerate(self.default_parameters)
-        }
-        for parameter, argument in enumerate(order):
-            if argument is None:
-                if parameter not in defaults:
-                    return None
-                order[parameter] = -2 - defaults[parameter]
-        return tuple(order)
+
+
+@dataclass(frozen=True, slots=True)
+class Context:
+    """A guarded internal entry: facts valid once its parameter guards pass."""
+
+    id: str
+    parameters: tuple
+    types: dict[str, object]
+    targets: dict[str, str]
+    return_type: object
 
 
 @dataclass(slots=True)

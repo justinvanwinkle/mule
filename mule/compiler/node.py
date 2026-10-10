@@ -186,7 +186,7 @@ class CallKind(Enum):
 class Combination(ValuedNode):
     """A call. ``fun`` yields the callee; ``args`` the operands in order."""
 
-    __slots__ = ("args", "fun", "fun_info", "info", "kind")
+    __slots__ = ("args", "fun", "fun_info", "info", "kind", "predicted", "proven")
 
     def __init__(self, lexenv, source, fun: Lvar):
         super().__init__(lexenv, source)
@@ -195,6 +195,10 @@ class Combination(ValuedNode):
         self.kind = CallKind.FULL
         self.fun_info = None
         self.info = None
+        # A GUARDED call's predicted lambda; ``proven`` when flow analysis
+        # established the callee's identity rather than merely predicting it.
+        self.predicted: Lambda | None = None
+        self.proven = False
 
     def accept(self, visitor):
         return visitor.visit_Combination(self)
@@ -434,6 +438,53 @@ class Signature:
     annotation_expressions: tuple = ()
     return_annotation_expression: ast.Expression | None = None
 
+    @property
+    def positional_body(self) -> bool:
+        return not self.variadic and ast.ParameterKind.KEYWORD_ONLY not in self.kinds
+
+    def call_order(self, parameters, keywords, count, *, receiver=False):
+        """Map a complete static call onto parameter positions: an index into
+        the arguments, ``-1`` for the receiver, or ``-2 - n`` for default n.
+        Returns ``None`` when the call must use the external entry."""
+        if self.variadic:
+            return None
+        kinds = self.kinds or (ast.ParameterKind.POSITIONAL_ONLY,) * len(parameters)
+        order = [None] * len(parameters)
+        positional = int(receiver)
+        if receiver:
+            if not order or kinds[0] == ast.ParameterKind.KEYWORD_ONLY:
+                return None
+            order[0] = -1
+        for index, keyword in enumerate(keywords or (None,) * count):
+            if keyword is None:
+                target = positional
+                positional += 1
+                if (
+                    target >= len(order)
+                    or kinds[target] == ast.ParameterKind.KEYWORD_ONLY
+                ):
+                    return None
+            else:
+                try:
+                    target = parameters.index(keyword)
+                except ValueError:
+                    return None
+                if kinds[target] == ast.ParameterKind.POSITIONAL_ONLY:
+                    return None
+            if order[target] is not None:
+                return None
+            order[target] = index
+        defaults = {
+            parameter: offset
+            for offset, parameter in enumerate(self.default_parameters)
+        }
+        for parameter, argument in enumerate(order):
+            if argument is None:
+                if parameter not in defaults:
+                    return None
+                order[parameter] = -2 - defaults[parameter]
+        return tuple(order)
+
 
 class Lambda(Functional):
     """A function body: ``vars`` are parameters, ``locals`` every local
@@ -494,6 +545,11 @@ class Lambda(Functional):
     @property
     def parameters(self) -> tuple[str, ...]:
         return tuple(var.name for var in self.vars)
+
+    def call_order(self, keywords, count, *, receiver=False):
+        return self.signature.call_order(
+            self.parameters, keywords, count, receiver=receiver
+        )
 
 
 class OptionalDispatch(Functional):

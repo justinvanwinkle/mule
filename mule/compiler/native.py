@@ -392,7 +392,7 @@ class _TruthProbe:
         return "0"
 
 
-def select(module, layouts, analysis):
+def select(module, layouts):
     """Choose native entries; remove any caller whose local edges lack a body."""
     collector = _ClassBindings(layouts)
     for fn in module.functions:
@@ -413,7 +413,7 @@ def select(module, layouts, analysis):
                 continue
             try:
                 plans[function.name] = _select_function(
-                    function, index, layouts, collector.bindings, plans, analysis
+                    function, index, layouts, collector.bindings, plans
                 )
             except NotNative:
                 continue
@@ -447,7 +447,7 @@ def select(module, layouts, analysis):
             del plans[name]
 
 
-def _select_function(function, index, layouts, bindings, plans, analysis):
+def _select_function(function, index, layouts, bindings, plans):
     parameters = []
     for ordinal, contract in enumerate(function.parameter_annotations):
         if ordinal == 0 and function.owner_class is not None:
@@ -496,12 +496,12 @@ def _select_function(function, index, layouts, bindings, plans, analysis):
         raise NotNative
     for block in function.blocks:
         for op in block.instructions:
-            op.accept(_BoundLocals(plan, analysis.types[function.name]))
+            op.accept(_BoundLocals(plan, function.facts))
     constraints = _ResultContracts(function)
     for block in function.blocks:
         for operation in (*block.instructions, block.terminator):
             operation.accept(constraints)
-    arithmetic = _ArithmeticProof(analysis.types[function.name], constraints.values)
+    arithmetic = _ArithmeticProof(function.facts, constraints.values)
     for block in function.blocks:
         for op in block.instructions:
             op.accept(arithmetic)

@@ -17,6 +17,7 @@ pub mod gmp;
 pub mod native_storage;
 pub mod numeric;
 pub mod object;
+pub mod process;
 pub mod sequences;
 pub use sequences::*;
 
@@ -24,3 +25,4 @@ pub use annotations::*;
 pub use classes::*;
 pub use native_storage::*;
 pub use object::*;
+pub use process::*;

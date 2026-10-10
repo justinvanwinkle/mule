@@ -7,7 +7,7 @@ emission still consume.
 
 from . import ir, ir1bridge
 from .ir1tran import UnsupportedSyntax
-from .main import compile_toplevel
+from .main import compile_toplevel, ir1_phases
 
 __all__ = ["UnsupportedSyntax", "lower"]
 
@@ -23,6 +23,7 @@ def lower(
     compilation = compile_toplevel(
         source, filename, imports=imports, prefix=prefix, namespace=namespace
     )
+    ir1_phases(compilation)
     module = ir1bridge.lower_module(compilation)
     if imports is None:
         ir.verify(module)
