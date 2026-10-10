@@ -42,7 +42,7 @@ def test_invalid_context_is_rejected_before_emission(source):
         "import os\n",
         "class C(A, B):\n pass\n",
         "x = [1, *items]\n",
-        "for i in range(3):\n print(i)\n",
+        "async for i in values:\n pass\n",
         "print(value=1)\n",
         "def f(x=1):\n pass\n",
         "def f():\n def g():\n  pass\n",

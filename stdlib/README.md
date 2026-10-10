@@ -2,8 +2,8 @@
 
 This directory contains the `.py` library files from the released
 [Python 3.15.0](https://www.python.org/downloads/release/python-3150/), alongside
-Mule's `mule.py`, `_native_class.py`, and `_format.py`. The latter two contain
-compiler-private protocols compiled by Mule itself.
+Mule's `mule.py`, `_native_class.py`, `_format.py`, and `_sequences.py`. The
+underscored modules contain compiler-private protocols compiled by Mule itself.
 
 The official source archive is
 `https://www.python.org/ftp/python/3.15.0/Python-3.15.0.tar.xz`. Its verified SHA-256

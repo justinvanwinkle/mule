@@ -1,0 +1,481 @@
+"""Native sequence and exception protocols, compiled by Mule.
+
+Underscored storage operations are bound by the compiler. These definitions
+execute as native Python functions and classes, in a private module namespace.
+"""
+
+# ruff: noqa: F821
+
+
+class BaseException:
+    def __init__(self, *args):
+        self.args = args
+
+    def __str__(self):
+        if len(self.args) == 0:
+            return ""
+        if len(self.args) == 1:
+            return str(self.args[0])
+        return str(self.args)
+
+
+class Exception(BaseException):
+    pass
+
+
+class ArithmeticError(Exception):
+    pass
+
+
+class LookupError(Exception):
+    pass
+
+
+class IndexError(LookupError):
+    pass
+
+
+class KeyError(LookupError):
+    pass
+
+
+class ValueError(Exception):
+    pass
+
+
+class TypeError(Exception):
+    pass
+
+
+class RuntimeError(Exception):
+    pass
+
+
+class NameError(Exception):
+    pass
+
+
+class UnboundLocalError(NameError):
+    pass
+
+
+class ZeroDivisionError(ArithmeticError):
+    pass
+
+
+class OverflowError(ArithmeticError):
+    pass
+
+
+class AssertionError(Exception):
+    pass
+
+
+class StopIteration(Exception):
+    pass
+
+
+class MemoryError(Exception):
+    pass
+
+
+class SystemError(Exception):
+    pass
+
+
+class AttributeError(Exception):
+    pass
+
+
+class OSError(Exception):
+    pass
+
+
+class EOFError(Exception):
+    pass
+
+
+class RecursionError(RuntimeError):
+    pass
+
+
+class UnicodeError(ValueError):
+    pass
+
+
+class UnicodeEncodeError(UnicodeError):
+    pass
+
+
+class UnicodeDecodeError(UnicodeError):
+    pass
+
+
+def exception_matches(value, expected):
+    choices = _exception_targets(expected)
+    index = 0
+    while index < _storage_length(choices):
+        target = _storage_read(choices, index)
+        parent = _class_identity(target)
+        valid = False
+        while parent is not None:
+            if parent is BaseException:
+                valid = True
+                break
+            parent = _class_parent(parent)
+        if not valid:
+            raise TypeError("catching classes that do not inherit from BaseException")
+        parent = _raised_class(value)
+        while parent is not None:
+            if parent is target:
+                return True
+            parent = _class_parent(parent)
+        index += 1
+    return False
+
+
+def iteration_exhausted(value):
+    return exception_matches(value, StopIteration)
+
+
+def raise_value(value):
+    parent = _raised_class(value)
+    valid = False
+    while parent is not None:
+        if parent is BaseException:
+            valid = True
+            break
+        parent = _class_parent(parent)
+    if not valid:
+        # Use the physical error primitive here to avoid recursive invalid raises.
+        return _invalid_raise()
+    return _raise_pending(value)
+
+
+def integer_index(value):
+    method = _index_method(value)
+    if method is not None:
+        value = method()
+    return _integer_storage(value)
+
+
+def getitem(value, index):
+    method = _getitem_method(value)
+    if method is None:
+        raise TypeError("object is not subscriptable")
+    return method(index)
+
+
+def setitem(value, index, item):
+    method = _setitem_method(value)
+    if method is None:
+        raise TypeError("object does not support item assignment")
+    method(index, item)
+
+
+def storage_index(value, index):
+    index = integer_index(index)
+    length = _storage_length(value)
+    if index < 0:
+        index += length
+    if index < 0 or index >= length:
+        raise IndexError("sequence index out of range")
+    return index
+
+
+class SequenceIterator:
+    def __init__(self, sequence):
+        self.sequence = sequence
+        self.index = 0
+        self.exhausted = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.exhausted:
+            raise StopIteration
+        index = self.index
+        try:
+            item = getitem(self.sequence, index)
+        except IndexError, StopIteration:
+            self.exhausted = True
+            raise StopIteration
+        self.index = index + 1
+        return item
+
+
+class ListStorage:
+    def __getitem__(self, index):
+        return _storage_read(self, storage_index(self, index))
+
+    def __setitem__(self, index, value):
+        _storage_write(self, storage_index(self, index), value)
+
+    def append(self, value):
+        _storage_append(self, value)
+
+    def __iter__(self):
+        return SequenceIterator(self)
+
+    def __eq__(self, other):
+        return sequence_equal(self, other)
+
+    def __ne__(self, other):
+        return not sequence_equal(self, other)
+
+
+class TupleStorage:
+    def __getitem__(self, index):
+        return _storage_read(self, storage_index(self, index))
+
+    def __iter__(self):
+        return SequenceIterator(self)
+
+    def __eq__(self, other):
+        return sequence_equal(self, other)
+
+    def __ne__(self, other):
+        return not sequence_equal(self, other)
+
+
+class TextStorage:
+    def __getitem__(self, index):
+        return _storage_read(self, storage_index(self, index))
+
+    def __iter__(self):
+        return SequenceIterator(self)
+
+
+class BytesStorage:
+    def __getitem__(self, index):
+        return _storage_read(self, storage_index(self, index))
+
+    def __iter__(self):
+        return SequenceIterator(self)
+
+
+def sequence_equal(left, right):
+    if not _storage_compatible(left, right):
+        return False
+    if left is right:
+        return True
+    if _storage_length(left) != _storage_length(right):
+        return False
+    index = 0
+    while index < _storage_length(left) and index < _storage_length(right):
+        a = _storage_read(left, index)
+        b = _storage_read(right, index)
+        if a is not b and not a == b:  # noqa: SIM201 - inequality may be overloaded separately
+            return False
+        index += 1
+    return _storage_length(left) == _storage_length(right)
+
+
+def iterate(value):
+    method = _iter_method(value)
+    if method is not None:
+        iterator = method()
+        if _next_method(iterator) is None:
+            raise TypeError("__iter__ returned a non-iterator")
+        return iterator
+    if _getitem_method(value) is not None:
+        return SequenceIterator(value)
+    raise TypeError("object is not iterable")
+
+
+def next_item(value):
+    method = _next_method(value)
+    if method is None:
+        raise TypeError("object is not an iterator")
+    return method()
+
+
+def unpack(value, count):
+    iterator = iterate(value)
+    result = []
+    index = 0
+    while index < count:
+        try:
+            item = next_item(iterator)
+        except StopIteration:
+            raise ValueError("not enough values to unpack")
+        _storage_append(result, item)
+        index += 1
+    try:
+        next_item(iterator)
+    except StopIteration:
+        return _storage_tuple(result)
+    raise ValueError("too many values to unpack")
+
+
+class RangeIterator:
+    def __init__(self, start, stop, step):
+        self.current = start
+        self.stop = stop
+        self.step = step
+        self.exhausted = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        current = self.current
+        if (
+            self.exhausted
+            or (self.step > 0 and current >= self.stop)
+            or (self.step < 0 and current <= self.stop)
+        ):
+            self.exhausted = True
+            raise StopIteration
+        self.current = current + self.step
+        return current
+
+
+class Range:
+    def __init__(self, args):
+        count = _storage_length(args)
+        if count == 1:
+            start = 0
+            stop = integer_index(_storage_read(args, 0))
+            step = 1
+        elif count == 2 or count == 3:
+            start = integer_index(_storage_read(args, 0))
+            stop = integer_index(_storage_read(args, 1))
+            step = 1
+            if count == 3:
+                step = integer_index(_storage_read(args, 2))
+        else:
+            raise TypeError("range expects one to three arguments")
+        if step == 0:
+            raise ValueError("range step must not be zero")
+        self.start = start
+        self.stop = stop
+        self.step = step
+
+    def __iter__(self):
+        return RangeIterator(self.start, self.stop, self.step)
+
+    def __len__(self):
+        if self.step > 0:
+            if self.start >= self.stop:
+                return 0
+            return (self.stop - self.start - 1) // self.step + 1
+        if self.start <= self.stop:
+            return 0
+        return (self.start - self.stop - 1) // (-self.step) + 1
+
+    def __getitem__(self, index):
+        index = integer_index(index)
+        length = self.__len__()
+        if index < 0:
+            index += length
+        if index < 0 or index >= length:
+            raise IndexError("range index out of range")
+        return self.start + index * self.step
+
+
+class Enumerate:
+    def __init__(self, iterator, start):
+        self.iterator = iterator
+        self.index = start
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        value = next_item(self.iterator)
+        index = self.index
+        self.index = index + 1
+        return (index, value)
+
+
+def range(*args):
+    return Range(args)
+
+
+def enumerate(*args):
+    count = _storage_length(args)
+    if count != 1 and count != 2:
+        raise TypeError("enumerate expects one or two arguments")
+    start = 0
+    if count == 2:
+        start = integer_index(_storage_read(args, 1))
+    return Enumerate(iterate(_storage_read(args, 0)), start)
+
+
+def iter(*args):
+    if _storage_length(args) != 1:
+        raise TypeError("iter currently expects one argument")
+    return iterate(_storage_read(args, 0))
+
+
+def next(*args):
+    count = _storage_length(args)
+    if count != 1 and count != 2:
+        raise TypeError("next expects one or two arguments")
+    try:
+        return next_item(_storage_read(args, 0))
+    except StopIteration:
+        if count == 2:
+            return _storage_read(args, 1)
+        raise
+
+
+def list(*args):
+    count = _storage_length(args)
+    if count > 1:
+        raise TypeError("list expects at most one argument")
+    result = []
+    if count == 1:
+        for value in _storage_read(args, 0):
+            _storage_append(result, value)
+    return result
+
+
+def tuple(*args):
+    return _storage_tuple(list_from_arguments(args))
+
+
+def list_from_arguments(args):
+    count = _storage_length(args)
+    if count > 1:
+        raise TypeError("tuple expects at most one argument")
+    result = []
+    if count == 1:
+        for value in _storage_read(args, 0):
+            _storage_append(result, value)
+    return result
+
+
+_install_storage(ListStorage, TupleStorage, TextStorage, BytesStorage)
+_install_builtin("range", range)
+_install_builtin("enumerate", enumerate)
+_install_builtin("iter", iter)
+_install_builtin("next", next)
+_install_builtin("list", list)
+_install_builtin("tuple", tuple)
+_install_builtin("BaseException", BaseException)
+_install_builtin("Exception", Exception)
+_install_builtin("ArithmeticError", ArithmeticError)
+_install_builtin("LookupError", LookupError)
+_install_builtin("IndexError", IndexError)
+_install_builtin("KeyError", KeyError)
+_install_builtin("ValueError", ValueError)
+_install_builtin("TypeError", TypeError)
+_install_builtin("RuntimeError", RuntimeError)
+_install_builtin("NameError", NameError)
+_install_builtin("UnboundLocalError", UnboundLocalError)
+_install_builtin("ZeroDivisionError", ZeroDivisionError)
+_install_builtin("OverflowError", OverflowError)
+_install_builtin("AssertionError", AssertionError)
+_install_builtin("StopIteration", StopIteration)
+_install_builtin("MemoryError", MemoryError)
+_install_builtin("SystemError", SystemError)
+_install_builtin("AttributeError", AttributeError)
+_install_builtin("OSError", OSError)
+_install_builtin("EOFError", EOFError)
+_install_builtin("RecursionError", RecursionError)
+_install_builtin("UnicodeError", UnicodeError)
+_install_builtin("UnicodeEncodeError", UnicodeEncodeError)
+_install_builtin("UnicodeDecodeError", UnicodeDecodeError)

@@ -20,7 +20,7 @@ args = []
 [mule]
 status = "pending"
 phase = "compile"
-reason = "syntax is not supported by the native compiler yet"
+reason = "finally and exception groups are not supported yet"
 '''
 
 try:

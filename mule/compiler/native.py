@@ -467,6 +467,8 @@ def _select_function(function, index, layouts, bindings, plans, analysis):
     while True:
         deferred = False
         for block in function.blocks:
+            if block.exception_target is not None or function.variadic:
+                raise NotNative
             selector.block = block
             for operation in (*block.instructions, block.terminator):
                 try:

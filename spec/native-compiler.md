@@ -118,8 +118,13 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
 - Expression statements and positional calls. Mule implements a limited builtin
   set, including `print`, `abs`, `int`, `input`, `len`, `bool`, `ascii`, `repr`,
   `str`, and `float`; arbitrary CPython builtins are not available.
-- `if`/`else`, `while`/`else`, `break`, `continue`, and `pass`.
-- Module-level function definitions with fixed positional parameters, native
+- `if`/`else`, `while`/`else`, `for`/`else`, `break`, `continue`, and `pass`.
+  Known fresh builtin ranges have a guarded counted LLVM loop; other iterables
+  use compiled Mule protocols, including user iterators and indexed sequences.
+- `try`/`except`/`else`, exception classes and hierarchy matching, `raise`, and
+  bare reraising. Handler transfers release temporaries and preserve locals;
+  handler exits clear exception bindings and restore active exception state.
+- Module-level function definitions with fixed and variadic positional parameters, native
   recursion, return statements, implicit `None` returns, and `global` declarations.
   Definitions can occur inside module-level control flow.
 - Module-level fixed-layout classes with zero or one compiled-class base,
@@ -140,7 +145,11 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
   ordinary path and require their library sources to compile.
 - Assertion statements with lazy message evaluation and native error cleanup.
 - List and tuple displays with left-to-right element evaluation and owned
-  contiguous storage. Starred displays and container algorithms remain incomplete.
+  contiguous storage. Lists/tuples/text/bytes support integer and `__index__`
+  indexing; lists support replacement and append. List/tuple equality, iterable
+  construction, `range`, `enumerate`, `iter`, `next`, and non-starred unpacking
+  run through compiled Mule Python. See [Sequences and iteration](sequences-and-iteration.md).
+  Starred displays, slicing, and other container algorithms remain incomplete.
 - F-strings with `!s`, `!r`, debug fields, nested specification expressions,
   string width/alignment and Unicode fill characters. Formatting protocols run
   as compiled Mule Python and honor class `__format__`, `__str__`, and `__repr__`.
@@ -156,9 +165,9 @@ and an active error survives cleanup.
 
 Unsupported constructs raise `UnsupportedSyntax`, a `SyntaxError` subclass,
 before native compilation. These include dynamic/wildcard imports, nested functions or classes,
-closures/`nonlocal`, defaults, keyword/variadic calls, general decorators,
-async/generators, `for`, exception handling, dictionaries/sets/comprehensions,
-subscriptions, unpacking, starred displays, template strings and `!a` conversion.
+closures/`nonlocal`, defaults, keyword/starred calls, general decorators,
+async/generators, `finally`, exception chaining/groups, dictionaries/sets/comprehensions,
+slicing, extended unpacking, starred displays, template strings and `!a` conversion.
 Unsupported source is
 also rejected in unreachable branches. Parser support is broader than compiler
 support; acceptance by the parser does not imply native compilation support.

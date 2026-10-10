@@ -17,8 +17,13 @@ timeout = 5.0
 
 [mule]
 status = "pending"
-phase = "compile"
-reason = "syntax is not supported by the native compiler yet"
+phase = "run"
+reason = "AttributeError: object has no attribute 'replace'"
+
+[mule.failure]
+stdout = ""
+stderr = "AttributeError: object has no attribute 'replace'\n"
+exit_code = 1
 '''
 
 class Luhn:

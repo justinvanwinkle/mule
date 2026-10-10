@@ -58,6 +58,9 @@ thread_local! {
     static DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 pub fn error(kind: &str, message: &str) {
+    if crate::sequences::has_pending() {
+        return;
+    }
     ERROR.with_borrow_mut(|current| {
         if current.is_none() {
             *current = Some((kind.into(), message.into()));
@@ -65,12 +68,19 @@ pub fn error(kind: &str, message: &str) {
     });
 }
 pub fn has_error() -> bool {
-    ERROR.with_borrow(|current| current.is_some())
+    ERROR.with_borrow(|current| current.is_some()) || crate::sequences::has_pending()
 }
 pub fn clear_error() {
     ERROR.with_borrow_mut(|current| *current = None);
+    crate::sequences::clear_pending();
+}
+pub fn take_native_error() -> Option<(String, String)> {
+    ERROR.with_borrow_mut(Option::take)
 }
 pub fn error_kind() -> String {
+    if crate::sequences::has_pending() {
+        return crate::sequences::pending_kind();
+    }
     ERROR.with_borrow(|current| {
         current
             .as_ref()
@@ -78,6 +88,9 @@ pub fn error_kind() -> String {
     })
 }
 pub fn error_message() -> String {
+    if crate::sequences::has_pending() {
+        return crate::sequences::pending_message();
+    }
     ERROR.with_borrow(|current| {
         current
             .as_ref()
@@ -395,6 +408,10 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
 }
 pub unsafe fn special(value: Value, name: &str, args: &[Value]) -> Value {
     unsafe {
+        let method = crate::sequences::binding(value, name);
+        if !method.is_null() {
+            return call_with_receiver(method, value, args);
+        }
         if value.is_null() || is_fixnum(value) {
             return std::ptr::null_mut();
         }
@@ -1108,7 +1125,7 @@ pub unsafe extern "C" fn mule_lookup_special(value: Value, name: *const c_char) 
                 Data::Type { attributes, .. } => lookup(*attributes, name),
                 _ => unreachable!(),
             },
-            _ => std::ptr::null_mut(),
+            _ => crate::sequences::binding(value, name),
         };
         if method.is_null() {
             return none_value();

@@ -1,0 +1,104 @@
+# Sequences, iteration, and exception edges
+
+Status: implemented the initial sequence, iteration, and exception slice.
+
+## SBCL sources and adaptations
+
+SBCL `src/code/macros.lisp`, `dolist` and `dotimes`, expands iteration into
+ordinary bindings, tests, and control transfers. `src/compiler/seqtran.lisp`,
+`build-sequence-iterator`, specializes known vectors to indexed loops and leaves
+unknown sequences on compiled language protocol paths. Mule likewise lowers
+`for` to explicit IR blocks; Python requires `__iter__`/`__next__`, exhaustion by
+`StopIteration`, and an `else` path distinct from `break`. Language algorithms
+and iterator state machines belong in compiled Mule Python, not Rust.
+
+SBCL `src/code/seq.lisp`, `elt` and `%setelt`, separates language-level sequence
+selection from physical access. `src/compiler/array-tran.lisp`, the `aref` and
+`(setf aref)` transforms, separates bounds checks from data-vector operations.
+Mule's Python indexing normalization and protocol selection are compiled Python;
+Rust supplies guarded physical length, element access, and replacement. Python
+negative indices and mutable list lengths require different language rules from
+Common Lisp vectors. Storage guards are not source-language type tags: builtin
+storage uses shared class method tables, just as user instances do.
+
+SBCL `src/compiler/ir2tran.lisp`, `ir2-convert-throw` and `emit-nlx-start`, records
+nonlocal targets and cleanup/dynamic state explicitly. Mule uses explicit IR
+exception successors and native return/error edges rather than SBCL's assembly
+stack-unwinding VOPs. LLVM functions and reference-counted ownership require
+releasing expression temporaries at a handler transfer while preserving locals.
+Exceptional analysis must join states before and after a potentially failing
+operation; successful stores must not be assumed on an exceptional edge.
+Caught exceptions and handler state are ordinary owned Mule class instances.
+Native primitive errors are converted to those instances at the catch boundary.
+Exception hierarchy matching runs in compiled Python using actual class ancestry;
+there are no name-based exception matching rules or type-tag attributes.
+
+The first slice implements ordinary `try`/`except`/`else`, raising and reraising,
+list/tuple/text indexing, list replacement/append, sequence iteration, range,
+enumerate, and non-starred unpacking. `finally`, exception groups/chaining,
+slices, deletion, and extended unpacking remain explicit compilation gaps.
+Iterator exhaustion is caught only around the `__next__` call, never around the
+loop body or target assignment. Break/continue/return must unwind exited handler
+state and delete an `except ... as` binding, including exceptional handler exits.
+Private protocol code has its own compiled namespace and cannot observe user
+bindings of builtin or intrinsic names. Variadic positional entries materialize
+owned tuples from borrowed native argument buffers; argument handling is compiler
+machinery, not a Rust implementation of range or iterator algorithms.
+
+SBCL `src/compiler/ir2tran.lisp`, `init-xep-environment`, verifies external
+argument counts and copies excess arguments before entering internal bodies.
+Mule's variadic external entry similarly checks its fixed prefix and constructs
+an owned rest tuple. Internal fixed-arity predictions must not bypass this
+entry for variadic functions, even when the source argument count happens to
+match the number of internal parameters.
+
+## Guarded range loop specialization
+
+Following `build-sequence-iterator` and `dotimes`, a direct call spelled
+`range(...)` is a candidate for a counted native loop, not proof of builtin
+identity. The callable is loaded before arguments, invoked normally, and retained
+for one entry guard. Only the actual private compiled range function and a fresh
+private RangeIterator with fixnum bounds/step may take the specialization. Other
+bindings and wider integers use the same compiled iterator protocol as any object.
+The iterator is fresh and cannot be aliased by user code on the accepted path;
+its count can therefore live in compiler-owned stack storage. LLVM tests and
+increments that count directly. Signed fixnum operands fit an int64 sum even
+when the last increment crosses the fixnum boundary, and the next bounds test
+occurs before boxing. This preserves unbounded Python range semantics without
+integer overflow or a per-iteration type/identity guard. Constant argument facts
+may narrow yielded integers only behind that entry guard. No user annotation is
+required. Internal iterator state never becomes a language attribute/type tag.
+
+
+## Implemented subset and limits
+
+List/tuple/str/bytes storage shares ordinary compiled method tables. Indexing
+supports integers, booleans, and user `__index__`; lists support replacement and
+append. Sequence equality is compiled Python, including identity shortcuts and
+recursive element comparisons. Iterators observe list appends/replacements until
+exhaustion and remain exhausted thereafter. Iteration accepts user protocols and
+the legacy indexed-sequence fallback. Constructors `list` and `tuple` consume
+iterables; `range`, `enumerate`, `iter`, and `next` are compiled Python entries.
+`iter(callable, sentinel)` and keyword arguments are not implemented. Range's
+initial implementation is a private compiled class behind the builtin factory;
+full builtin type identity, repr, comparison, containment specialization, and
+slicing are not implemented. Exception classes have real single-base ancestry,
+owned `args`, and a compiled `__str__`; full exception metadata, chaining,
+tracebacks, exception groups, and specialized exception constructors remain gaps.
+Existing Rust scalar printing/truth/containment and dynamic class allocation
+remain bootstrap debt; this slice does not extend their language algorithms.
+
+Variadic parameter annotations preserve their syntax metadata and apply numeric
+contracts to each rest element, not the rest tuple. Checks follow the function's
+existing safety policy. Defaults and keyword-only/variadic keyword parameters
+remain unsupported. Exception bindings are cleared on every handler exit.
+
+Validation includes native protocol/edge tests, unchanged corpus execution, and
+a Valgrind ownership probe with repeated unpacking, iterator calls, and caught
+exceptions. A 20-million-element range sum without annotations measured 42-47 ms
+in three native runs versus 324-328 ms in host Python 3.14.7. The optimized
+machine code retains a counted loop with direct integer instructions; the sum
+is not replaced with a constant. Its accumulator still has overflow/representation
+slow paths, so this is evidence for this loop, not a claim of general optimization
+parity with SBCL. Benchmark inputs/results and disassembly are in ignored build
+artifacts `range-iteration-benchmark.py`, `.json`, and `.asm`.

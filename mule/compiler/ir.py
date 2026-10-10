@@ -93,6 +93,36 @@ class Visitor:
     def visit_FormatValue(self, operation):
         return self.visit_Operation(operation)
 
+    def visit_PrepareRange(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_RangeAvailable(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_RangeAdvance(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_ProtocolCall(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_CatchException(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_EnterHandler(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_LeaveHandler(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_ClearBinding(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_Raise(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_Propagate(self, operation):
+        return self.visit_Operation(operation)
+
     def visit_Load(self, operation):
         return self.visit_Operation(operation)
 
@@ -241,6 +271,94 @@ class FormatValue(ResultOperation):
 
     def operands(self):
         return (self.value, self.specification)
+
+
+@dataclass(frozen=True, slots=True)
+class PrepareRange(ResultOperation):
+    result: str
+    callee: str
+    iterator: str
+    state: int
+
+    def accept(self, visitor):
+        return visitor.visit_PrepareRange(self)
+
+    def operands(self):
+        return (self.callee, self.iterator)
+
+
+@dataclass(frozen=True, slots=True)
+class RangeAvailable(ResultOperation):
+    result: str
+    state: int
+
+    def accept(self, visitor):
+        return visitor.visit_RangeAvailable(self)
+
+
+@dataclass(frozen=True, slots=True)
+class RangeAdvance(ResultOperation):
+    result: str
+    state: int
+    minimum: int
+    maximum: int
+
+    def accept(self, visitor):
+        return visitor.visit_RangeAdvance(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ProtocolCall(ResultOperation):
+    result: str
+    protocol: str
+    args: tuple[str, ...]
+
+    def accept(self, visitor):
+        return visitor.visit_ProtocolCall(self)
+
+    def operands(self):
+        return self.args
+
+
+@dataclass(frozen=True, slots=True)
+class CatchException(ResultOperation):
+    result: str
+
+    def accept(self, visitor):
+        return visitor.visit_CatchException(self)
+
+
+@dataclass(frozen=True, slots=True)
+class EnterHandler(Operation):
+    value: str
+
+    def accept(self, visitor):
+        return visitor.visit_EnterHandler(self)
+
+    def operands(self):
+        return (self.value,)
+
+
+@dataclass(frozen=True, slots=True)
+class LeaveHandler(Operation):
+    def accept(self, visitor):
+        return visitor.visit_LeaveHandler(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ClearBinding(Operation):
+    name: str
+    local: bool
+
+    def accept(self, visitor):
+        return visitor.visit_ClearBinding(self)
+
+    def global_names(self):
+        return () if self.local else (self.name,)
+
+    def validate(self, function, functions, following):
+        if self.local and self.name not in function.locals:
+            raise ValueError(f"undeclared local {self.name}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -494,6 +612,14 @@ type Instruction = (
     | BuildList
     | BuildTuple
     | FormatValue
+    | PrepareRange
+    | RangeAvailable
+    | RangeAdvance
+    | ProtocolCall
+    | CatchException
+    | EnterHandler
+    | LeaveHandler
+    | ClearBinding
     | Load
     | Store
     | Binary
@@ -548,7 +674,24 @@ class Return(Operation):
         return (self.value,)
 
 
-type Terminator = Jump | Branch | Return
+@dataclass(frozen=True, slots=True)
+class Raise(Operation):
+    value: str | None
+
+    def accept(self, visitor):
+        return visitor.visit_Raise(self)
+
+    def operands(self):
+        return () if self.value is None else (self.value,)
+
+
+@dataclass(frozen=True, slots=True)
+class Propagate(Operation):
+    def accept(self, visitor):
+        return visitor.visit_Propagate(self)
+
+
+type Terminator = Jump | Branch | Return | Raise | Propagate
 
 
 @dataclass(slots=True)
@@ -556,6 +699,15 @@ class Block:
     label: str
     instructions: list[Instruction] = field(default_factory=list)
     terminator: Terminator | None = None
+    exception_target: str | None = None
+
+    def successors(self):
+        targets = self.terminator.successors()
+        return (
+            targets
+            if self.exception_target is None
+            else (*targets, self.exception_target)
+        )
 
 
 @dataclass(slots=True)
@@ -573,6 +725,7 @@ class Function:
     return_annotation_expression: ast.Expression | None = None
     annotation_expressions: dict[str, ast.Expression] = field(default_factory=dict)
     namespace: str = "__main__"
+    variadic: bool = False
 
 
 @dataclass(slots=True)
@@ -611,7 +764,7 @@ def _verify_function(function: Function, functions: set[str]) -> None:
     for block in function.blocks:
         if block.terminator is None:
             raise ValueError(f"{function.name}/{block.label}: unterminated block")
-        targets = block.terminator.successors()
+        targets = block.successors()
         if not set(targets) <= blocks.keys():
             raise ValueError("control edge to missing block")
         successors[block.label] = targets

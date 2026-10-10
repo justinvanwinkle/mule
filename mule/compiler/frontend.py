@@ -92,6 +92,7 @@ class Lowerer:
         policy = self.policy(definition.decorators, policy)
         parameters = []
         annotations = []
+        variadic = False
         for parameter in definition.parameters:
             self.reserved(parameter.name, parameter)
             if parameter.name in parameters:
@@ -101,14 +102,16 @@ class Lowerer:
                 not in (
                     ast.ParameterKind.POSITIONAL_ONLY,
                     ast.ParameterKind.POSITIONAL_OR_KEYWORD,
+                    ast.ParameterKind.VAR_POSITIONAL,
                 )
                 or parameter.default is not None
             ):
                 self.error(
-                    "only fixed positional parameters are supported yet",
+                    "default values, keyword-only parameters and **kwargs are not supported yet",
                     parameter,
                     unsupported=True,
                 )
+            variadic |= parameter.kind == ast.ParameterKind.VAR_POSITIONAL
             parameters.append(parameter.name)
             annotations.append(
                 self.annotation(parameter.annotation)
@@ -119,7 +122,12 @@ class Lowerer:
             f"{self.prefix}mule_fn_{len(self.functions)}",
             tuple(parameters),
             (),
-            parameter_annotations=tuple(annotations),
+            parameter_annotations=tuple(
+                None if parameter.kind == ast.ParameterKind.VAR_POSITIONAL else contract
+                for parameter, contract in zip(
+                    definition.parameters, annotations, strict=True
+                )
+            ),
             return_annotation=(
                 self.annotation(definition.return_annotation)
                 if definition.return_annotation is not None
@@ -132,13 +140,29 @@ class Lowerer:
             ),
             return_annotation_expression=definition.return_annotation,
             namespace=self.namespace,
+            variadic=variadic,
         )
         self.functions.append(function)
         builder = FunctionBuilder(
             self, function, definition.body, is_module=False, origin=definition
         )
         for parameter, contract in zip(definition.parameters, annotations):
-            if contract is not None:
+            if (
+                contract is not None
+                and parameter.kind == ast.ParameterKind.VAR_POSITIONAL
+            ):
+                element = builder.temporary()
+                builder.annotations[element] = (contract, parameter)
+                builder.visit_For(
+                    ast.For(
+                        ast.Name(element, span=parameter.span),
+                        ast.Name(parameter.name, span=parameter.span),
+                        [],
+                        span=parameter.span,
+                    )
+                )
+                builder.emit(ir.ClearBinding(element, True))
+            elif contract is not None:
                 builder.annotations[parameter.name] = (contract, parameter)
                 function.local_annotations[parameter.name] = contract
                 builder.store(
@@ -171,7 +195,10 @@ class FunctionBuilder(ast.Visitor):
         self.annotations = {}
         self.values = 0
         self.hidden = 0
-        self.loops: list[tuple[ir.Block, ir.Block]] = []
+        self.loops = []
+        self.exception_target = None
+        self.handlers = []
+        self.range_states = 0
         self.globals: set[str] = set()
         self.locals: dict[str, None] = dict.fromkeys(function.parameters)
         self._bindings(statements)
@@ -191,12 +218,22 @@ class FunctionBuilder(ast.Visitor):
                 statement.accept(collector)
 
     def block(self) -> ir.Block:
-        block = ir.Block(f"b{len(self.function.blocks)}")
+        block = ir.Block(
+            f"b{len(self.function.blocks)}",
+            exception_target=self.exception_target.label
+            if self.exception_target is not None
+            else None,
+        )
         self.function.blocks.append(block)
         return block
 
     def emit(self, instruction: ir.Instruction):
         self.current.instructions.append(instruction)
+        if self.exception_target is not None:
+            self.current.exception_target = self.exception_target.label
+            following = self.block()
+            self.jump(following)
+            self.current = following
 
     def result(self) -> str:
         value = f"v{self.values}"
@@ -268,6 +305,23 @@ class FunctionBuilder(ast.Visitor):
 
     def jump(self, block: ir.Block):
         self.current.terminator = ir.Jump(block.label)
+
+    def protocol(self, name, *arguments):
+        result = self.result()
+        self.emit(ir.ProtocolCall(result, name, tuple(arguments)))
+        return result
+
+    def leave_handlers(self, depth):
+        for binding in reversed(self.handlers[depth:]):
+            if binding is not None:
+                self.emit(ir.ClearBinding(binding, self.local(binding)))
+            self.emit(ir.LeaveHandler())
+
+    def propagate(self):
+        self.current.exception_target = (
+            self.exception_target.label if self.exception_target is not None else None
+        )
+        self.current.terminator = ir.Propagate()
 
     def statements(self, statements: list[ast.Statement]):
         self.depth += 1
@@ -445,13 +499,205 @@ class FunctionBuilder(ast.Visitor):
             self.jump(join)
         self.current = join
 
+    def visit_Raise(self, node):
+        if node.cause is not None:
+            self.error(
+                "exception chaining is not supported yet", node, unsupported=True
+            )
+        value = self.expression(node.exception) if node.exception is not None else None
+        self.current.exception_target = (
+            self.exception_target.label if self.exception_target is not None else None
+        )
+        self.current.terminator = ir.Raise(value)
+
+    def visit_Try(self, node):
+        if node.finally_body or node.exception_groups:
+            self.error(
+                "finally and exception groups are not supported yet",
+                node,
+                unsupported=True,
+            )
+        outer = self.exception_target
+        dispatch, success, done = self.block(), self.block(), self.block()
+        self.exception_target = dispatch
+        self.statements(node.body)
+        if self.current.terminator is None:
+            self.jump(success)
+        self.exception_target = outer
+        self.current = success
+        self.statements(node.else_body)
+        if self.current.terminator is None:
+            self.jump(done)
+        self.current = dispatch
+        caught = self.result()
+        self.emit(ir.CatchException(caught))
+        exception = self.temporary()
+        self.store(exception, caught)
+        for handler in node.handlers:
+            body, unmatched = self.block(), self.block()
+            if handler.exception is None:
+                self.jump(body)
+            else:
+                expected = self.expression(handler.exception)
+                matches = self.protocol(
+                    "exception_matches", self.load(exception), expected
+                )
+                self.current.terminator = ir.Branch(
+                    matches, body.label, unmatched.label
+                )
+            self.current = body
+            self.emit(ir.EnterHandler(self.load(exception)))
+            unwind = self.block()
+            self.exception_target = unwind
+            if handler.binding is not None:
+                self.lowerer.reserved(handler.binding, handler)
+                self.store(handler.binding, self.load(exception), handler)
+            self.handlers.append(handler.binding)
+            self.statements(handler.body)
+            if self.current.terminator is None:
+                self.exception_target = outer
+                self.leave_handlers(len(self.handlers) - 1)
+                self.jump(done)
+            self.handlers.pop()
+            self.exception_target = outer
+            self.current = unwind
+            if handler.binding is not None:
+                self.emit(ir.ClearBinding(handler.binding, self.local(handler.binding)))
+            self.emit(ir.LeaveHandler())
+            self.propagate()
+            self.current = unmatched
+        # No handler matched: reinstall the original caught exception.
+        value = self.load(exception, clear=True)
+        self.current.exception_target = outer.label if outer is not None else None
+        self.current.terminator = ir.Raise(value)
+        self.current = done
+        self.emit(ir.ClearBinding(exception, True))
+
+    def visit_For(self, node):
+        if node.is_async:
+            self.error("async iteration is not supported yet", node, unsupported=True)
+        candidate = node.iterable.accept(_RangeCandidate())
+        callee = None
+        if candidate is not None:
+            callee = self.temporary()
+            self.store(callee, self.expression(candidate.function))
+            arguments = tuple(
+                self.expression(argument.value) for argument in candidate.arguments
+            )
+            value = self.result()
+            self.emit(
+                ir.Call(
+                    value,
+                    self.load(callee),
+                    arguments,
+                    self.lowerer.location(candidate),
+                )
+            )
+        else:
+            value = self.expression(node.iterable)
+        iterator = self.temporary()
+        self.store(iterator, self.protocol("iterate", value))
+        generic, range_test, range_body, range_done = (
+            self.block(),
+            self.block(),
+            self.block(),
+            self.block(),
+        )
+        if callee is not None:
+            state = self.range_states
+            self.range_states += 1
+            accepted = self.result()
+            self.emit(
+                ir.PrepareRange(
+                    accepted, self.load(callee, clear=True), self.load(iterator), state
+                )
+            )
+            self.current.terminator = ir.Branch(
+                accepted, range_test.label, generic.label
+            )
+            self.current = range_test
+            available = self.result()
+            self.emit(ir.RangeAvailable(available, state))
+            availability = self.current
+            self.current.terminator = ir.Branch(
+                available, range_body.label, range_done.label
+            )
+            self.current = range_body
+            item = self.result()
+            minimum, maximum = _range_interval(candidate)
+            self.emit(ir.RangeAdvance(item, state, minimum, maximum))
+            node.target.accept(_AssignmentTarget(self, item))
+            self.loops.append((range_test, range_done, len(self.handlers)))
+            self.statements(node.body)
+            self.loops.pop()
+            if self.current.terminator is None:
+                self.jump(range_test)
+            range_else = self.block()
+            # Break skips else; exhaustion runs it. Repoint only the test's false edge.
+            availability.terminator = ir.Branch(
+                available, range_body.label, range_else.label
+            )
+            self.current = range_else
+            self.statements(node.else_body)
+            if self.current.terminator is None:
+                self.jump(range_done)
+        else:
+            self.jump(generic)
+            # Keep the unused candidate blocks well formed and disconnected.
+            for unused in (range_test, range_body):
+                unused.terminator = ir.Jump(range_done.label)
+        self.current = generic
+        test, loop, exhausted, done = (
+            self.block(),
+            self.block(),
+            self.block(),
+            self.block(),
+        )
+        failed, finished = self.block(), self.block()
+        self.jump(test)
+        self.current = test
+        outer = self.exception_target
+        self.exception_target = exhausted
+        item = self.protocol("next_item", self.load(iterator))
+        temporary = self.temporary()
+        self.store(temporary, item)
+        self.exception_target = outer
+        self.jump(loop)
+        self.current = loop
+        node.target.accept(_AssignmentTarget(self, self.load(temporary, clear=True)))
+        self.loops.append((test, done, len(self.handlers)))
+        self.statements(node.body)
+        self.loops.pop()
+        if self.current.terminator is None:
+            self.jump(test)
+        self.current = exhausted
+        caught = self.result()
+        self.emit(ir.CatchException(caught))
+        exception = self.temporary()
+        self.store(exception, caught)
+        matches = self.protocol("iteration_exhausted", self.load(exception))
+        self.current.terminator = ir.Branch(matches, finished.label, failed.label)
+        self.current = failed
+        value = self.load(exception, clear=True)
+        self.current.exception_target = outer.label if outer is not None else None
+        self.current.terminator = ir.Raise(value)
+        self.current = finished
+        self.emit(ir.Discard(self.load(exception, clear=True)))
+        self.statements(node.else_body)
+        if self.current.terminator is None:
+            self.jump(done)
+        self.current = done
+        self.jump(range_done)
+        self.current = range_done
+        self.emit(ir.Discard(self.load(iterator, clear=True)))
+
     def visit_While(self, node):
         test, loop, other, done = self.block(), self.block(), self.block(), self.block()
         self.jump(test)
         self.current = test
         self.condition(node.condition, loop, other)
         self.current = loop
-        self.loops.append((test, done))
+        self.loops.append((test, done, len(self.handlers)))
         self.statements(node.body)
         self.loops.pop()
         if self.current.terminator is None:
@@ -465,11 +711,13 @@ class FunctionBuilder(ast.Visitor):
     def visit_Break(self, node):
         if not self.loops:
             self.error("'break' outside loop", node)
+        self.leave_handlers(self.loops[-1][2])
         self.jump(self.loops[-1][1])
 
     def visit_Continue(self, node):
         if not self.loops:
             self.error("'continue' outside loop", node)
+        self.leave_handlers(self.loops[-1][2])
         self.jump(self.loops[-1][0])
 
     def visit_Return(self, node):
@@ -482,6 +730,7 @@ class FunctionBuilder(ast.Visitor):
         )
         if self.function.return_annotation is not None:
             value = self.assert_type(value, self.function.return_annotation, node)
+        self.leave_handlers(0)
         self.current.terminator = ir.Return(value)
 
     def visit_FunctionDefinition(self, node):
@@ -599,6 +848,11 @@ class FunctionBuilder(ast.Visitor):
 
     def visit_BytesLiteral(self, node):
         return self.constant(node)
+
+    def visit_Subscript(self, node):
+        return self.protocol(
+            "getitem", self.expression(node.value), self.expression(node.index)
+        )
 
     def visit_List(self, node):
         return self.sequence(node, ir.BuildList)
@@ -816,6 +1070,58 @@ class FunctionBuilder(ast.Visitor):
         self.function.locals = tuple(self.locals)
 
 
+class _RangeName(ast.Visitor):
+    def visit_Name(self, node):
+        return node.identifier == "range"
+
+
+class _RangeCandidate(ast.Visitor):
+    def visit_Call(self, node):
+        if (
+            node.function.accept(_RangeName())
+            and 1 <= len(node.arguments) <= 3
+            and all(
+                argument.kind == ast.ArgumentKind.POSITIONAL
+                for argument in node.arguments
+            )
+        ):
+            return node
+
+
+class _IntegerConstant(ast.Visitor):
+    def visit_IntegerLiteral(self, node):
+        return node.value
+
+    def visit_Unary(self, node):
+        value = node.operand.accept(self)
+        if value is not None:
+            if node.operator == ast.UnaryOperator.NEGATIVE:
+                return -value
+            if node.operator == ast.UnaryOperator.POSITIVE:
+                return value
+
+
+def _range_interval(candidate):
+    from .value_facts import FIXNUM_MAX, FIXNUM_MIN
+
+    values = [
+        argument.value.accept(_IntegerConstant()) for argument in candidate.arguments
+    ]
+    if all(value is not None for value in values):
+        if len(values) == 1:
+            start, stop, step = 0, values[0], 1
+        elif len(values) == 2:
+            start, stop, step = values[0], values[1], 1
+        else:
+            start, stop, step = values
+        if all(FIXNUM_MIN <= value <= FIXNUM_MAX for value in (start, stop, step)):
+            if step > 0 and start < stop:
+                return start, stop - 1
+            if step < 0 and start > stop:
+                return stop + 1, start
+    return FIXNUM_MIN, FIXNUM_MAX
+
+
 class _AssignmentTarget(ast.Visitor):
     def __init__(self, builder, value):
         self.builder = builder
@@ -827,6 +1133,35 @@ class _AssignmentTarget(ast.Visitor):
             node,
             unsupported=True,
         )
+
+    def visit_Subscript(self, node):
+        receiver = self.builder.expression(node.value)
+        index = self.builder.expression(node.index)
+        result = self.builder.protocol("setitem", receiver, index, self.value)
+        self.builder.emit(ir.Discard(result))
+
+    def visit_Tuple(self, node):
+        self.unpack(node)
+
+    def visit_List(self, node):
+        self.unpack(node)
+
+    def unpack(self, node):
+        values = self.builder.protocol(
+            "unpack",
+            self.value,
+            self.builder.constant(ast.IntegerLiteral(len(node.elements))),
+        )
+        temporary = self.builder.temporary()
+        self.builder.store(temporary, values)
+        for index, target in enumerate(node.elements):
+            element = self.builder.protocol(
+                "getitem",
+                self.builder.load(temporary),
+                self.builder.constant(ast.IntegerLiteral(index)),
+            )
+            target.accept(_AssignmentTarget(self.builder, element))
+        self.builder.emit(ir.Discard(self.builder.load(temporary, clear=True)))
 
     def visit_Name(self, node):
         self.builder.store(node.identifier, self.value, node)
@@ -1284,6 +1619,22 @@ class _AugmentedTarget(ast.Visitor):
             unsupported=True,
         )
 
+    def visit_Subscript(self, node):
+        receiver, index = self.builder.temporary(), self.builder.temporary()
+        self.builder.store(receiver, self.builder.expression(node.value))
+        self.builder.store(index, self.builder.expression(node.index))
+        left = self.builder.protocol(
+            "getitem", self.builder.load(receiver), self.builder.load(index)
+        )
+        result = self.binary(left)
+        stored = self.builder.protocol(
+            "setitem",
+            self.builder.load(receiver, clear=True),
+            self.builder.load(index, clear=True),
+            result,
+        )
+        self.builder.emit(ir.Discard(stored))
+
     def binary(self, left, reuse_local=None):
         right = self.builder.expression(self.assignment.value)
         result = self.builder.result()
@@ -1606,6 +1957,11 @@ class _LocalBindings(_ImportNames):
     def visit_ClassDefinition(self, node):
         pass
 
+    def visit_ExceptionHandler(self, node):
+        if node.binding is not None:
+            ast.Name(node.binding, span=node.span).accept(self.target_visitor)
+        self.visit_Node(node)
+
     def visit_AnnotatedAssignment(self, node):
         node.target.accept(self.target_visitor)
         node.target.accept(self)
@@ -1618,6 +1974,13 @@ class _LocalTarget(ast.Visitor):
         self.builder = builder
 
     def visit_Node(self, node):
+        for child in node.children():
+            child.accept(self)
+
+    def visit_Subscript(self, node):
+        pass
+
+    def visit_Attribute(self, node):
         pass
 
     def visit_Name(self, node):

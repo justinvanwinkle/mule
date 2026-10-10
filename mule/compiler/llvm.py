@@ -11,7 +11,13 @@ from __future__ import annotations
 import struct
 
 from mule import ast
-from mule.compiler import format_protocol, llvm_ops, native, native_protocol
+from mule.compiler import (
+    format_protocol,
+    llvm_ops,
+    native,
+    native_protocol,
+    sequence_protocol,
+)
 from mule.compiler import ir as ir1
 from mule.compiler.analysis import UNKNOWN, Context, ValueType, analyze
 from mule.compiler.protocols import CompiledCall
@@ -119,6 +125,31 @@ declare void @mule_release(ptr)
 declare i32 @mule_enter_frame()
 declare void @mule_leave_frame()
 declare i32 @mule_function_matches(ptr, ptr, ptr)
+declare i32 @mule_run_protocols(ptr, ptr)
+declare i32 @mule_range_storage(ptr, ptr)
+declare ptr @mule_protocol_globals()
+declare ptr @mule_catch_exception()
+declare i32 @mule_enter_handler(ptr)
+declare void @mule_leave_handler()
+declare i32 @mule_clear_binding(ptr, ptr)
+declare i32 @mule_reraise()
+declare i32 @mule_check_rest_args(ptr, i32)
+declare ptr @mule_rest_args(ptr, i32)
+declare ptr @mule_storage_length(ptr)
+declare ptr @mule_storage_read(ptr, ptr)
+declare ptr @mule_storage_write(ptr, ptr, ptr)
+declare ptr @mule_storage_append(ptr, ptr)
+declare ptr @mule_storage_tuple(ptr)
+declare ptr @mule_storage_compatible(ptr, ptr)
+declare ptr @mule_integer_storage(ptr)
+declare ptr @mule_class_identity(ptr)
+declare ptr @mule_class_parent(ptr)
+declare ptr @mule_raised_class(ptr)
+declare ptr @mule_exception_targets(ptr)
+declare ptr @mule_raise_pending(ptr)
+declare ptr @mule_invalid_raise()
+declare ptr @mule_install_builtin(ptr, ptr)
+declare ptr @mule_install_storage(ptr, ptr, ptr, ptr)
 declare i32 @mule_run(ptr)
 declare void @llvm.assume(i1)
 """
@@ -128,6 +159,11 @@ def emit(module: ir1.Module) -> str:
     """Return a complete LLVM module with a native executable entry point."""
     ir1.verify(module)
     return _ModuleEmitter(module).emit()
+
+
+class _RangeStates(ir1.Visitor):
+    def visit_PrepareRange(self, operation):
+        return operation.state
 
 
 class _MethodTargets(ir1.Visitor):
@@ -165,9 +201,14 @@ class _ModuleEmitter:
     def __init__(self, module: ir1.Module):
         module = ir1.Module(list(module.functions), module.entry)
         self.module = module
+        self.protocol_entry, self.sequence_functions, calls, references = (
+            sequence_protocol.prepare(module)
+        )
         self.layouts, self.protocol_calls, self.protocol_references = (
             native_protocol.prepare(module)
         )
+        self.protocol_calls.update(calls)
+        self.protocol_references.update(references)
         calls, references = format_protocol.prepare(module)
         self.protocol_calls.update(calls)
         self.protocol_references.update(references)
@@ -259,10 +300,15 @@ class _ModuleEmitter:
                 f'[{len(value) + 1} x i8] c"{escaped}"'
             )
         entry = self.functions[self.module.entry]
+        run = (
+            f"call i32 @mule_run_protocols(ptr {entry}, ptr {self.functions[self.protocol_entry]})"
+            if self.protocol_entry is not None
+            else f"call i32 @mule_run(ptr {entry})"
+        )
         main = (
             "define i32 @main() {\n"
             "entry:\n"
-            f"  %status = call i32 @mule_run(ptr {entry})\n"
+            f"  %status = {run}\n"
             + "".join(
                 f"  %import.{index} = load ptr, ptr @mule.import.cache.{index}\n"
                 f"  call void @mule_release(ptr %import.{index})\n"
@@ -515,6 +561,7 @@ class _FunctionEmitter(ir1.Visitor):
         self.immortal_values: set[str] = set()
         self.lines: list[str] = []
         self.serial = 0
+        self.exception_target = None
         self.local_slots = {
             name: f"%local.{index}" for index, name in enumerate(function.locals)
         }
@@ -549,6 +596,12 @@ class _FunctionEmitter(ir1.Visitor):
         self.value_slots = {
             name: f"%value.{index}" for index, name in enumerate(results)
         }
+        self.range_slots = {
+            instruction.state: f"%range.{instruction.state}"
+            for block in function.blocks
+            for instruction in block.instructions
+            if instruction.accept(_RangeStates()) is not None
+        }
         self.receiver_slots = {
             name: f"%receiver.{index}"
             for index, name in enumerate(
@@ -581,7 +634,12 @@ class _FunctionEmitter(ir1.Visitor):
 
     def guard(self, failed: str) -> None:
         continuation = self.fresh("ok")[1:]
-        self.line(f"br i1 {failed}, label %error, label %{continuation}")
+        target = (
+            "error"
+            if self.exception_target is None
+            else "unwind." + self.exception_target
+        )
+        self.line(f"br i1 {failed}, label %{target}, label %{continuation}")
         self.lines.append(continuation + ":")
 
     def check_pointer(self, value: str) -> None:
@@ -688,6 +746,9 @@ class _FunctionEmitter(ir1.Visitor):
         ]:
             self.line(f"{slot} = alloca ptr")
             self.line(f"store ptr null, ptr {slot}")
+        for slot in self.range_slots.values():
+            self.line(f"{slot} = alloca [3 x i64]")
+            self.line(f"store [3 x i64] zeroinitializer, ptr {slot}")
         max_args = max(
             (
                 instruction.argument_count()
@@ -704,9 +765,26 @@ class _FunctionEmitter(ir1.Visitor):
         self.line(f"br label %{self.labels[self.function.blocks[0].label]}")
         for block in self.function.blocks:
             self.lines.append(self.labels[block.label] + ":")
+            self.exception_target = block.exception_target
             for instruction in block.instructions:
                 self.instruction(instruction)
             self.terminator(block.terminator)
+        for target in dict.fromkeys(
+            block.exception_target
+            for block in self.function.blocks
+            if block.exception_target is not None
+        ):
+            self.lines.append("unwind." + target + ":")
+            for result, slot in self.value_slots.items():
+                value = self.operation(f"load ptr, ptr {slot}")
+                self.line(f"store ptr null, ptr {slot}")
+                self.mark_immortal(result, value)
+                self.release(value)
+            for slot in self.receiver_slots.values():
+                value = self.operation(f"load ptr, ptr {slot}")
+                self.line(f"store ptr null, ptr {slot}")
+                self.release(value)
+            self.line(f"br label %{self.labels[target]}")
         self.lines.append("error:")
         self.line("br label %cleanup")
         self.lines.append("cleanup:")
@@ -727,6 +805,8 @@ class _FunctionEmitter(ir1.Visitor):
     def wrapper(self) -> str:
         """General entry validates an argument view and transfers owned arguments."""
         count = len(self.function.parameters)
+        fixed = count - int(self.function.variadic)
+        check = "mule_check_rest_args" if self.function.variadic else "mule_check_args"
         lines = [
             (
                 f"define ptr {self.module.functions[self.function.name]}"
@@ -743,16 +823,21 @@ class _FunctionEmitter(ir1.Visitor):
             )
         lines.extend(
             [
-                f"  %status = call i32 @mule_check_args(ptr %args, i32 {count})",
+                f"  %status = call i32 @{check}(ptr %args, i32 {fixed})",
                 "  %wrong = icmp slt i32 %status, 0",
                 "  br i1 %wrong, label %failed, label %checked",
                 "checked:",
             ]
         )
         for index in range(count):
+            getter = (
+                "mule_rest_args"
+                if self.function.variadic and index == fixed
+                else "mule_arg"
+            )
             lines.extend(
                 [
-                    f"  %arg.{index} = call ptr @mule_arg(ptr %args, i32 {index})",
+                    f"  %arg.{index} = call ptr @{getter}(ptr %args, i32 {index})",
                     f"  store ptr %arg.{index}, ptr %slot.{index}",
                     f"  %missing.{index} = icmp eq ptr %arg.{index}, null",
                     f"  br i1 %missing.{index}, label %failed, label %arg.ok.{index}",
@@ -872,6 +957,91 @@ class _FunctionEmitter(ir1.Visitor):
         self.release(value)
         self.release(specification)
         self.check_pointer(result)
+
+    def visit_PrepareRange(self, instruction):
+        callee, iterator = (
+            self.take(instruction.callee),
+            self.take(instruction.iterator),
+        )
+        globals_value = self.operation("call ptr @mule_protocol_globals()")
+        matched = self.operation(
+            f"call i32 @mule_function_matches(ptr {callee}, ptr {self.module.functions[self.module.sequence_functions['range']]}, ptr {globals_value})"
+        )
+        stored = self.operation(
+            f"call i32 @mule_range_storage(ptr {iterator}, ptr {self.range_slots[instruction.state]})"
+        )
+        accepted = self.operation(f"and i32 {matched}, {stored}")
+        result = self.operation(f"call ptr @mule_bool(i32 {accepted})")
+        self.publish(instruction.result, result)
+        self.release(callee)
+        self.release(iterator)
+
+    def range_words(self, state):
+        words = []
+        for index in range(3):
+            address = self.operation(
+                f"getelementptr i64, ptr {self.range_slots[state]}, i64 {index}"
+            )
+            words.append(self.operation(f"load i64, ptr {address}"))
+        return words
+
+    def visit_RangeAvailable(self, instruction):
+        current, stop, step = self.range_words(instruction.state)
+        forward = self.operation(f"icmp sgt i64 {step}, 0")
+        below = self.operation(f"icmp slt i64 {current}, {stop}")
+        above = self.operation(f"icmp sgt i64 {current}, {stop}")
+        available = self.operation(f"select i1 {forward}, i1 {below}, i1 {above}")
+        wide = self.operation(f"zext i1 {available} to i32")
+        result = self.operation(f"call ptr @mule_bool(i32 {wide})")
+        self.publish(instruction.result, result)
+
+    def visit_RangeAdvance(self, instruction):
+        current, _, step = self.range_words(instruction.state)
+        following = self.operation(f"add nsw i64 {current}, {step}")
+        self.line(f"store i64 {following}, ptr {self.range_slots[instruction.state]}")
+        encoded = self.operation(f"shl i64 {current}, 1")
+        tagged = self.operation(f"or i64 {encoded}, 1")
+        result = self.operation(f"inttoptr i64 {tagged} to ptr")
+        self.publish(instruction.result, result)
+        self.refine(instruction.result, result)
+
+    def sequence_call(self, name, arguments):
+        globals_value = self.operation("call ptr @mule_protocol_globals()")
+        return CompiledCall(self.module.sequence_functions[name], globals_value).emit(
+            self, arguments
+        )
+
+    def visit_ProtocolCall(self, instruction):
+        arguments = [self.take(value) for value in instruction.args]
+        result = self.sequence_call(instruction.protocol, arguments)
+        self.publish(instruction.result, result)
+        for value in arguments:
+            self.release(value)
+        self.check_pointer(result)
+
+    def visit_CatchException(self, instruction):
+        self.pointer_result(instruction.result, "call ptr @mule_catch_exception()")
+
+    def visit_EnterHandler(self, instruction):
+        value = self.take(instruction.value)
+        status = self.operation(f"call i32 @mule_enter_handler(ptr {value})")
+        self.release(value)
+        self.check_status(status)
+
+    def visit_LeaveHandler(self, instruction):
+        self.line("call void @mule_leave_handler()")
+
+    def visit_ClearBinding(self, instruction):
+        if instruction.local:
+            slot = self.local_slots[instruction.name]
+            value = self.operation(f"load ptr, ptr {slot}")
+            self.line(f"store ptr null, ptr {slot}")
+            if instruction.name not in self.immortal_locals:
+                self.release(value)
+        else:
+            self.line(
+                f"call i32 @mule_clear_binding(ptr %globals, ptr {self.module.text(instruction.name)})"
+            )
 
     def visit_Load(self, instruction: ir1.Load) -> None:
         result = instruction.result
@@ -1135,6 +1305,7 @@ class _FunctionEmitter(ir1.Visitor):
                 function
                 for function in self.module.module.functions
                 if function.name == target
+                and not function.variadic
                 and len(function.parameters) == len(arguments) + 1
             ),
             None,
@@ -1208,6 +1379,7 @@ class _FunctionEmitter(ir1.Visitor):
                 function
                 for function in self.module.module.functions
                 if function.name == target
+                and not function.variadic
                 and len(function.parameters) == len(arguments)
             ),
             None,
@@ -1308,6 +1480,24 @@ class _FunctionEmitter(ir1.Visitor):
 
     def terminator(self, terminator: ir1.Terminator) -> None:
         terminator.accept(self)
+
+    def visit_Raise(self, terminator):
+        if terminator.value is None:
+            self.line("call i32 @mule_reraise()")
+        else:
+            value = self.take(terminator.value)
+            result = self.sequence_call("raise_value", [value])
+            self.release(value)
+            self.release(result)
+        self.visit_Propagate(terminator)
+
+    def visit_Propagate(self, terminator):
+        target = (
+            "error"
+            if self.exception_target is None
+            else "unwind." + self.exception_target
+        )
+        self.line(f"br label %{target}")
 
     def visit_Jump(self, terminator: ir1.Jump) -> None:
         target = terminator.target

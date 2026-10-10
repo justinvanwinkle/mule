@@ -20,7 +20,7 @@ args = []
 [mule]
 status = "pending"
 phase = "compile"
-reason = "only fixed positional parameters are supported yet"
+reason = "default values, keyword-only parameters and **kwargs are not supported yet"
 '''
 
 def greeting(ip, style='-', spacing=10):

@@ -26,8 +26,9 @@ class Bindings(ir.Visitor):
 
 
 class CompiledCall(Primitive):
-    def __init__(self, function):
+    def __init__(self, function, globals_value="%globals"):
         self.function = function
+        self.globals_value = globals_value
 
     def emit(self, emitter, arguments):
         status = emitter.operation("call i32 @mule_enter_frame()")
@@ -44,7 +45,9 @@ class CompiledCall(Primitive):
             emitter.operation(f"call ptr @mule.fast.retain(ptr {value})")
             for value in arguments
         ]
-        operands = ", ".join(["ptr %globals", *(f"ptr {value}" for value in owned)])
+        operands = ", ".join(
+            [f"ptr {self.globals_value}", *(f"ptr {value}" for value in owned)]
+        )
         result = emitter.operation(
             f"call ptr {emitter.module.bodies[self.function]}({operands})"
         )

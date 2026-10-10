@@ -17,8 +17,13 @@ timeout = 5.0
 
 [mule]
 status = "pending"
-phase = "compile"
-reason = "syntax is not supported by the native compiler yet"
+phase = "run"
+reason = "AttributeError: object has no attribute 'upper'"
+
+[mule.failure]
+stdout = ""
+stderr = "AttributeError: object has no attribute 'upper'\n"
+exit_code = 1
 '''
 
 tasks_by_priority = ["Pay Rent", "Clean Dishes", "Buy Milk"]

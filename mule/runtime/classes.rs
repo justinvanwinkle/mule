@@ -21,6 +21,14 @@ pub struct ClassLayout {
     pub(crate) native: Option<NativeLayout>,
 }
 
+impl ClassLayout {
+    pub fn method(&self, name: &str) -> Value {
+        self.method_lookup
+            .get(name)
+            .map_or(std::ptr::null_mut(), |index| self.methods[*index].1)
+    }
+}
+
 pub(crate) struct NativeLayout {
     pub(crate) schema: *const c_void,
     // As with native function environments, the executing module owns globals.
@@ -285,7 +293,14 @@ unsafe fn resolve(
                     Data::Type { attributes, .. } => (*attributes, true),
                     _ => unreachable!(),
                 },
-                _ => return missing(attribute),
+                _ => {
+                    let method = crate::sequences::binding(receiver, attribute);
+                    if !method.is_null() {
+                        *bound = object::retain(receiver);
+                        return object::retain(method);
+                    }
+                    return missing(attribute);
+                }
             };
             let method = object::lookup(attributes, attribute);
             if method.is_null() {
@@ -356,10 +371,7 @@ pub unsafe fn special_binding(receiver: Value, attribute: &str) -> Value {
         let Some((layout, _)) = layout(receiver) else {
             return std::ptr::null_mut();
         };
-        layout
-            .method_lookup
-            .get(attribute)
-            .map_or(std::ptr::null_mut(), |index| layout.methods[*index].1)
+        layout.method(attribute)
     }
 }
 

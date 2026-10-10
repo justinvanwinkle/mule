@@ -19,8 +19,13 @@ args = []
 
 [mule]
 status = "pending"
-phase = "compile"
-reason = "syntax is not supported by the native compiler yet"
+phase = "run"
+reason = "AttributeError: object has no attribute 'startswith'"
+
+[mule.failure]
+stdout = ""
+stderr = "AttributeError: object has no attribute 'startswith'\n"
+exit_code = 1
 '''
 
 words = ['refuse', 'impossible', 'present', 'read']

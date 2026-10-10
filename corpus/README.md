@@ -40,8 +40,8 @@ stdin, command-line arguments, UTF-8 output decoding and a timeout. The selected
 programs use only the standard library and need no network access or installed
 third-party packages.
 
-Currently 44 reference tests and 8 native tests pass. The remaining 36 native
-cases document compiler gaps: 34 stop during compilation and 2 encounter missing
+Currently 44 reference tests and 11 native tests pass. The remaining 33 native
+cases document compiler gaps: 28 stop during compilation and 5 encounter missing
 string methods at runtime. Ordinary runs report these as expected failures;
 `--corpus-strict` makes them failures. A compile gap must match the recorded
 `SyntaxError` or `UnsupportedSyntax` message and source file. A runtime gap must

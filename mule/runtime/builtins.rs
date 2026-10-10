@@ -485,6 +485,9 @@ pub unsafe fn lookup_builtin(name: &str) -> Value {
     unsafe { object::lookup(namespace(), name) }
 }
 pub unsafe fn run(native: *mut c_void) -> i32 {
+    unsafe { run_protocols(native, std::ptr::null_mut()) }
+}
+pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 {
     unsafe {
         object::clear_error();
         if native.is_null() {
@@ -503,7 +506,11 @@ pub unsafe fn run(native: *mut c_void) -> i32 {
             data: Data::Args(Vec::new()),
         };
         let entry = std::mem::transmute::<*mut c_void, Native>(native);
-        let result = entry(globals, &mut args);
+        let result = if crate::sequences::initialize(protocols) {
+            entry(globals, &mut args)
+        } else {
+            std::ptr::null_mut()
+        };
         if result.is_null() && !object::has_error() {
             object::error(
                 "SystemError",
@@ -512,18 +519,18 @@ pub unsafe fn run(native: *mut c_void) -> i32 {
         }
         object::release(result);
         object::release(globals);
-        BUILTINS.with(|storage| {
-            object::release(storage.replace(std::ptr::null_mut()));
-        });
         if io::stdout().flush().is_err() {
             object::error("OSError", "output failed");
         }
-        if object::has_error() {
+        let status = if object::has_error() {
             let message = format!("{}: {}\n", object::error_kind(), object::error_message());
             let _ = io::stderr().lock().write_all(message.as_bytes());
             1
         } else {
             0
-        }
+        };
+        BUILTINS.with(|storage| object::release(storage.replace(std::ptr::null_mut())));
+        crate::sequences::finish();
+        status
     }
 }

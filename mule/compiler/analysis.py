@@ -209,6 +209,28 @@ class _InstructionAnalysis(ir.Visitor):
         self.invalidate(self.state)
         return _Fact()
 
+    def visit_PrepareRange(self, instruction):
+        return _Fact(BooleanType())
+
+    def visit_RangeAvailable(self, instruction):
+        return _Fact(BooleanType())
+
+    def visit_RangeAdvance(self, instruction):
+        return _Fact(IntegerType(instruction.minimum, instruction.maximum))
+
+    def visit_ProtocolCall(self, instruction):
+        self.invalidate(self.state)
+        return _Fact()
+
+    def visit_CatchException(self, instruction):
+        self.invalidate(self.state)
+        return _Fact()
+
+    def visit_ClearBinding(self, instruction):
+        key = instruction.name if instruction.local else ("global", instruction.name)
+        self.state[key] = _Fact(UNBOUND)
+        self.forget_origin(instruction.name)
+
     def visit_Sequence(self, instruction):
         return _Fact()
 
@@ -381,9 +403,7 @@ class _GlobalBindings(ir.Visitor):
 def _analyze_function(function, global_targets, parameters, resolve_call) -> _Body:
     blocks = {block.label: block for block in function.blocks}
     entry = function.blocks[0].label
-    successors = {
-        label: block.terminator.successors() for label, block in blocks.items()
-    }
+    successors = {label: block.successors() for label, block in blocks.items()}
     predecessors = defaultdict(set)
     consumers = defaultdict(set)
     producers = {}
@@ -455,6 +475,7 @@ def _analyze_function(function, global_targets, parameters, resolve_call) -> _Bo
                     name: _widen(incoming[label][name], state[name]) for name in state
                 }
             incoming[label] = dict(state)
+        before = dict(state)
         visitor = _InstructionAnalysis(
             state, values, {}, global_targets, invalidate_globals, resolve_call
         )
@@ -471,6 +492,9 @@ def _analyze_function(function, global_targets, parameters, resolve_call) -> _Bo
         terminator.accept(_TruthEffects(values, state, invalidate_globals))
         for target in successors[label]:
             edge = dict(state)
+            if target == blocks[label].exception_target:
+                edge = {name: _join_fact(before[name], state[name]) for name in state}
+                invalidate_globals(edge)
             terminator.accept(
                 _BranchConstraint(
                     target, producers, values, visitor.origins, state, edge
@@ -541,9 +565,13 @@ def _interprocedural(
     parameters = {}
     for function in module.functions:
         parameters[function.name, "general"] = (UNKNOWN,) * len(function.parameters)
-        if function.parameters and not any(
-            contract is not None and contract.contradicts(full)
-            for contract in function.parameter_annotations
+        if (
+            function.parameters
+            and not function.variadic
+            and not any(
+                contract is not None and contract.contradicts(full)
+                for contract in function.parameter_annotations
+            )
         ):
             parameters[function.name, "fixnum"] = (full,) * len(function.parameters)
     summaries = {key: BOTTOM for key in parameters}
@@ -584,7 +612,7 @@ def _interprocedural(
             if not callee.proven or callee.target not in functions:
                 return UNKNOWN
             target = functions[callee.target]
-            if len(arguments) != len(target.parameters):
+            if target.variadic or len(arguments) != len(target.parameters):
                 return UNKNOWN
             for actual, contract in zip(arguments, target.parameter_annotations):
                 if contract is not None:
@@ -627,6 +655,7 @@ def _interprocedural(
                 target = functions.get(call.target)
                 if (
                     target is None
+                    or target.variadic
                     or not target.parameters
                     or len(call.arguments) != len(target.parameters)
                 ):

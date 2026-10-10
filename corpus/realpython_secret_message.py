@@ -16,9 +16,9 @@ stdin = ""
 timeout = 5.0
 
 [mule]
-status = "pending"
+status = "supported"
 phase = "compile"
-reason = "syntax is not supported by the native compiler yet"
+reason = ""
 '''
 
 secret_message = "3LAigf7eq 5fhiOnpdDs2 Ra6 nwUalyo.9"

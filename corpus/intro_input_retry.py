@@ -18,9 +18,9 @@ timeout = 5.0
 args = []
 
 [mule]
-status = "pending"
+status = "supported"
 phase = "compile"
-reason = "syntax is not supported by the native compiler yet"
+reason = ""
 '''
 
 while True:
