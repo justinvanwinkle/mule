@@ -13,6 +13,8 @@ frontend coverage does not establish complete Python compatibility.
 - [Lexing and strings](lexing.md): tokenization and interpolated literals.
 - [Compiler design reference](compiler.md): scope and reading order.
 - [Native compiler](native-compiler.md): implemented subset and executable builds.
+- [Native implementation selection](native-lowering.md): implemented analysis,
+  native arithmetic, guarded calls, and their SBCL source references.
 - [Dependency policy](dependencies.md): prohibited CPython linking and library approvals.
 - [SBCL compiler](sbcl-compiler.md): source-backed baseline architecture.
 - [Python and LLVM changes](python-changes.md): retained analysis and required adaptations.

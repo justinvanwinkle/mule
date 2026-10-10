@@ -12,6 +12,7 @@ import struct
 
 from mule import ast
 from mule.compiler import ir as ir1
+from mule.compiler import llvm_ops
 
 _BINARY = {
     ast.BinaryOperator.ADD: 0,
@@ -82,7 +83,11 @@ declare ptr @mule_call(ptr, i64, ptr)
 declare ptr @mule_function(ptr, ptr, ptr)
 declare i32 @mule_check_args(ptr, i32)
 declare ptr @mule_arg(ptr, i32)
+declare ptr @mule_retain(ptr)
 declare void @mule_release(ptr)
+declare i32 @mule_enter_frame()
+declare void @mule_leave_frame()
+declare i32 @mule_function_matches(ptr, ptr, ptr)
 declare i32 @mule_run(ptr)
 """
 
@@ -98,6 +103,10 @@ class _ModuleEmitter:
         self.module = module
         self.functions = {
             function.name: f"@mule.fn.{index}"
+            for index, function in enumerate(module.functions)
+        }
+        self.bodies = {
+            function.name: f"@mule.body.{index}"
             for index, function in enumerate(module.functions)
         }
         self.data: dict[bytes, str] = {}
@@ -134,7 +143,12 @@ class _ModuleEmitter:
             "  ret i32 %status\n"
             "}"
         )
-        return "\n\n".join([_DECLARATIONS, *globals_, *functions, main]) + "\n"
+        return (
+            "\n\n".join(
+                [_DECLARATIONS, llvm_ops.helpers(), *globals_, *functions, main]
+            )
+            + "\n"
+        )
 
 
 class _FunctionEmitter:
@@ -189,7 +203,7 @@ class _FunctionEmitter:
         return result
 
     def release(self, value: str) -> None:
-        self.line(f"call void @mule_release(ptr {value})")
+        self.line(f"call void @mule.fast.release(ptr {value})")
 
     def publish(self, result: str, value: str) -> None:
         slot = self.value_slots[result]
@@ -205,9 +219,17 @@ class _FunctionEmitter:
         self.check_pointer(value)
 
     def emit(self) -> str:
+        wrapper = self.wrapper()
+        parameters = ", ".join(
+            ["ptr %globals"]
+            + [
+                f"ptr %parameter.{index}"
+                for index in range(len(self.function.parameters))
+            ]
+        )
         self.lines.append(
-            f"define ptr {self.module.functions[self.function.name]}"
-            "(ptr %globals, ptr %args) {"
+            f"define internal ptr {self.module.bodies[self.function.name]}"
+            f"({parameters}) {{"
         )
         self.lines.append("entry:")
         self.line("%return = alloca ptr")
@@ -225,14 +247,10 @@ class _FunctionEmitter:
             default=0,
         )
         self.line(f"%argv = alloca [{max(1, max_args)} x ptr]")
-        status = self.operation(
-            f"call i32 @mule_check_args(ptr %args, i32 {len(self.function.parameters)})"
-        )
-        self.check_status(status)
         for index, parameter in enumerate(self.function.parameters):
-            value = self.operation(f"call ptr @mule_arg(ptr %args, i32 {index})")
-            self.line(f"store ptr {value}, ptr {self.local_slots[parameter]}")
-            self.check_pointer(value)
+            self.line(
+                f"store ptr %parameter.{index}, ptr {self.local_slots[parameter]}"
+            )
         self.line(f"br label %{self.labels[self.function.blocks[0].label]}")
         for block in self.function.blocks:
             self.lines.append(self.labels[block.label] + ":")
@@ -247,7 +265,62 @@ class _FunctionEmitter:
         value = self.operation("load ptr, ptr %return")
         self.line(f"ret ptr {value}")
         self.lines.append("}")
-        return "\n".join(self.lines)
+        return wrapper + "\n\n" + "\n".join(self.lines)
+
+    def wrapper(self) -> str:
+        """General entry validates an argument view and transfers owned arguments."""
+        count = len(self.function.parameters)
+        lines = [
+            (
+                f"define ptr {self.module.functions[self.function.name]}"
+                "(ptr %globals, ptr %args) {"
+            ),
+            "entry:",
+        ]
+        for index in range(count):
+            lines.extend(
+                [
+                    f"  %slot.{index} = alloca ptr",
+                    f"  store ptr null, ptr %slot.{index}",
+                ]
+            )
+        lines.extend(
+            [
+                f"  %status = call i32 @mule_check_args(ptr %args, i32 {count})",
+                "  %wrong = icmp slt i32 %status, 0",
+                "  br i1 %wrong, label %failed, label %checked",
+                "checked:",
+            ]
+        )
+        for index in range(count):
+            lines.extend(
+                [
+                    f"  %arg.{index} = call ptr @mule_arg(ptr %args, i32 {index})",
+                    f"  store ptr %arg.{index}, ptr %slot.{index}",
+                    f"  %missing.{index} = icmp eq ptr %arg.{index}, null",
+                    f"  br i1 %missing.{index}, label %failed, label %arg.ok.{index}",
+                    f"arg.ok.{index}:",
+                ]
+            )
+        arguments = ", ".join(
+            ["ptr %globals", *(f"ptr %arg.{i}" for i in range(count))]
+        )
+        lines.extend(
+            [
+                f"  %result = call ptr {self.module.bodies[self.function.name]}({arguments})",
+                "  ret ptr %result",
+                "failed:",
+            ]
+        )
+        for index in range(count):
+            lines.extend(
+                [
+                    f"  %old.{index} = load ptr, ptr %slot.{index}",
+                    f"  call void @mule.fast.release(ptr %old.{index})",
+                ]
+            )
+        lines.extend(["  ret ptr null", "}"])
+        return "\n".join(lines)
 
     def instruction(self, instruction: ir1.Instruction) -> None:
         match instruction:
@@ -260,11 +333,9 @@ class _FunctionEmitter:
                     value = self.operation(f"load ptr, ptr {slot}")
                     if clear:
                         self.line(f"store ptr null, ptr {slot}")
-                        self.publish(result, value)
-                        self.check_pointer(value)
-                        return
+                    helper = "local.move" if clear else "local"
                     operation = (
-                        f"call ptr @mule_load_local(ptr {value}, ptr {name_pointer})"
+                        f"call ptr @mule.fast.{helper}(ptr {value}, ptr {name_pointer})"
                     )
                 else:
                     operation = (
@@ -295,24 +366,40 @@ class _FunctionEmitter:
                 inplace=inplace,
             ):
                 lhs, rhs = self.take(left), self.take(right)
+                opcode = _BINARY[operator]
+                operation = (
+                    f"@mule.fast.binary.{opcode}"
+                    if opcode in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12)
+                    else "@mule_binary"
+                )
+                arguments = (
+                    f"ptr {lhs}, ptr {rhs}, i32 {int(inplace)}"
+                    if operation != "@mule_binary"
+                    else f"i32 {opcode}, ptr {lhs}, ptr {rhs}, i32 {int(inplace)}"
+                )
                 self.pointer_result(
                     result,
-                    f"call ptr @mule_binary(i32 {_BINARY[operator]}, ptr {lhs}, "
-                    f"ptr {rhs}, i32 {int(inplace)})",
+                    f"call ptr {operation}({arguments})",
                     (lhs, rhs),
                 )
             case ir1.Unary(result=result, operator=operator, operand=operand):
                 value = self.take(operand)
                 self.pointer_result(
                     result,
-                    f"call ptr @mule_unary(i32 {_UNARY[operator]}, ptr {value})",
+                    f"call ptr @mule.fast.unary.{_UNARY[operator]}(ptr {value})",
                     (value,),
                 )
             case ir1.Compare(result=result, operator=operator, left=left, right=right):
                 lhs, rhs = self.take(left), self.take(right)
+                opcode = _COMPARE[operator]
+                operation = (
+                    f"call ptr @mule.fast.compare.{opcode}(ptr {lhs}, ptr {rhs})"
+                    if opcode < 8
+                    else f"call ptr @mule_compare(i32 {opcode}, ptr {lhs}, ptr {rhs})"
+                )
                 self.pointer_result(
                     result,
-                    f"call ptr @mule_compare(i32 {_COMPARE[operator]}, ptr {lhs}, ptr {rhs})",
+                    operation,
                     (lhs, rhs),
                 )
             case ir1.Call(result=result, callee=callee, args=args):
@@ -321,11 +408,11 @@ class _FunctionEmitter:
                 for index, value in enumerate(values):
                     slot = self.operation(f"getelementptr ptr, ptr %argv, i64 {index}")
                     self.line(f"store ptr {value}, ptr {slot}")
-                self.pointer_result(
-                    result,
-                    f"call ptr @mule_call(ptr {function}, i64 {len(args)}, ptr %argv)",
-                    (function, *values),
-                )
+                value = self.call(function, values)
+                self.publish(result, value)
+                for operand in (function, *values):
+                    self.release(operand)
+                self.check_pointer(value)
             case ir1.DefineFunction(result=result, function=function, public_name=name):
                 self.pointer_result(
                     result,
@@ -335,11 +422,66 @@ class _FunctionEmitter:
             case _:
                 raise TypeError(f"Unsupported LLVM instruction: {instruction!r}")
 
+    def call(self, callee: str, arguments: list[str]) -> str:
+        """Guard a native entry; preserve the actual callee for rebinding fallback."""
+        candidates = [
+            function
+            for function in self.module.module.functions
+            if len(function.parameters) == len(arguments)
+        ]
+        if not candidates:
+            return self.operation(
+                f"call ptr @mule_call(ptr {callee}, i64 {len(arguments)}, ptr %argv)"
+            )
+        join = self.fresh("call.join")[1:]
+        incoming = []
+        for function in candidates:
+            direct = self.fresh("call.direct")[1:]
+            next_ = self.fresh("call.next")[1:]
+            entered = self.fresh("call.entered")[1:]
+            failed = self.fresh("call.failed")[1:]
+            matched = self.operation(
+                f"call i32 @mule_function_matches(ptr {callee}, "
+                f"ptr {self.module.functions[function.name]}, ptr %globals)"
+            )
+            matching = self.operation(f"icmp ne i32 {matched}, 0")
+            self.line(f"br i1 {matching}, label %{direct}, label %{next_}")
+            self.lines.append(direct + ":")
+            frame = self.operation("call i32 @mule_enter_frame()")
+            rejected = self.operation(f"icmp slt i32 {frame}, 0")
+            self.line(f"br i1 {rejected}, label %{failed}, label %{entered}")
+            self.lines.append(failed + ":")
+            self.line(f"br label %{join}")
+            incoming.append(("null", failed))
+            self.lines.append(entered + ":")
+            owned = [
+                self.operation(f"call ptr @mule.fast.retain(ptr {argument})")
+                for argument in arguments
+            ]
+            operands = ", ".join(["ptr %globals", *(f"ptr {value}" for value in owned)])
+            result = self.operation(
+                f"call ptr {self.module.bodies[function.name]}({operands})"
+            )
+            self.line("call void @mule_leave_frame()")
+            self.line(f"br label %{join}")
+            incoming.append((result, entered))
+            self.lines.append(next_ + ":")
+        fallback_label = next_
+        fallback = self.operation(
+            f"call ptr @mule_call(ptr {callee}, i64 {len(arguments)}, ptr %argv)"
+        )
+        self.line(f"br label %{join}")
+        incoming.append((fallback, fallback_label))
+        self.lines.append(join + ":")
+        alternatives = ", ".join(f"[ {value}, %{label} ]" for value, label in incoming)
+        return self.operation(f"phi ptr {alternatives}")
+
     def constant(self, value) -> str:
         if value is None:
-            return "call ptr @mule_none()"
+            return "getelementptr i8, ptr @mule.none, i64 0"
         if isinstance(value, bool):
-            return f"call ptr @mule_bool(i32 {int(value)})"
+            name = "true" if value else "false"
+            return f"getelementptr i8, ptr @mule.{name}, i64 0"
         if isinstance(value, int):
             if -(1 << 62) <= value < (1 << 62):
                 tagged = ((value << 1) | 1) & ((1 << 64) - 1)
@@ -369,7 +511,7 @@ class _FunctionEmitter:
                 self.line(f"br label %{self.labels[target]}")
             case ir1.Branch(condition=condition, true=true, false=false):
                 value = self.take(condition)
-                truth = self.operation(f"call i32 @mule_truth(ptr {value})")
+                truth = self.operation(f"call i32 @mule.fast.truth(ptr {value})")
                 self.release(value)
                 self.check_status(truth)
                 condition = self.operation(f"icmp ne i32 {truth}, 0")

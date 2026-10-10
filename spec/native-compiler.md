@@ -10,7 +10,6 @@ Run from the repository with Python 3.14 and `uv`:
 ```sh
 uv run python -m mule examples/factorial.py -o build/factorial --emit-llvm build/factorial.ll
 ./build/factorial
-# prints 1000!
 ```
 
 The target is 64-bit Linux. Clang and Rust must be on `PATH`, or supplied through
@@ -36,23 +35,31 @@ executable = build("examples/factorial.py", "build/factorial")
 
 ## Compilation and execution
 
-The pipeline is Mule's lexer/Pratt parser → Mule AST → control-flow IR → textual
-LLVM IR → Clang-generated native executable. There is no host AST conversion,
+The pipeline is Mule's lexer/Pratt parser → Mule AST → control-flow IR → type/range
+analysis and implementation selection → textual LLVM IR → Clang-generated native
+executable. There is no host AST conversion,
 program source embedding, bytecode generation, or evaluator fallback.
 
 The IR separates control-flow blocks from single-consumer object results.
 Variables are explicit local slots or dynamic module globals. Verification checks
 definitions, consumption, control-flow targets, and dominance before emission.
 LLVM currently uses slots for these results and variables rather than optimized
-SSA construction. Mule has no language-level optimization passes yet; Clang
+SSA construction. Analysis joins local value types and integer intervals to a
+fixed point, widening growing loop bounds. Proven representation facts eliminate
+unnecessary checks; unknown operands use guarded native instructions with runtime
+slow paths. See [Native implementation selection](native-lowering.md). Clang
 builds at `-O3`, applying LLVM optimization and native code generation. Rust builds
 the runtime with `opt-level=3` and `panic=abort`, as a statically linked archive.
 Rust's code generation also uses LLVM. No C runtime source is compiled.
 
 Each source function becomes a native LLVM function. Definitions construct Mule
 function objects whose entry pointers refer to those native functions and whose
-context carries the module globals. Calls use Mule's callable protocol, retaining
-dynamic rebinding and recursion. The native `main` creates the module environment
+context carries the module globals. Functions have general callable entries and
+internal entries taking owned positional arguments directly. Predicted calls
+check the actual function entry and globals before using the internal entry;
+other calls use Mule's general callable protocol. Both paths retain dynamic
+rebinding, argument evaluation order, recursion guards, and error cleanup.
+The native `main` creates the module environment
 and invokes the compiled module initializer directly.
 
 `mule/runtime/` implements Mule's objects, strings, truth testing, operators,

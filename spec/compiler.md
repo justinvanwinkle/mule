@@ -34,7 +34,9 @@ The handwritten lexer and Pratt parser produce `mule.ast` objects without the
 host Python parser or its `ast` module. See [parser](parser.md), [AST](ast.md),
 and [lexing](lexing.md). A limited conversion stage classifies local/global
 bindings, validates supported constructs, and produces a verified control-flow
-IR. LLVM emission and a Rust runtime implement native functions and module startup.
-Optimization, broader language support, and an extension-build SDK remain future
-work. CPython linking is prohibited; see [dependency policy](dependencies.md).
+IR. Conservative type/range propagation and guarded implementation selection
+feed LLVM emission; a Rust runtime implements objects and module startup.
+See [Native implementation selection](native-lowering.md). Further optimization,
+broader language support, and an extension-build SDK remain future work.
+CPython linking is prohibited; see [dependency policy](dependencies.md).
 Earlier experiments under `old/` do not define the new compiler's contracts.

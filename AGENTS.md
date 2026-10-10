@@ -59,7 +59,9 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/parser/strings.py`: literal decoding and formatted/template interpolation.
 - `mule/compiler/frontend.py`: semantic validation and AST-to-IR conversion.
 - `mule/compiler/ir.py`: control-flow graph, object results, and graph verification.
+- `mule/compiler/analysis.py`: fixed-point value types, integer ranges, and guarded call predictions.
 - `mule/compiler/llvm.py`: LLVM emission and reference ownership/cleanup.
+- `mule/compiler/llvm_ops.py`: inline native operation templates and runtime slow paths.
 - `mule/runtime/lib.rs`: Rust runtime crate and native ABI.
 - `mule/runtime/object.rs`: tagged values, heap objects, calls, and ownership.
 - `mule/runtime/builtins.rs`: builtin functions and module execution.

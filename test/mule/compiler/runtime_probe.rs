@@ -11,6 +11,90 @@ use mule_runtime::*;
 
 static SCENARIO: OnceLock<String> = OnceLock::new();
 static RECURSION_DEPTH: AtomicUsize = AtomicUsize::new(0);
+static ABI_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" {
+    #[link_name = "mule.true"]
+    static IMMORTAL_TRUE: u8;
+    #[link_name = "mule.false"]
+    static IMMORTAL_FALSE: u8;
+    #[link_name = "mule.none"]
+    static IMMORTAL_NONE: u8;
+}
+
+unsafe extern "C" fn record_frame(_globals: Value, args: Value) -> Value {
+    unsafe {
+        assert_eq!(mule_check_args(args, 0), 0);
+        ABI_CALLS.fetch_add(1, Ordering::Relaxed);
+        mule_none()
+    }
+}
+
+unsafe fn specialized_abi(globals: Value) {
+    unsafe {
+        let constants = [
+            (mule_bool(1), ptr::addr_of!(IMMORTAL_TRUE) as Value),
+            (mule_bool(0), ptr::addr_of!(IMMORTAL_FALSE) as Value),
+            (mule_none(), ptr::addr_of!(IMMORTAL_NONE) as Value),
+        ];
+        for (value, address) in constants {
+            assert_eq!(value, address);
+            assert_eq!(mule_retain(value), address);
+            release(value);
+            release(value);
+            assert_eq!((*value).references, usize::MAX);
+        }
+        assert_eq!(mule_retain(small(42)), small(42));
+        let owned = text("retained");
+        assert_eq!(mule_retain(owned), owned);
+        assert_eq!((*owned).references, 2);
+        release(owned);
+        assert_eq!((*owned).references, 1);
+        release(owned);
+
+        let callable = function(globals, record_frame, c"frame");
+        let other_globals = namespace();
+        let other_scope = function(other_globals, record_frame, c"other_scope");
+        let entry = record_frame as *const () as *mut c_void;
+        assert_eq!(mule_function_matches(callable, entry, globals), 1);
+        assert_eq!(mule_function_matches(other_scope, entry, globals), 0);
+        assert_eq!(mule_function_matches(callable, entry, other_globals), 0);
+        assert_eq!(
+            mule_function_matches(callable, double_value as *const () as *mut c_void, globals),
+            0
+        );
+        for value in [ptr::null_mut(), small(42), mule_none(), mule_bool(1)] {
+            assert_eq!(mule_function_matches(value, entry, globals), 0);
+        }
+        assert!(!has_error());
+        error("ValueError", "pending failure");
+        assert_eq!(mule_function_matches(callable, entry, globals), 1);
+        assert_eq!(error_kind(), "ValueError");
+        assert_eq!(error_message(), "pending failure");
+        clear_error();
+
+        for _ in 0..999 {
+            assert_eq!(mule_enter_frame(), 0);
+        }
+        let result = mule_call(callable, 0, ptr::null());
+        assert!(!result.is_null());
+        release(result);
+        assert_eq!(ABI_CALLS.load(Ordering::Relaxed), 1);
+        assert_eq!(mule_enter_frame(), 0);
+        assert!(mule_call(callable, 0, ptr::null()).is_null());
+        assert_eq!(error_kind(), "RecursionError");
+        assert_eq!(ABI_CALLS.load(Ordering::Relaxed), 1);
+        for _ in 0..1000 {
+            mule_leave_frame();
+        }
+        clear_error();
+        assert_eq!(mule_enter_frame(), 0);
+        mule_leave_frame();
+        release(other_scope);
+        release(other_globals);
+        release(callable);
+    }
+}
 
 unsafe fn integer(decimal: &str) -> Value {
     let text = CString::new(decimal).expect("probe integer contains no NUL");
@@ -121,6 +205,10 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
             return ptr::null_mut();
         }
         match SCENARIO.get().expect("scenario initialized").as_str() {
+            "specialized_abi" => {
+                specialized_abi(globals);
+                println!("abi=ok");
+            }
             "literals" => {
                 for value in [
                     integer("-123456789012345678901234567890"),
