@@ -6,4 +6,10 @@ def factorial(n):
     return result
 
 
-print(factorial(1000))
+iterations = 0
+while True:
+    x = factorial(1500)
+    iterations += 1
+
+    if iterations > 1000:
+        break

@@ -3,7 +3,6 @@
 use crate::{builtins, gmp::BigInt, numeric};
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_void};
-use std::sync::OnceLock;
 
 pub type Value = *mut Object;
 pub type Native = unsafe extern "C" fn(Value, Value) -> Value;
@@ -118,22 +117,37 @@ pub unsafe fn release(value: Value) {
         }
     }
 }
-static NONE: OnceLock<usize> = OnceLock::new();
-static FALSE: OnceLock<usize> = OnceLock::new();
-static TRUE: OnceLock<usize> = OnceLock::new();
-fn immortal(storage: &OnceLock<usize>, data: Data) -> Value {
-    *storage.get_or_init(|| {
-        Box::into_raw(Box::new(Object {
-            references: usize::MAX,
-            data,
-        })) as usize
-    }) as Value
-}
+/// This private wrapper is used only for frozen None/Bool objects. These variants
+/// own no pointers or mutable storage, and their immortal reference count is
+/// never modified by retain/release. No other Object variants may be stored here.
+#[repr(transparent)]
+struct ImmortalObject(Object);
+unsafe impl Sync for ImmortalObject {}
+
+#[unsafe(export_name = "mule.none")]
+static NONE: ImmortalObject = ImmortalObject(Object {
+    references: usize::MAX,
+    data: Data::None,
+});
+#[unsafe(export_name = "mule.false")]
+static FALSE: ImmortalObject = ImmortalObject(Object {
+    references: usize::MAX,
+    data: Data::Bool(false),
+});
+#[unsafe(export_name = "mule.true")]
+static TRUE: ImmortalObject = ImmortalObject(Object {
+    references: usize::MAX,
+    data: Data::Bool(true),
+});
 pub unsafe fn none_value() -> Value {
-    immortal(&NONE, Data::None)
+    std::ptr::addr_of!(NONE.0).cast_mut()
 }
 pub unsafe fn bool_value(value: bool) -> Value {
-    immortal(if value { &TRUE } else { &FALSE }, Data::Bool(value))
+    if value {
+        std::ptr::addr_of!(TRUE.0).cast_mut()
+    } else {
+        std::ptr::addr_of!(FALSE.0).cast_mut()
+    }
 }
 pub unsafe fn namespace() -> Value {
     unsafe { new_value(Data::Namespace(Vec::new())) }
@@ -143,7 +157,7 @@ pub unsafe fn list() -> Value {
 }
 pub unsafe fn list_append(list: Value, value: Value) -> bool {
     unsafe {
-        if list.is_null() || is_fixnum(list) {
+        if list.is_null() || is_fixnum(list) || !matches!(&(*list).data, Data::List(_)) {
             error("TypeError", "list append requires a list");
             return false;
         }
@@ -176,7 +190,11 @@ pub unsafe fn lookup(namespace: Value, name: &str) -> Value {
 }
 pub unsafe fn bind(namespace: Value, name: &str, value: Value) -> bool {
     unsafe {
-        if !namespace.is_null() && !is_fixnum(namespace) && !value.is_null() {
+        if !namespace.is_null()
+            && !is_fixnum(namespace)
+            && !value.is_null()
+            && matches!(&(*namespace).data, Data::Namespace(_))
+        {
             if let Data::Namespace(bindings) = &mut (*namespace).data {
                 if let Some((_, previous)) = bindings.iter_mut().find(|(key, _)| key == name) {
                     let old = *previous;
@@ -252,16 +270,7 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
             Data::Function { entry, globals, .. } => (*entry, *globals),
             _ => unreachable!(),
         };
-        let entered = DEPTH.with(|depth| {
-            if depth.get() >= 1000 {
-                false
-            } else {
-                depth.set(depth.get() + 1);
-                true
-            }
-        });
-        if !entered {
-            error("RecursionError", "maximum native recursion depth exceeded");
+        if mule_enter_frame() < 0 {
             return std::ptr::null_mut();
         }
         // This stack object's vector borrows its values, unlike heap Args values.
@@ -271,7 +280,7 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
             data: Data::Args(args.to_vec()),
         };
         let result = entry(globals, &mut view);
-        DEPTH.with(|depth| depth.set(depth.get() - 1));
+        mule_leave_frame();
         if result.is_null() && !has_error() {
             error(
                 "SystemError",
@@ -797,6 +806,57 @@ unsafe fn literal_bytes(data: *const c_char, length: isize, text: bool) -> Value
         } else {
             Data::Bytes(bytes)
         })
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_retain(value: Value) -> Value {
+    unsafe { retain(value) }
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn mule_enter_frame() -> i32 {
+    if has_error() {
+        return -1;
+    }
+    let entered = DEPTH.with(|depth| {
+        if depth.get() >= 1000 {
+            false
+        } else {
+            depth.set(depth.get() + 1);
+            true
+        }
+    });
+    if entered {
+        0
+    } else {
+        error("RecursionError", "maximum native recursion depth exceeded");
+        -1
+    }
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn mule_leave_frame() {
+    DEPTH.with(|depth| {
+        debug_assert!(depth.get() > 0, "native frame exits must match entries");
+        depth.set(depth.get() - 1);
+    });
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_function_matches(
+    callable: Value,
+    expected: *mut c_void,
+    globals: Value,
+) -> i32 {
+    unsafe {
+        if callable.is_null() || is_fixnum(callable) {
+            return 0;
+        }
+        match &(*callable).data {
+            Data::Function {
+                entry,
+                globals: captured,
+                ..
+            } => i32::from(*entry as *const () as *mut c_void == expected && *captured == globals),
+            _ => 0,
+        }
     }
 }
 #[unsafe(no_mangle)]

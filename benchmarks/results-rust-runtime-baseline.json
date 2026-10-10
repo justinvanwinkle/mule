@@ -1,0 +1,327 @@
+{
+  "timestamp_utc": "2026-10-10T00:54:16.128897+00:00",
+  "platform": "Linux-7.2.8+deb14-amd64-x86_64-with-glibc2.43",
+  "cpu_model": "AMD Ryzen 9 9955HX 16-Core Processor",
+  "cpu_affinity": 0,
+  "versions": {
+    "cpython": "3.14.7 (main, Aug 14 2026, 15:35:28) [Clang 22.1.3 ]",
+    "clang": "Debian clang version 21.1.8 (13)",
+    "sbcl": "SBCL 2.6.4.debian",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "python_jit": {
+    "available": true,
+    "enabled": false
+  },
+  "gil_disabled": false,
+  "compiler_settings": {
+    "mule": "clang -O3, Rust runtime opt-level=3, tagged native integers, GMP bigints",
+    "cpython": "-I -S, same workload.py, normal bytecode interpreter",
+    "sbcl": "compiled executable; speed 3, safety 1; fixnum declarations",
+    "rust": "edition 2024, opt-level=3, target-cpu=native; u64 integers"
+  },
+  "source_sha256": {
+    "workload.py": "b1793d32002518b367767f95482ca1de0e3a310250bb01bf78f97c511656c98a",
+    "workload.lisp": "91b828f02c6ee5101ed5fbd4107e373d4a793c611400a68ee619ca90e3f6a2b9",
+    "workload.rs": "9f2552bd8d69012805a909776ee47e1bd0df66a6deb99bf1509c325a4016ec3f",
+    "build-lisp.lisp": "be3d8dd66e3813faf9206a09fe6b36166d75fb47ee0d1113e77961f998bd4b35",
+    "run.py": "ffe031ea7098abfe97445cade86e2352d3ad99a25f3214b6473864d1cb2df36c"
+  },
+  "mule_compiler_sha256": {
+    "mule/compiler/frontend.py": "0cfff03294ae21ddd308a7df293b9e7f5e2c47e532557fea6e576a76953f5d26",
+    "mule/compiler/ir.py": "4bbe668b3d9622a3f70643f5a875143e4aff6d20da2cd5e51592bcbfbbe6a48d",
+    "mule/compiler/llvm.py": "154051f187249ce8b66385e4f4482324272e7e7e8afa8fd882c3af5a967cc54b",
+    "mule/compiler/driver.py": "8c847752aaecc243a87b2e1e5c2883272ddbef8792789531ba6436b37f6ee8ce",
+    "mule/runtime/lib.rs": "699bd8b2f8612329e6cea37f240eb3e98f5b8266f94c960402778f989a70986a",
+    "mule/runtime/object.rs": "e8c17e15a7d467a9932437e0e7975681855984833e1125644c1d12f820bb68bf",
+    "mule/runtime/builtins.rs": "2fced47a289ea9153ee65e7aa0db2f77cb90b214a2eacb6fe83002d306d0bfef",
+    "mule/runtime/numeric.rs": "b69fa4a24ed3f7139aadfc68651d505b9abce16650946fe9dcbba14b6eef2238",
+    "mule/runtime/gmp.rs": "e20e44bafe08d62240fc06ab7fd56965ec890327265a4223526c9414c6166638"
+  },
+  "commands": {
+    "mule": [
+      "/home/jvanwinkle/repos/mule/build/benchmarks/workload-mule"
+    ],
+    "cpython": [
+      "/home/jvanwinkle/repos/mule/.venv/bin/python",
+      "-I",
+      "-S",
+      "/home/jvanwinkle/repos/mule/benchmarks/workload.py"
+    ],
+    "sbcl": [
+      "/home/jvanwinkle/repos/mule/build/benchmarks/workload-sbcl"
+    ],
+    "rust": [
+      "/home/jvanwinkle/repos/mule/build/benchmarks/workload-rust"
+    ]
+  },
+  "repeats": 7,
+  "warmups": 1,
+  "verification_cases": 9,
+  "profiles": {
+    "startup": {
+      "parameters": [
+        1,
+        0,
+        0
+      ],
+      "expected_output": "0 0",
+      "measurements": {
+        "mule": {
+          "seconds": [
+            0.001570396,
+            0.001528487,
+            0.001491528,
+            0.00148731,
+            0.001538496,
+            0.001531864,
+            0.001531082
+          ],
+          "median_seconds": 0.001531082,
+          "min_seconds": 0.00148731,
+          "max_seconds": 0.001570396
+        },
+        "cpython": {
+          "seconds": [
+            0.005894187,
+            0.005911017,
+            0.005785473,
+            0.00584243,
+            0.005899977,
+            0.005854752,
+            0.005852728
+          ],
+          "median_seconds": 0.005854752,
+          "min_seconds": 0.005785473,
+          "max_seconds": 0.005911017
+        },
+        "sbcl": {
+          "seconds": [
+            0.00269195,
+            0.00260147,
+            0.002723639,
+            0.00285229,
+            0.002612741,
+            0.002648158,
+            0.002592904
+          ],
+          "median_seconds": 0.002648158,
+          "min_seconds": 0.002592904,
+          "max_seconds": 0.00285229
+        },
+        "rust": {
+          "seconds": [
+            0.001462343,
+            0.00142851,
+            0.00144466,
+            0.001413512,
+            0.001467242,
+            0.00141774,
+            0.001424442
+          ],
+          "median_seconds": 0.00142851,
+          "min_seconds": 0.001413512,
+          "max_seconds": 0.001467242
+        }
+      }
+    },
+    "search": {
+      "parameters": [
+        12,
+        8,
+        0
+      ],
+      "expected_output": "113600 0",
+      "measurements": {
+        "mule": {
+          "seconds": [
+            1.894139942,
+            1.779904328,
+            1.904127679,
+            1.85457694,
+            1.877437228,
+            1.824607013,
+            1.852789063
+          ],
+          "median_seconds": 1.85457694,
+          "min_seconds": 1.779904328,
+          "max_seconds": 1.904127679
+        },
+        "cpython": {
+          "seconds": [
+            0.988160986,
+            0.973306595,
+            0.973466428,
+            1.012690696,
+            0.982765748,
+            0.967736915,
+            0.981325927
+          ],
+          "median_seconds": 0.981325927,
+          "min_seconds": 0.967736915,
+          "max_seconds": 1.012690696
+        },
+        "sbcl": {
+          "seconds": [
+            0.046273619,
+            0.046763288,
+            0.046728291,
+            0.046941862,
+            0.046646197,
+            0.046358037,
+            0.046881197
+          ],
+          "median_seconds": 0.046728291,
+          "min_seconds": 0.046273619,
+          "max_seconds": 0.046941862
+        },
+        "rust": {
+          "seconds": [
+            0.038355807,
+            0.038575319,
+            0.038293289,
+            0.038635641,
+            0.038562654,
+            0.038343072,
+            0.038655458
+          ],
+          "median_seconds": 0.038562654,
+          "min_seconds": 0.038293289,
+          "max_seconds": 0.038655458
+        }
+      }
+    },
+    "integers": {
+      "parameters": [
+        1,
+        0,
+        80000
+      ],
+      "expected_output": "0 974617263",
+      "measurements": {
+        "mule": {
+          "seconds": [
+            0.08615233,
+            0.086446942,
+            0.086516142,
+            0.086247688,
+            0.085697205,
+            0.086235515,
+            0.087259346
+          ],
+          "median_seconds": 0.086247688,
+          "min_seconds": 0.085697205,
+          "max_seconds": 0.087259346
+        },
+        "cpython": {
+          "seconds": [
+            0.050759041,
+            0.051353205,
+            0.051065445,
+            0.05066804,
+            0.050974384,
+            0.050783697,
+            0.050976489
+          ],
+          "median_seconds": 0.050974384,
+          "min_seconds": 0.05066804,
+          "max_seconds": 0.051353205
+        },
+        "sbcl": {
+          "seconds": [
+            0.007885571,
+            0.00781076,
+            0.007587943,
+            0.007721423,
+            0.007749386,
+            0.007816091,
+            0.007317716
+          ],
+          "median_seconds": 0.007749386,
+          "min_seconds": 0.007317716,
+          "max_seconds": 0.007885571
+        },
+        "rust": {
+          "seconds": [
+            0.00572589,
+            0.005439884,
+            0.005581961,
+            0.005230581,
+            0.005701444,
+            0.005775303,
+            0.005753593
+          ],
+          "median_seconds": 0.005701444,
+          "min_seconds": 0.005230581,
+          "max_seconds": 0.005775303
+        }
+      }
+    },
+    "combined": {
+      "parameters": [
+        12,
+        8,
+        80000
+      ],
+      "expected_output": "113600 974617263",
+      "measurements": {
+        "mule": {
+          "seconds": [
+            1.857513417,
+            1.852840916,
+            1.955265305,
+            1.841820562,
+            1.981694892,
+            1.912461192,
+            1.897354423
+          ],
+          "median_seconds": 1.897354423,
+          "min_seconds": 1.841820562,
+          "max_seconds": 1.981694892
+        },
+        "cpython": {
+          "seconds": [
+            1.031540795,
+            1.015002361,
+            1.018119606,
+            1.01853561,
+            1.02223963,
+            1.016774256,
+            1.045968327
+          ],
+          "median_seconds": 1.01853561,
+          "min_seconds": 1.015002361,
+          "max_seconds": 1.045968327
+        },
+        "sbcl": {
+          "seconds": [
+            0.05124428,
+            0.051311456,
+            0.050930761,
+            0.050344672,
+            0.050674029,
+            0.051169268,
+            0.051147978
+          ],
+          "median_seconds": 0.051147978,
+          "min_seconds": 0.050344672,
+          "max_seconds": 0.051311456
+        },
+        "rust": {
+          "seconds": [
+            0.042219082,
+            0.041870136,
+            0.042093236,
+            0.041567618,
+            0.04197389,
+            0.042051435,
+            0.041870736
+          ],
+          "median_seconds": 0.04197389,
+          "min_seconds": 0.041567618,
+          "max_seconds": 0.042219082
+        }
+      }
+    }
+  }
+}
