@@ -55,6 +55,8 @@ def runtime_probe(tmp_path_factory):
         ("function_metadata", "definitions=10000\n'first'\n'second'\n42\n42\n4\n"),
         ("builtin_call", "native callback\n"),
         ("truth", "0 1\n"),
+        ("class_ownership", "classes=ok\n"),
+        ("dynamic_tagged_attributes", "dynamic=ok\n"),
     ],
 )
 def test_runtime_values_and_direct_native_calls(runtime_probe, scenario, output):

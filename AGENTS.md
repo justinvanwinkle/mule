@@ -65,6 +65,8 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/compiler/llvm_ops.py`: inline native operation templates and runtime slow paths.
 - `mule/runtime/lib.rs`: Rust runtime crate and native ABI.
 - `mule/runtime/object.rs`: tagged values, heap objects, calls, and ownership.
+- `mule/runtime/classes.rs`: fixed instance layouts, immutable method tables,
+  attribute caches, and receiver binding.
 - `mule/runtime/builtins.rs`: builtin functions and module execution.
 - `mule/runtime/numeric.rs`: native integer fast paths and bigint operations.
 - `mule/runtime/gmp.rs`: direct GMP bindings and owned bigint wrapper.

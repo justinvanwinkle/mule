@@ -177,33 +177,18 @@ class FunctionBuilder(ast.Visitor):
         self.emit(ir.Discard(self.expression(node.expression)))
 
     def visit_Assignment(self, node):
-        target_visitor = _IdentifierTarget(self)
-        names = [target.accept(target_visitor) for target in node.targets]
         result = self.expression(node.value)
-        if len(names) == 1:
-            self.store(names[0], result)
+        if len(node.targets) == 1:
+            node.targets[0].accept(_AssignmentTarget(self, result))
         else:
             temporary = self.temporary()
             self.store(temporary, result)
-            for index, name in enumerate(names):
-                self.store(name, self.load(temporary, clear=index == len(names) - 1))
+            for index, target in enumerate(node.targets):
+                value = self.load(temporary, clear=index == len(node.targets) - 1)
+                target.accept(_AssignmentTarget(self, value))
 
     def visit_AugmentedAssignment(self, node):
-        name = node.target.accept(_IdentifierTarget(self))
-        left = self.load(name)
-        right = self.expression(node.value)
-        result = self.result()
-        self.emit(
-            ir.Binary(
-                result,
-                node.operator,
-                left,
-                right,
-                inplace=True,
-                reuse_local=name if self.local(name) else None,
-            )
-        )
-        self.store(name, result)
+        node.target.accept(_AugmentedTarget(self, node))
 
     def visit_If(self, node):
         then, other, join = self.block(), self.block(), self.block()
@@ -260,6 +245,56 @@ class FunctionBuilder(ast.Visitor):
         self.emit(ir.DefineFunction(result, function.name, node.name))
         self.store(node.name, result)
 
+    def visit_ClassDefinition(self, node):
+        if node.decorators or node.type_parameters:
+            self.error(
+                "decorated and generic classes are not supported yet",
+                node,
+                unsupported=True,
+            )
+        if len(node.arguments) > 1 or any(
+            argument.kind != ast.ArgumentKind.POSITIONAL for argument in node.arguments
+        ):
+            self.error(
+                "classes support at most one positional base",
+                node,
+                unsupported=True,
+            )
+        body = _ClassBody(self)
+        for statement in node.body:
+            statement.accept(body)
+        # Base expressions are evaluated before any method definitions, as in Python.
+        base = self.expression(node.arguments[0].value) if node.arguments else None
+        fields = {}
+        methods = {}
+        for method in body.methods:
+            function = self.lowerer.function(method)
+            if not method.parameters:
+                self.error("instance methods require a receiver parameter", method)
+            receiver = method.parameters[0].name
+            collector = _ReceiverFields(receiver, fields)
+            for statement in method.body:
+                statement.accept(collector)
+            value = self.result()
+            self.emit(ir.DefineFunction(value, function.name, method.name))
+            # Repeated definitions preserve Python's last-definition-wins behavior.
+            previous = methods.get(method.name)
+            if previous is not None:
+                self.emit(ir.Discard(previous))
+            methods[method.name] = value
+        result = self.result()
+        self.emit(
+            ir.DefineClass(
+                result,
+                node.name,
+                base,
+                tuple(fields),
+                tuple(methods),
+                tuple(methods.values()),
+            )
+        )
+        self.store(node.name, result)
+
     def visit_IntegerLiteral(self, node):
         return self.constant(node)
 
@@ -281,6 +316,12 @@ class FunctionBuilder(ast.Visitor):
     def visit_Name(self, node):
         return self.load(node.identifier)
 
+    def visit_Attribute(self, node):
+        receiver = self.expression(node.value)
+        result = self.result()
+        self.emit(ir.LoadAttribute(result, receiver, node.attribute))
+        return result
+
     def visit_Binary(self, node):
         a, b = self.expression(node.left), self.expression(node.right)
         result = self.result()
@@ -301,11 +342,7 @@ class FunctionBuilder(ast.Visitor):
                     argument,
                     unsupported=True,
                 )
-        function = self.expression(node.function)
-        args = tuple(self.expression(argument.value) for argument in node.arguments)
-        result = self.result()
-        self.emit(ir.Call(result, function, args))
-        return result
+        return node.function.accept(_CallTarget(self, node.arguments))
 
     def visit_NamedExpression(self, node):
         temporary = self.temporary()
@@ -434,19 +471,154 @@ class FunctionBuilder(ast.Visitor):
         self.function.locals = tuple(self.locals)
 
 
-class _IdentifierTarget(ast.Visitor):
-    def __init__(self, builder):
+class _AssignmentTarget(ast.Visitor):
+    def __init__(self, builder, value):
         self.builder = builder
+        self.value = value
 
     def visit_Node(self, node):
         self.builder.error(
-            "only identifier assignment targets are supported yet",
+            "only identifier and attribute assignment targets are supported yet",
             node,
             unsupported=True,
         )
 
     def visit_Name(self, node):
-        return node.identifier
+        self.builder.store(node.identifier, self.value)
+
+    def visit_Attribute(self, node):
+        receiver = self.builder.expression(node.value)
+        self.builder.emit(ir.StoreAttribute(receiver, node.attribute, self.value))
+
+
+class _AugmentedTarget(ast.Visitor):
+    def __init__(self, builder, assignment):
+        self.builder = builder
+        self.assignment = assignment
+
+    def visit_Node(self, node):
+        self.builder.error(
+            "only identifier and attribute assignment targets are supported yet",
+            node,
+            unsupported=True,
+        )
+
+    def binary(self, left, reuse_local=None):
+        right = self.builder.expression(self.assignment.value)
+        result = self.builder.result()
+        self.builder.emit(
+            ir.Binary(
+                result,
+                self.assignment.operator,
+                left,
+                right,
+                inplace=True,
+                reuse_local=reuse_local,
+            )
+        )
+        return result
+
+    def visit_Name(self, node):
+        left = self.builder.load(node.identifier)
+        result = self.binary(
+            left, node.identifier if self.builder.local(node.identifier) else None
+        )
+        self.builder.store(node.identifier, result)
+
+    def visit_Attribute(self, node):
+        temporary = self.builder.temporary()
+        self.builder.store(temporary, self.builder.expression(node.value))
+        left = self.builder.result()
+        self.builder.emit(
+            ir.LoadAttribute(left, self.builder.load(temporary), node.attribute)
+        )
+        result = self.binary(left)
+        self.builder.emit(
+            ir.StoreAttribute(
+                self.builder.load(temporary, clear=True), node.attribute, result
+            )
+        )
+
+
+class _CallTarget(ast.Visitor):
+    def __init__(self, builder, arguments):
+        self.builder = builder
+        self.arguments = arguments
+
+    def arguments_values(self):
+        return tuple(
+            self.builder.expression(argument.value) for argument in self.arguments
+        )
+
+    def visit_Node(self, node):
+        callee = self.builder.expression(node)
+        arguments = self.arguments_values()
+        result = self.builder.result()
+        self.builder.emit(ir.Call(result, callee, arguments))
+        return result
+
+    def visit_Attribute(self, node):
+        receiver = self.builder.expression(node.value)
+        callee = self.builder.result()
+        self.builder.emit(ir.ResolveMethod(callee, receiver, node.attribute))
+        arguments = self.arguments_values()
+        result = self.builder.result()
+        self.builder.emit(ir.CallMethod(result, callee, arguments))
+        return result
+
+
+class _ClassBody(ast.Visitor):
+    def __init__(self, builder):
+        self.builder = builder
+        self.methods = []
+
+    def visit_Node(self, node):
+        self.builder.error(
+            "class bodies support only instance methods and pass",
+            node,
+            unsupported=True,
+        )
+
+    def visit_FunctionDefinition(self, node):
+        self.methods.append(node)
+
+    def visit_Pass(self, node):
+        pass
+
+
+class _ReceiverFields(ast.Visitor):
+    def __init__(self, receiver, fields):
+        self.targets = _ReceiverFieldTarget(receiver, fields)
+
+    def visit_Node(self, node):
+        for target in node.assigned_targets():
+            target.accept(self.targets)
+        for child in node.children():
+            child.accept(self)
+
+    def visit_FunctionDefinition(self, node):
+        pass
+
+    def visit_ClassDefinition(self, node):
+        pass
+
+
+class _ReceiverFieldTarget(ast.Visitor):
+    def __init__(self, receiver, fields):
+        self.receiver = _ReceiverName(receiver)
+        self.fields = fields
+
+    def visit_Attribute(self, node):
+        if node.value.accept(self.receiver):
+            self.fields[node.attribute] = None
+
+
+class _ReceiverName(ast.Visitor):
+    def __init__(self, name):
+        self.name = name
+
+    def visit_Name(self, node):
+        return node.identifier == self.name
 
 
 class _ScopeVisitor(ast.Visitor):
@@ -466,6 +638,15 @@ class _ScopeVisitor(ast.Visitor):
             self.builder.error(
                 "nested functions are not supported yet", node, unsupported=True
             )
+        self.seen.add(node.name)
+
+    def visit_ClassDefinition(self, node):
+        if not self.builder.is_module:
+            self.builder.error(
+                "nested classes are not supported yet", node, unsupported=True
+            )
+        for argument in node.arguments:
+            argument.accept(self)
         self.seen.add(node.name)
 
     def visit_Global(self, node):
@@ -492,6 +673,12 @@ class _LocalBindings(ast.Visitor):
             target.accept(self.target_visitor)
         for child in node.children():
             child.accept(self)
+
+    def visit_FunctionDefinition(self, node):
+        pass
+
+    def visit_ClassDefinition(self, node):
+        pass
 
 
 class _LocalTarget(ast.Visitor):

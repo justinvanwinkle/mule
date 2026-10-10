@@ -73,6 +73,16 @@ pub unsafe fn integer_import(integer: &BigInt) -> Value {
     unsafe { object::new_value(Data::BigInt(integer.clone())) }
 }
 
+/// Lengths and slot indices normally fit the immediate representation.
+/// Do not construct a GMP temporary on this common path.
+pub unsafe fn integer_from_usize(value: usize) -> Value {
+    if value <= MAX as usize {
+        object::small(value as i64)
+    } else {
+        unsafe { integer_import_owned(BigInt::from_u64(value as u64)) }
+    }
+}
+
 /// Transfer a freshly computed GMP integer into its runtime box without copying.
 pub unsafe fn integer_import_owned(integer: BigInt) -> Value {
     if let Some(value) = integer.to_i64() {

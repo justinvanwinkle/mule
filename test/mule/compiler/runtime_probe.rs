@@ -318,6 +318,205 @@ unsafe fn function_name(value: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn initialize_slot(_: Value, args: Value) -> Value {
+    unsafe {
+        if mule_check_args(args, 2) < 0 {
+            return ptr::null_mut();
+        }
+        let receiver = argument(args, 0).unwrap();
+        let value = argument(args, 1).unwrap();
+        if mule_set_attr(receiver, c"value".as_ptr(), value) < 0 {
+            return ptr::null_mut();
+        }
+        mule_none()
+    }
+}
+
+unsafe extern "C" fn add_slot(_: Value, args: Value) -> Value {
+    unsafe {
+        if mule_check_args(args, 2) < 0 {
+            return ptr::null_mut();
+        }
+        let receiver = argument(args, 0).unwrap();
+        let value = mule_get_attr(receiver, c"value".as_ptr());
+        if value.is_null() {
+            return value;
+        }
+        let result = mule_binary(0, value, argument(args, 1).unwrap(), 0);
+        release(value);
+        result
+    }
+}
+
+unsafe fn class_ownership(globals: Value) {
+    unsafe {
+        let init = function(globals, initialize_slot, c"initialize_slot");
+        let add = function(globals, add_slot, c"add_slot");
+        let fields = [c"value".as_ptr(), c"callback".as_ptr()];
+        let names = [c"__init__".as_ptr(), c"add".as_ptr()];
+        let methods = [init, add];
+        let base = mule_class(
+            c"Base".as_ptr(),
+            ptr::null_mut(),
+            2,
+            fields.as_ptr(),
+            2,
+            names.as_ptr(),
+            methods.as_ptr(),
+        );
+        assert!(!base.is_null());
+        release(init);
+        release(add);
+        let extra = [c"extra".as_ptr()];
+        let derived = mule_class(
+            c"Derived".as_ptr(),
+            base,
+            1,
+            extra.as_ptr(),
+            0,
+            ptr::null(),
+            ptr::null(),
+        );
+        let values = [small(42)];
+        let instance = mule_call(derived, 1, values.as_ptr());
+        assert!(!instance.is_null());
+        let mut cache = AttrCache::default();
+        assert_eq!(
+            mule_get_attr_cached(instance, c"value".as_ptr(), &mut cache),
+            small(42)
+        );
+        let first_id = cache.class_id;
+        assert_ne!(first_id, 0);
+        assert_eq!(mule_set_attr(instance, c"extra".as_ptr(), small(7)), 0);
+        assert_eq!(mule_get_attr(instance, c"extra".as_ptr()), small(7));
+
+        let mut method_cache = AttrCache::default();
+        let argument = [small(8)];
+        assert_eq!(
+            mule_call_method_cached(
+                instance,
+                c"add".as_ptr(),
+                1,
+                argument.as_ptr(),
+                &mut method_cache
+            ),
+            small(50)
+        );
+        let bound = mule_get_attr(instance, c"add".as_ptr());
+        assert_eq!((*instance).references, 2);
+        assert_eq!(mule_call(bound, 1, argument.as_ptr()), small(50));
+
+        let old_callback = function(globals, double_value, c"old_callback");
+        assert_eq!(
+            mule_set_attr(instance, c"callback".as_ptr(), old_callback),
+            0
+        );
+        release(old_callback);
+        let mut receiver = ptr::null_mut();
+        let callback = mule_resolve_method(
+            instance,
+            c"callback".as_ptr(),
+            ptr::null_mut(),
+            &mut receiver,
+        );
+        assert!(receiver.is_null());
+        let replacement = function(globals, record_frame, c"replacement");
+        assert_eq!(
+            mule_set_attr(instance, c"callback".as_ptr(), replacement),
+            0
+        );
+        release(replacement);
+        assert_eq!(
+            mule_call_resolved(callback, receiver, 1, argument.as_ptr()),
+            small(16)
+        );
+        release(callback);
+
+        // Each slot owns one reference; reads own another. Replacing a slot
+        // releases its previous value without invalidating a saved read.
+        let owned = text("slot ownership");
+        assert_eq!(
+            mule_set_attr_cached(instance, c"value".as_ptr(), owned, &mut cache),
+            0
+        );
+        assert_eq!((*owned).references, 2);
+        let saved = mule_get_attr_cached(instance, c"value".as_ptr(), &mut cache);
+        assert_eq!(saved, owned);
+        assert_eq!((*owned).references, 3);
+        assert_eq!(
+            mule_set_attr_cached(instance, c"value".as_ptr(), small(42), &mut cache),
+            0
+        );
+        assert_eq!((*owned).references, 2);
+        release(saved);
+        release(owned);
+
+        // The bound method keeps its receiver and inherited class alive.
+        release(instance);
+        release(derived);
+        release(base);
+        assert_eq!(mule_call(bound, 1, argument.as_ptr()), small(50));
+        release(bound);
+
+        // An expired class cannot validate a reused site's cached slot index.
+        let new_fields = [c"unused".as_ptr(), c"value".as_ptr()];
+        let later = mule_class(
+            c"Later".as_ptr(),
+            ptr::null_mut(),
+            2,
+            new_fields.as_ptr(),
+            0,
+            ptr::null(),
+            ptr::null(),
+        );
+        let later_instance = mule_call(later, 0, ptr::null());
+        assert_eq!(
+            mule_set_attr(later_instance, c"value".as_ptr(), small(99)),
+            0
+        );
+        assert_eq!(
+            mule_get_attr_cached(later_instance, c"value".as_ptr(), &mut cache),
+            small(99)
+        );
+        assert_ne!(cache.class_id, first_id);
+        assert!(mule_get_attr(later_instance, c"unused".as_ptr()).is_null());
+        assert_eq!(error_kind(), "AttributeError");
+        clear_error();
+        assert_eq!(
+            mule_set_attr(later_instance, c"unknown".as_ptr(), small(1)),
+            -1
+        );
+        assert_eq!(error_kind(), "AttributeError");
+        clear_error();
+        assert_eq!(mule_set_attr(later, c"value".as_ptr(), small(1)), -1);
+        assert_eq!(error_kind(), "TypeError");
+        clear_error();
+        release(later_instance);
+        release(later);
+        assert!(!has_error());
+    }
+}
+
+unsafe fn dynamic_tagged_attributes() {
+    unsafe {
+        let attributes = namespace();
+        assert!(bind(attributes, "number", small(42)));
+        assert!(bind(attributes, "__bool__", small(42)));
+        let class = new_value(Data::Type {
+            name: "Dynamic".into(),
+            attributes,
+        });
+        assert_eq!(mule_get_attr(class, c"number".as_ptr()), small(42));
+        let instance = mule_call(class, 0, ptr::null());
+        assert_eq!(mule_get_attr(instance, c"number".as_ptr()), small(42));
+        assert_eq!(mule_truth(instance), -1);
+        assert_eq!(error_kind(), "TypeError");
+        clear_error();
+        release(instance);
+        release(class);
+    }
+}
+
 unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
     unsafe {
         if mule_check_args(args, 0) < 0 {
@@ -327,6 +526,14 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
             "specialized_abi" => {
                 specialized_abi(globals);
                 println!("abi=ok");
+            }
+            "class_ownership" => {
+                class_ownership(globals);
+                println!("classes=ok");
+            }
+            "dynamic_tagged_attributes" => {
+                dynamic_tagged_attributes();
+                println!("dynamic=ok");
             }
             "literals" => {
                 for value in [

@@ -107,9 +107,22 @@ unsafe extern "C" fn len(_: Value, args: Value) -> Value {
             },
             Data::Args(value) | Data::List(value) => value.len(),
             Data::Namespace(value) => value.len(),
+            Data::Instance { .. } => {
+                let result = object::special(value, "__len__", &[]);
+                if result.is_null() {
+                    if !object::has_error() {
+                        return fail("TypeError", "object has no len");
+                    }
+                    return std::ptr::null_mut();
+                }
+                let Some(length) = object::length_result(result) else {
+                    return std::ptr::null_mut();
+                };
+                length
+            }
             _ => return fail("TypeError", "object has no len"),
         };
-        numeric::integer_import(&BigInt::from_u64(length as u64))
+        numeric::integer_from_usize(length)
     }
 }
 unsafe fn format(args: Value, representation: bool, ascii_only: bool) -> Value {
@@ -360,7 +373,7 @@ unsafe extern "C" fn staticmethod(_: Value, args: Value) -> Value {
         if arity(args, 1, 1).is_none() {
             std::ptr::null_mut()
         } else {
-            object::retain(arg(args, 0))
+            object::new_value(Data::StaticMethod(object::retain(arg(args, 0))))
         }
     }
 }

@@ -197,6 +197,22 @@ class _InstructionAnalysis(ir.Visitor):
     def visit_DefineFunction(self, instruction):
         return _Fact(FunctionType(), instruction.function, True)
 
+    def visit_DefineClass(self, instruction):
+        return _Fact()
+
+    def visit_LoadAttribute(self, instruction):
+        return _Fact()
+
+    def visit_StoreAttribute(self, instruction):
+        pass
+
+    def visit_ResolveMethod(self, instruction):
+        return _Fact()
+
+    def visit_CallMethod(self, instruction):
+        self.invalidate(self.state)
+        return _Fact()
+
     def visit_Load(self, instruction):
         name = instruction.name
         fact = self.state[name if instruction.local else ("global", name)]

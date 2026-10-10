@@ -176,6 +176,51 @@ not merely equal values. An LLVM value has no implicit Python object lifetime.
 LLVM's [GC support][llvm-gc] supplies integration mechanisms, not a collector
 or Python ownership model.
 
+## Fixed-layout classes and a Python runtime library
+
+Mule's initial compiled classes use immutable class descriptors, indexed instance
+fields, and native methods. The compiler discovers fields from assignments on
+the first method parameter; single inheritance preserves inherited indices.
+Attribute sites cache class identity and field or method index. Calls resolve
+methods before argument evaluation and pass the receiver separately, avoiding a
+temporary bound-method allocation. Saved bound methods remain ordinary owned
+values. See the [implemented class contract](native-compiler.md#fixed-layout-classes).
+
+This adopts SBCL's separation of layouts and indexed instance access from general
+language-level slot lookup. In the local SBCL checkout,
+`src/compiler/generic/vm-fndb.lisp` declares `%instance-ref` and `%instance-set`
+as always translatable operations; `src/pcl/slots.lisp` and `slots-boot.lisp`
+implement the language-level slot protocols and optimized access functions.
+Mule does not copy CLOS's generic-function or class-redefinition semantics.
+
+Mule restricts compatibility to keep instance layouts and dispatch stable.
+Fixed-layout compiled classes reject undeclared fields and class
+mutation; their first implementation excludes multiple inheritance, metaclasses,
+arbitrary class-body execution, descriptors, and decorators. These are explicit
+language restrictions, not optimizations justified by assuming ordinary Python
+classes are immutable. Mutable module globals and object field values retain
+their existing semantics. Additional guarded class inference and direct LLVM
+slot access remain future optimizations; the current cache design alone does not
+establish a timing result.
+
+Container classes and their algorithms must be implemented in Mule Python and
+compiled to native code. Rust supplies primitives for allocation, lifetime,
+reference slot access, byte or machine-word storage, native numeric operations,
+and host services. Python methods own container policy: logical length, growth,
+index normalization, slicing, iteration, hashing protocol, collision handling,
+resizing, and the public API. Class field storage is foundational object storage,
+not an implementation of a Python list or dictionary. Existing Rust empty
+container builtin helpers are bootstrap facilities and do not establish the
+architecture for full containers.
+
+Storage primitives and a compiled Python runtime-library bootstrap are still
+required before those containers can be provided. Primitive bindings must remain
+private and cannot be selected merely because user code calls a matching global
+identifier. Ownership must distinguish an unused storage slot from a valid
+`None` element, preserve aliases during moves or growth, and eventually support
+collection of container cycles. A CPython-compatible extension interface will
+call Mule's object and container implementation without linking CPython.
+
 ## LLVM replaces the machine backend
 
 The adaptation boundary reaches into GTN/LTN and known-function backend hooks,

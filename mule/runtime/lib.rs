@@ -9,8 +9,10 @@
 compile_error!("Mule's initial runtime target is 64-bit Linux");
 
 pub mod builtins;
+pub mod classes;
 pub mod gmp;
 pub mod numeric;
 pub mod object;
 
+pub use classes::*;
 pub use object::*;

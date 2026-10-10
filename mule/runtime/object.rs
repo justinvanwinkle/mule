@@ -23,15 +23,31 @@ pub enum Data {
         name: String,
     },
     Args(Vec<Value>),
+    ArgumentView {
+        values: *const Value,
+        count: usize,
+    },
+    ReceiverArgs {
+        receiver: Value,
+        values: *const Value,
+        count: usize,
+    },
     List(Vec<Value>),
     Namespace(Vec<(String, Value)>),
     Type {
         name: String,
         attributes: Value,
     },
+    Class(Box<crate::classes::ClassLayout>),
     Instance {
         ty: Value,
+        fields: Box<[Value]>,
     },
+    BoundMethod {
+        receiver: Value,
+        method: Value,
+    },
+    StaticMethod(Value),
 }
 thread_local! {
     static ERROR: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
@@ -112,7 +128,23 @@ pub unsafe fn release(value: Value) {
                 }
             }
             Data::Type { attributes, .. } => release(*attributes),
-            Data::Instance { ty } => release(*ty),
+            Data::Class(layout) => {
+                release(layout.base);
+                for (_, method) in &layout.methods {
+                    release(*method);
+                }
+            }
+            Data::Instance { ty, fields } => {
+                release(*ty);
+                for field in fields {
+                    release(*field);
+                }
+            }
+            Data::BoundMethod { receiver, method } => {
+                release(*receiver);
+                release(*method);
+            }
+            Data::StaticMethod(method) => release(*method),
             _ => (), // Function globals are borrowed from the executing module.
         }
     }
@@ -225,6 +257,16 @@ pub unsafe fn argument(args: Value, index: usize) -> Option<Value> {
             if let Data::Args(values) = &(*args).data {
                 return values.get(index).copied();
             }
+            match &(*args).data {
+                Data::ArgumentView { values, count } if index < *count => {
+                    return Some(*values.add(index));
+                }
+                Data::ReceiverArgs { receiver, .. } if index == 0 => return Some(*receiver),
+                Data::ReceiverArgs { values, count, .. } if index <= *count => {
+                    return Some(*values.add(index - 1));
+                }
+                _ => (),
+            }
         }
         error("SystemError", "native arguments must be an argument view");
         None
@@ -235,6 +277,11 @@ pub unsafe fn argument_count(args: Value) -> Option<usize> {
         if !args.is_null() && !is_fixnum(args) {
             if let Data::Args(values) = &(*args).data {
                 return Some(values.len());
+            }
+            match &(*args).data {
+                Data::ArgumentView { count, .. } => return Some(*count),
+                Data::ReceiverArgs { count, .. } => return Some(*count + 1),
+                _ => (),
             }
         }
         error("SystemError", "native arguments must be an argument view");
@@ -258,7 +305,20 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
                 }
                 return new_value(Data::Instance {
                     ty: retain(callable),
+                    fields: Box::new([]),
                 });
+            }
+            Data::Class(_) => return crate::classes::construct(callable, args),
+            Data::BoundMethod { receiver, method } => {
+                return call_with_receiver(*method, *receiver, args);
+            }
+            Data::StaticMethod(method) => return call(*method, args),
+            Data::Instance { .. } => {
+                let result = special(callable, "__call__", args);
+                if result.is_null() && !has_error() {
+                    error("TypeError", "object is not callable");
+                }
+                return result;
             }
             Data::Function { .. } => (),
             _ => {
@@ -273,11 +333,14 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
         if mule_enter_frame() < 0 {
             return std::ptr::null_mut();
         }
-        // This stack object's vector borrows its values, unlike heap Args values.
+        // This stack object borrows the argument slice without allocating a vector.
         // Native callbacks may retain individual arguments, never the argument view.
         let mut view = Object {
             references: usize::MAX,
-            data: Data::Args(args.to_vec()),
+            data: Data::ArgumentView {
+                values: args.as_ptr(),
+                count: args.len(),
+            },
         };
         let result = entry(globals, &mut view);
         mule_leave_frame();
@@ -290,17 +353,53 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
         result
     }
 }
+/// Invoke a native method with a borrowed receiver-prefixed argument view.
+/// The common call path allocates neither an argument vector nor a bound method.
+pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value]) -> Value {
+    unsafe {
+        if has_error() {
+            return std::ptr::null_mut();
+        }
+        if !method.is_null() && !is_fixnum(method) {
+            if let Data::Function { entry, globals, .. } = &(*method).data {
+                if mule_enter_frame() < 0 {
+                    return std::ptr::null_mut();
+                }
+                let mut view = Object {
+                    references: usize::MAX,
+                    data: Data::ReceiverArgs {
+                        receiver,
+                        values: args.as_ptr(),
+                        count: args.len(),
+                    },
+                };
+                let result = entry(*globals, &mut view);
+                mule_leave_frame();
+                if result.is_null() && !has_error() {
+                    error(
+                        "SystemError",
+                        "native method returned NULL without an error",
+                    );
+                }
+                return result;
+            }
+        }
+        error("TypeError", "method is not a native function");
+        std::ptr::null_mut()
+    }
+}
 pub unsafe fn special(value: Value, name: &str, args: &[Value]) -> Value {
     unsafe {
         if value.is_null() || is_fixnum(value) {
             return std::ptr::null_mut();
         }
         let ty = match &(*value).data {
-            Data::Instance { ty } => *ty,
+            Data::Instance { ty, .. } => *ty,
             _ => return std::ptr::null_mut(),
         };
         let attributes = match &(*ty).data {
             Data::Type { attributes, .. } => *attributes,
+            Data::Class(_) => return crate::classes::special_method(value, name, args),
             _ => unreachable!(),
         };
         let method = lookup(attributes, name);
@@ -308,7 +407,14 @@ pub unsafe fn special(value: Value, name: &str, args: &[Value]) -> Value {
             return method;
         }
         retain(method);
-        let result = call(method, args);
+        let result = if is_fixnum(method) {
+            call(method, args)
+        } else {
+            match &(*method).data {
+                Data::StaticMethod(method) => call(*method, args),
+                _ => call_with_receiver(method, value, args),
+            }
+        };
         release(method);
         result
     }
@@ -336,7 +442,14 @@ pub unsafe fn truth(value: Value) -> Option<bool> {
             Data::Instance { .. } => {
                 let result = special(value, "__bool__", &[]);
                 if result.is_null() {
-                    return if has_error() { None } else { Some(true) };
+                    if has_error() {
+                        return None;
+                    }
+                    let length = special(value, "__len__", &[]);
+                    if length.is_null() {
+                        return if has_error() { None } else { Some(true) };
+                    }
+                    return length_result(length).map(|length| length != 0);
                 }
                 let boolean = if !is_fixnum(result) {
                     match &(*result).data {
@@ -354,6 +467,43 @@ pub unsafe fn truth(value: Value) -> Option<bool> {
             }
             _ => true,
         })
+    }
+}
+/// Validate and consume the owned result of the length protocol.
+pub unsafe fn length_result(result: Value) -> Option<usize> {
+    unsafe {
+        if is_fixnum(result) {
+            let length = fixnum(result);
+            if length < 0 {
+                error("ValueError", "__len__ must return a nonnegative integer");
+                return None;
+            }
+            return Some(length as usize);
+        }
+        if !result.is_null() {
+            if let Data::Bool(value) = &(*result).data {
+                let length = usize::from(*value);
+                release(result);
+                return Some(length);
+            }
+        }
+        let integer = numeric::integer_export(result);
+        release(result);
+        let integer = integer?;
+        if integer.sign() < 0 {
+            error("ValueError", "__len__ must return a nonnegative integer");
+            return None;
+        }
+        let length = integer
+            .to_u64()
+            .and_then(|length| usize::try_from(length).ok());
+        match length {
+            Some(length) if length <= isize::MAX as usize => Some(length),
+            _ => {
+                error("OverflowError", "__len__ result is too large");
+                None
+            }
+        }
     }
 }
 pub unsafe fn binary(op: i32, left: Value, right: Value, inplace: bool) -> Value {
@@ -744,11 +894,19 @@ pub unsafe fn formatted_value(
                 result
             }
             Data::Function { name, .. } => format!("<native function {name}>").into_bytes(),
+            Data::Class(layout) => format!("<class '{}'>", layout.name).into_bytes(),
+            Data::BoundMethod { .. } => b"<bound native method>".to_vec(),
+            Data::StaticMethod(_) => b"<staticmethod>".to_vec(),
             Data::Type { name, .. } => format!("<class '{name}'>").into_bytes(),
-            Data::Instance { ty } => match &(**ty).data {
+            Data::Instance { ty, .. } => match &(**ty).data {
                 Data::Type { name, .. } => format!("<{name} object>").into_bytes(),
+                Data::Class(layout) => format!("<{} object>", layout.name).into_bytes(),
                 _ => unreachable!(),
             },
+            Data::ArgumentView { .. } | Data::ReceiverArgs { .. } => {
+                error("SystemError", "argument view cannot escape a native call");
+                return None;
+            }
         })
     }
 }

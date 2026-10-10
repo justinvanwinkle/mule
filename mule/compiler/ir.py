@@ -38,6 +38,12 @@ class Operation:
     def argument_count(self) -> int:
         return 0
 
+    def resolved_receiver(self) -> str | None:
+        return None
+
+    def required_receiver(self) -> str | None:
+        return None
+
     def confirms_assignment(self, name: str, value: str) -> bool:
         return False
 
@@ -80,6 +86,21 @@ class Visitor:
         return self.visit_Operation(operation)
 
     def visit_DefineFunction(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_DefineClass(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_LoadAttribute(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_StoreAttribute(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_ResolveMethod(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_CallMethod(self, operation):
         return self.visit_Operation(operation)
 
     def visit_Discard(self, operation):
@@ -234,6 +255,96 @@ class DefineFunction(ResultOperation):
 
 
 @dataclass(frozen=True, slots=True)
+class DefineClass(ResultOperation):
+    result: str
+    public_name: str
+    base: str | None
+    fields: tuple[str, ...]
+    method_names: tuple[str, ...]
+    methods: tuple[str, ...]
+
+    def accept(self, visitor):
+        return visitor.visit_DefineClass(self)
+
+    def operands(self):
+        return (*(() if self.base is None else (self.base,)), *self.methods)
+
+    def argument_count(self):
+        return len(self.methods)
+
+    def validate(self, function, functions, following):
+        if len(self.method_names) != len(self.methods):
+            raise ValueError("class method names and values differ in length")
+        if len(set(self.fields)) != len(self.fields):
+            raise ValueError("duplicate class field")
+        if len(set(self.method_names)) != len(self.method_names):
+            raise ValueError("duplicate class method")
+
+
+@dataclass(frozen=True, slots=True)
+class LoadAttribute(ResultOperation):
+    result: str
+    receiver: str
+    name: str
+
+    def accept(self, visitor):
+        return visitor.visit_LoadAttribute(self)
+
+    def operands(self):
+        return (self.receiver,)
+
+
+@dataclass(frozen=True, slots=True)
+class StoreAttribute(Operation):
+    receiver: str
+    name: str
+    value: str
+
+    def accept(self, visitor):
+        return visitor.visit_StoreAttribute(self)
+
+    def operands(self):
+        return (self.receiver, self.value)
+
+
+@dataclass(frozen=True, slots=True)
+class ResolveMethod(ResultOperation):
+    """Resolve a callable and optional receiver before evaluating arguments."""
+
+    result: str
+    receiver: str
+    name: str
+
+    def accept(self, visitor):
+        return visitor.visit_ResolveMethod(self)
+
+    def operands(self):
+        return (self.receiver,)
+
+    def resolved_receiver(self):
+        return self.result
+
+
+@dataclass(frozen=True, slots=True)
+class CallMethod(ResultOperation):
+    result: str
+    callee: str
+    args: tuple[str, ...]
+
+    def accept(self, visitor):
+        return visitor.visit_CallMethod(self)
+
+    def operands(self):
+        return (self.callee, *self.args)
+
+    def argument_count(self):
+        return len(self.args) + 1
+
+    def required_receiver(self):
+        return self.callee
+
+
+@dataclass(frozen=True, slots=True)
 class Discard(Operation):
     value: str
 
@@ -245,7 +356,20 @@ class Discard(Operation):
 
 
 type Instruction = (
-    Constant | Load | Store | Binary | Unary | Compare | Call | DefineFunction | Discard
+    Constant
+    | Load
+    | Store
+    | Binary
+    | Unary
+    | Compare
+    | Call
+    | DefineFunction
+    | DefineClass
+    | LoadAttribute
+    | StoreAttribute
+    | ResolveMethod
+    | CallMethod
+    | Discard
 )
 
 
@@ -335,6 +459,7 @@ def _verify_function(function: Function, functions: set[str]) -> None:
     ) <= set(function.locals):
         raise ValueError("invalid parameter/local declarations")
     definitions = {}
+    resolved_methods = set()
     successors = {}
     predecessors = {label: set() for label in blocks}
     for block in function.blocks:
@@ -358,6 +483,8 @@ def _verify_function(function: Function, functions: set[str]) -> None:
                 if result in definitions:
                     raise ValueError(f"multiply defined value {result}")
                 definitions[result] = (block.label, index)
+                if operation.resolved_receiver() is not None:
+                    resolved_methods.add(result)
 
     entry = function.blocks[0].label
     reachable = set()
@@ -384,7 +511,14 @@ def _verify_function(function: Function, functions: set[str]) -> None:
     consumed = set()
     for block in function.blocks:
         for index, operation in enumerate([*block.instructions, block.terminator]):
+            resolved = operation.required_receiver()
+            if resolved is not None and resolved not in resolved_methods:
+                raise ValueError("method call requires a resolved method")
             for value in operands(operation):
+                if value in resolved_methods and value != resolved:
+                    raise ValueError(
+                        "resolved method must be consumed by a method call"
+                    )
                 if value not in definitions or value in consumed:
                     raise ValueError(f"undefined or multiply consumed value {value}")
                 producer, position = definitions[value]

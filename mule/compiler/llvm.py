@@ -82,6 +82,11 @@ declare ptr @mule_compare(i32, ptr, ptr)
 declare i32 @mule_truth(ptr)
 declare ptr @mule_call(ptr, i64, ptr)
 declare ptr @mule_function(ptr, ptr, ptr)
+declare ptr @mule_class(ptr, ptr, i64, ptr, i64, ptr, ptr)
+declare ptr @mule_get_attr_cached(ptr, ptr, ptr)
+declare i32 @mule_set_attr_cached(ptr, ptr, ptr, ptr)
+declare ptr @mule_resolve_method(ptr, ptr, ptr, ptr)
+declare ptr @mule_call_resolved(ptr, ptr, i64, ptr)
 declare i32 @mule_check_args(ptr, i32)
 declare ptr @mule_arg(ptr, i32)
 declare ptr @mule_retain(ptr)
@@ -98,6 +103,29 @@ def emit(module: ir1.Module) -> str:
     """Return a complete LLVM module with a native executable entry point."""
     ir1.verify(module)
     return _ModuleEmitter(module).emit()
+
+
+class _MethodTargets(ir1.Visitor):
+    """Collect native method predictions; calls still check callable identity."""
+
+    def __init__(self):
+        self.definitions = {}
+        self.methods = {}
+        self.resolutions = {}
+
+    def visit_DefineFunction(self, instruction):
+        self.definitions[instruction.result] = instruction.function
+
+    def visit_DefineClass(self, instruction):
+        for name, value in zip(
+            instruction.method_names, instruction.methods, strict=True
+        ):
+            target = self.definitions.get(value)
+            if target is not None:
+                self.methods.setdefault(name, target)
+
+    def visit_ResolveMethod(self, instruction):
+        self.resolutions[instruction.result] = instruction.name
 
 
 class _ModuleEmitter:
@@ -118,6 +146,30 @@ class _ModuleEmitter:
             for variant, context in enumerate(self.analysis.variants[function.name])
         }
         self.data: dict[bytes, str] = {}
+        self.auxiliary: list[str] = []
+        self.method_targets = {}
+        for function in module.functions:
+            collector = _MethodTargets()
+            for block in function.blocks:
+                for instruction in block.instructions:
+                    instruction.accept(collector)
+            for name, target in collector.methods.items():
+                self.method_targets.setdefault(name, target)
+
+    def attribute_cache(self) -> str:
+        name = f"@mule.cache.{len(self.auxiliary)}"
+        self.auxiliary.append(f"{name} = internal global [2 x i64] zeroinitializer")
+        return name
+
+    def names(self, names: tuple[str, ...]) -> str:
+        if not names:
+            return "null"
+        values = ", ".join(f"ptr {self.text(name)}" for name in names)
+        name = f"@mule.names.{len(self.auxiliary)}"
+        self.auxiliary.append(
+            f"{name} = private constant [{len(names)} x ptr] [{values}]"
+        )
+        return name
 
     def literal_data(self, value: bytes) -> str:
         """Produce a NUL-terminated global, retaining embedded NUL bytes."""
@@ -158,7 +210,14 @@ class _ModuleEmitter:
         )
         return (
             "\n\n".join(
-                [_DECLARATIONS, llvm_ops.helpers(), *globals_, *functions, main]
+                [
+                    _DECLARATIONS,
+                    llvm_ops.helpers(),
+                    *globals_,
+                    *self.auxiliary,
+                    *functions,
+                    main,
+                ]
             )
             + "\n"
         )
@@ -328,9 +387,23 @@ class _FunctionEmitter(ir1.Visitor):
         self.value_slots = {
             name: f"%value.{index}" for index, name in enumerate(results)
         }
+        self.receiver_slots = {
+            name: f"%receiver.{index}"
+            for index, name in enumerate(
+                instruction.resolved_receiver()
+                for block in function.blocks
+                for instruction in block.instructions
+                if instruction.resolved_receiver() is not None
+            )
+        }
         self.labels = {
             block.label: f"block.{index}" for index, block in enumerate(function.blocks)
         }
+        collector = _MethodTargets()
+        for block in function.blocks:
+            for instruction in block.instructions:
+                instruction.accept(collector)
+        self.method_names = collector.resolutions
 
     def line(self, text: str) -> None:
         self.lines.append("  " + text)
@@ -433,7 +506,11 @@ class _FunctionEmitter(ir1.Visitor):
                 self.refine_type(fact, value)
         self.line("%return = alloca ptr")
         self.line("store ptr null, ptr %return")
-        for slot in [*self.local_slots.values(), *self.value_slots.values()]:
+        for slot in [
+            *self.local_slots.values(),
+            *self.value_slots.values(),
+            *self.receiver_slots.values(),
+        ]:
             self.line(f"{slot} = alloca ptr")
             self.line(f"store ptr null, ptr {slot}")
         max_args = max(
@@ -465,6 +542,8 @@ class _FunctionEmitter(ir1.Visitor):
             value = self.operation(f"load ptr, ptr {slot}")
             self.mark_immortal(result, value)
             self.release(value)
+        for slot in self.receiver_slots.values():
+            self.release(self.operation(f"load ptr, ptr {slot}"))
         value = self.operation("load ptr, ptr %return")
         self.line(f"ret ptr {value}")
         self.lines.append("}")
@@ -719,6 +798,131 @@ class _FunctionEmitter(ir1.Visitor):
             result,
             "call ptr @mule_function(ptr %globals, "
             f"ptr {self.module.functions[function]}, ptr {self.module.text(name)})",
+        )
+
+    def visit_DefineClass(self, instruction: ir1.DefineClass) -> None:
+        base = self.take(instruction.base) if instruction.base is not None else "null"
+        methods = [self.take(method) for method in instruction.methods]
+        for index, value in enumerate(methods):
+            slot = self.operation(f"getelementptr ptr, ptr %argv, i64 {index}")
+            self.line(f"store ptr {value}, ptr {slot}")
+        self.pointer_result(
+            instruction.result,
+            f"call ptr @mule_class(ptr {self.module.text(instruction.public_name)}, "
+            f"ptr {base}, i64 {len(instruction.fields)}, ptr {self.module.names(instruction.fields)}, "
+            f"i64 {len(instruction.methods)}, ptr {self.module.names(instruction.method_names)}, ptr %argv)",
+            (base, *methods),
+        )
+
+    def visit_LoadAttribute(self, instruction: ir1.LoadAttribute) -> None:
+        receiver = self.take(instruction.receiver)
+        self.pointer_result(
+            instruction.result,
+            f"call ptr @mule_get_attr_cached(ptr {receiver}, ptr {self.module.text(instruction.name)}, "
+            f"ptr {self.module.attribute_cache()})",
+            (receiver,),
+        )
+
+    def visit_StoreAttribute(self, instruction: ir1.StoreAttribute) -> None:
+        receiver, value = self.take(instruction.receiver), self.take(instruction.value)
+        status = self.operation(
+            f"call i32 @mule_set_attr_cached(ptr {receiver}, ptr {self.module.text(instruction.name)}, "
+            f"ptr {value}, ptr {self.module.attribute_cache()})"
+        )
+        self.release(receiver)
+        self.release(value)
+        self.check_status(status)
+
+    def visit_ResolveMethod(self, instruction: ir1.ResolveMethod) -> None:
+        receiver = self.take(instruction.receiver)
+        slot = self.receiver_slots[instruction.result]
+        # Loop iterations reuse this slot; the previous call normally cleared it.
+        old = self.operation(f"load ptr, ptr {slot}")
+        self.line(f"store ptr null, ptr {slot}")
+        self.release(old)
+        self.pointer_result(
+            instruction.result,
+            f"call ptr @mule_resolve_method(ptr {receiver}, ptr {self.module.text(instruction.name)}, "
+            f"ptr {self.module.attribute_cache()}, ptr {slot})",
+            (receiver,),
+        )
+
+    def visit_CallMethod(self, instruction: ir1.CallMethod) -> None:
+        function = self.take(instruction.callee)
+        slot = self.receiver_slots[instruction.callee]
+        receiver = self.operation(f"load ptr, ptr {slot}")
+        self.line(f"store ptr null, ptr {slot}")
+        values = [self.take(argument) for argument in instruction.args]
+        for index, value in enumerate(values):
+            argv = self.operation(f"getelementptr ptr, ptr %argv, i64 {index}")
+            self.line(f"store ptr {value}, ptr {argv}")
+        value = self.call_method(instruction, function, receiver, values)
+        self.publish(instruction.result, value)
+        for operand in (function, receiver, *values):
+            self.release(operand)
+        self.check_pointer(value)
+
+    def call_method(self, instruction, callable, receiver, arguments):
+        """Guard a predicted method and pass owned arguments to its native body."""
+        target = self.module.method_targets.get(self.method_names[instruction.callee])
+        function = next(
+            (
+                function
+                for function in self.module.module.functions
+                if function.name == target
+                and len(function.parameters) == len(arguments) + 1
+            ),
+            None,
+        )
+        fallback_call = (
+            f"call ptr @mule_call_resolved(ptr {callable}, ptr {receiver}, "
+            f"i64 {len(arguments)}, ptr %argv)"
+        )
+        if function is None:
+            return self.operation(fallback_call)
+        matched = self.operation(
+            f"call i32 @mule_function_matches(ptr {callable}, "
+            f"ptr {self.module.functions[function.name]}, ptr %globals)"
+        )
+        identity = self.operation(f"icmp ne i32 {matched}, 0")
+        bound = self.operation(f"icmp ne ptr {receiver}, null")
+        valid = self.operation(f"and i1 {identity}, {bound}")
+        direct, fallback, entered, failed, join = (
+            self.fresh(label)[1:]
+            for label in (
+                "method.direct",
+                "method.fallback",
+                "method.entered",
+                "method.failed",
+                "method.join",
+            )
+        )
+        self.line(f"br i1 {valid}, label %{direct}, label %{fallback}")
+        self.lines.append(direct + ":")
+        frame = self.operation("call i32 @mule_enter_frame()")
+        rejected = self.operation(f"icmp slt i32 {frame}, 0")
+        self.line(f"br i1 {rejected}, label %{failed}, label %{entered}")
+        self.lines.append(failed + ":")
+        self.line(f"br label %{join}")
+        self.lines.append(entered + ":")
+        owned = [
+            value
+            if value in self.immortal_values
+            else self.operation(f"call ptr @mule.fast.retain(ptr {value})")
+            for value in (receiver, *arguments)
+        ]
+        operands = ", ".join(["ptr %globals", *(f"ptr {value}" for value in owned)])
+        result = self.operation(
+            f"call ptr {self.module.bodies[function.name]}({operands})"
+        )
+        self.line("call void @mule_leave_frame()")
+        self.line(f"br label %{join}")
+        self.lines.append(fallback + ":")
+        general = self.operation(fallback_call)
+        self.line(f"br label %{join}")
+        self.lines.append(join + ":")
+        return self.operation(
+            f"phi ptr [null, %{failed}], [{result}, %{entered}], [{general}, %{fallback}]"
         )
 
     def argument_guard(self, value: str, expected: ValueType) -> str:

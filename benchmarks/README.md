@@ -102,3 +102,21 @@ rustc --edition=2024 -C opt-level=3 -C target-cpu=native benchmarks/workload.rs 
 SBCL's executable includes its Lisp image. Mule dynamically links GMP and the
 platform C/math services and has no Python runtime dependency. Binary size does
 not directly compare total deployment size.
+
+## Class counter
+
+[`examples/class_counter.py`](../examples/class_counter.py) performs two million
+native method calls that update a fixed instance field. Build and run it with:
+
+```sh
+uv run python -m mule examples/class_counter.py -o build/class_counter
+time build/class_counter
+time uv run python -I -S examples/class_counter.py
+```
+
+The expected output is `6000000`. [Recorded samples](results-classes.json) use
+one warmup, seven fresh processes per implementation, shuffled order, and a
+single pinned CPU. Process wall time includes startup and shutdown but excludes
+compilation and `uv` startup. Mule's median was 60.03 ms and Python 3.14's was
+67.67 ms, a 1.13x speedup. This exercises cached fields and guarded native method
+calls; it does not establish performance for every object-oriented workload.
