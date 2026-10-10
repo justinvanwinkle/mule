@@ -14,7 +14,7 @@ from .stdlib_io import adapt_io
 VERSION = "3.15.0"
 ARCHIVE_SHA256 = "ba4bed1ba346b916890b76d9e320451420aa69f6408997d33c66482eeae3d575"
 SOURCE_URL = f"https://www.python.org/ftp/python/{VERSION}/Python-{VERSION}.tar.xz"
-EXCLUDED_DIRECTORIES = {"test", "tests", "idle_test"}
+TEST_DIRECTORIES = {"test", "tests", "idle_test"}
 
 
 def replace_once(source, old, new):
@@ -227,42 +227,68 @@ def vendor(archive, destination):
             "archive does not match the official Python 3.15.0 release checksum"
         )
     sources = {}
+    test_files = {}
+    resources = {}
+    directories = []
     prefix = f"Python-{VERSION}/Lib/"
     with tarfile.open(archive, "r:xz") as release:
         license_text = release.extractfile(f"Python-{VERSION}/LICENSE").read()
         for member in release.getmembers():
-            if not member.isfile() or not member.name.startswith(prefix):
+            if not member.name.startswith(prefix):
                 continue
             relative = PurePosixPath(member.name.removeprefix(prefix))
-            if relative.suffix != ".py" or EXCLUDED_DIRECTORIES.intersection(
-                relative.parts[:-1]
-            ):
-                continue
             if relative.is_absolute() or ".." in relative.parts:
                 raise ValueError(f"unsafe archive member: {member.name}")
-            sources[str(relative)] = release.extractfile(member).read().decode("utf-8")
+            if member.isdir():
+                directories.append(str(relative))
+                continue
+            if not member.isfile():
+                raise ValueError(f"unsupported archive member: {member.name}")
+            content = release.extractfile(member).read()
+            if TEST_DIRECTORIES.intersection(relative.parts[:-1]):
+                # Tests contain intentionally invalid source/encoding fixtures;
+                # preserve their bytes and native-extension references exactly.
+                test_files[str(relative)] = content
+            elif relative.suffix == ".py":
+                sources[str(relative)] = content.decode("utf-8")
+            else:
+                resources[str(relative)] = content
     original_hashes = {
         name: hashlib.sha256(text.encode()).hexdigest()
         for name, text in sources.items()
     }
     adapt(sources)
     destination.mkdir(parents=True, exist_ok=True)
+    for name in directories:
+        (destination / name).mkdir(parents=True, exist_ok=True)
     for name, text in sources.items():
         path = destination / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
+    for name, content in (test_files | resources).items():
+        path = destination / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
     (destination / "LICENSE.cpython").write_bytes(license_text)
     manifest = {
         "version": VERSION,
         "source": SOURCE_URL,
         "archive_sha256": checksum,
-        "excluded_directories": sorted(EXCLUDED_DIRECTORIES),
+        "test_directory_names": sorted(TEST_DIRECTORIES),
         "files": {
             name: {
                 "upstream_sha256": original_hashes[name],
                 "vendored_sha256": hashlib.sha256(text.encode()).hexdigest(),
             }
             for name, text in sorted(sources.items())
+        },
+        "test_files": {
+            name: hashlib.sha256(content).hexdigest()
+            for name, content in sorted(test_files.items())
+        },
+        "resource_files": {
+            name: hashlib.sha256(content).hexdigest()
+            for name, content in sorted(resources.items())
         },
     }
     (destination / "UPSTREAM.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -272,6 +298,10 @@ def vendor(archive, destination):
     )
     print(
         f"Vendored {len(sources)} Python files; selected Python fallbacks in {modified} files."
+    )
+    print(
+        f"Included all {len(test_files)} upstream test/support/fixture files "
+        f"and {len(resources)} library resource files."
     )
 
 

@@ -14,3 +14,10 @@ mule.core
 .ruff_cache/
 __pycache__/
 /build/
+
+# Preserve upstream standard-library code and gettext test fixtures even when
+# global Git ignores exclude virtual environments or translation outputs.
+!/stdlib/venv/
+!/stdlib/venv/**
+!/stdlib/test/test_tools/i18n_data/*.pot
+!/stdlib/test/test_tools/msgfmt_data/*.mo

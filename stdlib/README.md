@@ -8,9 +8,10 @@ The official source archive is
 `https://www.python.org/ftp/python/3.15.0/Python-3.15.0.tar.xz`. Its verified SHA-256
 is `ba4bed1ba346b916890b76d9e320451420aa69f6408997d33c66482eeae3d575`.
 `LICENSE.cpython` preserves the release's PSF and historical license notices.
-`UPSTREAM.json` records the archive identity and upstream/vendored hashes of every
-copied Python file. No Python runtime binaries, extension modules, C sources,
-bytecode, regression-test directories or non-Python resource files are included.
+`UPSTREAM.json` records the archive identity and hashes of every copied library,
+test and resource file. No CPython interpreter or native extension implementation
+is included. The test tree preserves binary and intentionally invalid source
+fixtures as test data; these are not runtime dependencies.
 
 693 upstream Python files are included. 39 files are adapted to select existing
 Python implementations rather than import optional native accelerators. These
@@ -37,7 +38,8 @@ library yet. Python 3.15 lazy imports and other new language/runtime facilities
 still need compiler support. Import/bootstrap code retains upstream Python
 semantics; it must be adapted to Mule's compiled-module loading before use by
 generated executables. It must never call a CPython runtime or host evaluator.
-Modules requiring excluded data resources will need those resources separately.
+The release's 63 non-Python library resources are included for the upstream tests,
+including IDLE configuration and ensurepip's bundled wheel.
 
 The imported Python code preserves upstream language idioms; this task does not
 refactor the standard library's algorithms or type inspection into Mule's own
@@ -49,10 +51,47 @@ From the repository root, with the official archive downloaded:
 
 ```sh
 uv run python -m tools.vendor_stdlib build/python-3.15.0/Python-3.15.0.tar.xz
-uv run pytest test/stdlib
+uv run pytest test/stdlib/test_python_fallbacks.py
 ```
 
 The tool verifies the release checksum before writing anything and selects exact,
 audited fallback blocks. Mule's two existing library files are not overwritten.
-The tests exercise selected compatible Python algorithms on the external test
-host; they do not substitute that host for Mule execution.
+The fallback smoke tests exercise selected compatible Python algorithms on the
+external test host; they do not substitute that host for Mule execution.
+
+## Complete upstream tests
+
+All 1,810 files under the release's `Lib/test` and all 68 files under
+`idlelib/idle_test` are preserved unchanged, including support code, tests requiring
+native extensions, and 519 non-Python fixture files. Their accelerator imports,
+decorators and assertions are retained. Tests for missing native extensions are
+not excluded.
+
+```sh
+uv run python -m tools.run_stdlib_tests
+uv run pytest test/stdlib/test_upstream.py
+```
+
+Both commands attempt all 557 entries discovered by Python's upstream rules.
+Discovery reads `SPLITTESTDIRS` from the shipped `findtests.py` with Mule's parser.
+It splits only the packages upstream splits; other packages remain whole so their
+`load_tests` hooks can select nested tests and doctests. The pytest entries are also
+part of the default `uv run pytest` suite, with no skips or expected-failure marks.
+
+Each entry first goes through Mule's native compiler. Once source compilation
+succeeds, a compiled driver imports that suite and calls
+`unittest.TestLoader.loadTestsFromModule`, respecting its hooks. Test execution
+requires a native ELF executable; there is no host-Python fallback. All 15 resource
+categories are enabled, including the four omitted by upstream's `-uall`.
+Loader errors, zero executed tests, unavailable/skipped tests and upstream
+expected failures all make the run unsuccessful.
+
+The command continues after failed entries and returns nonzero if any fail.
+`build/stdlib-tests/results.json` records every result and distinguishes
+compilation failures from executed test results. Each entry also has its own
+`outcome.json`. `--list` lists the complete selection; `--jobs` controls parallel
+suite attempts and `--timeout` bounds each compilation/execution.
+
+The initial Mule baseline is 557 compilation failures, zero executed suites and
+zero executed individual tests. This establishes complete test selection and the
+current compilation blockers; it is not an executed Python conformance result.
