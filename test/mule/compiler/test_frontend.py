@@ -41,7 +41,7 @@ def test_invalid_context_is_rejected_before_emission(source):
     [
         "import os\n",
         "class C(A, B):\n pass\n",
-        "x = [1, 2]\n",
+        "x = [1, *items]\n",
         "for i in range(3):\n print(i)\n",
         "print(value=1)\n",
         "def f(x=1):\n pass\n",
@@ -56,10 +56,10 @@ def test_unsupported_syntax_fails_explicitly_even_when_unreachable(source):
 
 def test_error_preserves_original_filename_and_unicode_columns():
     with pytest.raises(UnsupportedSyntax) as caught:
-        lower("名 = 1\n名 = [2]\n", "unicode.py")
+        lower("名 = 1\n名 = {2}\n", "unicode.py")
     error = caught.value
     assert (error.filename, error.lineno, error.offset) == ("unicode.py", 2, 5)
-    assert error.text == "名 = [2]\n"
+    assert error.text == "名 = {2}\n"
 
 
 def test_late_assignment_classifies_all_function_reads_as_local():

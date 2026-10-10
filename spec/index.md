@@ -15,6 +15,8 @@ frontend coverage does not establish complete Python compatibility.
 - [Native compiler](native-compiler.md): implemented subset and executable builds.
 - [Compiled modules](compiled-modules.md): static imports and the first native
   upstream test execution, including bootstrap runner limitations.
+- [Sequence displays and formatting](sequence-displays-and-formatting.md):
+  evaluated list/tuple construction and compiled Python formatting protocols.
 - [Native implementation selection](native-lowering.md): implemented analysis,
   native arithmetic, guarded calls, and their SBCL source references.
 - [Optimization policies](optimization-policies.md): target class restrictions,

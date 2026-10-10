@@ -11,6 +11,7 @@ from pathlib import Path
 
 from mule.compiler import ir
 from mule.compiler.frontend import lower
+from mule.compiler.protocols import Bindings, Primitive
 
 
 @dataclass(slots=True)
@@ -63,11 +64,6 @@ class _Definitions(ir.Visitor):
     def visit_Store(self, op):
         if not op.local and op.value in self.values:
             self.bindings[op.name] = self.values[op.value]
-
-
-class Primitive:
-    def emit(self, emitter, arguments):
-        raise NotImplementedError
 
 
 class Allocate(Primitive):
@@ -129,23 +125,6 @@ class WriteInt64(Primitive):
         return "@mule.none"
 
 
-class _Bindings(ir.Visitor):
-    def __init__(self, primitives):
-        self.primitives = primitives
-        self.references = set()
-        self.calls = {}
-        self.values = {}
-
-    def visit_Load(self, op):
-        if not op.local and op.name in self.primitives:
-            self.values[op.result] = self.primitives[op.name]
-            self.references.add(op.result)
-
-    def visit_Call(self, op):
-        if op.callee in self.values:
-            self.calls[op.result] = self.values[op.callee]
-
-
 def prepare(module):
     """Append compiled stdlib protocols; return layouts and intrinsic bindings."""
     definitions = _Definitions({fn.name: fn for fn in module.functions})
@@ -166,7 +145,9 @@ def prepare(module):
             ", PARAMETERS", ", " + parameters if parameters else ""
         )
         lowered = lower(
-            source, str(Path(__file__).parents[2] / "stdlib/_native_class.py")
+            source,
+            str(Path(__file__).parents[2] / "stdlib/_native_class.py"),
+            namespace=f"$mule.native.{layout.index}",
         )
         names = iter(("construct", "get_field", "set_field"))
         primitives = {
@@ -182,7 +163,7 @@ def prepare(module):
             role = next(names)
             function.name = f"mule_protocol_{layout.index}_{role}"
             layout.protocols[role] = function.name
-            collector = _Bindings(primitives)
+            collector = Bindings(primitives)
             for block in function.blocks:
                 for op in block.instructions:
                     op.accept(collector)

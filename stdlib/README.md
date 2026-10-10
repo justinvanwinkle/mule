@@ -2,7 +2,8 @@
 
 This directory contains the `.py` library files from the released
 [Python 3.15.0](https://www.python.org/downloads/release/python-3150/), alongside
-Mule's existing `mule.py` and `_native_class.py`.
+Mule's `mule.py`, `_native_class.py`, and `_format.py`. The latter two contain
+compiler-private protocols compiled by Mule itself.
 
 The official source archive is
 `https://www.python.org/ftp/python/3.15.0/Python-3.15.0.tar.xz`. Its verified SHA-256
@@ -55,7 +56,7 @@ uv run pytest test/stdlib/test_python_fallbacks.py
 ```
 
 The tool verifies the release checksum before writing anything and selects exact,
-audited fallback blocks. Mule's two existing library files are not overwritten.
+audited fallback blocks. Mule's own library files are not overwritten.
 The fallback smoke tests exercise selected compatible Python algorithms on the
 external test host; they do not substitute that host for Mule execution.
 

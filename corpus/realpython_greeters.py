@@ -16,9 +16,9 @@ stdin = ""
 timeout = 5.0
 
 [mule]
-status = "pending"
+status = "supported"
 phase = "compile"
-reason = "syntax is not supported by the native compiler yet"
+reason = ""
 '''
 
 def say_hello(name):

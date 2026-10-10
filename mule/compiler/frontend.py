@@ -324,23 +324,49 @@ class FunctionBuilder(ast.Visitor):
         if node.level == 0 and node.module in ("mule", "__future__"):
             self._import(node)
             return
-        if node.level or any(item.name == "*" for item in node.items):
+        if any(item.name == "*" for item in node.items):
             self.error(
-                "relative and wildcard runtime imports are not supported yet",
+                "wildcard runtime imports are not supported yet",
                 node,
                 unsupported=True,
             )
-        name = self.temporary()
-        self.store(name, self.import_module(node.module, node))
-        for item in node.items:
-            result = self.result()
-            self.emit(
-                ir.LoadAttribute(
-                    result, self.load(name), item.name, self.lowerer.location(item)
-                )
+        if self.lowerer.imports is None:
+            self.error(
+                "runtime module imports are not supported by standalone lowering",
+                node,
+                unsupported=True,
             )
-            self.store(item.alias or item.name, result, item)
+        module_name = self.lowerer.imports.import_name(self.lowerer, node)
+        name = self.temporary()
+        self.store(name, self.import_module(module_name, node))
+        for item in node.items:
+            child = module_name + "." + item.name
+            if self.lowerer.imports.path_for(child) is not None:
+                exists, absent, joined = self.block(), self.block(), self.block()
+                present = self.result()
+                self.emit(ir.HasModuleBinding(present, self.load(name), item.name))
+                self.current.terminator = ir.Branch(present, exists.label, absent.label)
+                self.current = absent
+                self.store(
+                    item.alias or item.name, self.import_module(child, item), item
+                )
+                self.jump(joined)
+                self.current = exists
+                self.import_attribute(name, item)
+                self.jump(joined)
+                self.current = joined
+            else:
+                self.import_attribute(name, item)
         self.emit(ir.Discard(self.load(name, clear=True)))
+
+    def import_attribute(self, namespace, item):
+        result = self.result()
+        self.emit(
+            ir.LoadAttribute(
+                result, self.load(namespace), item.name, self.lowerer.location(item)
+            )
+        )
+        self.store(item.alias or item.name, result, item)
 
     def import_module(self, name, node):
         if self.lowerer.imports is None:
@@ -573,6 +599,46 @@ class FunctionBuilder(ast.Visitor):
 
     def visit_BytesLiteral(self, node):
         return self.constant(node)
+
+    def visit_List(self, node):
+        return self.sequence(node, ir.BuildList)
+
+    def visit_Tuple(self, node):
+        return self.sequence(node, ir.BuildTuple)
+
+    def sequence(self, node, constructor):
+        elements = tuple(self.expression(element) for element in node.elements)
+        result = self.result()
+        self.emit(constructor(result, elements))
+        return result
+
+    def visit_FormattedString(self, node):
+        parts = [part.accept(self) for part in node.parts]
+        if not parts:
+            return self.constant(ast.TextLiteral(""))
+        result = parts[0]
+        for part in parts[1:]:
+            joined = self.result()
+            self.emit(ir.Binary(joined, ast.BinaryOperator.ADD, result, part))
+            result = joined
+        return result
+
+    def visit_Interpolation(self, node):
+        if node.conversion not in (None, "s", "r"):
+            self.error("unsupported f-string conversion", node, unsupported=True)
+        value = self.expression(node.expression)
+        specification = (
+            self.expression(node.format_spec)
+            if node.format_spec is not None
+            else self.constant(ast.TextLiteral(""))
+        )
+        result = self.result()
+        # Debug fields without an explicit format specification imply !r.
+        conversion = node.conversion
+        if node.expression_text is not None and node.format_spec is None:
+            conversion = conversion or "r"
+        self.emit(ir.FormatValue(result, value, specification, conversion))
+        return result
 
     def visit_Name(self, node):
         if node.identifier in self.lowerer.compiler_bindings:

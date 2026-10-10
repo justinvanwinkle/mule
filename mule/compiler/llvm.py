@@ -11,9 +11,10 @@ from __future__ import annotations
 import struct
 
 from mule import ast
+from mule.compiler import format_protocol, llvm_ops, native, native_protocol
 from mule.compiler import ir as ir1
-from mule.compiler import llvm_ops, native, native_protocol
 from mule.compiler.analysis import UNKNOWN, Context, ValueType, analyze
+from mule.compiler.protocols import CompiledCall
 
 _BINARY = {
     ast.BinaryOperator.ADD: 0,
@@ -76,7 +77,17 @@ declare ptr @mule_bool(i32)
 declare ptr @mule_load_global(ptr, ptr)
 declare i32 @mule_store_global(ptr, ptr, ptr)
 declare ptr @mule_namespace()
+declare i32 @mule_namespace_bound(ptr, ptr)
 declare i32 @mule_assertion_failure(ptr)
+declare ptr @mule_sequence_list(i64, ptr)
+declare ptr @mule_sequence_tuple(i64, ptr)
+declare ptr @mule_lookup_special(ptr, ptr)
+declare ptr @mule_render_text(ptr, i32)
+declare ptr @mule_text_result(ptr)
+declare ptr @mule_text_length(ptr)
+declare ptr @mule_text_character(ptr, ptr)
+declare ptr @mule_text_codepoint(ptr, ptr)
+declare ptr @mule_invalid_string_format()
 declare ptr @mule_load_local(ptr, ptr)
 declare ptr @mule_binary_reuse(i32, ptr, ptr, i32, ptr)
 declare ptr @mule_unary(i32, ptr)
@@ -157,6 +168,9 @@ class _ModuleEmitter:
         self.layouts, self.protocol_calls, self.protocol_references = (
             native_protocol.prepare(module)
         )
+        calls, references = format_protocol.prepare(module)
+        self.protocol_calls.update(calls)
+        self.protocol_references.update(references)
         ir1.verify(module)
         self.analysis = analyze(module)
         self.native_plans = native.select(module, self.layouts, self.analysis)
@@ -808,11 +822,56 @@ class _FunctionEmitter(ir1.Visitor):
         index = list(self.module.imports).index(instruction.module_name)
         self.pointer_result(instruction.result, f"call ptr @mule.import.{index}()")
 
+    def visit_HasModuleBinding(self, instruction):
+        module = self.take(instruction.module)
+        status = self.operation(
+            f"call i32 @mule_namespace_bound(ptr {module}, "
+            f"ptr {self.module.text(instruction.name)})"
+        )
+        self.release(module)
+        self.check_status(status)
+        self.pointer_result(instruction.result, f"call ptr @mule_bool(i32 {status})")
+
     def visit_AssertionFailure(self, instruction):
         message = self.take(instruction.message)
         status = self.operation(f"call i32 @mule_assertion_failure(ptr {message})")
         self.release(message)
         self.check_status(status)
+
+    def sequence(self, instruction, primitive):
+        values = [self.take(element) for element in instruction.elements]
+        for index, value in enumerate(values):
+            slot = self.operation(f"getelementptr ptr, ptr %argv, i64 {index}")
+            self.line(f"store ptr {value}, ptr {slot}")
+        self.pointer_result(
+            instruction.result,
+            f"call ptr @{primitive}(i64 {len(values)}, ptr %argv)",
+            values,
+        )
+
+    def visit_BuildList(self, instruction):
+        self.sequence(instruction, "mule_sequence_list")
+
+    def visit_BuildTuple(self, instruction):
+        self.sequence(instruction, "mule_sequence_tuple")
+
+    def visit_FormatValue(self, instruction):
+        value = self.take(instruction.value)
+        if instruction.conversion is not None:
+            protocol = {"s": "string", "r": "representation"}[instruction.conversion]
+            converted = CompiledCall("mule_format_" + protocol).emit(self, [value])
+            self.publish(instruction.result, converted)
+            self.release(value)
+            self.check_pointer(converted)
+            value = self.take(instruction.result)
+        specification = self.take(instruction.specification)
+        result = CompiledCall("mule_format_format_value").emit(
+            self, [value, specification]
+        )
+        self.publish(instruction.result, result)
+        self.release(value)
+        self.release(specification)
+        self.check_pointer(result)
 
     def visit_Load(self, instruction: ir1.Load) -> None:
         result = instruction.result

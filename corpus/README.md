@@ -40,12 +40,13 @@ stdin, command-line arguments, UTF-8 output decoding and a timeout. The selected
 programs use only the standard library and need no network access or installed
 third-party packages.
 
-Currently 44 reference tests and 6 native tests pass. The remaining 38 native
-cases document compiler gaps: 36 stop during lowering and 2 encounter missing
+Currently 44 reference tests and 8 native tests pass. The remaining 36 native
+cases document compiler gaps: 34 stop during compilation and 2 encounter missing
 string methods at runtime. Ordinary runs report these as expected failures;
 `--corpus-strict` makes them failures. A compile gap must match the recorded
-`UnsupportedSyntax` message. A runtime gap must match the entire recorded failure
-output and exit code. Different errors, crashes, timeouts, toolchain failures and
+`SyntaxError` or `UnsupportedSyntax` message and source file. A runtime gap must
+match the entire recorded failure output and exit code. Different errors,
+crashes, timeouts, toolchain failures and
 unexpected output fail the test. Cases that become fully supported pass without
 changing their metadata.
 
@@ -91,7 +92,7 @@ Compile gaps match the diagnostic and originating
 source file; imported-library gaps use `compile_error_file` relative to the
 repository and `compile_error_line` to pin the known blocker. Other source errors
 remain failures. Python 3.15 lazy imports currently block argparse, dataclasses
-and collections; string initialization additionally needs list literals.
+and collections; string initialization additionally needs the `_string` module.
 
 Expected outputs come from published examples or fixed inputs verified against
 isolated CPython, independently of Mule. `source_sha256` identifies the upstream

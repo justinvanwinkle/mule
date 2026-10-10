@@ -22,14 +22,21 @@ class ModuleCompiler:
         self.modules = {}
         self.functions = []
 
-    def resolve(self, name, lowerer, node):
-        if name in self.modules:
-            return self.modules[name]
+    def path_for(self, name):
         relative = Path(*name.split("."))
-        path = next(
+        parent, _, child = name.rpartition(".")
+        if parent in self.modules:
+            package = self.modules[parent]
+            if package.path.name != "__init__.py":
+                return None
+            roots = (package.path.parent,)
+            relative = Path(child)
+        else:
+            roots = self.roots
+        return next(
             (
                 candidate
-                for root in self.roots
+                for root in roots
                 for candidate in (
                     root / relative / "__init__.py",
                     root / relative.with_suffix(".py"),
@@ -38,6 +45,32 @@ class ModuleCompiler:
             ),
             None,
         )
+
+    def import_name(self, lowerer, node):
+        if not node.level:
+            return node.module
+        descriptor = self.modules.get(lowerer.namespace)
+        if descriptor is None:
+            lowerer.error(
+                "relative import has no known parent package", node, unsupported=True
+            )
+        package = (
+            descriptor.name
+            if descriptor.path.name == "__init__.py"
+            else descriptor.name.rpartition(".")[0]
+        )
+        parts = package.split(".") if package else []
+        if node.level > len(parts):
+            lowerer.error(
+                "relative import beyond top-level package", node, unsupported=True
+            )
+        base = ".".join(parts[: len(parts) - node.level + 1])
+        return base + "." + node.module if node.module else base
+
+    def resolve(self, name, lowerer, node):
+        if name in self.modules:
+            return self.modules[name]
+        path = self.path_for(name)
         if path is None:
             lowerer.error(
                 f"no compilable Python module named '{name}'", node, unsupported=True

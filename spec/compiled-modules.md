@@ -20,8 +20,19 @@ LLVM artifact. Each module has separately named compiler functions, its own
 namespace and a cached initializer. Generated LLVM performs initialization;
 Rust supplies existing namespace storage and reference ownership. Module caches
 own their namespaces until executable shutdown, preserving captured globals.
-Dynamic module discovery, relative imports, extension loading, and concurrent
-imports remain future work. Unsupported source remains a compilation error.
+Dynamic module discovery, extension loading, and concurrent imports remain
+future work. Unsupported source remains a compilation error.
+
+Relative names are resolved against the importing module's package, following
+the same static artifact resolution as absolute imports. SBCL's FASL loader
+resolves compiled initialization and named bindings (`load-as-fasl` and
+`fop-funcall*`); Python additionally requires package-relative module names and
+`from package import child` fallback to a submodule. Mule checks the package's
+binding at runtime first, so an existing binding (including None) wins. Only an
+absent binding initializes the compiled submodule and attaches it to its parent.
+Potential submodule source is statically compiled, never interpreted on demand.
+Directly executed source without a package rejects relative imports. Python's
+dynamic search-path mutation and runtime source compilation remain unsupported.
 
 SBCL `tests/test-util.lisp`, `run-test`, invokes a test function and records errors
 without abandoning later tests. Mule currently has no general exception handlers.

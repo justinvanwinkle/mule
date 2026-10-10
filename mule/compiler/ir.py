@@ -78,6 +78,21 @@ class Visitor:
     def visit_ImportModule(self, operation):
         return self.visit_Operation(operation)
 
+    def visit_HasModuleBinding(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_Sequence(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_BuildList(self, operation):
+        return self.visit_Sequence(operation)
+
+    def visit_BuildTuple(self, operation):
+        return self.visit_Sequence(operation)
+
+    def visit_FormatValue(self, operation):
+        return self.visit_Operation(operation)
+
     def visit_Load(self, operation):
         return self.visit_Operation(operation)
 
@@ -175,6 +190,57 @@ class ImportModule(ResultOperation):
     def validate(self, function, functions, following):
         if self.initializer not in functions:
             raise ValueError("reference to missing module initializer")
+
+
+@dataclass(frozen=True, slots=True)
+class Sequence(ResultOperation):
+    result: str
+    elements: tuple[str, ...]
+
+    def operands(self):
+        return self.elements
+
+    def argument_count(self):
+        return len(self.elements)
+
+
+@dataclass(frozen=True, slots=True)
+class HasModuleBinding(ResultOperation):
+    result: str
+    module: str
+    name: str
+
+    def accept(self, visitor):
+        return visitor.visit_HasModuleBinding(self)
+
+    def operands(self):
+        return (self.module,)
+
+
+@dataclass(frozen=True, slots=True)
+class BuildList(Sequence):
+    def accept(self, visitor):
+        return visitor.visit_BuildList(self)
+
+
+@dataclass(frozen=True, slots=True)
+class BuildTuple(Sequence):
+    def accept(self, visitor):
+        return visitor.visit_BuildTuple(self)
+
+
+@dataclass(frozen=True, slots=True)
+class FormatValue(ResultOperation):
+    result: str
+    value: str
+    specification: str
+    conversion: str | None = None
+
+    def accept(self, visitor):
+        return visitor.visit_FormatValue(self)
+
+    def operands(self):
+        return (self.value, self.specification)
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,6 +490,10 @@ type Instruction = (
     | AssertType
     | AssertionFailure
     | ImportModule
+    | HasModuleBinding
+    | BuildList
+    | BuildTuple
+    | FormatValue
     | Load
     | Store
     | Binary

@@ -18,9 +18,9 @@ timeout = 5.0
 [mule]
 status = "pending"
 phase = "compile"
-reason = "syntax is not supported by the native compiler yet"
+reason = "no compilable Python module named '_string'"
 compile_error_file = "stdlib/string/__init__.py"
-compile_error_line = 17
+compile_error_line = 21
 '''
 
 from string import ascii_lowercase

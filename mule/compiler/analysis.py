@@ -209,6 +209,16 @@ class _InstructionAnalysis(ir.Visitor):
         self.invalidate(self.state)
         return _Fact()
 
+    def visit_Sequence(self, instruction):
+        return _Fact()
+
+    def visit_HasModuleBinding(self, instruction):
+        return _Fact(BooleanType())
+
+    def visit_FormatValue(self, instruction):
+        self.invalidate(self.state)
+        return _Fact(TextType())
+
     def visit_LoadAttribute(self, instruction):
         return _Fact()
 

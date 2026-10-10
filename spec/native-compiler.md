@@ -134,10 +134,17 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
   `from __future__ import annotations` is accepted as a compiler directive.
 - Static imports of Python source modules, aliases, packages and named exports.
   Imported globals have separate mutable namespaces; initialization occurs once
-  at execution and functions capture the defining module. Relative, wildcard,
-  extension and dynamic imports remain unsupported. `typing` imports use this
+  at execution and functions capture the defining module. Package-relative imports
+  and from-import submodule fallback work. Wildcard, extension and dynamic imports
+  remain unsupported. `typing` imports use this
   ordinary path and require their library sources to compile.
 - Assertion statements with lazy message evaluation and native error cleanup.
+- List and tuple displays with left-to-right element evaluation and owned
+  contiguous storage. Starred displays and container algorithms remain incomplete.
+- F-strings with `!s`, `!r`, debug fields, nested specification expressions,
+  string width/alignment and Unicode fill characters. Formatting protocols run
+  as compiled Mule Python and honor class `__format__`, `__str__`, and `__repr__`.
+  Numeric format specifications, precision and zero padding are not implemented.
 
 Function-wide binding classification makes a later assignment local even when
 an earlier read occurs first. Unbound local slots raise `UnboundLocalError`;
@@ -148,10 +155,11 @@ operands once. Owned references are cleaned on normal and exceptional exits,
 and an active error survives cleanup.
 
 Unsupported constructs raise `UnsupportedSyntax`, a `SyntaxError` subclass,
-before native compilation. These include dynamic/relative imports, nested functions or classes,
+before native compilation. These include dynamic/wildcard imports, nested functions or classes,
 closures/`nonlocal`, defaults, keyword/variadic calls, general decorators,
-async/generators, `for`, exception handling, containers/comprehensions,
-subscriptions, unpacking, and formatted/template strings. Unsupported source is
+async/generators, `for`, exception handling, dictionaries/sets/comprehensions,
+subscriptions, unpacking, starred displays, template strings and `!a` conversion.
+Unsupported source is
 also rejected in unreachable branches. Parser support is broader than compiler
 support; acceptance by the parser does not imply native compilation support.
 
@@ -337,8 +345,9 @@ attribute mutation raises `TypeError`, and a field/method name collision raises
 inheritance, arbitrary class-body execution, class attributes,
 `__slots__` declarations, metaclasses, properties/descriptors, `super()`, and
 general method decorators are unsupported; the imported `optimize` directive is
-accepted. Custom `__repr__` and `__str__` hooks are not
-yet used by formatting. Existing empty dynamic `type()` objects and
+accepted. The compiled f-string formatter uses custom formatting hooks; existing
+Rust `print`, `str` and `repr` bootstrap paths still require migration. Existing
+empty dynamic `type()` objects and
 static special-method hooks remain a limited runtime facility; they do not
 change the fixed-layout compiled-class contract. The class implementation has
 behavioral native tests; no performance comparison is established by these tests.

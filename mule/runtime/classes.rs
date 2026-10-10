@@ -351,6 +351,18 @@ pub unsafe fn construct(class: Value, args: &[Value]) -> Value {
 }
 
 /// Special lookup bypasses instance slots, matching the language's method protocol.
+pub unsafe fn special_binding(receiver: Value, attribute: &str) -> Value {
+    unsafe {
+        let Some((layout, _)) = layout(receiver) else {
+            return std::ptr::null_mut();
+        };
+        layout
+            .method_lookup
+            .get(attribute)
+            .map_or(std::ptr::null_mut(), |index| layout.methods[*index].1)
+    }
+}
+
 pub unsafe fn special_method(receiver: Value, attribute: &str, args: &[Value]) -> Value {
     unsafe {
         let Some((layout, _)) = layout(receiver) else {

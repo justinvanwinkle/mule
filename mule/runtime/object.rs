@@ -1027,6 +1027,20 @@ pub unsafe extern "C" fn mule_namespace() -> Value {
     unsafe { namespace() }
 }
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_namespace_bound(namespace: Value, name: *const c_char) -> i32 {
+    unsafe {
+        let Some(name) = name_from_c(name) else {
+            return -1;
+        };
+        let value = lookup(namespace, name);
+        if has_error() {
+            -1
+        } else {
+            i32::from(!value.is_null())
+        }
+    }
+}
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_assertion_failure(message: Value) -> i32 {
     unsafe {
         if let Some(message) = formatted_value(message, false, false) {
@@ -1042,6 +1056,174 @@ pub unsafe extern "C" fn mule_list() -> Value {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_list_append(list: Value, value: Value) -> i32 {
     unsafe { if list_append(list, value) { 0 } else { -1 } }
+}
+
+/// Copy and retain an evaluated buffer. Language evaluation and container
+/// algorithms are compiled Mule code; this only constructs owned storage.
+unsafe fn sequence_buffer(count: isize, values: *const Value) -> Option<Vec<Value>> {
+    unsafe {
+        if count < 0 || (count != 0 && values.is_null()) {
+            error("SystemError", "invalid sequence buffer");
+            return None;
+        }
+        let mut result = Vec::new();
+        if result.try_reserve_exact(count as usize).is_err() {
+            error("MemoryError", "sequence allocation failed");
+            return None;
+        }
+        for index in 0..count as usize {
+            result.push(retain(*values.add(index)));
+        }
+        Some(result)
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_sequence_list(count: isize, values: *const Value) -> Value {
+    unsafe {
+        sequence_buffer(count, values)
+            .map_or(std::ptr::null_mut(), |values| new_value(Data::List(values)))
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_sequence_tuple(count: isize, values: *const Value) -> Value {
+    unsafe {
+        sequence_buffer(count, values)
+            .map_or(std::ptr::null_mut(), |values| new_value(Data::Args(values)))
+    }
+}
+/// Return an owned callable from the receiver's class method table, or None
+/// when absent. Instance fields are intentionally not consulted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_lookup_special(value: Value, name: *const c_char) -> Value {
+    unsafe {
+        let Some(name) = name_from_c(name) else {
+            return std::ptr::null_mut();
+        };
+        if value.is_null() || is_fixnum(value) {
+            return none_value();
+        }
+        let method = match &(*value).data {
+            Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => match &(**ty).data {
+                Data::Class(_) => crate::classes::special_binding(value, name),
+                Data::Type { attributes, .. } => lookup(*attributes, name),
+                _ => unreachable!(),
+            },
+            _ => std::ptr::null_mut(),
+        };
+        if method.is_null() {
+            return none_value();
+        }
+        if !is_fixnum(method) {
+            if let Data::StaticMethod(method) = &(*method).data {
+                return retain(*method);
+            }
+        }
+        new_value(Data::BoundMethod {
+            receiver: retain(value),
+            method: retain(method),
+        })
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_render_text(value: Value, representation: i32) -> Value {
+    unsafe {
+        formatted_value(value, representation != 0, false)
+            .map_or(std::ptr::null_mut(), |bytes| new_value(Data::Text(bytes)))
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_result(value: Value) -> Value {
+    unsafe {
+        if !value.is_null() && !is_fixnum(value) {
+            if let Data::Text(_) = &(*value).data {
+                return retain(value);
+            }
+        }
+        error("TypeError", "formatting protocol must return str");
+        std::ptr::null_mut()
+    }
+}
+/// Physical Unicode storage access for compiled Mule text algorithms.
+unsafe fn text_storage<'a>(value: Value) -> Option<&'a [u8]> {
+    unsafe {
+        if !value.is_null() && !is_fixnum(value) {
+            if let Data::Text(bytes) = &(*value).data {
+                return Some(bytes);
+            }
+        }
+        error("TypeError", "text storage is required");
+        None
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_length(value: Value) -> Value {
+    unsafe {
+        let Some(bytes) = text_storage(value) else {
+            return std::ptr::null_mut();
+        };
+        decode_text(bytes).map_or(std::ptr::null_mut(), |characters| {
+            numeric::integer_from_usize(characters.len())
+        })
+    }
+}
+unsafe fn text_position(value: Value, index: Value) -> Option<(u32, usize, usize)> {
+    unsafe {
+        let bytes = text_storage(value)?;
+        let index = if is_fixnum(index) {
+            usize::try_from(fixnum(index)).ok()
+        } else {
+            numeric::integer_export(index)?
+                .to_u64()
+                .and_then(|value| usize::try_from(value).ok())
+        };
+        let characters = decode_text(bytes)?;
+        let Some(index) = index.filter(|index| *index < characters.len()) else {
+            error("IndexError", "text storage index out of range");
+            return None;
+        };
+        let encoded_size = |value: u32| {
+            if value < 0x80 {
+                1
+            } else if value < 0x800 {
+                2
+            } else if value < 0x10000 {
+                3
+            } else {
+                4
+            }
+        };
+        let start = characters[..index]
+            .iter()
+            .map(|value| encoded_size(*value))
+            .sum();
+        let codepoint = characters[index];
+        Some((codepoint, start, start + encoded_size(codepoint)))
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_character(value: Value, index: Value) -> Value {
+    unsafe {
+        let Some((_, start, end)) = text_position(value, index) else {
+            return std::ptr::null_mut();
+        };
+        let Some(bytes) = text_storage(value) else {
+            return std::ptr::null_mut();
+        };
+        new_value(Data::Text(bytes[start..end].to_vec()))
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_codepoint(value: Value, index: Value) -> Value {
+    unsafe {
+        text_position(value, index).map_or(std::ptr::null_mut(), |(codepoint, _, _)| {
+            numeric::integer_from_usize(codepoint as usize)
+        })
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_invalid_string_format() -> Value {
+    error("ValueError", "unsupported string format specification");
+    std::ptr::null_mut()
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_load_global(globals: Value, name: *const c_char) -> Value {

@@ -18,7 +18,8 @@ timeout = 5.0
 [mule]
 status = "pending"
 phase = "compile"
-reason = "syntax is not supported by the native compiler yet"
+reason = "only imported mule.optimize decorators are supported"
+compile_error_line = 39
 '''
 
 class Pizza:
