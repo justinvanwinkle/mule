@@ -76,7 +76,16 @@ Both commands attempt all 557 entries discovered by Python's upstream rules.
 Discovery reads `SPLITTESTDIRS` from the shipped `findtests.py` with Mule's parser.
 It splits only the packages upstream splits; other packages remain whole so their
 `load_tests` hooks can select nested tests and doctests. The pytest entries are also
-part of the default `uv run pytest` suite, with no skips or expected-failure marks.
+part of the default `uv run pytest` suite. Current compilation gaps are marked
+`xfail(strict=True)`: every entry is still attempted, and an unexpected pass fails
+the run so its expected-failure mark can be removed. Runner errors other than the
+failed-outcome assertion remain failures.
+
+To report the gaps as ordinary failures, use pytest's `--runxfail` option:
+
+```sh
+uv run pytest test/stdlib/test_upstream.py --runxfail
+```
 
 Each entry first goes through Mule's native compiler. Once source compilation
 succeeds, a compiled driver imports that suite and calls
@@ -86,7 +95,8 @@ categories are enabled, including the four omitted by upstream's `-uall`.
 Loader errors, zero executed tests, unavailable/skipped tests and upstream
 expected failures all make the run unsuccessful.
 
-The command continues after failed entries and returns nonzero if any fail.
+The standalone command continues after failed entries and returns nonzero if any
+fail; it reports raw results independently of pytest's expected-failure marks.
 `build/stdlib-tests/results.json` records every result and distinguishes
 compilation failures from executed test results. Each entry also has its own
 `outcome.json`. `--list` lists the complete selection; `--jobs` controls parallel
