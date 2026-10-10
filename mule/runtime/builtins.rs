@@ -107,7 +107,7 @@ unsafe extern "C" fn len(_: Value, args: Value) -> Value {
             },
             Data::Args(value) | Data::List(value) => value.len(),
             Data::Namespace(value) => value.len(),
-            Data::Instance { .. } => {
+            Data::Instance { .. } | Data::NativeInstance { .. } => {
                 let result = object::special(value, "__len__", &[]);
                 if result.is_null() {
                     if !object::has_error() {

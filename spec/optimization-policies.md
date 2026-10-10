@@ -1,11 +1,92 @@
 # Optimization policies
 
-Status: target contract for implementation, not a description of capabilities
-already available. The user requires progressively restricted class semantics,
-ending in native structs. The level assignments and defaults below define the
-proposed API. See [current behavior](native-compiler.md#imported-annotation-contracts)
-for the implemented decorator and [current classes](native-compiler.md#fixed-layout-classes)
-for the existing boxed, fixed-layout runtime.
+Status: a signed-64-bit subset of native structs is implemented; the complete
+policy matrix remains a target. Explicit `@mule.optimize(speed=3)` classes with
+bare `mule.int64` fields use raw storage, require definite construction
+initialization, and can select native internal method and caller entries.
+The compiler keeps compiled generic entries for bodies that cannot establish
+the required proofs. See [current behavior](native-compiler.md#imported-annotation-contracts)
+and [current classes](native-compiler.md#fixed-layout-classes) for the supported
+source subset. The remaining level assignments below do not establish Python
+data-model parity or support for other raw field widths.
+
+## SBCL implementation correspondence
+
+The inspected implementation is the local `~/checkout/sbcl` source. Native
+class lowering must reproduce the following compiler mechanisms, rather than
+move an attribute or arithmetic evaluator into Rust:
+
+| SBCL source and entry | Required Mule counterpart |
+| --- | --- |
+| `src/code/defstruct.lisp:115`, `defstruct-slot-description`; `:907`, `choose-raw-slot-representation` | Store declared slot types and constant indices in compiler layout descriptions. Select raw storage from the declared numeric contract. SBCL explicitly keeps fixnum subtypes tagged; full machine-word numeric types can select raw slots. |
+| `src/code/defstruct.lisp:212`, `dsd-primitives`; `:1288`, `slot-access-transform` | Transform a proven field access into its representation-specific reader or writer at a constant slot index. Propagate the declared type to the read result. Check writes at the boundary where the invariant is established, retaining read checks only when initialization or a narrower subtype invalidates that invariant. |
+| `src/code/defstruct.lisp:1932`, `instance-constructor-form` | Lower construction to allocation plus typed slot initialization. The constructor describes each slot's raw type and index; it does not repeatedly perform name lookup. |
+| `src/compiler/locall.lisp:42`, `propagate-to-args`; `:141`, `convert-call` | Assert declared argument types at local-call edges and record proven local targets. Local-call conversion enables body integration; the name of a mutable global alone is not a target proof. |
+| `src/compiler/represent.lisp:285`, `select-tn-representation`; `:1029`, `select-representations` | Select internal value representations separately from semantic types, then insert required moves and coercions at representation boundaries. SBCL scores admissible storage classes from use costs; Mule must preserve this separation even when LLVM selects registers and machine instructions. |
+
+SBCL's `defstruct.lisp:153` documents the underlying invariant: slot types are
+normally checked on writes. Reads need additional checks for unsafe subtype
+accessors or potentially unbound slots. Its raw numeric slots cannot store an
+unbound marker. This is the reason construction proof is part of native field
+lowering, rather than permission to treat every heap word as a valid integer.
+
+### Concrete adaptations and restrictions
+
+These are required differences, with their consequences stated explicitly.
+They do not justify skipping SBCL's analysis or representation stages.
+
+- **Declaration syntax.** Lisp `defstruct` slot descriptions and `optimize`
+  declarations become Python class-body annotations and the imported
+  `@mule.optimize` compiler directive. Python classes normally allow dynamic
+  mutation, so native layout restrictions require the user's explicit
+  `speed=3` class policy. The consequence is an intentionally restricted Python
+  class contract; an undecorated spelling alone cannot establish that contract.
+- **Machine representation.** Full signed `mule.int64` values select an LLVM
+  `i64` field and internal argument/result representation, including values
+  outside Mule's tagged-integer range. LLVM constant-offset addressing and
+  loads/stores replace SBCL's raw-instance VOPs because LLVM is the required
+  backend. Generic object adapters box or unbox at real entry/exit boundaries;
+  internal arithmetic and field operations remain native. Initial support for
+  only signed 64-bit native fields is an implementation boundary, not a reason
+  to silently box other declared storage widths.
+- **Construction.** Python `__init__` is executable code with observable order
+  and effects; it cannot be replaced by Lisp's slot-value constructor form.
+  Compile its body while preserving those effects, and establish initialization
+  before an instance escapes, a raw field is read, or construction returns
+  successfully. The initial signed-64-bit native subset requires definite
+  initialization analysis and rejects a missing proof at compile time. This is
+  a restriction of explicitly selected speed-three classes; existing ordinary
+  classes retain their current unbound-field errors. Raw `i64` has no unused
+  value for an unbound sentinel, and a hidden Rust initialization bitmap would
+  move the construction semantics out of the compiler. Do not fabricate zero
+  values or add that language-level Rust mechanism to bypass the analysis.
+- **Exact receivers.** This level-three contract is final and requires its own
+  native receiver. It rejects duck receivers and subclassing instead of
+  inheriting SBCL structure subtype rules or ordinary Python's unbound-method
+  permissiveness. This is an explicit semantic restriction that permits one
+  stable field layout and direct method entry; a wrong generic receiver must
+  receive `TypeError`, not have its storage reinterpreted.
+- **Mutable bindings.** A Python module global holding a class or function can
+  be rebound while the class descriptor itself remains immutable. Establish
+  the actual descriptor/callable identity before entering a specialized region.
+  A failed speculative guard must execute the already compiled generic path
+  with the actual binding. Hoisting a guard requires proof that calls inside
+  the region cannot invalidate the relevant binding; immutability of the
+  original class does not provide that proof.
+- **Errors.** The user requires statically detected annotation violations to be
+  compilation errors. This is stricter than SBCL's warning plus compiled error
+  path for some contradictory assertions. Known violations therefore fail even
+  under safety zero; unknown violations use the applicable boundary and
+  overflow policy. Ordinary Python `int` still has arbitrary precision.
+
+Class construction, attribute semantics, descriptors, method dispatch and
+conversion algorithms belong in compiled Mule Python, matching SBCL's compiled
+Lisp language implementation. Rust may allocate storage, manage lifetime and
+expose memory/foreign-library primitives. Existing Rust class and numeric
+language semantics are bootstrap debt; extending a native payload primitive
+does not authorize extending that language-level implementation. The existing
+reference-counting implementation is also not an architectural justification
+for omitting SBCL's storage and lifetime analyses.
 
 ## Policy axes and scope
 
@@ -14,16 +95,19 @@ import mule
 
 @mule.optimize(speed=3, safety=3, debug=0)
 class Counter:
-    value: mule.int32
+    value: mule.int64
 
     def __init__(self):
         self.value = 0
 
-    def add(self, amount: mule.int32):
+    def add(self, amount: mule.int64):
         self.value += amount
 ```
 
-This is target syntax; class field declarations are not implemented yet.
+This syntax is implemented for signed 64-bit fields. Constructors and field
+adapters are compiled from `stdlib/_native_class.py` using Mule's parser,
+frontend, analysis, ownership lowering and LLVM emitter. Their physical
+allocation and integer storage/conversion primitives are backend bindings.
 
 `speed` selects a class's semantic restrictions and available representations.
 It also controls optimization effort for functions. `safety` selects checks for
@@ -43,7 +127,12 @@ class semantics. Restrictions require an explicit class policy. The explicit
 `debug=1`; checked native classes use `safety=3` explicitly. This class-default
 rule requires a compiler change; today's default policy remains `3, 0, 1`.
 
-## Class speed levels
+## Target class speed levels
+
+The current implementation provides the explicit signed-64-bit level-three
+subset and the earlier boxed fixed-layout classes. It does not implement the
+full dynamic behavior of levels zero and one or the declared-field level-two
+contract in this table.
 
 | Capability | 0: dynamic | 1: optimized dynamic | 2: fixed layout | 3: native struct |
 | --- | --- | --- | --- | --- |
@@ -99,16 +188,17 @@ silently converted into native field contracts for dynamic classes.
 
 ## Native representation and operations
 
-For the example, the payload is equivalent to a native struct with one `i32`
+For the example, the payload is equivalent to a native struct with one `i64`
 member. Field order, alignment and padding are fixed by the target data layout.
-`int8` through `int128` and `uint8` through `uint128` select LLVM integers of
-their declared widths. Float markers select their corresponding LLVM floating
+The current raw field implementation supports only signed `int64`. The target
+is for `int8` through `int128` and `uint8` through `uint128` to select LLVM integers
+of their declared widths. Float markers select their corresponding LLVM floating
 representations when those backends are implemented; unsupported representations
 must be rejected rather than silently stored as binary64.
 
 An exact `Counter` receiver permits field access through a constant offset and
 an LLVM load/store. `Counter.add` uses a native calling convention with the
-receiver and an `i32` argument. It can inline into its caller. Numeric field
+receiver and an `i64` argument. It can inline into its caller. Numeric field
 access does not allocate objects, manipulate reference counts, look up a name,
 consult an attribute cache or call a generic runtime arithmetic helper.
 
@@ -126,6 +216,14 @@ violations are compilation errors. Checked operations detect overflow and report
 boundaries report `TypeError`. Under unchecked trusted compilation, violation is
 outside the valid program contract. Python's ordinary `int` remains arbitrary
 precision and can use GMP; its presence in a field is not a fixed-width promise.
+
+Annotations on operands do not constrain otherwise unannotated intermediate
+results. For example, `x: mule.int64` does not make `x * x` a bounded integer.
+Select raw arithmetic only when the operation's result itself has a declared
+fixed-width contract or analysis proves its complete mathematical range fits.
+Otherwise preserve Python's arbitrary-precision intermediate through a compiled
+generic path. A later bounded return annotation is not a contract on every
+operation that produced the return value.
 
 Exact class identity and callable identity must be established before selecting
 native operations. Mutable module bindings retain their semantics: spelling a
@@ -163,7 +261,11 @@ adapter enforces it. Checked errors must preserve ownership and existing object
 state, and must not reinterpret an invalid boxed value as native bits.
 
 The current implementation distinguishes safety zero from positive safety for
-annotation assertions; it does not yet implement all of these tier differences.
+annotation assertions and native checked arithmetic; it does not yet implement
+all of these tier differences. Native generic entry/field-write adapters validate
+the physical integer representation even under safety zero. Raw add, subtract,
+multiply and negation use LLVM overflow intrinsics at positive safety; unchecked
+contracted operations may use `nsw` and require the promised range to hold.
 
 ## Debug levels
 
@@ -180,24 +282,26 @@ tracebacks and debug metadata still require implementation.
 
 ## Implementation and acceptance
 
-The current runtime is closest to the shape restrictions of level two, but it
-does not implement these level selections. All current class fields are generic
-object slots; field annotations and native struct lowering are missing. Merely
-adding annotations to method parameters does not complete level three.
+Class policy, field declarations and owner identity now pass through the IR.
+The frontend proves signed-64-bit constructor initialization with forward
+control-flow must analysis. Representation selection can produce raw integer
+locals/arguments/results, exact native receivers, constant-offset field accesses
+and direct internal method calls. An entry guard checks predicted mutable class
+bindings and selects the compiled generic body when they differ. Generic entry
+adapters retain owned values, convert at the boundary and clean up on failure.
 
-Implement the contract in this order:
+Raw entry selection remains deliberately limited. Bodies with unsupported
+operations or missing proofs retain their compiled boxed entries. Recursive call
+cycles retain ordinary recursion guards; repeated allocation sites in loops
+retain the generic lifetime path until escape/lifetime analysis can establish a
+safe raw alternative. Native allocation elimination remains LLVM's opportunity,
+not a claim that the compiler already proves arbitrary object escape behavior.
 
-1. Carry a persistent class policy and field declarations through AST conversion
-   and IR; distinguish class restrictions from method optimization options.
-2. Implement level-three field storage and construction validation. Propagate
-   exact native receiver facts and fixed-width values through fields, locals,
-   calls and returns, with generic adapters only at actual boundaries.
-3. Lower proven fields and methods directly to LLVM and allow inlining and
-   allocation elimination. Keep the current boxed class path as an explicitly
-   limited implementation until it meets level-two behavior.
-4. Implement the level-zero/one dynamic object protocols and level-one guarded
-   specialization. Do not claim Python-compatible dynamic classes while these
-   protocols are missing.
+Remaining work includes other raw field widths and references, general
+representation-cost selection, fuller local-call transformations, level-two
+declared layouts, the level-zero/one dynamic object protocols, the debug/safety
+matrix and migration of existing Rust language-level bootstrap code into compiled
+Mule Python. None of these gaps is a reason to implement a Rust language evaluator.
 
 Acceptance requires behavioral tests for the policy matrix, including writes
 from callers with different policies, construction failures, mutation and

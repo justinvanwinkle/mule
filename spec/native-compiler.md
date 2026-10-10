@@ -67,6 +67,10 @@ and invokes the compiled module initializer directly.
 
 `mule/runtime/` implements Mule's objects, strings, truth testing, operators,
 calls, builtins, module globals, errors, and reference ownership in Rust.
+These language-level Rust implementations are bootstrap debt, not the required
+architecture. New native class constructors and generic field adapters are Mule
+Python in `stdlib/_native_class.py`, compiled through the normal frontend. Rust
+provides their raw storage, boxing, layout validation, and lifetime primitives.
 `numeric.rs` implements native small-integer operations and GMP bigint arithmetic;
 `gmp.rs` owns the GMP integer storage and bindings. Signed integers in
 the range `[-2**62, 2**62-1]` are encoded as immediate tagged values; small integer
@@ -95,7 +99,8 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
 - Module-level fixed-layout classes with zero or one compiled-class base,
   positional construction, instance methods, bound-method values, attribute reads,
   and assignment or augmented assignment to declared instance fields. Class bodies
-  currently contain method definitions and `pass` only.
+  contain method definitions and `pass`; explicitly selected native classes also
+  accept bare `mule.int64` field declarations as described below.
 - Unconditional module-level imports of numeric annotation markers and
   `optimize` from `mule`, including aliases. Parameter, return, and identifier
   variable annotations support these imported markers.
@@ -146,7 +151,8 @@ print(increment(41))
 Imports must be unconditional module-level statements. Compiler-only bindings
 cannot be rebound, shadowed by parameters/locals, or used as runtime values.
 Wildcard imports, arbitrary annotation expressions, builtin `int`/`float`
-annotations, and class-field annotations remain unsupported. A module annotation
+annotations remain unsupported. Class-field declarations are supported only for
+the explicit native `int64` class subset below. A module annotation
 constrains all writes to that global, including writes in functions defined before
 the declaration. A local annotation constrains stores from its declaration onward.
 A bare declaration leaves the variable unbound until assigned. Repeated identical
@@ -157,10 +163,12 @@ booleans. They are not wrapping conversions: assigning a known out-of-range
 result is a compilation error. Known nonnumeric values, invalid return values,
 and proven call arguments contradicting a contract also cause source-positioned
 compilation errors. Annotations propagate trusted facts into the existing
-analysis and native operation selection. This change does not introduce an
-unboxed `i64`/`i128` storage convention: values outside Mule's tagged integer
-range still use its GMP-backed objects. Keeping fixed-width values unboxed
-through calls, locals, and fields remains implementation work.
+analysis and native operation selection. Eligible signed `int64` functions and
+native class methods have raw `i64` internal entries and locals. Native fields
+retain all 64 bits without GMP storage. Generic interfaces box full-width values
+outside the tagged range into GMP-backed objects. Other widths and general
+operations retain the boxed convention; annotations alone do not establish
+eligibility for raw arithmetic or erase ordinary Python integer semantics.
 
 The float widths are registered annotation markers. Currently they assert the
 floating-point category, and runtime arithmetic/storage remains binary64.
@@ -173,7 +181,9 @@ are inherited by methods, and method decorators override specified options.
 On the host interpreter the library decorator returns the original function.
 It does not wrap calls in the generated executable.
 
-- `safety=0` trusts declarations and emits no annotation boundary checks.
+- `safety=0` trusts declarations and omits optional annotation checks.
+  Generic values entering raw `int64` storage or an internal native entry still
+  undergo physical representation validation at that boundary.
   Statically detected contradictions are errors at every safety level. An
   undetected violation under trusted compilation need not produce a clean error.
 - `safety=1`, `2`, or `3` checks an unknown category or range before using its
@@ -194,7 +204,8 @@ and recursion handling retain their existing contracts.
 This section describes current behavior. The target
 [optimization policies](optimization-policies.md) distinguish Python-compatible
 dynamic classes, fixed layouts, and native typed structs; those policy-selected
-class implementations are not yet available.
+dynamic levels are not yet available. This section describes the existing boxed
+class path. The restricted native subset is described separately below.
 
 The compiler discovers fields from assignments to attributes of each method's
 first parameter, regardless of that parameter's spelling. This includes writes
@@ -239,6 +250,45 @@ yet used by formatting. Existing empty dynamic `type()` objects and
 static special-method hooks remain a limited runtime facility; they do not
 change the fixed-layout compiled-class contract. The class implementation has
 behavioral native tests; no performance comparison is established by these tests.
+
+## Native int64 classes
+
+An explicit `@mule.optimize(speed=3)` class may declare bare `mule.int64` fields.
+Every field must be declared; defaults, bases, attribute interception, and
+undeclared field writes are rejected. Each instance has a contiguous signed
+64-bit payload. Constructor CFG analysis requires initialization of every field
+before a field read, receiver exposure, or successful return. Missing proofs
+are compilation errors. Method arguments currently require `mule.int64`; an
+explicit return contract may also be `mule.int64`.
+
+Representation selection creates `@mule.native.N` internal entries for eligible
+methods and scalar callers. They use raw scalar locals, constant-offset field
+loads/stores, and direct native method calls. Generic entries validate incoming
+values and receivers once and box outgoing results. Construction and generic
+field access compile `stdlib/_native_class.py`, binding only its storage and
+conversion primitives to backend operations. Native initialization retains the
+normal recursion guard and `__init__` return validation.
+
+Unannotated arithmetic remains arbitrary precision unless its range is proven
+to fit. A fixed-width result contract permits raw arithmetic: positive safety
+checks overflow, while safety zero treats overflow as a violated trusted
+contract. Bitwise operations on raw signed `int64` operands preserve that range.
+Known annotation contradictions remain compilation errors at all safety levels.
+
+Class globals remain mutable. A scalar caller predicts a compiled layout,
+validates its actual module binding before entering the raw region, and falls
+back to its compiled boxed body if the binding differs. Native local edges must
+be closed over supported bodies without global mutation or unknown callbacks;
+this establishes that the guard remains valid. Unsupported methods retain their
+compiled general body and use compiled field adapters. Recursion, escaping
+native results, and constructor sites inside loops retain the general path until
+the corresponding stack and lifetime analyses exist.
+
+`examples/class_counter.py` exercises this path with an explicit native field.
+At `-O3`, LLVM eliminates its counted loop into an update by `3 * max(limit, 0)`.
+The comparison harness in `benchmarks/classes.py` also measures an XOR/add
+recurrence whose loop remains in the optimized code. This does not establish
+the complete SBCL pipeline or implementation of the target class policy matrix.
 
 ## Current limits and verification
 

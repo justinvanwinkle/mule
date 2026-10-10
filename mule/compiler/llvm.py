@@ -12,7 +12,7 @@ import struct
 
 from mule import ast
 from mule.compiler import ir as ir1
-from mule.compiler import llvm_ops
+from mule.compiler import llvm_ops, native, native_protocol
 from mule.compiler.analysis import UNKNOWN, Context, ValueType, analyze
 
 _BINARY = {
@@ -83,6 +83,16 @@ declare i32 @mule_truth(ptr)
 declare ptr @mule_call(ptr, i64, ptr)
 declare ptr @mule_function(ptr, ptr, ptr)
 declare ptr @mule_class(ptr, ptr, i64, ptr, i64, ptr, ptr)
+declare ptr @mule_native_class(ptr, ptr, ptr, i64, ptr, i64, ptr, ptr, ptr, ptr, ptr)
+declare i32 @mule_native_class_matches(ptr, ptr, ptr)
+declare ptr @mule_native_instance_payload(ptr, ptr, ptr)
+declare ptr @mule_native_new(ptr)
+declare ptr @mule_native_payload(ptr)
+declare i32 @mule_unbox_i64(ptr, ptr)
+declare ptr @mule_box_i64(i64)
+declare i32 @mule_native_type_error()
+declare i32 @mule_native_initializer_error()
+declare i32 @mule_native_overflow()
 declare ptr @mule_get_attr_cached(ptr, ptr, ptr)
 declare i32 @mule_set_attr_cached(ptr, ptr, ptr, ptr)
 declare ptr @mule_resolve_method(ptr, ptr, ptr, ptr)
@@ -132,8 +142,14 @@ class _MethodTargets(ir1.Visitor):
 
 class _ModuleEmitter:
     def __init__(self, module: ir1.Module):
+        module = ir1.Module(list(module.functions), module.entry)
         self.module = module
+        self.layouts, self.protocol_calls, self.protocol_references = (
+            native_protocol.prepare(module)
+        )
+        ir1.verify(module)
         self.analysis = analyze(module)
+        self.native_plans = native.select(module, self.layouts, self.analysis)
         self.functions = {
             function.name: f"@mule.fn.{index}"
             for index, function in enumerate(module.functions)
@@ -194,6 +210,16 @@ class _ModuleEmitter:
             _FunctionEmitter(self, function, context).emit()
             for function in self.module.functions
             for context in self.analysis.variants[function.name]
+        )
+        functions.extend(
+            native.Emitter(self, plan).emit() for plan in self.native_plans.values()
+        )
+        functions.extend(
+            native_protocol.callbacks(self, layout) for layout in self.layouts.values()
+        )
+        self.auxiliary.extend(
+            f"{layout.schema} = internal global i8 0"
+            for layout in self.layouts.values()
         )
         globals_ = []
         for value, name in self.data.items():
@@ -519,6 +545,12 @@ class _FunctionEmitter(ir1.Visitor):
 
     def emit(self) -> str:
         wrapper = self.wrapper() if self.context is None else ""
+        adapter = ""
+        plan = self.module.native_plans.get(self.function.name)
+        if plan is not None:
+            adapter = native.adapter(self, plan)
+            self.body += ".boxed"
+            self.lines = []
         parameters = ", ".join(
             ["ptr %globals"]
             + [
@@ -584,7 +616,7 @@ class _FunctionEmitter(ir1.Visitor):
         value = self.operation("load ptr, ptr %return")
         self.line(f"ret ptr {value}")
         self.lines.append("}")
-        return wrapper + "\n\n" + "\n".join(self.lines)
+        return wrapper + "\n\n" + adapter + "\n\n" + "\n".join(self.lines)
 
     def wrapper(self) -> str:
         """General entry validates an argument view and transfers owned arguments."""
@@ -682,6 +714,9 @@ class _FunctionEmitter(ir1.Visitor):
 
     def visit_Load(self, instruction: ir1.Load) -> None:
         result = instruction.result
+        if (self.function.name, result) in self.module.protocol_references:
+            self.publish(result, "@mule.none")
+            return
         name = instruction.name
         local = instruction.local
         clear = instruction.clear
@@ -830,6 +865,14 @@ class _FunctionEmitter(ir1.Visitor):
         args = instruction.args
         function = self.take(callee)
         values = [self.take(argument) for argument in args]
+        primitive = self.module.protocol_calls.get((self.function.name, result))
+        if primitive is not None:
+            value = primitive.emit(self, values)
+            self.publish(result, value)
+            for operand in (function, *values):
+                self.release(operand)
+            self.check_pointer(value)
+            return
         for index, value in enumerate(values):
             slot = self.operation(f"getelementptr ptr, ptr %argv, i64 {index}")
             self.line(f"store ptr {value}, ptr {slot}")
@@ -856,6 +899,17 @@ class _FunctionEmitter(ir1.Visitor):
         for index, value in enumerate(methods):
             slot = self.operation(f"getelementptr ptr, ptr %argv, i64 {index}")
             self.line(f"store ptr {value}, ptr {slot}")
+        layout = self.module.layouts.get(instruction.class_id)
+        if layout is not None:
+            self.pointer_result(
+                instruction.result,
+                f"call ptr @mule_native_class(ptr {self.module.text(instruction.public_name)}, "
+                f"ptr {layout.schema}, ptr %globals, i64 {len(instruction.fields)}, ptr {self.module.names(instruction.fields)}, "
+                f"i64 {len(methods)}, ptr {self.module.names(instruction.method_names)}, ptr %argv, "
+                f"ptr {layout.constructor}, ptr {layout.getter}, ptr {layout.setter})",
+                methods,
+            )
+            return
         self.pointer_result(
             instruction.result,
             f"call ptr @mule_class(ptr {self.module.text(instruction.public_name)}, "

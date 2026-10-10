@@ -284,6 +284,10 @@ class DefineClass(ResultOperation):
     fields: tuple[str, ...]
     method_names: tuple[str, ...]
     methods: tuple[str, ...]
+    field_annotations: tuple[Contract | None, ...] = ()
+    policy: OptimizationPolicy = field(default_factory=OptimizationPolicy)
+    location: tuple | None = None
+    class_id: str | None = None
 
     def accept(self, visitor):
         return visitor.visit_DefineClass(self)
@@ -295,6 +299,8 @@ class DefineClass(ResultOperation):
         return len(self.methods)
 
     def validate(self, function, functions, following):
+        if self.field_annotations and len(self.field_annotations) != len(self.fields):
+            raise ValueError("class field names and annotations differ in length")
         if len(self.method_names) != len(self.methods):
             raise ValueError("class method names and values differ in length")
         if len(set(self.fields)) != len(self.fields):
@@ -308,6 +314,7 @@ class LoadAttribute(ResultOperation):
     result: str
     receiver: str
     name: str
+    location: tuple | None = None
 
     def accept(self, visitor):
         return visitor.visit_LoadAttribute(self)
@@ -321,6 +328,7 @@ class StoreAttribute(Operation):
     receiver: str
     name: str
     value: str
+    location: tuple | None = None
 
     def accept(self, visitor):
         return visitor.visit_StoreAttribute(self)
@@ -336,6 +344,7 @@ class ResolveMethod(ResultOperation):
     result: str
     receiver: str
     name: str
+    location: tuple | None = None
 
     def accept(self, visitor):
         return visitor.visit_ResolveMethod(self)
@@ -453,6 +462,8 @@ class Function:
     parameter_annotations: tuple[Contract | None, ...] = ()
     return_annotation: Contract | None = None
     policy: OptimizationPolicy = field(default_factory=OptimizationPolicy)
+    owner_class: str | None = None
+    local_annotations: dict[str, Contract] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

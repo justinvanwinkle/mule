@@ -12,9 +12,11 @@ pub mod annotations;
 pub mod builtins;
 pub mod classes;
 pub mod gmp;
+pub mod native_storage;
 pub mod numeric;
 pub mod object;
 
 pub use annotations::*;
 pub use classes::*;
+pub use native_storage::*;
 pub use object::*;

@@ -105,29 +105,63 @@ not directly compare total deployment size.
 
 ## Class counter
 
-[`examples/class_counter.py`](../examples/class_counter.py) performs 200 million
-native method calls that update a fixed instance field. Numeric parameters, the
-loop index, and the return value use `mule.int64` annotations; the instance field
-still uses the current generic object storage. Build and run it with:
+[`examples/class_counter.py`](../examples/class_counter.py) expresses 200 million
+method calls updating a native `mule.int64` field. The class explicitly selects
+`speed=3, safety=0`; method arguments, loop state and return values also use
+`mule.int64`. The compiler generates raw field access and native method entries,
+and LLVM eliminates this linear loop into a multiply and field update. Build
+and run it with:
 
 ```sh
 uv run python -m mule examples/class_counter.py -o build/class_counter
 time build/class_counter
-time env PYTHONPATH=stdlib uv run python -S examples/class_counter.py
+time uv run python examples/class_counter.py
 ```
 
-The expected output is `600000000`. The host run uses `stdlib/mule.py` for the
-annotation markers; its numeric annotations do not change Python's execution.
-[Current samples](results-classes-int64.json) compare Mule's `int32` and `int64`
+The expected output is `600000000`. `examples/mule.py` is a relative symlink to
+`stdlib/mule.py`; its host annotation markers and identity decorator do not
+change Python's execution.
+
+Run the reproducible native comparison with:
+
+```sh
+uv run python benchmarks/classes.py
+```
+
+This builds the native example, a boxed-field version, and matching Rust struct
+programs. Both native implementations use LLVM optimization level three and
+signed 64-bit fields. Inputs arrive through stdin. The second workload uses
+The harness explicitly selects `speed=3, safety=0` for the measured native class
+and caller, independently of local policy experiments in the example.
+`value = (value ^ amount) + 3`, retaining a real data-dependent loop; neither
+implementation uses a `black_box` barrier. Generated sources and optimized IR
+are under `build/benchmarks/native-classes/`. The harness verifies negative,
+zero, odd and even limits, then uses one warmup and seven shuffled fresh-process
+samples pinned to one CPU. Compilation and `uv` startup are excluded; process
+startup, input/output and shutdown are included.
+
+[Recorded samples](results-native-classes.json), with 200 million iterations:
+
+| Workload | Mule native | Rust | Standard Python | Mule boxed fields |
+| --- | ---: | ---: | ---: | ---: |
+| Linear counter; native loop eliminated | 2.415 ms | 2.077 ms | 6.075 s | 6.015 s |
+| XOR/add recurrence; native loop retained | 90.147 ms | 89.863 ms | 8.272 s | — |
+
+The retained loop is about 92 times faster than standard Python and within
+0.4% of Rust in this run. The folded counter is dominated by process overhead;
+its duration does not measure 200 million executed native method calls.
+These results establish this restricted class path, not general Python or the
+complete SBCL optimization pipeline.
+
+[Earlier boxed samples](results-classes-int64.json) compare Mule's `int32` and `int64`
 annotations with the same `int64` source run by standard Python. They use one
 warmup, seven fresh processes per implementation, shuffled order, and one pinned
 CPU. Process wall time includes startup and shutdown but excludes compilation
-and `uv` startup. This measures the current boxed class backend, not the proposed
-native struct representation.
+and `uv` startup. These measure the earlier boxed class backend.
 
-The current medians are 5.616 seconds for Mule `int32`, 5.907 seconds for Mule
+Those medians are 5.616 seconds for Mule `int32`, 5.907 seconds for Mule
 `int64`, and 6.122 seconds for Python 3.14. The `int64` annotations make this
-version 5.2% slower than `int32`; native typed fields remain implementation work.
+version 5.2% slower than `int32`, before native typed fields were implemented.
 
 [Earlier samples](results-classes.json) measured the unannotated example with
 two million iterations and output `6000000`. Mule's median was 60.03 ms and

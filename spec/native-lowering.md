@@ -18,9 +18,12 @@ The inspected source is `~/checkout/sbcl` at commit
 | `src/compiler/ir2tran.lisp`, `ir2-convert-local-known-call` (1029–1042) | Use an internal call convention with direct argument locations. |
 | `src/compiler/x86-64/arith.lisp`, `+/signed=>integer` (949–975) | Emit machine addition and overflow checks, allocating a bigint only when needed. |
 
-Mule applies these ideas in Python and LLVM rather than copying Lisp VOP code
-or adding SBCL's assembler/backend. Its runtime remains Rust; GMP supplies
-arbitrary-precision arithmetic. No additional library is introduced.
+Mule reproduces these mechanisms in Python with LLVM as the required backend.
+The specific native class adaptations and their reasons are recorded in
+[optimization policies](optimization-policies.md#sbcl-implementation-correspondence).
+Rust supplies low-level primitives; the existing language-level Rust runtime is
+bootstrap debt. GMP supplies arbitrary-precision arithmetic. No additional
+library is introduced.
 
 ## Analysis and representation facts
 
@@ -107,6 +110,54 @@ the actual callee through the runtime. Both routes use the same recursion guard.
 Arguments still evaluate after the callee and before the guard, so an argument
 that rebinds the global does not replace the already-loaded callable.
 
+## Raw int64 entries and class protocols
+
+`native.py` selects physical representations after semantic analysis, following
+SBCL's `represent.lisp` separation of semantic type from storage class. Native
+class declarations carry stable compiler layout identities, aligned contracts,
+slot indices, and method function identities. Receiver facts select typed slots
+through virtual methods. There is no host-class inspection or class-name type
+dispatch. Full signed 64-bit fields use `i64`, not Mule's 63-bit immediate values.
+
+The pass solves local representations and unannotated method result summaries
+to a fixed point. An arithmetic result requires a direct fixed-width contract
+or a range proof before it may lose arbitrary precision. Signed bitwise
+operations are closed over the selected 64-bit operand representation. Native
+methods and scalar callers use raw entries; generic interfaces supply coercions
+at entry and exit. Safety-zero contract arithmetic uses LLVM `nsw`; positive
+safety uses overflow intrinsics and reports `OverflowError` before a field write.
+The boxed path remains available for unsupported signatures and operations.
+
+Local method edges require an available raw body with no mutable-global
+dependencies. Cyclic call components remain boxed until native stack checking
+is implemented. Predicted class globals are loaded and checked at entry against
+the compiler layout and module environment. Calls in the selected region cannot
+write globals or invoke unknown code. Failed identity guards transfer the owned
+arguments to the compiled boxed fallback without re-evaluating arguments.
+This is a conservative implementation boundary, not a replacement for SBCL's
+full effect analysis and local-call transformations.
+
+Following SBCL's generated Lisp constructors and accessor forms in
+`defstruct.lisp`, `native_protocol.py` lowers `stdlib/_native_class.py` with Mule's
+normal parser and frontend. Its private primitive bindings select allocation,
+raw field load/store, boxing/unboxing, and a known initializer entry. Constructor
+signatures are expanded from the actual initializer signature. Generic ABI
+callbacks adapt borrowed arguments to these compiled owning functions. Rust
+records callback addresses in the existing bootstrap class descriptor and
+forwards construction and indexed field operations to them; it does not perform
+new native-class initialization or field conversion algorithms.
+
+An instance's owned allocation keeps borrowed payload pointers alive for the
+native region. Aliased local pointers share the same storage; method field
+operations do not retain or release scalars or receivers per iteration.
+Constructor sites in loops and instance returns retain the general path until
+escape and lifetime analysis can establish a safe ownership transformation.
+Cleanup releases each allocation on normal and error exits. Allocation currently
+uses a Rust primitive; inline allocation, stack allocation and scalar replacement
+of the owning box still require SBCL's corresponding analyses and primitives.
+LLVM can inline the raw methods and eliminate or unroll loops independently of
+that remaining allocation work.
+
 ## Bigint storage and linking
 
 GMP inputs are borrowed while owned runtime operands keep them alive. Fresh
@@ -130,8 +181,8 @@ retain optimization level 3.
 
 ## Remaining work and verification
 
-This stage does not specialize arbitrary object/float signatures, keep all numeric
-locals unboxed across blocks, perform SBCL's full local-call and constraint
+This stage does not specialize arbitrary object/float signatures, keep every numeric
+local unboxed across blocks, perform SBCL's full local-call and constraint
 transformations, or provide a separate implementation-level IR. Speculative global
 call returns remain unknown when the general fallback could return another type.
 LLVM handles SSA promotion, instruction optimization, and register allocation.

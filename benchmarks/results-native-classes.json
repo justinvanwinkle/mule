@@ -1,0 +1,184 @@
+{
+  "timestamp_utc": "2026-10-10T04:27:39.113705+00:00",
+  "platform": "Linux-7.2.8+deb14-amd64-x86_64-with-glibc2.43",
+  "cpu_affinity": 0,
+  "cpu_model": "AMD Ryzen 9 9955HX 16-Core Processor",
+  "python": "3.14.7 (main, Aug 14 2026, 15:35:28) [Clang 22.1.3 ]",
+  "clang": "Debian clang version 21.1.8 (13)",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "settings": {
+    "mule": "LLVM -O3, Rust primitives opt-level=3, speed3 safety0 signed i64, generic class binding guards",
+    "rust": "opt-level=3, generic target, signed i64, no black_box",
+    "cpython": "-S; same generated source; PYTHONPATH=stdlib annotation markers"
+  },
+  "measurement": "fresh process wall time, including startup/I/O/shutdown; build and uv startup excluded",
+  "repeats": 7,
+  "warmups": 1,
+  "limit": 200000000,
+  "source_sha256": {
+    "linear": "d8f44a06e189188f04ed24799e821d9df8cea4bb8f6142a2f28dc64f6120a7f5",
+    "nonlinear": "2ec0e59aaf3fba29bf635e9f71acb8b56dc4fbd404204a296f4a890a46209099",
+    "boxed": "e9e4a1fd70ed1b2e8b69490125abc5c64b970eab907f253f51db97e3ed873c86"
+  },
+  "rust_source_sha256": "5bcc96352623e5b9a74449ecc8e54702fbcef3f797aa1304b894803d8de39827",
+  "compiler_sha256": {
+    "mule/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mule/__main__.py": "8fd225d02d58d07932858d0cfdd3257e536778899a841e14d7d0f940a4a2d58e",
+    "mule/ast.py": "2dab3375069c159e499c385cc5edf32a5d0791f4666803f3d5d0d72c0da67efe",
+    "mule/compiler/__init__.py": "e0284983ba1de43c038f50a5f103857ee07f6473fc56e50ad46a0a1781619096",
+    "mule/compiler/analysis.py": "52409ebbecfbd8f39b3a61fa1d85c21bf44451bb8d91c246ca51dae83bf3b040",
+    "mule/compiler/annotation_types.py": "786f29c99390bb5167a71f5a7102410e3bdadb3e2af55bddc19cd51d248ff8bd",
+    "mule/compiler/driver.py": "d5a509ed11a8de22671c8b70a19e6e1dea102b3591b7ae8014c63dd230c298cb",
+    "mule/compiler/frontend.py": "c2f091953c3b099f92c91880bbed572de5e628f3de4fb6e8b1af47750ff2a51c",
+    "mule/compiler/ir.py": "a65c20d3acb2551f9cd6b26cfa58f8093216f3e0a11feb6bd5711a00c73dd708",
+    "mule/compiler/llvm.py": "040760d1f0d9afe2383e8ea2f4df14c988ab2785d661afca1f538deefb809a78",
+    "mule/compiler/llvm_ops.py": "dfee4466acb81888dc25c9e3fd54acb913853ae41686af9d8a687d15c1c2e345",
+    "mule/compiler/native.py": "c6bd9268b9185648cf3670a795defc8bab14a66e07dcaf7e2d8c4c14649f54ee",
+    "mule/compiler/native_protocol.py": "807fb8983aa66df4adb241c253335e1fd82df8f1fe67148fb14eada6af817b89",
+    "mule/compiler/value_facts.py": "750dbfee3bcd3aa700159375f4095655e79d1a386708959327bf502f561c9aa2",
+    "mule/parser/__init__.py": "a3800ab1f3ba5d4162e02a8eeb3f7763ee559aa488d8003553a9cd3c9367b31f",
+    "mule/parser/core.py": "23fdc13ea6686fb683564a966e6120d859a215a9af0d8fe1763707c61168b805",
+    "mule/parser/expressions.py": "d2e534724ca9ee06f092533338c04258fbc27f1c64e82d27c12bce52f94f1b33",
+    "mule/parser/lexer.py": "25b81efe521b9f14d1b4b2002f5ed968dfb7beb17b462cf3c16d345edc9d5ae0",
+    "mule/parser/patterns.py": "25c163f2f2589bfce293e8e1c645e350a9e3f328916a9cf4fcc36d62284b1862",
+    "mule/parser/statements.py": "8573c57a352b75e9ce7bd085c27192cec5a177724f68483ce8b2e1542574f2f3",
+    "mule/parser/strings.py": "062d210e10b10c7a23eb221de1f77182c082a176932d5f317cbb342b2c3ecc23",
+    "mule/runtime/annotations.rs": "077603613b6101842df19b6716bcc78aef8e2a8de28111570509a8cadeb0586f",
+    "mule/runtime/builtins.rs": "b73f463475eca58b6a848bbd42efd9db865134b5095491b1d5e6e067b04c1c17",
+    "mule/runtime/classes.rs": "662a3d66d3d6a9e2f106a5847e6fe21ca396b52b24432369bca648ed9d06806a",
+    "mule/runtime/gmp.rs": "be4cd3bb7e200e745da69ad22a1d7f4231ef1fa315ca5ae0f1ab2488e06a06c0",
+    "mule/runtime/lib.rs": "8279979e57d1cc93a61f343bb2e848ce2c4123d20e8289202d0c7a1d50cf7f97",
+    "mule/runtime/native_storage.rs": "76504e32e97d0c30d28bb8ec9fdbe1fd523ae496eaaa635822b607e50a557708",
+    "mule/runtime/numeric.rs": "dde0a348a973b967b72981f622185da5697c01fbf6739744287f23cc765a9c02",
+    "mule/runtime/object.rs": "d6d721132c9dbd13bec217df9588ccd05398f80f9f1a8452b3e90f758c400a07",
+    "stdlib/_native_class.py": "e2fbb68fb3068f4e63769e206ee795d49da0e72ac6fb6602645ac1afec29dcac",
+    "stdlib/mule.py": "d08dfea5fc1431eba2ea7d5fb17e8a159786c72c1d9db79bfd458994cf959a3b"
+  },
+  "profiles": {
+    "linear": {
+      "expected": "600000000",
+      "commands": {
+        "mule_native": [
+          "/home/jvanwinkle/repos/mule/build/benchmarks/native-classes/linear-mule"
+        ],
+        "rust": [
+          "/home/jvanwinkle/repos/mule/build/benchmarks/native-classes/classes-rust",
+          "linear"
+        ],
+        "cpython": [
+          "/home/jvanwinkle/repos/mule/.venv/bin/python",
+          "-S",
+          "/home/jvanwinkle/repos/mule/build/benchmarks/native-classes/linear.py"
+        ],
+        "mule_boxed": [
+          "/home/jvanwinkle/repos/mule/build/benchmarks/native-classes/boxed-mule"
+        ]
+      },
+      "measurements": {
+        "mule_native": {
+          "seconds": [
+            0.002415149,
+            0.002537397,
+            0.002540042,
+            0.002438162,
+            0.002254078,
+            0.001962262,
+            0.001634047
+          ],
+          "median_seconds": 0.002415149
+        },
+        "rust": {
+          "seconds": [
+            0.001881941,
+            0.001949147,
+            0.002077477,
+            0.002563275,
+            0.001877382,
+            0.002422142,
+            0.00228801
+          ],
+          "median_seconds": 0.002077477
+        },
+        "cpython": {
+          "seconds": [
+            6.16779781,
+            6.107919357,
+            6.063643144,
+            6.108593916,
+            6.070337457,
+            6.073680721,
+            6.074611839
+          ],
+          "median_seconds": 6.074611839
+        },
+        "mule_boxed": {
+          "seconds": [
+            6.000168994,
+            5.995796637,
+            6.0444068,
+            6.014580883,
+            6.045420965,
+            6.005990387,
+            6.132752495
+          ],
+          "median_seconds": 6.014580883
+        }
+      }
+    },
+    "nonlinear": {
+      "expected": "800000000",
+      "commands": {
+        "mule_native": [
+          "/home/jvanwinkle/repos/mule/build/benchmarks/native-classes/nonlinear-mule"
+        ],
+        "rust": [
+          "/home/jvanwinkle/repos/mule/build/benchmarks/native-classes/classes-rust",
+          "nonlinear"
+        ],
+        "cpython": [
+          "/home/jvanwinkle/repos/mule/.venv/bin/python",
+          "-S",
+          "/home/jvanwinkle/repos/mule/build/benchmarks/native-classes/nonlinear.py"
+        ]
+      },
+      "measurements": {
+        "mule_native": {
+          "seconds": [
+            0.089978229,
+            0.090196889,
+            0.090147427,
+            0.090176041,
+            0.089863566,
+            0.090177935,
+            0.08968346
+          ],
+          "median_seconds": 0.090147427
+        },
+        "rust": {
+          "seconds": [
+            0.090050084,
+            0.089863025,
+            0.089701502,
+            0.089916595,
+            0.089750316,
+            0.089891939,
+            0.089847707
+          ],
+          "median_seconds": 0.089863025
+        },
+        "cpython": {
+          "seconds": [
+            8.312370782,
+            8.217918669,
+            8.276060613,
+            8.272115548,
+            8.378406738,
+            8.23475458,
+            8.223957074
+          ],
+          "median_seconds": 8.272115548
+        }
+      }
+    }
+  }
+}

@@ -1,8 +1,8 @@
-//! Fixed-layout native classes. Lookup tables belong to the immutable class;
-//! instances own only a compact array of references, never an attribute map.
+//! Bootstrap fixed-layout class metadata and compatibility dispatch.
+//! Native raw-slot protocols are compiler-generated; Rust forwards to their hooks.
 use crate::object::{self, Data, Value};
 use std::collections::HashMap;
-use std::ffi::{CStr, c_char};
+use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_CLASS_ID: AtomicUsize = AtomicUsize::new(1);
@@ -18,7 +18,89 @@ pub struct ClassLayout {
     boolean: Option<usize>,
     length: Option<usize>,
     callable: Option<usize>,
+    pub(crate) native: Option<NativeLayout>,
 }
+
+pub(crate) struct NativeLayout {
+    pub(crate) schema: *const c_void,
+    // As with native function environments, the executing module owns globals.
+    pub(crate) globals: Value,
+    constructor: NativeConstructor,
+    getter: NativeGetter,
+    setter: NativeSetter,
+}
+
+/// Compatibility descriptor allocation. Native layout protocols are generated
+/// by the compiler; this bootstrap metadata path only records their entry points.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_native_class(
+    class_name: *const c_char,
+    schema: *const c_void,
+    globals: Value,
+    field_count: isize,
+    field_names: *const *const c_char,
+    method_count: isize,
+    method_names: *const *const c_char,
+    methods: *const Value,
+    constructor: Option<NativeConstructor>,
+    getter: Option<NativeGetter>,
+    setter: Option<NativeSetter>,
+) -> Value {
+    let (Some(constructor), Some(getter), Some(setter)) = (constructor, getter, setter) else {
+        object::error("SystemError", "NULL native storage protocol");
+        return std::ptr::null_mut();
+    };
+    if schema.is_null() {
+        object::error("SystemError", "NULL native layout schema");
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        create_class(
+            class_name,
+            std::ptr::null_mut(),
+            field_count,
+            field_names,
+            method_count,
+            method_names,
+            methods,
+            Some(NativeLayout {
+                schema,
+                globals,
+                constructor,
+                getter,
+                setter,
+            }),
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_class(
+    class_name: *const c_char,
+    base: Value,
+    field_count: isize,
+    field_names: *const *const c_char,
+    method_count: isize,
+    method_names: *const *const c_char,
+    methods: *const Value,
+) -> Value {
+    unsafe {
+        create_class(
+            class_name,
+            base,
+            field_count,
+            field_names,
+            method_count,
+            method_names,
+            methods,
+            None,
+        )
+    }
+}
+
+pub type NativeConstructor = unsafe extern "C" fn(Value, Value, isize, *const Value) -> Value;
+pub type NativeGetter = unsafe extern "C" fn(Value, Value, i64) -> Value;
+pub type NativeSetter = unsafe extern "C" fn(Value, Value, i64, Value) -> i32;
 
 /// LLVM reserves two zero-initialized machine words per attribute site.
 /// IDs never repeat, so an expired class cannot make a cache entry valid again.
@@ -54,7 +136,7 @@ unsafe fn layout<'a>(receiver: Value) -> Option<(&'a ClassLayout, bool)> {
         }
         match &(*receiver).data {
             Data::Class(layout) => Some((layout, false)),
-            Data::Instance { ty, .. } => match &(**ty).data {
+            Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => match &(**ty).data {
                 Data::Class(layout) => Some((layout, true)),
                 _ => None,
             },
@@ -123,6 +205,11 @@ unsafe fn resolved(
     unsafe {
         let index = encoded >> 2;
         if encoded & 3 == FIELD {
+            if matches!(&(*receiver).data, Data::NativeInstance { .. }) {
+                let native = layout.native.as_ref().expect("native allocation layout");
+                let value = (native.getter)(native.globals, receiver, index as i64);
+                return (!value.is_null()).then_some(value);
+            }
             let Data::Instance { fields, .. } = &(*receiver).data else {
                 unreachable!();
             };
@@ -222,6 +309,9 @@ pub unsafe fn construct(class: Value, args: &[Value]) -> Value {
         let Data::Class(layout) = &(*class).data else {
             unreachable!();
         };
+        if let Some(native) = &layout.native {
+            return (native.constructor)(native.globals, class, args.len() as isize, args.as_ptr());
+        }
         let mut fields = Vec::new();
         if fields.try_reserve_exact(layout.fields.len()).is_err() {
             object::error("MemoryError", "instance slot allocation failed");
@@ -283,8 +373,7 @@ pub unsafe fn special_method(receiver: Value, attribute: &str, args: &[Value]) -
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mule_class(
+unsafe fn create_class(
     class_name: *const c_char,
     base: Value,
     field_count: isize,
@@ -292,6 +381,7 @@ pub unsafe extern "C" fn mule_class(
     method_count: isize,
     method_names: *const *const c_char,
     methods: *const Value,
+    native: Option<NativeLayout>,
 ) -> Value {
     unsafe {
         if object::has_error() {
@@ -318,6 +408,15 @@ pub unsafe extern "C" fn mule_class(
             let Data::Class(layout) = &(*base).data else {
                 unreachable!();
             };
+            if layout.native.is_some() {
+                // This bootstrap allocator only builds reference-slot layouts;
+                // it cannot inherit a compiler-defined raw-payload allocation.
+                object::error(
+                    "TypeError",
+                    "base has an incompatible native allocation layout",
+                );
+                return std::ptr::null_mut();
+            }
             Some(layout)
         };
         // Validate all names before taking ownership, making every rejection atomic.
@@ -407,6 +506,7 @@ pub unsafe extern "C" fn mule_class(
             boolean,
             length,
             callable,
+            native,
         })))
     }
 }
@@ -513,6 +613,10 @@ pub unsafe extern "C" fn mule_set_attr_cached(
             if encoded & 3 != FIELD {
                 object::error("AttributeError", "fixed-layout methods cannot be replaced");
                 return -1;
+            }
+            if matches!(&(*receiver).data, Data::NativeInstance { .. }) {
+                let native = layout.native.as_ref().expect("native allocation layout");
+                return (native.setter)(native.globals, receiver, (encoded >> 2) as i64, value);
             }
             let Data::Instance { fields, .. } = &mut (*receiver).data else {
                 unreachable!();

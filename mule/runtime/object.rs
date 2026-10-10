@@ -43,6 +43,10 @@ pub enum Data {
         ty: Value,
         fields: Box<[Value]>,
     },
+    NativeInstance {
+        ty: Value,
+        payload: Box<[i64]>,
+    },
     BoundMethod {
         receiver: Value,
         method: Value,
@@ -140,6 +144,7 @@ pub unsafe fn release(value: Value) {
                     release(*field);
                 }
             }
+            Data::NativeInstance { ty, .. } => release(*ty),
             Data::BoundMethod { receiver, method } => {
                 release(*receiver);
                 release(*method);
@@ -313,7 +318,7 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
                 return call_with_receiver(*method, *receiver, args);
             }
             Data::StaticMethod(method) => return call(*method, args),
-            Data::Instance { .. } => {
+            Data::Instance { .. } | Data::NativeInstance { .. } => {
                 let result = special(callable, "__call__", args);
                 if result.is_null() && !has_error() {
                     error("TypeError", "object is not callable");
@@ -394,7 +399,7 @@ pub unsafe fn special(value: Value, name: &str, args: &[Value]) -> Value {
             return std::ptr::null_mut();
         }
         let ty = match &(*value).data {
-            Data::Instance { ty, .. } => *ty,
+            Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => *ty,
             _ => return std::ptr::null_mut(),
         };
         let attributes = match &(*ty).data {
@@ -439,7 +444,7 @@ pub unsafe fn truth(value: Value) -> Option<bool> {
             Data::Text(value) | Data::Bytes(value) => !value.is_empty(),
             Data::Args(value) | Data::List(value) => !value.is_empty(),
             Data::Namespace(bindings) => !bindings.is_empty(),
-            Data::Instance { .. } => {
+            Data::Instance { .. } | Data::NativeInstance { .. } => {
                 let result = special(value, "__bool__", &[]);
                 if result.is_null() {
                     if has_error() {
@@ -898,7 +903,7 @@ pub unsafe fn formatted_value(
             Data::BoundMethod { .. } => b"<bound native method>".to_vec(),
             Data::StaticMethod(_) => b"<staticmethod>".to_vec(),
             Data::Type { name, .. } => format!("<class '{name}'>").into_bytes(),
-            Data::Instance { ty, .. } => match &(**ty).data {
+            Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => match &(**ty).data {
                 Data::Type { name, .. } => format!("<{name} object>").into_bytes(),
                 Data::Class(layout) => format!("<{} object>", layout.name).into_bytes(),
                 _ => unreachable!(),

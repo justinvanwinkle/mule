@@ -2,10 +2,11 @@
 
 Mule compiles a small Python subset to native executables through LLVM. It uses
 a handwritten parser, a custom syntax tree, a control-flow IR, and Mule's own
-native Rust runtime. Functions and control flow become native code;
+native runtime. Functions and control flow become native code;
 the compiler does not delegate program execution to a source or bytecode evaluator.
-The broader compiler architecture follows SBCL's compiler, historically called
-Python. See `spec/native-compiler.md` for the implemented subset and target.
+The required architecture is a beat-by-beat clone of SBCL's compiler, historically
+called Python, adapted to Python semantics and an LLVM backend. See
+`spec/native-compiler.md` for the implemented subset and target.
 
 This file is both the project overview and repository guidance for coding agents.
 `README.md` is a relative symlink to `AGENTS.md`; edit this file, not a separate
@@ -62,6 +63,8 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/compiler/analysis.py`: fixed-point value types, integer ranges, and guarded call predictions.
 - `mule/compiler/value_facts.py`: polymorphic value facts, joins, arithmetic, and representation proofs.
 - `mule/compiler/annotation_types.py`: imported numeric contracts and optimization policies.
+- `mule/compiler/native.py`: raw int64 representation selection and direct local entries.
+- `mule/compiler/native_protocol.py`: compile Mule class protocols and bind physical primitives.
 - `mule/compiler/llvm.py`: LLVM emission and reference ownership/cleanup.
 - `mule/compiler/llvm_ops.py`: inline native operation templates and runtime slow paths.
 - `mule/runtime/lib.rs`: Rust runtime crate and native ABI.
@@ -72,21 +75,60 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/runtime/numeric.rs`: native integer fast paths and bigint operations.
 - `mule/runtime/gmp.rs`: direct GMP bindings and owned bigint wrapper.
 - `mule/runtime/annotations.rs`: borrowed assertions at checked annotation boundaries.
+- `mule/runtime/native_storage.rs`: raw payload allocation, layout guards, and int64 boxing.
 - `mule/compiler/driver.py`: Clang compilation and executable linking.
 - `mule/__main__.py`: `python -m mule` command-line interface.
 - `test/mule/parser/`: parser and AST tests, fixtures, and AST query helpers.
 - `test/mule/compiler/`: lowering, LLVM, runtime, and native executable tests.
 - `examples/`: source programs that the native compiler can build.
 - `stdlib/mule.py`: numeric annotation markers and the `optimize` compiler directive.
+- `stdlib/_native_class.py`: compiler-private class construction and field protocols compiled by Mule.
+- `examples/mule.py`: relative symlink to the annotation library for direct host Python runs.
 - `spec/`: initial specifications and explicit boundaries of implemented behavior.
 - `old/`: earlier implementations, including Python bootstrap code, Common Lisp,
   LLVM experiments, a C++ runtime, and generated artifacts. Treat these as
   historical reference, not the active build or a specification for new behavior.
 
+## Mandatory SBCL architecture
+
+ALWAYS refer to how SBCL does it. Before designing or implementing any compiler
+or runtime feature, inspect the corresponding source in `~/checkout/sbcl`.
+Follow its compiler stages, data structures, analyses, invariants, representation
+selection, optimization and safety policies, and runtime boundaries. This is a
+beat-by-beat compiler clone in the Python context, not loose inspiration.
+
+Doing anything differently from SBCL requires CLEAR REASONS AND JUSTIFICATION.
+Before implementing a departure, document the relevant SBCL files and functions,
+what SBCL does, the proposed difference, why it is necessary, and its semantic
+and performance consequences in the relevant `spec/` document. Python semantics,
+LLVM, and the approved implementation languages require adaptations, but they
+are not blanket justifications: explain each concrete departure. Convenience,
+missing compiler infrastructure, or an easier Rust implementation do not by
+themselves justify a different architecture. Identify missing stages explicitly
+and implement the corresponding compiler machinery.
+
+The compiler is written in Python and must eventually self host. Language-level
+runtime and standard-library code must be written in Mule Python and compiled
+by Mule, as SBCL compiles its Lisp language implementation. This includes class
+construction, attribute and descriptor semantics, method dispatch, containers,
+and builtin algorithms. Rust is limited to low-level primitives such as memory
+allocation and lifetime support, OS and thread services, and approved foreign
+library interfaces. Existing Rust language-level implementations are bootstrap
+debt to migrate, not a precedent for extending that boundary.
+
+When compiler proofs permit it, emit direct LLVM arithmetic, field access,
+native layouts, and direct calls, following SBCL's corresponding mechanisms.
+Dynamic language paths belong in compiled Mule code backed by low-level
+primitives. Do not replace missing compiler work with a Rust evaluator or
+per-operation Rust language dispatch. Verify optimization claims with optimized
+IR or machine code and representative benchmarks. Keep LLVM at `-O3` and Rust
+at optimization level 3; those flags alone do not establish efficient code.
+
 ## Contracts to preserve
 
 - Approved implementation languages are Python and Rust. The compiler is written
-  in Python and must eventually self host; the native runtime is written in Rust.
+  in Python and must eventually self host; language-level runtime code is compiled
+  Mule Python, and low-level runtime primitives are written in Rust.
   Do not add C/C++ implementations or C test probes. LLVM IR is the compiler's
   output. Historical `old/` code and explicitly requested comparison programs
   do not establish permission to use other implementation languages.

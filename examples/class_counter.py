@@ -3,7 +3,10 @@
 import mule
 
 
+@mule.optimize(speed=3, safety=0)
 class Counter:
+    value: mule.int64
+
     def __init__(self):
         self.value = 0
 
@@ -11,6 +14,7 @@ class Counter:
         self.value += amount
 
 
+@mule.optimize(speed=1, safety=0)
 def count(limit: mule.int64) -> mule.int64:
     counter = Counter()
     index: mule.int64 = 0

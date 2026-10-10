@@ -21,6 +21,8 @@ class Lowerer:
         self.compiler_bindings = {}
         self.active_compiler_bindings = {}
         self.module_annotations = {}
+        self.class_definitions = 0
+        self.class_fields = {}
 
     def location(self, node):
         span = node.span
@@ -66,7 +68,9 @@ class Lowerer:
         if name in self.compiler_bindings:
             self.error(f"cannot shadow compiler-only import '{name}'", node)
 
-    def function(self, definition: ast.FunctionDefinition, policy) -> ir.Function:
+    def function(
+        self, definition: ast.FunctionDefinition, policy, *, owner_class=None
+    ) -> ir.Function:
         if definition.is_async or definition.type_parameters:
             self.error(
                 "async and generic functions are not supported yet",
@@ -110,6 +114,7 @@ class Lowerer:
                 else None
             ),
             policy=policy,
+            owner_class=owner_class,
         )
         self.functions.append(function)
         builder = FunctionBuilder(
@@ -118,11 +123,16 @@ class Lowerer:
         for parameter, contract in zip(definition.parameters, annotations):
             if contract is not None:
                 builder.annotations[parameter.name] = (contract, parameter)
+                function.local_annotations[parameter.name] = contract
                 builder.store(
                     parameter.name, builder.load(parameter.name, clear=True), parameter
                 )
         builder.statements(definition.body)
         builder.finish()
+        if owner_class is not None and definition.name == "__init__":
+            _validate_initialization(
+                function, self.class_fields[owner_class], self.location(definition)
+            )
         return function
 
 
@@ -206,6 +216,16 @@ class FunctionBuilder(ast.Visitor):
         if self.local(name):
             return self.annotations.get(name)
         return self.lowerer.module_annotations.get(name)
+
+    def field_value(self, node, value):
+        owner = self.function.owner_class
+        if owner is not None and node.value.accept(
+            _ReceiverName(self.function.parameters[0])
+        ):
+            declaration = self.lowerer.class_fields[owner].get(node.attribute)
+            if declaration is not None:
+                value = self.assert_type(value, declaration[0], node)
+        return value
 
     def store(self, name: str, value: str, node=None):
         if node is not None:
@@ -377,16 +397,47 @@ class FunctionBuilder(ast.Visitor):
         body = _ClassBody(self)
         for statement in node.body:
             statement.accept(body)
+        class_id = f"mule_cls_{self.lowerer.class_definitions}"
+        self.lowerer.class_definitions += 1
+        native = bool(body.fields)
+        if native:
+            if policy.speed != 3 or not any(
+                decorator.accept(_NativeClassOptIn()) for decorator in node.decorators
+            ):
+                self.error(
+                    "typed native classes require explicit @mule.optimize(speed=3)",
+                    node,
+                    unsupported=True,
+                )
+            if node.arguments:
+                self.error(
+                    "typed native classes cannot have bases", node, unsupported=True
+                )
+            if not any(method.name == "__init__" for method in body.methods):
+                self.error(
+                    "typed native classes require __init__", node, unsupported=True
+                )
+            self.lowerer.class_fields[class_id] = body.fields
         # Base expressions are evaluated before any method definitions, as in Python.
         base = self.expression(node.arguments[0].value) if node.arguments else None
-        fields = {}
+        fields = dict.fromkeys(body.fields)
         methods = {}
         for method in body.methods:
-            function = self.lowerer.function(method, policy)
             if not method.parameters:
+                # Decorator rejection precedes the ordinary receiver-arity error.
+                self.lowerer.policy(method.decorators, policy)
                 self.error("instance methods require a receiver parameter", method)
+            if native:
+                body.validate_method(method)
+            function = self.lowerer.function(
+                method, policy, owner_class=class_id if native else None
+            )
             receiver = method.parameters[0].name
-            collector = _ReceiverFields(receiver, fields)
+            collector = _ReceiverFields(
+                receiver,
+                fields,
+                declaration=body if native else None,
+            )
             for statement in method.body:
                 statement.accept(collector)
             value = self.result()
@@ -405,6 +456,14 @@ class FunctionBuilder(ast.Visitor):
                 tuple(fields),
                 tuple(methods),
                 tuple(methods.values()),
+                field_annotations=tuple(
+                    contract for contract, declaration in body.fields.values()
+                )
+                if native
+                else (),
+                policy=policy,
+                location=self.lowerer.location(node),
+                class_id=class_id if native else None,
             )
         )
         self.store(node.name, result, node)
@@ -439,7 +498,14 @@ class FunctionBuilder(ast.Visitor):
     def visit_Attribute(self, node):
         receiver = self.expression(node.value)
         result = self.result()
-        self.emit(ir.LoadAttribute(result, receiver, node.attribute))
+        self.emit(
+            ir.LoadAttribute(
+                result,
+                receiver,
+                node.attribute,
+                location=self.lowerer.location(node),
+            )
+        )
         return result
 
     def visit_Binary(self, node):
@@ -613,7 +679,15 @@ class _AssignmentTarget(ast.Visitor):
 
     def visit_Attribute(self, node):
         receiver = self.builder.expression(node.value)
-        self.builder.emit(ir.StoreAttribute(receiver, node.attribute, self.value))
+        value = self.builder.field_value(node, self.value)
+        self.builder.emit(
+            ir.StoreAttribute(
+                receiver,
+                node.attribute,
+                value,
+                location=self.builder.lowerer.location(node),
+            )
+        )
 
 
 class _AnnotationTarget(ast.Visitor):
@@ -643,6 +717,8 @@ class _AnnotationTarget(ast.Visitor):
                 f"conflicting annotation for '{node.identifier}'", self.assignment
             )
         annotations[node.identifier] = (contract, self.assignment)
+        if self.builder.local(node.identifier):
+            self.builder.function.local_annotations[node.identifier] = contract
         if self.assignment.value is not None:
             self.builder.store(
                 node.identifier, self.builder.expression(self.assignment.value), node
@@ -806,6 +882,148 @@ class _PolicyLevel(ast.Visitor):
         return node.value
 
 
+class _NativeClassOptIn(ast.Visitor):
+    def visit_Call(self, node):
+        return any(
+            argument.kind == ast.ArgumentKind.KEYWORD
+            and argument.keyword == "speed"
+            and argument.value.accept(_NativeClassSpeed())
+            for argument in node.arguments
+        )
+
+
+class _NativeClassSpeed(ast.Visitor):
+    def visit_IntegerLiteral(self, node):
+        return node.value == 3
+
+
+class _InitializerReceivers(ir.Visitor):
+    def __init__(self, name):
+        self.name = name
+        self.values = set()
+
+    def visit_Load(self, instruction):
+        if instruction.local and instruction.name == self.name:
+            self.values.add(instruction.result)
+
+
+class _InitializerWrites(ir.Visitor):
+    def __init__(self, receivers, initialized):
+        self.receivers = receivers
+        self.initialized = initialized
+
+    def visit_StoreAttribute(self, instruction):
+        if instruction.receiver in self.receivers:
+            self.initialized.add(instruction.name)
+
+
+class _InitializerUses(_InitializerWrites):
+    def __init__(self, receivers, initialized, fields, receiver, location):
+        super().__init__(receivers, initialized)
+        self.fields = fields
+        self.receiver = receiver
+        self.location = location
+
+    def require_initialized(self, location=None):
+        missing = self.fields - self.initialized
+        if missing:
+            raise UnsupportedSyntax(
+                "typed native initialization must assign every field before "
+                "reading or exposing the instance or returning; missing "
+                + ", ".join(sorted(missing)),
+                location or self.location,
+            )
+
+    def visit_Operation(self, instruction):
+        if any(value in self.receivers for value in instruction.operands()):
+            self.require_initialized()
+
+    def visit_Store(self, instruction):
+        if instruction.local and instruction.name == self.receiver:
+            raise UnsupportedSyntax(
+                "typed native initialization cannot rebind its receiver",
+                instruction.location or self.location,
+            )
+        if instruction.value in self.receivers:
+            self.require_initialized(instruction.location)
+
+    def visit_StoreAttribute(self, instruction):
+        if instruction.value in self.receivers:
+            self.require_initialized(instruction.location)
+        super().visit_StoreAttribute(instruction)
+
+    def visit_LoadAttribute(self, instruction):
+        if instruction.receiver in self.receivers:
+            self.require_initialized(instruction.location)
+
+    def visit_ResolveMethod(self, instruction):
+        if instruction.receiver in self.receivers:
+            self.require_initialized(instruction.location)
+
+    def visit_Call(self, instruction):
+        if any(value in self.receivers for value in instruction.operands()):
+            self.require_initialized(instruction.location)
+
+    def visit_Return(self, instruction):
+        self.require_initialized()
+
+
+def _validate_initialization(function, declarations, location):
+    """Establish the raw-slot invariant using forward CFG must analysis."""
+    fields = set(declarations)
+    blocks = {block.label: block for block in function.blocks}
+    entry = function.blocks[0].label
+    predecessors = {label: set() for label in blocks}
+    reachable = set()
+    pending = [entry]
+    receivers = _InitializerReceivers(function.parameters[0])
+    while pending:
+        label = pending.pop()
+        if label in reachable:
+            continue
+        reachable.add(label)
+        block = blocks[label]
+        for instruction in block.instructions:
+            instruction.accept(receivers)
+        for successor in block.terminator.successors():
+            predecessors[successor].add(label)
+            pending.append(successor)
+    # The greatest fixed point of intersection starts non-entry blocks at top.
+    # Entry always starts with no initialized raw fields.
+    incoming = {label: set(fields) for label in reachable}
+    outgoing = {label: set(fields) for label in reachable}
+    ordered = [block.label for block in function.blocks if block.label in reachable]
+    changed = True
+    while changed:
+        changed = False
+        for label in ordered:
+            initialized = (
+                set()
+                if label == entry
+                else set.intersection(
+                    *(outgoing[parent] for parent in predecessors[label])
+                )
+            )
+            incoming[label] = set(initialized)
+            writes = _InitializerWrites(receivers.values, initialized)
+            for instruction in blocks[label].instructions:
+                instruction.accept(writes)
+            if outgoing[label] != initialized:
+                outgoing[label] = initialized
+                changed = True
+    for label in ordered:
+        uses = _InitializerUses(
+            receivers.values,
+            set(incoming[label]),
+            fields,
+            function.parameters[0],
+            location,
+        )
+        for instruction in blocks[label].instructions:
+            instruction.accept(uses)
+        blocks[label].terminator.accept(uses)
+
+
 class _GlobalAnnotationStores(ir.Visitor):
     """Apply module contracts to writers compiled before their declarations."""
 
@@ -907,12 +1125,20 @@ class _AugmentedTarget(ast.Visitor):
         self.builder.store(temporary, self.builder.expression(node.value))
         left = self.builder.result()
         self.builder.emit(
-            ir.LoadAttribute(left, self.builder.load(temporary), node.attribute)
+            ir.LoadAttribute(
+                left,
+                self.builder.load(temporary),
+                node.attribute,
+                location=self.builder.lowerer.location(node),
+            )
         )
-        result = self.binary(left)
+        result = self.builder.field_value(node, self.binary(left))
         self.builder.emit(
             ir.StoreAttribute(
-                self.builder.load(temporary, clear=True), node.attribute, result
+                self.builder.load(temporary, clear=True),
+                node.attribute,
+                result,
+                location=self.builder.lowerer.location(node),
             )
         )
 
@@ -944,7 +1170,14 @@ class _CallTarget(ast.Visitor):
     def visit_Attribute(self, node):
         receiver = self.builder.expression(node.value)
         callee = self.builder.result()
-        self.builder.emit(ir.ResolveMethod(callee, receiver, node.attribute))
+        self.builder.emit(
+            ir.ResolveMethod(
+                callee,
+                receiver,
+                node.attribute,
+                location=self.builder.lowerer.location(node),
+            )
+        )
         arguments = self.arguments_values()
         result = self.builder.result()
         self.builder.emit(ir.CallMethod(result, callee, arguments))
@@ -955,10 +1188,11 @@ class _ClassBody(ast.Visitor):
     def __init__(self, builder):
         self.builder = builder
         self.methods = []
+        self.fields = {}
 
     def visit_Node(self, node):
         self.builder.error(
-            "class bodies support only instance methods and pass",
+            "class bodies support only instance methods, bare typed native fields, and pass",
             node,
             unsupported=True,
         )
@@ -969,10 +1203,92 @@ class _ClassBody(ast.Visitor):
     def visit_Pass(self, node):
         pass
 
+    def visit_AnnotatedAssignment(self, node):
+        node.target.accept(_ClassFieldDeclaration(self, node))
+
+    def validate_method(self, method):
+        if method.name in self.fields:
+            self.builder.error("typed native fields cannot share method names", method)
+        if method.name in (
+            "__getattr__",
+            "__getattribute__",
+            "__setattr__",
+            "__delattr__",
+            "__new__",
+            "__del__",
+        ):
+            self.builder.error(
+                "dynamic object hooks are not supported on typed native classes",
+                method,
+                unsupported=True,
+            )
+        if method.parameters[0].annotation is not None:
+            self.builder.error(
+                "typed native method receivers must be unannotated",
+                method.parameters[0],
+                unsupported=True,
+            )
+        for parameter in method.parameters[1:]:
+            if parameter.annotation is None or (
+                self.builder.lowerer.annotation(parameter.annotation)
+                is not EXPORTS["int64"]
+            ):
+                self.builder.error(
+                    "typed native method arguments require mule.int64 annotations",
+                    parameter,
+                    unsupported=True,
+                )
+        if method.return_annotation is not None and (
+            self.builder.lowerer.annotation(method.return_annotation)
+            is not EXPORTS["int64"]
+        ):
+            self.builder.error(
+                "typed native method returns support only mule.int64 annotations",
+                method.return_annotation,
+                unsupported=True,
+            )
+
+
+class _ClassFieldDeclaration(ast.Visitor):
+    def __init__(self, body, assignment):
+        self.body = body
+        self.assignment = assignment
+
+    def visit_Node(self, node):
+        self.body.builder.error(
+            "typed native field declarations require bare identifiers",
+            node,
+            unsupported=True,
+        )
+
+    def visit_Name(self, node):
+        if self.assignment.value is not None:
+            self.body.builder.error(
+                "typed native field declarations cannot have default values",
+                self.assignment,
+                unsupported=True,
+            )
+        if node.identifier in ("__dict__", "__slots__", "__class__"):
+            self.body.builder.error(
+                "reserved object attributes cannot be typed native fields", node
+            )
+        if node.identifier in self.body.fields:
+            self.body.builder.error(
+                f"duplicate typed native field '{node.identifier}'", node
+            )
+        contract = self.body.builder.lowerer.annotation(self.assignment.annotation)
+        if contract is not EXPORTS["int64"]:
+            self.body.builder.error(
+                "typed native fields currently support only mule.int64",
+                self.assignment.annotation,
+                unsupported=True,
+            )
+        self.body.fields[node.identifier] = (contract, self.assignment)
+
 
 class _ReceiverFields(ast.Visitor):
-    def __init__(self, receiver, fields):
-        self.targets = _ReceiverFieldTarget(receiver, fields)
+    def __init__(self, receiver, fields, *, declaration=None):
+        self.targets = _ReceiverFieldTarget(receiver, fields, declaration)
 
     def visit_Node(self, node):
         for target in node.assigned_targets():
@@ -988,12 +1304,17 @@ class _ReceiverFields(ast.Visitor):
 
 
 class _ReceiverFieldTarget(ast.Visitor):
-    def __init__(self, receiver, fields):
+    def __init__(self, receiver, fields, declaration):
         self.receiver = _ReceiverName(receiver)
         self.fields = fields
+        self.declaration = declaration
 
     def visit_Attribute(self, node):
         if node.value.accept(self.receiver):
+            if self.declaration is not None and node.attribute not in self.fields:
+                self.declaration.builder.error(
+                    f"undeclared typed native field '{node.attribute}'", node
+                )
             self.fields[node.attribute] = None
 
 

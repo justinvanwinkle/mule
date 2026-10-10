@@ -7,8 +7,8 @@ use std::cmp::Ordering;
 use std::ffi::{CStr, c_char};
 use std::ptr::null_mut;
 
-const MIN: i64 = -(1_i64 << 62);
-const MAX: i64 = (1_i64 << 62) - 1;
+pub(crate) const MIN: i64 = -(1_i64 << 62);
+pub(crate) const MAX: i64 = (1_i64 << 62) - 1;
 
 fn fail(kind: &str, message: &str) -> Value {
     object::error(kind, message);
