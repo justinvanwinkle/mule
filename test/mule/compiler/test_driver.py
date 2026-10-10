@@ -1,8 +1,10 @@
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from mule.compiler import ToolchainError, UnsupportedSyntax, build
+from mule.compiler.driver import link_llvm
 
 
 def test_failed_compilation_preserves_existing_executable(tmp_path):
@@ -62,3 +64,29 @@ def test_link_failure_reports_error_and_preserves_previous_artifact(tmp_path):
     with pytest.raises(ToolchainError, match="compilation/linking failed"):
         build(source, output, clang=str(Path("/usr/bin/false")))
     assert output.read_bytes() == b"previous artifact"
+
+
+def test_lto_eliminates_a_call_into_the_real_rust_runtime(tmp_path):
+    # Without the Rust body available to LLVM, this call and comparison cannot
+    # disappear: a separately compiled declaration could return NULL.
+    llvm = """declare ptr @mule_none()
+define i32 @main() {
+entry:
+  %value = call ptr @mule_none()
+  %null = icmp eq ptr %value, null
+  %status = zext i1 %null to i32
+  ret i32 %status
+}
+"""
+    executable = link_llvm(llvm, tmp_path / "lto-probe")
+    result = subprocess.run([executable], check=False, capture_output=True, timeout=10)
+    assert result.returncode == 0
+    assembly = subprocess.run(
+        ["objdump", "-d", "--disassemble=main", executable],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "<main>:" in assembly
+    assert "\tcall" not in assembly
+    assert "ret" in assembly

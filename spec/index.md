@@ -13,6 +13,8 @@ frontend coverage does not establish complete Python compatibility.
 - [Lexing and strings](lexing.md): tokenization and interpolated literals.
 - [Compiler design reference](compiler.md): scope and reading order.
 - [Native compiler](native-compiler.md): implemented subset and executable builds.
+- [Compiled modules](compiled-modules.md): static imports and the first native
+  upstream test execution, including bootstrap runner limitations.
 - [Native implementation selection](native-lowering.md): implemented analysis,
   native arithmetic, guarded calls, and their SBCL source references.
 - [Optimization policies](optimization-policies.md): target class restrictions,

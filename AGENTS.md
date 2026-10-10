@@ -18,8 +18,10 @@ Use Python 3.14 and `uv`. `.python-version` selects 3.14; `pyproject.toml`
 requires Python >=3.14. Python package dependencies are currently empty. Development
 dependencies are pytest and Ruff, resolved in `uv.lock`.
 
-Native builds additionally require Clang, Rust, 64-bit Linux, and the GMP shared
-library. The Rust runtime uses handwritten GMP bindings without external crates.
+Native builds additionally require Clang, Rust with its bundled LLVM LLD linker,
+64-bit Linux, and the GMP shared library. The Rust runtime uses handwritten GMP
+bindings without external crates. Generated LLVM and Rust runtime bitcode are
+optimized together with full link-time optimization at level 3.
 Small integers use Mule's tagged native values;
 arbitrary-precision integers use the approved GMP dependency. Executables do not
 depend on a Python runtime installation.
@@ -59,6 +61,7 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/parser/patterns.py`: structural pattern matching grammar.
 - `mule/parser/strings.py`: literal decoding and formatted/template interpolation.
 - `mule/compiler/frontend.py`: semantic validation and AST-to-IR conversion.
+- `mule/compiler/modules.py`: static module resolution and compiled initialization.
 - `mule/compiler/ir.py`: control-flow graph, object results, and graph verification.
 - `mule/compiler/analysis.py`: fixed-point value types, integer ranges, and guarded call predictions.
 - `mule/compiler/value_facts.py`: polymorphic value facts, joins, arithmetic, and representation proofs.
@@ -83,6 +86,8 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `examples/`: source programs that the native compiler can build.
 - `stdlib/mule.py`: numeric annotation markers and the `optimize` compiler directive.
 - `stdlib/_native_class.py`: compiler-private class construction and field protocols compiled by Mule.
+- `stdlib/bootstrap/unittest.py`: initial assertion API compiled by Mule for simple upstream suites.
+- `tools/run_stdlib_tests.py`: attempt all upstream suites and report native execution separately from compilation.
 - `examples/mule.py`: relative symlink to the annotation library for direct host Python runs.
 - `spec/`: initial specifications and explicit boundaries of implemented behavior.
 - `old/`: earlier implementations, including Python bootstrap code, Common Lisp,

@@ -1027,6 +1027,15 @@ pub unsafe extern "C" fn mule_namespace() -> Value {
     unsafe { namespace() }
 }
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_assertion_failure(message: Value) -> i32 {
+    unsafe {
+        if let Some(message) = formatted_value(message, false, false) {
+            error("AssertionError", &String::from_utf8_lossy(&message));
+        }
+        -1
+    }
+}
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_list() -> Value {
     unsafe { list() }
 }

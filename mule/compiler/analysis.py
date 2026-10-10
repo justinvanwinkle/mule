@@ -205,6 +205,10 @@ class _InstructionAnalysis(ir.Visitor):
     def visit_DefineClass(self, instruction):
         return _Fact()
 
+    def visit_ImportModule(self, instruction):
+        self.invalidate(self.state)
+        return _Fact()
+
     def visit_LoadAttribute(self, instruction):
         return _Fact()
 
@@ -484,7 +488,7 @@ def _analyze_function(function, global_targets, parameters, resolve_call) -> _Bo
 def analyze(module: ir.Module) -> Analysis:
     """Return proven value facts and speculative, guard-required call targets."""
     ir.verify(module)
-    global_targets = {}
+    global_targets = defaultdict(dict)
     for function in module.functions:
         definitions = {}
         for block in function.blocks:
@@ -493,7 +497,7 @@ def analyze(module: ir.Module) -> Analysis:
                 if definition is not None:
                     result, target = definition
                     definitions[result] = target
-        visitor = _GlobalBindings(definitions, global_targets)
+        visitor = _GlobalBindings(definitions, global_targets[function.namespace])
         for block in function.blocks:
             for instruction in block.instructions:
                 instruction.accept(visitor)
@@ -512,7 +516,9 @@ def _with_defined_arguments(arguments, continuation):
     )
 
 
-def _interprocedural(module: ir.Module, global_targets: dict[str, str]) -> Analysis:
+def _interprocedural(
+    module: ir.Module, global_targets: dict[str, dict[str, str]]
+) -> Analysis:
     """Solve local-call arguments/results before publishing specialization facts.
 
     General entries model externally supplied values. Observed integer contexts
@@ -585,7 +591,10 @@ def _interprocedural(module: ir.Module, global_targets: dict[str, str]) -> Analy
 
         for key, expected in previous_parameters.items():
             body = _analyze_function(
-                functions[key[0]], global_targets, expected, resolve
+                functions[key[0]],
+                global_targets[functions[key[0]].namespace],
+                expected,
+                resolve,
             )
             bodies[key] = body
             returned = _join_type(summaries[key], body.return_type)

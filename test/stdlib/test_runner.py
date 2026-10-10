@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 from tools.run_stdlib_tests import STRICT_RESULT, Entry, discover_entries, run_entry
+from tools.stdlib_bootstrap import discover_cases
 
 
 def test_discovery_preserves_package_hooks_and_missing_extension_tests(tmp_path):
@@ -63,3 +64,39 @@ def test_strict_result_rejects_skips_and_expected_failures(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "1 1 False\n1 0 False\n"
+
+
+def test_bootstrap_discovery_retains_every_method_and_rejects_fixtures():
+    source = "import unittest\nclass Cases(unittest.TestCase):\n def test_first(self):\n  self.assertEqual(1, 1)\n def test_second(self):\n  self.fail('failure')\n"
+    cases = discover_cases(source, "cases.py")
+    assert [case.name for case in cases] == ["Cases.test_first", "Cases.test_second"]
+    assert discover_cases(source + " def setUp(self):\n  pass\n", "cases.py") is None
+    assert (
+        discover_cases(
+            source + "def load_tests(loader, tests, pattern):\n return tests\n",
+            "cases.py",
+        )
+        is None
+    )
+
+
+def test_native_bootstrap_records_assertions_and_errors_and_continues(tmp_path):
+    package = tmp_path / "test"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    source = package / "test_native_fixture.py"
+    source.write_text(
+        "import unittest\nclass Cases(unittest.TestCase):\n"
+        " def test_a_failure(self):\n  self.assertEqual(1, 2)\n"
+        " def test_b_error(self):\n  self.assertEqual(missing, 2)\n"
+        " def test_c_success(self):\n  self.assertEqual(2 ** 100, 1267650600228229401496703205376)\n"
+    )
+    outcome = run_entry(Entry("test_native_fixture", source), tmp_path)
+    assert outcome.phase == "test-execution", outcome.stderr
+    assert outcome.status == "failed"
+    assert outcome.tests_run == 3
+    assert outcome.stats["failures"] == 1
+    assert outcome.stats["errors"] == 1
+    assert [case["passed"] for case in outcome.stats["cases"]] == [False, False, True]
+    assert "AssertionError: 1 != 2" in outcome.stderr
+    assert "NameError" in outcome.stderr

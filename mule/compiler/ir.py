@@ -72,6 +72,12 @@ class Visitor:
     def visit_AssertType(self, operation):
         return self.visit_Operation(operation)
 
+    def visit_AssertionFailure(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_ImportModule(self, operation):
+        return self.visit_Operation(operation)
+
     def visit_Load(self, operation):
         return self.visit_Operation(operation)
 
@@ -143,6 +149,32 @@ class AssertType(ResultOperation):
 
     def operands(self):
         return (self.value,)
+
+
+@dataclass(frozen=True, slots=True)
+class AssertionFailure(Operation):
+    message: str
+
+    def accept(self, visitor):
+        return visitor.visit_AssertionFailure(self)
+
+    def operands(self):
+        return (self.message,)
+
+
+@dataclass(frozen=True, slots=True)
+class ImportModule(ResultOperation):
+    result: str
+    module_name: str
+    initializer: str
+    filename: str
+
+    def accept(self, visitor):
+        return visitor.visit_ImportModule(self)
+
+    def validate(self, function, functions, following):
+        if self.initializer not in functions:
+            raise ValueError("reference to missing module initializer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,6 +422,8 @@ class Discard(Operation):
 type Instruction = (
     Constant
     | AssertType
+    | AssertionFailure
+    | ImportModule
     | Load
     | Store
     | Binary
@@ -468,6 +502,7 @@ class Function:
     parameter_annotation_expressions: tuple[ast.Expression | None, ...] = ()
     return_annotation_expression: ast.Expression | None = None
     annotation_expressions: dict[str, ast.Expression] = field(default_factory=dict)
+    namespace: str = "__main__"
 
 
 @dataclass(slots=True)

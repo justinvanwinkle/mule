@@ -2,7 +2,7 @@
 
 import pytest
 
-from mule.compiler import UnsupportedSyntax, build
+from mule.compiler import build
 from test.corpus.cases import discover_cases
 
 CASES = discover_cases()
@@ -24,12 +24,8 @@ def test_native_output(case, tmp_path, request):
     executable = tmp_path / "program"
     try:
         build(case.path, executable)
-    except UnsupportedSyntax as error:
-        if (
-            case.status == "pending"
-            and case.phase == "compile"
-            and error.msg == case.reason
-        ):
+    except SyntaxError as error:
+        if case.matches_compile_gap(error):
             expected_gap(case, request)
         raise
     assert executable.read_bytes()[:4] == b"\x7fELF"

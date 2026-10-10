@@ -14,9 +14,20 @@ class UnsupportedSyntax(SyntaxError):
 
 
 class Lowerer:
-    def __init__(self, source: str, filename: str):
+    def __init__(
+        self,
+        source: str,
+        filename: str,
+        *,
+        imports=None,
+        prefix="",
+        namespace="__main__",
+    ):
         self.source = source.replace("\r\n", "\n").replace("\r", "\n")
         self.filename = filename
+        self.imports = imports
+        self.prefix = prefix
+        self.namespace = namespace
         self.functions: list[ir.Function] = []
         self.compiler_bindings = {}
         self.active_compiler_bindings = {}
@@ -105,7 +116,7 @@ class Lowerer:
                 else None
             )
         function = ir.Function(
-            f"mule_fn_{len(self.functions)}",
+            f"{self.prefix}mule_fn_{len(self.functions)}",
             tuple(parameters),
             (),
             parameter_annotations=tuple(annotations),
@@ -120,6 +131,7 @@ class Lowerer:
                 parameter.annotation for parameter in definition.parameters
             ),
             return_annotation_expression=definition.return_annotation,
+            namespace=self.namespace,
         )
         self.functions.append(function)
         builder = FunctionBuilder(
@@ -298,10 +310,81 @@ class FunctionBuilder(ast.Visitor):
         node.accept(_ImportBindings(self.lowerer, activate=True))
 
     def visit_Import(self, node):
-        self._import(node)
+        for item in node.items:
+            if item.name == "mule":
+                self._import(ast.Import([item], span=node.span))
+                continue
+            imported = self.import_module(item.name, node)
+            if "." in item.name and item.alias is None:
+                self.emit(ir.Discard(imported))
+                imported = self.import_module(item.name.split(".")[0], node)
+            self.store(item.alias or item.name.split(".")[0], imported, node)
 
     def visit_ImportFrom(self, node):
-        self._import(node)
+        if node.level == 0 and node.module in ("mule", "__future__"):
+            self._import(node)
+            return
+        if node.level or any(item.name == "*" for item in node.items):
+            self.error(
+                "relative and wildcard runtime imports are not supported yet",
+                node,
+                unsupported=True,
+            )
+        name = self.temporary()
+        self.store(name, self.import_module(node.module, node))
+        for item in node.items:
+            result = self.result()
+            self.emit(
+                ir.LoadAttribute(
+                    result, self.load(name), item.name, self.lowerer.location(item)
+                )
+            )
+            self.store(item.alias or item.name, result, item)
+        self.emit(ir.Discard(self.load(name, clear=True)))
+
+    def import_module(self, name, node):
+        if self.lowerer.imports is None:
+            self.error(
+                "runtime module imports are not supported by standalone lowering",
+                node,
+                unsupported=True,
+            )
+        parent = None
+        parts = name.split(".")
+        for index, part in enumerate(parts):
+            qualified = ".".join(parts[: index + 1])
+            descriptor = self.lowerer.imports.resolve(qualified, self.lowerer, node)
+            result = self.result()
+            self.emit(
+                ir.ImportModule(
+                    result, qualified, descriptor.entry, str(descriptor.path)
+                )
+            )
+            if parent is not None:
+                temporary = self.temporary()
+                self.store(temporary, result)
+                self.emit(
+                    ir.StoreAttribute(
+                        parent, part, self.load(temporary), self.lowerer.location(node)
+                    )
+                )
+                result = self.load(temporary, clear=True)
+            parent = result
+        return parent
+
+    def visit_Assert(self, node):
+        passed, failed = self.block(), self.block()
+        self.condition(node.condition, passed, failed)
+        self.current = failed
+        message = (
+            self.expression(node.message)
+            if node.message is not None
+            else self.constant(ast.TextLiteral(""))
+        )
+        self.emit(ir.AssertionFailure(message))
+        # The failure operation always branches to owned-reference cleanup.
+        self.jump(passed)
+        self.current = passed
 
     def visit_AnnotatedAssignment(self, node):
         node.target.accept(_AnnotationTarget(self, node))
@@ -402,7 +485,7 @@ class FunctionBuilder(ast.Visitor):
         body = _ClassBody(self)
         for statement in node.body:
             statement.accept(body)
-        class_id = f"mule_cls_{self.lowerer.class_definitions}"
+        class_id = f"{self.lowerer.prefix}mule_cls_{self.lowerer.class_definitions}"
         self.lowerer.class_definitions += 1
         native = (
             bool(body.fields)
@@ -819,28 +902,11 @@ class _ImportBindings(ast.Visitor):
 
     def visit_Import(self, node):
         for item in node.items:
-            if item.name in ("typing", "typing_extensions"):
-                self.bind(item.alias or item.name, _OPAQUE_BINDING, item)
-                continue
             if item.name != "mule":
-                self.lowerer.error(
-                    "only compiler imports from mule are supported",
-                    node,
-                    unsupported=True,
-                )
+                continue
             self.bind(item.alias or item.name, _MODULE_BINDING, item)
 
     def visit_ImportFrom(self, node):
-        if node.level == 0 and node.module in ("typing", "typing_extensions"):
-            for item in node.items:
-                if item.name == "*":
-                    self.lowerer.error(
-                        "wildcard annotation imports are not supported",
-                        item,
-                        unsupported=True,
-                    )
-                self.bind(item.alias or item.name, _OPAQUE_BINDING, item)
-            return
         if (
             node.level == 0
             and node.module == "__future__"
@@ -849,12 +915,12 @@ class _ImportBindings(ast.Visitor):
             )
         ):
             return
-        if node.module != "mule" or node.level:
+        if node.module == "__future__" and node.level == 0:
             self.lowerer.error(
-                "only absolute compiler imports from mule are supported",
-                node,
-                unsupported=True,
+                "unsupported __future__ compiler directive", node, unsupported=True
             )
+        if node.module != "mule" or node.level:
+            return
         for item in node.items:
             binding = _EXPORT_BINDINGS.get(item.name)
             if binding is None:
@@ -1359,11 +1425,24 @@ class _ReceiverName(ast.Visitor):
         return node.identifier == self.name
 
 
-class _AnnotationShadows(ast.Visitor):
+class _ImportNames(ast.Visitor):
+    def visit_Import(self, node):
+        for item in node.items:
+            self.imported_name(item.alias or item.name.split(".")[0], item)
+
+    def visit_ImportFrom(self, node):
+        for item in node.items:
+            self.imported_name(item.alias or item.name, item)
+
+
+class _AnnotationShadows(_ImportNames):
     """Runtime bindings prevent treating the same name as a builtin contract."""
 
     def __init__(self):
         self.names = set()
+
+    def imported_name(self, name, node):
+        self.names.add(name)
 
     def visit_Node(self, node):
         for target in node.assigned_targets():
@@ -1391,10 +1470,13 @@ class _AnnotationShadowTarget(ast.Visitor):
         self.names.add(node.identifier)
 
 
-class _ScopeVisitor(ast.Visitor):
+class _ScopeVisitor(_ImportNames):
     def __init__(self, builder):
         self.builder = builder
         self.seen = set(builder.function.parameters)
+
+    def imported_name(self, name, node):
+        self.seen.add(name)
 
     def visit_Node(self, node):
         for child in node.children():
@@ -1438,10 +1520,13 @@ class _ScopeVisitor(ast.Visitor):
         )
 
 
-class _LocalBindings(ast.Visitor):
+class _LocalBindings(_ImportNames):
     def __init__(self, builder):
         self.builder = builder
         self.target_visitor = _LocalTarget(builder)
+
+    def imported_name(self, name, node):
+        ast.Name(name, span=node.span).accept(self.target_visitor)
 
     def visit_Node(self, node):
         for target in node.assigned_targets():
@@ -1548,17 +1633,28 @@ class _ValueConditionVisitor(ast.Visitor):
         )
 
 
-def lower(source: str, filename: str = "<unknown>") -> ir.Module:
+def lower(
+    source: str,
+    filename: str = "<unknown>",
+    *,
+    imports=None,
+    prefix="",
+    namespace="__main__",
+) -> ir.Module:
     tree = parse(source, filename)
-    lowerer = Lowerer(source, filename)
-    imports = _ImportBindings(lowerer)
+    lowerer = Lowerer(
+        source, filename, imports=imports, prefix=prefix, namespace=namespace
+    )
+    bindings = _ImportBindings(lowerer)
     for statement in tree.statements:
-        statement.accept(imports)
+        statement.accept(bindings)
     shadows = _AnnotationShadows()
     for statement in tree.statements:
         statement.accept(shadows)
     lowerer.module_annotation_shadows = shadows.names
-    entry = ir.Function("mule_module", (), (), policy=OptimizationPolicy())
+    entry = ir.Function(
+        f"{prefix}mule_module", (), (), policy=OptimizationPolicy(), namespace=namespace
+    )
     lowerer.functions.append(entry)
     builder = FunctionBuilder(lowerer, entry, tree.statements, is_module=True)
     builder.statements(tree.statements)
@@ -1566,5 +1662,6 @@ def lower(source: str, filename: str = "<unknown>") -> ir.Module:
     for function in lowerer.functions:
         _GlobalAnnotationStores(lowerer, function).apply()
     module = ir.Module(lowerer.functions, entry.name)
-    ir.verify(module)
+    if imports is None:
+        ir.verify(module)
     return module

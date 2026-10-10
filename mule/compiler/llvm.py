@@ -75,6 +75,8 @@ declare ptr @mule_none()
 declare ptr @mule_bool(i32)
 declare ptr @mule_load_global(ptr, ptr)
 declare i32 @mule_store_global(ptr, ptr, ptr)
+declare ptr @mule_namespace()
+declare i32 @mule_assertion_failure(ptr)
 declare ptr @mule_load_local(ptr, ptr)
 declare ptr @mule_binary_reuse(i32, ptr, ptr, i32, ptr)
 declare ptr @mule_unary(i32, ptr)
@@ -140,6 +142,14 @@ class _MethodTargets(ir1.Visitor):
         self.resolutions[instruction.result] = instruction.name
 
 
+class _Imports(ir1.Visitor):
+    def __init__(self, imports):
+        self.imports = imports
+
+    def visit_ImportModule(self, operation):
+        self.imports.setdefault(operation.module_name, operation)
+
+
 class _ModuleEmitter:
     def __init__(self, module: ir1.Module):
         module = ir1.Module(list(module.functions), module.entry)
@@ -166,11 +176,13 @@ class _ModuleEmitter:
         self.data: dict[bytes, str] = {}
         self.auxiliary: list[str] = []
         self.method_targets = {}
+        self.imports = {}
         for function in module.functions:
             collector = _MethodTargets()
             for block in function.blocks:
                 for instruction in block.instructions:
                     instruction.accept(collector)
+                    instruction.accept(_Imports(self.imports))
             for name, target in collector.methods.items():
                 self.method_targets.setdefault(name, target)
 
@@ -217,6 +229,10 @@ class _ModuleEmitter:
         functions.extend(
             native_protocol.callbacks(self, layout) for layout in self.layouts.values()
         )
+        functions.extend(
+            self.import_initializer(op, index)
+            for index, op in enumerate(self.imports.values())
+        )
         self.auxiliary.extend(
             f"{layout.schema} = internal global i8 0"
             for layout in self.layouts.values()
@@ -233,7 +249,13 @@ class _ModuleEmitter:
             "define i32 @main() {\n"
             "entry:\n"
             f"  %status = call i32 @mule_run(ptr {entry})\n"
-            "  ret i32 %status\n"
+            + "".join(
+                f"  %import.{index} = load ptr, ptr @mule.import.cache.{index}\n"
+                f"  call void @mule_release(ptr %import.{index})\n"
+                f"  store ptr null, ptr @mule.import.cache.{index}\n"
+                for index in range(len(self.imports))
+            )
+            + "  ret i32 %status\n"
             "}"
         )
         return (
@@ -249,6 +271,59 @@ class _ModuleEmitter:
             )
             + "\n"
         )
+
+    def import_initializer(self, op, index):
+        cache = f"@mule.import.cache.{index}"
+        self.auxiliary.append(f"{cache} = internal global ptr null")
+        lines = [
+            f"define internal ptr @mule.import.{index}() {{",
+            "entry:",
+            f"  %cached = load ptr, ptr {cache}",
+            "  %ready = icmp ne ptr %cached, null",
+            "  br i1 %ready, label %existing, label %initialize",
+            "existing:",
+            "  %owned = call ptr @mule_retain(ptr %cached)",
+            "  ret ptr %owned",
+            "initialize:",
+            "  %globals = call ptr @mule_namespace()",
+            f"  store ptr %globals, ptr {cache}",
+        ]
+        for field, value in (("__name__", op.module_name), ("__file__", op.filename)):
+            literal = self.literal_data(value.encode())
+            key = self.text(field)
+            label = field.strip("_")
+            lines.extend(
+                [
+                    f"  %{label} = call ptr @mule_literal_text(ptr {literal}, i64 {len(value.encode())})",
+                    f"  %status.{label} = call i32 @mule_store_global(ptr %globals, ptr {key}, ptr %{label})",
+                    f"  call void @mule_release(ptr %{label})",
+                    f"  %bad.{label} = icmp slt i32 %status.{label}, 0",
+                    f"  br i1 %bad.{label}, label %failed, label %after.{label}",
+                    f"after.{label}:",
+                ]
+            )
+        lines.extend(
+            [
+                "  %frame = call i32 @mule_enter_frame()",
+                "  %bad.frame = icmp slt i32 %frame, 0",
+                "  br i1 %bad.frame, label %failed, label %execute",
+                "execute:",
+                f"  %result = call ptr {self.bodies[op.initializer]}(ptr %globals)",
+                "  call void @mule_leave_frame()",
+                "  %bad.result = icmp eq ptr %result, null",
+                "  call void @mule_release(ptr %result)",
+                "  br i1 %bad.result, label %failed, label %success",
+                "success:",
+                "  %module = call ptr @mule_retain(ptr %globals)",
+                "  ret ptr %module",
+                "failed:",
+                f"  store ptr null, ptr {cache}",
+                "  call void @mule_release(ptr %globals)",
+                "  ret ptr null",
+                "}",
+            ]
+        )
+        return "\n".join(lines)
 
 
 class _LiteralEmitter(ast.Visitor):
@@ -728,6 +803,16 @@ class _FunctionEmitter(ir1.Visitor):
         value = self.take(instruction.value)
         self.publish(instruction.result, value)
         self.refine(instruction.result, value)
+
+    def visit_ImportModule(self, instruction):
+        index = list(self.module.imports).index(instruction.module_name)
+        self.pointer_result(instruction.result, f"call ptr @mule.import.{index}()")
+
+    def visit_AssertionFailure(self, instruction):
+        message = self.take(instruction.message)
+        status = self.operation(f"call i32 @mule_assertion_failure(ptr {message})")
+        self.release(message)
+        self.check_status(status)
 
     def visit_Load(self, instruction: ir1.Load) -> None:
         result = instruction.result

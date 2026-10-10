@@ -58,10 +58,25 @@ class Case:
     phase: str
     reason: str
     failure: Output | None
+    compile_error_file: Path
+    compile_error_line: int | None
 
     @property
     def id(self):
         return self.path.stem
+
+    def matches_compile_gap(self, error):
+        return (
+            self.status == "pending"
+            and self.phase == "compile"
+            and error.msg == self.reason
+            and error.filename is not None
+            and Path(error.filename).resolve() == self.compile_error_file
+            and (
+                self.compile_error_line is None
+                or error.lineno == self.compile_error_line
+            )
+        )
 
     def prepare(self, directory):
         for filename, contents in self.files.items():
@@ -143,6 +158,12 @@ def load_case(path):
             phase=phase,
             reason=reason,
             failure=Output.from_metadata(failure) if failure is not None else None,
+            compile_error_file=(
+                path.parent.parent / native["compile_error_file"]
+            ).resolve()
+            if "compile_error_file" in native
+            else path,
+            compile_error_line=native.get("compile_error_line"),
         )
     except (KeyError, ValueError) as error:
         raise ValueError(f"{path}: {error}") from error

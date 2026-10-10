@@ -35,3 +35,27 @@ def test_fixture_paths_cannot_escape_working_directory(tmp_path, filename):
 def test_empty_corpus_reports_collection_error(tmp_path):
     with pytest.raises(ValueError, match="no corpus programs"):
         discover_cases(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("message", "filename", "line", "matches"),
+    [
+        ("expected end of statement", "stdlib/library.py", 35, True),
+        ("different compiler error", "stdlib/library.py", 35, False),
+        ("expected end of statement", "corpus/program.py", 35, False),
+        ("expected end of statement", "stdlib/library.py", 36, False),
+    ],
+)
+def test_known_compile_gaps_do_not_mask_other_errors(
+    tmp_path, message, filename, line, matches
+):
+    case = replace(
+        discover_cases()[0],
+        status="pending",
+        phase="compile",
+        reason="expected end of statement",
+        compile_error_file=tmp_path / "stdlib/library.py",
+        compile_error_line=35,
+    )
+    error = SyntaxError(message, (str(tmp_path / filename), line, 6, "lazy import x"))
+    assert case.matches_compile_gap(error) == matches

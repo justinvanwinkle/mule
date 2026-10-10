@@ -87,21 +87,43 @@ To report the gaps as ordinary failures, use pytest's `--runxfail` option:
 uv run pytest test/stdlib/test_upstream.py --runxfail
 ```
 
-Each entry first goes through Mule's native compiler. Once source compilation
-succeeds, a compiled driver imports that suite and calls
+Each entry goes through Mule's native compiler. Simple suites consisting of
+ordinary undecorated `unittest.TestCase` classes can use the bootstrap driver:
+Mule compiles the unchanged upstream module, a small assertion implementation
+in `bootstrap/unittest.py`, and a driver that invokes every discovered test
+method. Each method runs in a separate process using the same native executable.
+Assertions and runtime errors are recorded individually, and later cases still
+run. Bootstrap discovery rejects fixtures, decorators, package hooks and dynamic
+discovery rather than silently dropping them. It uses Mule's AST and does not
+evaluate test bodies on the host.
+
+Other entries first require standalone source compilation, then a compiled
+driver imports that suite and calls
 `unittest.TestLoader.loadTestsFromModule`, respecting its hooks. Test execution
 requires a native ELF executable; there is no host-Python fallback. All 15 resource
 categories are enabled, including the four omitted by upstream's `-uall`.
 Loader errors, zero executed tests, unavailable/skipped tests and upstream
-expected failures all make the run unsuccessful.
+expected failures all make the run unsuccessful. The full unittest loader is
+still a compilation target, not an implemented native facility.
+
+The unchanged `test_int_literal.py` is now executed: all six binary, octal and
+hexadecimal literal tests pass under Mule. Its pytest entry has no xfail mark.
+
+```sh
+uv run python -m tools.run_stdlib_tests --suite test_int_literal
+```
 
 The standalone command continues after failed entries and returns nonzero if any
 fail; it reports raw results independently of pytest's expected-failure marks.
 `build/stdlib-tests/results.json` records every result and distinguishes
 compilation failures from executed test results. Each entry also has its own
 `outcome.json`. `--list` lists the complete selection; `--jobs` controls parallel
-suite attempts and `--timeout` bounds each compilation/execution.
+suite attempts and `--timeout` bounds each compilation/execution. Repeat `--suite`
+to select entries; omitting it continues to attempt the full upstream selection.
 
-The initial Mule baseline is 557 compilation failures, zero executed suites and
-zero executed individual tests. This establishes complete test selection and the
-current compilation blockers; it is not an executed Python conformance result.
+The original Mule baseline was 557 compilation failures and zero executed cases.
+The current execution milestone is one passing suite with six passing cases.
+`test_longexp` also reaches its individual test and fails because `eval` is not
+implemented. The remaining selection is still expected to fail and does not
+establish full Python conformance. See `spec/compiled-modules.md` for bootstrap
+limitations.

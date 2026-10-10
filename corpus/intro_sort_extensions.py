@@ -20,7 +20,9 @@ args = ["--unique"]
 [mule]
 status = "pending"
 phase = "compile"
-reason = "only compiler imports from mule are supported"
+reason = "expected end of statement"
+compile_error_file = "stdlib/argparse.py"
+compile_error_line = 95
 '''
 
 import argparse, sys

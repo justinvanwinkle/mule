@@ -200,9 +200,33 @@ def test_annotated_attribute_assignment_executes_value_but_not_annotation(
 @pytest.mark.parametrize(
     "imports, annotation",
     (
-        ("import typing as t\n", "t.Optional[int]"),
-        ("from typing import Any as Value\n", "Value"),
-        ("from typing_extensions import Annotated\n", "Annotated[int, 'metadata']"),
+        pytest.param(
+            "import typing as t\n",
+            "t.Optional[int]",
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=SyntaxError,
+                reason="Compiling Python 3.15 typing requires lazy import support",
+            ),
+        ),
+        pytest.param(
+            "from typing import Any as Value\n",
+            "Value",
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=SyntaxError,
+                reason="Compiling Python 3.15 typing requires lazy import support",
+            ),
+        ),
+        pytest.param(
+            "from typing_extensions import Annotated\n",
+            "Annotated[int, 'metadata']",
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=SyntaxError,
+                reason="typing_extensions is not a bundled library",
+            ),
+        ),
         ("from __future__ import annotations\n", "UnknownClass | None"),
         ("import mule\n", "mule.intp"),
     ),

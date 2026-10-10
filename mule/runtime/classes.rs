@@ -279,6 +279,7 @@ unsafe fn resolve(
         };
         if !receiver.is_null() && !object::is_fixnum(receiver) {
             let (attributes, instance) = match &(*receiver).data {
+                Data::Namespace(_) => (receiver, false),
                 Data::Type { attributes, .. } => (*attributes, false),
                 Data::Instance { ty, .. } => match &(**ty).data {
                     Data::Type { attributes, .. } => (*attributes, true),
@@ -630,6 +631,9 @@ pub unsafe extern "C" fn mule_set_attr_cached(
             return -1;
         };
         if !receiver.is_null() && !object::is_fixnum(receiver) {
+            if let Data::Namespace(_) = &(*receiver).data {
+                return if object::bind(receiver, attribute, value) { 0 } else { -1 };
+            }
             if let Data::Type { attributes, .. } = &(*receiver).data {
                 return if object::bind(*attributes, attribute, value) {
                     0

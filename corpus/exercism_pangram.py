@@ -18,7 +18,9 @@ timeout = 5.0
 [mule]
 status = "pending"
 phase = "compile"
-reason = "only absolute compiler imports from mule are supported"
+reason = "syntax is not supported by the native compiler yet"
+compile_error_file = "stdlib/string/__init__.py"
+compile_error_line = 17
 '''
 
 from string import ascii_lowercase

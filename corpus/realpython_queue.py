@@ -18,7 +18,9 @@ timeout = 5.0
 [mule]
 status = "pending"
 phase = "compile"
-reason = "only absolute compiler imports from mule are supported"
+reason = "expected end of statement"
+compile_error_file = "stdlib/collections/__init__.py"
+compile_error_line = 35
 '''
 
 from collections import deque

@@ -55,6 +55,32 @@ the runtime with `opt-level=3` and `panic=abort`, as a statically linked archive
 The linker discards unused sections and removes Rust dependency debug sections.
 Rust's code generation also uses LLVM. No C runtime source is compiled.
 
+### Optimization across the runtime boundary
+
+The native build uses full cross-language LLVM LTO: rustc produces a
+bitcode static library with `-C linker-plugin-lto -C lto=fat`, and Clang compiles
+Mule IR with `-flto=full`. The LLD shipped with the selected Rust toolchain links
+and optimizes both at level 3. Using that linker avoids reading newer Rust LLVM
+bitcode with an older system linker. Native runtime-probe `rlib` builds continue
+to use rustc's ordinary Rust library format.
+
+SBCL `src/compiler/main.lisp`, `compile-component` and `%compile-component`,
+optimize IR1 and IR2 components before generating machine code, including known
+local calls. Mule's semantic analyses retain that responsibility. This build
+adaptation additionally exposes the Rust primitive bodies to LLVM's optimizer,
+so it can inline and eliminate calls across generated code and runtime code.
+SBCL does not need cross-language LLVM LTO because its backend generates code
+directly and its implementation is predominantly compiled Lisp. Mule requires
+this extra link-time stage because its approved Rust primitives and Python
+frontend feed LLVM through different compilation drivers. It can increase build
+time; it does not replace semantic proofs, representation selection, or migration
+of language-level Rust bootstrap code into Mule Python.
+
+Rust's [linker-plugin LTO documentation](https://doc.rust-lang.org/rustc/linker-plugin-lto.html)
+defines the matching full-LTO modes and compatible-linker requirement. The build
+must report an error when that toolchain is unavailable, rather than silently
+produce a binary without cross-language optimization.
+
 Each source function becomes a native LLVM function. Definitions construct Mule
 function objects whose entry pointers refer to those native functions and whose
 context carries the module globals. Functions have general callable entries and
@@ -104,10 +130,14 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
 - Unconditional module-level imports of numeric annotation markers and
   `optimize` from `mule`, including aliases. Parameter, return, and identifier
   variable annotations support arbitrary expressions; recognized builtin and
-  imported numeric contracts additionally guide compiler analysis. Imports from
-  `typing` and `typing_extensions` can bind names for annotation use, and
-  `from __future__ import annotations` is accepted. Runtime typing APIs are not
-  implemented by these annotation imports.
+  imported numeric contracts additionally guide compiler analysis.
+  `from __future__ import annotations` is accepted as a compiler directive.
+- Static imports of Python source modules, aliases, packages and named exports.
+  Imported globals have separate mutable namespaces; initialization occurs once
+  at execution and functions capture the defining module. Relative, wildcard,
+  extension and dynamic imports remain unsupported. `typing` imports use this
+  ordinary path and require their library sources to compile.
+- Assertion statements with lazy message evaluation and native error cleanup.
 
 Function-wide binding classification makes a later assignment local even when
 an earlier read occurs first. Unbound local slots raise `UnboundLocalError`;
@@ -118,7 +148,7 @@ operands once. Owned references are cleaned on normal and exceptional exits,
 and an active error survives cleanup.
 
 Unsupported constructs raise `UnsupportedSyntax`, a `SyntaxError` subclass,
-before native compilation. These include general imports, nested functions or classes,
+before native compilation. These include dynamic/relative imports, nested functions or classes,
 closures/`nonlocal`, defaults, keyword/variadic calls, general decorators,
 async/generators, `for`, exception handling, containers/comprehensions,
 subscriptions, unpacking, and formatted/template strings. Unsupported source is

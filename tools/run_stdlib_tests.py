@@ -11,6 +11,7 @@ from pathlib import Path
 
 from mule import ast
 from mule.parser import parse
+from tools import stdlib_bootstrap
 
 ROOT = Path(__file__).resolve().parents[1]
 STDLIB = ROOT / "stdlib"
@@ -145,6 +146,11 @@ def run_entry(entry, directory, timeout=120.0):
     directory.mkdir(parents=True, exist_ok=True)
     phase = "test-module-compilation"
     try:
+        cases = stdlib_bootstrap.discover_cases(
+            entry.source.read_text(encoding="utf-8"), str(entry.source)
+        )
+        if cases is not None:
+            return run_bootstrap(entry, cases, directory, timeout)
         # This executable is not run as a script: doing that could report green
         # without loading any tests. It validates the actual upstream source.
         compiled = compile_source(entry.source, directory / "module", timeout)
@@ -233,6 +239,96 @@ def run_entry(entry, directory, timeout=120.0):
         )
 
 
+def run_bootstrap(entry, cases, directory, timeout):
+    module_name = entry.name if entry.name.startswith("test.") else "test." + entry.name
+    driver = directory / "driver.py"
+    executable = directory / "run-tests"
+    driver.write_text(stdlib_bootstrap.driver_source(module_name, cases))
+    compiled = compile_source(driver, executable, timeout)
+    if compiled.returncode:
+        return Outcome(
+            entry.name,
+            str(entry.source),
+            "failed",
+            "test-driver-compilation",
+            compiled.stdout,
+            compiled.stderr,
+            compiled.returncode,
+        )
+    with executable.open("rb") as binary:
+        if binary.read(4) != b"\x7fELF":
+            raise ValueError("compiler output is not a native ELF executable")
+    results = []
+    for case in cases:
+        try:
+            result = subprocess.run(
+                [str(executable)],
+                input=case.name + "\n",
+                cwd=directory,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            lines = result.stdout.splitlines()
+            executed = "MULE_TEST_START " + case.name in lines
+            passed = (
+                executed
+                and result.returncode == 0
+                and "MULE_TEST_PASS " + case.name in lines
+            )
+            failure = executed and result.stderr.startswith("AssertionError:")
+            results.append(
+                {
+                    "name": case.name,
+                    "executed": executed,
+                    "passed": passed,
+                    "failure": failure,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "exit_code": result.returncode,
+                }
+            )
+        except subprocess.TimeoutExpired as error:
+            stdout = (error.stdout or b"").decode("utf-8", errors="replace")
+            results.append(
+                {
+                    "name": case.name,
+                    "executed": "MULE_TEST_START " + case.name in stdout.splitlines(),
+                    "passed": False,
+                    "failure": False,
+                    "stdout": stdout,
+                    "stderr": f"Timed out after {timeout} seconds",
+                    "exit_code": None,
+                }
+            )
+    tests_run = sum(result["executed"] for result in results)
+    passed = all(result["passed"] for result in results)
+    stats = {
+        "tests_run": tests_run,
+        "failures": sum(result["failure"] for result in results),
+        "errors": sum(
+            not result["passed"] and not result["failure"] for result in results
+        ),
+        "unavailable": 0,
+        "loader_errors": [],
+        "cases": results,
+        "runner": "compiled-bootstrap",
+    }
+    (directory / "test-result.json").write_text(json.dumps(stats, indent=2) + "\n")
+    return Outcome(
+        entry.name,
+        str(entry.source),
+        "passed" if passed else "failed",
+        "test-execution",
+        "".join(result["stdout"] for result in results),
+        "".join(result["stderr"] for result in results),
+        0 if passed else 1,
+        tests_run,
+        stats,
+    )
+
+
 def run_all(entries, output, *, jobs=6, timeout=120.0):
     output.mkdir(parents=True, exist_ok=True)
     outcomes = []
@@ -275,12 +371,25 @@ def main():
         "--list", action="store_true", help="List upstream-discovered suites."
     )
     parser.add_argument("--jobs", type=int, default=6)
+    parser.add_argument(
+        "--suite",
+        action="append",
+        help="Run a named upstream entry (repeatable); the default runs all entries.",
+    )
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--output", type=Path, default=ROOT / "build/stdlib-tests")
     arguments = parser.parse_args()
     if arguments.jobs < 1 or arguments.timeout <= 0:
         parser.error("jobs and timeout must be positive")
     entries = discover_entries()
+    if arguments.suite:
+        requested = set(arguments.suite)
+        known = {entry.name for entry in entries}
+        if requested - known:
+            parser.error(
+                "unknown upstream entries: " + ", ".join(sorted(requested - known))
+            )
+        entries = [entry for entry in entries if entry.name in requested]
     if arguments.list:
         for entry in entries:
             print(entry.name)

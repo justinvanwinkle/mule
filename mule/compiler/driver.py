@@ -8,8 +8,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .frontend import lower
 from .llvm import emit
+from .modules import compile_modules
 
 
 class ToolchainError(RuntimeError):
@@ -17,7 +17,7 @@ class ToolchainError(RuntimeError):
 
 
 def emit_llvm(source: str, filename: str = "<unknown>") -> str:
-    return emit(lower(source, filename))
+    return emit(compile_modules(source, filename))
 
 
 def build_runtime(
@@ -46,12 +46,34 @@ def build_runtime(
         "-o",
         str(library),
     ]
+    if crate_type == "staticlib":
+        command.extend(
+            ["-C", "linker-plugin-lto", "-C", "lto=fat", "-C", "codegen-units=1"]
+        )
     result = subprocess.run(command, check=False, capture_output=True, text=True)
     if result.returncode:
         raise ToolchainError(
             f"Rust runtime compilation failed:\n{result.stderr.strip()}"
         )
     return library
+
+
+def lto_linker(rustc: str) -> Path:
+    """Use rustc's own LLD to read its bitcode with a compatible LLVM version."""
+    result = subprocess.run(
+        [rustc, "--print", "target-libdir"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        raise ToolchainError(
+            f"Could not locate Rust's LTO linker:\n{result.stderr.strip()}"
+        )
+    linker = Path(result.stdout.strip()).parent / "bin/gcc-ld/ld.lld"
+    if not linker.is_file():
+        raise ToolchainError(f"Rust's LLVM LTO linker was not found: {linker}")
+    return linker
 
 
 def link_llvm(
@@ -72,9 +94,15 @@ def link_llvm(
         binary = temporary / "program"
         ir_path.write_text(llvm)
         runtime = build_runtime(temporary, rustc=rustc)
+        linker = lto_linker(rustc)
         command = [
             compiler,
             "-O3",
+            "-flto=full",
+            f"--ld-path={linker}",
+            "-Wl,--lto-O3",
+            "-Wl,--lto-CGO3",
+            "-Wl,--threads=1",
             "-Wno-override-module",
             "-Wl,--gc-sections",
             "-Wl,--strip-debug",
