@@ -15,6 +15,8 @@ frontend coverage does not establish complete Python compatibility.
 - [Native compiler](native-compiler.md): implemented subset and executable builds.
 - [Native implementation selection](native-lowering.md): implemented analysis,
   native arithmetic, guarded calls, and their SBCL source references.
+- [Optimization policies](optimization-policies.md): target class restrictions,
+  native struct representation, safety checks, and debug levels.
 - [Dependency policy](dependencies.md): prohibited CPython linking and library approvals.
 - [SBCL compiler](sbcl-compiler.md): source-backed baseline architecture.
 - [Python and LLVM changes](python-changes.md): retained analysis and required adaptations.

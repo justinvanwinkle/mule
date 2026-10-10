@@ -32,7 +32,7 @@ values would not perform that conversion.
 | `BLOCK`/`RETURN-FROM`, `TAGBODY`/`GO`, `CATCH`/`THROW` | Omit Lisp operators and exit tags. Lower Python structured control and exceptions; retain cleanup across exits. |
 | Multiple values, `MV-COMBINATION`, unknown-value stacks and return conventions | Python returns one object; a tuple is an ordinary object. Internal multi-result helpers do not change Python semantics. |
 | Lisp lambda lists, supplied-p variables, `&KEY` rules | Replace argument dispatch with Python's parameter/default/keyword rules. |
-| `THE`, `DECLARE`, `DECLAIM`, Lisp type specifiers and unsafe declaration policies | Retain internal inferred facts; do not give Python annotations declaration semantics. |
+| `THE`, `DECLARE`, `DECLAIM`, Lisp type specifiers and unsafe declaration policies | Retain inferred facts and trusted Mule contracts; replace Lisp type spellings with Mule annotations and explicit class policies. |
 | CLOS generic functions, Lisp class layouts, cons-specific and Lisp library transforms | Replace operation metadata and object semantics with Python's model. Dynamic dispatch remains necessary. |
 | SBCL lowtags/widetags, number stack, architecture VOPs, assembler, FASL/core image formats | Replace representations and output mechanisms as required by LLVM and the CPython interface. Their generic responsibilities remain. |
 | SBCL's Lisp cross-compilation/bootstrap machinery | Not part of the language compiler to port. Mule's Python 3.14 host and eventual bootstrap are separate concerns. |
@@ -98,15 +98,21 @@ Python transformation.
 Keep the CTYPE-style distinction between language facts and implementation
 representation. Rewrite the type domain for Python objects: exact type versus
 subclass possibilities, constants, integer ranges, callable identity, and
-unknown values. Facts need justification from semantics, analysis, or runtime
-guards; annotation syntax alone supplies none.
+unknown values. Facts need justification from semantics, analysis, runtime
+guards, or explicit trusted Mule contracts under the applicable safety policy.
 
-Python annotations are runtime metadata, not enforced declarations. Python 3.14
+Ordinary Python annotations are runtime metadata, not enforced declarations. Python 3.14
 uses lazy evaluation by default; `from __future__ import annotations` retains
 stringized annotations. Preserve the applicable introspection behavior;
 evaluation can execute user code. Type aliases and type parameters also require
-their runtime objects and lazy values. See [annotationlib][annotations]. A checked optimizer
-guard must remain distinct from an annotation and from a user-visible type error.
+their runtime objects and lazy values. See [annotationlib][annotations]. Mule's
+imported numeric markers deliberately add compiler contracts. Restricted class
+policies also give field declarations storage semantics; dynamic class policies
+retain ordinary field annotation behavior. See the
+[target policies](optimization-policies.md) and
+[implemented annotation contracts](native-compiler.md#imported-annotation-contracts).
+Distinguish a failed speculative optimization guard, which selects a generic
+implementation, from a contract violation, which is an error.
 
 Rebuild SBCL's known-operation database for proven Python operations and runtime
 helpers. A binding spelled `len` is not sufficient evidence for the builtin.
@@ -123,7 +129,9 @@ ownership changes that can run finalizers.
 
 Unused values do not make operations removable. For example, `1 / 0` must still
 raise when its result is ignored. Optimizer policy may control cost and debug
-detail; it does not permit removing required errors or trusting annotations.
+detail and checks for trusted contracts; it does not permit removing required
+errors from valid programs. A high class speed policy imposes explicit language
+restrictions rather than silently assuming ordinary Python classes are sealed.
 Recursive inference must retain SBCL's rule that optimistic intermediate facts
 are not published as established types.
 
@@ -193,7 +201,7 @@ as always translatable operations; `src/pcl/slots.lisp` and `slots-boot.lisp`
 implement the language-level slot protocols and optimized access functions.
 Mule does not copy CLOS's generic-function or class-redefinition semantics.
 
-Mule restricts compatibility to keep instance layouts and dispatch stable.
+Mule's current classes restrict compatibility to keep layouts and dispatch stable.
 Fixed-layout compiled classes reject undeclared fields and class
 mutation; their first implementation excludes multiple inheritance, metaclasses,
 arbitrary class-body execution, descriptors, and decorators. These are explicit
@@ -202,6 +210,12 @@ classes are immutable. Mutable module globals and object field values retain
 their existing semantics. Additional guarded class inference and direct LLVM
 slot access remain future optimizations; the current cache design alone does not
 establish a timing result.
+
+The [target optimization policies](optimization-policies.md) make these
+restrictions explicit per class. Levels zero and one require Python-compatible
+dynamic behavior, level two fixes layout, and level three requires native typed
+fields and final classes. The existing object-slot implementation is not native
+struct storage and does not fulfill the level-three performance requirement.
 
 Container classes and their algorithms must be implemented in Mule Python and
 compiled to native code. Rust supplies primitives for allocation, lifetime,

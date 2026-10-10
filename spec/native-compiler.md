@@ -191,6 +191,11 @@ and recursion handling retain their existing contracts.
 
 ## Fixed-layout classes
 
+This section describes current behavior. The target
+[optimization policies](optimization-policies.md) distinguish Python-compatible
+dynamic classes, fixed layouts, and native typed structs; those policy-selected
+class implementations are not yet available.
+
 The compiler discovers fields from assignments to attributes of each method's
 first parameter, regardless of that parameter's spelling. This includes writes
 outside `__init__` and in branches. A subclass keeps inherited field indices and

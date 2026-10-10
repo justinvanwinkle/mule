@@ -1,0 +1,734 @@
+{
+  "recorded_at": "2026-10-10T02:36:40.327307+00:00",
+  "cpu": 0,
+  "cpu_info": "CPU MODELNAME",
+  "lscpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           48 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  32\nOn-line CPU(s) list:                     0-31\nVendor ID:                               AuthenticAMD\nModel name:                              AMD Ryzen 9 9955HX 16-Core Processor\nCPU family:                              26\nModel:                                   68\nThread(s) per core:                      2\nCore(s) per socket:                      16\nSocket(s):                               1\nStepping:                                0\nMicrocode version:                       0xb404024\nFrequency boost:                         enabled\nCPU(s) scaling MHz:                      44%\nCPU max MHz:                             4560.4399\nCPU min MHz:                             1208.7920\nBogoMIPS:                                4990.62\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good amd_lbr_v2 nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpuid_fault cpb cat_l3 cdp_l3 hw_pstate ssbd mba perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a avx512f avx512dq adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local user_shstk avx_vnni avx512_bf16 clzero irperf xsaveerptr rdpru wbnoinvd cppc arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold v_vmsave_vmload vgif x2avic v_spec_ctrl vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid bus_lock_detect movdiri movdir64b overflow_recov succor smca fsrm avx512_vp2intersect flush_l1d amd_lbr_pmc_freeze\nVirtualization:                          AMD-V\nL1d cache:                               768 KiB (16 instances)\nL1i cache:                               512 KiB (16 instances)\nL2 cache:                                16 MiB (16 instances)\nL3 cache:                                64 MiB (2 instances)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-31\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Mitigation; IBPB on VMEXIT only\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP always-on; PBRSB-eIBRS Not affected; BHI Not affected\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Mitigation; IBPB on VMEXIT\n",
+  "platform": "Linux-7.2.8+deb14-amd64-x86_64-with-glibc2.43",
+  "clang": "Debian clang version 21.1.8 (13)",
+  "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "gmp_version": "6.3.0",
+  "settings": {
+    "clang": "-O3 -march=native",
+    "rust": "opt-level=3 target-cpu=native panic=abort",
+    "batch": 1024,
+    "sample_target_ms": 150,
+    "repeats": 7,
+    "warmups": 1
+  },
+  "semantics": "Unsigned 256-bit operands; add/mul modulo 2^256; XOR; unsigned quotient.",
+  "scope": "Hot-array batch throughput, native arithmetic only; not Mule object/runtime overhead or dependent-operation latency.",
+  "gmp": "mpz outputs preallocated for 576 bits and reused; mpn uses four limbs. mpn_mul_n computes 512 product bits; mpn_tdiv_qr also computes remainder.",
+  "division": "div128: full-width 256/128; div256: full-width 256/256 (quotient 0 or 1).",
+  "excluded": "Build, process startup, input setup, mpz initialization, validation, checksum, output conversion, teardown.",
+  "source_sha256": {
+    "benchmarks/i256.py": "ea6f191e3e2ee52901468c5541575e441a3e9224e25881154255bb25294cc4d2",
+    "benchmarks/i256.rs": "5c4f6e591ad753b3b624c08988d96ad9a669abe32bef7ea84a6970ac33171ec9",
+    "build/benchmarks/i256/kernels.ll": "d1738a9e1d859c615d5b25e785e03444c8ca341b98c6561fa0eb994d6810bcc2"
+  },
+  "input_sha256": {
+    "add": "27d4bc6d90917b504710c60403c6b5385cb26ab21f4d0c04487592be77a8744e",
+    "xor": "27d4bc6d90917b504710c60403c6b5385cb26ab21f4d0c04487592be77a8744e",
+    "mul": "27d4bc6d90917b504710c60403c6b5385cb26ab21f4d0c04487592be77a8744e",
+    "div128": "2e59c065b40a0289ea9193483f2873d0b9d7e0f1cab7277f2e9ef818428f18ea",
+    "div256": "27d4bc6d90917b504710c60403c6b5385cb26ab21f4d0c04487592be77a8744e"
+  },
+  "medians_ns_per_operation": {
+    "add": {
+      "llvm": 0.7713875647402443,
+      "mpz": 5.744933152727384,
+      "mpn": 1.3320901359362365
+    },
+    "xor": {
+      "llvm": 0.7675807240684277,
+      "mpz": 4.538505728490067,
+      "mpn": 1.7641424186534422
+    },
+    "mul": {
+      "llvm": 2.160544296607611,
+      "mpz": 11.828993297693698,
+      "mpn": 7.8678202212354655
+    },
+    "div128": {
+      "llvm": 408.0832731530112,
+      "mpz": 17.367496057519222,
+      "mpn": 13.631202368476535
+    },
+    "div256": {
+      "llvm": 12.915328538643884,
+      "mpz": 20.685954476138388,
+      "mpn": 13.0656918832578
+    }
+  },
+  "samples": {
+    "add": {
+      "llvm": [
+        {
+          "elapsed_ns": 149386984,
+          "operations": 193264640,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 0.7729659393461732
+        },
+        {
+          "elapsed_ns": 149066542,
+          "operations": 193264640,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 0.7713078916039685
+        },
+        {
+          "elapsed_ns": 149470919,
+          "operations": 193264640,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 0.7734002402094868
+        },
+        {
+          "elapsed_ns": 149081940,
+          "operations": 193264640,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 0.7713875647402443
+        },
+        {
+          "elapsed_ns": 148898464,
+          "operations": 193264640,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 0.7704382136328715
+        },
+        {
+          "elapsed_ns": 149344570,
+          "operations": 193264640,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 0.772746478610883
+        },
+        {
+          "elapsed_ns": 148879857,
+          "operations": 193264640,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 0.7703419363210984
+        }
+      ],
+      "mpz": [
+        {
+          "elapsed_ns": 131826659,
+          "operations": 23001088,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 5.731322753080202
+        },
+        {
+          "elapsed_ns": 131752379,
+          "operations": 23001088,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 5.72809334062806
+        },
+        {
+          "elapsed_ns": 137878260,
+          "operations": 23001088,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 5.994423394232482
+        },
+        {
+          "elapsed_ns": 132784342,
+          "operations": 23001088,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 5.772959174800775
+        },
+        {
+          "elapsed_ns": 132139713,
+          "operations": 23001088,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 5.744933152727384
+        },
+        {
+          "elapsed_ns": 141292297,
+          "operations": 23001088,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 6.142852764182286
+        },
+        {
+          "elapsed_ns": 131756724,
+          "operations": 23001088,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 5.728282244735554
+        }
+      ],
+      "mpn": [
+        {
+          "elapsed_ns": 148077318,
+          "operations": 111435776,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 1.3288130914079155
+        },
+        {
+          "elapsed_ns": 148242316,
+          "operations": 111435776,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 1.3302937469560943
+        },
+        {
+          "elapsed_ns": 148129084,
+          "operations": 111435776,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 1.3292776280393113
+        },
+        {
+          "elapsed_ns": 149206683,
+          "operations": 111435776,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 1.3389477630595044
+        },
+        {
+          "elapsed_ns": 149340613,
+          "operations": 111435776,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 1.340149621249104
+        },
+        {
+          "elapsed_ns": 148445274,
+          "operations": 111435776,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 1.3321150471460799
+        },
+        {
+          "elapsed_ns": 148442498,
+          "operations": 111435776,
+          "checksum": 6560692375364384572,
+          "ns_per_operation": 1.3320901359362365
+        }
+      ]
+    },
+    "xor": {
+      "llvm": [
+        {
+          "elapsed_ns": 148803659,
+          "operations": 193530880,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 0.7688884533569009
+        },
+        {
+          "elapsed_ns": 148177787,
+          "operations": 193530880,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 0.76565448883403
+        },
+        {
+          "elapsed_ns": 149438799,
+          "operations": 193530880,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 0.7721703068781581
+        },
+        {
+          "elapsed_ns": 148550573,
+          "operations": 193530880,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 0.7675807240684277
+        },
+        {
+          "elapsed_ns": 148574677,
+          "operations": 193530880,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 0.767705272667597
+        },
+        {
+          "elapsed_ns": 148356347,
+          "operations": 193530880,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 0.7665771322902061
+        },
+        {
+          "elapsed_ns": 148434402,
+          "operations": 193530880,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 0.7669804529385698
+        }
+      ],
+      "mpz": [
+        {
+          "elapsed_ns": 149041636,
+          "operations": 32318464,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 4.61165592523209
+        },
+        {
+          "elapsed_ns": 146677534,
+          "operations": 32318464,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 4.538505728490067
+        },
+        {
+          "elapsed_ns": 138880629,
+          "operations": 32318464,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 4.2972533905076675
+        },
+        {
+          "elapsed_ns": 141467296,
+          "operations": 32318464,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 4.377290207851463
+        },
+        {
+          "elapsed_ns": 149699936,
+          "operations": 32318464,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 4.632025086340737
+        },
+        {
+          "elapsed_ns": 140642079,
+          "operations": 32318464,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 4.351756290150423
+        },
+        {
+          "elapsed_ns": 149504628,
+          "operations": 32318464,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 4.625981853593042
+        }
+      ],
+      "mpn": [
+        {
+          "elapsed_ns": 142708656,
+          "operations": 80929792,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 1.7633636819429859
+        },
+        {
+          "elapsed_ns": 137093891,
+          "operations": 80929792,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 1.6939854608794744
+        },
+        {
+          "elapsed_ns": 142833939,
+          "operations": 80929792,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 1.764911727439013
+        },
+        {
+          "elapsed_ns": 143034364,
+          "operations": 80929792,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 1.767388256725039
+        },
+        {
+          "elapsed_ns": 142575443,
+          "operations": 80929792,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 1.7617176502813698
+        },
+        {
+          "elapsed_ns": 145034762,
+          "operations": 80929792,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 1.792105952774474
+        },
+        {
+          "elapsed_ns": 142771679,
+          "operations": 80929792,
+          "checksum": 10636698348182272085,
+          "ns_per_operation": 1.7641424186534422
+        }
+      ]
+    },
+    "mul": {
+      "llvm": [
+        {
+          "elapsed_ns": 149785811,
+          "operations": 69112832,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 2.1672648430902095
+        },
+        {
+          "elapsed_ns": 149074617,
+          "operations": 69112832,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 2.1569745108983525
+        },
+        {
+          "elapsed_ns": 149090455,
+          "operations": 69112832,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 2.1572036723947297
+        },
+        {
+          "elapsed_ns": 149189681,
+          "operations": 69112832,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 2.158639382625791
+        },
+        {
+          "elapsed_ns": 153091934,
+          "operations": 69112832,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 2.2151014445479533
+        },
+        {
+          "elapsed_ns": 149321335,
+          "operations": 69112832,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 2.160544296607611
+        },
+        {
+          "elapsed_ns": 152038468,
+          "operations": 69112832,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 2.199858746925607
+        }
+      ],
+      "mpz": [
+        {
+          "elapsed_ns": 135186606,
+          "operations": 11471872,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 11.784180123348657
+        },
+        {
+          "elapsed_ns": 135014794,
+          "operations": 11471872,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 11.769203317470767
+        },
+        {
+          "elapsed_ns": 139349347,
+          "operations": 11471872,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 12.147045137881594
+        },
+        {
+          "elapsed_ns": 140656226,
+          "operations": 11471872,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 12.260965429181915
+        },
+        {
+          "elapsed_ns": 135626508,
+          "operations": 11471872,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 11.822526262496652
+        },
+        {
+          "elapsed_ns": 135782220,
+          "operations": 11471872,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 11.83609963570026
+        },
+        {
+          "elapsed_ns": 135700697,
+          "operations": 11471872,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 11.828993297693698
+        }
+      ],
+      "mpn": [
+        {
+          "elapsed_ns": 148599256,
+          "operations": 18758656,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 7.921636603389923
+        },
+        {
+          "elapsed_ns": 151035031,
+          "operations": 18758656,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 8.051484658602407
+        },
+        {
+          "elapsed_ns": 147589733,
+          "operations": 18758656,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 7.8678202212354655
+        },
+        {
+          "elapsed_ns": 144950425,
+          "operations": 18758656,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 7.727122081667258
+        },
+        {
+          "elapsed_ns": 147742197,
+          "operations": 18758656,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 7.875947882406927
+        },
+        {
+          "elapsed_ns": 144108356,
+          "operations": 18758656,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 7.682232458444784
+        },
+        {
+          "elapsed_ns": 143105796,
+          "operations": 18758656,
+          "checksum": 16599357678374842899,
+          "ns_per_operation": 7.628787264929854
+        }
+      ]
+    },
+    "div128": {
+      "llvm": [
+        {
+          "elapsed_ns": 148889992,
+          "operations": 365568,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 407.28398546918766
+        },
+        {
+          "elapsed_ns": 149258722,
+          "operations": 365568,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 408.2926350227591
+        },
+        {
+          "elapsed_ns": 148801593,
+          "operations": 365568,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 407.04217272846637
+        },
+        {
+          "elapsed_ns": 149421936,
+          "operations": 365568,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 408.73910189075633
+        },
+        {
+          "elapsed_ns": 149182186,
+          "operations": 365568,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 408.0832731530112
+        },
+        {
+          "elapsed_ns": 149263537,
+          "operations": 365568,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 408.30580630689775
+        },
+        {
+          "elapsed_ns": 148753571,
+          "operations": 365568,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 406.9108100271359
+        }
+      ],
+      "mpz": [
+        {
+          "elapsed_ns": 151123328,
+          "operations": 8390656,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 18.010907371247253
+        },
+        {
+          "elapsed_ns": 148697481,
+          "operations": 8390656,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 17.72179445802569
+        },
+        {
+          "elapsed_ns": 149196644,
+          "operations": 8390656,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 17.781284800616305
+        },
+        {
+          "elapsed_ns": 145095338,
+          "operations": 8390656,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 17.292490360706005
+        },
+        {
+          "elapsed_ns": 145724685,
+          "operations": 8390656,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 17.367496057519222
+        },
+        {
+          "elapsed_ns": 139368611,
+          "operations": 8390656,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 16.6099779325955
+        },
+        {
+          "elapsed_ns": 142538222,
+          "operations": 8390656,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 16.987732782752623
+        }
+      ],
+      "mpn": [
+        {
+          "elapsed_ns": 144340584,
+          "operations": 10320896,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 13.98527647212025
+        },
+        {
+          "elapsed_ns": 144441653,
+          "operations": 10320896,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 13.99506912965696
+        },
+        {
+          "elapsed_ns": 139827493,
+          "operations": 10320896,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 13.547999417879998
+        },
+        {
+          "elapsed_ns": 139907854,
+          "operations": 10320896,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 13.55578566046979
+        },
+        {
+          "elapsed_ns": 140686222,
+          "operations": 10320896,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 13.631202368476535
+        },
+        {
+          "elapsed_ns": 139428994,
+          "operations": 10320896,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 13.509388525957437
+        },
+        {
+          "elapsed_ns": 140981484,
+          "operations": 10320896,
+          "checksum": 1821293235125390450,
+          "ns_per_operation": 13.659810543580713
+        }
+      ]
+    },
+    "div256": {
+      "llvm": [
+        {
+          "elapsed_ns": 103261248,
+          "operations": 8045568,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 12.834550400916381
+        },
+        {
+          "elapsed_ns": 105039911,
+          "operations": 8045568,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 13.055624040465508
+        },
+        {
+          "elapsed_ns": 104475192,
+          "operations": 8045568,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 12.985433968117603
+        },
+        {
+          "elapsed_ns": 103911154,
+          "operations": 8045568,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 12.915328538643884
+        },
+        {
+          "elapsed_ns": 103089444,
+          "operations": 8045568,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 12.813196532550592
+        },
+        {
+          "elapsed_ns": 104342050,
+          "operations": 8045568,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 12.968885478315515
+        },
+        {
+          "elapsed_ns": 103388081,
+          "operations": 8045568,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 12.850314732284906
+        }
+      ],
+      "mpz": [
+        {
+          "elapsed_ns": 145304462,
+          "operations": 6903808,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 21.0470021761903
+        },
+        {
+          "elapsed_ns": 144371581,
+          "operations": 6903808,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 20.911876604911377
+        },
+        {
+          "elapsed_ns": 142811858,
+          "operations": 6903808,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 20.685954476138388
+        },
+        {
+          "elapsed_ns": 142730856,
+          "operations": 6903808,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 20.674221531073865
+        },
+        {
+          "elapsed_ns": 138009595,
+          "operations": 6903808,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 19.990358219695565
+        },
+        {
+          "elapsed_ns": 144009920,
+          "operations": 6903808,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 20.85949087807772
+        },
+        {
+          "elapsed_ns": 142659870,
+          "operations": 6903808,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 20.66393937954242
+        }
+      ],
+      "mpn": [
+        {
+          "elapsed_ns": 148349329,
+          "operations": 11354112,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 13.0656918832578
+        },
+        {
+          "elapsed_ns": 147914292,
+          "operations": 11354112,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 13.027376513460498
+        },
+        {
+          "elapsed_ns": 147479426,
+          "operations": 11354112,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 12.989076204286166
+        },
+        {
+          "elapsed_ns": 162876233,
+          "operations": 11354112,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 14.345131790139114
+        },
+        {
+          "elapsed_ns": 149098379,
+          "operations": 11354112,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 13.131663577037113
+        },
+        {
+          "elapsed_ns": 149034719,
+          "operations": 11354112,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 13.126056797748692
+        },
+        {
+          "elapsed_ns": 143587158,
+          "operations": 11354112,
+          "checksum": 17361711040268247409,
+          "ns_per_operation": 12.646269298735119
+        }
+      ]
+    }
+  }
+}

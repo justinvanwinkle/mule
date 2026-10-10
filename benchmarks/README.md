@@ -105,21 +105,34 @@ not directly compare total deployment size.
 
 ## Class counter
 
-[`examples/class_counter.py`](../examples/class_counter.py) performs two million
-native method calls that update a fixed instance field. Build and run it with:
+[`examples/class_counter.py`](../examples/class_counter.py) performs 200 million
+native method calls that update a fixed instance field. Numeric parameters, the
+loop index, and the return value use `mule.int64` annotations; the instance field
+still uses the current generic object storage. Build and run it with:
 
 ```sh
 uv run python -m mule examples/class_counter.py -o build/class_counter
 time build/class_counter
-time uv run python -I -S examples/class_counter.py
+time env PYTHONPATH=stdlib uv run python -S examples/class_counter.py
 ```
 
-The expected output is `6000000`. [Recorded samples](results-classes.json) use
-one warmup, seven fresh processes per implementation, shuffled order, and a
-single pinned CPU. Process wall time includes startup and shutdown but excludes
-compilation and `uv` startup. Mule's median was 60.03 ms and Python 3.14's was
-67.67 ms, a 1.13x speedup. This exercises cached fields and guarded native method
-calls; it does not establish performance for every object-oriented workload.
+The expected output is `600000000`. The host run uses `stdlib/mule.py` for the
+annotation markers; its numeric annotations do not change Python's execution.
+[Current samples](results-classes-int64.json) compare Mule's `int32` and `int64`
+annotations with the same `int64` source run by standard Python. They use one
+warmup, seven fresh processes per implementation, shuffled order, and one pinned
+CPU. Process wall time includes startup and shutdown but excludes compilation
+and `uv` startup. This measures the current boxed class backend, not the proposed
+native struct representation.
+
+The current medians are 5.616 seconds for Mule `int32`, 5.907 seconds for Mule
+`int64`, and 6.122 seconds for Python 3.14. The `int64` annotations make this
+version 5.2% slower than `int32`; native typed fields remain implementation work.
+
+[Earlier samples](results-classes.json) measured the unannotated example with
+two million iterations and output `6000000`. Mule's median was 60.03 ms and
+Python 3.14's was 67.67 ms, a 1.13x speedup; those durations do not describe the
+current 200-million-iteration program.
 
 ## LLVM i128 and i256 versus GMP
 
