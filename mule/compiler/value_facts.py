@@ -161,6 +161,9 @@ class ValueType:
     def fits_integer(self, expected):
         return False
 
+    def fits_python_integer(self, expected):
+        return False
+
     def fits_boolean(self, expected):
         return False
 
@@ -351,6 +354,23 @@ class IntegerType(PrimitiveType):
 
     def fits_integer(self, expected):
         return _bounds_fit(self, expected)
+
+    def fits_python_integer(self, expected):
+        return not self.may_be_unbound
+
+
+@dataclass(frozen=True, slots=True)
+class PythonIntegerType(PrimitiveType):
+    """An unbounded Python int may be a boolean singleton or an integer value."""
+
+    def accepts(self, actual):
+        return actual.fits_python_integer(self)
+
+    def fits_python_integer(self, expected):
+        return not self.may_be_unbound
+
+    def annotation_conflict(self, contract):
+        return contract.integer_conflict(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -680,6 +700,7 @@ class UnboundType(ValueType):
 
 UNKNOWN = UnknownType()
 INTEGER = IntegerType()
+PYTHON_INTEGER = PythonIntegerType()
 BOOLEAN = BooleanType()
 FLOAT = FloatType()
 BOTTOM = BottomType()

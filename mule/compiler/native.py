@@ -140,6 +140,7 @@ class _Contract:
         return INT64
 
     visit_FloatContract = visit_Contract
+    visit_PythonIntegerContract = visit_Contract
 
 
 class _Literal(ast.Visitor):

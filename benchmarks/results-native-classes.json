@@ -1,5 +1,5 @@
 {
-  "timestamp_utc": "2026-10-10T04:27:39.113705+00:00",
+  "timestamp_utc": "2026-10-10T04:38:37.123072+00:00",
   "platform": "Linux-7.2.8+deb14-amd64-x86_64-with-glibc2.43",
   "cpu_affinity": 0,
   "cpu_model": "AMD Ryzen 9 9955HX 16-Core Processor",
@@ -31,10 +31,10 @@
     "mule/compiler/driver.py": "d5a509ed11a8de22671c8b70a19e6e1dea102b3591b7ae8014c63dd230c298cb",
     "mule/compiler/frontend.py": "c2f091953c3b099f92c91880bbed572de5e628f3de4fb6e8b1af47750ff2a51c",
     "mule/compiler/ir.py": "a65c20d3acb2551f9cd6b26cfa58f8093216f3e0a11feb6bd5711a00c73dd708",
-    "mule/compiler/llvm.py": "040760d1f0d9afe2383e8ea2f4df14c988ab2785d661afca1f538deefb809a78",
+    "mule/compiler/llvm.py": "6a4cea147efeadc602f3bf843946b21ab56efe6952901df266c1212edd710976",
     "mule/compiler/llvm_ops.py": "dfee4466acb81888dc25c9e3fd54acb913853ae41686af9d8a687d15c1c2e345",
     "mule/compiler/native.py": "c6bd9268b9185648cf3670a795defc8bab14a66e07dcaf7e2d8c4c14649f54ee",
-    "mule/compiler/native_protocol.py": "807fb8983aa66df4adb241c253335e1fd82df8f1fe67148fb14eada6af817b89",
+    "mule/compiler/native_protocol.py": "2c7edc96452fe1b95b12f7d4dd5d6251bec599c0e9d60a7914e6d131d5f53ecb",
     "mule/compiler/value_facts.py": "750dbfee3bcd3aa700159375f4095655e79d1a386708959327bf502f561c9aa2",
     "mule/parser/__init__.py": "a3800ab1f3ba5d4162e02a8eeb3f7763ee559aa488d8003553a9cd3c9367b31f",
     "mule/parser/core.py": "23fdc13ea6686fb683564a966e6120d859a215a9af0d8fe1763707c61168b805",
@@ -48,10 +48,10 @@
     "mule/runtime/classes.rs": "662a3d66d3d6a9e2f106a5847e6fe21ca396b52b24432369bca648ed9d06806a",
     "mule/runtime/gmp.rs": "be4cd3bb7e200e745da69ad22a1d7f4231ef1fa315ca5ae0f1ab2488e06a06c0",
     "mule/runtime/lib.rs": "8279979e57d1cc93a61f343bb2e848ce2c4123d20e8289202d0c7a1d50cf7f97",
-    "mule/runtime/native_storage.rs": "76504e32e97d0c30d28bb8ec9fdbe1fd523ae496eaaa635822b607e50a557708",
+    "mule/runtime/native_storage.rs": "ef6fa67101b4e9a67f6fed40fb3aaea9daf3a7a04e8e415dbc0a00445baa0929",
     "mule/runtime/numeric.rs": "dde0a348a973b967b72981f622185da5697c01fbf6739744287f23cc765a9c02",
     "mule/runtime/object.rs": "d6d721132c9dbd13bec217df9588ccd05398f80f9f1a8452b3e90f758c400a07",
-    "stdlib/_native_class.py": "e2fbb68fb3068f4e63769e206ee795d49da0e72ac6fb6602645ac1afec29dcac",
+    "stdlib/_native_class.py": "5921b764360928a7dc63e692ced2eaafd0fe5a73e05d15fd1641599603fbefa9",
     "stdlib/mule.py": "d08dfea5fc1431eba2ea7d5fb17e8a159786c72c1d9db79bfd458994cf959a3b"
   },
   "profiles": {
@@ -77,51 +77,51 @@
       "measurements": {
         "mule_native": {
           "seconds": [
-            0.002415149,
-            0.002537397,
-            0.002540042,
-            0.002438162,
-            0.002254078,
-            0.001962262,
-            0.001634047
+            0.002437432,
+            0.002257634,
+            0.002349185,
+            0.002650241,
+            0.002493025,
+            0.002315361,
+            0.002124853
           ],
-          "median_seconds": 0.002415149
+          "median_seconds": 0.002349185
         },
         "rust": {
           "seconds": [
-            0.001881941,
-            0.001949147,
-            0.002077477,
-            0.002563275,
-            0.001877382,
-            0.002422142,
-            0.00228801
+            0.002096541,
+            0.002011401,
+            0.001860717,
+            0.002492625,
+            0.002432752,
+            0.002571412,
+            0.002455353
           ],
-          "median_seconds": 0.002077477
+          "median_seconds": 0.002432752
         },
         "cpython": {
           "seconds": [
-            6.16779781,
-            6.107919357,
-            6.063643144,
-            6.108593916,
-            6.070337457,
-            6.073680721,
-            6.074611839
+            6.107125877,
+            6.166215159,
+            6.137857832,
+            6.203192696,
+            6.049942994,
+            6.05059311,
+            6.04973056
           ],
-          "median_seconds": 6.074611839
+          "median_seconds": 6.107125877
         },
         "mule_boxed": {
           "seconds": [
-            6.000168994,
-            5.995796637,
-            6.0444068,
-            6.014580883,
-            6.045420965,
-            6.005990387,
-            6.132752495
+            5.99036246,
+            6.117303519,
+            6.049962143,
+            6.167429787,
+            6.027692298,
+            6.090926819,
+            6.039779901
           ],
-          "median_seconds": 6.014580883
+          "median_seconds": 6.049962143
         }
       }
     },
@@ -144,39 +144,39 @@
       "measurements": {
         "mule_native": {
           "seconds": [
-            0.089978229,
-            0.090196889,
-            0.090147427,
-            0.090176041,
-            0.089863566,
-            0.090177935,
-            0.08968346
+            0.089434775,
+            0.090170729,
+            0.094770142,
+            0.089874035,
+            0.090091889,
+            0.090163886,
+            0.089871628
           ],
-          "median_seconds": 0.090147427
+          "median_seconds": 0.090091889
         },
         "rust": {
           "seconds": [
-            0.090050084,
-            0.089863025,
-            0.089701502,
-            0.089916595,
-            0.089750316,
-            0.089891939,
-            0.089847707
+            0.089966533,
+            0.08995796,
+            0.094655275,
+            0.089784338,
+            0.09012472,
+            0.089954032,
+            0.089631426
           ],
-          "median_seconds": 0.089863025
+          "median_seconds": 0.08995796
         },
         "cpython": {
           "seconds": [
-            8.312370782,
-            8.217918669,
-            8.276060613,
-            8.272115548,
-            8.378406738,
-            8.23475458,
-            8.223957074
+            8.215828961,
+            8.955654881,
+            8.326651897,
+            8.238674362,
+            8.214743366,
+            8.25665848,
+            8.233705182
           ],
-          "median_seconds": 8.272115548
+          "median_seconds": 8.238674362
         }
       }
     }

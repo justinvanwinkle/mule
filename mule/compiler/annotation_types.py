@@ -7,7 +7,7 @@ through visitors.
 
 from dataclasses import dataclass
 
-from .value_facts import FLOAT, IntegerType
+from .value_facts import FLOAT, PYTHON_INTEGER, IntegerType
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +18,10 @@ class OptimizationPolicy:
 
 
 class Contract:
+    @property
+    def display_name(self):
+        return f"mule.{self.name}"
+
     def accept(self, visitor):
         return visitor.visit_Contract(self)
 
@@ -36,7 +40,7 @@ class Contract:
     def validate(self, actual, location):
         if self.contradicts(actual):
             raise SyntaxError(
-                f"value contradicts annotation mule.{self.name}", location
+                f"value contradicts annotation {self.display_name}", location
             )
 
 
@@ -77,6 +81,37 @@ class FloatContract(Contract):
 
     def accept(self, visitor):
         return visitor.visit_FloatContract(self)
+
+
+@dataclass(frozen=True, slots=True)
+class PythonIntegerContract(Contract):
+    name: str = "int"
+
+    @property
+    def display_name(self):
+        return self.name
+
+    @property
+    def fact(self):
+        return PYTHON_INTEGER
+
+    def accept(self, visitor):
+        return visitor.visit_PythonIntegerContract(self)
+
+    def integer_conflict(self, actual):
+        return False
+
+    def boolean_conflict(self, actual):
+        return False
+
+
+class PythonFloatContract(FloatContract):
+    @property
+    def display_name(self):
+        return self.name
+
+
+BUILTINS = {"int": PythonIntegerContract(), "float": PythonFloatContract("float", 64)}
 
 
 EXPORTS = {

@@ -14,10 +14,10 @@ class Counter:
         self.value += amount
 
 
-@mule.optimize(speed=1, safety=0)
+@mule.optimize(speed=3, safety=3)
 def count(limit: mule.int64) -> mule.int64:
     counter = Counter()
-    index: mule.int64 = 0
+    index: int = 0
     while index < limit:
         counter.add(3)
         index += 1

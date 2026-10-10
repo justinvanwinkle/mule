@@ -109,8 +109,9 @@ not directly compare total deployment size.
 method calls updating a native `mule.int64` field. The class explicitly selects
 `speed=3, safety=0`; method arguments, loop state and return values also use
 `mule.int64`. The compiler generates raw field access and native method entries,
-and LLVM eliminates this linear loop into a multiply and field update. Build
-and run it with:
+and, when `count` also selects `speed=3`, LLVM eliminates this linear loop into
+a multiply and field update. Lower caller policies retain the loop. Build and
+run it with:
 
 ```sh
 uv run python -m mule examples/class_counter.py -o build/class_counter
@@ -130,10 +131,11 @@ uv run python benchmarks/classes.py
 
 This builds the native example, a boxed-field version, and matching Rust struct
 programs. Both native implementations use LLVM optimization level three and
-signed 64-bit fields. Inputs arrive through stdin. The second workload uses
+signed 64-bit fields. Inputs arrive through stdin.
 The harness explicitly selects `speed=3, safety=0` for the measured native class
 and caller, independently of local policy experiments in the example.
-`value = (value ^ amount) + 3`, retaining a real data-dependent loop; neither
+The second workload uses `value = (value ^ amount) + 3`, retaining a real
+data-dependent loop; neither
 implementation uses a `black_box` barrier. Generated sources and optimized IR
 are under `build/benchmarks/native-classes/`. The harness verifies negative,
 zero, odd and even limits, then uses one warmup and seven shuffled fresh-process
@@ -144,11 +146,11 @@ startup, input/output and shutdown are included.
 
 | Workload | Mule native | Rust | Standard Python | Mule boxed fields |
 | --- | ---: | ---: | ---: | ---: |
-| Linear counter; native loop eliminated | 2.415 ms | 2.077 ms | 6.075 s | 6.015 s |
-| XOR/add recurrence; native loop retained | 90.147 ms | 89.863 ms | 8.272 s | — |
+| Linear counter; native loop eliminated | 2.349 ms | 2.433 ms | 6.107 s | 6.050 s |
+| XOR/add recurrence; native loop retained | 90.092 ms | 89.958 ms | 8.239 s | — |
 
 The retained loop is about 92 times faster than standard Python and within
-0.4% of Rust in this run. The folded counter is dominated by process overhead;
+0.2% of Rust in this run. The folded counter is dominated by process overhead;
 its duration does not measure 200 million executed native method calls.
 These results establish this restricted class path, not general Python or the
 complete SBCL optimization pipeline.

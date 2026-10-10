@@ -288,6 +288,7 @@ class DefineClass(ResultOperation):
     policy: OptimizationPolicy = field(default_factory=OptimizationPolicy)
     location: tuple | None = None
     class_id: str | None = None
+    annotation_expressions: tuple[tuple[str, ast.Expression], ...] = ()
 
     def accept(self, visitor):
         return visitor.visit_DefineClass(self)
@@ -464,6 +465,9 @@ class Function:
     policy: OptimizationPolicy = field(default_factory=OptimizationPolicy)
     owner_class: str | None = None
     local_annotations: dict[str, Contract] = field(default_factory=dict)
+    parameter_annotation_expressions: tuple[ast.Expression | None, ...] = ()
+    return_annotation_expression: ast.Expression | None = None
+    annotation_expressions: dict[str, ast.Expression] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

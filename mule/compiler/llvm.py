@@ -315,7 +315,7 @@ class _ContractAssertion:
         module = self.emitter.module
         minimum = module.text(_decimal(fact.minimum))
         maximum = module.text(_decimal(fact.maximum))
-        name = module.text(f"mule.{contract.name}")
+        name = module.text(contract.display_name)
         status = self.emitter.operation(
             f"call i32 @mule_assert_integer(ptr {self.value}, ptr {minimum}, "
             f"ptr {maximum}, ptr {name})"
@@ -323,11 +323,28 @@ class _ContractAssertion:
         self.emitter.check_status(status)
 
     def visit_FloatContract(self, contract):
-        name = self.emitter.module.text(f"mule.{contract.name}")
+        name = self.emitter.module.text(contract.display_name)
         status = self.emitter.operation(
             f"call i32 @mule_assert_float(ptr {self.value}, ptr {name})"
         )
         self.emitter.check_status(status)
+
+    def visit_PythonIntegerContract(self, contract):
+        emitter = self.emitter
+        true = emitter.operation(f"icmp eq ptr {self.value}, @mule.true")
+        false = emitter.operation(f"icmp eq ptr {self.value}, @mule.false")
+        boolean = emitter.operation(f"or i1 {true}, {false}")
+        integer = emitter.fresh("integer.check")[1:]
+        done = emitter.fresh("integer.checked")[1:]
+        emitter.line(f"br i1 {boolean}, label %{done}, label %{integer}")
+        emitter.lines.append(integer + ":")
+        status = emitter.operation(
+            f"call i32 @mule_assert_integer(ptr {self.value}, ptr null, "
+            f"ptr null, ptr {emitter.module.text(contract.display_name)})"
+        )
+        emitter.check_status(status)
+        emitter.line(f"br label %{done}")
+        emitter.lines.append(done + ":")
 
 
 class _ArgumentGuard:

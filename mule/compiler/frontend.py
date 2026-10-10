@@ -6,7 +6,7 @@ from mule import ast
 from mule.parser import parse
 
 from . import ir
-from .annotation_types import EXPORTS, OptimizationPolicy
+from .annotation_types import BUILTINS, EXPORTS, OptimizationPolicy
 
 
 class UnsupportedSyntax(SyntaxError):
@@ -23,6 +23,7 @@ class Lowerer:
         self.module_annotations = {}
         self.class_definitions = 0
         self.class_fields = {}
+        self.module_annotation_shadows = set()
 
     def location(self, node):
         span = node.span
@@ -53,8 +54,8 @@ class Lowerer:
             )
         return binding
 
-    def annotation(self, expression):
-        return expression.accept(_AnnotationReference(self)).annotation(
+    def annotation(self, expression, scope=None):
+        return expression.accept(_AnnotationReference(self, scope)).annotation(
             self, expression
         )
 
@@ -115,6 +116,10 @@ class Lowerer:
             ),
             policy=policy,
             owner_class=owner_class,
+            parameter_annotation_expressions=tuple(
+                parameter.annotation for parameter in definition.parameters
+            ),
+            return_annotation_expression=definition.return_annotation,
         )
         self.functions.append(function)
         builder = FunctionBuilder(
@@ -399,16 +404,10 @@ class FunctionBuilder(ast.Visitor):
             statement.accept(body)
         class_id = f"mule_cls_{self.lowerer.class_definitions}"
         self.lowerer.class_definitions += 1
-        native = bool(body.fields)
+        native = bool(body.fields) and body.native_eligible and policy.speed == 3 and any(
+            decorator.accept(_NativeClassOptIn()) for decorator in node.decorators
+        )
         if native:
-            if policy.speed != 3 or not any(
-                decorator.accept(_NativeClassOptIn()) for decorator in node.decorators
-            ):
-                self.error(
-                    "typed native classes require explicit @mule.optimize(speed=3)",
-                    node,
-                    unsupported=True,
-                )
             if node.arguments:
                 self.error(
                     "typed native classes cannot have bases", node, unsupported=True
@@ -420,7 +419,7 @@ class FunctionBuilder(ast.Visitor):
             self.lowerer.class_fields[class_id] = body.fields
         # Base expressions are evaluated before any method definitions, as in Python.
         base = self.expression(node.arguments[0].value) if node.arguments else None
-        fields = dict.fromkeys(body.fields)
+        fields = dict.fromkeys(body.fields if native else ())
         methods = {}
         for method in body.methods:
             if not method.parameters:
@@ -464,6 +463,7 @@ class FunctionBuilder(ast.Visitor):
                 policy=policy,
                 location=self.lowerer.location(node),
                 class_id=class_id if native else None,
+                annotation_expressions=tuple(body.annotation_expressions.items()),
             )
         )
         self.store(node.name, result, node)
@@ -696,29 +696,37 @@ class _AnnotationTarget(ast.Visitor):
         self.assignment = assignment
 
     def visit_Node(self, node):
-        self.builder.error(
-            "numeric annotations currently require identifier targets; class field annotations are not supported yet",
-            node,
-            unsupported=True,
-        )
+        if self.assignment.value is not None:
+            value = self.builder.expression(self.assignment.value)
+            node.accept(_AssignmentTarget(self.builder, value))
+
+    def visit_Attribute(self, node):
+        if self.assignment.value is not None:
+            self.visit_Node(node)
+        else:
+            self.builder.emit(ir.Discard(self.builder.expression(node.value)))
 
     def visit_Name(self, node):
         lowerer = self.builder.lowerer
         lowerer.reserved(node.identifier, node)
-        contract = lowerer.annotation(self.assignment.annotation)
+        self.builder.function.annotation_expressions[node.identifier] = (
+            self.assignment.annotation
+        )
+        contract = lowerer.annotation(self.assignment.annotation, self.builder)
         annotations = (
             self.builder.annotations
             if self.builder.local(node.identifier)
             else lowerer.module_annotations
         )
-        previous = annotations.get(node.identifier)
-        if previous is not None and previous[0] is not contract:
-            self.builder.error(
-                f"conflicting annotation for '{node.identifier}'", self.assignment
-            )
-        annotations[node.identifier] = (contract, self.assignment)
-        if self.builder.local(node.identifier):
-            self.builder.function.local_annotations[node.identifier] = contract
+        if contract is not None:
+            previous = annotations.get(node.identifier)
+            if previous is not None and previous[0] is not contract:
+                self.builder.error(
+                    f"conflicting annotation for '{node.identifier}'", self.assignment
+                )
+            annotations[node.identifier] = (contract, self.assignment)
+            if self.builder.local(node.identifier):
+                self.builder.function.local_annotations[node.identifier] = contract
         if self.assignment.value is not None:
             self.builder.store(
                 node.identifier, self.builder.expression(self.assignment.value), node
@@ -727,9 +735,7 @@ class _AnnotationTarget(ast.Visitor):
 
 class _CompilerBinding:
     def annotation(self, lowerer, node):
-        lowerer.error(
-            "expected an imported Mule numeric annotation", node, unsupported=True
-        )
+        return None
 
     def directive(self, lowerer, node):
         lowerer.error(
@@ -739,7 +745,7 @@ class _CompilerBinding:
         )
 
     def member(self, attribute, lowerer, node):
-        lowerer.error("expected an imported Mule module", node, unsupported=True)
+        return _OPAQUE_BINDING
 
 
 class _NumericBinding(_CompilerBinding):
@@ -759,9 +765,7 @@ class _ModuleBinding(_CompilerBinding):
     def member(self, attribute, lowerer, node):
         binding = _EXPORT_BINDINGS.get(attribute)
         if binding is None:
-            lowerer.error(
-                f"unknown Mule compiler export '{attribute}'", node, unsupported=True
-            )
+            return _OPAQUE_BINDING
         return binding
 
 
@@ -770,6 +774,8 @@ _EXPORT_BINDINGS = {
 }
 _EXPORT_BINDINGS["optimize"] = _OptimizeBinding()
 _MODULE_BINDING = _ModuleBinding()
+_OPAQUE_BINDING = _CompilerBinding()
+_BUILTIN_BINDINGS = {name: _NumericBinding(contract) for name, contract in BUILTINS.items()}
 
 
 class _ImportBindings(ast.Visitor):
@@ -814,18 +820,23 @@ class _ImportBindings(ast.Visitor):
 
 
 class _AnnotationReference(ast.Visitor):
-    def __init__(self, lowerer):
+    def __init__(self, lowerer, scope=None):
         self.lowerer = lowerer
+        self.scope = scope
 
     def visit_Node(self, node):
-        self.lowerer.error(
-            "expected an imported Mule numeric annotation or compiler directive",
-            node,
-            unsupported=True,
-        )
+        return _OPAQUE_BINDING
 
     def visit_Name(self, node):
-        return self.lowerer.imported_binding(node.identifier, node)
+        name = node.identifier
+        binding = self.lowerer.active_compiler_bindings.get(name)
+        if binding is not None:
+            return binding
+        if name in self.lowerer.module_annotation_shadows or (
+            self.scope is not None and self.scope.local(name)
+        ):
+            return _OPAQUE_BINDING
+        return _BUILTIN_BINDINGS.get(name, _OPAQUE_BINDING)
 
     def visit_Attribute(self, node):
         return node.value.accept(self).member(node.attribute, self.lowerer, node)
@@ -1189,6 +1200,8 @@ class _ClassBody(ast.Visitor):
         self.builder = builder
         self.methods = []
         self.fields = {}
+        self.annotation_expressions = {}
+        self.native_eligible = True
 
     def visit_Node(self, node):
         self.builder.error(
@@ -1222,31 +1235,6 @@ class _ClassBody(ast.Visitor):
                 method,
                 unsupported=True,
             )
-        if method.parameters[0].annotation is not None:
-            self.builder.error(
-                "typed native method receivers must be unannotated",
-                method.parameters[0],
-                unsupported=True,
-            )
-        for parameter in method.parameters[1:]:
-            if parameter.annotation is None or (
-                self.builder.lowerer.annotation(parameter.annotation)
-                is not EXPORTS["int64"]
-            ):
-                self.builder.error(
-                    "typed native method arguments require mule.int64 annotations",
-                    parameter,
-                    unsupported=True,
-                )
-        if method.return_annotation is not None and (
-            self.builder.lowerer.annotation(method.return_annotation)
-            is not EXPORTS["int64"]
-        ):
-            self.builder.error(
-                "typed native method returns support only mule.int64 annotations",
-                method.return_annotation,
-                unsupported=True,
-            )
 
 
 class _ClassFieldDeclaration(ast.Visitor):
@@ -1276,13 +1264,11 @@ class _ClassFieldDeclaration(ast.Visitor):
             self.body.builder.error(
                 f"duplicate typed native field '{node.identifier}'", node
             )
+        self.body.annotation_expressions[node.identifier] = self.assignment.annotation
         contract = self.body.builder.lowerer.annotation(self.assignment.annotation)
         if contract is not EXPORTS["int64"]:
-            self.body.builder.error(
-                "typed native fields currently support only mule.int64",
-                self.assignment.annotation,
-                unsupported=True,
-            )
+            self.body.native_eligible = False
+            return
         self.body.fields[node.identifier] = (contract, self.assignment)
 
 
@@ -1324,6 +1310,33 @@ class _ReceiverName(ast.Visitor):
 
     def visit_Name(self, node):
         return node.identifier == self.name
+
+
+class _AnnotationShadows(ast.Visitor):
+    """Runtime bindings prevent treating the same name as a builtin contract."""
+
+    def __init__(self):
+        self.names = set()
+
+    def visit_Node(self, node):
+        for target in node.assigned_targets():
+            target.accept(_AnnotationShadowTarget(self.names))
+        for child in node.children():
+            child.accept(self)
+
+    def visit_FunctionDefinition(self, node):
+        self.names.add(node.name)
+
+    def visit_ClassDefinition(self, node):
+        self.names.add(node.name)
+
+
+class _AnnotationShadowTarget(ast.Visitor):
+    def __init__(self, names):
+        self.names = names
+
+    def visit_Name(self, node):
+        self.names.add(node.identifier)
 
 
 class _ScopeVisitor(ast.Visitor):
@@ -1478,6 +1491,10 @@ def lower(source: str, filename: str = "<unknown>") -> ir.Module:
     imports = _ImportBindings(lowerer)
     for statement in tree.statements:
         statement.accept(imports)
+    shadows = _AnnotationShadows()
+    for statement in tree.statements:
+        statement.accept(shadows)
+    lowerer.module_annotation_shadows = shadows.names
     entry = ir.Function("mule_module", (), (), policy=OptimizationPolicy())
     lowerer.functions.append(entry)
     builder = FunctionBuilder(lowerer, entry, tree.statements, is_module=True)

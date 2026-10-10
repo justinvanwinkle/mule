@@ -121,7 +121,50 @@ subscriptions, unpacking, and formatted/template strings. Unsupported source is
 also rejected in unreachable branches. Parser support is broader than compiler
 support; acceptance by the parser does not imply native compilation support.
 
-## Imported annotation contracts
+## Annotation contracts
+
+### Builtin Python annotations and SBCL correspondence
+
+All parsed annotation expressions are accepted, including forward references,
+user classes, generic subscriptions, unions, and calls. Their Mule ASTs are
+retained separately from the compiler's semantic contracts. An annotation does
+not require the compiler to understand its type in order to compile the body.
+Function/module/class annotations are deferred, following Python 3.14; local
+annotations are not evaluated. Runtime annotation introspection/evaluation is
+not implemented yet. Supported contract expressions additionally guide analysis.
+
+Builtin `int` denotes arbitrary-precision Python integers, including booleans.
+It does not impose a machine width. Builtin `float` denotes Python's binary64
+floating-point category. Both are available without a compiler import for
+parameters, returns, and module/local declarations. Rebinding a builtin name
+makes its annotations opaque to contract analysis; it does not make them illegal.
+
+SBCL's `src/code/type.lisp`, `def-type-translator integer`, resolves `integer`
+with unbounded endpoints unless explicit bounds are provided. Its
+`src/compiler/ir1opt.lisp`, `assert-lvar-type`, inserts a CAST into IR1;
+`src/compiler/ctype.lisp`, `assert-definition-type`, applies argument and return
+declarations; `src/compiler/checkgen.lisp`, `generate-type-checks`, chooses checks
+after propagation and according to policy. Mule uses the same existing semantic
+contracts, IR assertions, propagation, and policy-controlled emission for builtin
+and imported annotations. Proven integer intervals can still select small-integer
+operations; an unbounded declaration alone cannot justify a raw `i64` value.
+
+The concrete Python adaptation is that booleans belong to `int`, whereas Common
+Lisp booleans are symbols. Mule must preserve boolean object identity and cannot
+refine an unknown `int` into its integer-only tagged representation. A semantic
+integer-or-boolean fact records that distinction. Checked boundaries recognize
+boolean singletons in compiled LLVM code and otherwise use the existing physical
+integer assertion with unbounded endpoints. No new Rust language implementation
+is required. Imported fixed-width Mule contracts continue to exclude booleans.
+
+SBCL rejects unknown declaration type specifiers because its declarations are
+compiler type assertions. Python annotations also carry arbitrary user metadata,
+so Mule must retain expressions it cannot interpret without adding assertions or
+evaluating them during compilation. This is a concrete semantic departure from
+SBCL's `specifier-type` resolution, not a reason to reject Python annotations.
+Bare class annotations use boxed instance storage unless their declared fields
+and policy support the native representation. Unsupported representation widths
+do not make an otherwise valid class annotation illegal.
 
 `stdlib/mule.py` exposes these annotation-only types, without a NumPy dependency:
 
@@ -150,9 +193,9 @@ print(increment(41))
 `from mule import int32, optimize` and renamed imported symbols also work.
 Imports must be unconditional module-level statements. Compiler-only bindings
 cannot be rebound, shadowed by parameters/locals, or used as runtime values.
-Wildcard imports, arbitrary annotation expressions, builtin `int`/`float`
-annotations remain unsupported. Class-field declarations are supported only for
-the explicit native `int64` class subset below. A module annotation
+Wildcard compiler imports remain unsupported. Raw class-field declarations use
+the explicit native `int64` class subset below; other bare class annotations do
+not force a native layout. A module annotation with a recognized contract
 constrains all writes to that global, including writes in functions defined before
 the declaration. A local annotation constrains stores from its declaration onward.
 A bare declaration leaves the variable unbound until assigned. Repeated identical
@@ -285,7 +328,8 @@ native results, and constructor sites inside loops retain the general path until
 the corresponding stack and lifetime analyses exist.
 
 `examples/class_counter.py` exercises this path with an explicit native field.
-At `-O3`, LLVM eliminates its counted loop into an update by `3 * max(limit, 0)`.
+With the caller selecting `speed=3`, at `-O3` LLVM eliminates its counted loop
+into an update by `3 * max(limit, 0)`. Lower caller policies retain the loop.
 The comparison harness in `benchmarks/classes.py` also measures an XOR/add
 recurrence whose loop remains in the optimized code. This does not establish
 the complete SBCL pipeline or implementation of the target class policy matrix.
