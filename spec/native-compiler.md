@@ -96,6 +96,9 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
   positional construction, instance methods, bound-method values, attribute reads,
   and assignment or augmented assignment to declared instance fields. Class bodies
   currently contain method definitions and `pass` only.
+- Unconditional module-level imports of numeric annotation markers and
+  `optimize` from `mule`, including aliases. Parameter, return, and identifier
+  variable annotations support these imported markers.
 
 Function-wide binding classification makes a later assignment local even when
 an earlier read occurs first. Unbound local slots raise `UnboundLocalError`;
@@ -106,12 +109,85 @@ operands once. Owned references are cleaned on normal and exceptional exits,
 and an active error survives cleanup.
 
 Unsupported constructs raise `UnsupportedSyntax`, a `SyntaxError` subclass,
-before native compilation. These include imports, nested functions or classes,
-closures/`nonlocal`, defaults, keyword/variadic calls, decorators, annotations,
+before native compilation. These include general imports, nested functions or classes,
+closures/`nonlocal`, defaults, keyword/variadic calls, general decorators and annotations,
 async/generators, `for`, exception handling, containers/comprehensions,
 subscriptions, unpacking, and formatted/template strings. Unsupported source is
 also rejected in unreachable branches. Parser support is broader than compiler
 support; acceptance by the parser does not imply native compilation support.
+
+## Imported annotation contracts
+
+`stdlib/mule.py` exposes these annotation-only types, without a NumPy dependency:
+
+| Category | Names |
+| --- | --- |
+| Signed integers | `int8`, `int16`, `int32`, `int64`, `int128` |
+| Unsigned integers | `uint8`, `uint16`, `uint32`, `uint64`, `uint128` |
+| Floats | `float16`, `float32`, `float64`, `float128` |
+
+There are no native-size or 256-bit public types. Ordinary Python integer values
+remain arbitrary precision. These markers are declarations, not constructors.
+Mule resolves them through its own compiler bindings rather than importing the
+host compiler package or executing library source. For example:
+
+```python
+import mule as m
+
+@m.optimize(speed=3, safety=3, debug=0)
+def increment(value: m.int32) -> m.int32:
+    result: m.int32 = value + 1
+    return result
+
+print(increment(41))
+```
+
+`from mule import int32, optimize` and renamed imported symbols also work.
+Imports must be unconditional module-level statements. Compiler-only bindings
+cannot be rebound, shadowed by parameters/locals, or used as runtime values.
+Wildcard imports, arbitrary annotation expressions, builtin `int`/`float`
+annotations, and class-field annotations remain unsupported. A module annotation
+constrains all writes to that global, including writes in functions defined before
+the declaration. A local annotation constrains stores from its declaration onward.
+A bare declaration leaves the variable unbound until assigned. Repeated identical
+declarations are allowed; conflicting declarations are errors.
+
+Integer contracts constrain values to their signed or unsigned range and exclude
+booleans. They are not wrapping conversions: assigning a known out-of-range
+result is a compilation error. Known nonnumeric values, invalid return values,
+and proven call arguments contradicting a contract also cause source-positioned
+compilation errors. Annotations propagate trusted facts into the existing
+analysis and native operation selection. This change does not introduce an
+unboxed `i64`/`i128` storage convention: values outside Mule's tagged integer
+range still use its GMP-backed objects. Keeping fixed-width values unboxed
+through calls, locals, and fields remains implementation work.
+
+The float widths are registered annotation markers. Currently they assert the
+floating-point category, and runtime arithmetic/storage remains binary64.
+Distinct binary16, binary32, and binary128 representation, rounding, and
+arithmetic lowering are not implemented by these marker declarations.
+
+`optimize` takes literal keyword levels from zero through three for `speed`,
+`safety`, and `debug`. Defaults are `speed=3`, `safety=0`, `debug=1`. Class policies
+are inherited by methods, and method decorators override specified options.
+On the host interpreter the library decorator returns the original function.
+It does not wrap calls in the generated executable.
+
+- `safety=0` trusts declarations and emits no annotation boundary checks.
+  Statically detected contradictions are errors at every safety level. An
+  undetected violation under trusted compilation need not produce a clean error.
+- `safety=1`, `2`, or `3` checks an unknown category or range before using its
+  annotated facts. Checks disappear when analysis already proves the contract.
+  Failures produce `TypeError`, and error cleanup owns the unrefined value until
+  the check succeeds. These levels currently share the same annotation checks.
+- `speed=0` emits `noinline optnone` native bodies. Levels one through three
+  retain the existing `-O3` compilation pipeline.
+- `debug=3` prevents body inlining. Other levels retain existing behavior;
+  source tracebacks and DWARF debug metadata are not implemented by this option.
+
+These options currently control the behavior above, not every future compiler
+optimization or Python runtime check. Ownership, argument arity, dynamic errors,
+and recursion handling retain their existing contracts.
 
 ## Fixed-layout classes
 
@@ -152,7 +228,8 @@ attribute mutation raises `TypeError`, and a field/method name collision raises
 `TypeError` during class construction. Instances have no `__dict__`. Multiple
 inheritance, arbitrary class-body execution, class attributes,
 `__slots__` declarations, metaclasses, properties/descriptors, `super()`, and
-method decorators are unsupported. Custom `__repr__` and `__str__` hooks are not
+general method decorators are unsupported; the imported `optimize` directive is
+accepted. Custom `__repr__` and `__str__` hooks are not
 yet used by formatting. Existing empty dynamic `type()` objects and
 static special-method hooks remain a limited runtime facility; they do not
 change the fixed-layout compiled-class contract. The class implementation has

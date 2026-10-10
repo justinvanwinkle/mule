@@ -47,7 +47,12 @@ not tagged integers, even though arithmetic accepts them as numeric operands.
 `None` is also an immortal object. Joins preserve the possibility of an unbound
 local; its runtime error must remain observable.
 
-General function parameters and unknown call results remain unknown. A predicted
+Unannotated general function parameters and unknown call results remain unknown. Imported
+numeric annotation assertions refine parameter, variable, and return facts.
+Assertions preserve a proven narrower interval, while an unknown value acquires
+the declared contract. Known contradictions are compilation errors; a checked
+policy validates unknown values before LLVM relies on the asserted facts.
+A predicted
 global function target is recorded separately from its type and never proves
 the result type of the call. Mutable global function bindings also exist in SBCL;
 both compilers must distinguish proven local targets from dynamic calls.

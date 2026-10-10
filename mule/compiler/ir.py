@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 
 from mule import ast
 
+from .annotation_types import Contract, OptimizationPolicy
+
 
 class Operation:
     """Behavior shared by instructions and control-flow terminators."""
@@ -65,6 +67,9 @@ class Visitor:
         return None
 
     def visit_Constant(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_AssertType(self, operation):
         return self.visit_Operation(operation)
 
     def visit_Load(self, operation):
@@ -126,6 +131,21 @@ class Constant(ResultOperation):
 
 
 @dataclass(frozen=True, slots=True)
+class AssertType(ResultOperation):
+    result: str
+    value: str
+    contract: Contract
+    location: tuple
+    safety: int = 0
+
+    def accept(self, visitor):
+        return visitor.visit_AssertType(self)
+
+    def operands(self):
+        return (self.value,)
+
+
+@dataclass(frozen=True, slots=True)
 class Load(ResultOperation):
     result: str
     name: str
@@ -148,6 +168,7 @@ class Store(Operation):
     name: str
     value: str
     local: bool
+    location: tuple | None = None
 
     def accept(self, visitor):
         return visitor.visit_Store(self)
@@ -226,6 +247,7 @@ class Call(ResultOperation):
     result: str
     callee: str
     args: tuple[str, ...]
+    location: tuple | None = None
 
     def accept(self, visitor):
         return visitor.visit_Call(self)
@@ -357,6 +379,7 @@ class Discard(Operation):
 
 type Instruction = (
     Constant
+    | AssertType
     | Load
     | Store
     | Binary
@@ -427,6 +450,9 @@ class Function:
     parameters: tuple[str, ...]
     locals: tuple[str, ...]
     blocks: list[Block] = field(default_factory=list)
+    parameter_annotations: tuple[Contract | None, ...] = ()
+    return_annotation: Contract | None = None
+    policy: OptimizationPolicy = field(default_factory=OptimizationPolicy)
 
 
 @dataclass(slots=True)

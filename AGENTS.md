@@ -61,6 +61,7 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/compiler/ir.py`: control-flow graph, object results, and graph verification.
 - `mule/compiler/analysis.py`: fixed-point value types, integer ranges, and guarded call predictions.
 - `mule/compiler/value_facts.py`: polymorphic value facts, joins, arithmetic, and representation proofs.
+- `mule/compiler/annotation_types.py`: imported numeric contracts and optimization policies.
 - `mule/compiler/llvm.py`: LLVM emission and reference ownership/cleanup.
 - `mule/compiler/llvm_ops.py`: inline native operation templates and runtime slow paths.
 - `mule/runtime/lib.rs`: Rust runtime crate and native ABI.
@@ -70,11 +71,13 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/runtime/builtins.rs`: builtin functions and module execution.
 - `mule/runtime/numeric.rs`: native integer fast paths and bigint operations.
 - `mule/runtime/gmp.rs`: direct GMP bindings and owned bigint wrapper.
+- `mule/runtime/annotations.rs`: borrowed assertions at checked annotation boundaries.
 - `mule/compiler/driver.py`: Clang compilation and executable linking.
 - `mule/__main__.py`: `python -m mule` command-line interface.
 - `test/mule/parser/`: parser and AST tests, fixtures, and AST query helpers.
 - `test/mule/compiler/`: lowering, LLVM, runtime, and native executable tests.
 - `examples/`: source programs that the native compiler can build.
+- `stdlib/mule.py`: numeric annotation markers and the `optimize` compiler directive.
 - `spec/`: initial specifications and explicit boundaries of implemented behavior.
 - `old/`: earlier implementations, including Python bootstrap code, Common Lisp,
   LLVM experiments, a C++ runtime, and generated artifacts. Treat these as

@@ -149,6 +149,12 @@ class ValueType:
     def accepts(self, actual):
         return actual.fits_unknown(self)
 
+    def annotation_conflict(self, contract):
+        return False
+
+    def annotated_integer(self, expected):
+        return expected
+
     def fits_unknown(self, expected):
         return not self.may_be_unbound
 
@@ -185,6 +191,9 @@ class UnknownType(ValueType):
 
 @dataclass(frozen=True, slots=True)
 class PrimitiveType(ValueType):
+    def annotation_conflict(self, contract):
+        return not self.fits(contract.fact)
+
     @property
     def may_run_user_code(self):
         return False
@@ -207,6 +216,19 @@ class PrimitiveType(ValueType):
 class IntegerType(PrimitiveType):
     minimum: int | None = None
     maximum: int | None = None
+
+    def annotation_conflict(self, contract):
+        return contract.integer_conflict(self)
+
+    def annotated_integer(self, expected):
+        return IntegerType(
+            max(self.minimum, expected.minimum)
+            if self.minimum is not None
+            else expected.minimum,
+            min(self.maximum, expected.maximum)
+            if self.maximum is not None
+            else expected.maximum,
+        )
 
     @property
     def is_fixnum(self):
@@ -336,6 +358,9 @@ class BooleanType(IntegerType):
     minimum: int | None = 0
     maximum: int | None = 1
 
+    def annotation_conflict(self, contract):
+        return contract.boolean_conflict(self)
+
     @property
     def is_fixnum(self):
         return False
@@ -455,6 +480,9 @@ class FloatType(PrimitiveType):
 
 @dataclass(frozen=True, slots=True)
 class ImmortalType(ValueType):
+    def annotation_conflict(self, contract):
+        return True
+
     @property
     def is_immortal(self):
         return not self.may_be_unbound
@@ -554,6 +582,9 @@ class BytesType(PrimitiveType):
 
 @dataclass(frozen=True, slots=True)
 class FunctionType(ValueType):
+    def annotation_conflict(self, contract):
+        return True
+
     def join(self, other):
         return other.join_function(self)
 

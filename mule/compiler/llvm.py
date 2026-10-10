@@ -88,6 +88,8 @@ declare i32 @mule_set_attr_cached(ptr, ptr, ptr, ptr)
 declare ptr @mule_resolve_method(ptr, ptr, ptr, ptr)
 declare ptr @mule_call_resolved(ptr, ptr, i64, ptr)
 declare i32 @mule_check_args(ptr, i32)
+declare i32 @mule_assert_integer(ptr, ptr, ptr, ptr)
+declare i32 @mule_assert_float(ptr, ptr)
 declare ptr @mule_arg(ptr, i32)
 declare ptr @mule_retain(ptr)
 declare void @mule_release(ptr)
@@ -272,6 +274,34 @@ class _LiteralEmitter(ast.Visitor):
 
     def visit_EllipsisLiteral(self, literal: ast.EllipsisLiteral) -> str:
         return self.visit_Literal(literal)
+
+
+class _ContractAssertion:
+    def __init__(self, emitter, value):
+        self.emitter = emitter
+        self.value = value
+
+    def visit_Contract(self, contract):
+        raise TypeError(f"unsupported annotation contract {contract}")
+
+    def visit_IntegerContract(self, contract):
+        fact = contract.fact
+        module = self.emitter.module
+        minimum = module.text(_decimal(fact.minimum))
+        maximum = module.text(_decimal(fact.maximum))
+        name = module.text(f"mule.{contract.name}")
+        status = self.emitter.operation(
+            f"call i32 @mule_assert_integer(ptr {self.value}, ptr {minimum}, "
+            f"ptr {maximum}, ptr {name})"
+        )
+        self.emitter.check_status(status)
+
+    def visit_FloatContract(self, contract):
+        name = self.emitter.module.text(f"mule.{contract.name}")
+        status = self.emitter.operation(
+            f"call i32 @mule_assert_float(ptr {self.value}, ptr {name})"
+        )
+        self.emitter.check_status(status)
 
 
 class _ArgumentGuard:
@@ -496,7 +526,14 @@ class _FunctionEmitter(ir1.Visitor):
                 for index in range(len(self.function.parameters))
             ]
         )
-        self.lines.append(f"define internal ptr {self.body}({parameters}) {{")
+        attributes = ""
+        if self.function.policy.speed == 0:
+            attributes = " noinline optnone"
+        elif self.function.policy.debug == 3:
+            attributes = " noinline"
+        self.lines.append(
+            f"define internal ptr {self.body}({parameters}){attributes} {{"
+        )
         self.lines.append("entry:")
         if self.context:
             for index, fact in enumerate(self.context.parameters):
@@ -629,6 +666,19 @@ class _FunctionEmitter(ir1.Visitor):
         result = instruction.result
         value = instruction.value
         self.pointer_result(result, self.constant(value))
+
+    def visit_AssertType(self, instruction: ir1.AssertType) -> None:
+        actual = self.facts[instruction.value]
+        if instruction.safety and not actual.fits(instruction.contract.fact):
+            # Keep the unrefined operand owned by its original slot until the
+            # assertion succeeds, so error cleanup releases its actual value.
+            value = self.operation(
+                f"load ptr, ptr {self.value_slots[instruction.value]}"
+            )
+            instruction.contract.accept(_ContractAssertion(self, value))
+        value = self.take(instruction.value)
+        self.publish(instruction.result, value)
+        self.refine(instruction.result, value)
 
     def visit_Load(self, instruction: ir1.Load) -> None:
         result = instruction.result

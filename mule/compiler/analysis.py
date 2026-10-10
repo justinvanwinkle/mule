@@ -194,6 +194,11 @@ class _InstructionAnalysis(ir.Visitor):
     def visit_Constant(self, instruction):
         return _Fact(_constant(instruction.value))
 
+    def visit_AssertType(self, instruction):
+        value = self.values[instruction.value]
+        instruction.contract.validate(value.type, instruction.location)
+        return _Fact(instruction.contract.refine(value.type))
+
     def visit_DefineFunction(self, instruction):
         return _Fact(FunctionType(), instruction.function, True)
 
@@ -268,6 +273,7 @@ class _InstructionAnalysis(ir.Visitor):
             self.resolve_call(
                 self.values[instruction.callee],
                 tuple(self.values[arg].type for arg in instruction.args),
+                instruction.location,
             )
         )
         self.invalidate(self.state)
@@ -519,7 +525,10 @@ def _interprocedural(module: ir.Module, global_targets: dict[str, str]) -> Analy
     parameters = {}
     for function in module.functions:
         parameters[function.name, "general"] = (UNKNOWN,) * len(function.parameters)
-        if function.parameters:
+        if function.parameters and not any(
+            contract is not None and contract.contradicts(full)
+            for contract in function.parameter_annotations
+        ):
             parameters[function.name, "fixnum"] = (full,) * len(function.parameters)
     summaries = {key: BOTTOM for key in parameters}
     return_changes = defaultdict(int)
@@ -534,6 +543,7 @@ def _interprocedural(module: ir.Module, global_targets: dict[str, str]) -> Analy
         def resolve(
             callee: _Fact,
             arguments: tuple[ValueType, ...],
+            location=None,
             context_parameters=previous_parameters,
             context_summaries=previous_summaries,
         ) -> ValueType:
@@ -541,12 +551,18 @@ def _interprocedural(module: ir.Module, global_targets: dict[str, str]) -> Analy
                 lambda: _with_defined_arguments(
                     arguments,
                     lambda: resolve_defined(
-                        callee, arguments, context_parameters, context_summaries
+                        callee,
+                        arguments,
+                        context_parameters,
+                        context_summaries,
+                        location,
                     ),
                 )
             )
 
-        def resolve_defined(callee, arguments, context_parameters, context_summaries):
+        def resolve_defined(
+            callee, arguments, context_parameters, context_summaries, location
+        ):
             # A name's predicted target is never sufficient to publish a return
             # type. Only an already-loaded value with proven identity is local.
             if not callee.proven or callee.target not in functions:
@@ -554,6 +570,9 @@ def _interprocedural(module: ir.Module, global_targets: dict[str, str]) -> Analy
             target = functions[callee.target]
             if len(arguments) != len(target.parameters):
                 return UNKNOWN
+            for actual, contract in zip(arguments, target.parameter_annotations):
+                if contract is not None:
+                    contract.validate(actual, location)
             for context in ("observed", "fixnum", "general"):
                 key = target.name, context
                 expected = context_parameters.get(key)
@@ -595,6 +614,11 @@ def _interprocedural(module: ir.Module, global_targets: dict[str, str]) -> Analy
                     continue
                 domains = tuple(_fixnum_domain(type_) for type_ in call.arguments)
                 if any(domain is None for domain in domains):
+                    continue
+                if any(
+                    contract is not None and contract.contradicts(domain)
+                    for domain, contract in zip(domains, target.parameter_annotations)
+                ):
                     continue
                 if target.name not in seeds:
                     seeds[target.name] = domains
@@ -641,9 +665,8 @@ def _interprocedural(module: ir.Module, global_targets: dict[str, str]) -> Analy
             key = function.name, identifier
             if key not in parameters:
                 continue
-            if (
-                identifier == "observed"
-                and parameters[key] == parameters[function.name, "fixnum"]
+            if identifier == "observed" and parameters[key] == parameters.get(
+                (function.name, "fixnum")
             ):
                 continue
             body = bodies[key]

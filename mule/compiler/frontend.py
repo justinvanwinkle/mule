@@ -1,9 +1,12 @@
 """Convert the supported Python subset into language-level control flow."""
 
+from dataclasses import replace
+
 from mule import ast
 from mule.parser import parse
 
 from . import ir
+from .annotation_types import EXPORTS, OptimizationPolicy
 
 
 class UnsupportedSyntax(SyntaxError):
@@ -15,41 +18,66 @@ class Lowerer:
         self.source = source.replace("\r\n", "\n").replace("\r", "\n")
         self.filename = filename
         self.functions: list[ir.Function] = []
+        self.compiler_bindings = {}
+        self.active_compiler_bindings = {}
+        self.module_annotations = {}
 
-    def error(self, message: str, node: ast.Node, *, unsupported=False):
+    def location(self, node):
         span = node.span
         start = span.start if span else ast.Position(1, 0)
         end = span.end if span else ast.Position(1, 1)
         lines = self.source.splitlines(keepends=True)
         line = lines[start.line - 1] if start.line <= len(lines) else None
-        error_type = UnsupportedSyntax if unsupported else SyntaxError
-        raise error_type(
-            message,
-            (
-                self.filename,
-                start.line,
-                start.column + 1,
-                line,
-                end.line,
-                end.column + 1,
-            ),
+        return (
+            self.filename,
+            start.line,
+            start.column + 1,
+            line,
+            end.line,
+            end.column + 1,
         )
 
-    def function(self, definition: ast.FunctionDefinition) -> ir.Function:
-        if definition.is_async or definition.decorators or definition.type_parameters:
+    def error(self, message: str, node: ast.Node, *, unsupported=False):
+        error_type = UnsupportedSyntax if unsupported else SyntaxError
+        raise error_type(message, self.location(node))
+
+    def imported_binding(self, name, node):
+        binding = self.active_compiler_bindings.get(name)
+        if binding is None:
             self.error(
-                "async, decorated, and generic functions are not supported yet",
+                f"'{name}' is not an imported Mule annotation or compiler directive",
+                node,
+                unsupported=True,
+            )
+        return binding
+
+    def annotation(self, expression):
+        return expression.accept(_AnnotationReference(self)).annotation(
+            self, expression
+        )
+
+    def policy(self, decorators, inherited):
+        policy = inherited
+        for decorator in decorators:
+            policy = decorator.accept(_PolicyDecorator(self, policy))
+        return policy
+
+    def reserved(self, name, node):
+        if name in self.compiler_bindings:
+            self.error(f"cannot shadow compiler-only import '{name}'", node)
+
+    def function(self, definition: ast.FunctionDefinition, policy) -> ir.Function:
+        if definition.is_async or definition.type_parameters:
+            self.error(
+                "async and generic functions are not supported yet",
                 definition,
                 unsupported=True,
             )
-        if definition.return_annotation is not None:
-            self.error(
-                "function annotations are not supported yet",
-                definition,
-                unsupported=True,
-            )
+        policy = self.policy(definition.decorators, policy)
         parameters = []
+        annotations = []
         for parameter in definition.parameters:
+            self.reserved(parameter.name, parameter)
             if parameter.name in parameters:
                 self.error(f"duplicate parameter '{parameter.name}'", parameter)
             if (
@@ -59,7 +87,6 @@ class Lowerer:
                     ast.ParameterKind.POSITIONAL_OR_KEYWORD,
                 )
                 or parameter.default is not None
-                or parameter.annotation is not None
             ):
                 self.error(
                     "only fixed positional parameters are supported yet",
@@ -67,9 +94,33 @@ class Lowerer:
                     unsupported=True,
                 )
             parameters.append(parameter.name)
-        function = ir.Function(f"mule_fn_{len(self.functions)}", tuple(parameters), ())
+            annotations.append(
+                self.annotation(parameter.annotation)
+                if parameter.annotation is not None
+                else None
+            )
+        function = ir.Function(
+            f"mule_fn_{len(self.functions)}",
+            tuple(parameters),
+            (),
+            parameter_annotations=tuple(annotations),
+            return_annotation=(
+                self.annotation(definition.return_annotation)
+                if definition.return_annotation is not None
+                else None
+            ),
+            policy=policy,
+        )
         self.functions.append(function)
-        builder = FunctionBuilder(self, function, definition.body, is_module=False)
+        builder = FunctionBuilder(
+            self, function, definition.body, is_module=False, origin=definition
+        )
+        for parameter, contract in zip(definition.parameters, annotations):
+            if contract is not None:
+                builder.annotations[parameter.name] = (contract, parameter)
+                builder.store(
+                    parameter.name, builder.load(parameter.name, clear=True), parameter
+                )
         builder.statements(definition.body)
         builder.finish()
         return function
@@ -83,10 +134,14 @@ class FunctionBuilder(ast.Visitor):
         statements: list[ast.Statement],
         *,
         is_module: bool,
+        origin=None,
     ):
         self.lowerer = lowerer
         self.function = function
         self.is_module = is_module
+        self.origin = origin
+        self.depth = 0
+        self.annotations = {}
         self.values = 0
         self.hidden = 0
         self.loops: list[tuple[ir.Block, ir.Block]] = []
@@ -134,8 +189,39 @@ class FunctionBuilder(ast.Visitor):
         self.emit(ir.Load(result, name, self.local(name), clear))
         return result
 
-    def store(self, name: str, value: str):
-        self.emit(ir.Store(name, value, self.local(name)))
+    def assert_type(self, value, contract, node):
+        result = self.result()
+        self.emit(
+            ir.AssertType(
+                result,
+                value,
+                contract,
+                self.lowerer.location(node),
+                self.function.policy.safety,
+            )
+        )
+        return result
+
+    def annotation_for(self, name):
+        if self.local(name):
+            return self.annotations.get(name)
+        return self.lowerer.module_annotations.get(name)
+
+    def store(self, name: str, value: str, node=None):
+        if node is not None:
+            self.lowerer.reserved(name, node)
+        annotation = self.annotation_for(name)
+        if annotation is not None:
+            contract, declaration = annotation
+            value = self.assert_type(value, contract, node or declaration)
+        self.emit(
+            ir.Store(
+                name,
+                value,
+                self.local(name),
+                location=self.lowerer.location(node) if node is not None else None,
+            )
+        )
 
     def temporary(self) -> str:
         name = f"$merge{self.hidden}"
@@ -147,12 +233,16 @@ class FunctionBuilder(ast.Visitor):
         self.current.terminator = ir.Jump(block.label)
 
     def statements(self, statements: list[ast.Statement]):
-        for statement in statements:
-            if self.current.terminator is not None:
-                # Compile unreachable source too, so unsupported/invalid syntax
-                # cannot be hidden behind a return, break, or continue.
-                self.current = self.block()
-            self.statement(statement)
+        self.depth += 1
+        try:
+            for statement in statements:
+                if self.current.terminator is not None:
+                    # Compile unreachable source too, so unsupported/invalid syntax
+                    # cannot be hidden behind a return, break, or continue.
+                    self.current = self.block()
+                self.statement(statement)
+        finally:
+            self.depth -= 1
 
     def statement(self, node: ast.Statement):
         node.accept(self)
@@ -172,6 +262,24 @@ class FunctionBuilder(ast.Visitor):
 
     def visit_Global(self, node):
         return None
+
+    def _import(self, node):
+        if not self.is_module or self.depth != 1:
+            self.error(
+                "Mule compiler imports must be unconditional module-level statements",
+                node,
+                unsupported=True,
+            )
+        node.accept(_ImportBindings(self.lowerer, activate=True))
+
+    def visit_Import(self, node):
+        self._import(node)
+
+    def visit_ImportFrom(self, node):
+        self._import(node)
+
+    def visit_AnnotatedAssignment(self, node):
+        node.target.accept(_AnnotationTarget(self, node))
 
     def visit_ExpressionStatement(self, node):
         self.emit(ir.Discard(self.expression(node.expression)))
@@ -233,25 +341,31 @@ class FunctionBuilder(ast.Visitor):
     def visit_Return(self, node):
         if self.is_module:
             self.error("'return' outside function", node)
-        self.current.terminator = ir.Return(
+        value = (
             self.constant(ast.NoneLiteral())
             if node.value is None
             else self.expression(node.value)
         )
+        if self.function.return_annotation is not None:
+            value = self.assert_type(value, self.function.return_annotation, node)
+        self.current.terminator = ir.Return(value)
 
     def visit_FunctionDefinition(self, node):
-        function = self.lowerer.function(node)
+        self.lowerer.reserved(node.name, node)
+        function = self.lowerer.function(node, self.function.policy)
         result = self.result()
         self.emit(ir.DefineFunction(result, function.name, node.name))
-        self.store(node.name, result)
+        self.store(node.name, result, node)
 
     def visit_ClassDefinition(self, node):
-        if node.decorators or node.type_parameters:
+        self.lowerer.reserved(node.name, node)
+        if node.type_parameters:
             self.error(
-                "decorated and generic classes are not supported yet",
+                "generic classes are not supported yet",
                 node,
                 unsupported=True,
             )
+        policy = self.lowerer.policy(node.decorators, self.function.policy)
         if len(node.arguments) > 1 or any(
             argument.kind != ast.ArgumentKind.POSITIONAL for argument in node.arguments
         ):
@@ -268,7 +382,7 @@ class FunctionBuilder(ast.Visitor):
         fields = {}
         methods = {}
         for method in body.methods:
-            function = self.lowerer.function(method)
+            function = self.lowerer.function(method, policy)
             if not method.parameters:
                 self.error("instance methods require a receiver parameter", method)
             receiver = method.parameters[0].name
@@ -293,7 +407,7 @@ class FunctionBuilder(ast.Visitor):
                 tuple(methods.values()),
             )
         )
-        self.store(node.name, result)
+        self.store(node.name, result, node)
 
     def visit_IntegerLiteral(self, node):
         return self.constant(node)
@@ -314,6 +428,12 @@ class FunctionBuilder(ast.Visitor):
         return self.constant(node)
 
     def visit_Name(self, node):
+        if node.identifier in self.lowerer.compiler_bindings:
+            self.error(
+                f"compiler-only import '{node.identifier}' cannot be used as a runtime value",
+                node,
+                unsupported=True,
+            )
         return self.load(node.identifier)
 
     def visit_Attribute(self, node):
@@ -347,7 +467,7 @@ class FunctionBuilder(ast.Visitor):
     def visit_NamedExpression(self, node):
         temporary = self.temporary()
         self.store(temporary, self.expression(node.value))
-        self.store(node.target.identifier, self.load(temporary))
+        self.store(node.target.identifier, self.load(temporary), node.target)
         return self.load(temporary, clear=True)
 
     def visit_Boolean(self, node):
@@ -467,7 +587,12 @@ class FunctionBuilder(ast.Visitor):
 
     def finish(self):
         if self.current.terminator is None:
-            self.current.terminator = ir.Return(self.constant(ast.NoneLiteral()))
+            value = self.constant(ast.NoneLiteral())
+            if self.function.return_annotation is not None:
+                value = self.assert_type(
+                    value, self.function.return_annotation, self.origin
+                )
+            self.current.terminator = ir.Return(value)
         self.function.locals = tuple(self.locals)
 
 
@@ -484,11 +609,259 @@ class _AssignmentTarget(ast.Visitor):
         )
 
     def visit_Name(self, node):
-        self.builder.store(node.identifier, self.value)
+        self.builder.store(node.identifier, self.value, node)
 
     def visit_Attribute(self, node):
         receiver = self.builder.expression(node.value)
         self.builder.emit(ir.StoreAttribute(receiver, node.attribute, self.value))
+
+
+class _AnnotationTarget(ast.Visitor):
+    def __init__(self, builder, assignment):
+        self.builder = builder
+        self.assignment = assignment
+
+    def visit_Node(self, node):
+        self.builder.error(
+            "numeric annotations currently require identifier targets; class field annotations are not supported yet",
+            node,
+            unsupported=True,
+        )
+
+    def visit_Name(self, node):
+        lowerer = self.builder.lowerer
+        lowerer.reserved(node.identifier, node)
+        contract = lowerer.annotation(self.assignment.annotation)
+        annotations = (
+            self.builder.annotations
+            if self.builder.local(node.identifier)
+            else lowerer.module_annotations
+        )
+        previous = annotations.get(node.identifier)
+        if previous is not None and previous[0] is not contract:
+            self.builder.error(
+                f"conflicting annotation for '{node.identifier}'", self.assignment
+            )
+        annotations[node.identifier] = (contract, self.assignment)
+        if self.assignment.value is not None:
+            self.builder.store(
+                node.identifier, self.builder.expression(self.assignment.value), node
+            )
+
+
+class _CompilerBinding:
+    def annotation(self, lowerer, node):
+        lowerer.error(
+            "expected an imported Mule numeric annotation", node, unsupported=True
+        )
+
+    def directive(self, lowerer, node):
+        lowerer.error(
+            "only imported mule.optimize decorators are supported",
+            node,
+            unsupported=True,
+        )
+
+    def member(self, attribute, lowerer, node):
+        lowerer.error("expected an imported Mule module", node, unsupported=True)
+
+
+class _NumericBinding(_CompilerBinding):
+    def __init__(self, contract):
+        self.contract = contract
+
+    def annotation(self, lowerer, node):
+        return self.contract
+
+
+class _OptimizeBinding(_CompilerBinding):
+    def directive(self, lowerer, node):
+        return None
+
+
+class _ModuleBinding(_CompilerBinding):
+    def member(self, attribute, lowerer, node):
+        binding = _EXPORT_BINDINGS.get(attribute)
+        if binding is None:
+            lowerer.error(
+                f"unknown Mule compiler export '{attribute}'", node, unsupported=True
+            )
+        return binding
+
+
+_EXPORT_BINDINGS = {
+    name: _NumericBinding(contract) for name, contract in EXPORTS.items()
+}
+_EXPORT_BINDINGS["optimize"] = _OptimizeBinding()
+_MODULE_BINDING = _ModuleBinding()
+
+
+class _ImportBindings(ast.Visitor):
+    def __init__(self, lowerer, *, activate=False):
+        self.lowerer = lowerer
+        self.activate = activate
+
+    def bind(self, name, binding, node):
+        previous = self.lowerer.compiler_bindings.get(name)
+        if previous is not None and previous is not binding:
+            self.lowerer.error(f"conflicting compiler import '{name}'", node)
+        self.lowerer.compiler_bindings[name] = binding
+        if self.activate:
+            self.lowerer.active_compiler_bindings[name] = binding
+
+    def visit_Import(self, node):
+        for item in node.items:
+            if item.name != "mule":
+                self.lowerer.error(
+                    "only compiler imports from mule are supported",
+                    node,
+                    unsupported=True,
+                )
+            self.bind(item.alias or item.name, _MODULE_BINDING, item)
+
+    def visit_ImportFrom(self, node):
+        if node.module != "mule" or node.level:
+            self.lowerer.error(
+                "only absolute compiler imports from mule are supported",
+                node,
+                unsupported=True,
+            )
+        for item in node.items:
+            binding = _EXPORT_BINDINGS.get(item.name)
+            if binding is None:
+                self.lowerer.error(
+                    f"unknown Mule compiler export '{item.name}'",
+                    item,
+                    unsupported=True,
+                )
+            self.bind(item.alias or item.name, binding, item)
+
+
+class _AnnotationReference(ast.Visitor):
+    def __init__(self, lowerer):
+        self.lowerer = lowerer
+
+    def visit_Node(self, node):
+        self.lowerer.error(
+            "expected an imported Mule numeric annotation or compiler directive",
+            node,
+            unsupported=True,
+        )
+
+    def visit_Name(self, node):
+        return self.lowerer.imported_binding(node.identifier, node)
+
+    def visit_Attribute(self, node):
+        return node.value.accept(self).member(node.attribute, self.lowerer, node)
+
+
+class _PolicyDecorator(ast.Visitor):
+    def __init__(self, lowerer, policy):
+        self.lowerer = lowerer
+        self.policy = policy
+
+    def visit_Node(self, node):
+        self.lowerer.error(
+            "only imported mule.optimize decorators are supported",
+            node,
+            unsupported=True,
+        )
+
+    def visit_Call(self, node):
+        node.function.accept(_AnnotationReference(self.lowerer)).directive(
+            self.lowerer, node.function
+        )
+        changes = {}
+        for argument in node.arguments:
+            if argument.kind != ast.ArgumentKind.KEYWORD:
+                self.lowerer.error(
+                    "optimize accepts only named policy levels", argument
+                )
+            if argument.keyword not in ("speed", "safety", "debug"):
+                self.lowerer.error(
+                    f"unknown optimization policy '{argument.keyword}'", argument
+                )
+            if argument.keyword in changes:
+                self.lowerer.error(
+                    f"duplicate optimization policy '{argument.keyword}'", argument
+                )
+            changes[argument.keyword] = argument.value.accept(
+                _PolicyLevel(self.lowerer)
+            )
+        return replace(self.policy, **changes)
+
+
+class _PolicyLevel(ast.Visitor):
+    def __init__(self, lowerer):
+        self.lowerer = lowerer
+
+    def visit_Node(self, node):
+        self.lowerer.error(
+            "optimization levels must be integer literals from 0 through 3", node
+        )
+
+    def visit_IntegerLiteral(self, node):
+        if not 0 <= node.value <= 3:
+            self.visit_Node(node)
+        return node.value
+
+
+class _GlobalAnnotationStores(ir.Visitor):
+    """Apply module contracts to writers compiled before their declarations."""
+
+    def __init__(self, lowerer, function):
+        self.lowerer = lowerer
+        self.function = function
+        self.assertions = {}
+        self.used_results = {
+            instruction.defined_result()
+            for block in function.blocks
+            for instruction in block.instructions
+        }
+        self.serial = 0
+        self.instructions = []
+
+    def result(self):
+        while (result := f"v{self.serial}") in self.used_results:
+            self.serial += 1
+        self.used_results.add(result)
+        return result
+
+    def visit_Operation(self, instruction):
+        self.instructions.append(instruction)
+
+    def visit_AssertType(self, instruction):
+        self.assertions[instruction.result] = instruction.contract
+        self.instructions.append(instruction)
+
+    def visit_Store(self, instruction):
+        annotation = (
+            self.lowerer.module_annotations.get(instruction.name)
+            if not instruction.local
+            else None
+        )
+        if annotation is not None:
+            contract, declaration = annotation
+            if self.assertions.get(instruction.value) is not contract:
+                result = self.result()
+                self.instructions.append(
+                    ir.AssertType(
+                        result,
+                        instruction.value,
+                        contract,
+                        instruction.location or self.lowerer.location(declaration),
+                        self.function.policy.safety,
+                    )
+                )
+                instruction = replace(instruction, value=result)
+        self.instructions.append(instruction)
+
+    def apply(self):
+        for block in self.function.blocks:
+            self.instructions = []
+            for instruction in block.instructions:
+                instruction.accept(self)
+            block.instructions = self.instructions
 
 
 class _AugmentedTarget(ast.Visitor):
@@ -521,9 +894,13 @@ class _AugmentedTarget(ast.Visitor):
     def visit_Name(self, node):
         left = self.builder.load(node.identifier)
         result = self.binary(
-            left, node.identifier if self.builder.local(node.identifier) else None
+            left,
+            node.identifier
+            if self.builder.local(node.identifier)
+            and self.builder.annotation_for(node.identifier) is None
+            else None,
         )
-        self.builder.store(node.identifier, result)
+        self.builder.store(node.identifier, result, node)
 
     def visit_Attribute(self, node):
         temporary = self.builder.temporary()
@@ -554,7 +931,14 @@ class _CallTarget(ast.Visitor):
         callee = self.builder.expression(node)
         arguments = self.arguments_values()
         result = self.builder.result()
-        self.builder.emit(ir.Call(result, callee, arguments))
+        self.builder.emit(
+            ir.Call(
+                result,
+                callee,
+                arguments,
+                location=self.builder.lowerer.location(node),
+            )
+        )
         return result
 
     def visit_Attribute(self, node):
@@ -689,6 +1073,7 @@ class _LocalTarget(ast.Visitor):
         pass
 
     def visit_Name(self, node):
+        self.builder.lowerer.reserved(node.identifier, node)
         if node.identifier not in self.builder.globals:
             self.builder.locals[node.identifier] = None
 
@@ -769,11 +1154,16 @@ class _ValueConditionVisitor(ast.Visitor):
 def lower(source: str, filename: str = "<unknown>") -> ir.Module:
     tree = parse(source, filename)
     lowerer = Lowerer(source, filename)
-    entry = ir.Function("mule_module", (), ())
+    imports = _ImportBindings(lowerer)
+    for statement in tree.statements:
+        statement.accept(imports)
+    entry = ir.Function("mule_module", (), (), policy=OptimizationPolicy())
     lowerer.functions.append(entry)
     builder = FunctionBuilder(lowerer, entry, tree.statements, is_module=True)
     builder.statements(tree.statements)
     builder.finish()
+    for function in lowerer.functions:
+        _GlobalAnnotationStores(lowerer, function).apply()
     module = ir.Module(lowerer.functions, entry.name)
     ir.verify(module)
     return module

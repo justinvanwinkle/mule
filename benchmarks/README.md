@@ -120,3 +120,53 @@ single pinned CPU. Process wall time includes startup and shutdown but excludes
 compilation and `uv` startup. Mule's median was 60.03 ms and Python 3.14's was
 67.67 ms, a 1.13x speedup. This exercises cached fields and guarded native method
 calls; it does not establish performance for every object-oriented workload.
+
+## LLVM i128 and i256 versus GMP
+
+Run the native arithmetic comparison with:
+
+```sh
+uv run python benchmarks/i256.py
+uv run python benchmarks/i256.py --bits 128
+```
+
+[`i256.py`](i256.py) generates LLVM batch kernels, links them to the
+[`Rust harness`](i256.rs), and compares LLVM `i256` against GMP's high-level
+`mpz` and low-level `mpn` APIs. `--bits 128` selects LLVM `i128` and two-limb
+GMP operands using the same harness. Clang uses `-O3 -march=native`; Rust uses
+`opt-level=3 target-cpu=native`. This measures the numeric implementations
+directly, without Mule's object or runtime overhead.
+
+Each batch contains 1,024 deterministic unsigned input pairs. Addition and
+multiplication return their low 256 bits; XOR returns 256 bits; division returns
+the unsigned quotient. Division has separate 256/128 and 256/256 datasets.
+Both datasets use full-width operands, so the 256/256 quotient is only zero or
+one. The latter is a cheap division case, not representative of every division.
+
+Every result is checked against independent Python integer arithmetic before
+timing. Timings cover repeated batch arithmetic, array access, loop overhead,
+and GMP calls. They exclude builds, process startup, input setup, GMP object
+initialization, checksums, result conversion, and teardown. Each process is
+pinned to one CPU; the default is one warmup and seven shuffled measured
+samples, targeting 150 ms per sample. Results are median nanoseconds per result,
+measuring throughput rather than dependent-operation latency.
+
+GMP `mpz` results reuse preallocated 576-bit storage. Addition and multiplication
+include reduction modulo 2²⁵⁶. `mpn` operates on four 64-bit limbs with reusable
+outputs. Its `mpn_mul_n` computes the complete 512-bit product before truncation,
+and `mpn_tdiv_qr` also computes the remainder; LLVM can omit this extra work.
+These are comparisons of the selected public APIs with equivalent final results.
+
+Generated LLVM, assembly, inputs, and default results are retained under
+`build/benchmarks/i256/`. [Recorded results](results-i256.json) include raw
+samples, versions, CPU information, settings, and source/input hashes.
+Use `--cpu`, `--repeats`, `--warmups`, `--batch`, or `--sample-ms` to change the
+run, and `--output PATH` to save its report elsewhere.
+
+The 128-bit run uses addition/multiplication modulo 2¹²⁸, 128-bit XOR, and
+separate 128/64 and 128/128 division datasets. Full-width 128/128 division also
+has quotients restricted to zero or one. GMP `mpz` storage is preallocated for
+320 bits, and `mpn_mul_n` computes a 256-bit product before truncation. Generated
+artifacts are under `build/benchmarks/i128/`;
+[recorded 128-bit results](results-i128.json) include the same verification and
+timing metadata as the 256-bit run.
