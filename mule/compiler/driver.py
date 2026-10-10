@@ -75,7 +75,7 @@ def build(
         home = sys.base_prefix.replace("\\", "\\\\").replace('"', '\\"')
         command = [
             compiler,
-            "-O0",
+            "-O3",
             "-std=c11",
             "-Wno-override-module",
             f'-DMULE_PYTHON_HOME="{home}"',

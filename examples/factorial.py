@@ -6,4 +6,4 @@ def factorial(n):
     return result
 
 
-print(factorial(10))
+print(factorial(1000))

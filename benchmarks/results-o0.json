@@ -1,0 +1,316 @@
+{
+  "timestamp_utc": "2026-10-10T00:24:04.208483+00:00",
+  "platform": "Linux-7.2.8+deb14-amd64-x86_64-with-glibc2.43",
+  "cpu_model": "AMD Ryzen 9 9955HX 16-Core Processor",
+  "cpu_affinity": 0,
+  "versions": {
+    "cpython": "3.14.7 (main, Aug 14 2026, 15:35:28) [Clang 22.1.3 ]",
+    "clang": "Debian clang version 21.1.8 (13)",
+    "sbcl": "SBCL 2.6.4.debian",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "python_jit": {
+    "available": true,
+    "enabled": false
+  },
+  "gil_disabled": false,
+  "compiler_settings": {
+    "mule": "current driver: clang -O0, boxed CPython objects",
+    "cpython": "-I -S, same workload.py, normal bytecode interpreter",
+    "sbcl": "compiled executable; speed 3, safety 1; fixnum declarations",
+    "rust": "edition 2024, opt-level=3, target-cpu=native; u64 integers"
+  },
+  "source_sha256": {
+    "workload.py": "b1793d32002518b367767f95482ca1de0e3a310250bb01bf78f97c511656c98a",
+    "workload.lisp": "91b828f02c6ee5101ed5fbd4107e373d4a793c611400a68ee619ca90e3f6a2b9",
+    "workload.rs": "9f2552bd8d69012805a909776ee47e1bd0df66a6deb99bf1509c325a4016ec3f",
+    "build-lisp.lisp": "be3d8dd66e3813faf9206a09fe6b36166d75fb47ee0d1113e77961f998bd4b35",
+    "run.py": "5def695e65d1ad6d0ce0266d14b2f49d35ad8a2d6a8f99ae4085b7e3dd45daa8"
+  },
+  "commands": {
+    "mule": [
+      "/home/jvanwinkle/repos/mule/build/benchmarks/workload-mule"
+    ],
+    "cpython": [
+      "/home/jvanwinkle/repos/mule/.venv/bin/python",
+      "-I",
+      "-S",
+      "/home/jvanwinkle/repos/mule/benchmarks/workload.py"
+    ],
+    "sbcl": [
+      "/home/jvanwinkle/repos/mule/build/benchmarks/workload-sbcl"
+    ],
+    "rust": [
+      "/home/jvanwinkle/repos/mule/build/benchmarks/workload-rust"
+    ]
+  },
+  "repeats": 7,
+  "warmups": 1,
+  "verification_cases": 9,
+  "profiles": {
+    "startup": {
+      "parameters": [
+        1,
+        0,
+        0
+      ],
+      "expected_output": "0 0",
+      "measurements": {
+        "mule": {
+          "seconds": [
+            0.006726594,
+            0.006979657,
+            0.006569039,
+            0.006716545,
+            0.006560052,
+            0.007025875,
+            0.006957866
+          ],
+          "median_seconds": 0.006726594,
+          "min_seconds": 0.006560052,
+          "max_seconds": 0.007025875
+        },
+        "cpython": {
+          "seconds": [
+            0.006625604,
+            0.006187854,
+            0.006679906,
+            0.005882002,
+            0.00629732,
+            0.00604629,
+            0.006287812
+          ],
+          "median_seconds": 0.006287812,
+          "min_seconds": 0.005882002,
+          "max_seconds": 0.006679906
+        },
+        "sbcl": {
+          "seconds": [
+            0.003525169,
+            0.003315316,
+            0.003097569,
+            0.003408661,
+            0.003425403,
+            0.002955544,
+            0.002939664
+          ],
+          "median_seconds": 0.003315316,
+          "min_seconds": 0.002939664,
+          "max_seconds": 0.003525169
+        },
+        "rust": {
+          "seconds": [
+            0.001850454,
+            0.002041582,
+            0.001756438,
+            0.002101774,
+            0.001966862,
+            0.00186949,
+            0.002089582
+          ],
+          "median_seconds": 0.001966862,
+          "min_seconds": 0.001756438,
+          "max_seconds": 0.002101774
+        }
+      }
+    },
+    "search": {
+      "parameters": [
+        12,
+        8,
+        0
+      ],
+      "expected_output": "113600 0",
+      "measurements": {
+        "mule": {
+          "seconds": [
+            5.140154309,
+            5.038905833,
+            5.084593973,
+            5.041485428,
+            5.142776478,
+            5.044462076,
+            5.065547685
+          ],
+          "median_seconds": 5.065547685,
+          "min_seconds": 5.038905833,
+          "max_seconds": 5.142776478
+        },
+        "cpython": {
+          "seconds": [
+            0.978900992,
+            0.973705217,
+            0.979838221,
+            1.051029339,
+            0.984258401,
+            0.974418208,
+            0.969716588
+          ],
+          "median_seconds": 0.978900992,
+          "min_seconds": 0.969716588,
+          "max_seconds": 1.051029339
+        },
+        "sbcl": {
+          "seconds": [
+            0.04670938,
+            0.046942066,
+            0.046715973,
+            0.04643134,
+            0.046780934,
+            0.046394952,
+            0.046956673
+          ],
+          "median_seconds": 0.046715973,
+          "min_seconds": 0.046394952,
+          "max_seconds": 0.046956673
+        },
+        "rust": {
+          "seconds": [
+            0.038695245,
+            0.038759847,
+            0.038365839,
+            0.038523545,
+            0.03973903,
+            0.038727877,
+            0.038563099
+          ],
+          "median_seconds": 0.038695245,
+          "min_seconds": 0.038365839,
+          "max_seconds": 0.03973903
+        }
+      }
+    },
+    "integers": {
+      "parameters": [
+        1,
+        0,
+        80000
+      ],
+      "expected_output": "0 974617263",
+      "measurements": {
+        "mule": {
+          "seconds": [
+            0.232911403,
+            0.23492336,
+            0.234468749,
+            0.232009826,
+            0.231144626,
+            0.229575458,
+            0.236710096
+          ],
+          "median_seconds": 0.232911403,
+          "min_seconds": 0.229575458,
+          "max_seconds": 0.236710096
+        },
+        "cpython": {
+          "seconds": [
+            0.050694552,
+            0.051801113,
+            0.051297671,
+            0.050828792,
+            0.052499601,
+            0.051491794,
+            0.052133145
+          ],
+          "median_seconds": 0.051491794,
+          "min_seconds": 0.050694552,
+          "max_seconds": 0.052499601
+        },
+        "sbcl": {
+          "seconds": [
+            0.007946938,
+            0.007299437,
+            0.007055529,
+            0.007283427,
+            0.007770719,
+            0.00788365,
+            0.007214717
+          ],
+          "median_seconds": 0.007299437,
+          "min_seconds": 0.007055529,
+          "max_seconds": 0.007946938
+        },
+        "rust": {
+          "seconds": [
+            0.005625522,
+            0.005347251,
+            0.005450734,
+            0.00553895,
+            0.005033094,
+            0.005810658,
+            0.005659947
+          ],
+          "median_seconds": 0.00553895,
+          "min_seconds": 0.005033094,
+          "max_seconds": 0.005810658
+        }
+      }
+    },
+    "combined": {
+      "parameters": [
+        12,
+        8,
+        80000
+      ],
+      "expected_output": "113600 974617263",
+      "measurements": {
+        "mule": {
+          "seconds": [
+            5.215782154,
+            5.237787046,
+            5.219889118,
+            5.233950124,
+            5.239896279,
+            5.186360099,
+            5.418333141
+          ],
+          "median_seconds": 5.233950124,
+          "min_seconds": 5.186360099,
+          "max_seconds": 5.418333141
+        },
+        "cpython": {
+          "seconds": [
+            1.01474585,
+            1.018895821,
+            1.016453071,
+            1.013605072,
+            1.027787757,
+            1.02330227,
+            1.043131127
+          ],
+          "median_seconds": 1.018895821,
+          "min_seconds": 1.013605072,
+          "max_seconds": 1.043131127
+        },
+        "sbcl": {
+          "seconds": [
+            0.050825988,
+            0.051068553,
+            0.051071848,
+            0.05082149,
+            0.051105793,
+            0.051633972,
+            0.051108568
+          ],
+          "median_seconds": 0.051071848,
+          "min_seconds": 0.05082149,
+          "max_seconds": 0.051633972
+        },
+        "rust": {
+          "seconds": [
+            0.042113857,
+            0.042416044,
+            0.041884307,
+            0.042257746,
+            0.041886281,
+            0.042685888,
+            0.04218995
+          ],
+          "median_seconds": 0.04218995,
+          "min_seconds": 0.041884307,
+          "max_seconds": 0.042685888
+        }
+      }
+    }
+  }
+}

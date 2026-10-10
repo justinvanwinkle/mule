@@ -46,7 +46,8 @@ The IR separates control-flow blocks from single-consumer object results.
 Variables are explicit local slots or dynamic module globals. Verification checks
 definitions, consumption, control-flow targets, and dominance before emission.
 LLVM currently uses slots for these results and variables rather than optimized
-SSA construction. There are no optimization passes; Clang builds at `-O0`.
+SSA construction. Mule has no language-level optimization passes yet; Clang
+builds at `-O3`, applying LLVM optimization and native code generation.
 
 Each source function becomes a native LLVM function. Definitions construct
 CPython C callable objects whose entry pointers refer to those native functions
