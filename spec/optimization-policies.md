@@ -5,7 +5,7 @@ policy matrix remains a target. Explicit `@mule.optimize(speed=3)` classes with
 bare `mule.int64` fields use raw storage, require definite construction
 initialization, and can select native internal method and caller entries.
 The compiler keeps compiled generic entries for bodies that cannot establish
-the required proofs. See [current behavior](native-compiler.md#imported-annotation-contracts)
+the required proofs. See [current behavior](native-compiler.md#annotation-contracts)
 and [current classes](native-compiler.md#fixed-layout-classes) for the supported
 source subset. The remaining level assignments below do not establish Python
 data-model parity or support for other raw field widths.

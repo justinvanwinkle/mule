@@ -189,9 +189,6 @@ def test_native_field_boundary_rejects_unknown_external_assignment(
 @pytest.mark.parametrize(
     "source",
     [
-        "from mule import int64\nclass C:\n value: int64\n",
-        "from mule import int64, optimize\n@optimize(speed=2)\nclass C:\n value: int64\n",
-        "from mule import int32, optimize\n@optimize(speed=3)\nclass C:\n value: int32\n",
         "from mule import int64, optimize\n@optimize(speed=3)\nclass C:\n value: int64 = 0\n",
         "from mule import int64, optimize\n@optimize(speed=3)\nclass C:\n value: int64\n def __init__(self):\n  self.other = 1\n",
         "from mule import int64, optimize\nclass Base:\n pass\n@optimize(speed=3)\nclass C(Base):\n value: int64\n",

@@ -99,11 +99,15 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
 - Module-level fixed-layout classes with zero or one compiled-class base,
   positional construction, instance methods, bound-method values, attribute reads,
   and assignment or augmented assignment to declared instance fields. Class bodies
-  contain method definitions and `pass`; explicitly selected native classes also
-  accept bare `mule.int64` field declarations as described below.
+  contain method definitions, bare annotated declarations and `pass`;
+  explicitly selected native classes may use `mule.int64` fields as described below.
 - Unconditional module-level imports of numeric annotation markers and
   `optimize` from `mule`, including aliases. Parameter, return, and identifier
-  variable annotations support these imported markers.
+  variable annotations support arbitrary expressions; recognized builtin and
+  imported numeric contracts additionally guide compiler analysis. Imports from
+  `typing` and `typing_extensions` can bind names for annotation use, and
+  `from __future__ import annotations` is accepted. Runtime typing APIs are not
+  implemented by these annotation imports.
 
 Function-wide binding classification makes a later assignment local even when
 an earlier read occurs first. Unbound local slots raise `UnboundLocalError`;
@@ -115,7 +119,7 @@ and an active error survives cleanup.
 
 Unsupported constructs raise `UnsupportedSyntax`, a `SyntaxError` subclass,
 before native compilation. These include general imports, nested functions or classes,
-closures/`nonlocal`, defaults, keyword/variadic calls, general decorators and annotations,
+closures/`nonlocal`, defaults, keyword/variadic calls, general decorators,
 async/generators, `for`, exception handling, containers/comprehensions,
 subscriptions, unpacking, and formatted/template strings. Unsupported source is
 also rejected in unreachable branches. Parser support is broader than compiler
@@ -149,6 +153,18 @@ contracts, IR assertions, propagation, and policy-controlled emission for builti
 and imported annotations. Proven integer intervals can still select small-integer
 operations; an unbounded declaration alone cannot justify a raw `i64` value.
 
+For representation selection, SBCL's `src/compiler/generic/primtype.lisp`,
+`primitive-type`, distinguishes bounded signed-byte-64 from descriptor-backed
+unbounded integers; `src/compiler/represent.lisp`, `select-tn-representation`,
+chooses among permitted storage classes. Mule may derive an ordinary `int`
+local's scalar representation from its operations and proven bounds instead of
+preassigning its declaration a width. A builtin `int` assertion preserves a
+previously selected integer or boolean representation, and arithmetic still
+requires the existing range proof or a separate fixed-width result contract.
+Unbounded `int` parameters do not acquire a raw `i64` entry from their declaration.
+This is the corresponding limited local selection pass; it does not implement
+SBCL's full storage-class costing machinery.
+
 The concrete Python adaptation is that booleans belong to `int`, whereas Common
 Lisp booleans are symbols. Mule must preserve boolean object identity and cannot
 refine an unknown `int` into its integer-only tagged representation. A semantic
@@ -157,11 +173,14 @@ boolean singletons in compiled LLVM code and otherwise use the existing physical
 integer assertion with unbounded endpoints. No new Rust language implementation
 is required. Imported fixed-width Mule contracts continue to exclude booleans.
 
-SBCL rejects unknown declaration type specifiers because its declarations are
-compiler type assertions. Python annotations also carry arbitrary user metadata,
-so Mule must retain expressions it cannot interpret without adding assertions or
-evaluating them during compilation. This is a concrete semantic departure from
-SBCL's `specifier-type` resolution, not a reason to reject Python annotations.
+SBCL's `src/code/type.lisp`, `%parse-type`, retains legal unresolved specifiers
+with `make-unknown-type`, while rejecting invalid type-specifier forms. Mule
+likewise retains unresolved annotation expressions rather than rejecting names
+it cannot resolve. The concrete Python adaptation is that annotations can carry
+arbitrary user expressions and metadata, not just Lisp type-specifier forms;
+these expressions must be accepted without executing them during compilation or
+adding unjustified assertions. Runtime annotation evaluation is a separate
+language feature, whereas SBCL's declaration path resolves compiler type objects.
 Bare class annotations use boxed instance storage unless their declared fields
 and policy support the native representation. Unsupported representation widths
 do not make an otherwise valid class annotation illegal.
@@ -301,8 +320,9 @@ Every field must be declared; defaults, bases, attribute interception, and
 undeclared field writes are rejected. Each instance has a contiguous signed
 64-bit payload. Constructor CFG analysis requires initialization of every field
 before a field read, receiver exposure, or successful return. Missing proofs
-are compilation errors. Method arguments currently require `mule.int64`; an
-explicit return contract may also be `mule.int64`.
+are compilation errors. Method annotations are unrestricted. Proven signed
+`mule.int64` arguments permit raw entries; other methods use their compiled
+general entries and field adapters.
 
 Representation selection creates `@mule.native.N` internal entries for eligible
 methods and scalar callers. They use raw scalar locals, constant-offset field

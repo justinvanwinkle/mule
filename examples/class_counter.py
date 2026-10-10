@@ -17,7 +17,7 @@ class Counter:
 @mule.optimize(speed=3, safety=3)
 def count(limit: mule.int64) -> mule.int64:
     counter = Counter()
-    index: int = 0
+    index: mule.int64 = 0
     while index < limit:
         counter.add(3)
         index += 1

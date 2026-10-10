@@ -299,7 +299,6 @@ def test_safety_three_rejects_unknown_integer_outside_range(tmp_path, marker, va
         "import mule\nprint(mule.int32)\n",
         "from mule import int32\nprint(int32)\n",
         "from mule import int32\nprint(int32(42))\n",
-        "import mule\nx: mule.intp = 1\n",
         "if True:\n from mule import int32\n",
         "from mule import optimize\n@optimize(3)\ndef f():\n pass\n",
         "from mule import optimize\n@optimize(safety=4)\ndef f():\n pass\n",

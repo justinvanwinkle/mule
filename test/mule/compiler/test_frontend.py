@@ -47,7 +47,6 @@ def test_invalid_context_is_rejected_before_emission(source):
         "def f(x=1):\n pass\n",
         "def f():\n def g():\n  pass\n",
         "def f():\n return\n yield 1\n",
-        "x: int = 1\n",
     ],
 )
 def test_unsupported_syntax_fails_explicitly_even_when_unreachable(source):

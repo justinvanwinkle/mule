@@ -110,7 +110,7 @@ imported numeric markers deliberately add compiler contracts. Restricted class
 policies also give field declarations storage semantics; dynamic class policies
 retain ordinary field annotation behavior. See the
 [target policies](optimization-policies.md) and
-[implemented annotation contracts](native-compiler.md#imported-annotation-contracts).
+[implemented annotation contracts](native-compiler.md#annotation-contracts).
 Distinguish a failed speculative optimization guard, which selects a generic
 implementation, from a contract violation, which is an error.
 

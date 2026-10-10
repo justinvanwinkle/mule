@@ -27,6 +27,9 @@ class Representation:
     def numeric(self):
         raise NotNative
 
+    def python_integer(self):
+        raise NotNative
+
     def field(self, name):
         raise NotNative
 
@@ -50,6 +53,9 @@ class Int64(Representation):
     def numeric(self):
         return self
 
+    def python_integer(self):
+        return self
+
     def truth(self, emitter, value):
         return emitter.operation(f"icmp ne i64 {value}, 0")
 
@@ -66,6 +72,9 @@ class Int64(Representation):
 class Boolean(Representation):
     llvm_type = "i1"
     zero = "false"
+
+    def python_integer(self):
+        return self
 
     def truth(self, emitter, value):
         return value
@@ -141,6 +150,21 @@ class _Contract:
 
     visit_FloatContract = visit_Contract
     visit_PythonIntegerContract = visit_Contract
+
+
+class _LocalContract(_Contract):
+    def visit_PythonIntegerContract(self, contract):
+        # Unbounded Python int is a semantic constraint, not a machine width.
+        # Select storage from the local's definitions and arithmetic proofs.
+        return None
+
+
+class _AssertionContract(_Contract):
+    def __init__(self, representation):
+        self.representation = representation
+
+    def visit_PythonIntegerContract(self, contract):
+        return self.representation.python_integer()
 
 
 class _Literal(ast.Visitor):
@@ -227,8 +251,9 @@ class _Select(ir.Visitor):
         return op.value.accept(_Literal())
 
     def visit_AssertType(self, op):
-        expected = op.contract.accept(_Contract())
-        if self.value(op.value) != expected:
+        value = self.value(op.value)
+        expected = op.contract.accept(_AssertionContract(value))
+        if value != expected:
             raise NotNative
         return expected
 
@@ -434,7 +459,9 @@ def _select_function(function, index, layouts, bindings, plans, analysis):
         dict(zip(function.parameters, parameters, strict=True)),
     )
     for name, contract in function.local_annotations.items():
-        plan.locals[name] = contract.accept(_Contract())
+        representation = contract.accept(_LocalContract())
+        if representation is not None:
+            plan.locals[name] = representation
     selector = _Select(plan, layouts, bindings, plans)
     previous = None
     while True:

@@ -2,7 +2,8 @@
 
 import pytest
 
-from mule.compiler import emit_llvm
+from mule.compiler import emit_llvm, lower
+from mule.compiler.ir import Visitor
 from test.mule.compiler.test_native import run_native
 
 
@@ -194,3 +195,99 @@ def test_annotated_attribute_assignment_executes_value_but_not_annotation(
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "42\n"
+
+
+@pytest.mark.parametrize(
+    "imports, annotation",
+    (
+        ("import typing as t\n", "t.Optional[int]"),
+        ("from typing import Any as Value\n", "Value"),
+        ("from typing_extensions import Annotated\n", "Annotated[int, 'metadata']"),
+        ("from __future__ import annotations\n", "UnknownClass | None"),
+        ("import mule\n", "mule.intp"),
+    ),
+)
+def test_annotation_imports_accept_lazy_expressions(tmp_path, imports, annotation):
+    result = run_native(
+        tmp_path,
+        imports + f"def identity(value: {annotation}) -> {annotation}:\n"
+        " return value\nprint(identity(42))\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "42\n"
+
+
+def test_builtin_float_contract_uses_checked_float_category(tmp_path):
+    result = run_native(
+        tmp_path,
+        "from mule import optimize\n@optimize(safety=3)\n"
+        "def twice(value: float) -> float:\n return value + value\n"
+        "print(twice(float('1.25')))\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "2.5\n"
+
+
+@pytest.mark.parametrize(
+    "policy, marker", (("", "int64"), ("speed=2", "int64"), ("speed=3", "int32"))
+)
+def test_class_annotations_select_boxed_storage_when_not_native(
+    tmp_path, policy, marker
+):
+    result = run_native(
+        tmp_path,
+        "import mule\n"
+        + (f"@mule.optimize({policy})\n" if policy else "")
+        + f"class Counter:\n value: mule.{marker}\n"
+        " def __init__(self):\n  self.value = 42\nprint(Counter().value)\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "42\n"
+
+
+def test_bare_attribute_and_subscript_annotations_evaluate_target_prefixes(tmp_path):
+    result = run_native(
+        tmp_path,
+        "def prefix():\n print(1)\n return 0\n"
+        "def index():\n print(2)\n return 0\n"
+        "prefix().missing: nonexistent()\n"
+        "prefix()[index()]: nonexistent()\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1\n1\n2\n"
+
+
+def test_local_annotation_does_not_count_as_runtime_global_use(tmp_path):
+    result = run_native(
+        tmp_path,
+        "def calculate():\n local: T\n global T\n T = 42\n return T\n"
+        "print(calculate())\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "42\n"
+
+
+def test_ir_retains_annotation_expressions_separately_from_contracts():
+    module = lower(
+        "module_value: Unknown[int] = 0\n"
+        "def identity(value: 'Later') -> list[int]:\n local: bool\n return value\n"
+        "class C:\n field: Custom | None\n"
+    )
+    function = module.functions[1]
+    assert function.parameter_annotation_expressions[0].value == "Later"
+    assert function.return_annotation_expression.value.identifier == "list"
+    assert function.annotation_expressions["local"].identifier == "bool"
+    assert function.parameter_annotations == (None,)
+    assert function.return_annotation is None
+    entry = module.functions[0]
+    assert entry.annotation_expressions["module_value"].value.identifier == "Unknown"
+
+    class Annotations(Visitor):
+        def visit_DefineClass(self, operation):
+            assert operation.annotation_expressions[0][0] == "field"
+            assert operation.annotation_expressions[0][1].left.identifier == "Custom"
+
+    definitions = Annotations()
+    for block in entry.blocks:
+        for operation in block.instructions:
+            operation.accept(definitions)

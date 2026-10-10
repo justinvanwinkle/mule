@@ -404,8 +404,13 @@ class FunctionBuilder(ast.Visitor):
             statement.accept(body)
         class_id = f"mule_cls_{self.lowerer.class_definitions}"
         self.lowerer.class_definitions += 1
-        native = bool(body.fields) and body.native_eligible and policy.speed == 3 and any(
-            decorator.accept(_NativeClassOptIn()) for decorator in node.decorators
+        native = (
+            bool(body.fields)
+            and body.native_eligible
+            and policy.speed == 3
+            and any(
+                decorator.accept(_NativeClassOptIn()) for decorator in node.decorators
+            )
         )
         if native:
             if node.arguments:
@@ -706,6 +711,13 @@ class _AnnotationTarget(ast.Visitor):
         else:
             self.builder.emit(ir.Discard(self.builder.expression(node.value)))
 
+    def visit_Subscript(self, node):
+        if self.assignment.value is not None:
+            self.visit_Node(node)
+        else:
+            self.builder.emit(ir.Discard(self.builder.expression(node.value)))
+            node.index.accept(_AnnotationIndex(self.builder))
+
     def visit_Name(self, node):
         lowerer = self.builder.lowerer
         lowerer.reserved(node.identifier, node)
@@ -731,6 +743,18 @@ class _AnnotationTarget(ast.Visitor):
             self.builder.store(
                 node.identifier, self.builder.expression(self.assignment.value), node
             )
+
+
+class _AnnotationIndex(ast.Visitor):
+    def __init__(self, builder):
+        self.builder = builder
+
+    def visit_Node(self, node):
+        self.builder.emit(ir.Discard(self.builder.expression(node)))
+
+    def visit_Slice(self, node):
+        for bound in node.children():
+            bound.accept(self)
 
 
 class _CompilerBinding:
@@ -775,7 +799,9 @@ _EXPORT_BINDINGS = {
 _EXPORT_BINDINGS["optimize"] = _OptimizeBinding()
 _MODULE_BINDING = _ModuleBinding()
 _OPAQUE_BINDING = _CompilerBinding()
-_BUILTIN_BINDINGS = {name: _NumericBinding(contract) for name, contract in BUILTINS.items()}
+_BUILTIN_BINDINGS = {
+    name: _NumericBinding(contract) for name, contract in BUILTINS.items()
+}
 
 
 class _ImportBindings(ast.Visitor):
@@ -793,6 +819,9 @@ class _ImportBindings(ast.Visitor):
 
     def visit_Import(self, node):
         for item in node.items:
+            if item.name in ("typing", "typing_extensions"):
+                self.bind(item.alias or item.name, _OPAQUE_BINDING, item)
+                continue
             if item.name != "mule":
                 self.lowerer.error(
                     "only compiler imports from mule are supported",
@@ -802,6 +831,24 @@ class _ImportBindings(ast.Visitor):
             self.bind(item.alias or item.name, _MODULE_BINDING, item)
 
     def visit_ImportFrom(self, node):
+        if node.level == 0 and node.module in ("typing", "typing_extensions"):
+            for item in node.items:
+                if item.name == "*":
+                    self.lowerer.error(
+                        "wildcard annotation imports are not supported",
+                        item,
+                        unsupported=True,
+                    )
+                self.bind(item.alias or item.name, _OPAQUE_BINDING, item)
+            return
+        if (
+            node.level == 0
+            and node.module == "__future__"
+            and all(
+                item.name == "annotations" and item.alias is None for item in node.items
+            )
+        ):
+            return
         if node.module != "mule" or node.level:
             self.lowerer.error(
                 "only absolute compiler imports from mule are supported",
@@ -1260,10 +1307,6 @@ class _ClassFieldDeclaration(ast.Visitor):
             self.body.builder.error(
                 "reserved object attributes cannot be typed native fields", node
             )
-        if node.identifier in self.body.fields:
-            self.body.builder.error(
-                f"duplicate typed native field '{node.identifier}'", node
-            )
         self.body.annotation_expressions[node.identifier] = self.assignment.annotation
         contract = self.body.builder.lowerer.annotation(self.assignment.annotation)
         if contract is not EXPORTS["int64"]:
@@ -1287,6 +1330,10 @@ class _ReceiverFields(ast.Visitor):
 
     def visit_ClassDefinition(self, node):
         pass
+
+    def visit_AnnotatedAssignment(self, node):
+        if node.value is not None:
+            self.visit_Node(node)
 
 
 class _ReceiverFieldTarget(ast.Visitor):
@@ -1330,6 +1377,11 @@ class _AnnotationShadows(ast.Visitor):
     def visit_ClassDefinition(self, node):
         self.names.add(node.name)
 
+    def visit_AnnotatedAssignment(self, node):
+        node.target.accept(_AnnotationShadowTarget(self.names))
+        if node.value is not None:
+            node.value.accept(self)
+
 
 class _AnnotationShadowTarget(ast.Visitor):
     def __init__(self, names):
@@ -1350,6 +1402,11 @@ class _ScopeVisitor(ast.Visitor):
 
     def visit_Name(self, node):
         self.seen.add(node.identifier)
+
+    def visit_AnnotatedAssignment(self, node):
+        node.target.accept(self)
+        if node.value is not None:
+            node.value.accept(self)
 
     def visit_FunctionDefinition(self, node):
         if not self.builder.is_module:
@@ -1397,6 +1454,12 @@ class _LocalBindings(ast.Visitor):
 
     def visit_ClassDefinition(self, node):
         pass
+
+    def visit_AnnotatedAssignment(self, node):
+        node.target.accept(self.target_visitor)
+        node.target.accept(self)
+        if node.value is not None:
+            node.value.accept(self)
 
 
 class _LocalTarget(ast.Visitor):
