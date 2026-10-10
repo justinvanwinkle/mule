@@ -3,6 +3,7 @@
 import pytest
 
 from mule import ast as a
+from test.mule.parser.literal import literal
 
 from .ast_query import assert_ast_equal
 
@@ -115,7 +116,7 @@ def name(identifier):
             a.Module(
                 [
                     a.Match(
-                        a.Lambda([a.Parameter("x", default=a.Literal(1))], name("x")),
+                        a.Lambda([a.Parameter("x", default=literal(1))], name("x")),
                         [a.MatchCase(a.CapturePattern(None), [a.Pass()])],
                     )
                 ]

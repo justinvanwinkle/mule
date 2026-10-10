@@ -4,6 +4,7 @@ import pytest
 
 from mule import ast as A
 from test.mule.parser.ast_query import assert_ast_equal, at, nodes, one
+from test.mule.parser.literal import literal
 
 STATEMENTS = [
     # Assignment and deletion (20).
@@ -234,7 +235,7 @@ def n(identifier):
 
 
 def c(value):
-    return A.Literal(value=value)
+    return literal(value=value)
 
 
 def call(identifier, *arguments):

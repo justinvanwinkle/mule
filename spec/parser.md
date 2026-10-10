@@ -55,6 +55,14 @@ not perform all semantic compiler validation: context checks such as `return`
 outside a function and duplicate pattern captures are deliberately outside the
 parser error suite. Parsing success is not a promise that a program can compile.
 
+The parser builds typed literal nodes directly from lexical syntax. Expression
+nodes own target validation, boolean/comparison chain extension, and collection
+restrictions. Literal and interpolation nodes own adjacent string-fragment
+merging, while numeric literal subclasses validate pattern-literal roles.
+These operations use node behavior rather than runtime AST-class checks.
+Tokens retain lexical `kind` categories; operator and parameter enums describe
+grammar roles. Tokens and positions expose `source_start()` for span construction.
+
 ## Evidence
 
 - `mule/parser/core.py`: `parse`, shared state, and diagnostic construction.

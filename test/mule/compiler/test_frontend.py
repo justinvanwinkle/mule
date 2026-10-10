@@ -88,7 +88,7 @@ def test_ir_rejects_multiply_consumed_expression_result():
                     ir.Block(
                         "entry",
                         [
-                            ir.Constant("a", 1),
+                            ir.Constant("a", ast.IntegerLiteral(1)),
                             ir.Binary("b", ast.BinaryOperator.ADD, "a", "a"),
                         ],
                         ir.Return("b"),
@@ -112,10 +112,14 @@ def test_ir_rejects_value_not_dominating_its_use():
                 [
                     ir.Block(
                         "entry",
-                        [ir.Constant("condition", True)],
+                        [ir.Constant("condition", ast.BooleanLiteral(True))],
                         ir.Branch("condition", "left", "right"),
                     ),
-                    ir.Block("left", [ir.Constant("a", 1)], ir.Jump("right")),
+                    ir.Block(
+                        "left",
+                        [ir.Constant("a", ast.IntegerLiteral(1))],
+                        ir.Jump("right"),
+                    ),
                     ir.Block("right", [], ir.Return("a")),
                 ],
             )

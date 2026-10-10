@@ -25,7 +25,6 @@ from mule.ast import (
     Interpolation,
     Lambda,
     List,
-    Literal,
     Name,
     NamedExpression,
     Parameter,
@@ -40,6 +39,7 @@ from mule.ast import (
     Yield,
 )
 from test.mule.parser.ast_query import assert_ast_equal, at, nodes, one
+from test.mule.parser.literal import literal
 
 
 def case(name, source, expected):
@@ -49,32 +49,32 @@ def case(name, source, expected):
 @pytest.mark.parametrize(
     "source, expected",
     [
-        case("none", "None", Literal(None)),
-        case("true", "True", Literal(True)),
-        case("false", "False", Literal(False)),
-        case("ellipsis", "...", Literal(Ellipsis)),
-        case("decimal-zero", "0", Literal(0)),
-        case("decimal-underscores", "1_000_000", Literal(1000000)),
-        case("binary", "0b1010_0101", Literal(165)),
-        case("octal", "0o7_55", Literal(493)),
-        case("hexadecimal", "0xCA_FE", Literal(51966)),
-        case("float-fraction", "12.34", Literal(12.34)),
-        case("float-leading-dot", ".5", Literal(0.5)),
-        case("float-trailing-dot", "5.", Literal(5.0)),
-        case("float-exponent", "1e-9", Literal(1e-9)),
-        case("float-exponent-underscores", "1_2.3_4e+5_6", Literal(12.34e56)),
-        case("imaginary-integer", "3j", Literal(3j)),
-        case("imaginary-float", ".5J", Literal(0.5j)),
-        case("single-quoted-string", "'hello'", Literal("hello")),
-        case("double-quoted-string", '"hello"', Literal("hello")),
-        case("escaped-string", r"'a\n\t\x41\u03b1'", Literal("a\n\tA\u03b1")),
-        case("raw-string", r"r'\d+\s*'", Literal(r"\d+\s*")),
-        case("unicode-prefix", "u'hello'", Literal("hello")),
-        case("bytes", "b'hello'", Literal(b"hello")),
-        case("raw-bytes", r"rb'\x41'", Literal(rb"\x41")),
-        case("triple-string", "'''first\nsecond'''", Literal("first\nsecond")),
-        case("adjacent-strings", "'one' \"two\"", Literal("onetwo")),
-        case("adjacent-bytes", "b'one' b'two'", Literal(b"onetwo")),
+        case("none", "None", literal(None)),
+        case("true", "True", literal(True)),
+        case("false", "False", literal(False)),
+        case("ellipsis", "...", literal(Ellipsis)),
+        case("decimal-zero", "0", literal(0)),
+        case("decimal-underscores", "1_000_000", literal(1000000)),
+        case("binary", "0b1010_0101", literal(165)),
+        case("octal", "0o7_55", literal(493)),
+        case("hexadecimal", "0xCA_FE", literal(51966)),
+        case("float-fraction", "12.34", literal(12.34)),
+        case("float-leading-dot", ".5", literal(0.5)),
+        case("float-trailing-dot", "5.", literal(5.0)),
+        case("float-exponent", "1e-9", literal(1e-9)),
+        case("float-exponent-underscores", "1_2.3_4e+5_6", literal(12.34e56)),
+        case("imaginary-integer", "3j", literal(3j)),
+        case("imaginary-float", ".5J", literal(0.5j)),
+        case("single-quoted-string", "'hello'", literal("hello")),
+        case("double-quoted-string", '"hello"', literal("hello")),
+        case("escaped-string", r"'a\n\t\x41\u03b1'", literal("a\n\tA\u03b1")),
+        case("raw-string", r"r'\d+\s*'", literal(r"\d+\s*")),
+        case("unicode-prefix", "u'hello'", literal("hello")),
+        case("bytes", "b'hello'", literal(b"hello")),
+        case("raw-bytes", r"rb'\x41'", literal(rb"\x41")),
+        case("triple-string", "'''first\nsecond'''", literal("first\nsecond")),
+        case("adjacent-strings", "'one' \"two\"", literal("onetwo")),
+        case("adjacent-bytes", "b'one' b'two'", literal(b"onetwo")),
         case("ascii-name", "identifier", Name("identifier")),
         case("unicode-name", "\u03c0", Name("\u03c0")),
         case("normalized-unicode-name", "\u212a", Name("K")),
@@ -405,7 +405,7 @@ def test_operators(parse, source, expected):
             Dict(
                 [
                     DictEntry(
-                        Literal("x"),
+                        literal("x"),
                         Tuple(
                             [
                                 List([Name("a"), Unpack(Name("b"))]),
@@ -443,8 +443,8 @@ def test_container_displays(parse, source, expected):
             Call(
                 Name("f"),
                 [
-                    CallArgument(Literal(1), ArgumentKind.KEYWORD, "a"),
-                    CallArgument(Literal(2), ArgumentKind.KEYWORD, "b"),
+                    CallArgument(literal(1), ArgumentKind.KEYWORD, "a"),
+                    CallArgument(literal(2), ArgumentKind.KEYWORD, "b"),
                 ],
             ),
         ),
@@ -490,7 +490,7 @@ def test_container_displays(parse, source, expected):
             Call(
                 Name("f"),
                 [
-                    CallArgument(Literal(1), ArgumentKind.KEYWORD, "a"),
+                    CallArgument(literal(1), ArgumentKind.KEYWORD, "a"),
                     CallArgument(Name("b"), ArgumentKind.STARRED),
                 ],
             ),
@@ -502,7 +502,7 @@ def test_container_displays(parse, source, expected):
                 Name("f"),
                 [
                     CallArgument(Name("a"), ArgumentKind.DOUBLE_STARRED),
-                    CallArgument(Literal(2), ArgumentKind.KEYWORD, "b"),
+                    CallArgument(literal(2), ArgumentKind.KEYWORD, "b"),
                 ],
             ),
         ),
@@ -545,7 +545,7 @@ def test_container_displays(parse, source, expected):
         case(
             "negative-step",
             "a[::-1]",
-            Subscript(Name("a"), Slice(step=Unary(UnaryOperator.NEGATIVE, Literal(1)))),
+            Subscript(Name("a"), Slice(step=Unary(UnaryOperator.NEGATIVE, literal(1)))),
         ),
         case(
             "mixed-dimensional-slice",
@@ -623,8 +623,8 @@ def test_primary_trailers(parse, source, expected):
             "lambda a=1, b=2: a + b",
             Lambda(
                 [
-                    Parameter("a", default=Literal(1)),
-                    Parameter("b", default=Literal(2)),
+                    Parameter("a", default=literal(1)),
+                    Parameter("b", default=literal(2)),
                 ],
                 Binary(BinaryOperator.ADD, Name("a"), Name("b")),
             ),
@@ -643,7 +643,7 @@ def test_primary_trailers(parse, source, expected):
             Lambda(
                 [
                     Parameter("a", ParameterKind.KEYWORD_ONLY),
-                    Parameter("b", ParameterKind.KEYWORD_ONLY, default=Literal(2)),
+                    Parameter("b", ParameterKind.KEYWORD_ONLY, default=literal(2)),
                 ],
                 Binary(BinaryOperator.ADD, Name("a"), Name("b")),
             ),
@@ -665,10 +665,10 @@ def test_primary_trailers(parse, source, expected):
             Lambda(
                 [
                     Parameter("a", ParameterKind.POSITIONAL_ONLY),
-                    Parameter("b", default=Literal(2)),
+                    Parameter("b", default=literal(2)),
                     Parameter("c", ParameterKind.VAR_POSITIONAL),
                     Parameter("d", ParameterKind.KEYWORD_ONLY),
-                    Parameter("e", ParameterKind.KEYWORD_ONLY, default=Literal(3)),
+                    Parameter("e", ParameterKind.KEYWORD_ONLY, default=literal(3)),
                     Parameter("f", ParameterKind.VAR_KEYWORD),
                 ],
                 Name("a"),
@@ -689,9 +689,9 @@ def test_primary_trailers(parse, source, expected):
             "(lambda x: x + 1)(2)",
             Call(
                 Lambda(
-                    [Parameter("x")], Binary(BinaryOperator.ADD, Name("x"), Literal(1))
+                    [Parameter("x")], Binary(BinaryOperator.ADD, Name("x"), literal(1))
                 ),
-                [CallArgument(Literal(2))],
+                [CallArgument(literal(2))],
             ),
         ),
         case("named-expression", "(x := y)", NamedExpression(Name("x"), Name("y"))),
@@ -787,10 +787,10 @@ def test_low_binding_and_suspension_expressions(parse, source, expected):
                         Name("items"),
                         [
                             Comparison(
-                                Name("x"), [ComparisonOperator.GREATER], [Literal(0)]
+                                Name("x"), [ComparisonOperator.GREATER], [literal(0)]
                             ),
                             Comparison(
-                                Name("x"), [ComparisonOperator.LESS], [Literal(10)]
+                                Name("x"), [ComparisonOperator.LESS], [literal(10)]
                             ),
                         ],
                     )
@@ -968,7 +968,7 @@ def test_comprehensions(parse, source, expected):
     "source, expected",
     [
         case("empty-f-string", "f''", FormattedString()),
-        case("f-string-literal", "f'hello'", FormattedString([Literal("hello")])),
+        case("f-string-literal", "f'hello'", FormattedString([literal("hello")])),
         case(
             "f-string-replacement",
             "f'{name}'",
@@ -978,13 +978,13 @@ def test_comprehensions(parse, source, expected):
             "f-string-text-and-expression",
             "f'Hello {name}!'",
             FormattedString(
-                [Literal("Hello "), Interpolation(Name("name")), Literal("!")]
+                [literal("Hello "), Interpolation(Name("name")), literal("!")]
             ),
         ),
         case(
             "f-string-escaped-braces",
             "f'{{{value}}}'",
-            FormattedString([Literal("{"), Interpolation(Name("value")), Literal("}")]),
+            FormattedString([literal("{"), Interpolation(Name("value")), literal("}")]),
         ),
         case(
             "f-string-repr",
@@ -1007,7 +1007,7 @@ def test_comprehensions(parse, source, expected):
             FormattedString(
                 [
                     Interpolation(
-                        Name("value"), format_spec=FormattedString([Literal("08.2f")])
+                        Name("value"), format_spec=FormattedString([literal("08.2f")])
                     )
                 ]
             ),
@@ -1022,9 +1022,9 @@ def test_comprehensions(parse, source, expected):
                         format_spec=FormattedString(
                             [
                                 Interpolation(Name("width")),
-                                Literal("."),
+                                literal("."),
                                 Interpolation(Name("precision")),
-                                Literal("f"),
+                                literal("f"),
                             ]
                         ),
                     )
@@ -1035,14 +1035,14 @@ def test_comprehensions(parse, source, expected):
             "f-string-debug",
             "f'{value=}'",
             FormattedString(
-                [Literal("value="), Interpolation(Name("value"), conversion="r")]
+                [literal("value="), Interpolation(Name("value"), conversion="r")]
             ),
         ),
         case(
             "f-string-debug-whitespace",
             "f'{ value = }'",
             FormattedString(
-                [Literal(" value = "), Interpolation(Name("value"), conversion="r")]
+                [literal(" value = "), Interpolation(Name("value"), conversion="r")]
             ),
         ),
         case(
@@ -1050,9 +1050,9 @@ def test_comprehensions(parse, source, expected):
             "f'{value=:04}'",
             FormattedString(
                 [
-                    Literal("value="),
+                    literal("value="),
                     Interpolation(
-                        Name("value"), format_spec=FormattedString([Literal("04")])
+                        Name("value"), format_spec=FormattedString([literal("04")])
                     ),
                 ]
             ),
@@ -1061,7 +1061,7 @@ def test_comprehensions(parse, source, expected):
             "f-string-debug-conversion",
             "f'{value=!s}'",
             FormattedString(
-                [Literal("value="), Interpolation(Name("value"), conversion="s")]
+                [literal("value="), Interpolation(Name("value"), conversion="s")]
             ),
         ),
         case(
@@ -1073,19 +1073,19 @@ def test_comprehensions(parse, source, expected):
             "adjacent-ordinary-and-f-strings",
             "'prefix' f'{value}' 'suffix'",
             FormattedString(
-                [Literal("prefix"), Interpolation(Name("value")), Literal("suffix")]
+                [literal("prefix"), Interpolation(Name("value")), literal("suffix")]
             ),
         ),
         case(
             "raw-f-string",
             r"rf'\n{value}'",
-            FormattedString([Literal(r"\n"), Interpolation(Name("value"))]),
+            FormattedString([literal(r"\n"), Interpolation(Name("value"))]),
         ),
         case(
             "pep701-reused-quote",
             'f"{mapping["key"]}"',
             FormattedString(
-                [Interpolation(Subscript(Name("mapping"), Literal("key")))]
+                [Interpolation(Subscript(Name("mapping"), literal("key")))]
             ),
         ),
         case(
@@ -1095,7 +1095,7 @@ def test_comprehensions(parse, source, expected):
                 [
                     Interpolation(
                         Call(
-                            Attribute(Literal("\n"), "join"),
+                            Attribute(literal("\n"), "join"),
                             [CallArgument(Name("items"))],
                         )
                     )

@@ -14,6 +14,9 @@ class Token:
     start: Position
     end: Position
 
+    def source_start(self) -> Position:
+        return self.start
+
 
 _ORIGIN = Position(1, 0)
 

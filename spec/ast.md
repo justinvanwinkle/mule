@@ -14,9 +14,16 @@ statements, and patterns have separate base classes. Supporting nodes represent
 parameters, call arguments, comprehension clauses, handlers, and other syntax
 components. The dataclass definitions specify the concrete fields.
 
+Literal syntax selects a concrete node at the grammar boundary:
+`IntegerLiteral`, `FloatLiteral`, `ComplexLiteral`, `BooleanLiteral`,
+`NoneLiteral`, `TextLiteral`, `BytesLiteral`, or `EllipsisLiteral`. Each retains
+its raw scalar `value` and derives from `Literal`. The base `Literal` can be
+used in hand-built trees but does not classify its value into a concrete node.
+`NoneLiteral()` and `EllipsisLiteral()` supply their singleton values by default.
+
 Assignment targets use the same expression types as values. Their owning
 statement or comprehension determines their role; nodes do not carry a host-AST
-load/store context. Scope validation belongs to a future compiler stage.
+load/store context. Scope validation belongs to the compiler.
 
 ## Coordinates
 
@@ -33,9 +40,22 @@ including compound statements and match cases.
 
 ## Traversal
 
-`children(node)` yields immediate child nodes in dataclass field order and list
-order, excluding the span. Non-node scalar fields are not children.
-`walk(node)` visits the root and recursively visits children in preorder.
+Each concrete node explicitly implements `children()`, yielding its owned syntax
+children in field and list order. Optional missing children are omitted; scalar
+metadata and spans are not children. `children(node)` delegates to that method,
+and `walk(node)` visits the root and recursively visits children in preorder.
+Traversal does not inspect dataclass fields or classify their values.
+
+Each concrete node also explicitly implements `accept(visitor)` and calls its
+corresponding visitor method, such as `visit_Name` or `visit_IntegerLiteral`.
+`Visitor` provides those methods and forwards their defaults to `visit_Node`.
+Consumers override the syntax they support; dispatch does not use class-name
+lookup, type tests, or a class registry.
+
+`assigned_targets()` exposes syntactic targets on assignments, named expressions,
+deletions, loops, with items, and comprehension clauses. Other nodes return an
+empty tuple; an ordinary name read is not an assignment. Target expressions own
+their validation behavior, and `Name.binding_name()` returns its identifier.
 
 ## Evidence
 

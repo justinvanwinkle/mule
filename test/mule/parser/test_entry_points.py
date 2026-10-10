@@ -1,6 +1,7 @@
 import pytest
 
 from mule import ast
+from test.mule.parser.literal import literal
 
 from .ast_query import assert_ast_equal, at
 
@@ -14,7 +15,7 @@ from .ast_query import assert_ast_equal, at
         pytest.param(
             "x = 1",
             "exec",
-            ast.Module([ast.Assignment([ast.Name("x")], ast.Literal(1))]),
+            ast.Module([ast.Assignment([ast.Name("x")], literal(1))]),
             id="module-without-final-newline",
         ),
         pytest.param(
@@ -22,8 +23,8 @@ from .ast_query import assert_ast_equal, at
             "exec",
             ast.Module(
                 [
-                    ast.Assignment([ast.Name("x")], ast.Literal(1)),
-                    ast.Assignment([ast.Name("y")], ast.Literal(2)),
+                    ast.Assignment([ast.Name("x")], literal(1)),
+                    ast.Assignment([ast.Name("y")], literal(2)),
                 ]
             ),
             id="multiple-statements",
@@ -32,7 +33,7 @@ from .ast_query import assert_ast_equal, at
             "x + 1",
             "eval",
             ast.ExpressionInput(
-                ast.Binary(ast.BinaryOperator.ADD, ast.Name("x"), ast.Literal(1))
+                ast.Binary(ast.BinaryOperator.ADD, ast.Name("x"), literal(1))
             ),
             id="expression",
         ),
@@ -40,14 +41,14 @@ from .ast_query import assert_ast_equal, at
             "\n(x + 1)\n",
             "eval",
             ast.ExpressionInput(
-                ast.Binary(ast.BinaryOperator.ADD, ast.Name("x"), ast.Literal(1))
+                ast.Binary(ast.BinaryOperator.ADD, ast.Name("x"), literal(1))
             ),
             id="padded-expression",
         ),
         pytest.param(
             "1, 2",
             "eval",
-            ast.ExpressionInput(ast.Tuple([ast.Literal(1), ast.Literal(2)])),
+            ast.ExpressionInput(ast.Tuple([literal(1), literal(2)])),
             id="expression-tuple",
         ),
         pytest.param(
@@ -59,7 +60,7 @@ from .ast_query import assert_ast_equal, at
         pytest.param(
             "x = 1\n",
             "single",
-            ast.InteractiveInput([ast.Assignment([ast.Name("x")], ast.Literal(1))]),
+            ast.InteractiveInput([ast.Assignment([ast.Name("x")], literal(1))]),
             id="interactive-assignment",
         ),
         pytest.param(
@@ -67,8 +68,8 @@ from .ast_query import assert_ast_equal, at
             "single",
             ast.InteractiveInput(
                 [
-                    ast.Assignment([ast.Name("a")], ast.Literal(1)),
-                    ast.Assignment([ast.Name("b")], ast.Literal(2)),
+                    ast.Assignment([ast.Name("a")], literal(1)),
+                    ast.Assignment([ast.Name("b")], literal(2)),
                 ]
             ),
             id="interactive-semicolons",
@@ -181,3 +182,19 @@ def test_single_mode_rejects_multiple_independent_statements(parse):
 def test_eval_mode_rejects_assignment_statement(parse):
     with pytest.raises(SyntaxError):
         parse("x = 1", mode="eval")
+
+
+@pytest.mark.parametrize("source", [None, 3, b"x = 1", ["x = 1"], {"source": "x = 1"}])
+def test_invalid_source_reports_public_type_error(parse, source):
+    with pytest.raises(TypeError, match="source must be a string"):
+        parse(source)
+
+
+def test_source_error_precedes_invalid_mode_error(parse):
+    with pytest.raises(TypeError, match="source must be a string"):
+        parse(None, mode="invalid")
+
+
+def test_valid_source_with_invalid_mode_reports_mode_error(parse):
+    with pytest.raises(ValueError, match="mode must be"):
+        parse("x = 1\r\n", mode="invalid")

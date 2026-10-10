@@ -65,8 +65,8 @@ def test_reuse_hint_requires_immediate_store_to_same_local():
                     ir.Block(
                         "entry",
                         [
-                            ir.Constant("left", BIG),
-                            ir.Constant("right", 2),
+                            ir.Constant("left", ast.IntegerLiteral(BIG)),
+                            ir.Constant("right", ast.IntegerLiteral(2)),
                             ir.Binary(
                                 "product",
                                 ast.BinaryOperator.MULTIPLY,

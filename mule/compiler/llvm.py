@@ -164,7 +164,115 @@ class _ModuleEmitter:
         )
 
 
-class _FunctionEmitter:
+class _LiteralEmitter(ast.Visitor):
+    """Each literal chooses its native representation without host type checks."""
+
+    def __init__(self, module: _ModuleEmitter):
+        self.module = module
+
+    def visit_Node(self, node: ast.Node) -> str:
+        raise TypeError("Unsupported LLVM constant")
+
+    def visit_Literal(self, literal: ast.Literal) -> str:
+        raise TypeError("Unsupported LLVM constant")
+
+    def visit_NoneLiteral(self, literal: ast.NoneLiteral) -> str:
+        return "getelementptr i8, ptr @mule.none, i64 0"
+
+    def visit_BooleanLiteral(self, literal: ast.BooleanLiteral) -> str:
+        name = "true" if literal.value else "false"
+        return f"getelementptr i8, ptr @mule.{name}, i64 0"
+
+    def visit_IntegerLiteral(self, literal: ast.IntegerLiteral) -> str:
+        value = literal.value
+        if -(1 << 62) <= value < (1 << 62):
+            tagged = ((value << 1) | 1) & ((1 << 64) - 1)
+            return f"inttoptr i64 {tagged} to ptr"
+        return f"call ptr @mule_literal_int(ptr {self.module.text(_decimal(value))})"
+
+    def visit_FloatLiteral(self, literal: ast.FloatLiteral) -> str:
+        bits = struct.unpack(">Q", struct.pack(">d", literal.value))[0]
+        return f"call ptr @mule_literal_float(double 0x{bits:016X})"
+
+    def visit_TextLiteral(self, literal: ast.TextLiteral) -> str:
+        encoded = literal.value.encode("utf-8", "surrogatepass")
+        return (
+            f"call ptr @mule_literal_text(ptr {self.module.literal_data(encoded)}, "
+            f"i64 {len(encoded)})"
+        )
+
+    def visit_BytesLiteral(self, literal: ast.BytesLiteral) -> str:
+        value = literal.value
+        return (
+            f"call ptr @mule_literal_bytes(ptr {self.module.literal_data(value)}, "
+            f"i64 {len(value)})"
+        )
+
+    def visit_ComplexLiteral(self, literal: ast.ComplexLiteral) -> str:
+        return self.visit_Literal(literal)
+
+    def visit_EllipsisLiteral(self, literal: ast.EllipsisLiteral) -> str:
+        return self.visit_Literal(literal)
+
+
+class _ArgumentGuard:
+    """Emit the entry check selected by the parameter fact's own behavior."""
+
+    def __init__(self, emitter, value: str):
+        self.emitter = emitter
+        self.value = value
+
+    def visit_ValueType(self, fact: ValueType) -> str:
+        raise ValueError(f"Unsupported specialization parameter: {fact!r}")
+
+    def visit_UnknownType(self, fact: ValueType) -> str:
+        return "true"
+
+    def visit_IntegerType(self, fact: ValueType) -> str:
+        if not fact.is_fixnum:
+            return self.visit_ValueType(fact)
+        operation = self.emitter.operation
+        bits = operation(f"ptrtoint ptr {self.value} to i64")
+        tag = operation(f"and i64 {bits}, 1")
+        tagged = operation(f"icmp ne i64 {tag}, 0")
+        decoded = operation(f"ashr i64 {bits}, 1")
+        lower = operation(f"icmp sge i64 {decoded}, {fact.minimum}")
+        upper = operation(f"icmp sle i64 {decoded}, {fact.maximum}")
+        bounds = operation(f"and i1 {lower}, {upper}")
+        return operation(f"and i1 {tagged}, {bounds}")
+
+    def visit_NoneType(self, fact: ValueType) -> str:
+        return self.emitter.operation(f"icmp eq ptr {self.value}, @mule.none")
+
+    def boolean(self) -> tuple[str, str, str]:
+        operation = self.emitter.operation
+        true = operation(f"icmp eq ptr {self.value}, @mule.true")
+        false = operation(f"icmp eq ptr {self.value}, @mule.false")
+        return true, false, operation(f"or i1 {true}, {false}")
+
+    def visit_BooleanType(self, fact: ValueType) -> str:
+        true, false, boolean = self.boolean()
+        allows_false = (fact.minimum is None or fact.minimum <= 0) and (
+            fact.maximum is None or fact.maximum >= 0
+        )
+        allows_true = (fact.minimum is None or fact.minimum <= 1) and (
+            fact.maximum is None or fact.maximum >= 1
+        )
+        if allows_false and allows_true:
+            return boolean
+        if allows_true:
+            return true
+        if allows_false:
+            return false
+        return self.emitter.operation("icmp eq i1 true, false")
+
+    def visit_ImmortalType(self, fact: ValueType) -> str:
+        _, _, boolean = self.boolean()
+        none = self.emitter.operation(f"icmp eq ptr {self.value}, @mule.none")
+        return self.emitter.operation(f"or i1 {boolean}, {none}")
+
+
+class _FunctionEmitter(ir1.Visitor):
     def __init__(
         self,
         module: _ModuleEmitter,
@@ -205,15 +313,17 @@ class _FunctionEmitter:
         }
         for block in function.blocks:
             for instruction in block.instructions:
-                if isinstance(instruction, ir1.Store) and instruction.local:
-                    fact = self.facts[instruction.value]
+                stored = instruction.stored_local()
+                if stored is not None:
+                    name, value = stored
+                    fact = self.facts[value]
                     if not (fact.is_fixnum or fact.is_immortal):
-                        self.immortal_locals.discard(instruction.name)
+                        self.immortal_locals.discard(name)
         results = dict.fromkeys(
-            instruction.result
+            instruction.defined_result()
             for block in function.blocks
             for instruction in block.instructions
-            if hasattr(instruction, "result")
+            if instruction.defined_result() is not None
         )
         self.value_slots = {
             name: f"%value.{index}" for index, name in enumerate(results)
@@ -328,10 +438,9 @@ class _FunctionEmitter:
             self.line(f"store ptr null, ptr {slot}")
         max_args = max(
             (
-                len(instruction.args)
+                instruction.argument_count()
                 for block in self.function.blocks
                 for instruction in block.instructions
-                if isinstance(instruction, ir1.Call)
             ),
             default=0,
         )
@@ -432,238 +541,189 @@ class _FunctionEmitter:
         self.refine(result, value)
 
     def instruction(self, instruction: ir1.Instruction) -> None:
-        match instruction:
-            case ir1.Constant(result=result, value=value):
-                self.pointer_result(result, self.constant(value))
-            case ir1.Load(result=result, name=name, local=local, clear=clear):
-                name_pointer = self.module.text(name)
-                if local:
-                    slot = self.local_slots[name]
-                    value = self.operation(f"load ptr, ptr {slot}")
-                    if clear:
-                        self.line(f"store ptr null, ptr {slot}")
-                    fact = self.facts[result]
-                    helper = (
-                        "local.move"
-                        if clear or fact.is_fixnum or fact.is_immortal
-                        else "local"
-                    )
-                    operation = (
-                        f"call ptr @mule.fast.{helper}(ptr {value}, ptr {name_pointer})"
-                    )
-                else:
-                    operation = (
-                        f"call ptr @mule_load_global(ptr %globals, ptr {name_pointer})"
-                    )
-                self.pointer_result(result, operation)
-            case ir1.Store(name=name, value=operand, local=local):
-                value = self.take(operand)
-                if local:
-                    slot = self.local_slots[name]
-                    old = self.operation(f"load ptr, ptr {slot}")
-                    self.line(f"store ptr {value}, ptr {slot}")
-                    if name not in self.immortal_locals:
-                        self.release(old)
-                else:
-                    status = self.operation(
-                        "call i32 @mule_store_global(ptr %globals, "
-                        f"ptr {self.module.text(name)}, ptr {value})"
-                    )
-                    self.release(value)
-                    self.check_status(status)
-            case ir1.Discard(value=operand):
-                self.release(self.take(operand))
-            case ir1.Binary(
-                result=result,
-                operator=operator,
-                left=left,
-                right=right,
-                inplace=inplace,
-                reuse_local=reuse_local,
-            ):
-                lhs, rhs = self.take(left), self.take(right)
-                opcode = _BINARY[operator]
-                fixnums = self.facts[left].is_fixnum and self.facts[right].is_fixnum
-                primitive = {
-                    0: "add",
-                    1: "sub",
-                    2: "mul",
-                    10: "and",
-                    11: "xor",
-                    12: "or",
-                }
-                if fixnums and self.facts[result].is_fixnum and opcode in primitive:
-                    a, b = self.decode(lhs), self.decode(rhs)
-                    integer = self.operation(f"{primitive[opcode]} i64 {a}, {b}")
-                    self.native_result(result, self.encode(integer), (lhs, rhs))
-                    return
-                prefix = "fixnum" if fixnums else "fast"
-                reuse = (
-                    self.local_slots[reuse_local] if reuse_local is not None else "null"
-                )
-                operation = (
-                    f"@mule.{prefix}.binary.{opcode}"
-                    if opcode in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12)
-                    else "@mule_binary_reuse"
-                )
-                arguments = (
-                    f"ptr {lhs}, ptr {rhs}, i32 {int(inplace)}, ptr {reuse}"
-                    if operation != "@mule_binary_reuse"
-                    else f"i32 {opcode}, ptr {lhs}, ptr {rhs}, i32 {int(inplace)}, ptr {reuse}"
-                )
-                self.pointer_result(
-                    result,
-                    f"call ptr {operation}({arguments})",
-                    (lhs, rhs),
-                )
-            case ir1.Unary(result=result, operator=operator, operand=operand):
-                value = self.take(operand)
-                opcode = _UNARY[operator]
-                fixnum = self.facts[operand].is_fixnum
-                if fixnum and self.facts[result].is_fixnum and opcode < 3:
-                    decoded = self.decode(value)
-                    integer = (
-                        decoded
-                        if opcode == 0
-                        else self.operation(
-                            f"sub i64 0, {decoded}"
-                            if opcode == 1
-                            else f"xor i64 {decoded}, -1"
-                        )
-                    )
-                    self.native_result(result, self.encode(integer), (value,))
-                    return
-                if fixnum and opcode == 3:
-                    bits = self.operation(f"ptrtoint ptr {value} to i64")
-                    zero = self.operation(f"icmp eq i64 {bits}, 1")
-                    boolean = self.operation(
-                        f"select i1 {zero}, ptr @mule.true, ptr @mule.false"
-                    )
-                    self.native_result(result, boolean, (value,))
-                    return
-                prefix = "fixnum" if fixnum and opcode < 3 else "fast"
-                self.pointer_result(
-                    result,
-                    f"call ptr @mule.{prefix}.unary.{opcode}(ptr {value})",
-                    (value,),
-                )
-            case ir1.Compare(result=result, operator=operator, left=left, right=right):
-                lhs, rhs = self.take(left), self.take(right)
-                opcode = _COMPARE[operator]
-                if (
-                    opcode < 6
-                    and self.facts[left].is_fixnum
-                    and self.facts[right].is_fixnum
-                ):
-                    a, b = self.decode(lhs), self.decode(rhs)
-                    predicate = ("eq", "ne", "slt", "sle", "sgt", "sge")[opcode]
-                    condition = self.operation(f"icmp {predicate} i64 {a}, {b}")
-                    boolean = self.operation(
-                        f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
-                    )
-                    self.native_result(result, boolean, (lhs, rhs))
-                    return
-                operation = (
-                    f"call ptr @mule.fast.compare.{opcode}(ptr {lhs}, ptr {rhs})"
-                    if opcode < 8
-                    else f"call ptr @mule_compare(i32 {opcode}, ptr {lhs}, ptr {rhs})"
-                )
-                self.pointer_result(
-                    result,
-                    operation,
-                    (lhs, rhs),
-                )
-            case ir1.Call(result=result, callee=callee, args=args):
-                function = self.take(callee)
-                values = [self.take(argument) for argument in args]
-                for index, value in enumerate(values):
-                    slot = self.operation(f"getelementptr ptr, ptr %argv, i64 {index}")
-                    self.line(f"store ptr {value}, ptr {slot}")
-                value = self.call(callee, function, args, values)
-                self.publish(result, value)
-                for operand in (function, *values):
-                    self.release(operand)
-                self.check_pointer(value)
-                self.refine(result, value)
-            case ir1.DefineFunction(result=result, function=function, public_name=name):
-                self.pointer_result(
-                    result,
-                    "call ptr @mule_function(ptr %globals, "
-                    f"ptr {self.module.functions[function]}, ptr {self.module.text(name)})",
-                )
-            case _:
-                raise TypeError(f"Unsupported LLVM instruction: {instruction!r}")
+        instruction.accept(self)
 
-    @staticmethod
-    def fits(actual: ValueType, expected: ValueType) -> bool:
-        """A caller proof can discharge the specialization's dispatch checks."""
-        if expected.kind == "unknown":
-            return True
-        if expected.is_fixnum:
-            return (
-                actual.is_fixnum
-                and expected.minimum <= actual.minimum
-                and actual.maximum <= expected.maximum
+    def visit_Operation(self, operation: ir1.Operation) -> None:
+        raise TypeError(f"Unsupported LLVM operation: {operation!r}")
+
+    def visit_Constant(self, instruction: ir1.Constant) -> None:
+        result = instruction.result
+        value = instruction.value
+        self.pointer_result(result, self.constant(value))
+
+    def visit_Load(self, instruction: ir1.Load) -> None:
+        result = instruction.result
+        name = instruction.name
+        local = instruction.local
+        clear = instruction.clear
+        name_pointer = self.module.text(name)
+        if local:
+            slot = self.local_slots[name]
+            value = self.operation(f"load ptr, ptr {slot}")
+            if clear:
+                self.line(f"store ptr null, ptr {slot}")
+            fact = self.facts[result]
+            helper = (
+                "local.move" if clear or fact.is_fixnum or fact.is_immortal else "local"
             )
-        if expected.kind == "bool":
-            return (
-                actual.kind == "bool"
-                and actual.is_immortal
-                and (
-                    expected.minimum is None
-                    or (
-                        actual.minimum is not None
-                        and expected.minimum <= actual.minimum
-                    )
+            operation = f"call ptr @mule.fast.{helper}(ptr {value}, ptr {name_pointer})"
+        else:
+            operation = f"call ptr @mule_load_global(ptr %globals, ptr {name_pointer})"
+        self.pointer_result(result, operation)
+
+    def visit_Store(self, instruction: ir1.Store) -> None:
+        name = instruction.name
+        operand = instruction.value
+        local = instruction.local
+        value = self.take(operand)
+        if local:
+            slot = self.local_slots[name]
+            old = self.operation(f"load ptr, ptr {slot}")
+            self.line(f"store ptr {value}, ptr {slot}")
+            if name not in self.immortal_locals:
+                self.release(old)
+        else:
+            status = self.operation(
+                "call i32 @mule_store_global(ptr %globals, "
+                f"ptr {self.module.text(name)}, ptr {value})"
+            )
+            self.release(value)
+            self.check_status(status)
+
+    def visit_Discard(self, instruction: ir1.Discard) -> None:
+        operand = instruction.value
+        self.release(self.take(operand))
+
+    def visit_Binary(self, instruction: ir1.Binary) -> None:
+        result = instruction.result
+        operator = instruction.operator
+        left = instruction.left
+        right = instruction.right
+        inplace = instruction.inplace
+        reuse_local = instruction.reuse_local
+        lhs, rhs = self.take(left), self.take(right)
+        opcode = _BINARY[operator]
+        fixnums = self.facts[left].is_fixnum and self.facts[right].is_fixnum
+        primitive = {
+            0: "add",
+            1: "sub",
+            2: "mul",
+            10: "and",
+            11: "xor",
+            12: "or",
+        }
+        if fixnums and self.facts[result].is_fixnum and opcode in primitive:
+            a, b = self.decode(lhs), self.decode(rhs)
+            integer = self.operation(f"{primitive[opcode]} i64 {a}, {b}")
+            self.native_result(result, self.encode(integer), (lhs, rhs))
+            return
+        prefix = "fixnum" if fixnums else "fast"
+        reuse = self.local_slots[reuse_local] if reuse_local is not None else "null"
+        operation = (
+            f"@mule.{prefix}.binary.{opcode}"
+            if opcode in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12)
+            else "@mule_binary_reuse"
+        )
+        arguments = (
+            f"ptr {lhs}, ptr {rhs}, i32 {int(inplace)}, ptr {reuse}"
+            if operation != "@mule_binary_reuse"
+            else f"i32 {opcode}, ptr {lhs}, ptr {rhs}, i32 {int(inplace)}, ptr {reuse}"
+        )
+        self.pointer_result(
+            result,
+            f"call ptr {operation}({arguments})",
+            (lhs, rhs),
+        )
+
+    def visit_Unary(self, instruction: ir1.Unary) -> None:
+        result = instruction.result
+        operator = instruction.operator
+        operand = instruction.operand
+        value = self.take(operand)
+        opcode = _UNARY[operator]
+        fixnum = self.facts[operand].is_fixnum
+        if fixnum and self.facts[result].is_fixnum and opcode < 3:
+            decoded = self.decode(value)
+            integer = (
+                decoded
+                if opcode == 0
+                else self.operation(
+                    f"sub i64 0, {decoded}" if opcode == 1 else f"xor i64 {decoded}, -1"
                 )
-                and (
-                    expected.maximum is None
-                    or (
-                        actual.maximum is not None
-                        and actual.maximum <= expected.maximum
-                    )
-                )
             )
-        if expected.is_immortal:
-            return actual.is_immortal and (
-                expected.kind == "immortal" or actual.kind == expected.kind
+            self.native_result(result, self.encode(integer), (value,))
+            return
+        if fixnum and opcode == 3:
+            bits = self.operation(f"ptrtoint ptr {value} to i64")
+            zero = self.operation(f"icmp eq i64 {bits}, 1")
+            boolean = self.operation(
+                f"select i1 {zero}, ptr @mule.true, ptr @mule.false"
             )
-        return False
+            self.native_result(result, boolean, (value,))
+            return
+        prefix = "fixnum" if fixnum and opcode < 3 else "fast"
+        self.pointer_result(
+            result,
+            f"call ptr @mule.{prefix}.unary.{opcode}(ptr {value})",
+            (value,),
+        )
+
+    def visit_Compare(self, instruction: ir1.Compare) -> None:
+        result = instruction.result
+        operator = instruction.operator
+        left = instruction.left
+        right = instruction.right
+        lhs, rhs = self.take(left), self.take(right)
+        opcode = _COMPARE[operator]
+        if opcode < 6 and self.facts[left].is_fixnum and self.facts[right].is_fixnum:
+            a, b = self.decode(lhs), self.decode(rhs)
+            predicate = ("eq", "ne", "slt", "sle", "sgt", "sge")[opcode]
+            condition = self.operation(f"icmp {predicate} i64 {a}, {b}")
+            boolean = self.operation(
+                f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
+            )
+            self.native_result(result, boolean, (lhs, rhs))
+            return
+        operation = (
+            f"call ptr @mule.fast.compare.{opcode}(ptr {lhs}, ptr {rhs})"
+            if opcode < 8
+            else f"call ptr @mule_compare(i32 {opcode}, ptr {lhs}, ptr {rhs})"
+        )
+        self.pointer_result(
+            result,
+            operation,
+            (lhs, rhs),
+        )
+
+    def visit_Call(self, instruction: ir1.Call) -> None:
+        result = instruction.result
+        callee = instruction.callee
+        args = instruction.args
+        function = self.take(callee)
+        values = [self.take(argument) for argument in args]
+        for index, value in enumerate(values):
+            slot = self.operation(f"getelementptr ptr, ptr %argv, i64 {index}")
+            self.line(f"store ptr {value}, ptr {slot}")
+        value = self.call(callee, function, args, values)
+        self.publish(result, value)
+        for operand in (function, *values):
+            self.release(operand)
+        self.check_pointer(value)
+        self.refine(result, value)
+
+    def visit_DefineFunction(self, instruction: ir1.DefineFunction) -> None:
+        result = instruction.result
+        function = instruction.function
+        name = instruction.public_name
+        self.pointer_result(
+            result,
+            "call ptr @mule_function(ptr %globals, "
+            f"ptr {self.module.functions[function]}, ptr {self.module.text(name)})",
+        )
 
     def argument_guard(self, value: str, expected: ValueType) -> str:
         """Check representation/range without touching or invoking an object."""
-        if expected.is_fixnum:
-            bits = self.operation(f"ptrtoint ptr {value} to i64")
-            tag = self.operation(f"and i64 {bits}, 1")
-            tagged = self.operation(f"icmp ne i64 {tag}, 0")
-            decoded = self.operation(f"ashr i64 {bits}, 1")
-            lower = self.operation(f"icmp sge i64 {decoded}, {expected.minimum}")
-            upper = self.operation(f"icmp sle i64 {decoded}, {expected.maximum}")
-            bounds = self.operation(f"and i1 {lower}, {upper}")
-            return self.operation(f"and i1 {tagged}, {bounds}")
-        if expected.kind == "none":
-            return self.operation(f"icmp eq ptr {value}, @mule.none")
-        true = self.operation(f"icmp eq ptr {value}, @mule.true")
-        false = self.operation(f"icmp eq ptr {value}, @mule.false")
-        boolean = self.operation(f"or i1 {true}, {false}")
-        if expected.kind == "bool":
-            allows_false = (expected.minimum is None or expected.minimum <= 0) and (
-                expected.maximum is None or expected.maximum >= 0
-            )
-            allows_true = (expected.minimum is None or expected.minimum <= 1) and (
-                expected.maximum is None or expected.maximum >= 1
-            )
-            if allows_false and allows_true:
-                return boolean
-            if allows_true:
-                return true
-            if allows_false:
-                return false
-            return self.operation("icmp eq i1 true, false")
-        if expected.kind != "immortal":
-            raise ValueError(f"Unsupported specialization parameter: {expected!r}")
-        none = self.operation(f"icmp eq ptr {value}, @mule.none")
-        return self.operation(f"or i1 {boolean}, {none}")
+        return expected.accept(_ArgumentGuard(self, value))
 
     def call(
         self,
@@ -748,7 +808,7 @@ class _FunctionEmitter:
                 for source, value, expected in zip(
                     argument_results, arguments, context.parameters, strict=True
                 )
-                if not self.fits(self.facts[source], expected)
+                if not self.facts[source].dispatch_fits(expected)
             ]
             if not guards:
                 invoke(context)
@@ -774,57 +834,37 @@ class _FunctionEmitter:
         alternatives = ", ".join(f"[ {value}, %{label} ]" for value, label in incoming)
         return self.operation(f"phi ptr {alternatives}")
 
-    def constant(self, value) -> str:
-        if value is None:
-            return "getelementptr i8, ptr @mule.none, i64 0"
-        if isinstance(value, bool):
-            name = "true" if value else "false"
-            return f"getelementptr i8, ptr @mule.{name}, i64 0"
-        if isinstance(value, int):
-            if -(1 << 62) <= value < (1 << 62):
-                tagged = ((value << 1) | 1) & ((1 << 64) - 1)
-                return f"inttoptr i64 {tagged} to ptr"
-            return (
-                f"call ptr @mule_literal_int(ptr {self.module.text(_decimal(value))})"
-            )
-        if isinstance(value, float):
-            bits = struct.unpack(">Q", struct.pack(">d", value))[0]
-            return f"call ptr @mule_literal_float(double 0x{bits:016X})"
-        if isinstance(value, str):
-            encoded = value.encode("utf-8", "surrogatepass")
-            return (
-                f"call ptr @mule_literal_text(ptr {self.module.literal_data(encoded)}, "
-                f"i64 {len(encoded)})"
-            )
-        if isinstance(value, bytes):
-            return (
-                f"call ptr @mule_literal_bytes(ptr {self.module.literal_data(value)}, "
-                f"i64 {len(value)})"
-            )
-        raise TypeError(f"Unsupported LLVM constant: {value!r}")
+    def constant(self, literal: ast.Literal) -> str:
+        return literal.accept(_LiteralEmitter(self.module))
 
-    def terminator(self, terminator) -> None:
-        match terminator:
-            case ir1.Jump(target=target):
-                self.line(f"br label %{self.labels[target]}")
-            case ir1.Branch(condition=condition, true=true, false=false):
-                value = self.take(condition)
-                if self.facts[condition].is_fixnum:
-                    bits = self.operation(f"ptrtoint ptr {value} to i64")
-                    nonzero = self.operation(f"icmp ne i64 {bits}, 1")
-                    truth = self.operation(f"zext i1 {nonzero} to i32")
-                else:
-                    truth = self.operation(f"call i32 @mule.fast.truth(ptr {value})")
-                self.release(value)
-                self.check_status(truth)
-                condition = self.operation(f"icmp ne i32 {truth}, 0")
-                self.line(
-                    f"br i1 {condition}, label %{self.labels[true]}, "
-                    f"label %{self.labels[false]}"
-                )
-            case ir1.Return(value=value):
-                result = self.take(value)
-                self.line(f"store ptr {result}, ptr %return")
-                self.line("br label %cleanup")
-            case _:
-                raise TypeError(f"Unsupported LLVM terminator: {terminator!r}")
+    def terminator(self, terminator: ir1.Terminator) -> None:
+        terminator.accept(self)
+
+    def visit_Jump(self, terminator: ir1.Jump) -> None:
+        target = terminator.target
+        self.line(f"br label %{self.labels[target]}")
+
+    def visit_Branch(self, terminator: ir1.Branch) -> None:
+        condition = terminator.condition
+        true = terminator.true
+        false = terminator.false
+        value = self.take(condition)
+        if self.facts[condition].is_fixnum:
+            bits = self.operation(f"ptrtoint ptr {value} to i64")
+            nonzero = self.operation(f"icmp ne i64 {bits}, 1")
+            truth = self.operation(f"zext i1 {nonzero} to i32")
+        else:
+            truth = self.operation(f"call i32 @mule.fast.truth(ptr {value})")
+        self.release(value)
+        self.check_status(truth)
+        condition = self.operation(f"icmp ne i32 {truth}, 0")
+        self.line(
+            f"br i1 {condition}, label %{self.labels[true]}, "
+            f"label %{self.labels[false]}"
+        )
+
+    def visit_Return(self, terminator: ir1.Return) -> None:
+        value = terminator.value
+        result = self.take(value)
+        self.line(f"store ptr {result}, ptr %return")
+        self.line("br label %cleanup")

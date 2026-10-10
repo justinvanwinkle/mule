@@ -115,11 +115,7 @@ class StatementParserMixin:
             target = self.expression_list(allow_star=False)
             # A top-level comma list represents several delete operands, while
             # explicitly grouped sequences remain nested target expressions.
-            targets = (
-                target.elements
-                if isinstance(target, ast.Tuple) and not self.is_parenthesized(target)
-                else [target]
-            )
+            targets = target.delete_operands(grouped=self.is_parenthesized(target))
             for value in targets:
                 self.validate_target(value, delete=True)
             return self.finish(ast.Delete(targets), start)
@@ -146,18 +142,16 @@ class StatementParserMixin:
 
     def _statement_value(self, *, allow_yield=False):
         value = self.expression_list(allow_yield=allow_yield)
-        if isinstance(value, ast.Unpack):
-            self.error("starred value requires a comma")
+        value.require_collection(self, "starred value requires a comma")
         return value
 
     def assignment_or_expression(self):
         start = self.current
         target = self.expression_list(allow_yield=True)
         if self.match(":"):
-            if not isinstance(target, (ast.Name, ast.Attribute, ast.Subscript)):
-                self.error(
-                    "only a name, attribute or subscript can be annotated", start
-                )
+            target.validate_single_target(
+                self, "only a name, attribute or subscript can be annotated", start
+            )
             annotation = self.expression()
             value = self._statement_value(allow_yield=True) if self.match("=") else None
             node = ast.AnnotatedAssignment(
@@ -165,8 +159,9 @@ class StatementParserMixin:
             )
         elif self.current.text in _AUGMENTED:
             operator = _AUGMENTED[self.advance().text]
-            if not isinstance(target, (ast.Name, ast.Attribute, ast.Subscript)):
-                self.error("invalid augmented assignment target", start)
+            target.validate_single_target(
+                self, "invalid augmented assignment target", start
+            )
             self.validate_target(target)
             node = ast.AugmentedAssignment(
                 target, operator, self._statement_value(allow_yield=True)
@@ -181,8 +176,9 @@ class StatementParserMixin:
                 value = self._statement_value(allow_yield=True)
             node = ast.Assignment(targets, value, self._type_comment())
         else:
-            if isinstance(target, ast.Unpack):
-                self.error("starred expression is not a statement", start)
+            target.require_collection(
+                self, "starred expression is not a statement", start
+            )
             node = ast.ExpressionStatement(target)
         return self.finish(node, start)
 
@@ -238,14 +234,8 @@ class StatementParserMixin:
         self.advance()
         # A function type signature may occupy its own comment line before the
         # suite's first statement. Such comment lines do not introduce a suite.
-        if self.current.kind == "TYPE_COMMENT" and isinstance(
-            type_comment_target, ast.FunctionDefinition
-        ):
-            if type_comment_target.type_comment is not None:
-                self.error("duplicate function type comment")
-            type_comment_target.type_comment = self._type_comment()
-            if self.current.kind == "NEWLINE":
-                self.advance()
+        if self.current.kind == "TYPE_COMMENT" and type_comment_target is not None:
+            type_comment_target.consume_signature_comment(self)
         self.expect_kind("INDENT")
         body = self.statements(stop_kinds=("DEDENT", "EOF"))
         if not body:
@@ -360,10 +350,7 @@ class StatementParserMixin:
                 grouped = self.current.text == "("
                 exception = self.expression_list(allow_star=False, stops=("as", ":"))
                 if self.match("as"):
-                    if isinstance(exception, ast.Tuple) and not grouped:
-                        self.error(
-                            "exception types must be parenthesized with an as binding"
-                        )
+                    exception.validate_exception_binding(self, grouped=grouped)
                     binding = self.name_token().text
             elif groups:
                 self.error("except* requires an exception type")
@@ -559,9 +546,7 @@ class StatementParserMixin:
                 if kind != ast.TypeParameterKind.TYPE_VAR:
                     self.error("variadic type parameters cannot have a bound", start)
                 bound = self.expression()
-                if isinstance(bound, ast.Tuple):
-                    constraints = bound.elements
-                    bound = None
+                bound, constraints = bound.type_parameter_bound()
             if self.match("="):
                 default_start = self.current
                 if self.match("*"):

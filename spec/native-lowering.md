@@ -24,6 +24,17 @@ arbitrary-precision arithmetic. No additional library is introduced.
 
 ## Analysis and representation facts
 
+AST nodes and IR operations select visitor methods through their own `accept`
+methods. Tree traversal, operand discovery, control-flow edges, and instruction
+validation are virtual behaviors. IR constants retain concrete Mule literal
+nodes, so neither lowering nor emission classifies host Python values.
+
+Value facts are polymorphic objects with union, widening, arithmetic, narrowing,
+and containment behavior. They do not carry string type tags. LLVM uses their
+representation proofs to select native templates and their visitor dispatch to
+emit entry guards. These compiler objects are separate from the native value
+representation described below.
+
 `mule/compiler/analysis.py` analyzes the verified control-flow graph. It propagates
 local value types and integer intervals through stores, loads, arithmetic, and
 control-flow joins. Integer comparisons can constrain successor-edge ranges.

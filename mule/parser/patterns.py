@@ -7,8 +7,7 @@ class PatternParserMixin:
     def match_statement(self) -> ast.Match:
         start = self.expect("match")
         subject = self.expression_list(allow_named=True, stops=(":",))
-        if isinstance(subject, ast.Unpack):
-            self.error("starred match subject requires a comma")
+        subject.require_collection(self, "starred match subject requires a comma")
         self.expect(":")
         self.expect_kind("NEWLINE")
         self.expect_kind("INDENT")
@@ -37,8 +36,7 @@ class PatternParserMixin:
         start = self.current
         first = self._pattern_item(allow_star=True)
         if not self.match(","):
-            if isinstance(first, ast.StarPattern):
-                self.error("star pattern requires a sequence")
+            first.validate_unsequenced(self)
             return first
         elements = [first]
         while self.current.text not in (":", "if"):
@@ -89,12 +87,7 @@ class PatternParserMixin:
         value = self._pattern_name()
         if self.current.text == "(":
             return self._class_pattern(value, start)
-        if isinstance(value, ast.Attribute):
-            return self.finish(ast.ValuePattern(value), start)
-        return self.finish(
-            ast.CapturePattern(None if value.identifier == "_" else value.identifier),
-            start,
-        )
+        return self.finish(value.pattern_reference(), start)
 
     def _pattern_name(self) -> ast.Expression:
         start = self.name_token()
@@ -118,8 +111,7 @@ class PatternParserMixin:
             elements.append(self._pattern_item(allow_star=True))
         self.expect(closer)
         if opener == "(" and not has_comma:
-            if isinstance(elements[0], ast.StarPattern):
-                self.error("star pattern requires a sequence")
+            elements[0].validate_unsequenced(self)
             return self.finish(elements[0], start)
         return self.finish(ast.SequencePattern(elements), start)
 
@@ -156,9 +148,7 @@ class PatternParserMixin:
         ):
             return self._pattern_literal()
         value = self._pattern_name()
-        if not isinstance(value, ast.Attribute):
-            self.error("mapping pattern key requires a literal or qualified name")
-        return value
+        return value.mapping_pattern_key(self)
 
     def _class_pattern(self, class_name: ast.Expression, start) -> ast.ClassPattern:
         self.expect("(")
@@ -189,38 +179,31 @@ class PatternParserMixin:
         start = self.current
         if start.kind == "STRING":
             value = self.parse_strings()
-            if not isinstance(value, ast.Literal):
-                self.error("pattern literal cannot be an interpolated string")
+            value.validate_pattern_literal(self)
             return value
         if start.text in ("None", "True", "False"):
             self.advance()
-            singleton = {"None": None, "True": True, "False": False}[start.text]
-            return self.finish(ast.Literal(singleton), start)
+            node = (
+                ast.NoneLiteral()
+                if start.text == "None"
+                else ast.BooleanLiteral(start.text == "True")
+            )
+            return self.finish(node, start)
         negative = bool(self.match("-"))
         if self.current.kind != "NUMBER":
             self.error("expected a numeric pattern literal")
         value = self.atom()
-        if not isinstance(value, ast.Literal) or type(value.value) not in (
-            int,
-            float,
-            complex,
-        ):
-            self.error("expected a numeric pattern literal")
+        value.validate_numeric_pattern(self)
+        real = value
         if negative:
             value = self.finish(ast.Unary(ast.UnaryOperator.NEGATIVE, value), start)
         if self.current.text in ("+", "-"):
-            real = value.operand if isinstance(value, ast.Unary) else value
-            if type(real.value) not in (int, float):
-                self.error("complex pattern literal requires a real left operand")
+            real.validate_real_pattern(self)
             operator = self.advance()
             if self.current.kind != "NUMBER":
                 self.error("complex pattern literal requires an imaginary operand")
             imaginary = self.atom()
-            if (
-                not isinstance(imaginary, ast.Literal)
-                or type(imaginary.value) is not complex
-            ):
-                self.error("complex pattern literal requires an imaginary operand")
+            imaginary.validate_imaginary_pattern(self)
             value = self.finish(
                 ast.Binary(ast.BinaryOperator(operator.text), value, imaginary), start
             )

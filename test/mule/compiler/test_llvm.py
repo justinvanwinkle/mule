@@ -54,12 +54,12 @@ def printing(instructions, value="value", *, locals_=()):
 @pytest.mark.parametrize(
     ("value", "output"),
     [
-        (None, "None\n"),
-        (True, "True\n"),
-        (-(10**100), "-" + "1" + "0" * 100 + "\n"),
-        (-0.0, "-0.0\n"),
-        ("π\x00雪", "π\x00雪\n"),
-        (b"\x00\xff", "b'\\x00\\xff'\n"),
+        (ast.NoneLiteral(None), "None\n"),
+        (ast.BooleanLiteral(True), "True\n"),
+        (ast.IntegerLiteral(-(10**100)), "-" + "1" + "0" * 100 + "\n"),
+        (ast.FloatLiteral(-0.0), "-0.0\n"),
+        (ast.TextLiteral("π\x00雪"), "π\x00雪\n"),
+        (ast.BytesLiteral(b"\x00\xff"), "b'\\x00\\xff'\n"),
     ],
     ids=["none", "bool", "huge-integer", "negative-zero", "unicode-nul", "bytes"],
 )
@@ -69,16 +69,26 @@ def test_native_constants_preserve_values(execute, value, output):
     assert result.stdout == output
 
 
+@pytest.mark.parametrize(
+    "literal",
+    [ast.ComplexLiteral(1j), ast.EllipsisLiteral(Ellipsis), ast.Literal(1 << 20000)],
+    ids=["complex", "ellipsis", "abstract-literal-large-value"],
+)
+def test_unsupported_native_literal_has_explicit_emitter_error(literal):
+    with pytest.raises(TypeError, match="Unsupported LLVM constant"):
+        emit(printing([ir.Constant("value", literal)]))
+
+
 def test_native_operators_and_clear_load_transfer_references(execute):
     module = printing(
         [
-            ir.Constant("left", 7),
-            ir.Constant("right", 3),
+            ir.Constant("left", ast.IntegerLiteral(7)),
+            ir.Constant("right", ast.IntegerLiteral(3)),
             ir.Binary("product", ast.BinaryOperator.MULTIPLY, "left", "right"),
             ir.Store("merge", "product", True),
             ir.Load("moved", "merge", True, clear=True),
             ir.Unary("negative", ast.UnaryOperator.NEGATIVE, "moved"),
-            ir.Constant("expected", -21),
+            ir.Constant("expected", ast.IntegerLiteral(-21)),
             ir.Compare("value", ast.ComparisonOperator.EQUAL, "negative", "expected"),
         ],
         locals_=("merge",),
@@ -91,8 +101,8 @@ def test_native_operators_and_clear_load_transfer_references(execute):
 def test_native_integer_constant_exceeds_host_decimal_conversion_limit(execute):
     module = printing(
         [
-            ir.Constant("huge", 1 << 20000),
-            ir.Constant("zero", 0),
+            ir.Constant("huge", ast.IntegerLiteral(1 << 20000)),
+            ir.Constant("zero", ast.IntegerLiteral(0)),
             ir.Compare("value", ast.ComparisonOperator.GREATER, "huge", "zero"),
         ]
     )
@@ -104,7 +114,7 @@ def test_native_integer_constant_exceeds_host_decimal_conversion_limit(execute):
 def test_native_text_constants_preserve_lone_surrogates(execute):
     module = printing(
         [
-            ir.Constant("surrogate", "\ud800"),
+            ir.Constant("surrogate", ast.TextLiteral("\ud800")),
             ir.Load("ascii", "ascii", False),
             ir.Call("value", "ascii", ("surrogate",)),
         ]
@@ -133,12 +143,12 @@ def test_native_functions_bind_arguments_and_see_current_globals(execute):
     )
     module = printing(
         [
-            ir.Constant("first", 1),
+            ir.Constant("first", ast.IntegerLiteral(1)),
             ir.Store("offset", "first", False),
             ir.DefineFunction("function", "function", "add_offset"),
-            ir.Constant("second", 40),
+            ir.Constant("second", ast.IntegerLiteral(40)),
             ir.Store("offset", "second", False),
-            ir.Constant("argument", 2),
+            ir.Constant("argument", ast.IntegerLiteral(2)),
             ir.Call("value", "function", ("argument",)),
         ]
     )
@@ -168,17 +178,23 @@ def test_native_branches_transfer_selected_value_through_local(execute, truth):
                 [
                     ir.Block(
                         "entry",
-                        [ir.Constant("condition", truth)],
+                        [ir.Constant("condition", ast.BooleanLiteral(truth))],
                         ir.Branch("condition", "yes", "no"),
                     ),
                     ir.Block(
                         "yes",
-                        [ir.Constant("yes", 11), ir.Store("merge", "yes", True)],
+                        [
+                            ir.Constant("yes", ast.IntegerLiteral(11)),
+                            ir.Store("merge", "yes", True),
+                        ],
                         ir.Jump("join"),
                     ),
                     ir.Block(
                         "no",
-                        [ir.Constant("no", 22), ir.Store("merge", "no", True)],
+                        [
+                            ir.Constant("no", ast.IntegerLiteral(22)),
+                            ir.Store("merge", "no", True),
+                        ],
                         ir.Jump("join"),
                     ),
                     ir.Block(
@@ -188,7 +204,7 @@ def test_native_branches_transfer_selected_value_through_local(execute, truth):
                             ir.Load("print", "print", False),
                             ir.Call("printed", "print", ("value",)),
                             ir.Discard("printed"),
-                            ir.Constant("return", None),
+                            ir.Constant("return", ast.NoneLiteral(None)),
                         ],
                         ir.Return("return"),
                     ),

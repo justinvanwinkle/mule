@@ -7,7 +7,7 @@ start at one, and spans exclude their end position.
 """
 
 from collections.abc import Iterator
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from enum import StrEnum
 from types import EllipsisType
 
@@ -16,6 +16,9 @@ from types import EllipsisType
 class Position:
     line: int
     column: int
+
+    def source_start(self) -> Position:
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,9 +31,84 @@ class Span:
 class Node:
     span: Span | None = None
 
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_Node(self)
+
+    def consume_signature_comment(self, parser):
+        pass
+
+    def assigned_targets(self) -> tuple[Expression, ...]:
+        return ()
+
+    def binding_name(self) -> str | None:
+        return None
+
+    def append_string_part(self, parts):
+        parts.append(self)
+
+    def merge_string_fragment(self, parts, fragment):
+        parts.append(fragment)
+
 
 class Expression(Node):
     __slots__ = ()
+
+    def validate_target(self, parser, *, delete=False):
+        parser.error(
+            "Invalid deletion target" if delete else "Invalid assignment target"
+        )
+
+    def validate_single_target(self, parser, message, start):
+        parser.error(message, start)
+
+    def validate_named_target(self, parser):
+        parser.error("Invalid assignment expression target or context")
+
+    def require_collection(self, parser, message, start=None):
+        pass
+
+    def subscript_item(self, parser, start):
+        return self
+
+    def delete_operands(self, *, grouped):
+        return [self]
+
+    def type_parameter_bound(self):
+        return self, []
+
+    def validate_exception_binding(self, parser, *, grouped):
+        pass
+
+    def append_boolean(self, operator, right, *, grouped):
+        return Boolean(
+            operator, [self, right], span=Span(self.span.start, right.span.end)
+        )
+
+    def append_comparison(self, operator, right, *, grouped):
+        return Comparison(
+            self, [operator], [right], span=Span(self.span.start, right.span.end)
+        )
+
+    def pattern_reference(self):
+        return ValuePattern(self, span=self.span)
+
+    def mapping_pattern_key(self, parser):
+        parser.error("mapping pattern key requires a literal or qualified name")
+
+    def validate_pattern_literal(self, parser):
+        parser.error("pattern literal cannot be an interpolated string")
+
+    def validate_numeric_pattern(self, parser):
+        parser.error("expected a numeric pattern literal")
+
+    def validate_real_pattern(self, parser):
+        parser.error("complex pattern literal requires a real left operand")
+
+    def validate_imaginary_pattern(self, parser):
+        parser.error("complex pattern literal requires an imaginary operand")
 
 
 class Statement(Node):
@@ -39,6 +117,9 @@ class Statement(Node):
 
 class Pattern(Node):
     __slots__ = ()
+
+    def validate_unsequenced(self, parser):
+        pass
 
 
 class BinaryOperator(StrEnum):
@@ -115,31 +196,229 @@ class TypeIgnore(Node):
     line: int
     tag: str = ""
 
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_TypeIgnore(self)
+
 
 @dataclass(slots=True)
 class Module(Node):
     statements: list[Statement] = field(default_factory=list)
     type_ignores: list[TypeIgnore] = field(default_factory=list)
 
+    def children(self) -> Iterator[Node]:
+        yield from self.statements
+        yield from self.type_ignores
+
+    def accept(self, visitor):
+        return visitor.visit_Module(self)
+
 
 @dataclass(slots=True)
 class ExpressionInput(Node):
     expression: Expression
+
+    def children(self) -> Iterator[Node]:
+        yield self.expression
+
+    def accept(self, visitor):
+        return visitor.visit_ExpressionInput(self)
 
 
 @dataclass(slots=True)
 class InteractiveInput(Node):
     statements: list[Statement] = field(default_factory=list)
 
+    def children(self) -> Iterator[Node]:
+        yield from self.statements
+
+    def accept(self, visitor):
+        return visitor.visit_InteractiveInput(self)
+
 
 @dataclass(slots=True)
 class Name(Expression):
     identifier: str
 
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_Name(self)
+
+    def binding_name(self):
+        return self.identifier
+
+    def validate_target(self, parser, *, delete=False):
+        pass
+
+    def validate_single_target(self, parser, message, start):
+        pass
+
+    def validate_named_target(self, parser):
+        pass
+
+    def pattern_reference(self):
+        return CapturePattern(
+            None if self.identifier == "_" else self.identifier, span=self.span
+        )
+
 
 @dataclass(slots=True)
 class Literal(Expression):
     value: str | bytes | int | float | complex | bool | None | EllipsisType
+
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_Literal(self)
+
+
+@dataclass(slots=True)
+class IntegerLiteral(Literal):
+    value: int
+
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_IntegerLiteral(self)
+
+    def validate_numeric_pattern(self, parser):
+        pass
+
+    def validate_real_pattern(self, parser):
+        pass
+
+
+@dataclass(slots=True)
+class FloatLiteral(Literal):
+    value: float
+
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_FloatLiteral(self)
+
+    def validate_numeric_pattern(self, parser):
+        pass
+
+    def validate_real_pattern(self, parser):
+        pass
+
+
+@dataclass(slots=True)
+class ComplexLiteral(Literal):
+    value: complex
+
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_ComplexLiteral(self)
+
+    def validate_numeric_pattern(self, parser):
+        pass
+
+    def validate_imaginary_pattern(self, parser):
+        pass
+
+
+@dataclass(slots=True)
+class BooleanLiteral(Literal):
+    value: bool
+
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_BooleanLiteral(self)
+
+
+@dataclass(slots=True)
+class NoneLiteral(Literal):
+    value: None = None
+
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_NoneLiteral(self)
+
+
+@dataclass(slots=True)
+class TextLiteral(Literal):
+    value: str
+
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_TextLiteral(self)
+
+    def validate_pattern_literal(self, parser):
+        pass
+
+    def append_string_part(self, parts):
+        if not self.value:
+            return
+        if parts:
+            parts[-1].merge_string_fragment(parts, self)
+        else:
+            parts.append(self)
+
+    def merge_string_fragment(self, parts, fragment):
+        span = (
+            Span(self.span.start, fragment.span.end)
+            if self.span and fragment.span
+            else None
+        )
+        parts[-1] = TextLiteral(self.value + fragment.value, span=span)
+
+
+@dataclass(slots=True)
+class BytesLiteral(Literal):
+    value: bytes
+
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_BytesLiteral(self)
+
+    def validate_pattern_literal(self, parser):
+        pass
+
+    def append_string_part(self, parts):
+        if not self.value:
+            return
+        if parts:
+            parts[-1].merge_string_fragment(parts, self)
+        else:
+            parts.append(self)
+
+    def merge_string_fragment(self, parts, fragment):
+        span = (
+            Span(self.span.start, fragment.span.end)
+            if self.span and fragment.span
+            else None
+        )
+        parts[-1] = BytesLiteral(self.value + fragment.value, span=span)
+
+
+@dataclass(slots=True)
+class EllipsisLiteral(Literal):
+    value: EllipsisType = Ellipsis
+
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_EllipsisLiteral(self)
 
 
 @dataclass(slots=True)
@@ -148,17 +427,45 @@ class Binary(Expression):
     left: Expression
     right: Expression
 
+    def children(self) -> Iterator[Node]:
+        yield self.left
+        yield self.right
+
+    def accept(self, visitor):
+        return visitor.visit_Binary(self)
+
 
 @dataclass(slots=True)
 class Unary(Expression):
     operator: UnaryOperator
     operand: Expression
 
+    def children(self) -> Iterator[Node]:
+        yield self.operand
+
+    def accept(self, visitor):
+        return visitor.visit_Unary(self)
+
 
 @dataclass(slots=True)
 class Boolean(Expression):
     operator: BooleanOperator
     operands: list[Expression]
+
+    def children(self) -> Iterator[Node]:
+        yield from self.operands
+
+    def accept(self, visitor):
+        return visitor.visit_Boolean(self)
+
+    def append_boolean(self, operator, right, *, grouped):
+        if operator != self.operator or grouped:
+            return Boolean(
+                operator, [self, right], span=Span(self.span.start, right.span.end)
+            )
+        self.operands.append(right)
+        self.span = Span(self.span.start, right.span.end)
+        return self
 
 
 @dataclass(slots=True)
@@ -167,12 +474,37 @@ class Comparison(Expression):
     operators: list[ComparisonOperator]
     comparators: list[Expression]
 
+    def children(self) -> Iterator[Node]:
+        yield self.left
+        yield from self.comparators
+
+    def accept(self, visitor):
+        return visitor.visit_Comparison(self)
+
+    def append_comparison(self, operator, right, *, grouped):
+        if grouped:
+            return Comparison(
+                self, [operator], [right], span=Span(self.span.start, right.span.end)
+            )
+        self.operators.append(operator)
+        self.comparators.append(right)
+        self.span = Span(self.span.start, right.span.end)
+        return self
+
 
 @dataclass(slots=True)
 class Conditional(Expression):
     condition: Expression
     then: Expression
     otherwise: Expression
+
+    def children(self) -> Iterator[Node]:
+        yield self.condition
+        yield self.then
+        yield self.otherwise
+
+    def accept(self, visitor):
+        return visitor.visit_Conditional(self)
 
 
 @dataclass(slots=True)
@@ -183,11 +515,27 @@ class Parameter(Node):
     default: Expression | None = None
     type_comment: str | None = None
 
+    def children(self) -> Iterator[Node]:
+        if self.annotation is not None:
+            yield self.annotation
+        if self.default is not None:
+            yield self.default
+
+    def accept(self, visitor):
+        return visitor.visit_Parameter(self)
+
 
 @dataclass(slots=True)
 class Lambda(Expression):
     parameters: list[Parameter]
     body: Expression
+
+    def children(self) -> Iterator[Node]:
+        yield from self.parameters
+        yield self.body
+
+    def accept(self, visitor):
+        return visitor.visit_Lambda(self)
 
 
 @dataclass(slots=True)
@@ -195,22 +543,60 @@ class NamedExpression(Expression):
     target: Name
     value: Expression
 
+    def children(self) -> Iterator[Node]:
+        yield self.target
+        yield self.value
+
+    def accept(self, visitor):
+        return visitor.visit_NamedExpression(self)
+
+    def assigned_targets(self):
+        return (self.target,)
+
 
 @dataclass(slots=True)
 class Yield(Expression):
     value: Expression | None = None
     from_iterable: bool = False
 
+    def children(self) -> Iterator[Node]:
+        if self.value is not None:
+            yield self.value
+
+    def accept(self, visitor):
+        return visitor.visit_Yield(self)
+
 
 @dataclass(slots=True)
 class Await(Expression):
     value: Expression
+
+    def children(self) -> Iterator[Node]:
+        yield self.value
+
+    def accept(self, visitor):
+        return visitor.visit_Await(self)
 
 
 @dataclass(slots=True)
 class Attribute(Expression):
     value: Expression
     attribute: str
+
+    def children(self) -> Iterator[Node]:
+        yield self.value
+
+    def accept(self, visitor):
+        return visitor.visit_Attribute(self)
+
+    def validate_target(self, parser, *, delete=False):
+        pass
+
+    def validate_single_target(self, parser, message, start):
+        pass
+
+    def mapping_pattern_key(self, parser):
+        return self
 
 
 @dataclass(slots=True)
@@ -219,17 +605,43 @@ class CallArgument(Node):
     kind: ArgumentKind = ArgumentKind.POSITIONAL
     keyword: str | None = None
 
+    def children(self) -> Iterator[Node]:
+        yield self.value
+
+    def accept(self, visitor):
+        return visitor.visit_CallArgument(self)
+
 
 @dataclass(slots=True)
 class Call(Expression):
     function: Expression
     arguments: list[CallArgument] = field(default_factory=list)
 
+    def children(self) -> Iterator[Node]:
+        yield self.function
+        yield from self.arguments
+
+    def accept(self, visitor):
+        return visitor.visit_Call(self)
+
 
 @dataclass(slots=True)
 class Subscript(Expression):
     value: Expression
     index: Expression
+
+    def children(self) -> Iterator[Node]:
+        yield self.value
+        yield self.index
+
+    def accept(self, visitor):
+        return visitor.visit_Subscript(self)
+
+    def validate_target(self, parser, *, delete=False):
+        pass
+
+    def validate_single_target(self, parser, message, start):
+        pass
 
 
 @dataclass(slots=True)
@@ -238,25 +650,89 @@ class Slice(Expression):
     upper: Expression | None = None
     step: Expression | None = None
 
+    def children(self) -> Iterator[Node]:
+        if self.lower is not None:
+            yield self.lower
+        if self.upper is not None:
+            yield self.upper
+        if self.step is not None:
+            yield self.step
+
+    def accept(self, visitor):
+        return visitor.visit_Slice(self)
+
 
 @dataclass(slots=True)
 class Unpack(Expression):
     value: Expression
+
+    def children(self) -> Iterator[Node]:
+        yield self.value
+
+    def accept(self, visitor):
+        return visitor.visit_Unpack(self)
+
+    def require_collection(self, parser, message, start=None):
+        parser.error(message, start)
+
+    def subscript_item(self, parser, start):
+        return parser.finish(Tuple([self]), start)
+
+    def validate_target(self, parser, *, delete=False):
+        if delete:
+            parser.error("Invalid deletion target")
+        self.value.validate_target(parser)
 
 
 @dataclass(slots=True)
 class Tuple(Expression):
     elements: list[Expression] = field(default_factory=list)
 
+    def children(self) -> Iterator[Node]:
+        yield from self.elements
+
+    def accept(self, visitor):
+        return visitor.visit_Tuple(self)
+
+    def validate_target(self, parser, *, delete=False):
+        for element in self.elements:
+            element.validate_target(parser, delete=delete)
+
+    def delete_operands(self, *, grouped):
+        return [self] if grouped else self.elements
+
+    def type_parameter_bound(self):
+        return None, self.elements
+
+    def validate_exception_binding(self, parser, *, grouped):
+        if not grouped:
+            parser.error("exception types must be parenthesized with an as binding")
+
 
 @dataclass(slots=True)
 class List(Expression):
     elements: list[Expression] = field(default_factory=list)
 
+    def children(self) -> Iterator[Node]:
+        yield from self.elements
+
+    def accept(self, visitor):
+        return visitor.visit_List(self)
+
+    def validate_target(self, parser, *, delete=False):
+        for element in self.elements:
+            element.validate_target(parser, delete=delete)
+
 
 @dataclass(slots=True)
 class Set(Expression):
     elements: list[Expression] = field(default_factory=list)
+
+    def children(self) -> Iterator[Node]:
+        yield from self.elements
+
+    def accept(self, visitor):
+        return visitor.visit_Set(self)
 
 
 @dataclass(slots=True)
@@ -264,10 +740,24 @@ class DictEntry(Node):
     key: Expression | None
     value: Expression
 
+    def children(self) -> Iterator[Node]:
+        if self.key is not None:
+            yield self.key
+        yield self.value
+
+    def accept(self, visitor):
+        return visitor.visit_DictEntry(self)
+
 
 @dataclass(slots=True)
 class Dict(Expression):
     entries: list[DictEntry] = field(default_factory=list)
+
+    def children(self) -> Iterator[Node]:
+        yield from self.entries
+
+    def accept(self, visitor):
+        return visitor.visit_Dict(self)
 
 
 @dataclass(slots=True)
@@ -277,6 +767,17 @@ class ComprehensionClause(Node):
     conditions: list[Expression] = field(default_factory=list)
     is_async: bool = False
 
+    def children(self) -> Iterator[Node]:
+        yield self.target
+        yield self.iterable
+        yield from self.conditions
+
+    def accept(self, visitor):
+        return visitor.visit_ComprehensionClause(self)
+
+    def assigned_targets(self):
+        return (self.target,)
+
 
 @dataclass(slots=True)
 class Comprehension(Expression):
@@ -284,6 +785,15 @@ class Comprehension(Expression):
     element: Expression
     clauses: list[ComprehensionClause]
     key: Expression | None = None
+
+    def children(self) -> Iterator[Node]:
+        yield self.element
+        yield from self.clauses
+        if self.key is not None:
+            yield self.key
+
+    def accept(self, visitor):
+        return visitor.visit_Comprehension(self)
 
 
 @dataclass(slots=True)
@@ -293,20 +803,46 @@ class Interpolation(Node):
     format_spec: FormattedString | None = None
     expression_text: str | None = None
 
+    def children(self) -> Iterator[Node]:
+        yield self.expression
+        if self.format_spec is not None:
+            yield self.format_spec
+
+    def accept(self, visitor):
+        return visitor.visit_Interpolation(self)
+
 
 @dataclass(slots=True)
 class FormattedString(Expression):
     parts: list[Literal | Interpolation] = field(default_factory=list)
+
+    def children(self) -> Iterator[Node]:
+        yield from self.parts
+
+    def accept(self, visitor):
+        return visitor.visit_FormattedString(self)
 
 
 @dataclass(slots=True)
 class TemplateString(Expression):
     parts: list[Literal | Interpolation] = field(default_factory=list)
 
+    def children(self) -> Iterator[Node]:
+        yield from self.parts
+
+    def accept(self, visitor):
+        return visitor.visit_TemplateString(self)
+
 
 @dataclass(slots=True)
 class ExpressionStatement(Statement):
     expression: Expression
+
+    def children(self) -> Iterator[Node]:
+        yield self.expression
+
+    def accept(self, visitor):
+        return visitor.visit_ExpressionStatement(self)
 
 
 @dataclass(slots=True)
@@ -314,6 +850,16 @@ class Assignment(Statement):
     targets: list[Expression]
     value: Expression
     type_comment: str | None = None
+
+    def children(self) -> Iterator[Node]:
+        yield from self.targets
+        yield self.value
+
+    def accept(self, visitor):
+        return visitor.visit_Assignment(self)
+
+    def assigned_targets(self):
+        return tuple(self.targets)
 
 
 @dataclass(slots=True)
@@ -323,6 +869,18 @@ class AnnotatedAssignment(Statement):
     value: Expression | None = None
     parenthesized: bool = False
 
+    def children(self) -> Iterator[Node]:
+        yield self.target
+        yield self.annotation
+        if self.value is not None:
+            yield self.value
+
+    def accept(self, visitor):
+        return visitor.visit_AnnotatedAssignment(self)
+
+    def assigned_targets(self):
+        return (self.target,)
+
 
 @dataclass(slots=True)
 class AugmentedAssignment(Statement):
@@ -330,10 +888,29 @@ class AugmentedAssignment(Statement):
     operator: BinaryOperator
     value: Expression
 
+    def children(self) -> Iterator[Node]:
+        yield self.target
+        yield self.value
+
+    def accept(self, visitor):
+        return visitor.visit_AugmentedAssignment(self)
+
+    def assigned_targets(self):
+        return (self.target,)
+
 
 @dataclass(slots=True)
 class Delete(Statement):
     targets: list[Expression]
+
+    def children(self) -> Iterator[Node]:
+        yield from self.targets
+
+    def accept(self, visitor):
+        return visitor.visit_Delete(self)
+
+    def assigned_targets(self):
+        return tuple(self.targets)
 
 
 @dataclass(slots=True)
@@ -341,10 +918,22 @@ class ImportItem(Node):
     name: str
     alias: str | None = None
 
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_ImportItem(self)
+
 
 @dataclass(slots=True)
 class Import(Statement):
     items: list[ImportItem]
+
+    def children(self) -> Iterator[Node]:
+        yield from self.items
+
+    def accept(self, visitor):
+        return visitor.visit_Import(self)
 
 
 @dataclass(slots=True)
@@ -353,6 +942,12 @@ class ImportFrom(Statement):
     items: list[ImportItem]
     level: int = 0
 
+    def children(self) -> Iterator[Node]:
+        yield from self.items
+
+    def accept(self, visitor):
+        return visitor.visit_ImportFrom(self)
+
 
 @dataclass(slots=True)
 class If(Statement):
@@ -360,12 +955,28 @@ class If(Statement):
     body: list[Statement]
     else_body: list[Statement] = field(default_factory=list)
 
+    def children(self) -> Iterator[Node]:
+        yield self.condition
+        yield from self.body
+        yield from self.else_body
+
+    def accept(self, visitor):
+        return visitor.visit_If(self)
+
 
 @dataclass(slots=True)
 class While(Statement):
     condition: Expression
     body: list[Statement]
     else_body: list[Statement] = field(default_factory=list)
+
+    def children(self) -> Iterator[Node]:
+        yield self.condition
+        yield from self.body
+        yield from self.else_body
+
+    def accept(self, visitor):
+        return visitor.visit_While(self)
 
 
 @dataclass(slots=True)
@@ -377,11 +988,34 @@ class For(Statement):
     is_async: bool = False
     type_comment: str | None = None
 
+    def children(self) -> Iterator[Node]:
+        yield self.target
+        yield self.iterable
+        yield from self.body
+        yield from self.else_body
+
+    def accept(self, visitor):
+        return visitor.visit_For(self)
+
+    def assigned_targets(self):
+        return (self.target,)
+
 
 @dataclass(slots=True)
 class WithItem(Node):
     context: Expression
     target: Expression | None = None
+
+    def children(self) -> Iterator[Node]:
+        yield self.context
+        if self.target is not None:
+            yield self.target
+
+    def accept(self, visitor):
+        return visitor.visit_WithItem(self)
+
+    def assigned_targets(self):
+        return () if self.target is None else (self.target,)
 
 
 @dataclass(slots=True)
@@ -391,12 +1025,27 @@ class With(Statement):
     is_async: bool = False
     type_comment: str | None = None
 
+    def children(self) -> Iterator[Node]:
+        yield from self.items
+        yield from self.body
+
+    def accept(self, visitor):
+        return visitor.visit_With(self)
+
 
 @dataclass(slots=True)
 class ExceptionHandler(Node):
     exception: Expression | None
     binding: str | None
     body: list[Statement]
+
+    def children(self) -> Iterator[Node]:
+        if self.exception is not None:
+            yield self.exception
+        yield from self.body
+
+    def accept(self, visitor):
+        return visitor.visit_ExceptionHandler(self)
 
 
 @dataclass(slots=True)
@@ -407,6 +1056,15 @@ class Try(Statement):
     finally_body: list[Statement] = field(default_factory=list)
     exception_groups: bool = False
 
+    def children(self) -> Iterator[Node]:
+        yield from self.body
+        yield from self.handlers
+        yield from self.else_body
+        yield from self.finally_body
+
+    def accept(self, visitor):
+        return visitor.visit_Try(self)
+
 
 @dataclass(slots=True)
 class TypeParameter(Node):
@@ -415,6 +1073,16 @@ class TypeParameter(Node):
     bound: Expression | None = None
     constraints: list[Expression] = field(default_factory=list)
     default: Expression | None = None
+
+    def children(self) -> Iterator[Node]:
+        if self.bound is not None:
+            yield self.bound
+        yield from self.constraints
+        if self.default is not None:
+            yield self.default
+
+    def accept(self, visitor):
+        return visitor.visit_TypeParameter(self)
 
 
 @dataclass(slots=True)
@@ -428,6 +1096,24 @@ class FunctionDefinition(Statement):
     is_async: bool = False
     type_comment: str | None = None
 
+    def children(self) -> Iterator[Node]:
+        yield from self.parameters
+        yield from self.body
+        yield from self.decorators
+        if self.return_annotation is not None:
+            yield self.return_annotation
+        yield from self.type_parameters
+
+    def accept(self, visitor):
+        return visitor.visit_FunctionDefinition(self)
+
+    def consume_signature_comment(self, parser):
+        if self.type_comment is not None:
+            parser.error("duplicate function type comment")
+        self.type_comment = parser._type_comment()
+        if parser.current.kind == "NEWLINE":
+            parser.advance()
+
 
 @dataclass(slots=True)
 class ClassDefinition(Statement):
@@ -437,6 +1123,15 @@ class ClassDefinition(Statement):
     decorators: list[Expression] = field(default_factory=list)
     type_parameters: list[TypeParameter] = field(default_factory=list)
 
+    def children(self) -> Iterator[Node]:
+        yield from self.body
+        yield from self.arguments
+        yield from self.decorators
+        yield from self.type_parameters
+
+    def accept(self, visitor):
+        return visitor.visit_ClassDefinition(self)
+
 
 @dataclass(slots=True)
 class TypeAlias(Statement):
@@ -444,25 +1139,51 @@ class TypeAlias(Statement):
     value: Expression
     type_parameters: list[TypeParameter] = field(default_factory=list)
 
+    def children(self) -> Iterator[Node]:
+        yield self.value
+        yield from self.type_parameters
+
+    def accept(self, visitor):
+        return visitor.visit_TypeAlias(self)
+
 
 @dataclass(slots=True)
 class Pass(Statement):
-    pass
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_Pass(self)
 
 
 @dataclass(slots=True)
 class Break(Statement):
-    pass
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_Break(self)
 
 
 @dataclass(slots=True)
 class Continue(Statement):
-    pass
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_Continue(self)
 
 
 @dataclass(slots=True)
 class Return(Statement):
     value: Expression | None = None
+
+    def children(self) -> Iterator[Node]:
+        if self.value is not None:
+            yield self.value
+
+    def accept(self, visitor):
+        return visitor.visit_Return(self)
 
 
 @dataclass(slots=True)
@@ -470,46 +1191,108 @@ class Raise(Statement):
     exception: Expression | None = None
     cause: Expression | None = None
 
+    def children(self) -> Iterator[Node]:
+        if self.exception is not None:
+            yield self.exception
+        if self.cause is not None:
+            yield self.cause
+
+    def accept(self, visitor):
+        return visitor.visit_Raise(self)
+
 
 @dataclass(slots=True)
 class Assert(Statement):
     condition: Expression
     message: Expression | None = None
 
+    def children(self) -> Iterator[Node]:
+        yield self.condition
+        if self.message is not None:
+            yield self.message
+
+    def accept(self, visitor):
+        return visitor.visit_Assert(self)
+
 
 @dataclass(slots=True)
 class Global(Statement):
     identifiers: list[str]
+
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_Global(self)
 
 
 @dataclass(slots=True)
 class Nonlocal(Statement):
     identifiers: list[str]
 
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_Nonlocal(self)
+
 
 @dataclass(slots=True)
 class CapturePattern(Pattern):
     name: str | None
+
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_CapturePattern(self)
 
 
 @dataclass(slots=True)
 class LiteralPattern(Pattern):
     value: Expression
 
+    def children(self) -> Iterator[Node]:
+        yield self.value
+
+    def accept(self, visitor):
+        return visitor.visit_LiteralPattern(self)
+
 
 @dataclass(slots=True)
 class ValuePattern(Pattern):
     value: Expression
+
+    def children(self) -> Iterator[Node]:
+        yield self.value
+
+    def accept(self, visitor):
+        return visitor.visit_ValuePattern(self)
 
 
 @dataclass(slots=True)
 class SequencePattern(Pattern):
     elements: list[Pattern]
 
+    def children(self) -> Iterator[Node]:
+        yield from self.elements
+
+    def accept(self, visitor):
+        return visitor.visit_SequencePattern(self)
+
 
 @dataclass(slots=True)
 class StarPattern(Pattern):
     name: str | None
+
+    def children(self) -> Iterator[Node]:
+        return iter(())
+
+    def accept(self, visitor):
+        return visitor.visit_StarPattern(self)
+
+    def validate_unsequenced(self, parser):
+        parser.error("star pattern requires a sequence")
 
 
 @dataclass(slots=True)
@@ -517,17 +1300,36 @@ class PatternEntry(Node):
     key: Expression
     pattern: Pattern
 
+    def children(self) -> Iterator[Node]:
+        yield self.key
+        yield self.pattern
+
+    def accept(self, visitor):
+        return visitor.visit_PatternEntry(self)
+
 
 @dataclass(slots=True)
 class MappingPattern(Pattern):
     entries: list[PatternEntry]
     rest: str | None = None
 
+    def children(self) -> Iterator[Node]:
+        yield from self.entries
+
+    def accept(self, visitor):
+        return visitor.visit_MappingPattern(self)
+
 
 @dataclass(slots=True)
 class KeywordPattern(Node):
     name: str
     pattern: Pattern
+
+    def children(self) -> Iterator[Node]:
+        yield self.pattern
+
+    def accept(self, visitor):
+        return visitor.visit_KeywordPattern(self)
 
 
 @dataclass(slots=True)
@@ -536,16 +1338,36 @@ class ClassPattern(Pattern):
     positional: list[Pattern] = field(default_factory=list)
     keywords: list[KeywordPattern] = field(default_factory=list)
 
+    def children(self) -> Iterator[Node]:
+        yield self.class_name
+        yield from self.positional
+        yield from self.keywords
+
+    def accept(self, visitor):
+        return visitor.visit_ClassPattern(self)
+
 
 @dataclass(slots=True)
 class OrPattern(Pattern):
     alternatives: list[Pattern]
+
+    def children(self) -> Iterator[Node]:
+        yield from self.alternatives
+
+    def accept(self, visitor):
+        return visitor.visit_OrPattern(self)
 
 
 @dataclass(slots=True)
 class AsPattern(Pattern):
     pattern: Pattern
     name: str
+
+    def children(self) -> Iterator[Node]:
+        yield self.pattern
+
+    def accept(self, visitor):
+        return visitor.visit_AsPattern(self)
 
 
 @dataclass(slots=True)
@@ -554,27 +1376,283 @@ class MatchCase(Node):
     body: list[Statement]
     guard: Expression | None = None
 
+    def children(self) -> Iterator[Node]:
+        yield self.pattern
+        yield from self.body
+        if self.guard is not None:
+            yield self.guard
+
+    def accept(self, visitor):
+        return visitor.visit_MatchCase(self)
+
 
 @dataclass(slots=True)
 class Match(Statement):
     subject: Expression
     cases: list[MatchCase]
 
+    def children(self) -> Iterator[Node]:
+        yield self.subject
+        yield from self.cases
+
+    def accept(self, visitor):
+        return visitor.visit_Match(self)
+
 
 def children(node: Node) -> Iterator[Node]:
-    """Yield immediate syntax children in field and source-list order."""
-    for item in fields(node):
-        if item.name == "span":
-            continue
-        value = getattr(node, item.name)
-        if isinstance(value, Node):
-            yield value
-        elif isinstance(value, list):
-            yield from (child for child in value if isinstance(child, Node))
+    """Yield immediate syntax children using their explicit node behavior."""
+    return node.children()
 
 
 def walk(node: Node) -> Iterator[Node]:
     """Visit a syntax tree in preorder, including its root."""
     yield node
-    for child in children(node):
+    for child in node.children():
         yield from walk(child)
+
+
+class Visitor:
+    """Explicit node dispatch; subclasses override the syntax they handle."""
+
+    def visit_Node(self, node: Node):
+        return None
+
+    def visit_TypeIgnore(self, node: TypeIgnore):
+        return self.visit_Node(node)
+
+    def visit_Module(self, node: Module):
+        return self.visit_Node(node)
+
+    def visit_ExpressionInput(self, node: ExpressionInput):
+        return self.visit_Node(node)
+
+    def visit_InteractiveInput(self, node: InteractiveInput):
+        return self.visit_Node(node)
+
+    def visit_Name(self, node: Name):
+        return self.visit_Node(node)
+
+    def visit_Literal(self, node: Literal):
+        return self.visit_Node(node)
+
+    def visit_IntegerLiteral(self, node: IntegerLiteral):
+        return self.visit_Node(node)
+
+    def visit_FloatLiteral(self, node: FloatLiteral):
+        return self.visit_Node(node)
+
+    def visit_ComplexLiteral(self, node: ComplexLiteral):
+        return self.visit_Node(node)
+
+    def visit_BooleanLiteral(self, node: BooleanLiteral):
+        return self.visit_Node(node)
+
+    def visit_NoneLiteral(self, node: NoneLiteral):
+        return self.visit_Node(node)
+
+    def visit_TextLiteral(self, node: TextLiteral):
+        return self.visit_Node(node)
+
+    def visit_BytesLiteral(self, node: BytesLiteral):
+        return self.visit_Node(node)
+
+    def visit_EllipsisLiteral(self, node: EllipsisLiteral):
+        return self.visit_Node(node)
+
+    def visit_Binary(self, node: Binary):
+        return self.visit_Node(node)
+
+    def visit_Unary(self, node: Unary):
+        return self.visit_Node(node)
+
+    def visit_Boolean(self, node: Boolean):
+        return self.visit_Node(node)
+
+    def visit_Comparison(self, node: Comparison):
+        return self.visit_Node(node)
+
+    def visit_Conditional(self, node: Conditional):
+        return self.visit_Node(node)
+
+    def visit_Parameter(self, node: Parameter):
+        return self.visit_Node(node)
+
+    def visit_Lambda(self, node: Lambda):
+        return self.visit_Node(node)
+
+    def visit_NamedExpression(self, node: NamedExpression):
+        return self.visit_Node(node)
+
+    def visit_Yield(self, node: Yield):
+        return self.visit_Node(node)
+
+    def visit_Await(self, node: Await):
+        return self.visit_Node(node)
+
+    def visit_Attribute(self, node: Attribute):
+        return self.visit_Node(node)
+
+    def visit_CallArgument(self, node: CallArgument):
+        return self.visit_Node(node)
+
+    def visit_Call(self, node: Call):
+        return self.visit_Node(node)
+
+    def visit_Subscript(self, node: Subscript):
+        return self.visit_Node(node)
+
+    def visit_Slice(self, node: Slice):
+        return self.visit_Node(node)
+
+    def visit_Unpack(self, node: Unpack):
+        return self.visit_Node(node)
+
+    def visit_Tuple(self, node: Tuple):
+        return self.visit_Node(node)
+
+    def visit_List(self, node: List):
+        return self.visit_Node(node)
+
+    def visit_Set(self, node: Set):
+        return self.visit_Node(node)
+
+    def visit_DictEntry(self, node: DictEntry):
+        return self.visit_Node(node)
+
+    def visit_Dict(self, node: Dict):
+        return self.visit_Node(node)
+
+    def visit_ComprehensionClause(self, node: ComprehensionClause):
+        return self.visit_Node(node)
+
+    def visit_Comprehension(self, node: Comprehension):
+        return self.visit_Node(node)
+
+    def visit_Interpolation(self, node: Interpolation):
+        return self.visit_Node(node)
+
+    def visit_FormattedString(self, node: FormattedString):
+        return self.visit_Node(node)
+
+    def visit_TemplateString(self, node: TemplateString):
+        return self.visit_Node(node)
+
+    def visit_ExpressionStatement(self, node: ExpressionStatement):
+        return self.visit_Node(node)
+
+    def visit_Assignment(self, node: Assignment):
+        return self.visit_Node(node)
+
+    def visit_AnnotatedAssignment(self, node: AnnotatedAssignment):
+        return self.visit_Node(node)
+
+    def visit_AugmentedAssignment(self, node: AugmentedAssignment):
+        return self.visit_Node(node)
+
+    def visit_Delete(self, node: Delete):
+        return self.visit_Node(node)
+
+    def visit_ImportItem(self, node: ImportItem):
+        return self.visit_Node(node)
+
+    def visit_Import(self, node: Import):
+        return self.visit_Node(node)
+
+    def visit_ImportFrom(self, node: ImportFrom):
+        return self.visit_Node(node)
+
+    def visit_If(self, node: If):
+        return self.visit_Node(node)
+
+    def visit_While(self, node: While):
+        return self.visit_Node(node)
+
+    def visit_For(self, node: For):
+        return self.visit_Node(node)
+
+    def visit_WithItem(self, node: WithItem):
+        return self.visit_Node(node)
+
+    def visit_With(self, node: With):
+        return self.visit_Node(node)
+
+    def visit_ExceptionHandler(self, node: ExceptionHandler):
+        return self.visit_Node(node)
+
+    def visit_Try(self, node: Try):
+        return self.visit_Node(node)
+
+    def visit_TypeParameter(self, node: TypeParameter):
+        return self.visit_Node(node)
+
+    def visit_FunctionDefinition(self, node: FunctionDefinition):
+        return self.visit_Node(node)
+
+    def visit_ClassDefinition(self, node: ClassDefinition):
+        return self.visit_Node(node)
+
+    def visit_TypeAlias(self, node: TypeAlias):
+        return self.visit_Node(node)
+
+    def visit_Pass(self, node: Pass):
+        return self.visit_Node(node)
+
+    def visit_Break(self, node: Break):
+        return self.visit_Node(node)
+
+    def visit_Continue(self, node: Continue):
+        return self.visit_Node(node)
+
+    def visit_Return(self, node: Return):
+        return self.visit_Node(node)
+
+    def visit_Raise(self, node: Raise):
+        return self.visit_Node(node)
+
+    def visit_Assert(self, node: Assert):
+        return self.visit_Node(node)
+
+    def visit_Global(self, node: Global):
+        return self.visit_Node(node)
+
+    def visit_Nonlocal(self, node: Nonlocal):
+        return self.visit_Node(node)
+
+    def visit_CapturePattern(self, node: CapturePattern):
+        return self.visit_Node(node)
+
+    def visit_LiteralPattern(self, node: LiteralPattern):
+        return self.visit_Node(node)
+
+    def visit_ValuePattern(self, node: ValuePattern):
+        return self.visit_Node(node)
+
+    def visit_SequencePattern(self, node: SequencePattern):
+        return self.visit_Node(node)
+
+    def visit_StarPattern(self, node: StarPattern):
+        return self.visit_Node(node)
+
+    def visit_PatternEntry(self, node: PatternEntry):
+        return self.visit_Node(node)
+
+    def visit_MappingPattern(self, node: MappingPattern):
+        return self.visit_Node(node)
+
+    def visit_KeywordPattern(self, node: KeywordPattern):
+        return self.visit_Node(node)
+
+    def visit_ClassPattern(self, node: ClassPattern):
+        return self.visit_Node(node)
+
+    def visit_OrPattern(self, node: OrPattern):
+        return self.visit_Node(node)
+
+    def visit_AsPattern(self, node: AsPattern):
+        return self.visit_Node(node)
+
+    def visit_MatchCase(self, node: MatchCase):
+        return self.visit_Node(node)
+
+    def visit_Match(self, node: Match):
+        return self.visit_Node(node)

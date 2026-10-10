@@ -4,6 +4,7 @@ import pytest
 
 from mule import ast
 from test.mule.parser.ast_query import assert_ast_equal, one
+from test.mule.parser.literal import literal
 
 
 @pytest.mark.parametrize(
@@ -14,7 +15,7 @@ def test_plain_literal_prefixes_accept_all_supported_case_combinations(parse, pr
     expected = b"hello" if "b" in prefix.lower() else "hello"
     assert_ast_equal(
         parse(prefix + "'hello'", mode="eval"),
-        ast.ExpressionInput(ast.Literal(expected)),
+        ast.ExpressionInput(literal(expected)),
     )
 
 
@@ -69,9 +70,7 @@ def test_interpolated_literal_prefixes_accept_all_supported_case_combinations(
     ],
 )
 def test_escape_decoding_preserves_unicode_and_bytes(parse, source, value):
-    assert_ast_equal(
-        parse(source, mode="eval"), ast.ExpressionInput(ast.Literal(value))
-    )
+    assert_ast_equal(parse(source, mode="eval"), ast.ExpressionInput(literal(value)))
 
 
 @pytest.mark.parametrize("prefix", ["f", "t"])
@@ -80,7 +79,7 @@ def test_format_specification_text_is_not_expression_syntax(parse, prefix, spec)
     source = prefix + '"{value:' + spec + '}"'
     field = ast.Interpolation(
         ast.Name("value"),
-        format_spec=ast.FormattedString([ast.Literal(spec)]),
+        format_spec=ast.FormattedString([literal(spec)]),
         expression_text="value" if prefix == "t" else None,
     )
     kind = ast.FormattedString if prefix == "f" else ast.TemplateString
@@ -96,7 +95,7 @@ def test_nested_format_field_can_have_its_own_literal_format_specification(parse
                     [
                         ast.Interpolation(
                             ast.Name("width"),
-                            format_spec=ast.FormattedString([ast.Literal("05")]),
+                            format_spec=ast.FormattedString([literal("05")]),
                         )
                     ]
                 ),
@@ -174,7 +173,7 @@ def test_pep701_requires_two_levels_of_nested_format_fields(parse):
 def test_field_comments_after_debug_specifier_preserve_raw_debug_text(parse):
     expected = ast.FormattedString(
         [
-            ast.Literal("value= # debug comment\n"),
+            literal("value= # debug comment\n"),
             ast.Interpolation(ast.Name("value"), conversion="r"),
         ]
     )

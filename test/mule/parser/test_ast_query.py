@@ -1,6 +1,7 @@
 import pytest
 
 from mule import ast
+from test.mule.parser.literal import literal
 
 from .ast_query import assert_ast_equal, at, nodes, one
 
@@ -10,7 +11,7 @@ def assignment_tree():
         [
             ast.Assignment(
                 [ast.Name("answer")],
-                ast.Binary(ast.BinaryOperator.ADD, ast.Literal(1), ast.Literal(2)),
+                ast.Binary(ast.BinaryOperator.ADD, literal(1), literal(2)),
             )
         ]
     )
@@ -75,12 +76,10 @@ def test_equal_trees_accepts_every_field():
     assert_ast_equal(assignment_tree(), assignment_tree())
 
 
-@pytest.mark.parametrize(
-    "expected", [ast.Literal(2), ast.Name("one"), ast.Literal(True)]
-)
+@pytest.mark.parametrize("expected", [literal(2), ast.Name("one"), literal(True)])
 def test_different_nodes_or_literal_types_fail_comparison(expected):
     with pytest.raises(AssertionError):
-        assert_ast_equal(ast.Literal(1), expected)
+        assert_ast_equal(literal(1), expected)
 
 
 def test_source_locations_can_be_compared_explicitly():

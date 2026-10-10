@@ -55,6 +55,13 @@ HARD_KEYWORDS = frozenset(
 )
 
 
+def _normalize_source(source: str) -> str:
+    try:
+        return source.replace("\r\n", "\n").replace("\r", "\n")
+    except (AttributeError, TypeError) as error:
+        raise TypeError("source must be a string") from error
+
+
 class Parser(
     ExpressionParserMixin, StatementParserMixin, PatternParserMixin, StringParserMixin
 ):
@@ -67,7 +74,7 @@ class Parser(
         start: ast.Position = SOURCE_START,
         fragment: bool = False,
     ):
-        self.source = source.replace("\r\n", "\n").replace("\r", "\n")
+        self.source = _normalize_source(source)
         self.filename = filename
         self.type_comments = type_comments
         self.origin = start
@@ -142,7 +149,7 @@ class Parser(
     def finish[T: ast.Node](
         self, node: T, start: Token | ast.Position, *, end: ast.Position | None = None
     ) -> T:
-        position = start.start if isinstance(start, Token) else start
+        position = start.source_start()
         node.span = ast.Span(position, self.previous.end if end is None else end)
         return node
 
@@ -165,8 +172,7 @@ class Parser(
         while parser.match_kind("NEWLINE"):
             pass
         result = parser.expression_list(allow_named=True, allow_yield=True)
-        if isinstance(result, ast.Unpack):
-            parser.error("A starred expression must be in a tuple")
+        result.require_collection(parser, "A starred expression must be in a tuple")
         while parser.match_kind("NEWLINE"):
             pass
         parser.expect_kind("EOF")
@@ -181,8 +187,7 @@ def parse(
     type_comments: bool = False,
 ) -> ast.Node:
     """Parse Python source into Mule nodes without invoking the host parser."""
-    if not isinstance(source, str):
-        raise TypeError("source must be a string")
+    source = _normalize_source(source)
     if mode not in ("exec", "eval", "single"):
         raise ValueError("mode must be 'exec', 'eval', or 'single'")
     parser = Parser(source, filename, type_comments=type_comments)

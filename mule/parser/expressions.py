@@ -59,12 +59,9 @@ class ExpressionParserMixin:
                     left = self.finish(ast.Attribute(left, attribute.text), begin)
                 continue
             if text == ":=" and min_bp <= 1:
-                if (
-                    not allow_named
-                    or not isinstance(left, ast.Name)
-                    or self.is_parenthesized(left)
-                ):
+                if not allow_named or self.is_parenthesized(left):
                     self.error("Invalid assignment expression target or context")
+                left.validate_named_target(self)
                 self.advance()
                 right = self.expression(2)
                 left = self.finish(ast.NamedExpression(left, right), left.span.start)
@@ -85,17 +82,9 @@ class ExpressionParserMixin:
                 self.advance()
                 right = self.expression(power + 1)
                 operator = ast.BooleanOperator(text)
-                if (
-                    isinstance(left, ast.Boolean)
-                    and left.operator == operator
-                    and not self.is_parenthesized(left)
-                ):
-                    left.operands.append(right)
-                    left.span = ast.Span(left.span.start, right.span.end)
-                else:
-                    left = self.finish(
-                        ast.Boolean(operator, [left, right]), left.span.start
-                    )
+                left = left.append_boolean(
+                    operator, right, grouped=self.is_parenthesized(left)
+                )
                 continue
             if text in COMPARISONS or (text == "not" and self.peek().text == "in"):
                 if min_bp > 30:
@@ -107,17 +96,11 @@ class ExpressionParserMixin:
                     self.expect("in")
                     operator = "not in"
                 right = self.expression(31)
-                if isinstance(left, ast.Comparison) and not self.is_parenthesized(left):
-                    left.operators.append(ast.ComparisonOperator(operator))
-                    left.comparators.append(right)
-                    left.span = ast.Span(left.span.start, right.span.end)
-                else:
-                    left = self.finish(
-                        ast.Comparison(
-                            left, [ast.ComparisonOperator(operator)], [right]
-                        ),
-                        left.span.start,
-                    )
+                left = left.append_comparison(
+                    ast.ComparisonOperator(operator),
+                    right,
+                    grouped=self.is_parenthesized(left),
+                )
                 continue
             power = BINARY_POWER.get(text)
             if power is None or power < min_bp:
@@ -138,24 +121,27 @@ class ExpressionParserMixin:
             if raw[-1:] in ("j", "J") and re.fullmatch(
                 rf"(?:{DIGITS}|{FLOAT})[jJ]", raw
             ):
-                value = complex(clean)
+                node = ast.ComplexLiteral(complex(clean))
             elif re.fullmatch(BASE_INTEGER, raw):
-                value = int(clean, 0)
+                node = ast.IntegerLiteral(int(clean, 0))
             elif re.fullmatch(INTEGER, raw):
-                value = int(clean, 10)
+                node = ast.IntegerLiteral(int(clean, 10))
             elif re.fullmatch(FLOAT, raw):
-                value = float(clean)
+                node = ast.FloatLiteral(float(clean))
             else:
                 self.error("Invalid numeric literal", start)
-            return self.finish(ast.Literal(value), start)
+            return self.finish(node, start)
         if start.kind == "STRING":
             return self.parse_strings()
         if start.text in ("None", "True", "False", "..."):
             self.advance()
-            value = {"None": None, "True": True, "False": False, "...": Ellipsis}[
-                start.text
-            ]
-            return self.finish(ast.Literal(value), start)
+            if start.text == "None":
+                node = ast.NoneLiteral()
+            elif start.text == "...":
+                node = ast.EllipsisLiteral()
+            else:
+                node = ast.BooleanLiteral(start.text == "True")
+            return self.finish(node, start)
         if start.text in ("+", "-", "~", "not"):
             self.advance()
             operand = self.expression(25 if start.text == "not" else 80)
@@ -193,8 +179,9 @@ class ExpressionParserMixin:
                 self.grouped.add(id(result))
                 return result
             self.expect(")")
-            if isinstance(first, ast.Unpack):
-                self.error("A starred expression must be in a collection", start)
+            first.require_collection(
+                self, "A starred expression must be in a collection", start
+            )
             self.grouped.add(id(first))
             return first
         if self.match("["):
@@ -265,9 +252,7 @@ class ExpressionParserMixin:
         start = self.current
         elements = [self.slice_item()]
         if not self.match(","):
-            if isinstance(elements[0], ast.Unpack):
-                return self.finish(ast.Tuple(elements), start)
-            return elements[0]
+            return elements[0].subscript_item(self, start)
         while self.current.text != "]":
             elements.append(self.slice_item())
             if not self.match(","):
@@ -342,8 +327,7 @@ class ExpressionParserMixin:
             first = self.star_expression()
             dictionary = bool(self.match(":"))
             if dictionary:
-                if isinstance(first, ast.Unpack):
-                    self.error("Dictionary keys cannot be unpacked")
+                first.require_collection(self, "Dictionary keys cannot be unpacked")
                 value = self.expression()
                 if self.current.text in ("for", "async"):
                     result = self.comprehension(
@@ -376,8 +360,7 @@ class ExpressionParserMixin:
         )
 
     def comprehension(self, kind, element, *, key=None):
-        if isinstance(element, ast.Unpack):
-            self.error("Comprehensions cannot unpack their element")
+        element.require_collection(self, "Comprehensions cannot unpack their element")
         clauses = []
         while self.current.text in ("for", "async"):
             start = self.current
@@ -401,13 +384,4 @@ class ExpressionParserMixin:
         )
 
     def validate_target(self, node, *, delete=False):
-        if isinstance(node, (ast.Name, ast.Attribute, ast.Subscript)):
-            return
-        if isinstance(node, (ast.Tuple, ast.List)):
-            for element in node.elements:
-                self.validate_target(element, delete=delete)
-            return
-        if isinstance(node, ast.Unpack) and not delete:
-            self.validate_target(node.value)
-            return
-        self.error("Invalid deletion target" if delete else "Invalid assignment target")
+        node.validate_target(self, delete=delete)

@@ -4,19 +4,38 @@ import pytest
 
 from mule import ast
 from mule.compiler import ir
-from mule.compiler.analysis import analyze
+from mule.compiler.analysis import (
+    BOTTOM,
+    FLOAT,
+    INTEGER,
+    UNKNOWN,
+    BooleanType,
+    BytesType,
+    ImmortalType,
+    IntegerType,
+    NoneType,
+    TextType,
+    analyze,
+)
+
+I = ast.IntegerLiteral
+B = ast.BooleanLiteral
+N = ast.NoneLiteral
+F = ast.FloatLiteral
+T = ast.TextLiteral
+Y = ast.BytesLiteral
 
 
 def straight(instructions, *, parameters=(), locals_=()):
     instructions = list(instructions)
     consumed = {
-        value for instruction in instructions for value in ir.operands(instruction)
+        value for instruction in instructions for value in instruction.operands()
     }
     for instruction in list(instructions):
-        result = getattr(instruction, "result", None)
+        result = instruction.defined_result()
         if result is not None and result not in consumed:
             instructions.append(ir.Discard(result))
-    instructions.append(ir.Constant("returned", None))
+    instructions.append(ir.Constant("returned", N(None)))
     function = ir.Function(
         "entry",
         parameters,
@@ -27,24 +46,24 @@ def straight(instructions, *, parameters=(), locals_=()):
 
 
 @pytest.mark.parametrize(
-    ("value", "kind", "fixnum", "immortal"),
+    ("value", "expected", "fixnum", "immortal"),
     [
-        (0, "integer", True, False),
-        (-(2**62), "integer", True, False),
-        (2**62 - 1, "integer", True, False),
-        (-(2**62) - 1, "integer", False, False),
-        (2**62, "integer", False, False),
-        (True, "bool", False, True),
-        (False, "bool", False, True),
-        (None, "none", False, True),
-        (1.0, "float", False, False),
-        ("text", "text", False, False),
-        (b"bytes", "bytes", False, False),
+        (I(0), IntegerType(0, 0), True, False),
+        (I(-(2**62)), IntegerType(-(2**62), -(2**62)), True, False),
+        (I(2**62 - 1), IntegerType(2**62 - 1, 2**62 - 1), True, False),
+        (I(-(2**62) - 1), IntegerType(-(2**62) - 1, -(2**62) - 1), False, False),
+        (I(2**62), IntegerType(2**62, 2**62), False, False),
+        (B(True), BooleanType(1, 1), False, True),
+        (B(False), BooleanType(0, 0), False, True),
+        (N(None), NoneType(), False, True),
+        (F(1.0), FLOAT, False, False),
+        (T("text"), TextType(), False, False),
+        (Y(b"bytes"), BytesType(), False, False),
     ],
 )
-def test_constant_representation_is_proven(value, kind, fixnum, immortal):
+def test_constant_representation_is_proven(value, expected, fixnum, immortal):
     facts = analyze(straight([ir.Constant("value", value)])).types["entry"]["value"]
-    assert facts.kind == kind
+    assert facts == expected
     assert facts.is_fixnum is fixnum
     assert facts.is_immortal is immortal
 
@@ -54,7 +73,14 @@ def test_constant_representation_is_proven(value, kind, fixnum, immortal):
     [
         (ast.BinaryOperator.ADD, 3, 4, 7, 7, True),
         (ast.BinaryOperator.ADD, 2**62 - 1, 1, 2**62, 2**62, False),
-        (ast.BinaryOperator.SUBTRACT, -(2**62), 1, -(2**62) - 1, -(2**62) - 1, False),
+        (
+            ast.BinaryOperator.SUBTRACT,
+            -(2**62),
+            1,
+            -(2**62) - 1,
+            -(2**62) - 1,
+            False,
+        ),
         (ast.BinaryOperator.MULTIPLY, 2**40, 2**40, 2**80, 2**80, False),
         (ast.BinaryOperator.BIT_AND, -(2**100), 255, 0, 0, True),
         (ast.BinaryOperator.RIGHT_SHIFT, -5, 1, -3, -3, True),
@@ -66,8 +92,8 @@ def test_integer_ranges_detect_promotion(
 ):
     module = straight(
         [
-            ir.Constant("left", left),
-            ir.Constant("right", right),
+            ir.Constant("left", I(left)),
+            ir.Constant("right", I(right)),
             ir.Binary("result", operator, "left", "right"),
         ]
     )
@@ -79,8 +105,8 @@ def test_integer_ranges_detect_promotion(
 def test_bool_arithmetic_does_not_decode_heap_bool_as_integer_tag():
     module = straight(
         [
-            ir.Constant("left", True),
-            ir.Constant("right", False),
+            ir.Constant("left", B(True)),
+            ir.Constant("right", B(False)),
             ir.Binary("sum", ast.BinaryOperator.ADD, "left", "right"),
         ]
     )
@@ -94,15 +120,15 @@ def test_unknown_parameter_operator_can_return_arbitrary_object():
     module = straight(
         [
             ir.Load("parameter", "x", True),
-            ir.Constant("one", 1),
+            ir.Constant("one", I(1)),
             ir.Binary("result", ast.BinaryOperator.ADD, "parameter", "one"),
         ],
         parameters=("x",),
         locals_=("x",),
     )
     facts = analyze(module).types["entry"]
-    assert facts["parameter"].kind == "unknown"
-    assert facts["result"].kind == "unknown"
+    assert facts["parameter"] == UNKNOWN
+    assert facts["result"] == UNKNOWN
 
 
 @pytest.mark.parametrize(
@@ -110,7 +136,7 @@ def test_unknown_parameter_operator_can_return_arbitrary_object():
 )
 def test_unary_range_follows_integer_bounds(operator):
     module = straight(
-        [ir.Constant("value", -(2**62)), ir.Unary("result", operator, "value")]
+        [ir.Constant("value", I(-(2**62))), ir.Unary("result", operator, "value")]
     )
     result = analyze(module).types["entry"]["result"]
     assert result.is_fixnum is (operator == ast.UnaryOperator.INVERT)
@@ -146,31 +172,31 @@ def joined(left, right, *, missing=False):
 
 
 def test_branch_join_unions_integer_bounds():
-    result = analyze(joined(-3, 8)).types["entry"]["joined"]
+    result = analyze(joined(I(-3), I(8))).types["entry"]["joined"]
     assert result.is_fixnum
     assert (result.minimum, result.maximum) == (-3, 8)
 
 
 def test_branch_join_preserves_null_possibility():
-    result = analyze(joined(3, None, missing=True)).types["entry"]["joined"]
+    result = analyze(joined(I(3), N(None), missing=True)).types["entry"]["joined"]
     assert result.may_be_unbound
     assert not result.is_fixnum
     assert not result.is_immortal
 
 
 def test_bool_and_integer_join_is_not_proven_tagged():
-    assert not analyze(joined(True, 1)).types["entry"]["joined"].is_fixnum
+    assert not analyze(joined(B(True), I(1))).types["entry"]["joined"].is_fixnum
 
 
 def test_bool_and_none_join_preserves_immortality():
-    assert analyze(joined(True, None)).types["entry"]["joined"].is_immortal
+    assert analyze(joined(B(True), N(None))).types["entry"]["joined"].is_immortal
 
 
 def loop(*, bounded):
     test = [ir.Load("test", "x", True)]
     if bounded:
         test += [
-            ir.Constant("limit", 10),
+            ir.Constant("limit", I(10)),
             ir.Compare("test_result", ast.ComparisonOperator.LESS, "test", "limit"),
         ]
         condition = "test_result"
@@ -185,7 +211,7 @@ def loop(*, bounded):
                 [
                     ir.Block(
                         "entry",
-                        [ir.Constant("zero", 0), ir.Store("x", "zero", True)],
+                        [ir.Constant("zero", I(0)), ir.Store("x", "zero", True)],
                         ir.Jump("test"),
                     ),
                     ir.Block("test", test, ir.Branch(condition, "body", "done")),
@@ -193,7 +219,7 @@ def loop(*, bounded):
                         "body",
                         [
                             ir.Load("old", "x", True),
-                            ir.Constant("one", 1),
+                            ir.Constant("one", I(1)),
                             ir.Binary("new", ast.BinaryOperator.ADD, "old", "one"),
                             ir.Store("x", "new", True),
                         ],
@@ -209,7 +235,7 @@ def loop(*, bounded):
 
 def test_unbounded_loop_widens_and_converges():
     result = analyze(loop(bounded=False)).types["entry"]["new"]
-    assert result.kind == "integer"
+    assert result.fits(INTEGER)
     assert not result.is_fixnum
     assert result.maximum is None
 
@@ -223,7 +249,7 @@ def test_integer_branch_constraint_keeps_bounded_loop_body_tagged():
 def test_clear_load_leaves_subsequent_local_unbound():
     module = straight(
         [
-            ir.Constant("initial", 3),
+            ir.Constant("initial", I(3)),
             ir.Store("x", "initial", True),
             ir.Load("moved", "x", True, clear=True),
             ir.Load("empty", "x", True),
@@ -243,7 +269,7 @@ def target_module(instructions):
             "target",
             (),
             (),
-            [ir.Block("entry", [ir.Constant("answer", 7)], ir.Return("answer"))],
+            [ir.Block("entry", [ir.Constant("answer", I(7))], ir.Return("answer"))],
         )
     )
     return module
@@ -254,7 +280,7 @@ def test_rebound_global_is_only_a_guarded_target_candidate():
         [
             ir.DefineFunction("definition", "target", "f"),
             ir.Store("f", "definition", False),
-            ir.Constant("replacement", 3),
+            ir.Constant("replacement", I(3)),
             ir.Store("f", "replacement", False),
             ir.Load("callee", "f", False),
             ir.Call("result", "callee", ()),
@@ -262,8 +288,8 @@ def test_rebound_global_is_only_a_guarded_target_candidate():
     )
     result = analyze(module)
     assert result.targets["entry"]["callee"] == "target"
-    assert result.types["entry"]["callee"].kind == "integer"
-    assert result.types["entry"]["result"].kind == "unknown"
+    assert result.types["entry"]["callee"].fits(INTEGER)
+    assert result.types["entry"]["result"] == UNKNOWN
 
 
 def test_local_alias_propagates_guarded_candidate():
@@ -293,10 +319,12 @@ def test_proven_function_identity_propagates_its_return_summary():
 
 
 @pytest.mark.parametrize(
-    ("initial", "step", "kind"),
-    [(0, -1, "unknown"), (-1, -1, "float"), (0, 1, "integer")],
+    ("initial", "step", "expected"),
+    [(0, -1, UNKNOWN), (-1, -1, FLOAT), (0, 1, INTEGER)],
 )
-def test_widened_integer_exponent_preserves_negative_power_type(initial, step, kind):
+def test_widened_integer_exponent_preserves_negative_power_type(
+    initial, step, expected
+):
     module = ir.Module(
         [
             ir.Function(
@@ -307,7 +335,7 @@ def test_widened_integer_exponent_preserves_negative_power_type(initial, step, k
                     ir.Block(
                         "entry",
                         [
-                            ir.Constant("initial", initial),
+                            ir.Constant("initial", I(initial)),
                             ir.Store("exponent", "initial", True),
                         ],
                         ir.Jump("test"),
@@ -315,7 +343,7 @@ def test_widened_integer_exponent_preserves_negative_power_type(initial, step, k
                     ir.Block(
                         "test",
                         [
-                            ir.Constant("base", 2),
+                            ir.Constant("base", I(2)),
                             ir.Load("exponent", "exponent", True),
                             ir.Binary(
                                 "power", ast.BinaryOperator.POWER, "base", "exponent"
@@ -329,31 +357,31 @@ def test_widened_integer_exponent_preserves_negative_power_type(initial, step, k
                         "body",
                         [
                             ir.Load("old", "exponent", True),
-                            ir.Constant("step", step),
+                            ir.Constant("step", I(step)),
                             ir.Binary("new", ast.BinaryOperator.ADD, "old", "step"),
                             ir.Store("exponent", "new", True),
                         ],
                         ir.Jump("test"),
                     ),
-                    ir.Block("done", [ir.Constant("none", None)], ir.Return("none")),
+                    ir.Block("done", [ir.Constant("none", N(None))], ir.Return("none")),
                 ],
             )
         ],
         "entry",
     )
     result = analyze(module).types["entry"]["power"]
-    assert result.kind == kind
+    assert result == expected
     assert not result.is_fixnum
 
 
 def test_identical_branch_successors_do_not_apply_only_true_constraint():
-    module = joined(-3, 8)
+    module = joined(I(-3), I(8))
     function = module.functions[0]
     function.blocks[-1] = ir.Block(
         "join",
         [
             ir.Load("tested", "x", True),
-            ir.Constant("bound", 0),
+            ir.Constant("bound", I(0)),
             ir.Compare(
                 "condition_result", ast.ComparisonOperator.LESS, "tested", "bound"
             ),
@@ -412,13 +440,13 @@ def test_local_candidate_join_requires_same_target_on_every_path(right_target):
                 "target",
                 (),
                 (),
-                [ir.Block("entry", [ir.Constant("none", None)], ir.Return("none"))],
+                [ir.Block("entry", [ir.Constant("none", N(None))], ir.Return("none"))],
             ),
             ir.Function(
                 "other",
                 (),
                 (),
-                [ir.Block("entry", [ir.Constant("none", None)], ir.Return("none"))],
+                [ir.Block("entry", [ir.Constant("none", N(None))], ir.Return("none"))],
             ),
         ],
         "entry",
@@ -456,13 +484,13 @@ def test_not_of_unknown_object_always_returns_immortal_boolean():
 
 
 def test_missing_immortal_assignment_keeps_unbound_load_check():
-    result = analyze(joined(None, None, missing=True)).types["entry"]["joined"]
+    result = analyze(joined(N(None), N(None), missing=True)).types["entry"]["joined"]
     assert result.may_be_unbound
     assert not result.is_immortal
 
 
 def test_block_storage_order_does_not_control_propagation():
-    module = joined(-3, 8)
+    module = joined(I(-3), I(8))
     function = module.functions[0]
     function.blocks[1:] = reversed(function.blocks[1:])
     result = analyze(module).types["entry"]["joined"]
@@ -476,7 +504,7 @@ def test_bounded_bit_mask_recovers_fixnum_after_loop_widening():
         "done",
         [
             ir.Load("final", "x", True),
-            ir.Constant("mask", 255),
+            ir.Constant("mask", I(255)),
             ir.Binary("masked", ast.BinaryOperator.BIT_AND, "final", "mask"),
         ],
         ir.Return("masked"),
@@ -488,20 +516,20 @@ def test_bounded_bit_mask_recovers_fixnum_after_loop_widening():
 
 
 def test_assignment_invalidates_constraint_for_previous_local_load():
-    module = joined(-3, 8)
+    module = joined(I(-3), I(8))
     function = module.functions[0]
     function.locals += ("replacement",)
     for block, value in zip(function.blocks[1:3], (100, -100), strict=True):
         result = f"{block.label}_replacement"
         block.instructions += [
-            ir.Constant(result, value),
+            ir.Constant(result, I(value)),
             ir.Store("replacement", result, True),
         ]
     function.blocks[-1] = ir.Block(
         "join",
         [
             ir.Load("tested", "x", True),
-            ir.Constant("bound", 0),
+            ir.Constant("bound", I(0)),
             ir.Compare("comparison", ast.ComparisonOperator.LESS, "tested", "bound"),
             ir.Load("replacement", "replacement", True),
             ir.Store("x", "replacement", True),
@@ -537,7 +565,7 @@ def integer_calls(values):
                     "entry",
                     [
                         ir.Load("x", "x", True),
-                        ir.Constant("one", 1),
+                        ir.Constant("one", I(1)),
                         ir.Binary("sum", ast.BinaryOperator.ADD, "x", "one"),
                     ],
                     ir.Return("sum"),
@@ -555,17 +583,17 @@ def observed(result, function):
 
 
 def test_callsite_ranges_join_in_optional_context_not_public_parameters():
-    result = analyze(integer_calls((2, 8)))
+    result = analyze(integer_calls((I(2), I(8))))
     context = observed(result, "increment")
     assert (context.parameters[0].minimum, context.parameters[0].maximum) == (2, 8)
     assert (context.return_type.minimum, context.return_type.maximum) == (3, 9)
     assert context.types["x"].is_fixnum
-    assert result.types["increment"]["x"].kind == "unknown"
-    assert result.returns["increment"].kind == "unknown"
+    assert result.types["increment"]["x"] == UNKNOWN
+    assert result.returns["increment"] == UNKNOWN
 
 
 def test_proven_caller_uses_matching_context_return_range():
-    result = analyze(integer_calls((2, 8)))
+    result = analyze(integer_calls((I(2), I(8))))
     for identifier in ("call0", "call1"):
         assert result.types["entry"][identifier].is_fixnum
         assert (
@@ -575,7 +603,7 @@ def test_proven_caller_uses_matching_context_return_range():
 
 
 def test_fixnum_context_cannot_assume_fixnum_arithmetic_result_on_overflow():
-    result = analyze(integer_calls((2**62 - 1,)))
+    result = analyze(integer_calls((I(2**62 - 1),)))
     context = observed(result, "increment")
     assert context.parameters[0].is_fixnum
     assert not context.return_type.is_fixnum
@@ -588,23 +616,23 @@ def test_fixnum_context_cannot_assume_fixnum_arithmetic_result_on_overflow():
 
 
 def test_mixed_calls_do_not_assign_integer_facts_to_bool_float_public_entry():
-    result = analyze(integer_calls((3, True, 2.0)))
+    result = analyze(integer_calls((I(3), B(True), F(2.0))))
     context = observed(result, "increment")
     assert (context.parameters[0].minimum, context.parameters[0].maximum) == (3, 3)
     assert result.types["entry"]["call0"].is_fixnum
-    assert result.types["entry"]["call1"].kind == "unknown"
-    assert result.types["entry"]["call2"].kind == "unknown"
-    assert result.types["increment"]["x"].kind == "unknown"
+    assert result.types["entry"]["call1"] == UNKNOWN
+    assert result.types["entry"]["call2"] == UNKNOWN
+    assert result.types["increment"]["x"] == UNKNOWN
 
 
 def test_dynamic_call_has_guarded_fixnum_context_without_observed_integer_seed():
-    module = integer_calls((3,))
+    module = integer_calls((I(3),))
     entry = module.functions[0]
     entry.parameters = entry.locals = ("argument",)
     entry.blocks[0].instructions[1] = ir.Load("argument0", "argument", True)
     result = analyze(module)
     assert [context.id for context in result.variants["increment"]] == ["fixnum"]
-    assert result.types["entry"]["call0"].kind == "unknown"
+    assert result.types["entry"]["call0"] == UNKNOWN
 
 
 def test_global_store_proves_function_until_an_arbitrary_call():
@@ -621,8 +649,8 @@ def test_global_store_proves_function_until_an_arbitrary_call():
     )
     result = analyze(module)
     assert result.types["entry"]["first"].is_fixnum
-    assert result.types["entry"]["after"].kind == "unknown"
-    assert result.types["entry"]["second"].kind == "unknown"
+    assert result.types["entry"]["after"] == UNKNOWN
+    assert result.types["entry"]["second"] == UNKNOWN
 
 
 def test_loaded_callee_keeps_identity_when_argument_call_rebinds_globals():
@@ -664,12 +692,12 @@ def test_module_definition_is_not_a_fact_at_another_function_entry():
     )
     result = analyze(module)
     assert result.targets["wrapper"]["callee"] == "target"
-    assert result.returns["wrapper"].kind == "unknown"
+    assert result.returns["wrapper"] == UNKNOWN
 
 
 @pytest.mark.parametrize("same_target", [False, True])
 def test_joined_global_functions_require_unanimous_proven_identity(same_target):
-    module = joined(-3, 8)
+    module = joined(I(-3), I(8))
     function = module.functions[0]
     for block, target in zip(
         function.blocks[1:3],
@@ -689,7 +717,7 @@ def test_joined_global_functions_require_unanimous_proven_identity(same_target):
         ],
         ir.Return("result"),
     )
-    for name, value in (("first", 7), ("second", "text")):
+    for name, value in (("first", I(7)), ("second", T("text"))):
         module.functions.append(
             ir.Function(
                 name,
@@ -707,11 +735,11 @@ def test_joined_global_functions_require_unanimous_proven_identity(same_target):
     result = analyze(module).types["entry"]["result"]
     assert result.is_fixnum is same_target
     if not same_target:
-        assert result.kind == "unknown"
+        assert result == UNKNOWN
 
 
 def test_unbound_argument_does_not_seed_or_prove_specialized_call():
-    module = joined(3, None, missing=True)
+    module = joined(I(3), N(None), missing=True)
     entry = module.functions[0]
     entry.blocks[-1] = ir.Block(
         "join",
@@ -722,10 +750,10 @@ def test_unbound_argument_does_not_seed_or_prove_specialized_call():
         ],
         ir.Return("result"),
     )
-    module.functions.append(integer_calls((3,)).functions[1])
+    module.functions.append(integer_calls((I(3),)).functions[1])
     result = analyze(module)
     assert result.types["entry"]["argument"].may_be_unbound
-    assert result.types["entry"]["result"].kind == "unknown"
+    assert result.types["entry"]["result"] == UNKNOWN
     assert [context.id for context in result.variants["increment"]] == ["fixnum"]
 
 
@@ -733,7 +761,7 @@ def recursive_calls(*, speculative=False):
     module = straight(
         [
             ir.DefineFunction("callee", "recursive", "recursive"),
-            ir.Constant("argument", 3),
+            ir.Constant("argument", I(3)),
             ir.Call("result", "callee", ("argument",)),
         ]
     )
@@ -751,7 +779,7 @@ def recursive_calls(*, speculative=False):
                 "entry",
                 [
                     ir.Load("tested", "n", True),
-                    ir.Constant("limit", 100),
+                    ir.Constant("limit", I(100)),
                     ir.Compare(
                         "comparison", ast.ComparisonOperator.LESS, "tested", "limit"
                     ),
@@ -763,7 +791,7 @@ def recursive_calls(*, speculative=False):
                 [
                     recurse,
                     ir.Load("old", "n", True),
-                    ir.Constant("one", 1),
+                    ir.Constant("one", I(1)),
                     ir.Binary("new", ast.BinaryOperator.ADD, "old", "one"),
                     ir.Call("recursive_result", "callee", ("new",)),
                 ],
@@ -786,9 +814,9 @@ def test_recursive_argument_propagation_widens_before_publication():
     context = observed(result, "recursive")
     assert context.parameters[0].minimum == 3
     assert context.parameters[0].maximum == 2**62 - 1
-    assert context.return_type.kind == "integer"
+    assert context.return_type.fits(INTEGER)
     assert context.return_type.is_fixnum
-    assert result.types["recursive"]["tested"].kind == "unknown"
+    assert result.types["recursive"]["tested"] == UNKNOWN
 
 
 def test_recursive_global_candidate_return_remains_unknown():
@@ -796,19 +824,19 @@ def test_recursive_global_candidate_return_remains_unknown():
     context = observed(result, "recursive")
     assert context.parameters[0].is_fixnum
     assert context.types["new"].is_fixnum
-    assert context.types["recursive_result"].kind == "unknown"
-    assert context.return_type.kind == "unknown"
+    assert context.types["recursive_result"] == UNKNOWN
+    assert context.return_type == UNKNOWN
 
 
 def test_context_ids_and_cardinality_are_stable():
-    first = analyze(integer_calls((2, 8)))
-    second = analyze(integer_calls((2, 8)))
+    first = analyze(integer_calls((I(2), I(8))))
+    second = analyze(integer_calls((I(2), I(8))))
     assert first.variants == second.variants
     assert all(len(contexts) <= 2 for contexts in first.variants.values())
 
 
 def test_argument_and_return_types_propagate_through_multiple_local_calls():
-    module = integer_calls((3,))
+    module = integer_calls((I(3),))
     module.functions[0].blocks[0].instructions[0] = ir.DefineFunction(
         "callee0", "wrapper", "wrapper"
     )
@@ -835,28 +863,30 @@ def test_argument_and_return_types_propagate_through_multiple_local_calls():
         context = observed(result, name)
         assert (context.parameters[0].minimum, context.parameters[0].maximum) == (3, 3)
         assert (context.return_type.minimum, context.return_type.maximum) == (4, 4)
-        assert result.returns[name].kind == "unknown"
+        assert result.returns[name] == UNKNOWN
     assert result.types["entry"]["call0"].is_fixnum
 
 
 def test_growing_recursive_return_interval_widens_without_fixnum_promise():
     module = recursive_calls()
     function = module.functions[1]
-    function.blocks[0].instructions[1] = ir.Constant("limit", 0)
+    function.blocks[0].instructions[1] = ir.Constant("limit", I(0))
     function.blocks[0].instructions[2] = ir.Compare(
         "comparison", ast.ComparisonOperator.GREATER, "tested", "limit"
     )
-    function.blocks[1].instructions[2] = ir.Constant("one", -1)
+    function.blocks[1].instructions[2] = ir.Constant("one", I(-1))
     function.blocks[1].instructions += [
-        ir.Constant("increment", 1),
+        ir.Constant("increment", I(1)),
         ir.Binary("sum", ast.BinaryOperator.ADD, "recursive_result", "increment"),
     ]
     function.blocks[1].terminator = ir.Return("sum")
-    function.blocks[2] = ir.Block("done", [ir.Constant("base", 1)], ir.Return("base"))
+    function.blocks[2] = ir.Block(
+        "done", [ir.Constant("base", I(1))], ir.Return("base")
+    )
     result = analyze(module)
     context = observed(result, "recursive")
     assert context.parameters[0].is_fixnum
-    assert context.return_type.kind == "integer"
+    assert context.return_type.fits(INTEGER)
     assert context.return_type.minimum == 1
     assert context.return_type.maximum is None
     assert not context.return_type.is_fixnum
@@ -870,14 +900,9 @@ def test_source_defined_global_call_gets_only_flow_proven_return_facts():
     )
     result = analyze(module)
     entry = module.functions[0]
-    calls = [
-        instruction
-        for block in entry.blocks
-        for instruction in block.instructions
-        if isinstance(instruction, ir.Call)
-    ]
+    calls = call_operations(entry)
     assert result.types[entry.name][calls[0].result].is_fixnum
-    assert result.types[entry.name][calls[1].result].kind == "unknown"
+    assert result.types[entry.name][calls[1].result] == UNKNOWN
 
 
 @pytest.mark.parametrize("effect", ["x + 1", "not x", "x == 1", "if x:\n    pass"])
@@ -887,10 +912,57 @@ def test_user_operator_or_truth_hook_invalidates_stored_global_function(effect):
     module = lower(f"def target():\n    return 7\n{effect}\nresult = target()\n")
     result = analyze(module)
     entry = module.functions[0]
-    call = next(
-        instruction
-        for block in entry.blocks
-        for instruction in block.instructions
-        if isinstance(instruction, ir.Call)
-    )
-    assert result.types[entry.name][call.result].kind == "unknown"
+    call = call_operations(entry)[0]
+    assert result.types[entry.name][call.result] == UNKNOWN
+
+
+class CallCollector(ir.Visitor):
+    def __init__(self):
+        self.calls = []
+
+    def visit_Call(self, instruction):
+        self.calls.append(instruction)
+
+
+def call_operations(function):
+    collector = CallCollector()
+    for block in function.blocks:
+        for instruction in block.instructions:
+            instruction.accept(collector)
+    return collector.calls
+
+
+@pytest.mark.parametrize(
+    ("actual", "expected", "semantic_match", "dispatch_match"),
+    [
+        (UNKNOWN, UNKNOWN, True, True),
+        (IntegerType(2, 4), IntegerType(1, 5), True, True),
+        (IntegerType(2, 6), IntegerType(1, 5), False, False),
+        (BooleanType(0, 1), IntegerType(0, 1), False, False),
+        (BooleanType(0, 0), BooleanType(1, 1), False, False),
+        (BooleanType(1, 1), BooleanType(0, 1), True, True),
+        (NoneType(), ImmortalType(), True, True),
+        (BooleanType(may_be_unbound=True), ImmortalType(), False, False),
+        (IntegerType(1, 2, may_be_unbound=True), UNKNOWN, False, True),
+        (BOTTOM, UNKNOWN, False, True),
+        (FLOAT, FLOAT, True, False),
+    ],
+    ids=[
+        "unknown-adds-no-proof",
+        "contained-integer-range",
+        "range-exceeds-entry",
+        "heap-bool-is-not-tagged-integer",
+        "bool-singleton-rejects-opposite-value",
+        "bool-singleton-fits-bool-domain",
+        "none-is-immortal",
+        "unbound-bool-is-not-proven-immortal",
+        "unbound-argument-cannot-prove-return",
+        "unsolved-value-cannot-prove-return",
+        "float-summary-does-not-discharge-fixnum-entry",
+    ],
+)
+def test_semantic_containment_and_dispatch_proofs(
+    actual, expected, semantic_match, dispatch_match
+):
+    assert actual.fits(expected) is semantic_match
+    assert actual.dispatch_fits(expected) is dispatch_match

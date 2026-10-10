@@ -75,7 +75,7 @@ class Lowerer:
         return function
 
 
-class FunctionBuilder:
+class FunctionBuilder(ast.Visitor):
     def __init__(
         self,
         lowerer: Lowerer,
@@ -100,57 +100,13 @@ class FunctionBuilder:
 
     def _bindings(self, statements):
         """Classify the whole function, including assignments after an early read."""
-        seen = set(self.function.parameters)
-
-        def visit(node):
-            if isinstance(node, ast.FunctionDefinition):
-                if not self.is_module:
-                    self.error(
-                        "nested functions are not supported yet", node, unsupported=True
-                    )
-                seen.add(node.name)
-                return
-            if isinstance(node, ast.Global):
-                for name in node.identifiers:
-                    if name not in self.globals and name in seen:
-                        self.error(
-                            f"name '{name}' is used or assigned before global declaration",
-                            node,
-                        )
-                    self.globals.add(name)
-                return
-            if isinstance(node, ast.Nonlocal):
-                self.error(
-                    "nonlocal bindings are not supported yet", node, unsupported=True
-                )
-            if isinstance(node, ast.Name):
-                seen.add(node.identifier)
-            for child in ast.children(node):
-                visit(child)
-
+        scope = _ScopeVisitor(self)
         for statement in statements:
-            visit(statement)
+            statement.accept(scope)
         if not self.is_module:
+            collector = _LocalBindings(self)
             for statement in statements:
-                for node in ast.walk(statement):
-                    targets = []
-                    if isinstance(node, ast.Assignment):
-                        targets = node.targets
-                    elif isinstance(
-                        node,
-                        (
-                            ast.AugmentedAssignment,
-                            ast.AnnotatedAssignment,
-                            ast.NamedExpression,
-                        ),
-                    ):
-                        targets = [node.target]
-                    for target in targets:
-                        if (
-                            isinstance(target, ast.Name)
-                            and target.identifier not in self.globals
-                        ):
-                            self.locals[target.identifier] = None
+                statement.accept(collector)
 
     def block(self) -> ir.Block:
         block = ir.Block(f"b{len(self.function.blocks)}")
@@ -165,7 +121,7 @@ class FunctionBuilder:
         self.values += 1
         return value
 
-    def constant(self, value) -> str:
+    def constant(self, value: ast.Literal) -> str:
         result = self.result()
         self.emit(ir.Constant(result, value))
         return result
@@ -199,162 +155,182 @@ class FunctionBuilder:
             self.statement(statement)
 
     def statement(self, node: ast.Statement):
-        match node:
-            case ast.Pass() | ast.Global():
-                return
-            case ast.ExpressionStatement(expression=expression):
-                self.emit(ir.Discard(self.expression(expression)))
-            case ast.Assignment(targets=targets, value=value):
-                for target in targets:
-                    if not isinstance(target, ast.Name):
-                        self.error(
-                            "only identifier assignment targets are supported yet",
-                            target,
-                            unsupported=True,
-                        )
-                result = self.expression(value)
-                if len(targets) == 1:
-                    self.store(targets[0].identifier, result)
-                else:
-                    temporary = self.temporary()
-                    self.store(temporary, result)
-                    for index, target in enumerate(targets):
-                        self.store(
-                            target.identifier,
-                            self.load(temporary, clear=index == len(targets) - 1),
-                        )
-            case ast.AugmentedAssignment(
-                target=ast.Name(identifier=name), operator=op, value=value
-            ):
-                left = self.load(name)
-                right = self.expression(value)
-                result = self.result()
-                self.emit(
-                    ir.Binary(
-                        result,
-                        op,
-                        left,
-                        right,
-                        inplace=True,
-                        reuse_local=name if self.local(name) else None,
-                    )
-                )
-                self.store(name, result)
-            case ast.If(condition=condition, body=body, else_body=otherwise):
-                then, other, join = self.block(), self.block(), self.block()
-                self.condition(condition, then, other)
-                self.current = then
-                self.statements(body)
-                if self.current.terminator is None:
-                    self.jump(join)
-                self.current = other
-                self.statements(otherwise)
-                if self.current.terminator is None:
-                    self.jump(join)
-                self.current = join
-            case ast.While(condition=condition, body=body, else_body=otherwise):
-                test, loop, other, done = (
-                    self.block(),
-                    self.block(),
-                    self.block(),
-                    self.block(),
-                )
-                self.jump(test)
-                self.current = test
-                self.condition(condition, loop, other)
-                self.current = loop
-                self.loops.append((test, done))
-                self.statements(body)
-                self.loops.pop()
-                if self.current.terminator is None:
-                    self.jump(test)
-                self.current = other
-                self.statements(otherwise)
-                if self.current.terminator is None:
-                    self.jump(done)
-                self.current = done
-            case ast.Break() | ast.Continue():
-                if not self.loops:
-                    self.error(f"'{type(node).__name__.lower()}' outside loop", node)
-                self.jump(self.loops[-1][1 if isinstance(node, ast.Break) else 0])
-            case ast.Return(value=value):
-                if self.is_module:
-                    self.error("'return' outside function", node)
-                self.current.terminator = ir.Return(
-                    self.constant(None) if value is None else self.expression(value)
-                )
-            case ast.FunctionDefinition():
-                function = self.lowerer.function(node)
-                result = self.result()
-                self.emit(ir.DefineFunction(result, function.name, node.name))
-                self.store(node.name, result)
-            case _:
-                self.error(
-                    f"{type(node).__name__} is not supported by the native compiler yet",
-                    node,
-                    unsupported=True,
-                )
+        node.accept(self)
 
     def expression(self, node: ast.Expression) -> str:
-        match node:
-            case ast.Literal(value=value) if (
-                isinstance(value, (str, bytes, int, float)) or value is None
-            ):
-                return self.constant(value)
-            case ast.Name(identifier=name):
-                return self.load(name)
-            case ast.Binary(operator=op, left=left, right=right):
-                a, b = self.expression(left), self.expression(right)
-                result = self.result()
-                self.emit(ir.Binary(result, op, a, b))
-                return result
-            case ast.Unary(operator=op, operand=operand):
-                value = self.expression(operand)
-                result = self.result()
-                self.emit(ir.Unary(result, op, value))
-                return result
-            case ast.Call(function=callee, arguments=arguments):
-                for argument in arguments:
-                    if argument.kind != ast.ArgumentKind.POSITIONAL:
-                        self.error(
-                            "only positional call arguments are supported yet",
-                            argument,
-                            unsupported=True,
-                        )
-                function = self.expression(callee)
-                args = tuple(self.expression(argument.value) for argument in arguments)
-                result = self.result()
-                self.emit(ir.Call(result, function, args))
-                return result
-            case ast.NamedExpression(target=target, value=value):
-                temporary = self.temporary()
-                self.store(temporary, self.expression(value))
-                self.store(target.identifier, self.load(temporary))
-                return self.load(temporary, clear=True)
-            case ast.Boolean(operator=op, operands=values):
-                return self.boolean(op, values)
-            case ast.Conditional(
-                condition=condition, then=then_value, otherwise=other_value
-            ):
-                then, other, join = self.block(), self.block(), self.block()
-                temporary = self.temporary()
-                self.condition(condition, then, other)
-                self.current = then
-                self.store(temporary, self.expression(then_value))
-                self.jump(join)
-                self.current = other
-                self.store(temporary, self.expression(other_value))
-                self.jump(join)
-                self.current = join
-                return self.load(temporary, clear=True)
-            case ast.Comparison():
-                return self.comparison(node)
-            case _:
+        return node.accept(self)
+
+    def visit_Node(self, node):
+        self.error(
+            "syntax is not supported by the native compiler yet",
+            node,
+            unsupported=True,
+        )
+
+    def visit_Pass(self, node):
+        return None
+
+    def visit_Global(self, node):
+        return None
+
+    def visit_ExpressionStatement(self, node):
+        self.emit(ir.Discard(self.expression(node.expression)))
+
+    def visit_Assignment(self, node):
+        target_visitor = _IdentifierTarget(self)
+        names = [target.accept(target_visitor) for target in node.targets]
+        result = self.expression(node.value)
+        if len(names) == 1:
+            self.store(names[0], result)
+        else:
+            temporary = self.temporary()
+            self.store(temporary, result)
+            for index, name in enumerate(names):
+                self.store(name, self.load(temporary, clear=index == len(names) - 1))
+
+    def visit_AugmentedAssignment(self, node):
+        name = node.target.accept(_IdentifierTarget(self))
+        left = self.load(name)
+        right = self.expression(node.value)
+        result = self.result()
+        self.emit(
+            ir.Binary(
+                result,
+                node.operator,
+                left,
+                right,
+                inplace=True,
+                reuse_local=name if self.local(name) else None,
+            )
+        )
+        self.store(name, result)
+
+    def visit_If(self, node):
+        then, other, join = self.block(), self.block(), self.block()
+        self.condition(node.condition, then, other)
+        self.current = then
+        self.statements(node.body)
+        if self.current.terminator is None:
+            self.jump(join)
+        self.current = other
+        self.statements(node.else_body)
+        if self.current.terminator is None:
+            self.jump(join)
+        self.current = join
+
+    def visit_While(self, node):
+        test, loop, other, done = self.block(), self.block(), self.block(), self.block()
+        self.jump(test)
+        self.current = test
+        self.condition(node.condition, loop, other)
+        self.current = loop
+        self.loops.append((test, done))
+        self.statements(node.body)
+        self.loops.pop()
+        if self.current.terminator is None:
+            self.jump(test)
+        self.current = other
+        self.statements(node.else_body)
+        if self.current.terminator is None:
+            self.jump(done)
+        self.current = done
+
+    def visit_Break(self, node):
+        if not self.loops:
+            self.error("'break' outside loop", node)
+        self.jump(self.loops[-1][1])
+
+    def visit_Continue(self, node):
+        if not self.loops:
+            self.error("'continue' outside loop", node)
+        self.jump(self.loops[-1][0])
+
+    def visit_Return(self, node):
+        if self.is_module:
+            self.error("'return' outside function", node)
+        self.current.terminator = ir.Return(
+            self.constant(ast.NoneLiteral())
+            if node.value is None
+            else self.expression(node.value)
+        )
+
+    def visit_FunctionDefinition(self, node):
+        function = self.lowerer.function(node)
+        result = self.result()
+        self.emit(ir.DefineFunction(result, function.name, node.name))
+        self.store(node.name, result)
+
+    def visit_IntegerLiteral(self, node):
+        return self.constant(node)
+
+    def visit_FloatLiteral(self, node):
+        return self.constant(node)
+
+    def visit_BooleanLiteral(self, node):
+        return self.constant(node)
+
+    def visit_NoneLiteral(self, node):
+        return self.constant(node)
+
+    def visit_TextLiteral(self, node):
+        return self.constant(node)
+
+    def visit_BytesLiteral(self, node):
+        return self.constant(node)
+
+    def visit_Name(self, node):
+        return self.load(node.identifier)
+
+    def visit_Binary(self, node):
+        a, b = self.expression(node.left), self.expression(node.right)
+        result = self.result()
+        self.emit(ir.Binary(result, node.operator, a, b))
+        return result
+
+    def visit_Unary(self, node):
+        value = self.expression(node.operand)
+        result = self.result()
+        self.emit(ir.Unary(result, node.operator, value))
+        return result
+
+    def visit_Call(self, node):
+        for argument in node.arguments:
+            if argument.kind != ast.ArgumentKind.POSITIONAL:
                 self.error(
-                    f"{type(node).__name__} is not supported by the native compiler yet",
-                    node,
+                    "only positional call arguments are supported yet",
+                    argument,
                     unsupported=True,
                 )
+        function = self.expression(node.function)
+        args = tuple(self.expression(argument.value) for argument in node.arguments)
+        result = self.result()
+        self.emit(ir.Call(result, function, args))
+        return result
+
+    def visit_NamedExpression(self, node):
+        temporary = self.temporary()
+        self.store(temporary, self.expression(node.value))
+        self.store(node.target.identifier, self.load(temporary))
+        return self.load(temporary, clear=True)
+
+    def visit_Boolean(self, node):
+        return self.boolean(node.operator, node.operands)
+
+    def visit_Conditional(self, node):
+        then, other, join = self.block(), self.block(), self.block()
+        temporary = self.temporary()
+        self.condition(node.condition, then, other)
+        self.current = then
+        self.store(temporary, self.expression(node.then))
+        self.jump(join)
+        self.current = other
+        self.store(temporary, self.expression(node.otherwise))
+        self.jump(join)
+        self.current = join
+        return self.load(temporary, clear=True)
+
+    def visit_Comparison(self, node):
+        return self.comparison(node)
 
     def boolean(self, operator, expressions):
         temporary = self.temporary()
@@ -381,53 +357,11 @@ class FunctionBuilder:
         Other expression forms produce their ordinary values before testing;
         those boundaries can intentionally test a selected object again.
         """
-        if isinstance(node, ast.Boolean):
-            for operand in node.operands[:-1]:
-                next_block = self.block()
-                yes, no = (
-                    (next_block, false)
-                    if node.operator == ast.BooleanOperator.AND
-                    else (true, next_block)
-                )
-                self.value_condition(operand, destination, yes, no)
-                self.current = next_block
-                self.emit(ir.Discard(self.load(destination, clear=True)))
-            self.value_condition(node.operands[-1], destination, true, false)
-            return
-        self.store(destination, self.expression(node))
-        self.current.terminator = ir.Branch(
-            self.load(destination), true.label, false.label
-        )
+        node.accept(_ValueConditionVisitor(self, destination, true, false))
 
     def condition(self, node, true, false):
         """Lower truth-testing contexts without re-testing short-circuit values."""
-        match node:
-            case ast.Boolean(operator=operator, operands=operands):
-                for operand in operands[:-1]:
-                    next_block = self.block()
-                    yes, no = (
-                        (next_block, false)
-                        if operator == ast.BooleanOperator.AND
-                        else (true, next_block)
-                    )
-                    self.condition(operand, yes, no)
-                    self.current = next_block
-                self.condition(operands[-1], true, false)
-            case ast.Unary(operator=ast.UnaryOperator.NOT, operand=operand):
-                self.condition(operand, false, true)
-            case ast.Conditional(condition=test, then=yes, otherwise=no):
-                yes_block, no_block = self.block(), self.block()
-                self.condition(test, yes_block, no_block)
-                self.current = yes_block
-                self.condition(yes, true, false)
-                self.current = no_block
-                self.condition(no, true, false)
-            case ast.Comparison() if len(node.operators) > 1:
-                self.comparison_condition(node, true, false)
-            case _:
-                self.current.terminator = ir.Branch(
-                    self.expression(node), true.label, false.label
-                )
+        node.accept(_ConditionVisitor(self, true, false))
 
     def comparison_condition(self, node, true, false):
         previous = self.temporary()
@@ -490,14 +424,159 @@ class FunctionBuilder:
         # A short-circuit can leave the middle operand in the temporary. Its
         # release is conditional because the successful final comparison moved it.
         # Assigning None releases either state without reading an unbound slot.
-        self.store(previous, self.constant(None))
+        self.store(previous, self.constant(ast.NoneLiteral()))
         self.emit(ir.Discard(self.load(previous, clear=True)))
         return self.load(outcome, clear=True)
 
     def finish(self):
         if self.current.terminator is None:
-            self.current.terminator = ir.Return(self.constant(None))
+            self.current.terminator = ir.Return(self.constant(ast.NoneLiteral()))
         self.function.locals = tuple(self.locals)
+
+
+class _IdentifierTarget(ast.Visitor):
+    def __init__(self, builder):
+        self.builder = builder
+
+    def visit_Node(self, node):
+        self.builder.error(
+            "only identifier assignment targets are supported yet",
+            node,
+            unsupported=True,
+        )
+
+    def visit_Name(self, node):
+        return node.identifier
+
+
+class _ScopeVisitor(ast.Visitor):
+    def __init__(self, builder):
+        self.builder = builder
+        self.seen = set(builder.function.parameters)
+
+    def visit_Node(self, node):
+        for child in node.children():
+            child.accept(self)
+
+    def visit_Name(self, node):
+        self.seen.add(node.identifier)
+
+    def visit_FunctionDefinition(self, node):
+        if not self.builder.is_module:
+            self.builder.error(
+                "nested functions are not supported yet", node, unsupported=True
+            )
+        self.seen.add(node.name)
+
+    def visit_Global(self, node):
+        for name in node.identifiers:
+            if name not in self.builder.globals and name in self.seen:
+                self.builder.error(
+                    f"name '{name}' is used or assigned before global declaration", node
+                )
+            self.builder.globals.add(name)
+
+    def visit_Nonlocal(self, node):
+        self.builder.error(
+            "nonlocal bindings are not supported yet", node, unsupported=True
+        )
+
+
+class _LocalBindings(ast.Visitor):
+    def __init__(self, builder):
+        self.builder = builder
+        self.target_visitor = _LocalTarget(builder)
+
+    def visit_Node(self, node):
+        for target in node.assigned_targets():
+            target.accept(self.target_visitor)
+        for child in node.children():
+            child.accept(self)
+
+
+class _LocalTarget(ast.Visitor):
+    def __init__(self, builder):
+        self.builder = builder
+
+    def visit_Node(self, node):
+        pass
+
+    def visit_Name(self, node):
+        if node.identifier not in self.builder.globals:
+            self.builder.locals[node.identifier] = None
+
+
+class _ConditionVisitor(ast.Visitor):
+    def __init__(self, builder, true, false):
+        self.builder = builder
+        self.true, self.false = true, false
+
+    def visit_Node(self, node):
+        self.builder.current.terminator = ir.Branch(
+            self.builder.expression(node), self.true.label, self.false.label
+        )
+
+    def visit_Boolean(self, node):
+        for operand in node.operands[:-1]:
+            next_block = self.builder.block()
+            yes, no = (
+                (next_block, self.false)
+                if node.operator == ast.BooleanOperator.AND
+                else (self.true, next_block)
+            )
+            self.builder.condition(operand, yes, no)
+            self.builder.current = next_block
+        self.builder.condition(node.operands[-1], self.true, self.false)
+
+    def visit_Unary(self, node):
+        if node.operator == ast.UnaryOperator.NOT:
+            self.builder.condition(node.operand, self.false, self.true)
+        else:
+            self.visit_Node(node)
+
+    def visit_Conditional(self, node):
+        yes_block, no_block = self.builder.block(), self.builder.block()
+        self.builder.condition(node.condition, yes_block, no_block)
+        self.builder.current = yes_block
+        self.builder.condition(node.then, self.true, self.false)
+        self.builder.current = no_block
+        self.builder.condition(node.otherwise, self.true, self.false)
+
+    def visit_Comparison(self, node):
+        if len(node.operators) > 1:
+            self.builder.comparison_condition(node, self.true, self.false)
+        else:
+            self.visit_Node(node)
+
+
+class _ValueConditionVisitor(ast.Visitor):
+    def __init__(self, builder, destination, true, false):
+        self.builder = builder
+        self.destination = destination
+        self.true, self.false = true, false
+
+    def visit_Node(self, node):
+        self.builder.store(self.destination, self.builder.expression(node))
+        self.builder.current.terminator = ir.Branch(
+            self.builder.load(self.destination), self.true.label, self.false.label
+        )
+
+    def visit_Boolean(self, node):
+        for operand in node.operands[:-1]:
+            next_block = self.builder.block()
+            yes, no = (
+                (next_block, self.false)
+                if node.operator == ast.BooleanOperator.AND
+                else (self.true, next_block)
+            )
+            self.builder.value_condition(operand, self.destination, yes, no)
+            self.builder.current = next_block
+            self.builder.emit(
+                ir.Discard(self.builder.load(self.destination, clear=True))
+            )
+        self.builder.value_condition(
+            node.operands[-1], self.destination, self.true, self.false
+        )
 
 
 def lower(source: str, filename: str = "<unknown>") -> ir.Module:

@@ -9,29 +9,147 @@ from dataclasses import dataclass, field
 from mule import ast
 
 
+class Operation:
+    """Behavior shared by instructions and control-flow terminators."""
+
+    __slots__ = ()
+
+    def accept(self, visitor):
+        return visitor.visit_Operation(self)
+
+    def operands(self) -> tuple[str, ...]:
+        return ()
+
+    def successors(self) -> tuple[str, ...]:
+        return ()
+
+    def defined_result(self) -> str | None:
+        return None
+
+    def global_names(self) -> tuple[str, ...]:
+        return ()
+
+    def function_definition(self) -> tuple[str, str] | None:
+        return None
+
+    def stored_local(self) -> tuple[str, str] | None:
+        return None
+
+    def argument_count(self) -> int:
+        return 0
+
+    def confirms_assignment(self, name: str, value: str) -> bool:
+        return False
+
+    def validate(self, function, functions, following):
+        pass
+
+
+class ResultOperation(Operation):
+    __slots__ = ()
+
+    def defined_result(self) -> str:
+        return self.result
+
+
+class Visitor:
+    """An operation selects its visitor method directly."""
+
+    def visit_Operation(self, operation):
+        return None
+
+    def visit_Constant(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_Load(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_Store(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_Binary(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_Unary(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_Compare(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_Call(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_DefineFunction(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_Discard(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_Jump(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_Branch(self, operation):
+        return self.visit_Operation(operation)
+
+    def visit_Return(self, operation):
+        return self.visit_Operation(operation)
+
+
 @dataclass(frozen=True, slots=True)
-class Constant:
+class Constant(ResultOperation):
     result: str
-    value: str | bytes | int | float | bool | None
+    value: ast.Literal
+
+    def accept(self, visitor):
+        return visitor.visit_Constant(self)
 
 
 @dataclass(frozen=True, slots=True)
-class Load:
+class Load(ResultOperation):
     result: str
     name: str
     local: bool
     clear: bool = False
 
+    def accept(self, visitor):
+        return visitor.visit_Load(self)
+
+    def global_names(self):
+        return () if self.local else (self.name,)
+
+    def validate(self, function, functions, following):
+        if self.local and self.name not in function.locals:
+            raise ValueError(f"undeclared local {self.name}")
+
 
 @dataclass(frozen=True, slots=True)
-class Store:
+class Store(Operation):
     name: str
     value: str
     local: bool
 
+    def accept(self, visitor):
+        return visitor.visit_Store(self)
+
+    def operands(self):
+        return (self.value,)
+
+    def global_names(self):
+        return () if self.local else (self.name,)
+
+    def stored_local(self):
+        return (self.name, self.value) if self.local else None
+
+    def confirms_assignment(self, name, value):
+        return self.local and self.name == name and self.value == value
+
+    def validate(self, function, functions, following):
+        if self.local and self.name not in function.locals:
+            raise ValueError(f"undeclared local {self.name}")
+
 
 @dataclass(frozen=True, slots=True)
-class Binary:
+class Binary(ResultOperation):
     result: str
     operator: ast.BinaryOperator
     left: str
@@ -39,39 +157,91 @@ class Binary:
     inplace: bool = False
     reuse_local: str | None = None
 
+    def accept(self, visitor):
+        return visitor.visit_Binary(self)
+
+    def operands(self):
+        return (self.left, self.right)
+
+    def validate(self, function, functions, following):
+        if self.reuse_local is not None and (
+            not self.inplace
+            or self.reuse_local not in function.locals
+            or following is None
+            or not following.confirms_assignment(self.reuse_local, self.result)
+        ):
+            raise ValueError("bigint reuse requires immediate assignment to its local")
+
 
 @dataclass(frozen=True, slots=True)
-class Unary:
+class Unary(ResultOperation):
     result: str
     operator: ast.UnaryOperator
     operand: str
 
+    def accept(self, visitor):
+        return visitor.visit_Unary(self)
+
+    def operands(self):
+        return (self.operand,)
+
 
 @dataclass(frozen=True, slots=True)
-class Compare:
+class Compare(ResultOperation):
     result: str
     operator: ast.ComparisonOperator
     left: str
     right: str
 
+    def accept(self, visitor):
+        return visitor.visit_Compare(self)
+
+    def operands(self):
+        return (self.left, self.right)
+
 
 @dataclass(frozen=True, slots=True)
-class Call:
+class Call(ResultOperation):
     result: str
     callee: str
     args: tuple[str, ...]
 
+    def accept(self, visitor):
+        return visitor.visit_Call(self)
+
+    def operands(self):
+        return (self.callee, *self.args)
+
+    def argument_count(self):
+        return len(self.args)
+
 
 @dataclass(frozen=True, slots=True)
-class DefineFunction:
+class DefineFunction(ResultOperation):
     result: str
     function: str
     public_name: str
 
+    def accept(self, visitor):
+        return visitor.visit_DefineFunction(self)
+
+    def function_definition(self):
+        return (self.result, self.function)
+
+    def validate(self, function, functions, following):
+        if self.function not in functions:
+            raise ValueError("reference to missing function")
+
 
 @dataclass(frozen=True, slots=True)
-class Discard:
+class Discard(Operation):
     value: str
+
+    def accept(self, visitor):
+        return visitor.visit_Discard(self)
+
+    def operands(self):
+        return (self.value,)
 
 
 type Instruction = (
@@ -80,20 +250,41 @@ type Instruction = (
 
 
 @dataclass(frozen=True, slots=True)
-class Jump:
+class Jump(Operation):
     target: str
+
+    def accept(self, visitor):
+        return visitor.visit_Jump(self)
+
+    def successors(self):
+        return (self.target,)
 
 
 @dataclass(frozen=True, slots=True)
-class Branch:
+class Branch(Operation):
     condition: str
     true: str
     false: str
 
+    def accept(self, visitor):
+        return visitor.visit_Branch(self)
+
+    def operands(self):
+        return (self.condition,)
+
+    def successors(self):
+        return (self.true, self.false)
+
 
 @dataclass(frozen=True, slots=True)
-class Return:
+class Return(Operation):
     value: str
+
+    def accept(self, visitor):
+        return visitor.visit_Return(self)
+
+    def operands(self):
+        return (self.value,)
 
 
 type Terminator = Jump | Branch | Return
@@ -121,17 +312,7 @@ class Module:
 
 
 def operands(operation: Instruction | Terminator) -> tuple[str, ...]:
-    match operation:
-        case Store(value=value) | Return(value=value) | Discard(value=value):
-            return (value,)
-        case Unary(operand=value) | Branch(condition=value):
-            return (value,)
-        case Binary(left=left, right=right) | Compare(left=left, right=right):
-            return (left, right)
-        case Call(callee=callee, args=args):
-            return (callee, *args)
-        case _:
-            return ()
+    return operation.operands()
 
 
 def verify(module: Module) -> None:
@@ -159,46 +340,20 @@ def _verify_function(function: Function, functions: set[str]) -> None:
     for block in function.blocks:
         if block.terminator is None:
             raise ValueError(f"{function.name}/{block.label}: unterminated block")
-        targets = ()
-        if isinstance(block.terminator, Jump):
-            targets = (block.terminator.target,)
-        elif isinstance(block.terminator, Branch):
-            targets = (block.terminator.true, block.terminator.false)
+        targets = block.terminator.successors()
         if not set(targets) <= blocks.keys():
             raise ValueError("control edge to missing block")
         successors[block.label] = targets
         for target in targets:
             predecessors[target].add(block.label)
         for index, operation in enumerate(block.instructions):
-            if isinstance(operation, Binary) and operation.reuse_local is not None:
-                following = (
-                    block.instructions[index + 1]
-                    if index + 1 < len(block.instructions)
-                    else None
-                )
-                if (
-                    not operation.inplace
-                    or operation.reuse_local not in function.locals
-                    or not isinstance(following, Store)
-                    or not following.local
-                    or following.name != operation.reuse_local
-                    or following.value != operation.result
-                ):
-                    raise ValueError(
-                        "bigint reuse requires immediate assignment to its local"
-                    )
-            if (
-                isinstance(operation, DefineFunction)
-                and operation.function not in functions
-            ):
-                raise ValueError("reference to missing function")
-            if (
-                isinstance(operation, (Load, Store))
-                and operation.local
-                and operation.name not in function.locals
-            ):
-                raise ValueError(f"undeclared local {operation.name}")
-            result = getattr(operation, "result", None)
+            following = (
+                block.instructions[index + 1]
+                if index + 1 < len(block.instructions)
+                else None
+            )
+            operation.validate(function, functions, following)
+            result = operation.defined_result()
             if result is not None:
                 if result in definitions:
                     raise ValueError(f"multiply defined value {result}")

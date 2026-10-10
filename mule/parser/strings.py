@@ -80,7 +80,10 @@ class StringParserMixin:
                     body, token, raw="r" in prefix, is_bytes=is_bytes
                 )
                 self._append_string_part(
-                    parts, ast.Literal(value, span=ast.Span(token.start, token.end))
+                    parts,
+                    ast.BytesLiteral(value, span=ast.Span(token.start, token.end))
+                    if is_bytes
+                    else ast.TextLiteral(value, span=ast.Span(token.start, token.end)),
                 )
         if family == "template":
             result = ast.TemplateString(parts)
@@ -90,27 +93,14 @@ class StringParserMixin:
             value = b"" if family == "bytes" else ""
             for part in parts:
                 value += part.value
-            result = ast.Literal(value)
+            result = (
+                ast.BytesLiteral(value) if family == "bytes" else ast.TextLiteral(value)
+            )
         return self.finish(result, first)
 
     @staticmethod
     def _append_string_part(parts, part):
-        if isinstance(part, ast.Literal) and part.value == "":
-            return
-        if (
-            parts
-            and isinstance(parts[-1], ast.Literal)
-            and isinstance(part, ast.Literal)
-        ):
-            previous = parts[-1]
-            span = (
-                ast.Span(previous.span.start, part.span.end)
-                if previous.span and part.span
-                else None
-            )
-            parts[-1] = ast.Literal(previous.value + part.value, span=span)
-        else:
-            parts.append(part)
+        part.append_string_part(parts)
 
     def _decode_string(self, body, token, *, raw=False, is_bytes=False):
         if is_bytes and any(ord(character) > 127 for character in body):
@@ -186,7 +176,7 @@ class StringParserMixin:
             text = self._decode_string("".join(literal), token, raw=raw)
             self._append_string_part(
                 parts,
-                ast.Literal(
+                ast.TextLiteral(
                     text,
                     span=ast.Span(
                         position_at(body, literal_start, origin),
@@ -323,7 +313,7 @@ class StringParserMixin:
         if debug:
             index = self._skip_field_trivia(body, index + 1)
             parts.append(
-                ast.Literal(
+                ast.TextLiteral(
                     body[expression_start:index],
                     span=ast.Span(
                         position_at(body, expression_start, origin),

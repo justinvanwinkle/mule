@@ -1,4 +1,5 @@
 from mule import ast
+from test.mule.parser.literal import literal
 
 
 def test_walk_visits_root_and_nested_children_in_source_order():
@@ -10,7 +11,7 @@ def test_walk_visits_root_and_nested_children_in_source_order():
 
 def test_children_visits_direct_nodes_without_descending():
     left = ast.Name("left")
-    right = ast.Unary(ast.UnaryOperator.NEGATIVE, ast.Literal(1))
+    right = ast.Unary(ast.UnaryOperator.NEGATIVE, literal(1))
     root = ast.Binary(ast.BinaryOperator.ADD, left, right)
     assert list(ast.children(root)) == [left, right]
 
@@ -41,16 +42,16 @@ def test_node_list_defaults_are_independently_owned():
 
 def test_missing_parameter_default_differs_from_none_literal():
     required = ast.Parameter("required")
-    optional = ast.Parameter("optional", default=ast.Literal(None))
+    optional = ast.Parameter("optional", default=literal(None))
     assert required.default is None
-    assert optional.default == ast.Literal(None)
+    assert optional.default == literal(None)
 
 
 def test_calls_preserve_interleaved_argument_order():
     call = ast.Call(
         ast.Name("f"),
         [
-            ast.CallArgument(ast.Literal(1), ast.ArgumentKind.KEYWORD, "named"),
+            ast.CallArgument(literal(1), ast.ArgumentKind.KEYWORD, "named"),
             ast.CallArgument(ast.Name("items"), ast.ArgumentKind.STARRED),
         ],
     )
@@ -74,11 +75,11 @@ def test_unpacked_dictionary_entry_has_no_key():
 
 def test_pattern_walk_reaches_capture_and_mapping_key():
     pattern = ast.MappingPattern(
-        [ast.PatternEntry(ast.Literal("key"), ast.CapturePattern("item"))], rest="rest"
+        [ast.PatternEntry(literal("key"), ast.CapturePattern("item"))], rest="rest"
     )
     assert [type(node) for node in ast.walk(pattern)] == [
         ast.MappingPattern,
         ast.PatternEntry,
-        ast.Literal,
+        ast.TextLiteral,
         ast.CapturePattern,
     ]

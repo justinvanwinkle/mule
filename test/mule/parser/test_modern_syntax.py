@@ -9,6 +9,7 @@ import pytest
 
 from mule import ast as a
 from test.mule.parser.ast_query import assert_ast_equal, at, nodes, one
+from test.mule.parser.literal import literal
 
 
 def name(identifier):
@@ -90,7 +91,7 @@ def template(*parts):
 
 def precision_spec():
     return a.FormattedString(
-        [field("width"), a.Literal("."), field("precision"), a.Literal("f")]
+        [field("width"), literal("."), field("precision"), literal("f")]
     )
 
 
@@ -329,8 +330,8 @@ MODERN_CASES = [
         "type = 1\ntype.attr = 2",
         a.Module(
             [
-                a.Assignment([name("type")], a.Literal(1)),
-                a.Assignment([a.Attribute(name("type"), "attr")], a.Literal(2)),
+                a.Assignment([name("type")], literal(1)),
+                a.Assignment([a.Attribute(name("type"), "attr")], literal(2)),
             ]
         ),
     ),
@@ -339,10 +340,10 @@ MODERN_CASES = [
         "match = 1\ncase = match + 2",
         a.Module(
             [
-                a.Assignment([name("match")], a.Literal(1)),
+                a.Assignment([name("match")], literal(1)),
                 a.Assignment(
                     [name("case")],
-                    a.Binary(a.BinaryOperator.ADD, name("match"), a.Literal(2)),
+                    a.Binary(a.BinaryOperator.ADD, name("match"), literal(2)),
                 ),
             ]
         ),
@@ -350,7 +351,7 @@ MODERN_CASES = [
     (
         "fstring-quote-reuse",
         'result = f"{mapping["key"]}"',
-        formatted(a.Interpolation(a.Subscript(name("mapping"), a.Literal("key")))),
+        formatted(a.Interpolation(a.Subscript(name("mapping"), literal("key")))),
     ),
     (
         "fstring-comment",
@@ -363,7 +364,7 @@ MODERN_CASES = [
         formatted(
             a.Interpolation(
                 a.Call(
-                    a.Attribute(a.Literal("\n"), "join"),
+                    a.Attribute(literal("\n"), "join"),
                     [a.CallArgument(name("lines"))],
                 )
             )
@@ -377,21 +378,21 @@ MODERN_CASES = [
     (
         "fstring-debug",
         'result = f"{value=}"',
-        formatted(a.Literal("value="), field(conversion="r")),
+        formatted(literal("value="), field(conversion="r")),
     ),
     (
         "fstring-debug-spaces",
         'result = f"{ value = }"',
-        formatted(a.Literal(" value = "), field(conversion="r")),
+        formatted(literal(" value = "), field(conversion="r")),
     ),
     (
         "fstring-conversions",
         'result = f"{value!s} {value!r} {value!a}"',
         formatted(
             field(conversion="s"),
-            a.Literal(" "),
+            literal(" "),
             field(conversion="r"),
-            a.Literal(" "),
+            literal(" "),
             field(conversion="a"),
         ),
     ),
@@ -403,17 +404,17 @@ MODERN_CASES = [
     (
         "fstring-escaped-braces",
         'result = f"{{literal}} {value}"',
-        formatted(a.Literal("{literal} "), field()),
+        formatted(literal("{literal} "), field()),
     ),
     (
         "fstring-raw-prefix",
         'result = rf"\\path\\{value}"',
-        formatted(a.Literal("\\path\\"), field()),
+        formatted(literal("\\path\\"), field()),
     ),
     (
         "fstring-adjacent",
         'result = "prefix" f"{value}" "suffix"',
-        formatted(a.Literal("prefix"), field(), a.Literal("suffix")),
+        formatted(literal("prefix"), field(), literal("suffix")),
     ),
     (
         "fstring-lambda",
@@ -423,7 +424,7 @@ MODERN_CASES = [
                 a.Call(
                     a.Lambda(
                         [a.Parameter("x")],
-                        a.Binary(a.BinaryOperator.ADD, name("x"), a.Literal(1)),
+                        a.Binary(a.BinaryOperator.ADD, name("x"), literal(1)),
                     ),
                     [a.CallArgument(name("value"))],
                 )
@@ -469,12 +470,12 @@ MODERN_CASES = [
     (
         "tstring-basic",
         'result = t"hello {name}"',
-        template(a.Literal("hello "), field("name", expression_text="name")),
+        template(literal("hello "), field("name", expression_text="name")),
     ),
     (
         "tstring-debug",
         'result = t"{value=}"',
-        template(a.Literal("value="), field(conversion="r", expression_text="value")),
+        template(literal("value="), field(conversion="r", expression_text="value")),
     ),
     (
         "tstring-conversion",
@@ -489,12 +490,12 @@ MODERN_CASES = [
     (
         "tstring-raw",
         'result = rt"\\path\\{name}"',
-        template(a.Literal("\\path\\"), field("name", expression_text="name")),
+        template(literal("\\path\\"), field("name", expression_text="name")),
     ),
     (
         "tstring-prefix-order",
         'result = tr"{name}\\n"',
-        template(field("name", expression_text="name"), a.Literal("\\n")),
+        template(field("name", expression_text="name"), literal("\\n")),
     ),
     (
         "tstring-concatenation",
@@ -509,7 +510,7 @@ MODERN_CASES = [
         'result = t"{mapping["key"]}"',
         template(
             a.Interpolation(
-                a.Subscript(name("mapping"), a.Literal("key")),
+                a.Subscript(name("mapping"), literal("key")),
                 expression_text='mapping["key"]',
             )
         ),
@@ -537,7 +538,7 @@ MODERN_CASES = [
                 a.Match(
                     name("subject"),
                     [
-                        a.MatchCase(a.LiteralPattern(a.Literal(value)), [a.Pass()])
+                        a.MatchCase(a.LiteralPattern(literal(value)), [a.Pass()])
                         for value in (None, True, False)
                     ],
                 )
@@ -547,23 +548,19 @@ MODERN_CASES = [
     (
         "match-signed-literal",
         "match subject:\n    case -3:\n        pass",
-        matched(a.LiteralPattern(a.Unary(a.UnaryOperator.NEGATIVE, a.Literal(3)))),
+        matched(a.LiteralPattern(a.Unary(a.UnaryOperator.NEGATIVE, literal(3)))),
     ),
     (
         "match-complex-literal",
         "match subject:\n    case 1 + 2j:\n        pass",
         matched(
-            a.LiteralPattern(
-                a.Binary(a.BinaryOperator.ADD, a.Literal(1), a.Literal(2j))
-            )
+            a.LiteralPattern(a.Binary(a.BinaryOperator.ADD, literal(1), literal(2j)))
         ),
     ),
     (
         "match-or",
         "match subject:\n    case 1 | 2 | 3:\n        pass",
-        matched(
-            a.OrPattern([a.LiteralPattern(a.Literal(value)) for value in (1, 2, 3)])
-        ),
+        matched(a.OrPattern([a.LiteralPattern(literal(value)) for value in (1, 2, 3)])),
     ),
     (
         "match-as",
@@ -581,7 +578,7 @@ MODERN_CASES = [
         matched(
             a.CapturePattern("value"),
             guard=a.Comparison(
-                name("value"), [a.ComparisonOperator.GREATER], [a.Literal(0)]
+                name("value"), [a.ComparisonOperator.GREATER], [literal(0)]
             ),
         ),
     ),
@@ -590,7 +587,7 @@ MODERN_CASES = [
         'match subject:\n    case {"key": value, **rest}:\n        pass',
         matched(
             a.MappingPattern(
-                [a.PatternEntry(a.Literal("key"), a.CapturePattern("value"))], "rest"
+                [a.PatternEntry(literal("key"), a.CapturePattern("value"))], "rest"
             )
         ),
     ),
@@ -624,7 +621,7 @@ MODERN_CASES = [
             a.MappingPattern(
                 [
                     a.PatternEntry(
-                        a.Literal("key"),
+                        literal("key"),
                         a.SequencePattern(
                             [
                                 a.ClassPattern(name("Point"), [a.CapturePattern("x")]),
@@ -653,7 +650,7 @@ MODERN_CASES = [
         "π = 3\n变量 = π\ncafé = 变量",
         a.Module(
             [
-                a.Assignment([name("π")], a.Literal(3)),
+                a.Assignment([name("π")], literal(3)),
                 a.Assignment([name("变量")], name("π")),
                 a.Assignment([name("café")], name("变量")),
             ]
@@ -664,7 +661,7 @@ MODERN_CASES = [
         "K = 1\nresult = K",
         a.Module(
             [
-                a.Assignment([name("K")], a.Literal(1)),
+                a.Assignment([name("K")], literal(1)),
                 a.Assignment([name("result")], name("K")),
             ]
         ),
@@ -672,12 +669,12 @@ MODERN_CASES = [
     (
         "explicit-line-continuation",
         "result = 1 + \\\n    2",
-        assigned(a.Binary(a.BinaryOperator.ADD, a.Literal(1), a.Literal(2))),
+        assigned(a.Binary(a.BinaryOperator.ADD, literal(1), literal(2))),
     ),
     (
         "implicit-line-continuation",
         "result = (\n    1 +  # comment\n    2\n)",
-        assigned(a.Binary(a.BinaryOperator.ADD, a.Literal(1), a.Literal(2))),
+        assigned(a.Binary(a.BinaryOperator.ADD, literal(1), literal(2))),
     ),
     (
         "crlf",
@@ -692,32 +689,32 @@ MODERN_CASES = [
     (
         "string-adjacency",
         "result = 'first' \"second\" '''third'''",
-        assigned(a.Literal("firstsecondthird")),
+        assigned(literal("firstsecondthird")),
     ),
     (
         "bytes-adjacency",
         "result = b'first' br'\\second'",
-        assigned(a.Literal(b"first\\second")),
+        assigned(literal(b"first\\second")),
     ),
     (
         "triple-quoted-string",
         "result = '''first\nsecond\nthird'''",
-        assigned(a.Literal("first\nsecond\nthird")),
+        assigned(literal("first\nsecond\nthird")),
     ),
     (
         "raw-string",
         'result = r"C:\\folder\\file"',
-        assigned(a.Literal("C:\\folder\\file")),
+        assigned(literal("C:\\folder\\file")),
     ),
     (
         "encoding-cookie",
         "# coding: utf-8\nmessage = 'café'",
-        assigned(a.Literal("café"), "message"),
+        assigned(literal("café"), "message"),
     ),
     (
         "comment-with-no-final-newline",
         "value = 1 # final comment",
-        assigned(a.Literal(1), "value"),
+        assigned(literal(1), "value"),
     ),
     (
         "semicolon-newline",
@@ -729,7 +726,7 @@ MODERN_CASES = [
                     subscript("tuple", name("T"), name("T")),
                     [a.TypeParameter("T")],
                 ),
-                a.Assignment([name("result")], a.Literal(1)),
+                a.Assignment([name("result")], literal(1)),
             ]
         ),
     ),
