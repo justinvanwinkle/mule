@@ -122,3 +122,22 @@ except TypeError:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "('truth failed',)\nhierarchy\ninvalid raise\n"
+
+
+def test_handler_does_not_cover_statements_before_the_try(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        """
+def f():
+    x = 1 // 0
+    try:
+        y = 2
+    except ZeroDivisionError:
+        print('caught')
+    return 5
+print(f())
+""",
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""

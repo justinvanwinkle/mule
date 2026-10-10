@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 
 from mule import ast
 
-from .annotation_types import Contract, OptimizationPolicy
+from .annotation_types import Contract
+from .policy import OptimizationPolicy
 
 
 class Operation:

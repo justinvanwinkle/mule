@@ -32,10 +32,15 @@ runtime is written in Rust; these are the approved implementation languages.
 
 The handwritten lexer and Pratt parser produce `mule.ast` objects without the
 host Python parser or its `ast` module. See [parser](parser.md), [AST](ast.md),
-and [lexing](lexing.md). A limited conversion stage classifies local/global
-bindings, validates supported constructs, and produces a verified control-flow
-IR. Conservative type/range propagation and guarded implementation selection
-feed LLVM emission; a Rust runtime implements objects and module startup.
+and [lexing](lexing.md). Conversion (`ir1tran.py`, `ir1tran_lambda.py`)
+classifies local/global bindings, validates supported constructs, and builds
+IR1: SBCL's node graph with control transfers (`Ctran`), single-consumer value
+flow (`Lvar`), leaves, lambdas, blocks, cleanups, and components (`node.py`),
+verified by `check_ir1_consistency` and ordered by `dfo.py`. A temporary bridge
+(`ir1bridge.py`) lowers IR1 to the earlier control-flow IR, which conservative
+type/range propagation and guarded implementation selection still consume
+before LLVM emission; a Rust runtime implements objects and module startup.
+See [Python and LLVM changes](python-changes.md#ir1-implementation).
 See [Native implementation selection](native-lowering.md). Further optimization,
 broader language support, and an extension-build SDK remain future work.
 CPython linking is prohibited; see [dependency policy](dependencies.md).

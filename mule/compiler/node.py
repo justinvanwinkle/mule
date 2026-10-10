@@ -1,0 +1,696 @@
+"""IR1 structures, following SBCL's ``src/compiler/node.lisp``.
+
+IR1 is a flow graph rather than an annotated syntax tree. Control transfer
+inside a block is represented by ``Ctran`` objects linking nodes; value flow
+is represented by ``Lvar`` objects connecting producing nodes to one consumer.
+The two are decoupled so that a discarded result is simply an lvar with no
+destination, and evaluation order never depends on who receives a value.
+
+Python adaptations, recorded in ``spec/python-changes.md``:
+
+- An ``Lvar`` carries exactly one object. Lisp multiple values do not exist.
+- A function's locals are all ``LambdaVar`` objects of one ``Lambda``, because
+  Python's local namespace is flat and decided at compile time. Compiler
+  temporaries are hidden lambda-vars of the same lambda rather than LET-bound
+  lambdas; SBCL's LET conversion would produce the same home environment.
+- ``Set`` with ``value=None`` represents Python's unbinding (``del`` and the
+  implicit deletion of an ``except ... as`` name). Lisp variables are never
+  unbound.
+- ``Cleanup`` kinds describe Python's exception regions instead of Lisp's
+  dynamic bindings. A block's error destination is derived from the innermost
+  cleanup that designates a handler block; nothing is stored per block.
+- ``Combination.info`` carries compile-time data that Lisp would pass as quoted
+  constants (class definitions, import descriptors, range-loop state) so the
+  known function's arguments remain ordinary runtime values.
+"""
+
+from __future__ import annotations
+
+import itertools
+from dataclasses import dataclass, field
+from enum import Enum, auto
+
+from mule import ast
+
+from .policy import OptimizationPolicy
+
+_numbers = itertools.count(1)
+
+
+def _number() -> int:
+    return next(_numbers)
+
+
+class CtranKind(Enum):
+    UNUSED = auto()
+    INSIDE_BLOCK = auto()
+    BLOCK_START = auto()
+
+
+class Ctran:
+    """A control position leading into a node ("lead-in control transfer")."""
+
+    __slots__ = ("block", "kind", "next", "number", "use")
+
+    def __init__(self):
+        self.kind = CtranKind.UNUSED
+        self.next: Node | None = None
+        self.use: Node | None = None
+        self.block: Block | None = None
+        self.number = _number()
+
+    def __repr__(self):
+        return f"<Ctran {self.number} {self.kind.name}>"
+
+
+class Lvar:
+    """Result flow: produced by ``uses``, consumed by exactly one ``dest``."""
+
+    __slots__ = ("derived_type", "dest", "info", "number", "reoptimize", "uses")
+
+    def __init__(self, dest: Node | None = None):
+        self.dest = dest
+        self.uses: list[Node] = []
+        self.derived_type = None
+        self.reoptimize = True
+        self.info = None
+        self.number = _number()
+
+    def use(self) -> Node:
+        """The unique producing node; callers must know there is exactly one."""
+        if len(self.uses) != 1:
+            raise ValueError(f"{self!r} does not have a single use")
+        return self.uses[0]
+
+    def __repr__(self):
+        return f"<Lvar {self.number}>"
+
+
+class Node:
+    """An operation with control linkage, lexical context, and source."""
+
+    __slots__ = ("lexenv", "next", "number", "prev", "reoptimize", "source")
+
+    def __init__(self, lexenv: Lexenv, source: ast.Node | None):
+        self.prev: Ctran | None = None
+        self.next: Ctran | None = None
+        self.lexenv = lexenv
+        self.source = source
+        self.reoptimize = True
+        self.number = _number()
+
+    @property
+    def block(self) -> Block:
+        return self.prev.block
+
+    @property
+    def home_lambda(self) -> Lambda:
+        return self.lexenv.lambda_
+
+    def accept(self, visitor):
+        return visitor.visit_Node(self)
+
+    def __repr__(self):
+        return f"<{type(self).__name__} {self.number}>"
+
+
+class ValuedNode(Node):
+    __slots__ = ("derived_type", "lvar")
+
+    def __init__(self, lexenv, source):
+        super().__init__(lexenv, source)
+        self.lvar: Lvar | None = None
+        self.derived_type = None
+
+    @property
+    def dest(self) -> Node | None:
+        return self.lvar.dest if self.lvar is not None else None
+
+
+class Ref(ValuedNode):
+    """A reference to a leaf. ``final`` marks the last reference in a compiler
+    temporary's extent; the binding is dead afterwards. User variables never
+    carry it; lifetime analysis replaces it when IR2 exists."""
+
+    __slots__ = ("final", "leaf")
+
+    def __init__(self, lexenv, source, leaf: Leaf, *, final=False):
+        super().__init__(lexenv, source)
+        self.leaf = leaf
+        self.final = final
+        self.reoptimize = False
+
+    def accept(self, visitor):
+        return visitor.visit_Ref(self)
+
+
+class If(Node):
+    """Two-way branch on the truth of ``test``; always the last node in a block."""
+
+    __slots__ = ("alternative", "consequent", "test")
+
+    def __init__(
+        self, lexenv, source, test: Lvar, consequent: Block, alternative: Block
+    ):
+        super().__init__(lexenv, source)
+        self.test = test
+        self.consequent = consequent
+        self.alternative = alternative
+
+    def accept(self, visitor):
+        return visitor.visit_If(self)
+
+
+class Set(ValuedNode):
+    """Assign ``value`` to ``var``; ``value=None`` unbinds the variable."""
+
+    __slots__ = ("value", "var")
+
+    def __init__(self, lexenv, source, var: BasicVar, value: Lvar | None):
+        super().__init__(lexenv, source)
+        self.var = var
+        self.value = value
+
+    def accept(self, visitor):
+        return visitor.visit_Set(self)
+
+
+class CallKind(Enum):
+    FULL = auto()
+    LOCAL = auto()
+    KNOWN = auto()
+    GUARDED = auto()
+    ERROR = auto()
+
+
+class Combination(ValuedNode):
+    """A call. ``fun`` yields the callee; ``args`` the operands in order."""
+
+    __slots__ = ("args", "fun", "fun_info", "info", "kind")
+
+    def __init__(self, lexenv, source, fun: Lvar):
+        super().__init__(lexenv, source)
+        self.fun = fun
+        self.args: list[Lvar] = []
+        self.kind = CallKind.FULL
+        self.fun_info = None
+        self.info = None
+
+    def accept(self, visitor):
+        return visitor.visit_Combination(self)
+
+
+class Bind(Node):
+    """Marks the start of a lambda body and its parameter binding."""
+
+    __slots__ = ("lambda_",)
+
+    def __init__(self, lexenv, source):
+        super().__init__(lexenv, source)
+        self.lambda_: Lambda | None = None
+
+    def accept(self, visitor):
+        return visitor.visit_Bind(self)
+
+
+class Return(Node):
+    """Marks the end of a lambda body; ``result`` yields the returned value."""
+
+    __slots__ = ("lambda_", "result", "result_type")
+
+    def __init__(self, lexenv, source, result: Lvar, lambda_: Lambda):
+        super().__init__(lexenv, source)
+        self.result = result
+        self.lambda_ = lambda_
+        self.result_type = None
+
+    def accept(self, visitor):
+        return visitor.visit_Return(self)
+
+
+class Cast(ValuedNode):
+    """Assert a contract on ``value``. Check generation decides whether the
+    assertion becomes a runtime check (``type_check``) according to policy."""
+
+    __slots__ = ("contract", "location", "safety", "type_check", "value")
+
+    def __init__(self, lexenv, source, value: Lvar, contract, location, safety: int):
+        super().__init__(lexenv, source)
+        self.value = value
+        self.contract = contract
+        self.location = location
+        self.safety = safety
+        self.type_check = True
+
+    def accept(self, visitor):
+        return visitor.visit_Cast(self)
+
+
+class Entry(Node):
+    """Start of the dynamic extent of a lexical exit (a cleanup's mess-up)."""
+
+    __slots__ = ("cleanup", "exits")
+
+    def __init__(self, lexenv, source):
+        super().__init__(lexenv, source)
+        self.exits: list[Exit] = []
+        self.cleanup: Cleanup | None = None
+
+    def accept(self, visitor):
+        return visitor.visit_Entry(self)
+
+
+class Exit(ValuedNode):
+    """A lexical exit to ``entry``. With no entry it is degenerate: a filler
+    for an otherwise empty block, exactly as in SBCL."""
+
+    __slots__ = ("entry", "value")
+
+    def __init__(
+        self, lexenv, source, entry: Entry | None = None, value: Lvar | None = None
+    ):
+        super().__init__(lexenv, source)
+        self.entry = entry
+        self.value = value
+
+    def accept(self, visitor):
+        return visitor.visit_Exit(self)
+
+
+class Enclose(Node):
+    """Marks where function objects for ``funs`` would be allocated."""
+
+    __slots__ = ("funs",)
+
+    def __init__(self, lexenv, source, funs: list[Functional]):
+        super().__init__(lexenv, source)
+        self.funs = funs
+
+    def accept(self, visitor):
+        return visitor.visit_Enclose(self)
+
+
+class NodeVisitor:
+    """A node selects its visitor method directly."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node):
+        return self.visit_Node(node)
+
+    def visit_If(self, node):
+        return self.visit_Node(node)
+
+    def visit_Set(self, node):
+        return self.visit_Node(node)
+
+    def visit_Combination(self, node):
+        return self.visit_Node(node)
+
+    def visit_Bind(self, node):
+        return self.visit_Node(node)
+
+    def visit_Return(self, node):
+        return self.visit_Node(node)
+
+    def visit_Cast(self, node):
+        return self.visit_Node(node)
+
+    def visit_Entry(self, node):
+        return self.visit_Node(node)
+
+    def visit_Exit(self, node):
+        return self.visit_Node(node)
+
+    def visit_Enclose(self, node):
+        return self.visit_Node(node)
+
+
+class Leaf:
+    """Something a ``Ref`` can reference: a constant, variable, or function."""
+
+    __slots__ = ("info", "number", "refs", "source_name", "type")
+
+    def __init__(self, source_name: str | None = None):
+        self.source_name = source_name
+        self.refs: list[Ref] = []
+        self.type = None
+        self.info = None
+        self.number = _number()
+
+    def __repr__(self):
+        return f"<{type(self).__name__} {self.source_name or self.number}>"
+
+
+class Constant(Leaf):
+    __slots__ = ("value",)
+
+    def __init__(self, value: ast.Literal):
+        super().__init__()
+        self.value = value
+
+
+class KnownFunction(Leaf):
+    """A compiler-known operation from the function database (``fndb``)."""
+
+    __slots__ = ("fun_info",)
+
+    def __init__(self, fun_info):
+        super().__init__(fun_info.name)
+        self.fun_info = fun_info
+
+
+class BasicVar(Leaf):
+    __slots__ = ("sets",)
+
+    def __init__(self, source_name):
+        super().__init__(source_name)
+        self.sets: list[Set] = []
+
+
+class GlobalVar(BasicVar):
+    """A module-namespace binding, looked up at execution time."""
+
+    __slots__ = ("namespace",)
+
+    def __init__(self, name: str, namespace: str):
+        super().__init__(name)
+        self.namespace = namespace
+
+    @property
+    def name(self) -> str:
+        return self.source_name
+
+
+class LambdaVar(BasicVar):
+    """A function local. ``hidden`` marks compiler temporaries."""
+
+    __slots__ = ("arg_info", "hidden", "home", "indirect", "optimistic_type")
+
+    def __init__(self, name: str, *, hidden=False):
+        super().__init__(name)
+        self.home: Lambda | None = None
+        self.arg_info = None
+        self.indirect = False
+        self.hidden = hidden
+        self.optimistic_type = None
+
+    @property
+    def name(self) -> str:
+        return self.source_name
+
+
+class FunctionalKind(Enum):
+    NORMAL = auto()
+    LET = auto()
+    ASSIGNMENT = auto()
+    OPTIONAL = auto()
+    EXTERNAL = auto()
+    TOPLEVEL = auto()
+    DELETED = auto()
+
+
+class Functional(Leaf):
+    __slots__ = ("debug_name", "entry_fun", "kind", "lexenv")
+
+    def __init__(self, source_name, *, debug_name=None, lexenv=None):
+        super().__init__(source_name)
+        self.kind = FunctionalKind.NORMAL
+        self.entry_fun: Functional | None = None
+        self.debug_name = debug_name
+        self.lexenv = lexenv
+
+
+@dataclass(slots=True)
+class Signature:
+    """Python parameter metadata a lambda carries (SBCL's arg-info, flattened)."""
+
+    kinds: tuple[ast.ParameterKind, ...] = ()
+    default_parameters: tuple[int, ...] = ()
+    variadic: bool = False
+    annotations: tuple = ()
+    return_annotation: object = None
+    annotation_expressions: tuple = ()
+    return_annotation_expression: ast.Expression | None = None
+
+
+class Lambda(Functional):
+    """A function body: ``vars`` are parameters, ``locals`` every local
+    including parameters and hidden temporaries."""
+
+    __slots__ = (
+        "annotation_expressions",
+        "bind",
+        "binding",
+        "calls",
+        "component",
+        "entries",
+        "environment",
+        "home",
+        "lets",
+        "local_annotations",
+        "locals",
+        "name",
+        "namespace",
+        "optional_dispatch",
+        "owner_class",
+        "policy",
+        "return_",
+        "signature",
+        "vars",
+    )
+
+    def __init__(
+        self,
+        name: str,
+        source_name,
+        *,
+        policy: OptimizationPolicy,
+        namespace: str,
+        lexenv=None,
+    ):
+        super().__init__(source_name, lexenv=lexenv)
+        self.name = name
+        self.vars: list[LambdaVar] = []
+        self.locals: list[LambdaVar] = []
+        self.bind: Bind | None = None
+        self.return_: Return | None = None
+        self.home: Lambda = self
+        self.lets: list[Lambda] = []
+        self.entries: list[Entry] = []
+        self.calls: list[Lambda] = []
+        self.component: Component | None = None
+        self.environment: Environment | None = None
+        self.optional_dispatch = None
+        self.policy = policy
+        self.namespace = namespace
+        self.owner_class: str | None = None
+        self.signature = Signature()
+        self.local_annotations: dict[str, object] = {}
+        self.annotation_expressions: dict[str, ast.Expression] = {}
+        self.binding: str | None = None
+
+    @property
+    def parameters(self) -> tuple[str, ...]:
+        return tuple(var.name for var in self.vars)
+
+
+class OptionalDispatch(Functional):
+    """Dispatch from a full Python signature to argument-count entries.
+    Populated by local-call analysis; conversion only records the arglist."""
+
+    __slots__ = ("arglist", "entry_points", "main_entry", "more_entry")
+
+    def __init__(self, source_name, arglist):
+        super().__init__(source_name)
+        self.arglist = arglist
+        self.entry_points: list[Lambda] = []
+        self.more_entry: Lambda | None = None
+        self.main_entry: Lambda | None = None
+
+
+class CleanupKind(Enum):
+    HANDLER_REGION = auto()
+    HANDLER_BODY = auto()
+    FINALLY = auto()
+    WITH = auto()
+
+
+@dataclass(slots=True, eq=False)
+class Cleanup:
+    """A protected region. ``target`` is the block that receives errors raised
+    inside the region; ``binding`` names an ``except ... as`` variable the
+    region must unbind on exit."""
+
+    kind: CleanupKind
+    target: Block | None = None
+    mess_up: Node | None = None
+    binding: str | None = None
+    parent: Cleanup | None = None
+    nlx_info: list = field(default_factory=list)
+
+
+@dataclass(slots=True, eq=False)
+class LoopTarget:
+    """Where ``continue`` and ``break`` transfer, and the cleanup depth to leave."""
+
+    continue_block: Block
+    break_block: Block
+    cleanup: Cleanup | None
+
+
+@dataclass(slots=True, eq=False)
+class Lexenv:
+    """Conversion-time context: visible bindings, the enclosing lambda, the
+    innermost cleanup, loop targets, and the optimization policy."""
+
+    vars: dict[str, Leaf]
+    lambda_: Lambda | None
+    cleanup: Cleanup | None = None
+    policy: OptimizationPolicy = field(default_factory=OptimizationPolicy)
+    loops: tuple[LoopTarget, ...] = ()
+    parent: Lexenv | None = None
+
+    def derive(self, **changes) -> Lexenv:
+        return Lexenv(
+            vars=changes.get("vars", self.vars),
+            lambda_=changes.get("lambda_", self.lambda_),
+            cleanup=changes.get("cleanup", self.cleanup),
+            policy=changes.get("policy", self.policy),
+            loops=changes.get("loops", self.loops),
+            parent=self,
+        )
+
+
+@dataclass(slots=True, eq=False)
+class Environment:
+    """Result of environment analysis for one non-LET lambda."""
+
+    lambda_: Lambda
+    closure: list = field(default_factory=list)
+    nlx_info: list = field(default_factory=list)
+    info: object = None
+
+
+class Block:
+    """A basic block: a chain of nodes from ``start`` to ``last``."""
+
+    __slots__ = (
+        "component",
+        "delete_p",
+        "dominator",
+        "flag",
+        "flush_p",
+        "in_",
+        "info",
+        "kill",
+        "last",
+        "next",
+        "number",
+        "out",
+        "pred",
+        "prev",
+        "reoptimize",
+        "start",
+        "succ",
+        "type_check",
+    )
+
+    def __init__(
+        self, start: Ctran | None = None, *, component: Component | None = None
+    ):
+        self.start = start
+        self.last: Node | None = None
+        self.pred: list[Block] = []
+        self.succ: list[Block] = []
+        self.next: Block | None = None
+        self.prev: Block | None = None
+        self.component = component
+        self.reoptimize = True
+        self.flush_p = True
+        self.type_check = True
+        self.delete_p = False
+        self.flag = None
+        self.number = 0
+        self.dominator = None
+        self.kill = None
+        self.in_ = None
+        self.out = None
+        self.info = None
+
+    def nodes(self):
+        """Iterate the node chain from ``start`` through ``last``."""
+        ctran = self.start
+        while ctran is not None:
+            node = ctran.next
+            if node is None:
+                return
+            yield node
+            if node is self.last:
+                return
+            ctran = node.next
+
+    def __repr__(self):
+        if self.component is not None and self is self.component.head:
+            return "<Block HEAD>"
+        if self.component is not None and self is self.component.tail:
+            return "<Block TAIL>"
+        return f"<Block {self.number} start={self.start!r}>"
+
+
+class ComponentKind(Enum):
+    NORMAL = auto()
+    TOPLEVEL = auto()
+    INITIAL = auto()
+    DELETED = auto()
+
+
+class Component:
+    """A connected piece of the flow graph with dummy ``head``/``tail`` blocks."""
+
+    __slots__ = (
+        "delete_blocks",
+        "failed_optimizations",
+        "head",
+        "info",
+        "kind",
+        "lambdas",
+        "last_block",
+        "name",
+        "new_functionals",
+        "reanalyze",
+        "reanalyze_functionals",
+        "reoptimize",
+        "tail",
+    )
+
+    def __init__(self, name="<unknown>"):
+        self.head = Block(component=self)
+        self.tail = Block(component=self)
+        self.head.flag = True
+        self.tail.flag = True
+        self.head.next = self.tail
+        self.tail.prev = self.head
+        self.last_block = self.tail
+        self.kind = ComponentKind.INITIAL
+        self.lambdas: list[Lambda] = []
+        self.new_functionals: list[Functional] = []
+        self.reanalyze_functionals: list[Functional] = []
+        self.reoptimize = True
+        self.reanalyze = False
+        self.name = name
+        self.info = None
+        self.delete_blocks: list[Block] = []
+        self.failed_optimizations: dict = {}
+
+    def blocks(self):
+        """Blocks in depth-first order, excluding the dummy head and tail."""
+        block = self.head.next
+        while block is not self.tail:
+            following = block.next
+            yield block
+            block = following
+
+    def __repr__(self):
+        return f"<Component {self.name}>"

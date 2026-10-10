@@ -60,11 +60,21 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/parser/statements.py`: statements, suites, definitions, and type parameters.
 - `mule/parser/patterns.py`: structural pattern matching grammar.
 - `mule/parser/strings.py`: literal decoding and formatted/template interpolation.
-- `mule/compiler/frontend.py`: semantic validation and AST-to-IR conversion.
+- `mule/compiler/frontend.py`: public `lower` entry: IR1 conversion then the bridge to the control-flow IR.
+- `mule/compiler/main.py`: compilation driver (`compile_toplevel`), following SBCL `main.lisp`.
+- `mule/compiler/node.py`: IR1 structures (ctrans, lvars, nodes, leaves, lambdas, blocks, components, cleanups), following `node.lisp`.
+- `mule/compiler/ir1tran.py`: AST-to-IR1 conversion with scope classification and semantic validation, following `ir1tran.lisp`.
+- `mule/compiler/ir1tran_lambda.py`: lambda and module-body conversion, native initialization proof, following `ir1tran-lambda.lisp`.
+- `mule/compiler/ir1util.py`: IR1 graph construction and surgery, following `ir1util.lisp`.
+- `mule/compiler/dfo.py`: depth-first ordering, unreachable-block deletion, and component splitting, following `dfo.lisp`.
+- `mule/compiler/debug.py`: `check_ir1_consistency`, following `debug.lisp`.
+- `mule/compiler/knownfun.py` and `mule/compiler/fndb.py`: known-operation metadata and the database of Python operations and runtime protocols, following `fun-info.lisp`/`fndb.lisp`.
+- `mule/compiler/policy.py`: optimization policy qualities, following `policy.lisp`.
+- `mule/compiler/ir1bridge.py`: temporary lowering of IR1 to the control-flow IR until later phases consume IR1 directly.
 - `mule/compiler/modules.py`: static module resolution and compiled initialization.
 - `mule/compiler/ir.py`: control-flow graph, object results, and graph verification.
 - `mule/compiler/analysis.py`: fixed-point value types, integer ranges, and guarded call predictions.
-- `mule/compiler/value_facts.py`: polymorphic value facts, joins, arithmetic, and representation proofs.
+- `mule/compiler/ctype.py`: language-level value types (SBCL CTYPE): polymorphic facts, joins, arithmetic, and representation proofs.
 - `mule/compiler/annotation_types.py`: imported numeric contracts and optimization policies.
 - `mule/compiler/native.py`: raw int64 representation selection and direct local entries.
 - `mule/compiler/native_protocol.py`: compile Mule class protocols and bind physical primitives.
@@ -89,7 +99,9 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/__main__.py`: `python -m mule` command-line interface.
 - `test/mule/parser/`: parser and AST tests, fixtures, and AST query helpers.
 - `test/mule/compiler/`: lowering, LLVM, runtime, and native executable tests.
-- `examples/`: source programs that the native compiler can build.
+- `examples/`: native compiler examples and upstream performance reference programs.
+- `examples/benchmarks-game/`: unmodified Python 3, Rust, SBCL, and Go comparison sources,
+  upstream licenses, expected outputs, and source hashes in `UPSTREAM.json`.
 - `stdlib/mule.py`: numeric annotation markers and the `optimize` compiler directive.
 - `stdlib/_native_class.py`: compiler-private class construction and field protocols compiled by Mule.
 - `stdlib/_arguments.py`: compiled general constructor forwarding.
@@ -102,6 +114,86 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `old/`: earlier implementations, including Python bootstrap code, Common Lisp,
   LLVM experiments, a C++ runtime, and generated artifacts. Treat these as
   historical reference, not the active build or a specification for new behavior.
+
+## Benchmarks Game performance examples
+
+`examples/benchmarks-game/` contains all Python 3, Rust, SBCL, and Go variants
+from the official Computer Language Benchmarks Game source archive for these
+ten workloads: binarytrees, fannkuchredux, fasta, knucleotide, mandelbrot, nbody,
+pidigits, regexredux, revcomp, and spectralnorm. There are 183 programs: 41 Python,
+61 Rust, 33 SBCL, and 48 Go. Source bytes and contributor notices are unchanged;
+only extensions were changed to `.py`, `.rs`, and `.lisp`. Upstream variant
+identifiers remain in the filenames. Each workload retains its BSD license and
+small-input expected output. `UPSTREAM.json` records the download URL, archive
+SHA-256, original paths, local paths, and individual file hashes.
+
+These are external comparison programs, not Mule runtime dependencies or a claim
+that Mule can compile their Python features. Some variants require external
+libraries, older toolchain features, SIMD, or multiple workers. Do not install
+new libraries implicitly or rewrite reference algorithms to obtain a successful
+Mule build. Record the variant, toolchain, flags, input, and worker count with
+performance results; different upstream variants need not use identical
+algorithms or parallelism.
+
+Start with the dependency-free base nbody variants. Build outside the timed run:
+
+```sh
+mkdir -p build/benchmarks-game
+rustc -C opt-level=3 --crate-name nbody examples/benchmarks-game/nbody/nbody.rs \
+  -o build/benchmarks-game/nbody-rust
+go build -o build/benchmarks-game/nbody-go examples/benchmarks-game/nbody/nbody.go
+sbcl --noinform --no-sysinit --no-userinit --non-interactive \
+  --eval '(declaim (optimize (speed 3)))' \
+  --load examples/benchmarks-game/nbody/nbody.lisp \
+  --eval '(sb-ext:save-lisp-and-die "build/benchmarks-game/nbody-sbcl" :toplevel (function main) :executable t)'
+```
+
+Validate against the upstream output before timing. These four invocations have
+been checked at input 1000 and produce byte-identical output:
+
+```sh
+uv run python examples/benchmarks-game/nbody/nbody.py 1000 > build/benchmarks-game/nbody-python.out
+cmp examples/benchmarks-game/nbody/1000_out build/benchmarks-game/nbody-python.out
+for language in rust go sbcl; do
+  build/benchmarks-game/nbody-$language 1000 > build/benchmarks-game/nbody-$language.out
+  cmp examples/benchmarks-game/nbody/1000_out build/benchmarks-game/nbody-$language.out
+done
+```
+
+For repeated wall-clock and peak resident-memory measurements on Linux:
+
+```sh
+for run in 1 2 3; do
+  uv run /usr/bin/time -f 'python elapsed=%e seconds maxrss=%M KiB' \
+    python examples/benchmarks-game/nbody/nbody.py 1000000 > /dev/null
+  for language in rust go sbcl; do
+    /usr/bin/time -f "$language elapsed=%e seconds maxrss=%M KiB" \
+      build/benchmarks-game/nbody-$language 1000000 > /dev/null
+  done
+done
+```
+
+These timings include process startup but exclude Rust/Go builds, SBCL source
+loading/image creation, and uv startup. Increase the input when native runs are
+too short for useful measurements. Use an otherwise idle machine and compare
+repeated runs, not a single measurement. For stdin workloads (knucleotide,
+regexredux, and revcomp), generate one FASTA input with a fasta reference and
+reuse that same file across implementations; input generation is not part of
+their timed execution. Mandelbrot output is binary PBM, so compare bytes rather
+than decoding it as text.
+
+Mule compilation can be attempted separately:
+
+```sh
+uv run python -m mule examples/benchmarks-game/nbody/nbody.py \
+  -o build/benchmarks-game/nbody-mule --emit-llvm build/benchmarks-game/nbody-mule.ll
+```
+
+The current nbody attempt stops at `import sys` with
+`no compilable Python module named 'sys'`. There is no Mule timing result for
+this program yet. Once it compiles, validate the executable against the same
+upstream output before including it in comparisons. No compiler or runtime
+behavior was changed to import these examples.
 
 ## Mandatory SBCL architecture
 

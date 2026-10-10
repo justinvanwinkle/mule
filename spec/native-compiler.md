@@ -35,9 +35,11 @@ executable = build("examples/factorial.py", "build/factorial")
 
 ## Compilation and execution
 
-The pipeline is Mule's lexer/Pratt parser → Mule AST → control-flow IR → type/range
-analysis and implementation selection → textual LLVM IR → Clang-generated native
-executable. There is no host AST conversion,
+The pipeline is Mule's lexer/Pratt parser → Mule AST → IR1 flow graph →
+(bridge) control-flow IR → type/range analysis and implementation selection →
+textual LLVM IR → Clang-generated native executable. IR1 is SBCL's
+representation adapted to Python; the bridge exists until the later phases
+consume IR1 directly. See [Python and LLVM changes](python-changes.md#ir1-implementation). There is no host AST conversion,
 program source embedding, bytecode generation, or evaluator fallback.
 
 The IR separates control-flow blocks from single-consumer object results.

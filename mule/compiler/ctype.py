@@ -1,4 +1,6 @@
-"""Polymorphic semantic facts used by control-flow and local-call analysis.
+"""Language-level value types, following SBCL's CTYPE (``ctype.lisp``).
+
+Polymorphic semantic facts used by control-flow and local-call analysis.
 
 Intervals describe values, not representations of class names. Operations use
 ordinary virtual methods and double dispatch; representation properties expose

@@ -21,6 +21,71 @@ results do not need Lisp's variable-count multiple-value protocol. Mapping this
 graph to LLVM SSA is a lowering responsibility; relabeling SBCL LVARs as SSA
 values would not perform that conversion.
 
+## IR1 implementation
+
+Status: implemented. `node.py`, `ir1tran.py`, `ir1tran_lambda.py`,
+`ir1util.py`, `dfo.py`, `debug.py`, `knownfun.py`, `fndb.py`, `policy.py`, and
+`main.py` port the corresponding SBCL files for the supported subset. The
+frontend produces the IR1 graph and `ir1bridge.py` lowers it to the earlier
+control-flow IR for the remaining phases; the generated LLVM is the same up to
+block order and the removal of unreachable blocks.
+
+Adaptations, each a concrete departure from `node.lisp`/`ir1tran.lisp`:
+
+- An `Lvar` carries one object. Lisp's multiple values, `mv-combination`, and
+  unknown-value conventions are omitted.
+- A function's locals, including compiler temporaries, are `LambdaVar`s of one
+  `Lambda`. Python's local namespace is flat and decided at compile time, so
+  LET-bound temporaries have the same home environment SBCL's LET conversion
+  would produce. Temporaries are marked `hidden`; the final reference in a
+  temporary's extent is marked so ownership lowering can move the value.
+- `Set` with no value represents Python's unbinding (`del`, the implicit
+  deletion of an `except ... as` name).
+- Module globals are `GlobalVar` leaves per namespace, looked up at execution
+  time. Calls through them are full calls; local-call analysis may convert
+  them only under an identity guard, because the binding is mutable until the
+  module has executed. The module body is the top-level lambda, as in
+  `compile-file`; `def`, `class`, decorators, defaults, and imports are
+  operations in that lambda.
+- Python operations are known-function combinations (`%add`, `%getattr`,
+  `%iterate`, `%make_function`, ...) with conservative effect attributes in
+  `fndb.py`. Compile-time data Lisp would quote (class definitions, import
+  descriptors, counted-loop state) travels in `Combination.info`.
+- Cleanups describe exception regions (`HANDLER_REGION`, `HANDLER_BODY`) and
+  change only at block boundaries, so a block's error destination is a
+  property of its first node. Handler-exit actions on `break`/`continue`/
+  `return` are still emitted at conversion time; environment analysis takes
+  that over with `Entry`/`Exit` nodes. A handler now covers exactly the `try`
+  body; the previous frontend extended it to earlier instructions in the same
+  block.
+- Error edges count as successors for reachability. SBCL reaches non-local
+  exit blocks from the component head after environment analysis.
+- `for` over a call spelled `range` emits the guarded counted loop beside the
+  general protocol at conversion time, as a source transform; the identity
+  guard keeps it correct. It becomes an optimizer transform on `%iterate`.
+- Conditional values use hidden temporaries assigned in each branch rather
+  than a multi-use result lvar, matching the bridge's single-producer values.
+- `return` statements deliver to one `Return` node per lambda. The node and
+  its block are deleted when no path returns normally.
+
+Settled departures from SBCL's design, with their reasons:
+
+- **Error propagation** stays LLVM-native: status and null results with
+  cleanup edges, swappable for `invoke`/`landingpad` inside code generation.
+  SBCL's catch-block and unwind-block runtime structures are not cloned; the
+  C extension interface requires CPython-style error returns and the Rust
+  runtime is built with `panic=abort`. Cleanup-region analysis carries over.
+- **Memory management** stays reference counting, which the
+  [C extension interface](cpython-interface.md#ownership-allocation-and-collection)
+  requires. Cycle collection remains later work; no tracing collector.
+- **Optimization scope** is semantic IR1 optimization only: type derivation,
+  constraints, known-function transforms, local calls, effect-based flushing,
+  check generation, and representation selection. SBCL's machine-level phases
+  (copy propagation, IR2 optimization, control and stack analysis, lifetime
+  analysis, pack, algebraic rewrites in `srctran.lisp`/`modarith.lisp`) belong
+  to LLVM. The `reoptimize`/until-done iteration remains because those
+  semantic decisions feed each other.
+
 ## Lisp facilities that do not apply
 
 | SBCL facility | Treatment for Mule |

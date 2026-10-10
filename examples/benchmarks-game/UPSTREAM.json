@@ -1,0 +1,1028 @@
+{
+  "source_url": "https://benchmarksgame-team.pages.debian.net/benchmarksgame/download/benchmarksgame-sourcecode.zip",
+  "retrieved_on": "2026-10-10",
+  "archive_sha256": "aabcf6726cdc14f0f45b99e5daba48584f94bbb48883fd3711a1d040474d1cb4",
+  "selection": "All Python 3, Rust, SBCL, and Go variants of the ten standard tasks, with per-task licenses and expected outputs. Only filename extensions changed; source bytes are unchanged.",
+  "files": [
+    {
+      "upstream_path": "LICENSE",
+      "path": "LICENSE",
+      "sha256": "5bb4ce0a63be9ab37cd2e162375e4075535d341c18b3ca18d5cf3e4e07b7d010"
+    },
+    {
+      "upstream_path": "binarytrees/10_out",
+      "path": "binarytrees/10_out",
+      "sha256": "b7f92c56b5d8aeb0a4d698842d1d87a57b4909865c3c84e5e10313e16663c3cb"
+    },
+    {
+      "upstream_path": "binarytrees/LICENSE",
+      "path": "binarytrees/LICENSE",
+      "sha256": "97dcdfb027430b29c73e6b2eadec75a0cb898050fe45770083db3e5207e2dcff"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.go",
+      "path": "binarytrees/binarytrees.go",
+      "sha256": "72d31464e6ef9df69c740c364e18099be00dbdca22a12bd04ed919f7e664e6c3"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.go-2.go",
+      "path": "binarytrees/binarytrees.go-2.go",
+      "sha256": "dc8aa53d7241d3c1b8e7985bc59ff8816421964d74486b2fb1d204a882253b4d"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.go-3.go",
+      "path": "binarytrees/binarytrees.go-3.go",
+      "sha256": "d5080000ec49cd138974ce7078af8681d71e40ac716b6f9aa66c410b6aa59d8a"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.go-5.go",
+      "path": "binarytrees/binarytrees.go-5.go",
+      "sha256": "c46127330532363d37205d3e0e7d5973f1f2fa4cdbe7f0d23a75bb3bb519144f"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.go-6.go",
+      "path": "binarytrees/binarytrees.go-6.go",
+      "sha256": "77c81c18bf4763b36d13ca6f4a2f6f61ace3e2e64d3316500917fbcd00b1a480"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.go-7.go",
+      "path": "binarytrees/binarytrees.go-7.go",
+      "sha256": "517718cea273baeb7571d7b794bca01425f654e168113ad483ccee2afff1e21b"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.python3",
+      "path": "binarytrees/binarytrees.py",
+      "sha256": "4eba41e47c256a732446527a2889eaf7e88bb959ce250905eb5d98fa48fb6b20"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.python3-2.python3",
+      "path": "binarytrees/binarytrees.python3-2.py",
+      "sha256": "90069a6b07af6d771b782f9347ae41da290549d2bbd6d8d9d94df2e2ae25abd4"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.python3-3.python3",
+      "path": "binarytrees/binarytrees.python3-3.py",
+      "sha256": "9b2f90f444bb02c136f22ecc98f0c48fb1c592d3e6e2b0883ceafe74ea36eb2a"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.python3-4.python3",
+      "path": "binarytrees/binarytrees.python3-4.py",
+      "sha256": "b31546829b8877ade9183a917affafa387151c6d0dfbf43d29e1851eab1e19ff"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.python3-5.python3",
+      "path": "binarytrees/binarytrees.python3-5.py",
+      "sha256": "424e4ba10f4c2c0a376fbbd1a6cea1f1805c6387849955619aa0f2022e5cc735"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.rust",
+      "path": "binarytrees/binarytrees.rs",
+      "sha256": "2bb471318d836aa874fecbcf2dd3da00c6bedee70ec20c141f9ca02bc25abe07"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.rust-2.rust",
+      "path": "binarytrees/binarytrees.rust-2.rs",
+      "sha256": "e8812a78babb260271feb35f8707aa0e0164ad97d7b5a10edd5c47f51d0fbfc5"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.rust-3.rust",
+      "path": "binarytrees/binarytrees.rust-3.rs",
+      "sha256": "6c9bdadf813a8d88247a99e36ecb28d7a87607d37714b8d564610bbc8fabe368"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.rust-4.rust",
+      "path": "binarytrees/binarytrees.rust-4.rs",
+      "sha256": "08b92abb43bd760193bd7fe6cd9b441d5350ceb73fbd69befccbef601da136b4"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.rust-5.rust",
+      "path": "binarytrees/binarytrees.rust-5.rs",
+      "sha256": "fa543ffd0409c90174d96d3cc237ac1ff84affaceef9f215553e953755ef33c4"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.sbcl",
+      "path": "binarytrees/binarytrees.lisp",
+      "sha256": "6aab6defb79d1c856cb8fdfb98b9dc93f6144f1d4bf25faad0647c5282ee28ff"
+    },
+    {
+      "upstream_path": "binarytrees/binarytrees.sbcl-3.sbcl",
+      "path": "binarytrees/binarytrees.sbcl-3.lisp",
+      "sha256": "ed486cbdb2877c09ae5a6af46ef532397ff3d7bb43aec00a0e0f22887d3fb417"
+    },
+    {
+      "upstream_path": "fannkuchredux/7_out",
+      "path": "fannkuchredux/7_out",
+      "sha256": "2dc0a3cd4a547ba69389f97f3b447bd4d487fe6216c3cacd2f9bf8c908dc127f"
+    },
+    {
+      "upstream_path": "fannkuchredux/LICENSE",
+      "path": "fannkuchredux/LICENSE",
+      "sha256": "97dcdfb027430b29c73e6b2eadec75a0cb898050fe45770083db3e5207e2dcff"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.go",
+      "path": "fannkuchredux/fannkuchredux.go",
+      "sha256": "5e47620ed3cd6460457728cd43025a72d9293d022ece3b59feb891ff3ae71306"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.go-2.go",
+      "path": "fannkuchredux/fannkuchredux.go-2.go",
+      "sha256": "239df20fdbdde276110a5d5f18344d2b999bc9246583b3e63fdbcd3086a8556a"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.go-3.go",
+      "path": "fannkuchredux/fannkuchredux.go-3.go",
+      "sha256": "5b88f512ae9878fdbc3aaa1d6f9be11d026606059ab014b8d80d467775da4ac3"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.go-8.go",
+      "path": "fannkuchredux/fannkuchredux.go-8.go",
+      "sha256": "b2f253a103bb797863b132e10b522034451f395bca02ec470a3e98c2031f742b"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.python3-4.python3",
+      "path": "fannkuchredux/fannkuchredux.python3-4.py",
+      "sha256": "babb64ef4816fbebb585486eea110c0b9d2a3a8daf01dbecc949866fea42c299"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.python3-6.python3",
+      "path": "fannkuchredux/fannkuchredux.python3-6.py",
+      "sha256": "d62d0ec075ad5264730fc9f131798a4ee670b3187a1e64beafab8949a4ecce4c"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.python3-8.python3",
+      "path": "fannkuchredux/fannkuchredux.python3-8.py",
+      "sha256": "fad3eec38b9b516c4c0e8b49b2466d8f689d912f08b3d72bc558b051721fb2af"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.rust-2.rust",
+      "path": "fannkuchredux/fannkuchredux.rust-2.rs",
+      "sha256": "9238cf9dd91b245c4b07de2a6985785c7683e40fcd510f8b817076e7c4ba3d1c"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.rust-4.rust",
+      "path": "fannkuchredux/fannkuchredux.rust-4.rs",
+      "sha256": "367a0a0187b3ee6744f9a455a170a5b7f0307046a4dd245d5f8678e89ccf2e33"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.rust-5.rust",
+      "path": "fannkuchredux/fannkuchredux.rust-5.rs",
+      "sha256": "7a8ab49b03083e544e9394409693c4ef276670d76a9b7bef61e1d6f5677d5a2d"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.rust-6.rust",
+      "path": "fannkuchredux/fannkuchredux.rust-6.rs",
+      "sha256": "b0fac82457e18fea7bd8b64dddb8a0d5266d4f5d84201a3b3970973c96349a38"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.sbcl-2.sbcl",
+      "path": "fannkuchredux/fannkuchredux.sbcl-2.lisp",
+      "sha256": "2d2a11a4153dc8f3d98ccbb76f0bee6edf753f743f8a331b16db13900222b0b0"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.sbcl-3.sbcl",
+      "path": "fannkuchredux/fannkuchredux.sbcl-3.lisp",
+      "sha256": "a18e6227e5930d085e07eb0c49dbdf8bb6121efd769ae1dfb95c7bc1c6e13619"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.sbcl-4.sbcl",
+      "path": "fannkuchredux/fannkuchredux.sbcl-4.lisp",
+      "sha256": "6d9804f2c091704d084973c20287ff54af27994ebda4fa073ec081ae8c91332b"
+    },
+    {
+      "upstream_path": "fannkuchredux/fannkuchredux.sbcl-5.sbcl",
+      "path": "fannkuchredux/fannkuchredux.sbcl-5.lisp",
+      "sha256": "a724a98d3635891ad061de236d371b60ea26bd7bff7b3ccd920038d313c0182b"
+    },
+    {
+      "upstream_path": "fasta/1000_out",
+      "path": "fasta/1000_out",
+      "sha256": "62d1e8d0df7938d2aefda9a37887e0389231ea72c099c29a51afb6edca1bdc73"
+    },
+    {
+      "upstream_path": "fasta/LICENSE",
+      "path": "fasta/LICENSE",
+      "sha256": "97dcdfb027430b29c73e6b2eadec75a0cb898050fe45770083db3e5207e2dcff"
+    },
+    {
+      "upstream_path": "fasta/fasta.go",
+      "path": "fasta/fasta.go",
+      "sha256": "b7a6d09683ec310b5d9f619383487d345a3435b1d17bf239443fed4ef84107db"
+    },
+    {
+      "upstream_path": "fasta/fasta.go-2.go",
+      "path": "fasta/fasta.go-2.go",
+      "sha256": "49eb4e788bf353e59b1efcfce499d713a9bc453e05786e3afff3c3d8754fb047"
+    },
+    {
+      "upstream_path": "fasta/fasta.go-3.go",
+      "path": "fasta/fasta.go-3.go",
+      "sha256": "d7f0a78b9bb9f90acbcb0a7c045650d22d29035d3267ddef022771f7e7b74200"
+    },
+    {
+      "upstream_path": "fasta/fasta.go-8.go",
+      "path": "fasta/fasta.go-8.go",
+      "sha256": "2dace805868f891c8ff406bcc4f2a0433752b2ef1ce946490ce063180941a5d3"
+    },
+    {
+      "upstream_path": "fasta/fasta.python3",
+      "path": "fasta/fasta.py",
+      "sha256": "f8bc35bb3b1c35fed1db20010aaa2abbdcce524e99822ae4a1238c2014e89899"
+    },
+    {
+      "upstream_path": "fasta/fasta.python3-2.python3",
+      "path": "fasta/fasta.python3-2.py",
+      "sha256": "5455453ca96eb48d06fb870ca27a59197c0e153cbfd394e9f1663ebb3939763a"
+    },
+    {
+      "upstream_path": "fasta/fasta.python3-3.python3",
+      "path": "fasta/fasta.python3-3.py",
+      "sha256": "23d8398048e2a44d5724ad9a72f5986ca26b129ff94f761ad0aa2a342cb54ed5"
+    },
+    {
+      "upstream_path": "fasta/fasta.python3-5.python3",
+      "path": "fasta/fasta.python3-5.py",
+      "sha256": "20a91903b425fe94478e546c1b82796e1d26cba527eac2feb38b6941d8b22b8d"
+    },
+    {
+      "upstream_path": "fasta/fasta.python3-8.python3",
+      "path": "fasta/fasta.python3-8.py",
+      "sha256": "d8412fe8f6fa285c014158a2ffd2f3718578177edd4a7f462c9c51925133d2d1"
+    },
+    {
+      "upstream_path": "fasta/fasta.rust",
+      "path": "fasta/fasta.rs",
+      "sha256": "560295dd3349aebb3ece8c747fb4656178362ca7a2b0375cb3024779eda135a4"
+    },
+    {
+      "upstream_path": "fasta/fasta.rust-2.rust",
+      "path": "fasta/fasta.rust-2.rs",
+      "sha256": "9428471f6741234af74ae72e6a1b3a770a1dae8ed5364946742d08695595732a"
+    },
+    {
+      "upstream_path": "fasta/fasta.rust-3.rust",
+      "path": "fasta/fasta.rust-3.rs",
+      "sha256": "d11d8ba1572a7ced89e97284a97ccd5b63795d32dcf7ca9e48c7c30a6fe5367c"
+    },
+    {
+      "upstream_path": "fasta/fasta.rust-4.rust",
+      "path": "fasta/fasta.rust-4.rs",
+      "sha256": "d7d9c00058423e6976125060581affd80c407ebc7ead5ca6aca1f5e62b18d37a"
+    },
+    {
+      "upstream_path": "fasta/fasta.rust-5.rust",
+      "path": "fasta/fasta.rust-5.rs",
+      "sha256": "d0c5fd84cb736d2fe85d0ef4d0a59cae2bcc92ca17b164ad2dc2e150c447a9e7"
+    },
+    {
+      "upstream_path": "fasta/fasta.rust-6.rust",
+      "path": "fasta/fasta.rust-6.rs",
+      "sha256": "084510a16c91dd6b0d09e4ca27f367c42172109b7a6d9fb85f65867cacf2e7ab"
+    },
+    {
+      "upstream_path": "fasta/fasta.rust-7.rust",
+      "path": "fasta/fasta.rust-7.rs",
+      "sha256": "20fe129fdda92dff4e951ac49236713d99e89cdfa0afaa596321886ca8e15ca2"
+    },
+    {
+      "upstream_path": "fasta/fasta.rust-9.rust",
+      "path": "fasta/fasta.rust-9.rs",
+      "sha256": "789c29ce4271a1a4a3ad5dd751692388bb34132e7bd54f96255b0f92e3957afa"
+    },
+    {
+      "upstream_path": "fasta/fasta.sbcl",
+      "path": "fasta/fasta.lisp",
+      "sha256": "00a19eb81676bf6adb584815f5dc08f17630dd98287a086fa4178804512cc3d9"
+    },
+    {
+      "upstream_path": "fasta/fasta.sbcl-2.sbcl",
+      "path": "fasta/fasta.sbcl-2.lisp",
+      "sha256": "67a649a3274fad9e8e509c65b60ce06fa925b81bc466d8b0a253b9d64833d964"
+    },
+    {
+      "upstream_path": "fasta/fasta.sbcl-3.sbcl",
+      "path": "fasta/fasta.sbcl-3.lisp",
+      "sha256": "bbfcf436da8bbbb510515c36d260caa682b2a524ee2669718698495a3d8ce66c"
+    },
+    {
+      "upstream_path": "fasta/fasta.sbcl-6.sbcl",
+      "path": "fasta/fasta.sbcl-6.lisp",
+      "sha256": "264352638c44d528f01e431f2ce627d61b253c5e22a552ce4d3913c1471ff983"
+    },
+    {
+      "upstream_path": "knucleotide/1000_out",
+      "path": "knucleotide/1000_out",
+      "sha256": "baa63c46addb89c63e68ea0055952847fbccf450e89997b2b62234c90e66f500"
+    },
+    {
+      "upstream_path": "knucleotide/LICENSE",
+      "path": "knucleotide/LICENSE",
+      "sha256": "97dcdfb027430b29c73e6b2eadec75a0cb898050fe45770083db3e5207e2dcff"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.go-3.go",
+      "path": "knucleotide/knucleotide.go-3.go",
+      "sha256": "6e38e6fe180012d1022c69c4111bbfdaf1e3b731b8b0a5707c97aa4bf6da610f"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.go-4.go",
+      "path": "knucleotide/knucleotide.go-4.go",
+      "sha256": "f6f503aa70f0e02b3e6b624b7fdcdd06fc1ecfd10d99f337f83b986e348b805b"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.go-6.go",
+      "path": "knucleotide/knucleotide.go-6.go",
+      "sha256": "57145e60b8f7e4c4041a18f85f80d4e394f91968927e404d115d8eb0ed4b3e7b"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.go-7.go",
+      "path": "knucleotide/knucleotide.go-7.go",
+      "sha256": "5a7460f0e3300efa7aa74b1a57a9129c4ab5f678b4dd4e14f159631bd9f1783c"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.go-8.go",
+      "path": "knucleotide/knucleotide.go-8.go",
+      "sha256": "1e8082e5b4634de904bfe357aa58224160b0395fdc8fe1675c902bbc54454d4f"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.python3",
+      "path": "knucleotide/knucleotide.py",
+      "sha256": "e8da061e093461b7c2f27d488924e40e89fe66ec2d58996d490c66e6712e4fc4"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.python3-3.python3",
+      "path": "knucleotide/knucleotide.python3-3.py",
+      "sha256": "8fcac91a94f0bc55a801d073a4321822ba2a3f40c1dda590da9e6715f3958f11"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.python3-4.python3",
+      "path": "knucleotide/knucleotide.python3-4.py",
+      "sha256": "a887d87e51a796f290b17aa8132daf383c97e63cfc23eb8c59cb39dcc7d67930"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.python3-8.python3",
+      "path": "knucleotide/knucleotide.python3-8.py",
+      "sha256": "12b679c9ddfcd0a176ca19c0dcd9e9333e4eba7714005b8ff29e855f3e43a4f5"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.python3-9.python3",
+      "path": "knucleotide/knucleotide.python3-9.py",
+      "sha256": "2c3f10f19da14008aa6afb0dc91d97165d0dd80147ecb68ebaf890380c58ff08"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.rust",
+      "path": "knucleotide/knucleotide.rs",
+      "sha256": "6e36ebd098878896465b1714284c51751976ab2d0a226c8af1b28c6f921d0f64"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.rust-2.rust",
+      "path": "knucleotide/knucleotide.rust-2.rs",
+      "sha256": "5f68ca049ae90432457d99d47387be9ccaec0a90be33e52449ebcedb8ae76b57"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.rust-3.rust",
+      "path": "knucleotide/knucleotide.rust-3.rs",
+      "sha256": "fea7511573c0457cf364c812411c5b0f85b86038c96b43bbcef00510dde2bd3c"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.rust-4.rust",
+      "path": "knucleotide/knucleotide.rust-4.rs",
+      "sha256": "82d3213c4b4fc4c819b0d45ffe77449647a28f00ddfcf9859bc37d14b784ae22"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.rust-5.rust",
+      "path": "knucleotide/knucleotide.rust-5.rs",
+      "sha256": "1c31017fbc96416addbc403cbf837ae5323dc8268b65df2431a60cc4574f87f0"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.rust-6.rust",
+      "path": "knucleotide/knucleotide.rust-6.rs",
+      "sha256": "9ffb4a33d5ac9c624969fe41a9c0390306e0cea163d373c4dcbe33faa02a08c9"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.rust-7.rust",
+      "path": "knucleotide/knucleotide.rust-7.rs",
+      "sha256": "47548a02d18bbc68734b0ef2145e3bd89523f15fa779682031ddbd462dbf7851"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.rust-9.rust",
+      "path": "knucleotide/knucleotide.rust-9.rs",
+      "sha256": "291b7c29a9314887cf67084faf00c7a926c6f82c901746917b5432727e9857e4"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.sbcl",
+      "path": "knucleotide/knucleotide.lisp",
+      "sha256": "48d80b4e4eeab387e159685972fbf245d4d4e7c08a917b2a064cbe5d29bbd83d"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.sbcl-2.sbcl",
+      "path": "knucleotide/knucleotide.sbcl-2.lisp",
+      "sha256": "833c978753c586f1ac7cecec6ed187cec12b13fff1f1f745366b0b3506750485"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.sbcl-3.sbcl",
+      "path": "knucleotide/knucleotide.sbcl-3.lisp",
+      "sha256": "c904a077fb2bb554c97176acfc4caf924dc0b4a15fd88c7c84dc9963265eb713"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.sbcl-4.sbcl",
+      "path": "knucleotide/knucleotide.sbcl-4.lisp",
+      "sha256": "70138f37aee2469cd0eb9817ee989db39a1113b5384c46a29afbbd8c6e2f1b31"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.sbcl-5.sbcl",
+      "path": "knucleotide/knucleotide.sbcl-5.lisp",
+      "sha256": "62c8a09e2b25ca94f6939b6075cd3670ec71bde6c6ee997bc14e4daa22b5facd"
+    },
+    {
+      "upstream_path": "knucleotide/knucleotide.sbcl-6.sbcl",
+      "path": "knucleotide/knucleotide.sbcl-6.lisp",
+      "sha256": "c26d7f84873b91a6e48728451acf06fc004611005df61dfc00295ddac58e0a98"
+    },
+    {
+      "upstream_path": "mandelbrot/200_out",
+      "path": "mandelbrot/200_out",
+      "sha256": "97610473750700638fc63d13cfa49d339b67c18e7f26b3f9c9acb61e746472d5"
+    },
+    {
+      "upstream_path": "mandelbrot/LICENSE",
+      "path": "mandelbrot/LICENSE",
+      "sha256": "97dcdfb027430b29c73e6b2eadec75a0cb898050fe45770083db3e5207e2dcff"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.go",
+      "path": "mandelbrot/mandelbrot.go",
+      "sha256": "4d0755c4e3b2218796195cbda95255f0042fa35af877cf5fd953037599370d44"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.go-2.go",
+      "path": "mandelbrot/mandelbrot.go-2.go",
+      "sha256": "62b10d46bcc94c53b1143aa7da776f4225661feaae14954611a506883575e3a7"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.go-3.go",
+      "path": "mandelbrot/mandelbrot.go-3.go",
+      "sha256": "18238291efcb5d44aabebfa3657fc3c6da4b11edc8e836ae8b09c9db6572effc"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.go-4.go",
+      "path": "mandelbrot/mandelbrot.go-4.go",
+      "sha256": "39914187a39ecbad8411e4960a0926432eb797f74931f0c0fb67dc00e88d8736"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.go-6.go",
+      "path": "mandelbrot/mandelbrot.go-6.go",
+      "sha256": "467d0e31d1bfc39fc313925f56bb6a2a76175ba264685450a6b65ea4d2d56a84"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.go-8.go",
+      "path": "mandelbrot/mandelbrot.go-8.go",
+      "sha256": "5c738174a4d392c995978c4d5121785c738b36347fb75608f70e52a8ca83c157"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.python3-2.python3",
+      "path": "mandelbrot/mandelbrot.python3-2.py",
+      "sha256": "b26334453e6d2a8bda988f3b2def8b932c173f0ac42917a1fadcd7479669b528"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.python3-3.python3",
+      "path": "mandelbrot/mandelbrot.python3-3.py",
+      "sha256": "26b2be1bb72913bac550ec95c3443ce68a0eb250adb858c2b3c9f7c9575ec3a4"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.python3-5.python3",
+      "path": "mandelbrot/mandelbrot.python3-5.py",
+      "sha256": "72f21f55dab03a8d5e1c701c598affcd658653fbae277198f8e5b3d00a156bb3"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.python3-7.python3",
+      "path": "mandelbrot/mandelbrot.python3-7.py",
+      "sha256": "a8a8a696f51807e9fc93489bbafb1f50db20a9e698cac3cdad03597028f25514"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.python3-8.python3",
+      "path": "mandelbrot/mandelbrot.python3-8.py",
+      "sha256": "4fd93dceb9dab51b11ed25821ba93c346b7296b93c2bf73f69a6726d06645601"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.rust",
+      "path": "mandelbrot/mandelbrot.rs",
+      "sha256": "8f6961e391c91e1924dca775b61a19970934e71de3f6d5301d518f93c125f183"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.rust-2.rust",
+      "path": "mandelbrot/mandelbrot.rust-2.rs",
+      "sha256": "c3c80c0157b5ae60683996de297f198b8f16657203099544cf25de1f9f8d4d04"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.rust-3.rust",
+      "path": "mandelbrot/mandelbrot.rust-3.rs",
+      "sha256": "f03991f07f2d29b35c9200daf15534e77fa0b100ffa5830a7c00ca64c8f68b53"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.rust-4.rust",
+      "path": "mandelbrot/mandelbrot.rust-4.rs",
+      "sha256": "5d7cbf0a4536913670781be454d9fc95817e7f09cacd7082186b176bab08830c"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.rust-5.rust",
+      "path": "mandelbrot/mandelbrot.rust-5.rs",
+      "sha256": "1547d36fd3d91369d803c427c13293bffb8b0c16de0ad423f7382d7131554c18"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.rust-6.rust",
+      "path": "mandelbrot/mandelbrot.rust-6.rs",
+      "sha256": "481afb7049c682b1c0e238ac9af779570a0198ef9db60dd9a236217f5fa3108f"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.rust-7.rust",
+      "path": "mandelbrot/mandelbrot.rust-7.rs",
+      "sha256": "020327e13e9b3fae47d06dfb47b91b53c642b8b10718089d150c1ea1821cad1d"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.sbcl",
+      "path": "mandelbrot/mandelbrot.lisp",
+      "sha256": "1a40f9d8df7d0b5b633d500f4a3e9eabfe3353a0acef0fdeffb975145ea106c2"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.sbcl-3.sbcl",
+      "path": "mandelbrot/mandelbrot.sbcl-3.lisp",
+      "sha256": "bad5f3258e201c983beacf4e15069b6a518f7bde08114be50b193b6f57a9f1df"
+    },
+    {
+      "upstream_path": "mandelbrot/mandelbrot.sbcl-4.sbcl",
+      "path": "mandelbrot/mandelbrot.sbcl-4.lisp",
+      "sha256": "c0f686553bfda22343b3d3a734877b389e1ea753656bc823011efdee2667d454"
+    },
+    {
+      "upstream_path": "nbody/1000_out",
+      "path": "nbody/1000_out",
+      "sha256": "76de83d6d51a74f82828547423f516e7815cfe8cfea6290a2831aa173f806de7"
+    },
+    {
+      "upstream_path": "nbody/LICENSE",
+      "path": "nbody/LICENSE",
+      "sha256": "97dcdfb027430b29c73e6b2eadec75a0cb898050fe45770083db3e5207e2dcff"
+    },
+    {
+      "upstream_path": "nbody/nbody.go",
+      "path": "nbody/nbody.go",
+      "sha256": "cbcb799e281d7566e26aed2756ec289ff874baa5fc91a1ce32a5c1e346737633"
+    },
+    {
+      "upstream_path": "nbody/nbody.go-2.go",
+      "path": "nbody/nbody.go-2.go",
+      "sha256": "650ca1b459d8cfe41fa3359a48f118abc07cd61abc42a0851152a1c904cf7aff"
+    },
+    {
+      "upstream_path": "nbody/nbody.go-3.go",
+      "path": "nbody/nbody.go-3.go",
+      "sha256": "229a0db157a1482f54575ceb4f2d4feb2dfbbaaacffa57eabdd98427e771745d"
+    },
+    {
+      "upstream_path": "nbody/nbody.go-8.go",
+      "path": "nbody/nbody.go-8.go",
+      "sha256": "a684e611ada6c41073ddf7f4e0d01e35632f4f34b3b67064a811049fbbd86d4b"
+    },
+    {
+      "upstream_path": "nbody/nbody.python3",
+      "path": "nbody/nbody.py",
+      "sha256": "101f5f50adf87324c426cbd09ce5bc3dd15f61ddeb34fd0a8c3ee2e2f4086ff5"
+    },
+    {
+      "upstream_path": "nbody/nbody.python3-2.python3",
+      "path": "nbody/nbody.python3-2.py",
+      "sha256": "f59c522f189fa547639696298e57fe90db40c737fb7b83d9678bfd921fd003c1"
+    },
+    {
+      "upstream_path": "nbody/nbody.python3-8.python3",
+      "path": "nbody/nbody.python3-8.py",
+      "sha256": "b0adb5671e270b37d1f398bfb8e77ad15bdc2d5898315a0d7e844ae5297088ab"
+    },
+    {
+      "upstream_path": "nbody/nbody.rust",
+      "path": "nbody/nbody.rs",
+      "sha256": "1097288b773ff0666c453ad91aa9c04024cff3e12e548565d10435ca4e1980d3"
+    },
+    {
+      "upstream_path": "nbody/nbody.rust-2.rust",
+      "path": "nbody/nbody.rust-2.rs",
+      "sha256": "3c438befc88266e8c6a062b89672919c3f12e98333c52a6a8907dc8296a1a951"
+    },
+    {
+      "upstream_path": "nbody/nbody.rust-3.rust",
+      "path": "nbody/nbody.rust-3.rs",
+      "sha256": "34c935a74f929712bf8864697763c7d37806eb97ffdbad5e987346f5e761c994"
+    },
+    {
+      "upstream_path": "nbody/nbody.rust-4.rust",
+      "path": "nbody/nbody.rust-4.rs",
+      "sha256": "db033150606649b8088d68d39bf0246a63f26d71677fd5ceca3c2315d6181779"
+    },
+    {
+      "upstream_path": "nbody/nbody.rust-5.rust",
+      "path": "nbody/nbody.rust-5.rs",
+      "sha256": "23514a9c5e383070c9c703f59e8c79623b97eae1605766b0a93df71f5849aba4"
+    },
+    {
+      "upstream_path": "nbody/nbody.rust-6.rust",
+      "path": "nbody/nbody.rust-6.rs",
+      "sha256": "db959717a6274945296bb8ca2c719b7c410d49f8c78ca8a726bcbda36de7800b"
+    },
+    {
+      "upstream_path": "nbody/nbody.rust-7.rust",
+      "path": "nbody/nbody.rust-7.rs",
+      "sha256": "29a9bd0ed0a088973e0e6889ad376f8a07a60a3c811f95a86391a540d579ea96"
+    },
+    {
+      "upstream_path": "nbody/nbody.rust-9.rust",
+      "path": "nbody/nbody.rust-9.rs",
+      "sha256": "f6da9c5ef7e2b2f65f0bf29b55d19b62f4f8ac44f2abd78fc41da19ad086346d"
+    },
+    {
+      "upstream_path": "nbody/nbody.sbcl",
+      "path": "nbody/nbody.lisp",
+      "sha256": "4c36c33eb5c4cc1f45e0623b30a67d144021110b30fa6437b21f2c0ccade68e6"
+    },
+    {
+      "upstream_path": "nbody/nbody.sbcl-2.sbcl",
+      "path": "nbody/nbody.sbcl-2.lisp",
+      "sha256": "a094c62c2bb225fbab2747554e766fc5e54abb0bae740274e2a680d6c1bd688f"
+    },
+    {
+      "upstream_path": "pidigits/27_out",
+      "path": "pidigits/27_out",
+      "sha256": "ab4264eca722a55e8a6458574e6e607450b978c5f95aedc426ae0615c48cbbba"
+    },
+    {
+      "upstream_path": "pidigits/LICENSE",
+      "path": "pidigits/LICENSE",
+      "sha256": "97dcdfb027430b29c73e6b2eadec75a0cb898050fe45770083db3e5207e2dcff"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.go",
+      "path": "pidigits/pidigits.go",
+      "sha256": "3030f79ef7920e3092a9748bb952708f36f5ac68aaa11446e9578bcdbdd9ac05"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.go-2.go",
+      "path": "pidigits/pidigits.go-2.go",
+      "sha256": "7f7a85864fa6adb83231bd4f406e031781c0ed5d84d2fa93b241a8f58b11deef"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.go-3.go",
+      "path": "pidigits/pidigits.go-3.go",
+      "sha256": "a4ebc375e1192bd7e4bbe84340eeafff06e28bbb960e095352bd9458d9e86899"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.go-4.go",
+      "path": "pidigits/pidigits.go-4.go",
+      "sha256": "9ced7c622f0b4acb4ad8acaba72da4e54919bd75050c6678723e753cc55049e3"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.go-6.go",
+      "path": "pidigits/pidigits.go-6.go",
+      "sha256": "e61871fd3f3fc2919de827d9c37a698f85fabf3463a6c63b421b5431f3b70c69"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.go-7.go",
+      "path": "pidigits/pidigits.go-7.go",
+      "sha256": "05986ab0e5b74a2a892aefd5c49a190844d50e3cc6d625f8deb1419f4c60f718"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.python3-3.python3",
+      "path": "pidigits/pidigits.python3-3.py",
+      "sha256": "4ac5b12b52aedd5c4cb794d1b685ecbd09e8f5a601f2d441e3b5f45fa316ed4b"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.python3-4.python3",
+      "path": "pidigits/pidigits.python3-4.py",
+      "sha256": "cdfff9f6ad7154f1b7020ff7fae2027653cd113a4913074431a7e9af7f800795"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.python3-5.python3",
+      "path": "pidigits/pidigits.python3-5.py",
+      "sha256": "1429830d4a5a4a573d4e8cdc22df0405133817eb22048224a71f7f427cd98813"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.rust",
+      "path": "pidigits/pidigits.rs",
+      "sha256": "e8a6f30107e53e12d52d172b1c421a41249f493136a6405daf2601fd8a567139"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.rust-2.rust",
+      "path": "pidigits/pidigits.rust-2.rs",
+      "sha256": "036b3b6e088f68374f15a85ed92578302654431e57c9835de55727f0c5e5e8ad"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.rust-3.rust",
+      "path": "pidigits/pidigits.rust-3.rs",
+      "sha256": "1668f9258a1b81868a3d4b0d6a6e282af8f2b182d1d2281bf0bc85dfe4729a53"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.rust-4.rust",
+      "path": "pidigits/pidigits.rust-4.rs",
+      "sha256": "fb6b33b1bf74612f8ce78d19e70f10f41650b02b72e4c73d2cb0480508fbef65"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.sbcl-2.sbcl",
+      "path": "pidigits/pidigits.sbcl-2.lisp",
+      "sha256": "40e3f88f67246aac9415df0bf3209182ce8cc93950a64e9631d5f0a8ee00743a"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.sbcl-3.sbcl",
+      "path": "pidigits/pidigits.sbcl-3.lisp",
+      "sha256": "22b9e22ead0e8ee89dab39a78d381c4a954e2c699b515d9a36649e832e513877"
+    },
+    {
+      "upstream_path": "pidigits/pidigits.sbcl-4.sbcl",
+      "path": "pidigits/pidigits.sbcl-4.lisp",
+      "sha256": "3015268ad4dbc218c0826c0cf7ef142341c707ee699c30529c364437b4c4b0ea"
+    },
+    {
+      "upstream_path": "regexredux/1000_out",
+      "path": "regexredux/1000_out",
+      "sha256": "9f417691b946e86f2a86df4340c17f8b5c7bd5f977df525072c66c89b8a656f1"
+    },
+    {
+      "upstream_path": "regexredux/LICENSE",
+      "path": "regexredux/LICENSE",
+      "sha256": "97dcdfb027430b29c73e6b2eadec75a0cb898050fe45770083db3e5207e2dcff"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.go",
+      "path": "regexredux/regexredux.go",
+      "sha256": "c29142537a4142e0886c8e02979df2740a0c01642974860143567fad3865442b"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.go-3.go",
+      "path": "regexredux/regexredux.go-3.go",
+      "sha256": "5722e99f0e9850c3e737c3ece11149801012e10501c8c2428649dc87a57f10e1"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.go-4.go",
+      "path": "regexredux/regexredux.go-4.go",
+      "sha256": "1d66fe904a8a3881faf370e834acd8260df3a294e9cc6e24ac68e2c4f5072e19"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.go-5.go",
+      "path": "regexredux/regexredux.go-5.go",
+      "sha256": "423e6c822bd1abb80bdf5bbf6e6419333c74b440ac6f74af892c7136c4206b9f"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.python3",
+      "path": "regexredux/regexredux.py",
+      "sha256": "955633de90f6d4d45d81aec246ea2c62ef02d9d3bf87c9115017e494b2b0b86b"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.python3-2.python3",
+      "path": "regexredux/regexredux.python3-2.py",
+      "sha256": "dce2a1bfd1dfb236934ce234d24e1ea58db67c322c61df62f1a32436fe9fbb87"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.rust",
+      "path": "regexredux/regexredux.rs",
+      "sha256": "9e826f38b182de0bff08d52f56277054cd0b3141e3e0fa538f5b42b314bf2a43"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.rust-2.rust",
+      "path": "regexredux/regexredux.rust-2.rs",
+      "sha256": "22df31e4afdf7af4e01fe7cbe59c8f61ba388b380c040a79a2153dbdd28621ab"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.rust-3.rust",
+      "path": "regexredux/regexredux.rust-3.rs",
+      "sha256": "2ffaccca2dac69721b8bb9c06deb6ba7feb19b7ebd911b25d8ffce4a48da141c"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.rust-4.rust",
+      "path": "regexredux/regexredux.rust-4.rs",
+      "sha256": "b7e4248c21e8d5bc400cdb73fdc032ec2aaaa817aec9b523cfad240edb687aea"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.rust-5.rust",
+      "path": "regexredux/regexredux.rust-5.rs",
+      "sha256": "8c4183ccdffe22ada641abf185fa6029cd0cedf32606f969e8b9269feffa88f0"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.rust-6.rust",
+      "path": "regexredux/regexredux.rust-6.rs",
+      "sha256": "2989e4bbb9656227183f1e9eebae6c9251338a1615ba0014020b214af9588373"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.rust-7.rust",
+      "path": "regexredux/regexredux.rust-7.rs",
+      "sha256": "7120a448ec8b1b6a9ef0fe6576e66a2a4f40527a41a2679c4d0c3f374819dd67"
+    },
+    {
+      "upstream_path": "regexredux/regexredux.sbcl-4.sbcl",
+      "path": "regexredux/regexredux.sbcl-4.lisp",
+      "sha256": "52163330fb3bbb8ff6b4361a3c7cd503dadfed592728dcffc6cf4000c51ba562"
+    },
+    {
+      "upstream_path": "revcomp/1000_out",
+      "path": "revcomp/1000_out",
+      "sha256": "549dcdcc7df2685145e6cbdfd682469bd9c12ff1beec93c270f8ba447acd4855"
+    },
+    {
+      "upstream_path": "revcomp/LICENSE",
+      "path": "revcomp/LICENSE",
+      "sha256": "97dcdfb027430b29c73e6b2eadec75a0cb898050fe45770083db3e5207e2dcff"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.go",
+      "path": "revcomp/revcomp.go",
+      "sha256": "1135567a25268c66c22cb0edb2e97d6e883c66befc326c96200032b55da2a27b"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.go-2.go",
+      "path": "revcomp/revcomp.go-2.go",
+      "sha256": "f1fb6d5a148e917fa5c5395b78ba6fc0734c28c54e8cdc0c09852273ef20d814"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.go-3.go",
+      "path": "revcomp/revcomp.go-3.go",
+      "sha256": "13325c6a7aa527e54defc7184cd263eb711c0f318982f9edb4e7da5a6e1143c6"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.go-5.go",
+      "path": "revcomp/revcomp.go-5.go",
+      "sha256": "ca653f691aa9bb4b56af20867d79ae0629d1202e1120e1350016a56c055499ff"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.go-6.go",
+      "path": "revcomp/revcomp.go-6.go",
+      "sha256": "849c8d9a0fddee29347c529946d82bfb66082c2932d0c3a9335c436a8c4f8799"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.python3",
+      "path": "revcomp/revcomp.py",
+      "sha256": "0750e816ae6271b5e188b3af5c46e34858c344e0a741bdfc40ffeb5f43fecb88"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.python3-2.python3",
+      "path": "revcomp/revcomp.python3-2.py",
+      "sha256": "3cdc068eba3f4180e840db38418e4884fa36cc67148dc42777a6544b4dd53cc4"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.python3-3.python3",
+      "path": "revcomp/revcomp.python3-3.py",
+      "sha256": "841fb06eb5079de04ad1e36b5e24a851ae94d174434e504cfe3b755a3b07f123"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.python3-4.python3",
+      "path": "revcomp/revcomp.python3-4.py",
+      "sha256": "715a69853756db4f0320bb9ec0d126f2e2059783e7e0d759f142211853ffa8b2"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.python3-5.python3",
+      "path": "revcomp/revcomp.python3-5.py",
+      "sha256": "b89c40d8cd38ceed5c8eb7e09a8a6278c36d116690b94e374c0f4e5a4276506e"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.python3-6.python3",
+      "path": "revcomp/revcomp.python3-6.py",
+      "sha256": "739a6f47b97c571621678518299f6278d76b33b3b6df9ca67bf7065c96032dac"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.rust",
+      "path": "revcomp/revcomp.rs",
+      "sha256": "4c2f8d1f74334d85f16d72cb03075b9888633183d1b82e9cdbb4eed2c805ec2f"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.rust-2.rust",
+      "path": "revcomp/revcomp.rust-2.rs",
+      "sha256": "a000f1ff5b10f92c9ac7ff49081888f87807634a96529dfb2834c52ba15e4a29"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.rust-3.rust",
+      "path": "revcomp/revcomp.rust-3.rs",
+      "sha256": "5fe81e6638c98cb6c735964247590331dd7e7d30bfad95b79fc537b0f0b040ee"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.sbcl",
+      "path": "revcomp/revcomp.lisp",
+      "sha256": "43dc2c019b4709330513a5336135557f79173eacaa724d1c0a9aad5c7e7cb4b9"
+    },
+    {
+      "upstream_path": "revcomp/revcomp.sbcl-2.sbcl",
+      "path": "revcomp/revcomp.sbcl-2.lisp",
+      "sha256": "3c5fabb9c34377f3d02d7649fb353605b5f8b1174dec7d6903c4393055c79f69"
+    },
+    {
+      "upstream_path": "spectralnorm/100_out",
+      "path": "spectralnorm/100_out",
+      "sha256": "a95e11fa07f7b196ef488e73f67afbbbc16cf6a2c6de5f8d54ea49821fe604e6"
+    },
+    {
+      "upstream_path": "spectralnorm/LICENSE",
+      "path": "spectralnorm/LICENSE",
+      "sha256": "ccddb3b088a98bac79496da794178a265dca0fd6aa4befee753464872672f136"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.go",
+      "path": "spectralnorm/spectralnorm.go",
+      "sha256": "c090aa0518e8239e97a57322aeb577a8cfb94aae5a1b55604be82ac3a77dbbe9"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.go-2.go",
+      "path": "spectralnorm/spectralnorm.go-2.go",
+      "sha256": "4006bff81ba463f5de67d52414591728da6f4021f6fd2b1b5a0b1c48b8c75f6e"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.go-4.go",
+      "path": "spectralnorm/spectralnorm.go-4.go",
+      "sha256": "bed1eaba75cc4fe09231497d1f2d3e2a6320f88dfee6f0a3b63ff1af5d8f465e"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.go-8.go",
+      "path": "spectralnorm/spectralnorm.go-8.go",
+      "sha256": "8f277cc7c9f4b0cb287c9bd697d047fc8d40562d960030d9c718a948073dd6ab"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.python3-4.python3",
+      "path": "spectralnorm/spectralnorm.python3-4.py",
+      "sha256": "34dbcdaeefd8a8a113a91591016b6760b8773da30a77f0a0da2cf8c28853b67d"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.python3-6.python3",
+      "path": "spectralnorm/spectralnorm.python3-6.py",
+      "sha256": "bc4cf8abdaa4c49e4d95a7e43e536b26c10b930408cb5c22def1121d2dfc4890"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.python3-7.python3",
+      "path": "spectralnorm/spectralnorm.python3-7.py",
+      "sha256": "34f0a06b2fd1893589c140f54cf2cbd3d2651bed6cab898a48fe543372d9a4d3"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.python3-8.python3",
+      "path": "spectralnorm/spectralnorm.python3-8.py",
+      "sha256": "008630d2ec8f650d813004a250970305b51ac6d2773cbdd84f059e02f398894b"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.rust",
+      "path": "spectralnorm/spectralnorm.rs",
+      "sha256": "a4c4e4df5e239e12f125fcad80a3e521d64adcbf6d6774223aa3467723bb9e3b"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.rust-2.rust",
+      "path": "spectralnorm/spectralnorm.rust-2.rs",
+      "sha256": "ad19b0848bd42342b406b3de3de3d7d3d91538fdd14db3d0b681526e103c9c5a"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.rust-3.rust",
+      "path": "spectralnorm/spectralnorm.rust-3.rs",
+      "sha256": "6b8fca569218ac7cff178ce4da8e44cccae1c8668b1e5f0e2d2876e80c7b2424"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.rust-4.rust",
+      "path": "spectralnorm/spectralnorm.rust-4.rs",
+      "sha256": "c33712a6b2c264c937c9fbca390d0643f51058ce05d1fc843c1b1cebba63478d"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.rust-5.rust",
+      "path": "spectralnorm/spectralnorm.rust-5.rs",
+      "sha256": "4ff08e9d0816e172d312741eba6cecd1126e8653c271692102ac4cfcdd6de0d7"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.rust-6.rust",
+      "path": "spectralnorm/spectralnorm.rust-6.rs",
+      "sha256": "fd81731399d95833a369c0c0dbabc3e82467a2146e6a0175161ed23423dee1f4"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.rust-7.rust",
+      "path": "spectralnorm/spectralnorm.rust-7.rs",
+      "sha256": "77640f108d85bef0da4c8d14370e00365cc324868342ba8f4d18767a5b6a016f"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.sbcl",
+      "path": "spectralnorm/spectralnorm.lisp",
+      "sha256": "a55943a9f78e13c8928cfd32df6a944527f90f87bc253855fda035f3906e995e"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.sbcl-2.sbcl",
+      "path": "spectralnorm/spectralnorm.sbcl-2.lisp",
+      "sha256": "e6ff1c155c4f1cd3006052dad0269c1ce944ebbf7926cb3a23708e5ff5952431"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.sbcl-3.sbcl",
+      "path": "spectralnorm/spectralnorm.sbcl-3.lisp",
+      "sha256": "1d4d16ce39b9ab8fb7adb36d8853e6813906de88c390230fc5c4c790cb8406a2"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.sbcl-6.sbcl",
+      "path": "spectralnorm/spectralnorm.sbcl-6.lisp",
+      "sha256": "d4c3fe9b0f9bb3d2585ed939a3341a1b7a27fd8f662378750f2d32b13d09d3e6"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.sbcl-7.sbcl",
+      "path": "spectralnorm/spectralnorm.sbcl-7.lisp",
+      "sha256": "bac0cef1bfb50feb1100ad19f1765fcda0bd443d09d5cc4699d95d3e3f409d85"
+    },
+    {
+      "upstream_path": "spectralnorm/spectralnorm.sbcl-9.sbcl",
+      "path": "spectralnorm/spectralnorm.sbcl-9.lisp",
+      "sha256": "03197fbee34a948b5d7ce62bfc8f40c4d033f80cf4ce7d7cc21abdf84b4daa7d"
+    }
+  ]
+}

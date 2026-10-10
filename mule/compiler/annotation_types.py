@@ -7,14 +7,7 @@ through visitors.
 
 from dataclasses import dataclass
 
-from .value_facts import FLOAT, PYTHON_INTEGER, IntegerType
-
-
-@dataclass(frozen=True, slots=True)
-class OptimizationPolicy:
-    speed: int = 3
-    safety: int = 0
-    debug: int = 1
+from .ctype import FLOAT, PYTHON_INTEGER, IntegerType
 
 
 class Contract:

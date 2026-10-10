@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from mule import ast
 from mule.compiler import ir
-from mule.compiler.value_facts import (
+from mule.compiler.ctype import (
     BOOLEAN,
     BOTTOM,
     FIXNUM_MAX,
