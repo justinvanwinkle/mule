@@ -45,7 +45,6 @@ def test_invalid_context_is_rejected_before_emission(source):
         "async for i in values:\n pass\n",
         "print(**values)\n",
         "def f(**kwargs):\n pass\n",
-        "def f():\n def g():\n  pass\n",
         "def f():\n return\n yield 1\n",
     ],
 )
@@ -219,7 +218,6 @@ def test_method_call_resolves_attribute_before_argument_side_effects():
         "class C:\n if True:\n  pass\n",
         "def f():\n class C:\n  pass\n",
         "class C:\n @decorator\n def f(self):\n  pass\n",
-        "class C:\n def f(self):\n  return\n  def nested():\n   pass\n",
     ],
 )
 def test_classes_reject_unimplemented_features_explicitly(source):

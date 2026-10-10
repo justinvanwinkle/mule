@@ -5,6 +5,7 @@ from pathlib import Path
 from . import ir
 from .format_protocol import LookupMethod, TextAccess
 from .frontend import lower
+from .modules import ModuleCompiler
 from .protocols import Bindings
 
 
@@ -78,9 +79,11 @@ def prepare(module):
     if not visitor.needed:
         return None, {}, {}, set()
     path = Path(__file__).resolve().parents[2] / "stdlib/_sequences.py"
+    imports = ModuleCompiler(str(path), prefix="mule_sequences_")
     lowered = lower(
         path.read_text(),
         str(path),
+        imports=imports,
         prefix="mule_sequences_",
         namespace="$mule.sequences",
     )
@@ -109,12 +112,13 @@ def prepare(module):
                 ("_storage_tuple", "mule_storage_tuple"),
                 ("_storage_compatible", "mule_storage_compatible"),
                 ("_integer_storage", "mule_integer_storage"),
-                ("_text_from_codepoint", "mule_text_from_codepoint"),
                 ("_class_identity", "mule_class_identity"),
                 ("_class_parent", "mule_class_parent"),
                 ("_raised_class", "mule_raised_class"),
                 ("_exception_targets", "mule_exception_targets"),
                 ("_raise_pending", "mule_raise_pending"),
+                ("_active_exception", "mule_active_exception"),
+                ("_exception_instance", "mule_exception_instance"),
                 ("_invalid_raise", "mule_invalid_raise"),
                 ("_install_builtin", "mule_install_builtin"),
                 ("_install_storage", "mule_install_storage"),
@@ -133,4 +137,5 @@ def prepare(module):
         )
         references.update((function.name, result) for result in collector.references)
     module.functions.extend(lowered.functions)
+    module.functions.extend(imports.functions)
     return lowered.entry, exports.functions, calls, references

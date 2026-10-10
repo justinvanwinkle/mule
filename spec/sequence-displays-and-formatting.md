@@ -1,6 +1,7 @@
 # Sequence displays and compiled formatting
 
-Status: implemented list and tuple displays, and basic compiled f-strings.
+Status: implemented list and tuple displays, basic compiled f-strings, and
+integer decimal percent formatting.
 
 SBCL `src/compiler/ir2tran.lisp`, `(list ir2-convert)`, takes evaluated argument
 lvars and emits known-size construction VOPs; `src/compiler/srctran.lisp`,
@@ -35,3 +36,30 @@ formatting must finish before evaluating the next interpolation, including its
 side effects. Compiler-private primitive bindings cannot observe user globals
 named `str` or `repr`. Invalid protocol results raise TypeError; method failures
 follow ordinary owned-reference cleanup.
+
+## Decimal percent formatting
+
+Text `%` supports literal characters, `%%`, and `%d` with integer or boolean
+operands, either a scalar or a tuple consumed in order. Arbitrary-precision
+integers retain their full decimal value. Missing and surplus arguments raise
+`TypeError`; incomplete or unsupported directives raise `ValueError`. Flags,
+widths, precision, other conversion directives, mappings, float-to-decimal and
+custom numeric conversion are not implemented in this increment.
+
+SBCL `src/code/format.lisp`, `expand-format-integer`, expands the decimal
+directive into compiled `format-integer` or `format-print-integer` calls.
+`src/code/target-format.lisp` implements dynamic directive interpretation and
+sign/padding rules in Lisp. Mule's corresponding parser, argument consumption,
+sign handling and decimal digit generation execute in compiled `_format.py`.
+Rust supplies existing text/tuple/integer storage access and arithmetic only;
+this new formatter does not extend the Rust scalar renderer.
+
+Python overloads `%` for numeric remainder and text formatting, unlike SBCL's
+separate FORMAT operation, and uses `%d`/`%%` rather than `~D`/`~~`. When compiler
+facts prove a numeric left operand, LLVM retains the existing numeric modulo
+path. Unknown operands enter a compiled Python dispatch that tests physical
+text storage and selects formatting or the existing numeric operation. Both
+operands are evaluated once before dispatch. Numeric modulo retains its existing
+negative-operand, float, bigint and zero-division behavior. Literal and dynamic
+format strings use the same compiled formatter, with normal owned-reference
+cleanup on errors.

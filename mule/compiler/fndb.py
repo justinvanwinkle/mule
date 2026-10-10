@@ -64,6 +64,13 @@ PROTOCOLS = {
         "unpack",
         "exception_matches",
         "iteration_exhausted",
+        "context_exit",
+        "cell_new",
+        "cell_get",
+        "cell_set",
+        "cell_clear",
+        "exception_instance",
+        "set_exception_cause",
     )
 }
 

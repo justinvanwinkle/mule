@@ -15,6 +15,7 @@ from mule.parser import parse
 from . import checkgen, ir1opt, locall
 from .debug import check_ir1_consistency
 from .dfo import find_dfo, find_initial_dfo
+from .envanal import environment_analyze
 from .ir1tran import (
     Converter,
     _AnnotationShadows,
@@ -33,6 +34,10 @@ class Compilation:
     components: list[Component]
     converter: Converter
     facts: dict[Lambda, locall.LambdaFacts] | None = None
+
+    @property
+    def converters(self):
+        return self.converter.function_converters
 
 
 REOPTIMIZE_LIMIT = 10
@@ -105,4 +110,13 @@ def compile_toplevel(
         _GlobalAnnotationStores(converter, lambda_).apply(lambda_blocks(lambda_))
     components = find_initial_dfo(initial, converter.functions)
     check_ir1_consistency(components)
-    return Compilation(converter.functions, entry, components, converter)
+    compilation = Compilation(converter.functions, entry, components, converter)
+    # SBCL runs environment analysis after the IR1 phases, once LET conversion
+    # has settled the cleanup structure. Python's cleanup regions are fixed at
+    # conversion, and the phases must see the cleanup code, so it runs first.
+    environment_analyze(compilation)
+    for component in components:
+        if component.reanalyze:
+            find_dfo(component)
+    check_ir1_consistency(components)
+    return compilation

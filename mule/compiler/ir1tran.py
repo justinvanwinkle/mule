@@ -39,6 +39,7 @@ from . import fndb
 from .annotation_types import BUILTINS, EXPORTS
 from .ir1util import (
     aver,
+    change_block_successor,
     ctran_starts_block,
     insert_cast_before,
     link_blocks,
@@ -113,7 +114,8 @@ class ClassInfo:
 class ImportInfo:
     module_name: str
     initializer: str
-    filename: str
+    filename: str | None
+    native: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +180,7 @@ class Converter:
         self.component = component
         self.ir1_namespace = ir1_namespace or Namespace()
         self.functions: list[Lambda] = []
+        self.function_converters: dict[Lambda, FunctionConverter] = {}
         self.compiler_bindings = {}
         self.active_compiler_bindings = {}
         self.module_annotations = {}
@@ -235,11 +238,13 @@ class Converter:
     def known(self, info) -> KnownFunction:
         return self.ir1_namespace.known_function(info)
 
-    def function(self, definition, policy, *, owner_class=None) -> Lambda:
+    def function(self, definition, policy, *, owner_class=None, parent=None) -> Lambda:
         # ir1tran_lambda imports FunctionConverter from this module.
         from .ir1tran_lambda import convert_function
 
-        return convert_function(self, definition, policy, owner_class=owner_class)
+        return convert_function(
+            self, definition, policy, owner_class=owner_class, parent=parent
+        )
 
 
 class FunctionConverter:
@@ -253,16 +258,22 @@ class FunctionConverter:
         *,
         is_module: bool,
         origin=None,
+        parent=None,
     ):
         self.converter = converter
         self.lambda_ = lambda_
         self.is_module = is_module
         self.origin = origin
+        # The enclosing function's converter, through which free variables
+        # resolve to their home lambda's variables (Python's nested scopes).
+        self.parent = parent
+        self.nonlocals: set[str] = set()
         self.depth = 0
         self.annotations = {}
         self.hidden = 0
         self.globals: set[str] = set()
         self.locals: dict[str, LambdaVar] = {}
+        self._cleanup_edges: dict[Block, Block] = {}
         for var in lambda_.vars:
             self.locals[var.name] = var
         self._bindings(statements)
@@ -270,6 +281,7 @@ class FunctionConverter:
         self.expressions = _Expressions(self)
         self.statements_visitor = _Statements(self)
         self.frames: list[tuple] = []
+        converter.function_converters[lambda_] = self
 
     @property
     def component(self):
@@ -309,11 +321,30 @@ class FunctionConverter:
         var = self.locals.get(name)
         if var is not None:
             return var
+        if name not in self.globals:
+            free = self.enclosing_local(name)
+            if free is not None:
+                return free
         return self.converter.global_var(name)
+
+    def enclosing_local(self, name: str):
+        """The nearest enclosing function's variable bound to ``name``, if
+        any. Class bodies are not function scopes and are skipped."""
+        scope = self.parent
+        while scope is not None and not scope.is_module:
+            if name in scope.globals:
+                return None
+            var = scope.locals.get(name)
+            if var is not None:
+                return var
+            scope = scope.parent
+        return None
 
     def annotation_for(self, name):
         if self.local(name):
             return self.annotations.get(name)
+        if name not in self.globals and self.enclosing_local(name) is not None:
+            return None
         return self.converter.module_annotations.get(name)
 
     # Node construction primitives
@@ -515,6 +546,32 @@ class FunctionConverter:
     def with_loop(self, target: LoopTarget):
         return _LoopScope(self, target)
 
+    def call_info(self, source):
+        return CallInfo(
+            (), self.converter.location(source) if source is not None else None
+        )
+
+    def insert_cleanup_block(self, pred: Block, succ: Block, cleanup: Cleanup) -> Block:
+        """Interpose an empty block on the edge ``pred -> succ`` for code that
+        leaves ``cleanup`` (``insert-cleanup-code``)."""
+        # After conversion the lambda owns its component; the conversion-time
+        # initial component has been split away.
+        component = self.lambda_.component
+        block = ctran_starts_block(Ctran(), component)
+        change_block_successor(pred, succ, block)
+        self._cleanup_edges[block] = succ
+        component.reanalyze = True
+        return block
+
+    def in_cleanup_block(self, block: Block, cleanup: Cleanup):
+        """Convert into ``block`` in the environment enclosing ``cleanup``."""
+        return _CleanupBlockScope(self, block, cleanup)
+
+    def finish_cleanup_block(self, frontier: Ctran) -> None:
+        """Connect the inserted block's open frontier to the original successor."""
+        block = frontier.block
+        self.jump(frontier, self._cleanup_edges.pop(block))
+
     # Expression helpers shared by several translators
 
     def assert_type(self, start, next_, result, value, contract, node):
@@ -692,7 +749,12 @@ class FunctionConverter:
                 fndb.IMPORT,
                 (),
                 node,
-                ImportInfo(qualified, descriptor.entry, str(descriptor.path)),
+                ImportInfo(
+                    qualified,
+                    descriptor.entry,
+                    str(descriptor.path) if descriptor.path is not None else None,
+                    descriptor.native,
+                ),
             )
             current = ctran
             if parent is not None:
@@ -763,6 +825,25 @@ class _LoopScope:
     def __enter__(self):
         self.saved = self.function.lexenv
         self.function.lexenv = self.saved.derive(loops=(*self.saved.loops, self.target))
+
+    def __exit__(self, *exc):
+        self.function.lexenv = self.saved
+
+
+class _CleanupBlockScope:
+    """Converts cleanup code for leaving ``cleanup`` into ``block``, in the
+    lexical environment of the cleanup's parent and with the loop targets in
+    effect where the region was entered."""
+
+    def __init__(self, function, block, cleanup):
+        self.function, self.block, self.cleanup = function, block, cleanup
+
+    def __enter__(self):
+        self.saved = self.function.lexenv
+        self.function.lexenv = self.saved.derive(
+            cleanup=self.cleanup.parent, loops=self.cleanup.loops
+        )
+        return self.block.start
 
     def __exit__(self, *exc):
         self.function.lexenv = self.saved
@@ -975,6 +1056,19 @@ class _Statements(ast.Visitor):
     def visit_Global(self, node):
         return None
 
+    def visit_Nonlocal(self, node):
+        return None
+
+    def visit_Delete(self, node):
+        function = self.function
+        start, next_, _ = self.frame
+        current = start
+        for index, target in enumerate(node.targets):
+            last = index == len(node.targets) - 1
+            following = next_ if last else Ctran()
+            target.accept(_DeleteTarget(function, current, following))
+            current = following
+
     def visit_Import(self, node):
         function = self.function
         start, next_, _ = self.frame
@@ -1115,14 +1209,28 @@ class _Statements(ast.Visitor):
     def visit_Raise(self, node):
         function = self.function
         start, _, _ = self.frame
-        if node.cause is not None:
-            function.error(
-                "exception chaining is not supported yet", node, unsupported=True
-            )
         if node.exception is None:
             self.terminal(start, fndb.RERAISE, (), node)
             return
         ctran, value = function.value(start, node.exception)
+        if node.cause is not None:
+            # ``raise X from Y`` chains on the instance, so create it first.
+            following, instance = Ctran(), Lvar()
+            function.protocol(
+                ctran, following, instance, "exception_instance", (value,), node
+            )
+            temporary = function.temporary()
+            ctran = Ctran()
+            function.set_var(following, ctran, temporary, instance, node)
+            following, cause = function.value(ctran, node.cause)
+            ctran, loaded = Ctran(), Lvar()
+            function.ref(following, ctran, loaded, temporary, node)
+            following = Ctran()
+            function.protocol(
+                ctran, following, None, "set_exception_cause", (loaded, cause), node
+            )
+            ctran, value = Ctran(), Lvar()
+            function.ref(following, ctran, value, temporary, node, final=True)
         self.terminal(ctran, fndb.RAISE, (value,), node)
 
     def terminal(self, start, info, operands, node):
@@ -1132,12 +1240,62 @@ class _Statements(ast.Visitor):
     def visit_Try(self, node):
         function = self.function
         start, next_, _ = self.frame
-        if node.finally_body or node.exception_groups:
+        if node.exception_groups:
             function.error(
-                "finally and exception groups are not supported yet",
-                node,
-                unsupported=True,
+                "exception groups are not supported yet", node, unsupported=True
             )
+        if node.finally_body:
+            self.try_finally(start, next_, node)
+            return
+        if not node.handlers:
+            frontier = function.convert_body(start, node.body)
+            if frontier is not None:
+                frontier = function.convert_body(frontier, node.else_body)
+            if frontier is not None:
+                function.flow(frontier, next_)
+            return
+        self.try_handlers(start, next_, node)
+
+    def try_finally(self, start, next_, node):
+        """``try``/``finally``: the protected statement runs inside a FINALLY
+        cleanup whose exits run the suite; its error dispatch runs the suite
+        and re-raises unless the suite transfers control."""
+        function = self.function
+        outer = function.lexenv.cleanup
+        dispatch, done = function.block(), function.block()
+        region = Cleanup(
+            CleanupKind.FINALLY,
+            target=dispatch,
+            parent=outer,
+            info=node.finally_body,
+            loops=function.lexenv.loops,
+        )
+        protected = ast.Try(
+            node.body, node.handlers, node.else_body, [], span=node.span
+        )
+        with function.with_cleanup(region):
+            body = function.block()
+            function.jump(start, body)
+            following = Ctran()
+            function.convert_statement(body.start, following, protected)
+            if body.start.next is None:
+                function.flow(body.start, following)
+            if following.kind is not CtranKind.UNUSED:
+                function.jump(following, done)
+        ctran, caught = Ctran(), Lvar()
+        function.known(dispatch.start, ctran, caught, fndb.CATCH_EXCEPTION, (), node)
+        exception = function.temporary()
+        current = Ctran()
+        function.set_var(ctran, current, exception, caught, node)
+        frontier = function.convert_body(current, node.finally_body)
+        if frontier is not None:
+            ctran, value = Ctran(), Lvar()
+            function.ref(frontier, ctran, value, exception, node, final=True)
+            self.terminal(ctran, fndb.RAISE, (value,), node)
+        function.flow(done.start, next_)
+
+    def try_handlers(self, start, next_, node):
+        function = self.function
         outer = function.lexenv.cleanup
         dispatch, success, done = function.block(), function.block(), function.block()
         region = Cleanup(CleanupKind.HANDLER_REGION, target=dispatch, parent=outer)
@@ -1189,6 +1347,7 @@ class _Statements(ast.Visitor):
                 # The handler body's own error destination starts a new block.
                 inner = function.block()
                 function.jump(entered, inner)
+                active.mess_up = inner.start.next
                 current = inner.start
                 if handler.binding is not None:
                     function.converter.reserved(handler.binding, handler)
@@ -1198,11 +1357,8 @@ class _Statements(ast.Visitor):
                     function.store(ctran, current, handler.binding, raised, handler)
                 frontier = function.convert_body(current, handler.body)
             if frontier is not None:
-                # Leaving the handler happens outside its own protection.
-                leaving = function.block()
-                function.jump(frontier, leaving)
-                ctran = function.leave_handler_bodies(leaving.start, [active], handler)
-                function.jump(ctran, done)
+                # Environment analysis emits the handler-leaving code on this edge.
+                function.jump(frontier, done)
             current = unwind.start
             if handler.binding is not None:
                 ctran = Ctran()
@@ -1221,6 +1377,112 @@ class _Statements(ast.Visitor):
         ctran = Ctran()
         function.set_var(done.start, ctran, exception, None, node)
         function.flow(ctran, next_)
+
+    def visit_With(self, node):
+        function = self.function
+        start, next_, _ = self.frame
+        if node.is_async:
+            function.error(
+                "async context managers are not supported yet", node, unsupported=True
+            )
+        self.with_items(start, next_, node, 0)
+
+    def with_items(self, start, next_, node, index):
+        """Enter one ``with`` item; nested items wrap the body in turn."""
+        function = self.function
+        if index == len(node.items):
+            frontier = function.convert_body(start, node.body)
+            if frontier is not None:
+                function.flow(frontier, next_)
+            return
+        item = node.items[index]
+        outer = function.lexenv.cleanup
+        manager, exit_method = function.temporary(), function.temporary()
+        ctran, value = function.value(start, item.context)
+        current = Ctran()
+        function.set_var(ctran, current, manager, value, item)
+        ctran, loaded = Ctran(), Lvar()
+        function.ref(current, ctran, loaded, manager, item)
+        following, bound_exit = Ctran(), Lvar()
+        function.known(
+            ctran,
+            following,
+            bound_exit,
+            fndb.GETATTR,
+            (loaded,),
+            item,
+            AttributeInfo("__exit__", function.converter.location(item)),
+        )
+        current = Ctran()
+        function.set_var(following, current, exit_method, bound_exit, item)
+        ctran, loaded = Ctran(), Lvar()
+        function.ref(current, ctran, loaded, manager, item)
+        following, resolved = Ctran(), Lvar()
+        function.known(
+            ctran,
+            following,
+            resolved,
+            fndb.RESOLVE_METHOD,
+            (loaded,),
+            item,
+            AttributeInfo("__enter__", function.converter.location(item)),
+        )
+        ctran, entered = Ctran(), Lvar()
+        function.known(
+            following,
+            ctran,
+            entered,
+            fndb.CALL_RESOLVED,
+            (resolved,),
+            item,
+            CallInfo((), None),
+        )
+        if item.target is not None:
+            current = Ctran()
+            item.target.accept(_AssignmentTarget(function, entered, ctran, current))
+        else:
+            for use in entered.uses:
+                use.lvar = None
+            entered.uses = []
+            current = ctran
+        dispatch, done = function.block(), function.block()
+        region = Cleanup(
+            CleanupKind.WITH,
+            target=dispatch,
+            parent=outer,
+            info=exit_method,
+            loops=function.lexenv.loops,
+        )
+        with function.with_cleanup(region):
+            body = function.block()
+            function.jump(current, body)
+            following = Ctran()
+            self.with_items(body.start, following, node, index + 1)
+            region.mess_up = body.start.next
+            if body.start.next is None:
+                function.flow(body.start, following)
+            if following.kind is not CtranKind.UNUSED:
+                function.jump(following, done)
+        # An exception inside the body goes to __exit__; a true result suppresses it.
+        ctran, caught = Ctran(), Lvar()
+        function.known(dispatch.start, ctran, caught, fndb.CATCH_EXCEPTION, (), item)
+        exception = function.temporary()
+        following = Ctran()
+        function.set_var(ctran, following, exception, caught, item)
+        ctran, method = Ctran(), Lvar()
+        function.ref(following, ctran, method, exit_method, item)
+        following, raised = Ctran(), Lvar()
+        function.ref(ctran, following, raised, exception, item)
+        ctran, suppressed = Ctran(), Lvar()
+        function.protocol(
+            following, ctran, suppressed, "context_exit", (method, raised), item
+        )
+        reraise = function.block()
+        function.if_node(ctran, suppressed, done, reraise, item)
+        ctran, value = Ctran(), Lvar()
+        function.ref(reraise.start, ctran, value, exception, item, final=True)
+        self.terminal(ctran, fndb.RAISE, (value,), item)
+        function.flow(done.start, next_)
 
     def visit_For(self, node):
         function = self.function
@@ -1386,8 +1648,7 @@ class _Statements(ast.Visitor):
         if not function.lexenv.loops:
             function.error("'break' outside loop", node)
         target = function.lexenv.loops[-1]
-        ctran = function.leave_handlers(start, target.cleanup, node)
-        function.jump(ctran, target.break_block)
+        function.jump(start, target.break_block)
 
     def visit_Continue(self, node):
         function = self.function
@@ -1395,8 +1656,7 @@ class _Statements(ast.Visitor):
         if not function.lexenv.loops:
             function.error("'continue' outside loop", node)
         target = function.lexenv.loops[-1]
-        ctran = function.leave_handlers(start, target.cleanup, node)
-        function.jump(ctran, target.continue_block)
+        function.jump(start, target.continue_block)
 
     def visit_Return(self, node):
         function = self.function
@@ -1416,14 +1676,15 @@ class _Statements(ast.Visitor):
             following = Ctran()
             function.cast(ctran, following, result, delivered, annotation, node)
             ctran = following
-        ctran = function.leave_handlers(ctran, None, node)
         function.jump(ctran, lambda_.return_.block)
 
     def visit_FunctionDefinition(self, node):
         function = self.function
         start, next_, _ = self.frame
         function.converter.reserved(node.name, node)
-        lambda_ = function.converter.function(node, function.lambda_.policy)
+        lambda_ = function.converter.function(
+            node, function.lambda_.policy, parent=function
+        )
         current = start
         defaults = []
         for parameter in node.parameters:
@@ -1460,7 +1721,9 @@ class _Statements(ast.Visitor):
                 "classes support at most one positional base", node, unsupported=True
             )
         body = _ClassBody(function)
-        for statement in node.body:
+        for index, statement in enumerate(node.body):
+            if index == 0 and statement.accept(_ClassDocstring()):
+                continue
             statement.accept(body)
         class_id = f"{converter.prefix}mule_cls_{converter.class_definitions}"
         converter.class_definitions += 1
@@ -1498,7 +1761,10 @@ class _Statements(ast.Visitor):
             if native:
                 body.validate_method(method)
             lambda_ = converter.function(
-                method, policy, owner_class=class_id if native else None
+                method,
+                policy,
+                owner_class=class_id if native else None,
+                parent=function,
             )
             receiver = method.parameters[0].name
             collector = _ReceiverFields(
@@ -1710,6 +1976,28 @@ class _AssignmentTarget(ast.Visitor):
             node,
             AttributeInfo(node.attribute, function.converter.location(node)),
         )
+
+
+class _DeleteTarget(ast.Visitor):
+    """``del name``: a read establishes the binding exists, then it is unbound."""
+
+    def __init__(self, function, start, next_):
+        self.function = function
+        self.start = start
+        self.next = next_
+
+    def visit_Node(self, node):
+        self.function.error(
+            "only identifier deletion targets are supported yet", node, unsupported=True
+        )
+
+    def visit_Name(self, node):
+        function = self.function
+        function.converter.reserved(node.identifier, node)
+        var = function.variable(node.identifier)
+        ctran = Ctran()
+        function.ref(self.start, ctran, None, var, node)
+        function.set_var(ctran, self.next, var, None, node)
 
 
 class _AnnotationTarget(ast.Visitor):
@@ -2127,6 +2415,17 @@ class _CallTarget(ast.Visitor):
         )
 
 
+class _ClassDocstring(ast.Visitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_ExpressionStatement(self, node):
+        return node.expression.accept(self)
+
+    def visit_TextLiteral(self, node):
+        return True
+
+
 class _ClassBody(ast.Visitor):
     def __init__(self, function):
         self.function = function
@@ -2137,7 +2436,8 @@ class _ClassBody(ast.Visitor):
 
     def visit_Node(self, node):
         self.function.error(
-            "class bodies support only instance methods, bare typed native fields, and pass",
+            "class bodies support only a leading docstring, instance methods, "
+            "bare typed native fields, and pass",
             node,
             unsupported=True,
         )
@@ -2310,10 +2610,6 @@ class _ScopeVisitor(_ImportNames):
             node.value.accept(self)
 
     def visit_FunctionDefinition(self, node):
-        if not self.function.is_module:
-            self.function.error(
-                "nested functions are not supported yet", node, unsupported=True
-            )
         self.seen.add(node.name)
 
     def visit_ClassDefinition(self, node):
@@ -2334,9 +2630,20 @@ class _ScopeVisitor(_ImportNames):
             self.function.globals.add(name)
 
     def visit_Nonlocal(self, node):
-        self.function.error(
-            "nonlocal bindings are not supported yet", node, unsupported=True
-        )
+        function = self.function
+        if function.is_module:
+            function.error("nonlocal declaration not allowed at module level", node)
+        for name in node.identifiers:
+            if name in function.globals:
+                function.error(f"name '{name}' is nonlocal and global", node)
+            if name not in function.nonlocals and name in self.seen:
+                function.error(
+                    f"name '{name}' is used or assigned before nonlocal declaration",
+                    node,
+                )
+            if function.enclosing_local(name) is None:
+                function.error(f"no binding for nonlocal '{name}' found", node)
+            function.nonlocals.add(name)
 
 
 class _LocalBindings(_ImportNames):
@@ -2354,10 +2661,11 @@ class _LocalBindings(_ImportNames):
             child.accept(self)
 
     def visit_FunctionDefinition(self, node):
-        pass
+        # The definition binds its name here; the body is another scope.
+        ast.Name(node.name, span=node.span).accept(self.target_visitor)
 
     def visit_ClassDefinition(self, node):
-        pass
+        ast.Name(node.name, span=node.span).accept(self.target_visitor)
 
     def visit_ExceptionHandler(self, node):
         if node.binding is not None:
@@ -2387,8 +2695,12 @@ class _LocalTarget(ast.Visitor):
 
     def visit_Name(self, node):
         self.function.converter.reserved(node.identifier, node)
-        if node.identifier not in self.function.globals:
-            self.function.declare_local(node.identifier)
+        function = self.function
+        if (
+            node.identifier not in function.globals
+            and node.identifier not in function.nonlocals
+        ):
+            function.declare_local(node.identifier)
 
 
 class _ConditionVisitor(ast.Visitor):

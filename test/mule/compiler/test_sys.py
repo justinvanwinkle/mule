@@ -26,8 +26,11 @@ def argv_program(tmp_path_factory):
     )
     # Built-in modules precede a source-local file, including private OS bindings.
     (directory / "sys.py").write_text("raise RuntimeError('local sys loaded')\n")
-    (directory / "_mule_os.py").write_text(
-        "raise RuntimeError('local OS module loaded')\n"
+    (directory / "_mule_native.py").write_text(
+        "raise RuntimeError('local native module loaded')\n"
+    )
+    (directory / "_mule_codecs.py").write_text(
+        "raise RuntimeError('local codec module loaded')\n"
     )
     executable = build(source, directory / "program")
     for path in directory.glob("*.py"):
@@ -64,9 +67,9 @@ def test_argv_rejects_undecodable_bytes_without_lossy_replacement(argv_program):
     assert b"UnicodeDecodeError" in result.stderr
 
 
-def test_private_os_intrinsic_identifiers_are_not_application_builtins(tmp_path):
+def test_native_operations_require_an_explicit_import(tmp_path):
     source = tmp_path / "main.py"
-    source.write_text("print(_process_argument_count())\n")
+    source.write_text("print(read_pointer(None, 0))\n")
     executable = build(source, tmp_path / "program")
     result = subprocess.run(
         [executable], check=False, capture_output=True, text=True, timeout=10

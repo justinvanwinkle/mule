@@ -43,6 +43,14 @@ class TextAccess(Primitive):
         return emitter.operation(f"call ptr @{self.primitive}({operands})")
 
 
+class NumericModulo(Primitive):
+    def emit(self, emitter, arguments):
+        return emitter.operation(
+            f"call ptr @mule.fast.binary.5(ptr {arguments[0]}, ptr {arguments[1]}, "
+            "i32 0, ptr null)"
+        )
+
+
 class Formats(ir.Visitor):
     def __init__(self):
         self.needed = False
@@ -51,20 +59,30 @@ class Formats(ir.Visitor):
         self.needed = True
 
 
-def prepare(module):
+def prepare(module, *, string_conversion=False):
     visitor = Formats()
     for function in module.functions:
         for block in function.blocks:
             for operation in block.instructions:
                 operation.accept(visitor)
-    if not visitor.needed:
+    if not visitor.needed and not string_conversion:
         return {}, set()
     path = Path(__file__).resolve().parents[2] / "stdlib/_format.py"
     lowered = lower(
         path.read_text(), str(path), prefix="mule_format_", namespace="$mule.format"
     )
     functions = lowered.functions[1:]
-    names = iter(("string", "representation", "align_string", "format_value"))
+    names = iter(
+        (
+            "string",
+            "representation",
+            "align_string",
+            "format_value",
+            "decimal_integer",
+            "percent_decimal",
+            "modulo",
+        )
+    )
     for function in functions:
         function.name = "mule_format_" + next(names)
     primitives = {
@@ -76,6 +94,14 @@ def prepare(module):
         "_text_result": TextResult(),
         "_string_protocol": CompiledCall("mule_format_string"),
         "_alignment_protocol": CompiledCall("mule_format_align_string"),
+        "_decimal_protocol": CompiledCall("mule_format_decimal_integer"),
+        "_percent_decimal_protocol": CompiledCall("mule_format_percent_decimal"),
+        "_numeric_modulo": NumericModulo(),
+        "_text_storage": TextAccess("mule_text_storage"),
+        "_integer_storage": TextAccess("mule_integer_storage"),
+        "_storage_compatible": TextAccess("mule_storage_compatible"),
+        "_storage_length": TextAccess("mule_storage_length"),
+        "_storage_read": TextAccess("mule_storage_read"),
         "_text_length": TextAccess("mule_text_length"),
         "_text_character": TextAccess("mule_text_character"),
         "_text_codepoint": TextAccess("mule_text_codepoint"),

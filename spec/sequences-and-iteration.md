@@ -67,11 +67,13 @@ argument/result types; `src/compiler/x86-64/char.lisp`, the `code-char` VOP,
 performs the representation conversion. Mule retains compiled language rules
 and a physical construction boundary. Python differs concretely: `chr` returns
 an owned string, not SBCL's immediate character, and uses `__index__` with
-`ValueError` outside the Unicode codepoint range. Rust only encodes a guarded
-codepoint into Mule text storage and allocates its value. The existing text
+`ValueError` outside the Unicode codepoint range. Rust's explicitly imported
+native `text_from_codepoints` callable only encodes guarded codepoint storage
+and allocates text; `chr` passes a one-element list. The existing text
 representation permits surrogate codepoints; `chr` preserves them rather than
 using Rust's scalar-only `char` type. Construction has constant work and allocates
-one 1-to-4-byte text payload; this is not a complete string or codec implementation.
+one 1-to-4-byte text payload and a temporary one-element list; this is not a
+complete string or codec implementation.
 
 ## Guarded range loop specialization
 

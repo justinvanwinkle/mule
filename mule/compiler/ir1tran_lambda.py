@@ -40,6 +40,7 @@ def convert_function(
     policy,
     *,
     owner_class=None,
+    parent=None,
 ) -> Lambda:
     if definition.is_async or definition.type_parameters:
         converter.error(
@@ -106,7 +107,12 @@ def convert_function(
         lambda_.vars.append(var)
         lambda_.locals.append(var)
     function = FunctionConverter(
-        converter, lambda_, definition.body, is_module=False, origin=definition
+        converter,
+        lambda_,
+        definition.body,
+        is_module=False,
+        origin=definition,
+        parent=parent,
     )
 
     def prologue(start: Ctran) -> Ctran:

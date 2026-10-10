@@ -8,18 +8,21 @@ and pass. General unittest support remains incomplete.
 
 ### Initial sys module
 
-`sys` is compiled from `stdlib/sys.py`; the compiler-private `_mule_os` module is
-compiled from `stdlib/_mule_os.py`. These two exact module identifiers resolve to
-the repository sources before source-local files or packages, matching Python's
-built-in module precedence. Ordinary modules retain their existing resolution
-order. Only `_mule_os` receives bindings for the private process primitives;
-those identifiers are not application builtins.
+`sys` is compiled from `stdlib/sys.py`, with shared decoding in
+`stdlib/_mule_codecs.py`. Both resolve to repository implementation sources before
+source-local files or packages. `_mule_native` is a built-in native module, not
+a Python source file. Ordinary modules retain their existing resolution order.
+Python source imports native exports explicitly; there are no undeclared process
+intrinsics or module-specific identifier substitutions.
 
 Generated native `main(argc, argv)` publishes borrowed, process-lifetime argument
-pointers before any compiled module initialization. Rust exposes the argument
-count and indexed access, producing an owned text value for an argument. Compiled
-Python constructs the mutable `sys.argv` list. The module cache owns it through
-normal module globals: repeated imports share mutations and reassignment, and
+pointers before any compiled module initialization. The native module exports the
+raw startup count and an opaque read-only view of the pointer vector. Compiled
+Python reads its elements, copies each C string to bytes, decodes those bytes with
+the shared compiled UTF-8 decoder, and constructs the mutable `sys.argv` list.
+Rust does not select Python arguments, decode their bytes, or construct the list.
+The module cache owns it through normal module globals: repeated imports share
+mutations and reassignment, and
 each executable invocation constructs its own state. `argv[0]` is the native
 executable invocation string, not a canonical path or the compiler's source path.
 An empty native argument vector produces an empty list.
@@ -32,17 +35,65 @@ are compiled Python. Python requires a mutable list in a module rather than a
 Lisp special variable. LLVM's executable entry receives the platform argc/argv
 ABI directly because Mule has no separate native launcher processing options.
 
-Initial decoding is strictly UTF-8. Invalid sequences fail with the existing
-native `UnicodeDecodeError` kind/message mechanism; no bytes are replaced or
-ignored. Unlike Python's POSIX filesystem decoding, this does not yet implement
-surrogateescape or locale-derived encoding, and the exception does not yet have
-Python's structured encoding/object/start/end/reason payload. These are explicit
-compatibility gaps, not complete argv decoding parity. Validation is a low-level
-text-storage boundary check; list construction stays in Python. Supporting
-surrogateescape needs consistent surrogate-capable text and codec behavior rather
-than publishing invalid text storage that existing Unicode operations cannot use.
-Strict validation has linear cost in argument byte length and copies each
-argument once into its owned language value during module initialization.
+SBCL `src/code/target-alieneval.lisp`, `extern-alien` and
+`define-alien-routine`, declares foreign access explicitly and constructs callable
+interfaces. `src/code/c-call.lisp`, C-string naturalization, delegates encoding
+conversion to the shared language-level external-format implementation;
+`src/code/external-formats/enc-basic.lisp`, `read-from-c-string/utf-8/lf`, validates
+and constructs decoded strings in Lisp. Mule's explicit native module exports
+provide ordinary imported callable values using Mule's existing boxed-value ABI.
+This is an initial fixed set of foreign-storage facilities, not arbitrary foreign
+symbol loading or a general user-authored FFI declaration system. Python decoding
+and argument traversal remain normal compiled language code.
+
+Initial decoding remains strictly UTF-8. Compiled Python checks leading and
+continuation bytes, length, overlong sequences, surrogates, and the maximum
+codepoint, raising `UnicodeDecodeError` with encoding, data, offsets, and reason
+in its argument tuple. No bytes are replaced or ignored. Unlike Python's POSIX
+filesystem decoding, locale-derived encoding and surrogateescape remain gaps.
+The current exception implementation also lacks the specialized properties and
+formatting of Python's `UnicodeDecodeError`. Text storage already permits lone
+surrogates; the missing surrogateescape behavior is codec policy, not a missing
+storage representation. Decoding is linear in byte length, collects codepoints
+in a Python list, then calls generic physical text construction once. This avoids
+repeated immutable-string concatenation and its quadratic copying cost.
+
+### Explicit native storage module
+
+The existing generated import cache owns the `_mule_native` namespace and its
+real function objects. Native initialization is an explicit import variant: it
+populates the same namespace, returns owned success or null with an error, and
+uses the existing failure cache reset and reference cleanup. It has `__name__`
+but no fabricated `__file__`. Imports, aliases, passing callables, and module
+attribute rebinding retain ordinary Python behavior; no call-site spelling is
+rewritten. This does not introduce a separate runtime module registry or evaluator.
+
+Exports are positional-only physical operations:
+
+| Export | Storage contract |
+| --- | --- |
+| argc | Native startup integer count. |
+| argv | Read-only borrowed pointer vector; includes the NULL sentinel for nonempty native vectors. |
+| read_pointer(vector, index) | Guard the vector kind and index; return an opaque borrowed C pointer, or None for NULL. |
+| read_c_string(pointer) | Copy valid NUL-terminated foreign storage into owned bytes without decoding. |
+| byte_length(data) | Guard byte storage and return its physical byte length. |
+| read_byte(data, index) | Guard byte storage and bounds, then return an unsigned byte integer. |
+| text_from_codepoints(values) | Guard list/tuple integer storage and codepoint bounds, encode the existing text representation, and allocate owned text. |
+
+Only native-created pointer views are available; Python cannot construct one
+from an arbitrary integer. Their storage is process-lifetime borrowed and is
+never freed by the wrappers. The startup ABI guarantees valid NUL termination
+and vector storage; generic C-string access relies on that explicit foreign-memory
+contract. Vector bounds and pointer kinds are checked before dereferencing.
+The view is read-only, but native-module attributes are ordinarily rebindable.
+Compared with SBCL's raw alien pointers, these opaque checked views are a safety
+adaptation with one small wrapper allocation per pointer read and a byte copy per
+C-string read. Rust handles physical access, allocation, and storage checks; it
+does not choose a decoding policy or expose argument-to-text operations.
+
+The `chr` builtin added with this work also imports `text_from_codepoints`
+explicitly. Older class/sequence/format private intrinsics remain bootstrap debt
+outside this migration; new sys and codec code do not depend on that convention.
 
 Only `argv` is available in this increment. Standard streams, descriptor access,
 buffering, text codecs, and `detach` remain work to enable the existing compiled

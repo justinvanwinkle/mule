@@ -422,6 +422,28 @@ pub unsafe extern "C" fn mule_leave_handler() {
         }
     });
 }
+/// The exception being handled by the innermost active handler, or None.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_active_exception() -> Value {
+    unsafe {
+        ACTIVE.with_borrow(|values| match values.last() {
+            Some(value) => object::retain(*value),
+            None => object::none_value(),
+        })
+    }
+}
+/// Instantiate an exception class with no arguments; an instance is returned as is.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_exception_instance(value: Value) -> Value {
+    unsafe {
+        if !value.is_null() && !object::is_fixnum(value) && matches!(&(*value).data, Data::Class(_))
+        {
+            object::call(value, &[])
+        } else {
+            object::retain(value)
+        }
+    }
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_reraise() -> i32 {
     unsafe {

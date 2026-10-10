@@ -51,13 +51,32 @@ Adaptations, each a concrete departure from `node.lisp`/`ir1tran.lisp`:
   `%iterate`, `%make_function`, ...) with conservative effect attributes in
   `fndb.py`. Compile-time data Lisp would quote (class definitions, import
   descriptors, counted-loop state) travels in `Combination.info`.
-- Cleanups describe exception regions (`HANDLER_REGION`, `HANDLER_BODY`) and
-  change only at block boundaries, so a block's error destination is a
-  property of its first node. Handler-exit actions on `break`/`continue`/
-  `return` are still emitted at conversion time; environment analysis takes
-  that over with `Entry`/`Exit` nodes. A handler now covers exactly the `try`
-  body; the previous frontend extended it to earlier instructions in the same
-  block.
+- Cleanups describe protected regions (`HANDLER_REGION`, `HANDLER_BODY`,
+  `FINALLY`, `WITH`) and change only at block boundaries, so a block's error
+  destination is a property of its first node. The converter records the
+  regions; `envanal.find_cleanup_points` inserts the exit code (unbinding and
+  popping a handler, running a `finally` suite, calling `__exit__`) on every
+  control edge that leaves a region, one block per level, converted in the
+  enclosing region's environment. Python has no lexical non-local exits, so
+  SBCL's `Entry`/`Exit` machinery and `find-non-local-exits` have no
+  counterpart; a degenerate `Exit` only fills an otherwise empty block. A
+  handler now covers exactly the `try` body; the previous frontend extended it
+  to earlier instructions in the same block.
+- Environment analysis runs right after conversion rather than after the IR1
+  phases, because Python's cleanup regions are fixed at conversion and the
+  phases must see the inserted cleanup code. `compute_closure` records
+  closed-over variables per environment and marks assigned ones `indirect`.
+  Lowering gives an indirect variable a cell (a compiled Mule `Cell` object
+  from `stdlib/_sequences.py`) and copies a read-only capture's value, as
+  SBCL's IR2 conversion does for indirect lambda-vars; the function object
+  carries its closure and the runtime hands it to the body through the
+  argument view, so the native entry ABI is unchanged. Python's rule that
+  every captured variable is a cell is preserved for assigned variables; a
+  variable bound once and never reassigned has no observable difference
+  between a cell and a copy.
+- A free variable's facts are unknown in the nested lambda, and an indirect
+  variable's facts are forgotten whenever user code may run, since a nested
+  function may assign it.
 - Error edges count as successors for reachability. SBCL reaches non-local
   exit blocks from the component head after environment analysis.
 - `for` over a call spelled `range` emits the guarded counted loop beside the

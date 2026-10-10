@@ -124,9 +124,20 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
 - `if`/`else`, `while`/`else`, `for`/`else`, `break`, `continue`, and `pass`.
   Known fresh builtin ranges have a guarded counted LLVM loop; other iterables
   use compiled Mule protocols, including user iterators and indexed sequences.
-- `try`/`except`/`else`, exception classes and hierarchy matching, `raise`, and
-  bare reraising. Handler transfers release temporaries and preserve locals;
-  handler exits clear exception bindings and restore active exception state.
+- `try`/`except`/`else`/`finally`, exception classes and hierarchy matching,
+  `raise`, and bare reraising. Handler transfers release temporaries and
+  preserve locals; handler exits clear exception bindings and restore active
+  exception state. A `finally` suite runs on fall-through, `return`, `break`,
+  `continue`, and exception paths; a transfer inside it replaces a pending
+  exception. `with` statements look up `__exit__` then call `__enter__`, call
+  `__exit__(None, None, None)` on every normal exit, pass the raised exception
+  class and instance (traceback `None`) on error, and suppress it when the
+  result is true.
+- Exception chaining: `raise X from Y` sets `__cause__` and
+  `__suppress_context__`; an exception raised while another is being handled
+  records it as `__context__`. `BaseException` instances carry `__cause__`,
+  `__context__`, and `__suppress_context__`. Exception groups remain
+  unsupported.
 - Module-level function definitions with positional-only, positional-or-keyword,
   keyword-only, default and variadic positional parameters, native
   recursion, return statements, implicit `None` returns, and `global` declarations.
@@ -136,7 +147,8 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
 - Module-level fixed-layout classes with zero or one compiled-class base,
   positional/keyword construction, instance methods, bound-method values, attribute reads,
   and assignment or augmented assignment to declared instance fields. Class bodies
-  contain method definitions, bare annotated declarations and `pass`;
+  contain an optional leading string-literal docstring, method definitions,
+  bare annotated declarations and `pass`;
   explicitly selected native classes may use `mule.int64` fields as described below.
 - Unconditional module-level imports of numeric annotation markers and
   `optimize` from `mule`, including aliases. Parameter, return, and identifier
@@ -169,14 +181,59 @@ Boolean operations return operands; chained comparisons evaluate shared middle
 operands once. Owned references are cleaned on normal and exceptional exits,
 and an active error survives cleanup.
 
+Class docstrings accept only a text literal in the first statement, including
+empty, multiline and adjacent string literals. Bytes, f-strings, computed text
+and later expression statements remain unsupported in class bodies. Docstring
+acceptance does not yet provide runtime `__doc__` metadata for classes, functions
+or modules. SBCL `src/pcl/defclass.lisp`, `canonize-defclass-options`, validates
+and preserves its `:documentation` string for class creation; Mule still needs
+the corresponding documentation metadata and lookup support. This increment
+only removes the class-body syntax rejection, without allocating runtime
+documentation or changing class layout, construction or method dispatch.
+
+- Nested function definitions, closures, and `nonlocal`. A variable captured
+  by a nested function and assigned anywhere lives in a shared cell, so later
+  assignments in either scope are visible to both and reading it before any
+  assignment raises `NameError`. A captured variable that is never assigned
+  after binding (a parameter, for example) is copied into the closure when
+  the function object is created. Nested class definitions remain unsupported.
+- `del name` for locals, globals, and captured variables. Deleting an unbound
+  name raises the same error a read would; later reads see the name unbound.
+
 Unsupported constructs raise `UnsupportedSyntax`, a `SyntaxError` subclass,
-before native compilation. These include dynamic/wildcard imports, nested functions or classes,
-closures/`nonlocal`, `**kwargs` parameters, call argument expansion, general decorators,
-async/generators, `finally`, exception chaining/groups, dictionaries/sets/comprehensions,
+before native compilation. These include dynamic/wildcard imports, nested classes,
+`**kwargs` parameters, call argument expansion, general decorators,
+async/generators, exception groups, dictionaries/sets/comprehensions,
 slicing, extended unpacking, starred displays, template strings and `!a` conversion.
 Unsupported source is
 also rejected in unreachable branches. Parser support is broader than compiler
 support; acceptance by the parser does not imply native compilation support.
+
+## Print endings
+
+`print(*objects, end="\n")` is compiled from `stdlib/_print.py` and installed as
+an ordinary builtin with a generated keyword/default argument binder. `end`
+accepts text or `None`; `None` selects the default newline. Empty endings,
+Unicode and embedded NUL characters are written without truncation. Objects
+are separated by one space; a call without objects writes only its ending.
+Invalid endings raise `TypeError` before conversion or output. Conversion uses
+the shared compiled string protocol, and each object and separator is written
+in order, preserving partial output when a later conversion or write fails.
+The result is `None`.
+
+SBCL `src/code/stream.lisp`, `write-string` and `%write-string`, implements output
+dispatch in compiled Lisp; `src/code/fd-stream.lisp`, `flush-output-buffer`,
+calls the physical OS write boundary. Mule likewise keeps ending, separator and
+conversion rules in compiled Python; Rust only tests physical text storage and
+writes its exact bytes to the existing native stdout. Sequence/exception
+protocols initialize before the print builtin is installed, and both share the
+existing owned protocol namespace. The wrapper releases intermediate initializer
+results and stops on failure. Existing shutdown stdout flushing is unchanged.
+
+This is an explicitly scoped Python adaptation: print retains Mule's fixed
+native stdout destination. `sep`, `file`, `flush` and dynamic `sys.stdout`
+selection remain unsupported; this increment adds only `end`. It introduces
+neither a second stream hierarchy nor a Rust language-level print algorithm.
 
 ## Annotation contracts
 
@@ -361,7 +418,7 @@ inheritance, arbitrary class-body execution, class attributes,
 `__slots__` declarations, metaclasses, properties/descriptors, `super()`, and
 general method decorators are unsupported; the imported `optimize` directive is
 accepted. The compiled f-string formatter uses custom formatting hooks; existing
-Rust `print`, `str` and `repr` bootstrap paths still require migration. Existing
+Rust `str` and `repr` bootstrap paths still require migration. Existing
 empty dynamic `type()` objects and
 static special-method hooks remain a limited runtime facility; they do not
 change the fixed-layout compiled-class contract. The class implementation has

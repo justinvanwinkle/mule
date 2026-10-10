@@ -17,24 +17,35 @@ pub enum Data {
     Float(f64),
     Text(Vec<u8>),
     Bytes(Vec<u8>),
+    ForeignPointerVector {
+        base: *const *const c_char,
+        length: usize,
+    },
+    ForeignCString {
+        address: *const c_char,
+    },
     Function {
         entry: Native,
         globals: Value,
         name: String,
         defaults: Value,
         keyword_entry: Option<Native>,
+        /// Captured cells and values for a nested function, or NULL.
+        closure: Value,
     },
     Args(Vec<Value>),
     ArgumentView {
         values: *const Value,
         count: usize,
         defaults: Value,
+        closure: Value,
     },
     ReceiverArgs {
         receiver: Value,
         values: *const Value,
         count: usize,
         defaults: Value,
+        closure: Value,
     },
     KeywordArgs {
         receiver: Value,
@@ -44,6 +55,7 @@ pub enum Data {
         keyword_values: *const Value,
         keyword_count: usize,
         defaults: Value,
+        closure: Value,
     },
     List(Vec<Value>),
     Namespace(Vec<(String, Value)>),
@@ -176,7 +188,12 @@ pub unsafe fn release(value: Value) {
                 release(*method);
             }
             Data::StaticMethod(method) => release(*method),
-            Data::Function { defaults, .. } => release(*defaults),
+            Data::Function {
+                defaults, closure, ..
+            } => {
+                release(*defaults);
+                release(*closure);
+            }
             _ => (), // Function globals are borrowed from the executing module.
         }
     }
@@ -282,6 +299,7 @@ pub unsafe fn function(globals: Value, entry: Native, name: &str) -> Value {
             name: name.into(),
             defaults: std::ptr::null_mut(),
             keyword_entry: None,
+            closure: std::ptr::null_mut(),
         })
     }
 }
@@ -377,13 +395,14 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
                 return std::ptr::null_mut();
             }
         }
-        let (entry, globals, defaults) = match &(*callable).data {
+        let (entry, globals, defaults, closure) = match &(*callable).data {
             Data::Function {
                 entry,
                 globals,
                 defaults,
+                closure,
                 ..
-            } => (*entry, *globals, *defaults),
+            } => (*entry, *globals, *defaults, *closure),
             _ => unreachable!(),
         };
         if mule_enter_frame() < 0 {
@@ -397,6 +416,7 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
                 values: args.as_ptr(),
                 count: args.len(),
                 defaults,
+                closure,
             },
         };
         let result = entry(globals, &mut view);
@@ -422,6 +442,7 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
                 entry,
                 globals,
                 defaults,
+                closure,
                 ..
             } = &(*method).data
             {
@@ -435,6 +456,7 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
                         values: args.as_ptr(),
                         count: args.len(),
                         defaults: *defaults,
+                        closure: *closure,
                     },
                 };
                 let result = entry(*globals, &mut view);
@@ -962,6 +984,8 @@ pub unsafe fn formatted_value(
                 result
             }
             Data::Function { name, .. } => format!("<native function {name}>").into_bytes(),
+            Data::ForeignPointerVector { .. } => b"<foreign pointer vector>".to_vec(),
+            Data::ForeignCString { .. } => b"<foreign C string pointer>".to_vec(),
             Data::Class(layout) => format!("<class '{}'>", layout.name).into_bytes(),
             Data::BoundMethod { .. } => b"<bound native method>".to_vec(),
             Data::StaticMethod(_) => b"<staticmethod>".to_vec(),
@@ -1283,42 +1307,26 @@ pub unsafe extern "C" fn mule_text_codepoint(value: Value, index: Value) -> Valu
         })
     }
 }
-/// Allocate a one-codepoint text value after compiled Python index/range checks.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mule_text_from_codepoint(value: Value) -> Value {
-    unsafe {
-        let code = if is_fixnum(value) {
-            u32::try_from(fixnum(value)).ok()
-        } else {
-            let Some(integer) = numeric::integer_export(value) else {
-                return std::ptr::null_mut();
-            };
-            integer.to_u64().and_then(|code| u32::try_from(code).ok())
-        };
-        let Some(code) = code.filter(|code| *code <= 0x10ffff) else {
-            error("SystemError", "invalid codepoint for text storage");
-            return std::ptr::null_mut();
-        };
-        // Mule text permits surrogate codepoints, unlike Rust's char type.
-        let bytes = if code < 0x80 {
-            vec![code as u8]
-        } else if code < 0x800 {
-            vec![(0xc0 | (code >> 6)) as u8, (0x80 | (code & 0x3f)) as u8]
-        } else if code < 0x10000 {
-            vec![
-                (0xe0 | (code >> 12)) as u8,
-                (0x80 | ((code >> 6) & 0x3f)) as u8,
-                (0x80 | (code & 0x3f)) as u8,
-            ]
-        } else {
-            vec![
-                (0xf0 | (code >> 18)) as u8,
-                (0x80 | ((code >> 12) & 0x3f)) as u8,
-                (0x80 | ((code >> 6) & 0x3f)) as u8,
-                (0x80 | (code & 0x3f)) as u8,
-            ]
-        };
-        new_value(Data::Text(bytes))
+/// Encode a validated codepoint into physical text storage, including surrogates.
+pub(crate) fn append_text_codepoint(bytes: &mut Vec<u8>, code: u32) {
+    debug_assert!(code <= 0x10ffff);
+    if code < 0x80 {
+        bytes.push(code as u8);
+    } else if code < 0x800 {
+        bytes.extend_from_slice(&[(0xc0 | (code >> 6)) as u8, (0x80 | (code & 0x3f)) as u8]);
+    } else if code < 0x10000 {
+        bytes.extend_from_slice(&[
+            (0xe0 | (code >> 12)) as u8,
+            (0x80 | ((code >> 6) & 0x3f)) as u8,
+            (0x80 | (code & 0x3f)) as u8,
+        ]);
+    } else {
+        bytes.extend_from_slice(&[
+            (0xf0 | (code >> 18)) as u8,
+            (0x80 | ((code >> 12) & 0x3f)) as u8,
+            (0x80 | ((code >> 6) & 0x3f)) as u8,
+            (0x80 | (code & 0x3f)) as u8,
+        ]);
     }
 }
 #[unsafe(no_mangle)]
@@ -1447,6 +1455,58 @@ pub unsafe extern "C" fn mule_function(
             std::mem::transmute::<*mut c_void, Native>(native),
             name,
         )
+    }
+}
+/// Create a nested function object owning its captured cells and values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_function_closure(
+    globals: Value,
+    native: *mut c_void,
+    name: *const c_char,
+    captured: Value,
+    closure: Value,
+) -> Value {
+    unsafe {
+        let value = if captured.is_null() {
+            mule_function(globals, native, name)
+        } else {
+            crate::arguments::mule_function_defaults(globals, native, name, captured)
+        };
+        if !value.is_null() {
+            let Data::Function {
+                closure: slot, ..
+            } = &mut (*value).data
+            else {
+                unreachable!()
+            };
+            *slot = retain(closure);
+        }
+        value
+    }
+}
+/// Borrow the closure the argument view carries for the running function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_closure(args: Value) -> Value {
+    unsafe {
+        if args.is_null() || is_fixnum(args) {
+            return std::ptr::null_mut();
+        }
+        match &(*args).data {
+            Data::ArgumentView { closure, .. }
+            | Data::ReceiverArgs { closure, .. }
+            | Data::KeywordArgs { closure, .. } => *closure,
+            _ => std::ptr::null_mut(),
+        }
+    }
+}
+/// Borrow a callable's closure after the caller has guarded its entry.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_function_closure_of(callable: Value) -> Value {
+    unsafe {
+        match &(*callable).data {
+            Data::Function { closure, .. } => *closure,
+            _ => std::ptr::null_mut(),
+        }
     }
 }
 #[unsafe(no_mangle)]

@@ -314,7 +314,7 @@ def block_exception_target(block: Block) -> Block | None:
     """
     cleanup = block_start_cleanup(block)
     while cleanup is not None:
-        if cleanup.kind in (CleanupKind.HANDLER_REGION, CleanupKind.HANDLER_BODY):
+        if cleanup.target is not None:
             return cleanup.target
         cleanup = cleanup.parent
     return None

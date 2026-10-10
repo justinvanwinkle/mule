@@ -74,6 +74,7 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/compiler/constraint.py`: flow-sensitive propagation of variable facts and node types, following `constraint.lisp`.
 - `mule/compiler/locall.py`: local-call analysis: guarded calls through module globals, entry contexts, optimistic argument/result solving, following `locall.lisp`.
 - `mule/compiler/checkgen.py`: decides which casts become runtime checks, following `checkgen.lisp`.
+- `mule/compiler/envanal.py`: environment analysis: closed-over variables and cleanup-point insertion for handler, `finally`, and `with` regions, following `envanal.lisp`.
 - `mule/compiler/ir1bridge.py`: temporary lowering of IR1 and its facts to the control-flow IR until later phases consume IR1 directly.
 - `mule/compiler/modules.py`: static module resolution and compiled initialization.
 - `mule/compiler/ir.py`: control-flow graph, object results, and graph verification.

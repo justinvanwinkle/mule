@@ -37,26 +37,36 @@ unsafe fn text(value: Value) -> Option<Vec<u8>> {
         }
     }
 }
-unsafe extern "C" fn print(_: Value, args: Value) -> Value {
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_stdout_write(value: Value) -> Value {
     unsafe {
-        let Some(count) = object::argument_count(args) else {
+        if object::has_error() {
             return std::ptr::null_mut();
-        };
-        let mut bytes = Vec::new();
-        for index in 0..count {
-            if index > 0 {
-                bytes.push(b' ');
-            }
-            let Some(value) = object::formatted_value(arg(args, index), false, false) else {
-                return std::ptr::null_mut();
-            };
-            bytes.extend(value);
         }
-        bytes.push(b'\n');
-        if io::stdout().lock().write_all(&bytes).is_err() {
+        if value.is_null() || object::is_fixnum(value) {
+            return fail("TypeError", "stdout storage write requires text");
+        }
+        let Data::Text(bytes) = &(*value).data else {
+            return fail("TypeError", "stdout storage write requires text");
+        };
+        if io::stdout().lock().write_all(bytes).is_err() {
             return fail("OSError", "output failed");
         }
         object::none_value()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_storage(value: Value) -> Value {
+    unsafe {
+        if object::has_error() {
+            return std::ptr::null_mut();
+        }
+        object::bool_value(
+            !value.is_null()
+                && !object::is_fixnum(value)
+                && matches!(&(*value).data, Data::Text(_)),
+        )
     }
 }
 unsafe extern "C" fn abs(_: Value, args: Value) -> Value {
@@ -454,7 +464,6 @@ pub unsafe fn namespace() -> Value {
             }
             let namespace = object::namespace();
             let entries: &[(&str, Native)] = &[
-                ("print", print),
                 ("abs", abs),
                 ("int", int),
                 ("input", input),

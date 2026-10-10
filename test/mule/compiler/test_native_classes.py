@@ -353,6 +353,11 @@ def test_native_class_invalid_protocol_results(
     "source",
     [
         "class C:\n value = 1\n",
+        "class C:\n b'not a docstring'\n",
+        "class C:\n f'not a docstring'\n",
+        "class C:\n 'computed' + 'text'\n",
+        "class C:\n pass\n 'not a leading docstring'\n",
+        "class C:\n 'docstring'\n 'another expression'\n",
         "class C:\n __slots__ = ('value',)\n",
         "class A:\n pass\nclass B:\n pass\nclass C(A, B):\n pass\n",
         "class C(metaclass=type):\n pass\n",
@@ -365,3 +370,20 @@ def test_native_class_invalid_protocol_results(
 def test_unimplemented_class_features_are_explicitly_rejected(source):
     with pytest.raises(UnsupportedSyntax):
         lower(source)
+
+
+@pytest.mark.parametrize(
+    "docstring", ["'Class documentation.'", "''", "('Adjacent ' 'strings.')"]
+)
+def test_class_docstring_compiles(docstring):
+    lower(f"class Documented:\n {docstring}\n")
+
+
+def test_class_docstring_preserves_instance_behavior(tmp_path):
+    result = run_native(
+        tmp_path,
+        'class Documented:\n """Class documentation.\n More documentation.\n """\n'
+        " def value(self):\n  return 42\nprint(Documented().value())\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "42\n"

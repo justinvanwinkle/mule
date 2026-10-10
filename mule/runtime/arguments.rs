@@ -108,9 +108,11 @@ unsafe fn call_buffers(
             }
             _ => (),
         }
-        let captured = match &(*callable).data {
-            Data::Function { defaults, .. } => *defaults,
-            _ => std::ptr::null_mut(),
+        let (captured, closure) = match &(*callable).data {
+            Data::Function {
+                defaults, closure, ..
+            } => (*defaults, *closure),
+            _ => (std::ptr::null_mut(), std::ptr::null_mut()),
         };
         let mut view = Object {
             references: usize::MAX,
@@ -122,6 +124,7 @@ unsafe fn call_buffers(
                 keyword_values: keyword_values.as_ptr(),
                 keyword_count: keyword_values.len(),
                 defaults: captured,
+                closure,
             },
         };
         match &(*callable).data {

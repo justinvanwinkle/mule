@@ -90,7 +90,7 @@ def binder_source(function):
             )
     values = ", ".join(f"p{index}" for index in range(len(function.parameters)))
     lines.append(
-        f"    return _binding_body(body_globals{', ' + values if values else ''})"
+        f"    return _binding_body(body_globals, view{', ' + values if values else ''})"
     )
     return "\n".join(lines) + "\n"
 
@@ -173,13 +173,16 @@ class BoundBody(Primitive):
         self.function = function
 
     def emit(self, emitter, arguments):
+        globals_value, view, *parameters = arguments
         owned = [
             emitter.operation(f"call ptr @mule.fast.retain(ptr {value})")
-            for value in arguments[1:]
+            for value in parameters
         ]
-        operands = ", ".join(
-            [f"ptr {arguments[0]}", *(f"ptr {value}" for value in owned)]
-        )
+        operands = [f"ptr {globals_value}"]
+        if emitter.module.closure_of(self.function):
+            closure = emitter.operation(f"call ptr @mule_closure(ptr {view})")
+            operands.append(f"ptr {closure}")
+        operands.extend(f"ptr {value}" for value in owned)
         return emitter.operation(
-            f"call ptr {emitter.module.bodies[self.function]}({operands})"
+            f"call ptr {emitter.module.bodies[self.function]}({', '.join(operands)})"
         )

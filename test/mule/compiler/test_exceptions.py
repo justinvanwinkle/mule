@@ -141,3 +141,147 @@ print(f())
     )
     assert result.returncode != 0
     assert result.stdout == ""
+
+
+def test_finally_runs_on_every_exit(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        """
+def through(flag):
+    try:
+        if flag:
+            return 'returned'
+        raise ValueError('raised')
+    finally:
+        print('cleanup', flag)
+print(through(True))
+try:
+    through(False)
+except ValueError as error:
+    print('propagated', error.args[0])
+for i in range(3):
+    try:
+        if i == 1:
+            continue
+        if i == 2:
+            break
+        print('body', i)
+    finally:
+        print('finally', i)
+def override():
+    try:
+        raise ValueError('lost')
+    finally:
+        return 'finally wins'
+print(override())
+def nested():
+    try:
+        try:
+            raise KeyError('inner')
+        finally:
+            print('inner finally')
+    except KeyError as error:
+        print('caught', error.args[0])
+    finally:
+        print('outer finally')
+nested()
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "cleanup True\nreturned\ncleanup False\npropagated raised\n"
+        "body 0\nfinally 0\nfinally 1\nfinally 2\nfinally wins\n"
+        "inner finally\ncaught inner\nouter finally\n"
+    )
+
+
+def test_with_statement_calls_enter_and_exit(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        """
+class Manager:
+    def __init__(self, name, suppress):
+        self.name = name
+        self.suppress = suppress
+    def __enter__(self):
+        print('enter', self.name)
+        return self.name
+    def __exit__(self, kind, value, traceback):
+        print('exit', self.name, kind is None, value is None, traceback)
+        return self.suppress
+with Manager('plain', False) as value:
+    print('body', value)
+with Manager('swallow', True):
+    raise ValueError('ignored')
+print('after swallow')
+try:
+    with Manager('raise', False):
+        raise ValueError('escapes')
+except ValueError as error:
+    print('caught', error.args[0])
+def early():
+    with Manager('return', False):
+        return 'early'
+print(early())
+with Manager('outer', False), Manager('inner', False):
+    print('nested body')
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "enter plain\nbody plain\nexit plain True True None\n"
+        "enter swallow\nexit swallow False False None\nafter swallow\n"
+        "enter raise\nexit raise False False None\ncaught escapes\n"
+        "enter return\nexit return True True None\nearly\n"
+        "enter outer\nenter inner\nnested body\nexit inner True True None\nexit outer True True None\n"
+    )
+
+
+def test_exception_chaining_records_cause_and_context(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        """
+def explicit():
+    try:
+        raise KeyError('inner')
+    except KeyError as inner:
+        raise ValueError('outer') from inner
+try:
+    explicit()
+except ValueError as error:
+    print(error.args[0], error.__cause__.args[0], error.__context__.args[0], error.__suppress_context__)
+def implicit():
+    try:
+        raise KeyError('first')
+    except KeyError:
+        raise ValueError('second')
+try:
+    implicit()
+except ValueError as error:
+    print(error.__cause__, error.__context__.args[0], error.__suppress_context__)
+def suppressed():
+    try:
+        raise KeyError('hidden')
+    except KeyError:
+        raise ValueError('shown') from None
+try:
+    suppressed()
+except ValueError as error:
+    print(error.__cause__, error.__context__.args[0], error.__suppress_context__)
+try:
+    raise ValueError from KeyError
+except ValueError as error:
+    print(error.args, error.__cause__.args)
+try:
+    raise ValueError('bad cause') from 42
+except TypeError as error:
+    print('cause type error')
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "outer inner inner True\nNone first False\nNone hidden True\n() ()\ncause type error\n"
+    )

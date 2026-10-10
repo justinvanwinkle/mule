@@ -4,12 +4,17 @@ Underscored storage operations are bound by the compiler. These definitions
 execute as native Python functions and classes, in a private module namespace.
 """
 
+from _mule_native import text_from_codepoints as _text_from_codepoints
+
 # ruff: noqa: F821
 
 
 class BaseException:
     def __init__(self, *args):
         self.args = args
+        self.__cause__ = None
+        self.__context__ = None
+        self.__suppress_context__ = False
 
     def __str__(self):
         if len(self.args) == 0:
@@ -149,7 +154,35 @@ def raise_value(value):
     if not valid:
         # Use the physical error primitive here to avoid recursive invalid raises.
         return _invalid_raise()
-    return _raise_pending(value)
+    instance = _exception_instance(value)
+    # An exception raised while another is being handled records it as its
+    # context, unless it already has one or is that exception itself.
+    active = _active_exception()
+    if active is not None and active is not instance and instance.__context__ is None:
+        instance.__context__ = active
+    return _raise_pending(instance)
+
+
+def exception_instance(value):
+    """The instance a ``raise`` statement will raise, creating it from a class."""
+    parent = _raised_class(value)
+    valid = False
+    while parent is not None:
+        if parent is BaseException:
+            valid = True
+            break
+        parent = _class_parent(parent)
+    if not valid:
+        raise TypeError("exceptions must derive from BaseException")
+    return _exception_instance(value)
+
+
+def set_exception_cause(instance, cause):
+    """``raise instance from cause``: the cause is None or an exception."""
+    if cause is not None:
+        cause = exception_instance(cause)
+    instance.__cause__ = cause
+    instance.__suppress_context__ = True
 
 
 def integer_index(value):
@@ -163,7 +196,7 @@ def chr(value, /):
     value = integer_index(value)
     if value < 0 or value > 0x10FFFF:
         raise ValueError("chr() arg not in range(0x110000)")
-    return _text_from_codepoint(value)
+    return _text_from_codepoints([value])
 
 
 def getitem(value, index):
@@ -487,3 +520,40 @@ _install_builtin("RecursionError", RecursionError)
 _install_builtin("UnicodeError", UnicodeError)
 _install_builtin("UnicodeEncodeError", UnicodeEncodeError)
 _install_builtin("UnicodeDecodeError", UnicodeDecodeError)
+
+
+def context_exit(exit_method, value):
+    """Report a pending exception to a context manager's ``__exit__``.
+
+    The caller suppresses the exception when the result is true. Mule has no
+    traceback objects yet, so the third argument is None.
+    """
+    return exit_method(_raised_class(value), value, None)
+
+
+class Cell:
+    """Shared storage for a variable captured by a nested function."""
+
+    def __init__(self):
+        self.bound = False
+        self.value = None
+
+
+def cell_new():
+    return Cell()
+
+
+def cell_get(cell):
+    if not cell.bound:
+        raise NameError("free variable referenced before assignment in enclosing scope")
+    return cell.value
+
+
+def cell_set(cell, value):
+    cell.value = value
+    cell.bound = True
+
+
+def cell_clear(cell):
+    cell.value = None
+    cell.bound = False

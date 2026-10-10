@@ -183,6 +183,9 @@ class _Propagation(NodeVisitor):
                 fact = Fact(fact.type, self.walk.global_targets.get(leaf.name))
             return fact
         if isinstance(leaf, LambdaVar):
+            if leaf not in self.state:
+                # A free variable of an enclosing function: any value.
+                return Fact(UNKNOWN)
             fact = self.state[leaf]
             if node.final:
                 self.forget_origin(leaf)
@@ -196,6 +199,8 @@ class _Propagation(NodeVisitor):
 
     def visit_Set(self, node: Set):
         key = _key(node.var)
+        if key not in self.state:
+            return
         if node.value is None:
             self.state[key] = Fact(UNBOUND)
         else:
@@ -342,6 +347,7 @@ class _Walk:
             for node in block.nodes()
             for leaf in _global_leaves(node)
         }
+        self.indirect = [var for var in lambda_.locals if var.indirect]
         parameter_facts = dict(zip(lambda_.vars, parameters, strict=True))
         self.initial = {
             var: Fact(parameter_facts.get(var, UNBOUND)) for var in lambda_.locals
@@ -354,8 +360,12 @@ class _Walk:
         )
 
     def invalidate_globals(self, state):
+        """Forget facts that user code may change: module globals and
+        variables captured by nested functions."""
         for name in self.global_names:
             state[_GLOBAL, name] = Fact(UNKNOWN, self.global_targets.get(name))
+        for var in self.indirect:
+            state[var] = Fact(UNKNOWN)
 
     def run(self) -> Body:
         incoming, edge_states = {}, {}
@@ -460,7 +470,7 @@ class _Walk:
             local = visitor.origins.get(right)
             bound = visitor.type_of(left).exact_integer()
             operator = _SWAPPED.get(operator, operator)
-        if local is None or bound is None:
+        if local is None or bound is None or local not in visitor.state:
             return
         current = visitor.state[local]
         edge[local] = Fact(

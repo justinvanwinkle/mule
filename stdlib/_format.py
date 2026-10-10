@@ -68,3 +68,57 @@ def format_value(value, specification):
             return _string_protocol(value)
         return _alignment_protocol(_text_result(value), specification)
     return _text_result(method(specification))
+
+
+def decimal_integer(value):
+    value = _integer_storage(value)
+    if value == 0:
+        return "0"
+    negative = value < 0
+    if negative:
+        value = -value
+    result = ""
+    while value > 0:
+        result = _text_character("0123456789", value % 10) + result
+        value = value // 10
+    if negative:
+        result = "-" + result
+    return result
+
+
+def percent_decimal(pattern, values):
+    if not _storage_compatible(values, ()):
+        values = (values,)
+    count = _storage_length(values)
+    consumed = 0
+    index = 0
+    size = _text_length(pattern)
+    result = ""
+    while index < size:
+        character = _text_character(pattern, index)
+        index += 1
+        if character != "%":
+            result += character
+            continue
+        if index == size:
+            raise ValueError("incomplete format")
+        conversion = _text_character(pattern, index)
+        index += 1
+        if conversion == "%":
+            result += "%"
+            continue
+        if conversion != "d":
+            raise ValueError("unsupported percent format conversion")
+        if consumed == count:
+            raise TypeError("not enough arguments for format string")
+        result += _decimal_protocol(_storage_read(values, consumed))
+        consumed += 1
+    if consumed != count:
+        raise TypeError("not all arguments converted during string formatting")
+    return result
+
+
+def modulo(left, right):
+    if _text_storage(left):
+        return _percent_decimal_protocol(left, right)
+    return _numeric_modulo(left, right)

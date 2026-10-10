@@ -58,11 +58,12 @@ def lower_lambda(lambda_: Lambda, facts=None) -> ir.Function:
     lowering = _Lowering(lambda_, blocks)
     for block in blocks:
         lowering.lower_block(block)
+    lowering.result[0].instructions[:0] = lowering.prologue()
     signature = lambda_.signature
     function = ir.Function(
         lambda_.name,
         lambda_.parameters,
-        tuple(var.name for var in lambda_.locals),
+        (*(var.name for var in lambda_.locals), *lowering.hidden),
         lowering.result,
         parameter_annotations=signature.annotations,
         return_annotation=signature.return_annotation,
@@ -77,6 +78,7 @@ def lower_lambda(lambda_: Lambda, facts=None) -> ir.Function:
         parameter_kinds=signature.kinds,
         default_parameters=signature.default_parameters,
         binding=lambda_.binding,
+        closure=tuple(var.name for var in lowering.captured),
     )
     if facts is not None:
         function.facts = lowering.named_types(facts.types)
@@ -98,6 +100,26 @@ def lower_lambda(lambda_: Lambda, facts=None) -> ir.Function:
 class _Lowering(NodeVisitor):
     def __init__(self, lambda_, blocks):
         self.lambda_ = lambda_
+        # Variables captured from enclosing lambdas, in closure order, and the
+        # hidden locals holding their cells (assigned anywhere) or copied
+        # values (never assigned). This lambda's own captured-and-assigned
+        # variables also live in cells. SBCL makes the same choice in IR2
+        # conversion: an indirect lambda-var is a value cell.
+        environment = lambda_.environment
+        self.captured = list(environment.closure) if environment is not None else []
+        self.cells = {}
+        self.copies = {}
+        for var in self.captured:
+            if var.indirect:
+                self.cells[var] = f"$cell:{var.name}"
+            else:
+                self.copies[var] = f"$copy:{var.name}"
+        self.home_cells = []
+        for var in lambda_.locals:
+            if var.indirect:
+                self.cells[var] = f"$cell:{var.name}"
+                self.home_cells.append(var)
+        self.hidden = (*self.cells.values(), *self.copies.values())
         self.labels = {block: f"b{index}" for index, block in enumerate(blocks)}
         self.names: dict[int, str] = {}
         self.node_names: dict[object, str] = {}
@@ -144,6 +166,36 @@ class _Lowering(NodeVisitor):
             index = self.range_states[id(range_state)] = len(self.range_states)
         return index
 
+    def prologue(self) -> list:
+        """Entry instructions: take captured cells and values from the
+        closure and allocate cells for this lambda's captured variables."""
+        instructions = []
+        for index, var in enumerate(self.captured):
+            value = self.fresh()
+            instructions.append(ir.LoadClosure(value, index))
+            instructions.append(
+                ir.Store(self.cells.get(var) or self.copies[var], value, True)
+            )
+        for var in self.home_cells:
+            value = self.fresh()
+            instructions.append(ir.ProtocolCall(value, "cell_new", ()))
+            instructions.append(ir.Store(self.cells[var], value, True))
+        return instructions
+
+    def cell(self, var) -> str:
+        """Load the cell object of a captured-and-assigned variable."""
+        value = self.fresh()
+        self.emit(ir.Load(value, self.cells[var], True))
+        return value
+
+    def captured_value(self, var) -> str:
+        """The value to place in a nested function's closure for ``var``."""
+        if var in self.cells:
+            return self.cell(var)
+        value = self.fresh()
+        self.emit(ir.Load(value, self.copies.get(var, var.name), True))
+        return value
+
     def new_block(self) -> ir.Block:
         block = ir.Block(
             f"b{len(self.labels) + len(self.result)}"
@@ -179,6 +231,20 @@ class _Lowering(NodeVisitor):
             node.accept(self)
         self.current.terminator = self.terminator(block)
 
+    def return_use(self, block):
+        """The producer of the returned value for a path ending at ``block``.
+        Cleanup code inserted on the way to the return block has no producer
+        of its own, so walk back through single-predecessor blocks."""
+        uses = self.lambda_.return_.result.uses
+        current = block
+        while True:
+            for use in uses:
+                if use.block is current:
+                    return use
+            if len(current.pred) != 1:
+                raise ValueError(f"{block!r} has no returned value on its path")
+            current = current.pred[0]
+
     def terminator(self, block):
         last = block.last
         if isinstance(last, If):
@@ -202,8 +268,7 @@ class _Lowering(NodeVisitor):
                 block.succ == [returned.block] and returned.block.start.next is returned
             )
         ):
-            use = next(use for use in returned.result.uses if use.block is block)
-            return ir.Return(self.name(use))
+            return ir.Return(self.name(self.return_use(block)))
         if len(block.succ) != 1:
             raise ValueError(f"{block!r} has no lowering for its control transfer")
         return ir.Jump(self.labels[block.succ[0]])
@@ -215,7 +280,19 @@ class _Lowering(NodeVisitor):
         if isinstance(leaf, Constant):
             self.produce(node, ir.Constant(self.name(node), leaf.value))
         elif isinstance(leaf, LambdaVar):
-            self.produce(node, ir.Load(self.name(node), leaf.name, True, node.final))
+            if leaf in self.cells:
+                cell = self.cell(leaf)
+                self.produce(
+                    node, ir.ProtocolCall(self.name(node), "cell_get", (cell,))
+                )
+            elif leaf in self.copies:
+                self.produce(
+                    node, ir.Load(self.name(node), self.copies[leaf], True, node.final)
+                )
+            else:
+                self.produce(
+                    node, ir.Load(self.name(node), leaf.name, True, node.final)
+                )
         elif isinstance(leaf, GlobalVar):
             self.produce(node, ir.Load(self.name(node), leaf.name, False))
         elif isinstance(leaf, (KnownFunction, Lambda)):
@@ -225,6 +302,19 @@ class _Lowering(NodeVisitor):
 
     def visit_Set(self, node):
         local = isinstance(node.var, LambdaVar)
+        if local and node.var in self.cells:
+            cell = self.cell(node.var)
+            result = self.fresh()
+            if node.value is None:
+                self.emit(ir.ProtocolCall(result, "cell_clear", (cell,)))
+            else:
+                self.emit(
+                    ir.ProtocolCall(
+                        result, "cell_set", (cell, self.operand(node.value))
+                    )
+                )
+            self.emit(ir.Discard(result))
+            return
         if node.value is None:
             self.emit(ir.ClearBinding(node.var.name, local))
             return
@@ -323,6 +413,11 @@ class _Lowering(NodeVisitor):
             )
         elif name == "%make_function":
             lambda_ = args[0].use().leaf
+            environment = lambda_.environment
+            closure = tuple(
+                self.captured_value(var)
+                for var in (environment.closure if environment is not None else ())
+            )
             self.produce(
                 node,
                 ir.DefineFunction(
@@ -332,6 +427,7 @@ class _Lowering(NodeVisitor):
                     tuple(self.operand(arg) for arg in args[1:]),
                     info.default_contracts,
                     info.location,
+                    closure=closure,
                 ),
             )
         elif name == "%make_class":
@@ -357,7 +453,11 @@ class _Lowering(NodeVisitor):
             self.produce(
                 node,
                 ir.ImportModule(
-                    result, info.module_name, info.initializer, info.filename
+                    result,
+                    info.module_name,
+                    info.initializer,
+                    info.filename,
+                    info.native,
                 ),
             )
         elif name == "%has_binding":

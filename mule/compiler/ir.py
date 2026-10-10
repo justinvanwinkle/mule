@@ -127,6 +127,9 @@ class Visitor:
     def visit_Load(self, operation):
         return self.visit_Operation(operation)
 
+    def visit_LoadClosure(self, operation):
+        return self.visit_Operation(operation)
+
     def visit_Store(self, operation):
         return self.visit_Operation(operation)
 
@@ -213,13 +216,19 @@ class ImportModule(ResultOperation):
     result: str
     module_name: str
     initializer: str
-    filename: str
+    filename: str | None
+    native: bool = False
 
     def accept(self, visitor):
         return visitor.visit_ImportModule(self)
 
     def validate(self, function, functions, following):
-        if self.initializer not in functions:
+        if self.native:
+            if self.filename is not None:
+                raise ValueError("native module cannot have a source filename")
+        elif self.filename is None:
+            raise ValueError("compiled Python module requires a source filename")
+        elif self.initializer not in functions:
             raise ValueError("reference to missing module initializer")
 
 
@@ -381,6 +390,21 @@ class Load(ResultOperation):
 
 
 @dataclass(frozen=True, slots=True)
+class LoadClosure(ResultOperation):
+    """Take the captured cell or value at ``index`` of the running closure."""
+
+    result: str
+    index: int
+
+    def accept(self, visitor):
+        return visitor.visit_LoadClosure(self)
+
+    def validate(self, function, functions, following):
+        if not 0 <= self.index < len(function.closure):
+            raise ValueError("closure index outside the function's captured variables")
+
+
+@dataclass(frozen=True, slots=True)
 class Store(Operation):
     name: str
     value: str
@@ -485,12 +509,14 @@ class DefineFunction(ResultOperation):
     defaults: tuple[str, ...] = ()
     default_contracts: tuple[Contract | None, ...] = ()
     location: tuple | None = None
+    # Captured cells and values, in the callee's closure order.
+    closure: tuple[str, ...] = ()
 
     def operands(self):
-        return self.defaults
+        return (*self.defaults, *self.closure)
 
     def argument_count(self):
-        return len(self.defaults)
+        return max(len(self.defaults), len(self.closure))
 
     def accept(self, visitor):
         return visitor.visit_DefineFunction(self)
@@ -633,6 +659,7 @@ type Instruction = (
     | LeaveHandler
     | ClearBinding
     | Load
+    | LoadClosure
     | Store
     | Binary
     | Unary
@@ -741,6 +768,8 @@ class Function:
     parameter_kinds: tuple[ast.ParameterKind, ...] = ()
     default_parameters: tuple[int, ...] = ()
     binding: str | None = None
+    # Names of the variables this function captures, in closure order.
+    closure: tuple[str, ...] = ()
     # Facts established by the IR1 phases, keyed by result name: value types,
     # predicted call targets, guarded entry contexts, and the return type.
     facts: dict[str, object] = field(default_factory=dict)

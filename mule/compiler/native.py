@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from mule import ast
 from mule.compiler import ir
 from mule.compiler.annotation_types import EXPORTS
+from mule.compiler.ctype import UNKNOWN
 
 
 class NotNative(Exception):
@@ -448,6 +449,8 @@ def select(module, layouts):
 
 
 def _select_function(function, index, layouts, bindings, plans):
+    if function.closure:
+        raise NotNative
     parameters = []
     for ordinal, contract in enumerate(function.parameter_annotations):
         if ordinal == 0 and function.owner_class is not None:
@@ -513,7 +516,7 @@ class _BoundLocals(ir.Visitor):
         self.plan, self.facts = plan, facts
 
     def visit_Load(self, op):
-        if op.local and self.facts[op.result].may_be_unbound:
+        if op.local and self.facts.get(op.result, UNKNOWN).may_be_unbound:
             raise NotNative
 
 
@@ -535,9 +538,9 @@ class _ArithmeticProof(ir.Visitor):
         self.facts, self.constrained = facts, constrained
 
     def require(self, op):
-        if op.result not in self.constrained and not self.facts[op.result].fits(
-            EXPORTS["int64"].fact
-        ):
+        if op.result not in self.constrained and not self.facts.get(
+            op.result, UNKNOWN
+        ).fits(EXPORTS["int64"].fact):
             raise NotNative
 
     def visit_Binary(self, op):

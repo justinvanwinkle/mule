@@ -584,6 +584,11 @@ class Cleanup:
     mess_up: Node | None = None
     binding: str | None = None
     parent: Cleanup | None = None
+    # Kind-specific data: the ``finally`` suite, or the ``with`` exit method's
+    # temporary; and the loop targets in effect where the region was entered,
+    # which a ``finally`` suite converted at an exit edge must see.
+    info: object = None
+    loops: tuple = ()
     nlx_info: list = field(default_factory=list)
 
 
