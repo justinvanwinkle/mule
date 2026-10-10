@@ -21,16 +21,29 @@ pub enum Data {
         entry: Native,
         globals: Value,
         name: String,
+        defaults: Value,
+        keyword_entry: Option<Native>,
     },
     Args(Vec<Value>),
     ArgumentView {
         values: *const Value,
         count: usize,
+        defaults: Value,
     },
     ReceiverArgs {
         receiver: Value,
         values: *const Value,
         count: usize,
+        defaults: Value,
+    },
+    KeywordArgs {
+        receiver: Value,
+        values: *const Value,
+        count: usize,
+        names: *const *const c_char,
+        keyword_values: *const Value,
+        keyword_count: usize,
+        defaults: Value,
     },
     List(Vec<Value>),
     Namespace(Vec<(String, Value)>),
@@ -163,6 +176,7 @@ pub unsafe fn release(value: Value) {
                 release(*method);
             }
             Data::StaticMethod(method) => release(*method),
+            Data::Function { defaults, .. } => release(*defaults),
             _ => (), // Function globals are borrowed from the executing module.
         }
     }
@@ -266,6 +280,8 @@ pub unsafe fn function(globals: Value, entry: Native, name: &str) -> Value {
             entry,
             globals,
             name: name.into(),
+            defaults: std::ptr::null_mut(),
+            keyword_entry: None,
         })
     }
 }
@@ -276,12 +292,26 @@ pub unsafe fn argument(args: Value, index: usize) -> Option<Value> {
                 return values.get(index).copied();
             }
             match &(*args).data {
-                Data::ArgumentView { values, count } if index < *count => {
+                Data::ArgumentView { values, count, .. } if index < *count => {
                     return Some(*values.add(index));
                 }
                 Data::ReceiverArgs { receiver, .. } if index == 0 => return Some(*receiver),
                 Data::ReceiverArgs { values, count, .. } if index <= *count => {
                     return Some(*values.add(index - 1));
+                }
+                Data::KeywordArgs {
+                    receiver,
+                    values,
+                    count,
+                    ..
+                } => {
+                    let offset = usize::from(!receiver.is_null());
+                    if offset == 1 && index == 0 {
+                        return Some(*receiver);
+                    }
+                    if index >= offset && index - offset < *count {
+                        return Some(*values.add(index - offset));
+                    }
                 }
                 _ => (),
             }
@@ -298,6 +328,9 @@ pub unsafe fn argument_count(args: Value) -> Option<usize> {
             }
             match &(*args).data {
                 Data::ArgumentView { count, .. } => return Some(*count),
+                Data::KeywordArgs {
+                    receiver, count, ..
+                } => return Some(*count + usize::from(!receiver.is_null())),
                 Data::ReceiverArgs { count, .. } => return Some(*count + 1),
                 _ => (),
             }
@@ -344,8 +377,13 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
                 return std::ptr::null_mut();
             }
         }
-        let (entry, globals) = match &(*callable).data {
-            Data::Function { entry, globals, .. } => (*entry, *globals),
+        let (entry, globals, defaults) = match &(*callable).data {
+            Data::Function {
+                entry,
+                globals,
+                defaults,
+                ..
+            } => (*entry, *globals, *defaults),
             _ => unreachable!(),
         };
         if mule_enter_frame() < 0 {
@@ -358,6 +396,7 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
             data: Data::ArgumentView {
                 values: args.as_ptr(),
                 count: args.len(),
+                defaults,
             },
         };
         let result = entry(globals, &mut view);
@@ -379,7 +418,13 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
             return std::ptr::null_mut();
         }
         if !method.is_null() && !is_fixnum(method) {
-            if let Data::Function { entry, globals, .. } = &(*method).data {
+            if let Data::Function {
+                entry,
+                globals,
+                defaults,
+                ..
+            } = &(*method).data
+            {
                 if mule_enter_frame() < 0 {
                     return std::ptr::null_mut();
                 }
@@ -389,6 +434,7 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
                         receiver,
                         values: args.as_ptr(),
                         count: args.len(),
+                        defaults: *defaults,
                     },
                 };
                 let result = entry(*globals, &mut view);
@@ -925,7 +971,7 @@ pub unsafe fn formatted_value(
                 Data::Class(layout) => format!("<{} object>", layout.name).into_bytes(),
                 _ => unreachable!(),
             },
-            Data::ArgumentView { .. } | Data::ReceiverArgs { .. } => {
+            Data::ArgumentView { .. } | Data::ReceiverArgs { .. } | Data::KeywordArgs { .. } => {
                 error("SystemError", "argument view cannot escape a native call");
                 return None;
             }
@@ -933,7 +979,7 @@ pub unsafe fn formatted_value(
     }
 }
 
-unsafe fn name_from_c<'a>(name: *const c_char) -> Option<&'a str> {
+pub(crate) unsafe fn name_from_c<'a>(name: *const c_char) -> Option<&'a str> {
     unsafe {
         if name.is_null() {
             error("SystemError", "NULL name");
@@ -1371,6 +1417,10 @@ pub unsafe extern "C" fn mule_check_args(args: Value, count: i32) -> i32 {
         let Some(actual) = argument_count(args) else {
             return -1;
         };
+        if crate::arguments::keyword_count(args) != 0 {
+            error("TypeError", "unexpected keyword argument");
+            return -1;
+        }
         if count < 0 || actual != count as usize {
             error(
                 "TypeError",

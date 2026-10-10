@@ -18,9 +18,9 @@ timeout = 5.0
 args = []
 
 [mule]
-status = "pending"
+status = "supported"
 phase = "compile"
-reason = "default values, keyword-only parameters and **kwargs are not supported yet"
+reason = ""
 '''
 
 def greeting(ip, style='-', spacing=10):

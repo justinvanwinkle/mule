@@ -209,6 +209,15 @@ def callbacks(module, layout):
             "}",
         ]
     )
+    initializer = layout.methods["__init__"]
+    if initializer.default_parameters or not initializer.positional_body():
+        constructor = [
+            f"define internal ptr {layout.constructor}(ptr %globals, ptr %class, i64 %count, ptr %args) {{",
+            "entry:",
+            "  %result = call ptr @mule_construct_arguments(ptr %class, i64 %count, ptr %args)",
+            "  ret ptr %result",
+            "}",
+        ]
     index = [
         "  %shifted = shl i64 %index, 1",
         "  %tagged = or i64 %shifted, 1",

@@ -1,0 +1,110 @@
+# Function argument binding
+
+Status: implemented for the subset below.
+
+## SBCL reference and required adaptations
+
+`src/compiler/locall.lisp:make-xep-lambda-expression` constructs external entries
+for fixed and optional-dispatch functions. External entries select the applicable
+arity and transfer control to an internal entry. `convert-more-call` verifies
+constant keyword arguments and rearranges them for a direct main-entry call.
+`src/compiler/ir2tran.lisp:init-xep-environment` arranges argument-count checking
+and access to excess arguments. Mule retains separate external and internal
+entries, borrowed argument views, and guarded direct calls to known bodies.
+
+Python default expressions run once when the definition executes, whereas Lisp
+optional defaults run on entry. Mule therefore evaluates defaults in source order
+before publishing the function, stores owned references on that function, and
+makes those values available through the external entry's borrowed argument
+view. Repeated definitions can have identical code but different captured values;
+optimization must use the actual callable's defaults, never a compile-time cache.
+
+Python rejects a parameter supplied both positionally and by keyword and rejects
+positional-only names used as keywords. Unlike Lisp's keyword handling, duplicate
+binding is an error. Keyword-only parameters never consume positional arguments.
+These binding rules are compiled Python generated for each signature; Rust only
+provides borrowed argument-buffer access, ownership, callable invocation, and
+physical allocation. Binding precedes body annotation checks. `None` is a valid
+argument and default; missing values use a private identity sentinel.
+
+Complete known calls can arrange arguments at compile time and enter the internal
+body after checking callable identity. General calls enter a generated binder,
+which binds owned local references and calls the internal body directly, just as
+SBCL's generated external lambda calls its main entry. The binder retains the
+actual defining namespace separately from its private exception namespace. It
+transfers owned argument references to the body and cleans its own references on
+success and failure; no intermediate normalized-argument tuple is allocated.
+Keyword names and values remain in original evaluation order until binding.
+All argument expressions execute before binding errors are raised.
+
+Keyword constructor calls use a compiled Python allocation/initialization
+protocol, backed by physical instance allocation and forwarding of the borrowed
+argument view. Existing positional native constructor callbacks retain their
+fast path for complete fixed signatures. Optional or variadic constructors must
+use the general binding path rather than incorrectly applying a fixed count.
+
+This batch covers defaults, explicit keyword calls, positional-only and
+keyword-only parameters, and positional rest parameters. Call-site iterable and
+mapping expansion and `**kwargs` parameters remain explicit unsupported boundaries
+until the mapping and call-expansion protocols are implemented.
+
+## Implemented boundaries and checks
+
+Generated binders support fixed positional-only, positional-or-keyword, required
+and optional keyword-only, and positional rest parameters. Both positional and
+keyword defaults are captured on each function object. Failed default evaluation
+does not publish a replacement definition. Captured values are owned and released
+with the function, including partial-definition failure and repeated definitions.
+Unknown names, duplicate binding, too many positional arguments, and missing
+required parameters raise catchable TypeError before the function body executes.
+Messages identify binding failures but do not yet reproduce every CPython error
+message, including grouped missing names and positional-only error precedence.
+
+Calls to compiled user functions and methods accept explicit keywords, including
+saved bound methods, imported functions, callable instances and inherited methods.
+Constructor forwarding supports both boxed and native class layouts. Builtins
+implemented through older positional native entries reject keyword calls rather
+than silently ignoring them; keyword-capable builtin signatures remain work.
+Function introspection attributes and mutation of __defaults__/__kwdefaults__ are
+not implemented. The defaults context is function storage, not a user-visible
+attribute or a type tag.
+
+Known keyword calls are rearranged after source-order argument evaluation and
+before the internal body. Missing optional arguments are fetched from the actual
+callable only on the identity-guarded branch. Those calls avoid the normalized
+argument tuple. Direct calls with omitted defaults currently use the unspecialized
+internal entry rather than inferring specialized ranges from captured values.
+General and variadic calls use the compiled binder and directly invoke the
+internal body. Only a positional rest parameter requires a new tuple, as required
+by Python's observable rest-argument semantics. General binding happens before
+annotation checks in the body; statically known annotation
+contradictions in defaults and proven keyword calls also produce compile errors.
+
+Tests cover source evaluation order, mutable captured defaults, None defaults,
+repeated definitions, binding errors, positional rest tuples, imported functions,
+methods and constructors, native layouts, inheritance, annotation safety and
+error cleanup. A 1,000-iteration Valgrind probe through saved methods, captured
+mutable defaults, duplicate arguments, and failed default evaluation reports no
+memory errors or lost allocations (the platform stdout buffer remains reachable).
+
+## Native validation
+
+The full regression run completed with 1,540 passed and 590 expected failures.
+After tightening implicit-receiver binding for keyword-only first parameters,
+the final argument-binding suite completed with 24 passing cases. Ruff checks
+and formatting checks pass. Corpus coverage increased from 11 to 13 native
+programs; upstream stdlib execution remains one passing suite out of 557 attempted
+(two suites execute, with seven individual tests attempted).
+
+The `build/argument-call-benchmark.py` probe performs 20 million calls to
+`add(value: mule.int64, *, step: mule.int64 = 3) -> mule.int64`, supplying `value`
+by keyword and omitting `step`. It prints 60,000,000. Three process wall times
+were 0.2971, 0.2901 and 0.2889 seconds for Mule and 0.6281, 0.6343 and 0.6309
+seconds for standard Python 3.14.7 using the same source and annotation markers.
+LLVM and Rust use optimization level 3 with full cross-language LTO. Machine
+code in `build/argument-call-benchmark-loop.asm` retains the counted loop and
+calls the internal add entry; the work is not folded into a constant result.
+The direct branch reads the captured default from the guarded function object.
+Global lookup, identity guards, ownership and numeric entry guards remain costs;
+this measurement does not establish equivalent performance for arbitrary dynamic
+calls, which execute the generated binder.

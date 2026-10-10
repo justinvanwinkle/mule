@@ -16,9 +16,9 @@ stdin = ""
 timeout = 5.0
 
 [mule]
-status = "pending"
+status = "supported"
 phase = "compile"
-reason = "default values, keyword-only parameters and **kwargs are not supported yet"
+reason = ""
 '''
 
 def two_fer(name='you'):

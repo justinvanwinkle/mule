@@ -115,7 +115,7 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
   assignment, and assignment expressions.
 - Binary and unary operators, comparison chains, short-circuit `and`/`or`, and
   conditional expressions.
-- Expression statements and positional calls. Mule implements a limited builtin
+- Expression statements and positional/explicit keyword calls. Mule implements a limited builtin
   set, including `print`, `abs`, `int`, `input`, `len`, `bool`, `ascii`, `repr`,
   `str`, and `float`; arbitrary CPython builtins are not available.
 - `if`/`else`, `while`/`else`, `for`/`else`, `break`, `continue`, and `pass`.
@@ -124,11 +124,14 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
 - `try`/`except`/`else`, exception classes and hierarchy matching, `raise`, and
   bare reraising. Handler transfers release temporaries and preserve locals;
   handler exits clear exception bindings and restore active exception state.
-- Module-level function definitions with fixed and variadic positional parameters, native
+- Module-level function definitions with positional-only, positional-or-keyword,
+  keyword-only, default and variadic positional parameters, native
   recursion, return statements, implicit `None` returns, and `global` declarations.
-  Definitions can occur inside module-level control flow.
+  Definitions can occur inside module-level control flow. Defaults are evaluated
+  once per definition; compiled external entries bind general calls, and guarded
+  direct entries normalize known calls. See [Function argument binding](argument-binding.md).
 - Module-level fixed-layout classes with zero or one compiled-class base,
-  positional construction, instance methods, bound-method values, attribute reads,
+  positional/keyword construction, instance methods, bound-method values, attribute reads,
   and assignment or augmented assignment to declared instance fields. Class bodies
   contain method definitions, bare annotated declarations and `pass`;
   explicitly selected native classes may use `mule.int64` fields as described below.
@@ -165,7 +168,7 @@ and an active error survives cleanup.
 
 Unsupported constructs raise `UnsupportedSyntax`, a `SyntaxError` subclass,
 before native compilation. These include dynamic/wildcard imports, nested functions or classes,
-closures/`nonlocal`, defaults, keyword/starred calls, general decorators,
+closures/`nonlocal`, `**kwargs` parameters, call argument expansion, general decorators,
 async/generators, `finally`, exception chaining/groups, dictionaries/sets/comprehensions,
 slicing, extended unpacking, starred displays, template strings and `!a` conversion.
 Unsupported source is

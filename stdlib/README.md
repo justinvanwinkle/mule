@@ -128,3 +128,7 @@ The current execution milestone is one passing suite with six passing cases.
 implemented. The remaining selection is still expected to fail and does not
 establish full Python conformance. See `spec/compiled-modules.md` for bootstrap
 limitations.
+
+`_arguments.py` is a compiler-private compiled constructor protocol. Signature-specific
+argument binders are generated as Mule Python by `mule/compiler/argument_protocol.py`;
+Rust supplies borrowed call buffers and captured-default storage.

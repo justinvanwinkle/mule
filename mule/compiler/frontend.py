@@ -97,17 +97,9 @@ class Lowerer:
             self.reserved(parameter.name, parameter)
             if parameter.name in parameters:
                 self.error(f"duplicate parameter '{parameter.name}'", parameter)
-            if (
-                parameter.kind
-                not in (
-                    ast.ParameterKind.POSITIONAL_ONLY,
-                    ast.ParameterKind.POSITIONAL_OR_KEYWORD,
-                    ast.ParameterKind.VAR_POSITIONAL,
-                )
-                or parameter.default is not None
-            ):
+            if parameter.kind == ast.ParameterKind.VAR_KEYWORD:
                 self.error(
-                    "default values, keyword-only parameters and **kwargs are not supported yet",
+                    "**kwargs parameters are not supported yet",
                     parameter,
                     unsupported=True,
                 )
@@ -141,6 +133,14 @@ class Lowerer:
             return_annotation_expression=definition.return_annotation,
             namespace=self.namespace,
             variadic=variadic,
+            parameter_kinds=tuple(
+                parameter.kind for parameter in definition.parameters
+            ),
+            default_parameters=tuple(
+                index
+                for index, parameter in enumerate(definition.parameters)
+                if parameter.default is not None
+            ),
         )
         self.functions.append(function)
         builder = FunctionBuilder(
@@ -737,7 +737,24 @@ class FunctionBuilder(ast.Visitor):
         self.lowerer.reserved(node.name, node)
         function = self.lowerer.function(node, self.function.policy)
         result = self.result()
-        self.emit(ir.DefineFunction(result, function.name, node.name))
+        defaults = tuple(
+            self.expression(parameter.default)
+            for parameter in node.parameters
+            if parameter.default is not None
+        )
+        self.emit(
+            ir.DefineFunction(
+                result,
+                function.name,
+                node.name,
+                defaults,
+                tuple(
+                    function.parameter_annotations[index]
+                    for index in function.default_parameters
+                ),
+                self.lowerer.location(node),
+            )
+        )
         self.store(node.name, result, node)
 
     def visit_ClassDefinition(self, node):
@@ -803,7 +820,24 @@ class FunctionBuilder(ast.Visitor):
             for statement in method.body:
                 statement.accept(collector)
             value = self.result()
-            self.emit(ir.DefineFunction(value, function.name, method.name))
+            defaults = tuple(
+                self.expression(parameter.default)
+                for parameter in method.parameters
+                if parameter.default is not None
+            )
+            self.emit(
+                ir.DefineFunction(
+                    value,
+                    function.name,
+                    method.name,
+                    defaults,
+                    tuple(
+                        function.parameter_annotations[index]
+                        for index in function.default_parameters
+                    ),
+                    self.lowerer.location(method),
+                )
+            )
             # Repeated definitions preserve Python's last-definition-wins behavior.
             previous = methods.get(method.name)
             if previous is not None:
@@ -929,13 +963,23 @@ class FunctionBuilder(ast.Visitor):
         return result
 
     def visit_Call(self, node):
+        keywords = set()
         for argument in node.arguments:
-            if argument.kind != ast.ArgumentKind.POSITIONAL:
+            if argument.kind not in (
+                ast.ArgumentKind.POSITIONAL,
+                ast.ArgumentKind.KEYWORD,
+            ):
                 self.error(
-                    "only positional call arguments are supported yet",
+                    "call argument expansion is not supported yet",
                     argument,
                     unsupported=True,
                 )
+            if argument.kind == ast.ArgumentKind.KEYWORD:
+                if argument.keyword in keywords:
+                    self.error(
+                        f"keyword argument repeated: {argument.keyword}", argument
+                    )
+                keywords.add(argument.keyword)
         return node.function.accept(_CallTarget(self, node.arguments))
 
     def visit_NamedExpression(self, node):
@@ -1694,6 +1738,10 @@ class _CallTarget(ast.Visitor):
             self.builder.expression(argument.value) for argument in self.arguments
         )
 
+    def keywords(self):
+        names = tuple(argument.keyword for argument in self.arguments)
+        return names if any(name is not None for name in names) else ()
+
     def visit_Node(self, node):
         callee = self.builder.expression(node)
         arguments = self.arguments_values()
@@ -1704,6 +1752,7 @@ class _CallTarget(ast.Visitor):
                 callee,
                 arguments,
                 location=self.builder.lowerer.location(node),
+                keywords=self.keywords(),
             )
         )
         return result
@@ -1721,7 +1770,7 @@ class _CallTarget(ast.Visitor):
         )
         arguments = self.arguments_values()
         result = self.builder.result()
-        self.builder.emit(ir.CallMethod(result, callee, arguments))
+        self.builder.emit(ir.CallMethod(result, callee, arguments, self.keywords()))
         return result
 
 

@@ -464,6 +464,7 @@ class Call(ResultOperation):
     callee: str
     args: tuple[str, ...]
     location: tuple | None = None
+    keywords: tuple[str | None, ...] = ()
 
     def accept(self, visitor):
         return visitor.visit_Call(self)
@@ -480,6 +481,15 @@ class DefineFunction(ResultOperation):
     result: str
     function: str
     public_name: str
+    defaults: tuple[str, ...] = ()
+    default_contracts: tuple[Contract | None, ...] = ()
+    location: tuple | None = None
+
+    def operands(self):
+        return self.defaults
+
+    def argument_count(self):
+        return len(self.defaults)
 
     def accept(self, visitor):
         return visitor.visit_DefineFunction(self)
@@ -578,6 +588,7 @@ class CallMethod(ResultOperation):
     result: str
     callee: str
     args: tuple[str, ...]
+    keywords: tuple[str | None, ...] = ()
 
     def accept(self, visitor):
         return visitor.visit_CallMethod(self)
@@ -726,6 +737,60 @@ class Function:
     annotation_expressions: dict[str, ast.Expression] = field(default_factory=dict)
     namespace: str = "__main__"
     variadic: bool = False
+    parameter_kinds: tuple[ast.ParameterKind, ...] = ()
+    default_parameters: tuple[int, ...] = ()
+    binding: str | None = None
+
+    def positional_body(self):
+        return (
+            not self.variadic
+            and ast.ParameterKind.KEYWORD_ONLY not in self.parameter_kinds
+        )
+
+    def call_order(self, keywords, count, *, receiver=False):
+        """Normalize a complete static call; incomplete calls use the external entry."""
+        if self.variadic:
+            return None
+        kinds = self.parameter_kinds or (ast.ParameterKind.POSITIONAL_ONLY,) * len(
+            self.parameters
+        )
+        order = [None] * len(self.parameters)
+        positional = int(receiver)
+        if receiver:
+            if not order:
+                return None
+            if kinds[0] == ast.ParameterKind.KEYWORD_ONLY:
+                return None
+            order[0] = -1
+        for index, keyword in enumerate(keywords or (None,) * count):
+            if keyword is None:
+                target = positional
+                positional += 1
+                if (
+                    target >= len(order)
+                    or kinds[target] == ast.ParameterKind.KEYWORD_ONLY
+                ):
+                    return None
+            else:
+                try:
+                    target = self.parameters.index(keyword)
+                except ValueError:
+                    return None
+                if kinds[target] == ast.ParameterKind.POSITIONAL_ONLY:
+                    return None
+            if order[target] is not None:
+                return None
+            order[target] = index
+        defaults = {
+            parameter: offset
+            for offset, parameter in enumerate(self.default_parameters)
+        }
+        for parameter, argument in enumerate(order):
+            if argument is None:
+                if parameter not in defaults:
+                    return None
+                order[parameter] = -2 - defaults[parameter]
+        return tuple(order)
 
 
 @dataclass(slots=True)

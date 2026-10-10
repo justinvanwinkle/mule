@@ -18,7 +18,8 @@ timeout = 5.0
 [mule]
 status = "pending"
 phase = "compile"
-reason = "default values, keyword-only parameters and **kwargs are not supported yet"
+reason = "syntax is not supported by the native compiler yet"
+compile_error_line = 26
 '''
 
 def reverse(text=""):

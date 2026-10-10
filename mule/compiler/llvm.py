@@ -12,6 +12,7 @@ import struct
 
 from mule import ast
 from mule.compiler import (
+    argument_protocol,
     format_protocol,
     llvm_ops,
     native,
@@ -100,6 +101,22 @@ declare ptr @mule_unary(i32, ptr)
 declare ptr @mule_compare(i32, ptr, ptr)
 declare i32 @mule_truth(ptr)
 declare ptr @mule_call(ptr, i64, ptr)
+declare ptr @mule_call_keywords(ptr, ptr, i64, ptr, i64, ptr, ptr)
+declare ptr @mule_function_defaults(ptr, ptr, ptr, ptr)
+declare ptr @mule_function_default(ptr, i32)
+declare void @mule_set_argument_constructor(ptr)
+declare ptr @mule_construct_arguments(ptr, i64, ptr)
+declare i32 @mule_binding_plain(ptr, i32, i32)
+declare ptr @mule_binding_missing()
+declare ptr @mule_binding_count(ptr)
+declare ptr @mule_binding_pos(ptr, ptr)
+declare ptr @mule_binding_rest(ptr, ptr)
+declare ptr @mule_binding_keyword_count(ptr)
+declare ptr @mule_binding_keyword_name(ptr, ptr)
+declare ptr @mule_binding_keyword_value(ptr, ptr)
+declare ptr @mule_binding_default(ptr, ptr)
+declare ptr @mule_allocate_instance(ptr)
+declare ptr @mule_forward_call(ptr, ptr)
 declare ptr @mule_function(ptr, ptr, ptr)
 declare ptr @mule_class(ptr, ptr, i64, ptr, i64, ptr, ptr)
 declare ptr @mule_native_class(ptr, ptr, ptr, i64, ptr, i64, ptr, ptr, ptr, ptr, ptr)
@@ -201,6 +218,9 @@ class _ModuleEmitter:
     def __init__(self, module: ir1.Module):
         module = ir1.Module(list(module.functions), module.entry)
         self.module = module
+        self.argument_constructor, argument_calls, argument_references = (
+            argument_protocol.prepare(module)
+        )
         self.protocol_entry, self.sequence_functions, calls, references = (
             sequence_protocol.prepare(module)
         )
@@ -209,6 +229,8 @@ class _ModuleEmitter:
         )
         self.protocol_calls.update(calls)
         self.protocol_references.update(references)
+        self.protocol_calls.update(argument_calls)
+        self.protocol_references.update(argument_references)
         calls, references = format_protocol.prepare(module)
         self.protocol_calls.update(calls)
         self.protocol_references.update(references)
@@ -305,10 +327,25 @@ class _ModuleEmitter:
             if self.protocol_entry is not None
             else f"call i32 @mule_run(ptr {entry})"
         )
+        if self.argument_constructor is not None:
+            self.auxiliary.append(
+                "define internal ptr @mule.arguments.construct(ptr %class, ptr %view) {\n"
+                "entry:\n"
+                "  %globals = call ptr @mule_protocol_globals()\n"
+                "  %owned.class = call ptr @mule.fast.retain(ptr %class)\n"
+                "  %owned.view = call ptr @mule.fast.retain(ptr %view)\n"
+                f"  %result = call ptr {self.bodies[self.argument_constructor]}(ptr %globals, ptr %owned.class, ptr %owned.view)\n"
+                "  ret ptr %result\n}"
+            )
         main = (
             "define i32 @main() {\n"
             "entry:\n"
-            f"  %status = {run}\n"
+            + (
+                "  call void @mule_set_argument_constructor(ptr @mule.arguments.construct)\n"
+                if self.argument_constructor is not None
+                else ""
+            )
+            + f"  %status = {run}\n"
             + "".join(
                 f"  %import.{index} = load ptr, ptr @mule.import.cache.{index}\n"
                 f"  call void @mule_release(ptr %import.{index})\n"
@@ -802,8 +839,84 @@ class _FunctionEmitter(ir1.Visitor):
         self.lines.append("}")
         return wrapper + "\n\n" + adapter + "\n\n" + "\n".join(self.lines)
 
+    def binding_wrapper(self):
+        count = len(self.function.parameters)
+        kinds = self.function.parameter_kinds
+        positional = sum(
+            kind
+            in (
+                ast.ParameterKind.POSITIONAL_ONLY,
+                ast.ParameterKind.POSITIONAL_OR_KEYWORD,
+            )
+            for kind in kinds
+        )
+        fast = ast.ParameterKind.KEYWORD_ONLY not in kinds
+        lines = [
+            f"define ptr {self.module.functions[self.function.name]}(ptr %globals, ptr %args) {{",
+            "entry:",
+        ]
+        for index in range(count):
+            lines += [
+                f"  %slot.{index} = alloca ptr",
+                f"  store ptr null, ptr %slot.{index}",
+            ]
+        if fast:
+            lines += [
+                f"  %plain.status = call i32 @mule_binding_plain(ptr %args, i32 {positional}, i32 {int(self.function.variadic)})",
+                "  %fits = icmp ne i32 %plain.status, 0",
+                "  br i1 %fits, label %plain, label %binding",
+                "plain:",
+            ]
+            for index in range(count):
+                getter = (
+                    "mule_rest_args"
+                    if kinds[index] == ast.ParameterKind.VAR_POSITIONAL
+                    else "mule_arg"
+                )
+                lines += [
+                    f"  %plain.{index} = call ptr @{getter}(ptr %args, i32 {index})",
+                    f"  store ptr %plain.{index}, ptr %slot.{index}",
+                    f"  %plain.missing.{index} = icmp eq ptr %plain.{index}, null",
+                    f"  br i1 %plain.missing.{index}, label %failed, label %plain.ok.{index}",
+                    f"plain.ok.{index}:",
+                ]
+            lines.append("  br label %invoke")
+        else:
+            lines.append("  br label %binding")
+        lines += [
+            "binding:",
+            "  %private = call ptr @mule_protocol_globals()",
+            "  %owned.view = call ptr @mule.fast.retain(ptr %args)",
+            "  %owned.namespace = call ptr @mule.fast.retain(ptr %globals)",
+            f"  %bound.result = call ptr {self.module.bodies[self.function.binding]}(ptr %private, ptr %owned.view, ptr %owned.namespace)",
+            "  ret ptr %bound.result",
+            "invoke:",
+        ]
+        for index in range(count):
+            lines.append(f"  %parameter.{index} = load ptr, ptr %slot.{index}")
+        arguments = ", ".join(
+            ["ptr %globals", *(f"ptr %parameter.{index}" for index in range(count))]
+        )
+        lines += [
+            f"  %result = call ptr {self.module.bodies[self.function.name]}({arguments})",
+            "  ret ptr %result",
+            "failed:",
+        ]
+        for index in range(count):
+            lines += [
+                f"  %old.{index} = load ptr, ptr %slot.{index}",
+                f"  call void @mule.fast.release(ptr %old.{index})",
+            ]
+        lines += [
+            "  ret ptr null",
+            "}",
+        ]
+        return "\n".join(lines)
+
     def wrapper(self) -> str:
         """General entry validates an argument view and transfers owned arguments."""
+        if self.function.binding is not None:
+            return self.binding_wrapper()
         count = len(self.function.parameters)
         fixed = count - int(self.function.variadic)
         check = "mule_check_rest_args" if self.function.variadic else "mule_check_args"
@@ -1207,7 +1320,7 @@ class _FunctionEmitter(ir1.Visitor):
         for index, value in enumerate(values):
             slot = self.operation(f"getelementptr ptr, ptr %argv, i64 {index}")
             self.line(f"store ptr {value}, ptr {slot}")
-        value = self.call(callee, function, args, values)
+        value = self.call(callee, function, args, values, instruction.keywords)
         self.publish(result, value)
         for operand in (function, *values):
             self.release(operand)
@@ -1215,13 +1328,62 @@ class _FunctionEmitter(ir1.Visitor):
         self.refine(result, value)
 
     def visit_DefineFunction(self, instruction: ir1.DefineFunction) -> None:
-        result = instruction.result
-        function = instruction.function
-        name = instruction.public_name
-        self.pointer_result(
-            result,
-            "call ptr @mule_function(ptr %globals, "
-            f"ptr {self.module.functions[function]}, ptr {self.module.text(name)})",
+        values = [self.take(value) for value in instruction.defaults]
+        for index, value in enumerate(values):
+            slot = self.operation(f"getelementptr ptr, ptr %argv, i64 {index}")
+            self.line(f"store ptr {value}, ptr {slot}")
+        if values:
+            captured = self.operation(
+                f"call ptr @mule_sequence_tuple(i64 {len(values)}, ptr %argv)"
+            )
+            self.publish(instruction.result, captured)
+            for value in values:
+                self.release(value)
+            self.check_pointer(captured)
+            self.take(instruction.result)
+            self.pointer_result(
+                instruction.result,
+                f"call ptr @mule_function_defaults(ptr %globals, ptr {self.module.functions[instruction.function]}, "
+                f"ptr {self.module.text(instruction.public_name)}, ptr {captured})",
+                (captured,),
+            )
+        else:
+            target = next(
+                function
+                for function in self.module.module.functions
+                if function.name == instruction.function
+            )
+            creator = (
+                "mule_function_defaults"
+                if target.binding is not None
+                else "mule_function"
+            )
+            captured = ", ptr null" if target.binding is not None else ""
+            self.pointer_result(
+                instruction.result,
+                f"call ptr @{creator}(ptr %globals, ptr {self.module.functions[instruction.function]}, "
+                f"ptr {self.module.text(instruction.public_name)}{captured})",
+            )
+
+    def keyword_expression(self, callable, receiver, values, keywords):
+        positional = [
+            value for value, name in zip(values, keywords, strict=True) if name is None
+        ]
+        named = [
+            (name, value)
+            for value, name in zip(values, keywords, strict=True)
+            if name is not None
+        ]
+        for index, value in enumerate((*positional, *(value for name, value in named))):
+            slot = self.operation(f"getelementptr ptr, ptr %argv, i64 {index}")
+            self.line(f"store ptr {value}, ptr {slot}")
+        kw_values = self.operation(
+            f"getelementptr ptr, ptr %argv, i64 {len(positional)}"
+        )
+        names = self.module.names(tuple(name for name, value in named))
+        return (
+            f"call ptr @mule_call_keywords(ptr {callable}, ptr {receiver}, "
+            f"i64 {len(positional)}, ptr %argv, i64 {len(named)}, ptr {names}, ptr {kw_values})"
         )
 
     def visit_DefineClass(self, instruction: ir1.DefineClass) -> None:
@@ -1305,8 +1467,10 @@ class _FunctionEmitter(ir1.Visitor):
                 function
                 for function in self.module.module.functions
                 if function.name == target
-                and not function.variadic
-                and len(function.parameters) == len(arguments) + 1
+                and function.call_order(
+                    instruction.keywords, len(arguments), receiver=True
+                )
+                is not None
             ),
             None,
         )
@@ -1314,8 +1478,17 @@ class _FunctionEmitter(ir1.Visitor):
             f"call ptr @mule_call_resolved(ptr {callable}, ptr {receiver}, "
             f"i64 {len(arguments)}, ptr %argv)"
         )
+        if instruction.keywords:
+            fallback_call = self.keyword_expression(
+                callable, receiver, arguments, instruction.keywords
+            )
         if function is None:
             return self.operation(fallback_call)
+        order = function.call_order(instruction.keywords, len(arguments), receiver=True)
+        normalized = [
+            receiver if index == -1 else arguments[index] if index >= 0 else None
+            for index in order
+        ]
         matched = self.operation(
             f"call i32 @mule_function_matches(ptr {callable}, "
             f"ptr {self.module.functions[function.name]}, ptr %globals)"
@@ -1341,11 +1514,19 @@ class _FunctionEmitter(ir1.Visitor):
         self.lines.append(failed + ":")
         self.line(f"br label %{join}")
         self.lines.append(entered + ":")
+        normalized = [
+            value
+            if value is not None
+            else self.operation(
+                f"call ptr @mule_function_default(ptr {callable}, i32 {-2 - index})"
+            )
+            for index, value in zip(order, normalized, strict=True)
+        ]
         owned = [
             value
             if value in self.immortal_values
             else self.operation(f"call ptr @mule.fast.retain(ptr {value})")
-            for value in (receiver, *arguments)
+            for value in normalized
         ]
         operands = ", ".join(["ptr %globals", *(f"ptr {value}" for value in owned)])
         result = self.operation(
@@ -1371,6 +1552,7 @@ class _FunctionEmitter(ir1.Visitor):
         callee: str,
         argument_results: tuple[str, ...],
         arguments: list[str],
+        keywords=(),
     ) -> str:
         """Dispatch once to a guarded typed entry or the general native entry."""
         target = self.targets.get(callee_result)
@@ -1379,15 +1561,22 @@ class _FunctionEmitter(ir1.Visitor):
                 function
                 for function in self.module.module.functions
                 if function.name == target
-                and not function.variadic
-                and len(function.parameters) == len(arguments)
+                and function.call_order(keywords, len(arguments)) is not None
             ),
             None,
         )
+        fallback_call = (
+            self.keyword_expression(callee, "null", arguments, keywords)
+            if keywords
+            else f"call ptr @mule_call(ptr {callee}, i64 {len(arguments)}, ptr %argv)"
+        )
         if function is None:
-            return self.operation(
-                f"call ptr @mule_call(ptr {callee}, i64 {len(arguments)}, ptr %argv)"
-            )
+            return self.operation(fallback_call)
+        order = function.call_order(keywords, len(arguments))
+        arguments = [arguments[index] if index >= 0 else None for index in order]
+        argument_results = tuple(
+            argument_results[index] if index >= 0 else None for index in order
+        )
         join = self.fresh("call.join")[1:]
         direct = self.fresh("call.direct")[1:]
         fallback_label = self.fresh("call.fallback")[1:]
@@ -1413,13 +1602,21 @@ class _FunctionEmitter(ir1.Visitor):
             parameter_facts = (
                 context.parameters if context else [UNKNOWN] * len(arguments)
             )
+            normalized = [
+                argument
+                if argument is not None
+                else self.operation(
+                    f"call ptr @mule_function_default(ptr {callee}, i32 {-2 - index})"
+                )
+                for index, argument in zip(order, arguments, strict=True)
+            ]
             owned = [
                 argument
                 if argument in self.immortal_values
                 or fact.is_fixnum
                 or fact.is_immortal
                 else self.operation(f"call ptr @mule.fast.retain(ptr {argument})")
-                for argument, fact in zip(arguments, parameter_facts, strict=True)
+                for argument, fact in zip(normalized, parameter_facts, strict=True)
             ]
             operands = ", ".join(["ptr %globals", *(f"ptr {value}" for value in owned)])
             body = (
@@ -1443,6 +1640,8 @@ class _FunctionEmitter(ir1.Visitor):
                 for fact in context.parameters
             ),
         )
+        if any(index < 0 for index in order):
+            contexts = []
         for context in contexts:
             guards = [
                 self.argument_guard(value, expected)
@@ -1466,9 +1665,7 @@ class _FunctionEmitter(ir1.Visitor):
         else:
             invoke(None)
         self.lines.append(fallback_label + ":")
-        fallback = self.operation(
-            f"call ptr @mule_call(ptr {callee}, i64 {len(arguments)}, ptr %argv)"
-        )
+        fallback = self.operation(fallback_call)
         self.line(f"br label %{join}")
         incoming.append((fallback, fallback_label))
         self.lines.append(join + ":")

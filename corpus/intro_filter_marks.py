@@ -20,7 +20,8 @@ args = []
 [mule]
 status = "pending"
 phase = "compile"
-reason = "only positional call arguments are supported yet"
+reason = "syntax is not supported by the native compiler yet"
+compile_error_line = 28
 '''
 
 marks = dict(Rahul=68, Ravi=92, Rohit=75, Rajan=85, Ram=80)

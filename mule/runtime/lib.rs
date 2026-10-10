@@ -8,6 +8,8 @@
 #[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
 compile_error!("Mule's initial runtime target is 64-bit Linux");
 
+pub mod arguments;
+pub use arguments::*;
 pub mod annotations;
 pub mod builtins;
 pub mod classes;

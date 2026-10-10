@@ -457,6 +457,10 @@ pub unsafe extern "C" fn mule_clear_binding(namespace: Value, name: *const c_cha
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_check_rest_args(args: Value, minimum: i32) -> i32 {
     unsafe {
+        if crate::arguments::keyword_count(args) != 0 {
+            object::error("TypeError", "unexpected keyword argument");
+            return -1;
+        }
         if let Some(count) = object::argument_count(args) {
             if minimum >= 0 && count >= minimum as usize {
                 return 0;

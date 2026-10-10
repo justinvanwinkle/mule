@@ -69,6 +69,7 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/compiler/native.py`: raw int64 representation selection and direct local entries.
 - `mule/compiler/native_protocol.py`: compile Mule class protocols and bind physical primitives.
 - `mule/compiler/protocols.py`: shared bindings and calls for compiled language protocols.
+- `mule/compiler/argument_protocol.py`: generate compiled signature binders and constructor forwarding.
 - `mule/compiler/sequence_protocol.py`: compile sequence/exception protocols and bind physical primitives.
 - `mule/compiler/format_protocol.py`: compile formatting protocols and bind text storage primitives.
 - `mule/compiler/llvm.py`: LLVM emission and reference ownership/cleanup.
@@ -77,6 +78,7 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/runtime/object.rs`: tagged values, heap objects, calls, and ownership.
 - `mule/runtime/classes.rs`: fixed instance layouts, immutable method tables,
   attribute caches, and receiver binding.
+- `mule/runtime/arguments.rs`: borrowed positional/keyword buffers and captured default storage.
 - `mule/runtime/sequences.rs`: physical sequence storage, protocol tables, and exception state.
 - `mule/runtime/builtins.rs`: builtin functions and module execution.
 - `mule/runtime/numeric.rs`: native integer fast paths and bigint operations.
@@ -90,6 +92,7 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `examples/`: source programs that the native compiler can build.
 - `stdlib/mule.py`: numeric annotation markers and the `optimize` compiler directive.
 - `stdlib/_native_class.py`: compiler-private class construction and field protocols compiled by Mule.
+- `stdlib/_arguments.py`: compiled general constructor forwarding.
 - `stdlib/_sequences.py`: compiled sequence, iterator, and exception algorithms.
 - `stdlib/_format.py`: compiler-private formatting rules compiled by Mule.
 - `stdlib/bootstrap/unittest.py`: initial assertion API compiled by Mule for simple upstream suites.

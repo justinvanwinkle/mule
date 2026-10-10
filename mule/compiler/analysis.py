@@ -200,6 +200,9 @@ class _InstructionAnalysis(ir.Visitor):
         return _Fact(instruction.contract.refine(value.type))
 
     def visit_DefineFunction(self, instruction):
+        for value, contract in zip(instruction.defaults, instruction.default_contracts):
+            if contract is not None:
+                contract.validate(self.values[value].type, instruction.location)
         return _Fact(FunctionType(), instruction.function, True)
 
     def visit_DefineClass(self, instruction):
@@ -310,6 +313,7 @@ class _InstructionAnalysis(ir.Visitor):
                 self.values[instruction.callee],
                 tuple(self.values[arg].type for arg in instruction.args),
                 instruction.location,
+                instruction.keywords,
             )
         )
         self.invalidate(self.state)
@@ -383,6 +387,8 @@ class _Summarize(ir.Visitor):
         self.returned = self.returned.join(self.values[instruction.value].type)
 
     def visit_Call(self, instruction):
+        if instruction.keywords:
+            return
         self.calls.append(
             _CallSite(
                 self.values[instruction.callee].target,
@@ -588,6 +594,7 @@ def _interprocedural(
             callee: _Fact,
             arguments: tuple[ValueType, ...],
             location=None,
+            keywords=(),
             context_parameters=previous_parameters,
             context_summaries=previous_summaries,
         ) -> ValueType:
@@ -600,20 +607,25 @@ def _interprocedural(
                         context_parameters,
                         context_summaries,
                         location,
+                        keywords,
                     ),
                 )
             )
 
         def resolve_defined(
-            callee, arguments, context_parameters, context_summaries, location
+            callee, arguments, context_parameters, context_summaries, location, keywords
         ):
             # A name's predicted target is never sufficient to publish a return
             # type. Only an already-loaded value with proven identity is local.
             if not callee.proven or callee.target not in functions:
                 return UNKNOWN
             target = functions[callee.target]
-            if target.variadic or len(arguments) != len(target.parameters):
+            order = target.call_order(keywords, len(arguments))
+            if order is None:
                 return UNKNOWN
+            arguments = tuple(
+                arguments[index] if index >= 0 else UNKNOWN for index in order
+            )
             for actual, contract in zip(arguments, target.parameter_annotations):
                 if contract is not None:
                     contract.validate(actual, location)
@@ -655,7 +667,7 @@ def _interprocedural(
                 target = functions.get(call.target)
                 if (
                     target is None
-                    or target.variadic
+                    or not target.positional_body()
                     or not target.parameters
                     or len(call.arguments) != len(target.parameters)
                 ):

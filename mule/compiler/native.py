@@ -318,8 +318,12 @@ class _Select(ir.Visitor):
         return self.value(op.receiver).method(op.name)
 
     def visit_CallMethod(self, op):
+        if op.keywords:
+            raise NotNative
         method = self.value(op.callee)
         target = method.target
+        if not target.positional_body():
+            raise NotNative
         if len(target.parameters) != len(op.args) + 1:
             raise NotNative
         for argument, contract in zip(
@@ -336,9 +340,13 @@ class _Select(ir.Visitor):
         return known.returned
 
     def visit_Call(self, op):
+        if op.keywords:
+            raise NotNative
         callee = self.value(op.callee)
         instance = callee.constructor()
         initializer = instance.layout.methods["__init__"]
+        if not initializer.positional_body():
+            raise NotNative
         if len(op.args) != len(initializer.parameters) - 1:
             raise NotNative
         for argument, contract in zip(

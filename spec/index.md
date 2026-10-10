@@ -15,6 +15,8 @@ frontend coverage does not establish complete Python compatibility.
 - [Native compiler](native-compiler.md): implemented subset and executable builds.
 - [Compiled modules](compiled-modules.md): static imports and the first native
   upstream test execution, including bootstrap runner limitations.
+- [Function argument binding](argument-binding.md): captured defaults, compiled external entries,
+  keyword calls, and guarded direct internal calls.
 - [Sequences and iteration](sequences-and-iteration.md): compiled container protocols,
   native loops, variadic entries, and owned exception transfers.
 - [Sequence displays and formatting](sequence-displays-and-formatting.md):
