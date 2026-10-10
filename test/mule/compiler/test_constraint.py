@@ -68,7 +68,9 @@ def fixnum_context(function):
 )
 def test_constant_representation_is_proven(literal, expected, fixnum, immortal):
     module = lower(f"x = {literal}\n")
-    facts = last_fact(module.functions[0], ir.Constant)
+    entry = module.functions[0]
+    # A negative literal is a unary operation on a constant; test the stored value.
+    facts = entry.facts[instructions(entry, ir.Store)[0].value]
     assert facts == expected
     assert facts.is_fixnum is fixnum
     assert facts.is_immortal is immortal
@@ -86,7 +88,9 @@ def test_constant_representation_is_proven(literal, expected, fixnum, immortal):
         ("<<", 1, 62, 2**62, 2**62, False),
     ],
 )
-def test_integer_ranges_detect_promotion(operator, left, right, minimum, maximum, fixnum):
+def test_integer_ranges_detect_promotion(
+    operator, left, right, minimum, maximum, fixnum
+):
     # Operands flow through locals so the operation is derived, not folded.
     module = lower(f"a = {left}\nb = {right}\nx = a {operator} b\n")
     result = last_fact(module.functions[0], ir.Binary)
@@ -129,7 +133,9 @@ def test_unary_range_follows_integer_bounds(operator):
 
 def joined(left, right=None):
     else_body = "" if right is None else f"\n else:\n  x = {right}"
-    return lower(f"def f(c):\n if c:\n  x = {left}{else_body}\n return x\n").functions[1]
+    return lower(f"def f(c):\n if c:\n  x = {left}{else_body}\n return x\n").functions[
+        1
+    ]
 
 
 def test_branch_join_unions_integer_bounds():
@@ -161,7 +167,9 @@ def test_missing_immortal_assignment_keeps_unbound_load_check():
 
 def loop(*, bounded):
     test = "x < 10" if bounded else "x"
-    return lower(f"def f():\n x = 0\n while {test}:\n  x = x + 1\n return x\n").functions[1]
+    return lower(
+        f"def f():\n x = 0\n while {test}:\n  x = x + 1\n return x\n"
+    ).functions[1]
 
 
 def test_unbounded_loop_widens_and_converges():
@@ -180,8 +188,13 @@ def test_integer_branch_constraint_keeps_bounded_loop_body_tagged():
 def test_bounded_bit_mask_recovers_fixnum_after_loop_widening():
     module = lower("def f(c):\n x = 0\n while c:\n  x = x + 1\n return x & 255\n")
     body = module.functions[1]
-    final = fact(body, instructions(body, ir.Load)[-1])
-    masked = last_fact(body, ir.Binary)
+    mask = next(
+        instruction
+        for instruction in instructions(body, ir.Binary)
+        if instruction.operator == ast.BinaryOperator.BIT_AND
+    )
+    final = body.facts[mask.left]
+    masked = fact(body, mask)
     assert not final.is_fixnum
     assert masked.is_fixnum
     assert (masked.minimum, masked.maximum) == (0, 255)
@@ -216,7 +229,9 @@ def test_proven_function_identity_propagates_its_return_summary():
     ("initial", "step", "expected"),
     [(0, -1, UNKNOWN), (-1, -1, FLOAT), (0, 1, INTEGER)],
 )
-def test_widened_integer_exponent_preserves_negative_power_type(initial, step, expected):
+def test_widened_integer_exponent_preserves_negative_power_type(
+    initial, step, expected
+):
     module = lower(
         f"def f(c):\n exponent = {initial}\n power = None\n while c:\n"
         f"  power = 2 ** exponent\n  exponent = exponent + {step}\n return power\n"
@@ -403,13 +418,17 @@ def test_argument_types_propagate_through_multiple_local_calls():
     for body in (increment, wrapper):
         context = observed(body)
         assert (context.parameters[0].minimum, context.parameters[0].maximum) == (3, 3)
-    assert (observed(increment).return_type.minimum, observed(increment).return_type.maximum) == (4, 4)
+    returned = observed(increment).return_type
+    assert (returned.minimum, returned.maximum) == (4, 4)
+    # The call inside wrapper is only predicted, so wrapper publishes no range.
     assert observed(wrapper).return_type == UNKNOWN
-    assert last_fact(module.functions[0], ir.Call).is_fixnum
+    assert last_fact(module.functions[0], ir.Call) == UNKNOWN
 
 
 def test_source_defined_global_call_gets_only_flow_proven_return_facts():
-    module = lower("def increment(x):\n    return x + 1\ny = increment(3)\nz = increment(4)\n")
+    module = lower(
+        "def increment(x):\n    return x + 1\ny = increment(3)\nz = increment(4)\n"
+    )
     entry = module.functions[0]
     calls = instructions(entry, ir.Call)
     assert fact(entry, calls[0]).is_fixnum
@@ -427,7 +446,9 @@ def test_constant_branch_removes_the_dead_arm():
     module = lower("if True:\n w = 1\nelse:\n w = 0\n")
     entry = module.functions[0]
     assert instructions(entry, ir.Branch) == []
-    assert [constant.value.value for constant in instructions(entry, ir.Constant)][:1] == [1]
+    assert [constant.value.value for constant in instructions(entry, ir.Constant)][
+        :1
+    ] == [1]
 
 
 @pytest.mark.parametrize(

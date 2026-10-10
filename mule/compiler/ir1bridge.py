@@ -199,8 +199,7 @@ class _Lowering(NodeVisitor):
         if returned is not None and (
             last is returned
             or (
-                block.succ == [returned.block]
-                and returned.block.start.next is returned
+                block.succ == [returned.block] and returned.block.start.next is returned
             )
         ):
             use = next(use for use in returned.result.uses if use.block is block)

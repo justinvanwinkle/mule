@@ -52,6 +52,27 @@ an owned rest tuple. Internal fixed-arity predictions must not bypass this
 entry for variadic functions, even when the source argument count happens to
 match the number of internal parameters.
 
+## Character construction
+
+`chr(value, /)` is compiled Python in `stdlib/_sequences.py`. It reuses the
+integer-index protocol, accepts booleans and user `__index__` methods, and checks
+the Python range `0..0x10ffff` before constructing a length-one string. Invalid
+types raise `TypeError`; negative or oversized integers raise `ValueError`.
+The ordinary compiled argument binder rejects missing, extra, and keyword
+arguments. Builtin lookup remains dynamic, including aliasing and rebinding.
+
+SBCL `src/code/target-char.lisp`, `code-char`, is a language function backed by
+the compiler's character operation. `src/compiler/fndb.lisp` records its known
+argument/result types; `src/compiler/x86-64/char.lisp`, the `code-char` VOP,
+performs the representation conversion. Mule retains compiled language rules
+and a physical construction boundary. Python differs concretely: `chr` returns
+an owned string, not SBCL's immediate character, and uses `__index__` with
+`ValueError` outside the Unicode codepoint range. Rust only encodes a guarded
+codepoint into Mule text storage and allocates its value. The existing text
+representation permits surrogate codepoints; `chr` preserves them rather than
+using Rust's scalar-only `char` type. Construction has constant work and allocates
+one 1-to-4-byte text payload; this is not a complete string or codec implementation.
+
 ## Guarded range loop specialization
 
 Following `build-sequence-iterator` and `dotimes`, a direct call spelled

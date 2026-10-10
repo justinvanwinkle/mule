@@ -35,19 +35,20 @@ executable = build("examples/factorial.py", "build/factorial")
 
 ## Compilation and execution
 
-The pipeline is Mule's lexer/Pratt parser → Mule AST → IR1 flow graph →
-(bridge) control-flow IR → type/range analysis and implementation selection →
-textual LLVM IR → Clang-generated native executable. IR1 is SBCL's
-representation adapted to Python; the bridge exists until the later phases
-consume IR1 directly. See [Python and LLVM changes](python-changes.md#ir1-implementation). There is no host AST conversion,
+The pipeline is Mule's lexer/Pratt parser → Mule AST → IR1 flow graph → IR1
+phases (optimization, local-call analysis, flow propagation, check generation)
+→ (bridge) control-flow IR with facts → implementation selection → textual
+LLVM IR → Clang-generated native executable. IR1 is SBCL's representation
+adapted to Python; the bridge exists until the later phases consume IR1
+directly. See [Python and LLVM changes](python-changes.md#ir1-implementation). There is no host AST conversion,
 program source embedding, bytecode generation, or evaluator fallback.
 
 The IR separates control-flow blocks from single-consumer object results.
 Variables are explicit local slots or dynamic module globals. Verification checks
 definitions, consumption, control-flow targets, and dominance before emission.
 LLVM currently uses slots for these results and variables rather than optimized
-SSA construction. Analysis joins local value types and integer intervals to a
-fixed point, widening growing loop bounds. Interprocedural analysis derives
+SSA construction. Flow propagation joins local value types and integer intervals to a
+fixed point, widening growing loop bounds. Local-call analysis derives
 integer parameter contexts and return summaries for proven local calls; guarded
 specialized entries preserve general function behavior. Proven representation facts eliminate
 unnecessary checks; unknown operands use guarded native instructions with runtime

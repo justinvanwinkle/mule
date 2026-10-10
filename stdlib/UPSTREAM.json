@@ -537,7 +537,7 @@
     },
     "ctypes/__init__.py": {
       "upstream_sha256": "f6c316a429099c16b92e75855308b8153ba9e5467b937e7668d164ee4cfddabf",
-      "vendored_sha256": "f6c316a429099c16b92e75855308b8153ba9e5467b937e7668d164ee4cfddabf"
+      "vendored_sha256": "80f70dc4e12809770cff9aaf5df3a381b7a6cf2a155a281babdb221cdcb83b5b"
     },
     "ctypes/_aix.py": {
       "upstream_sha256": "540e2821fa36981bde5c6ffb8f972474b06db4a37c1854c0e0e379b75d2b0fa3",

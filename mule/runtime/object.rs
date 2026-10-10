@@ -1283,6 +1283,44 @@ pub unsafe extern "C" fn mule_text_codepoint(value: Value, index: Value) -> Valu
         })
     }
 }
+/// Allocate a one-codepoint text value after compiled Python index/range checks.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_from_codepoint(value: Value) -> Value {
+    unsafe {
+        let code = if is_fixnum(value) {
+            u32::try_from(fixnum(value)).ok()
+        } else {
+            let Some(integer) = numeric::integer_export(value) else {
+                return std::ptr::null_mut();
+            };
+            integer.to_u64().and_then(|code| u32::try_from(code).ok())
+        };
+        let Some(code) = code.filter(|code| *code <= 0x10ffff) else {
+            error("SystemError", "invalid codepoint for text storage");
+            return std::ptr::null_mut();
+        };
+        // Mule text permits surrogate codepoints, unlike Rust's char type.
+        let bytes = if code < 0x80 {
+            vec![code as u8]
+        } else if code < 0x800 {
+            vec![(0xc0 | (code >> 6)) as u8, (0x80 | (code & 0x3f)) as u8]
+        } else if code < 0x10000 {
+            vec![
+                (0xe0 | (code >> 12)) as u8,
+                (0x80 | ((code >> 6) & 0x3f)) as u8,
+                (0x80 | (code & 0x3f)) as u8,
+            ]
+        } else {
+            vec![
+                (0xf0 | (code >> 18)) as u8,
+                (0x80 | ((code >> 12) & 0x3f)) as u8,
+                (0x80 | ((code >> 6) & 0x3f)) as u8,
+                (0x80 | (code & 0x3f)) as u8,
+            ]
+        };
+        new_value(Data::Text(bytes))
+    }
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_invalid_string_format() -> Value {
     error("ValueError", "unsupported string format specification");

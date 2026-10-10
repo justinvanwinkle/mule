@@ -68,6 +68,33 @@ Adaptations, each a concrete departure from `node.lisp`/`ir1tran.lisp`:
 - `return` statements deliver to one `Return` node per lambda. The node and
   its block are deleted when no path returns normally.
 
+The IR1 phases (`main.ir1_phases`, after `ir1-phases` in `main.lisp`) repeat
+optimization, local-call analysis, and propagation until nothing changes, then
+decide checks:
+
+- `ir1opt.py` folds known operations on integer/boolean literals, flushes
+  unused flushable calls, and deletes the dead arm of a branch on a literal,
+  within SBCL's iteration limit. Nearly every Python operator may run user
+  code, so the effect attributes in `fndb.py` are conservative and a reference
+  to a possibly unbound name is never deleted.
+- `constraint.py` propagates one fact per variable (value type plus predicted
+  callable identity) forward over the flow graph instead of SBCL's constraint
+  sets: facts join at block entries, comparison branches narrow intervals,
+  loop headers widen after a few visits, and error edges carry the join of
+  every state inside the raising block. Node result types are derived in the
+  same walk. Globals are tracked within one lambda: a store of a known function
+  proves the binding until an operation that may run user code.
+- `locall.py` converts a call through a global name into a guarded call with
+  the predicted lambda; code generation checks identity at the call site and
+  keeps the general path. Entry contexts (`fixnum`, `observed`) stand in for
+  SBCL's optional-dispatch entry points: one body, facts per entry, return
+  summaries grown optimistically and published only after the fixpoint. Copying
+  the body (SBCL's inline expansion) becomes necessary once a transform depends
+  on an entry's facts. Optional-dispatch splitting and XEP lambdas wait for the
+  backend to consume IR1, because the current bridge cannot express them.
+- `checkgen.py` marks a cast as a runtime check only under a checking policy
+  and only when the derived type does not already satisfy the contract.
+
 Settled departures from SBCL's design, with their reasons:
 
 - **Error propagation** stays LLVM-native: status and null results with

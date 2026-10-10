@@ -70,10 +70,13 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/compiler/debug.py`: `check_ir1_consistency`, following `debug.lisp`.
 - `mule/compiler/knownfun.py` and `mule/compiler/fndb.py`: known-operation metadata and the database of Python operations and runtime protocols, following `fun-info.lisp`/`fndb.lisp`.
 - `mule/compiler/policy.py`: optimization policy qualities, following `policy.lisp`.
-- `mule/compiler/ir1bridge.py`: temporary lowering of IR1 to the control-flow IR until later phases consume IR1 directly.
+- `mule/compiler/ir1opt.py`: IR1 optimization loop: literal folding, flushing unused flushable calls, constant branches, following `ir1opt.lisp`.
+- `mule/compiler/constraint.py`: flow-sensitive propagation of variable facts and node types, following `constraint.lisp`.
+- `mule/compiler/locall.py`: local-call analysis: guarded calls through module globals, entry contexts, optimistic argument/result solving, following `locall.lisp`.
+- `mule/compiler/checkgen.py`: decides which casts become runtime checks, following `checkgen.lisp`.
+- `mule/compiler/ir1bridge.py`: temporary lowering of IR1 and its facts to the control-flow IR until later phases consume IR1 directly.
 - `mule/compiler/modules.py`: static module resolution and compiled initialization.
 - `mule/compiler/ir.py`: control-flow graph, object results, and graph verification.
-- `mule/compiler/analysis.py`: fixed-point value types, integer ranges, and guarded call predictions.
 - `mule/compiler/ctype.py`: language-level value types (SBCL CTYPE): polymorphic facts, joins, arithmetic, and representation proofs.
 - `mule/compiler/annotation_types.py`: imported numeric contracts and optimization policies.
 - `mule/compiler/native.py`: raw int64 representation selection and direct local entries.

@@ -38,7 +38,8 @@ representation proofs to select native templates and their visitor dispatch to
 emit entry guards. These compiler objects are separate from the native value
 representation described below.
 
-`mule/compiler/analysis.py` analyzes the verified control-flow graph. It propagates
+`mule/compiler/constraint.py` propagates facts over IR1 (`constraint.lisp`'s
+role, adapted to a value-type lattice). It propagates
 local value types and integer intervals through stores, loads, arithmetic, and
 control-flow joins. Integer comparisons can constrain successor-edge ranges.
 Facts settle through a worklist; widening removes growing loop bounds so analysis

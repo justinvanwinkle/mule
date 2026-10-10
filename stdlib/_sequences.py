@@ -159,6 +159,13 @@ def integer_index(value):
     return _integer_storage(value)
 
 
+def chr(value, /):
+    value = integer_index(value)
+    if value < 0 or value > 0x10FFFF:
+        raise ValueError("chr() arg not in range(0x110000)")
+    return _text_from_codepoint(value)
+
+
 def getitem(value, index):
     method = _getitem_method(value)
     if method is None:
@@ -455,6 +462,7 @@ _install_builtin("iter", iter)
 _install_builtin("next", next)
 _install_builtin("list", list)
 _install_builtin("tuple", tuple)
+_install_builtin("chr", chr)
 _install_builtin("BaseException", BaseException)
 _install_builtin("Exception", Exception)
 _install_builtin("ArithmeticError", ArithmeticError)
