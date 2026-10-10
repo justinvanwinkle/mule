@@ -2,140 +2,103 @@
 
 from pathlib import Path
 
-from . import ir
-from .format_protocol import LookupMethod, TextAccess
-from .frontend import lower
 from .modules import ModuleCompiler
-from .protocols import Bindings
+from .node import CallKind, Combination, GlobalVar, NodeVisitor, Ref
+from .protocols import add_lambdas, compile_protocol
+
+BUILTIN_NAMES = frozenset(
+    {
+        "range",
+        "enumerate",
+        "iter",
+        "next",
+        "list",
+        "tuple",
+        "chr",
+        "min",
+        "max",
+        "BaseException",
+        "Exception",
+        "StopIteration",
+        "IndexError",
+        "KeyError",
+        "ValueError",
+        "TypeError",
+        "RuntimeError",
+        "ArithmeticError",
+        "LookupError",
+        "NameError",
+        "UnboundLocalError",
+        "ZeroDivisionError",
+        "OverflowError",
+        "AssertionError",
+        "MemoryError",
+        "SystemError",
+        "AttributeError",
+        "OSError",
+        "EOFError",
+        "RecursionError",
+        "UnicodeError",
+        "UnicodeEncodeError",
+        "UnicodeDecodeError",
+    }
+)
+_PROTOCOL_KNOWNS = frozenset(
+    {"%raise", "%reraise", "%catch_exception", "%build_list", "%build_tuple"}
+)
 
 
-class NeedsProtocols(ir.Visitor):
+class NeedsProtocols(NodeVisitor):
     def __init__(self):
         self.needed = False
 
-    def visit_ProtocolCall(self, operation):
-        self.needed = True
-
-    def visit_Raise(self, operation):
-        self.needed = True
-
-    def visit_CatchException(self, operation):
-        self.needed = True
-
-    def visit_Sequence(self, operation):
-        self.needed = True
-
-    def visit_Load(self, operation):
-        if not operation.local and operation.name in (
-            "range",
-            "enumerate",
-            "iter",
-            "next",
-            "list",
-            "tuple",
-            "chr",
-            "BaseException",
-            "Exception",
-            "StopIteration",
-            "IndexError",
-            "KeyError",
-            "ValueError",
-            "TypeError",
-            "RuntimeError",
-            "ArithmeticError",
-            "LookupError",
-            "NameError",
-            "UnboundLocalError",
-            "ZeroDivisionError",
-            "OverflowError",
-            "AssertionError",
-            "MemoryError",
-            "SystemError",
-            "AttributeError",
-            "OSError",
-            "EOFError",
-            "RecursionError",
-            "UnicodeError",
-            "UnicodeEncodeError",
-            "UnicodeDecodeError",
+    def visit_Combination(self, node):
+        if node.kind is CallKind.KNOWN and (
+            node.fun_info.protocol is not None or node.fun_info.name in _PROTOCOL_KNOWNS
         ):
             self.needed = True
 
-
-class Exports(ir.Visitor):
-    def __init__(self):
-        self.functions = {}
-
-    def visit_DefineFunction(self, operation):
-        self.functions[operation.public_name] = operation.function
+    def visit_Ref(self, node):
+        if isinstance(node.leaf, GlobalVar) and node.leaf.name in BUILTIN_NAMES:
+            self.needed = True
 
 
-def prepare(module):
+def exports(entry) -> dict:
+    """Functions the module defines, by public name."""
+    functions = {}
+    for block in entry.component.blocks():
+        for node in block.nodes():
+            if (
+                isinstance(node, Combination)
+                and node.kind is CallKind.KNOWN
+                and node.fun_info.name == "%make_function"
+            ):
+                functions[node.info.public_name] = node.args[0].use().leaf
+    return functions
+
+
+def prepare(program):
+    """Compile the sequence protocols when the program needs them. Returns
+    the protocol module's entry lambda and its exported functions by name."""
     visitor = NeedsProtocols()
-    for function in module.functions:
-        for block in function.blocks:
-            for operation in (*block.instructions, block.terminator):
-                operation.accept(visitor)
+    for lambda_ in program.lambdas:
+        for block in lambda_.component.blocks():
+            for node in block.nodes():
+                node.accept(visitor)
     if not visitor.needed:
-        return None, {}, {}, set()
+        return None, {}
     path = Path(__file__).resolve().parents[2] / "stdlib/_sequences.py"
     imports = ModuleCompiler(str(path), prefix="mule_sequences_")
-    lowered = lower(
+    compilation = compile_protocol(
         path.read_text(),
         str(path),
         imports=imports,
         prefix="mule_sequences_",
         namespace="$mule.sequences",
     )
-    exports = Exports()
-    for block in lowered.functions[0].blocks:
-        for operation in block.instructions:
-            operation.accept(exports)
-    primitives = {
-        name: LookupMethod(method)
-        for name, method in (
-            ("_getitem_method", "__getitem__"),
-            ("_setitem_method", "__setitem__"),
-            ("_iter_method", "__iter__"),
-            ("_next_method", "__next__"),
-            ("_index_method", "__index__"),
-        )
-    }
-    primitives.update(
-        {
-            name: TextAccess(primitive)
-            for name, primitive in (
-                ("_storage_length", "mule_storage_length"),
-                ("_storage_read", "mule_storage_read"),
-                ("_storage_write", "mule_storage_write"),
-                ("_storage_append", "mule_storage_append"),
-                ("_storage_tuple", "mule_storage_tuple"),
-                ("_storage_compatible", "mule_storage_compatible"),
-                ("_integer_storage", "mule_integer_storage"),
-                ("_class_identity", "mule_class_identity"),
-                ("_class_parent", "mule_class_parent"),
-                ("_raised_class", "mule_raised_class"),
-                ("_exception_targets", "mule_exception_targets"),
-                ("_raise_pending", "mule_raise_pending"),
-                ("_active_exception", "mule_active_exception"),
-                ("_exception_instance", "mule_exception_instance"),
-                ("_invalid_raise", "mule_invalid_raise"),
-                ("_install_builtin", "mule_install_builtin"),
-                ("_install_storage", "mule_install_storage"),
-            )
-        }
-    )
-    calls, references = {}, set()
-    for function in lowered.functions:
-        collector = Bindings(primitives)
-        for block in function.blocks:
-            for operation in block.instructions:
-                operation.accept(collector)
-        calls.update(
-            ((function.name, result), primitive)
-            for result, primitive in collector.calls.items()
-        )
-        references.update((function.name, result) for result in collector.references)
-    module.functions.extend(lowered.functions)
-    module.functions.extend(imports.functions)
-    return lowered.entry, exports.functions, calls, references
+    add_lambdas(program, compilation.lambdas, compilation.facts)
+    add_lambdas(program, imports.lambdas, imports.facts)
+    return compilation.entry, exports(compilation.entry)
+
+
+_ = Ref

@@ -265,6 +265,9 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
                 return null_mut();
             }
         }
+        if !crate::math::populate(globals) {
+            return null_mut();
+        }
         object::none_value()
     }
 }

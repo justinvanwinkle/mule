@@ -75,6 +75,33 @@ using Rust's scalar-only `char` type. Construction has constant work and allocat
 one 1-to-4-byte text payload and a temporary one-element list; this is not a
 complete string or codec implementation.
 
+## Minimum and maximum reductions
+
+`min` and `max` are ordinary compiled Python functions in `_sequences.py`,
+installed as builtins with generated positional-rest and keyword/default binders.
+They accept one iterable or two or more positional values, with optional `key`.
+`default` is permitted only in the one-iterable form. Empty iterables return the
+exact supplied default, including `None`, without invoking `key`; without a
+default they raise `ValueError`. Zero arguments and a default supplied with
+multiple positional values raise `TypeError`.
+
+SBCL `src/code/numbers.lisp`, `min` and `max`, reduces rest arguments in compiled
+Lisp and replaces the winner only for strict `<` or `>`. Mule retains that
+architecture and first-item tie behavior. Python additionally requires iterable
+input, key projection, an optional empty-input default and arbitrary supported
+ordered values, rather than only Lisp real-number arguments. The reduction
+streams values without materializing the iterable, retaining only the current
+winner and key. Each yielded item's key is evaluated once. Iterator exhaustion
+is caught only around `next_item`; failures from key, comparison or truth
+conversion propagate, including `StopIteration`.
+
+The omitted-default marker reuses the argument protocol's physical missing
+sentinel; `None` remains a valid value. Selection and iteration execute in
+compiled Python, with no new Rust language dispatch. General reflected
+rich-comparison, `NotImplemented` handling and lexicographic list/tuple ordering
+remain limitations of the shared comparison implementation, not implemented by
+these reductions. Call-site argument expansion remains unsupported.
+
 ## Guarded range loop specialization
 
 Following `build-sequence-iterator` and `dotimes`, a direct call spelled
@@ -113,8 +140,9 @@ remain bootstrap debt; this slice does not extend their language algorithms.
 
 Variadic parameter annotations preserve their syntax metadata and apply numeric
 contracts to each rest element, not the rest tuple. Checks follow the function's
-existing safety policy. Defaults and keyword-only/variadic keyword parameters
-remain unsupported. Exception bindings are cleared on every handler exit.
+existing safety policy. Defaults and keyword-only parameters use the ordinary
+compiled argument binder; variadic keyword parameters remain unsupported.
+Exception bindings are cleared on every handler exit.
 
 Validation includes native protocol/edge tests, unchanged corpus execution, and
 a Valgrind ownership probe with repeated unpacking, iterator calls, and caught

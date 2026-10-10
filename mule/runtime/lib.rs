@@ -14,6 +14,7 @@ pub mod annotations;
 pub mod builtins;
 pub mod classes;
 pub mod gmp;
+pub mod math;
 pub mod native_storage;
 pub mod numeric;
 pub mod object;

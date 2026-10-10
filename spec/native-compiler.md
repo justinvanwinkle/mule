@@ -235,6 +235,51 @@ native stdout destination. `sep`, `file`, `flush` and dynamic `sys.stdout`
 selection remain unsupported; this increment adds only `end`. It introduces
 neither a second stream hierarchy nor a Rust language-level print algorithm.
 
+## Initial math support
+
+`math` is a compiled Python package providing `sqrt`, `factorial`, `comb`,
+`perm`, `gcd`, `lcm` and `isqrt`, plus `pi`, `e`, `tau`, `inf` and `nan`.
+The integer functions are implemented in `math.integer` and re-exported by
+`math` as the same function objects. This is initial math support, not the
+complete Python math API; trigonometric/logarithmic functions, floating-point
+reductions and the remaining operations are not implemented yet.
+
+Argument conversion, integer algorithms and domain checks execute in compiled
+Python. Square root accepts builtin real numbers and the supported `__float__`
+or `__index__` protocols, requires a float result from `__float__`, preserves
+negative zero, propagates NaN/positive infinity, and rejects negative values
+with `ValueError`. Integer operations accept builtin integers/booleans and
+`__index__`, rejecting float arguments and invalid conversion results. Arithmetic
+remains arbitrary precision; integer square root uses SBCL's normalized 64-bit
+approximation table and successively refined high-bit prefixes with a final
+exact square check. Empty `gcd` and `lcm` return zero and one respectively.
+
+The approximation table is immutable byte storage, corresponding to SBCL's
+unsigned-byte-8 vector. The large-integer leading word is extracted with a
+compiled integer shift instead of SBCL's raw bignum-part accessor because Mule
+bigint storage belongs to GMP, not SBCL's limb layout. The extracted 64-bit
+value and seed/refinement arithmetic are unchanged; the shift can allocate a
+temporary bigint rather than reading an SBCL limb directly.
+
+SBCL `src/code/irrat.lisp`, `def-math-rtn` and `sqrt`, separates compiled language
+dispatch from physical floating-point operations. Python's concrete difference
+is that a negative real square root raises `ValueError` rather than producing
+a complex value. `src/code/numbers.lisp`, `gcd`, `lcm` and `isqrt`, supplies the
+language-level integer reduction/refinement structure. Python additionally
+requires its integer-conversion protocols and combinatorial functions.
+
+The physical bit-length query returns Python's magnitude length, including zero
+for zero. SBCL's signed `integer-length` instead counts the two's-complement
+representation without redundant sign bits. The difference matters for negative
+integers; the square-root algorithm itself supplies nonnegative integers.
+
+The existing `_mule_native` module supplies raw binary64 square root,
+numeric-kind/bit-length queries, storage conversion and special-method access.
+It uses the existing module cache and system math services; no new library,
+CPython linkage or Rust integer/math algorithms are introduced. Binary64
+operations currently use boxed primitive entries; unboxed float representation
+selection remains compiler work, and this increment makes no speed claim.
+
 ## Annotation contracts
 
 ### Builtin Python annotations and SBCL correspondence

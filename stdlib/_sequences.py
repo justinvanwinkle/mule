@@ -488,6 +488,53 @@ def list_from_arguments(args):
     return result
 
 
+_missing_default = _binding_missing()
+
+
+def _extreme(args, key, default, greatest):
+    count = _storage_length(args)
+    if count == 0:
+        raise TypeError("min/max expected at least one argument")
+    if count == 1:
+        iterator = iterate(_storage_read(args, 0))
+    else:
+        if default is not _missing_default:
+            raise TypeError("default is only valid with one iterable argument")
+        iterator = iterate(args)
+    try:
+        best = next_item(iterator)
+    except StopIteration:
+        if default is not _missing_default:
+            return default
+        raise ValueError("min/max arg is an empty sequence")
+    best_key = best
+    if key is not None:
+        best_key = key(best)
+    while True:
+        try:
+            candidate = next_item(iterator)
+        except StopIteration:
+            return best
+        candidate_key = candidate
+        if key is not None:
+            candidate_key = key(candidate)
+        if greatest:
+            better = candidate_key > best_key
+        else:
+            better = candidate_key < best_key
+        if better:
+            best = candidate
+            best_key = candidate_key
+
+
+def min(*args, key=None, default=_missing_default):
+    return _extreme(args, key, default, False)
+
+
+def max(*args, key=None, default=_missing_default):
+    return _extreme(args, key, default, True)
+
+
 _install_storage(ListStorage, TupleStorage, TextStorage, BytesStorage)
 _install_builtin("range", range)
 _install_builtin("enumerate", enumerate)
@@ -496,6 +543,8 @@ _install_builtin("next", next)
 _install_builtin("list", list)
 _install_builtin("tuple", tuple)
 _install_builtin("chr", chr)
+_install_builtin("min", min)
+_install_builtin("max", max)
 _install_builtin("BaseException", BaseException)
 _install_builtin("Exception", Exception)
 _install_builtin("ArithmeticError", ArithmeticError)

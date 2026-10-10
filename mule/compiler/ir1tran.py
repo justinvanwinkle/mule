@@ -171,6 +171,8 @@ class Converter:
         namespace="__main__",
         component=None,
         ir1_namespace: Namespace | None = None,
+        primitives=None,
+        primitive_data=None,
     ):
         self.source = source.replace("\r\n", "\n").replace("\r", "\n")
         self.filename = filename
@@ -179,6 +181,11 @@ class Converter:
         self.namespace = namespace
         self.component = component
         self.ir1_namespace = ir1_namespace or Namespace()
+        # Compiled stdlib protocols name the backend's physical primitives by
+        # underscored global names; those resolve to known functions, and
+        # ``primitive_data`` supplies a primitive's compile-time operand.
+        self.primitives: dict = primitives or {}
+        self.primitive_data: dict = primitive_data or {}
         self.functions: list[Lambda] = []
         self.function_converters: dict[Lambda, FunctionConverter] = {}
         self.compiler_bindings = {}
@@ -325,6 +332,9 @@ class FunctionConverter:
             free = self.enclosing_local(name)
             if free is not None:
                 return free
+        primitive = self.converter.primitives.get(name)
+        if primitive is not None:
+            return self.converter.known(primitive)
         return self.converter.global_var(name)
 
     def enclosing_local(self, name: str):
@@ -405,10 +415,18 @@ class FunctionConverter:
         return node
 
     def full_call(self, start, next_, result, callee, operands, source, data):
-        """Emit a call through an evaluated callable value."""
+        """Emit a call through an evaluated callable value. A callee that is
+        a reference to a known function (a compiled protocol's primitive)
+        makes the call known, as ``ir1-convert-combination`` does."""
         node = Combination(self.lexenv, source, callee)
         callee.dest = node
         node.info = data
+        producer = callee.uses[0] if len(callee.uses) == 1 else None
+        if isinstance(producer, Ref) and isinstance(producer.leaf, KnownFunction):
+            info = producer.leaf.fun_info
+            node.kind = CallKind.KNOWN
+            node.fun_info = info
+            node.info = self.converter.primitive_data.get(info.name)
         self._combination_args(node, start, next_, result, operands)
         return node
 

@@ -18,7 +18,8 @@ timeout = 5.0
 [mule]
 status = "pending"
 phase = "compile"
-reason = "nested functions are not supported yet"
+reason = "only imported mule.optimize decorators are supported"
+compile_error_line = 41
 '''
 
 def decorator(func):

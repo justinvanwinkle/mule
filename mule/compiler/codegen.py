@@ -1,0 +1,1498 @@
+"""LLVM code generation over IR2, following ``src/compiler/codegen.lisp``.
+
+``generate`` turns a whole program (every lambda of the user's modules and of
+the compiled stdlib protocols, with their IR1 facts) into one LLVM module.
+For each lambda it runs the IR2 phases per entry context (template
+selection, IR2 conversion, representation selection) and then emits one LLVM
+function per body by invoking each VOP's generator in block order.
+
+Ownership: every TN of descriptor storage owns a runtime reference in an
+entry-block slot. Consuming a temporary clears its slot before borrowing the
+value to a runtime operation; the operation's result is published before its
+inputs are released. Every still-live operand therefore remains visible to the
+shared error cleanup path, and the handler-edge unwind blocks release the
+temporaries before transferring to the handler.
+
+The module also carries SBCL's external entry points as thin wrappers: the
+argument-view entry (``@mule.fn.N``) validates and transfers arguments to the
+body (``@mule.body.N``); guarded entries (``.spec.V``) and native entries
+(``@mule.native.N``) are additional bodies of the same lambda.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from . import vops
+from .ctype import UNKNOWN, ValueType
+from .ir1util import block_exception_target
+from .ir2tran import ir2_convert
+from .ltn import EntryContext, ltn_analyze
+from .node import CallKind, Combination, FunctionalKind, Lambda
+from .represent import select_native_plans, select_representations
+from .vop import BOOLEAN, CLASS, DESCRIPTOR, IMMEDIATE, NULL, RANGE, SIGNED
+
+OBJECT = vops.OBJECT
+
+DECLARATIONS = """declare ptr @mule_literal_int(ptr)
+declare ptr @mule_literal_float(double)
+declare ptr @mule_literal_text(ptr, i64)
+declare ptr @mule_literal_bytes(ptr, i64)
+declare ptr @mule_none()
+declare ptr @mule_bool(i32)
+declare ptr @mule_load_global(ptr, ptr)
+declare i32 @mule_store_global(ptr, ptr, ptr)
+declare ptr @mule_namespace()
+declare i32 @mule_namespace_bound(ptr, ptr)
+declare i32 @mule_assertion_failure(ptr)
+declare ptr @mule_sequence_list(i64, ptr)
+declare ptr @mule_sequence_tuple(i64, ptr)
+declare ptr @mule_lookup_special(ptr, ptr)
+declare ptr @mule_render_text(ptr, i32)
+declare ptr @mule_text_result(ptr)
+declare ptr @mule_text_length(ptr)
+declare ptr @mule_text_character(ptr, ptr)
+declare ptr @mule_text_codepoint(ptr, ptr)
+declare ptr @mule_invalid_string_format()
+declare ptr @mule_load_local(ptr, ptr)
+declare ptr @mule_binary_reuse(i32, ptr, ptr, i32, ptr)
+declare ptr @mule_unary(i32, ptr)
+declare ptr @mule_compare(i32, ptr, ptr)
+declare i32 @mule_truth(ptr)
+declare ptr @mule_call(ptr, i64, ptr)
+declare ptr @mule_call_keywords(ptr, ptr, i64, ptr, i64, ptr, ptr)
+declare ptr @mule_function_defaults(ptr, ptr, ptr, ptr)
+declare ptr @mule_function_default(ptr, i32)
+declare void @mule_set_argument_constructor(ptr)
+declare ptr @mule_construct_arguments(ptr, i64, ptr)
+declare i32 @mule_binding_plain(ptr, i32, i32)
+declare ptr @mule_binding_missing()
+declare ptr @mule_binding_count(ptr)
+declare ptr @mule_binding_pos(ptr, ptr)
+declare ptr @mule_binding_rest(ptr, ptr)
+declare ptr @mule_binding_keyword_count(ptr)
+declare ptr @mule_binding_keyword_name(ptr, ptr)
+declare ptr @mule_binding_keyword_value(ptr, ptr)
+declare ptr @mule_binding_default(ptr, ptr)
+declare ptr @mule_allocate_instance(ptr)
+declare ptr @mule_forward_call(ptr, ptr)
+declare ptr @mule_function(ptr, ptr, ptr)
+declare ptr @mule_function_closure(ptr, ptr, ptr, ptr, ptr)
+declare ptr @mule_closure(ptr)
+declare ptr @mule_function_closure_of(ptr)
+declare ptr @mule_class(ptr, ptr, i64, ptr, i64, ptr, ptr)
+declare ptr @mule_native_class(ptr, ptr, ptr, i64, ptr, i64, ptr, ptr, ptr, ptr, ptr)
+declare i32 @mule_native_class_matches(ptr, ptr, ptr)
+declare ptr @mule_native_instance_payload(ptr, ptr, ptr)
+declare ptr @mule_native_new(ptr)
+declare ptr @mule_native_payload(ptr)
+declare i32 @mule_unbox_i64(ptr, ptr)
+declare ptr @mule_box_i64(i64)
+declare i32 @mule_native_type_error()
+declare i32 @mule_native_initializer_error()
+declare i32 @mule_native_overflow()
+declare ptr @mule_get_attr_cached(ptr, ptr, ptr)
+declare i32 @mule_set_attr_cached(ptr, ptr, ptr, ptr)
+declare ptr @mule_resolve_method(ptr, ptr, ptr, ptr)
+declare ptr @mule_call_resolved(ptr, ptr, i64, ptr)
+declare i32 @mule_check_args(ptr, i32)
+declare i32 @mule_assert_integer(ptr, ptr, ptr, ptr)
+declare i32 @mule_assert_float(ptr, ptr)
+declare ptr @mule_arg(ptr, i32)
+declare ptr @mule_retain(ptr)
+declare void @mule_release(ptr)
+declare i32 @mule_enter_frame()
+declare void @mule_leave_frame()
+declare i32 @mule_function_matches(ptr, ptr, ptr)
+declare i32 @mule_run_protocols(ptr, ptr)
+declare i32 @mule_range_storage(ptr, ptr)
+declare ptr @mule_protocol_globals()
+declare ptr @mule_catch_exception()
+declare i32 @mule_enter_handler(ptr)
+declare void @mule_leave_handler()
+declare i32 @mule_clear_binding(ptr, ptr)
+declare i32 @mule_reraise()
+declare i32 @mule_check_rest_args(ptr, i32)
+declare ptr @mule_rest_args(ptr, i32)
+declare ptr @mule_storage_length(ptr)
+declare ptr @mule_storage_read(ptr, ptr)
+declare ptr @mule_storage_write(ptr, ptr, ptr)
+declare ptr @mule_storage_append(ptr, ptr)
+declare ptr @mule_storage_tuple(ptr)
+declare ptr @mule_storage_compatible(ptr, ptr)
+declare ptr @mule_integer_storage(ptr)
+declare ptr @mule_class_identity(ptr)
+declare ptr @mule_class_parent(ptr)
+declare ptr @mule_raised_class(ptr)
+declare ptr @mule_exception_targets(ptr)
+declare ptr @mule_raise_pending(ptr)
+declare ptr @mule_active_exception()
+declare ptr @mule_exception_instance(ptr)
+declare ptr @mule_invalid_raise()
+declare ptr @mule_install_builtin(ptr, ptr)
+declare ptr @mule_text_storage(ptr)
+declare ptr @mule_stdout_write(ptr)
+declare ptr @mule_install_storage(ptr, ptr, ptr, ptr)
+declare void @mule_set_process_arguments(i32, ptr)
+declare ptr @mule_native_module_init(ptr)
+declare i32 @mule_run(ptr)
+declare void @llvm.assume(i1)
+"""
+
+
+@dataclass(slots=True)
+class Program:
+    """Everything code generation needs: the lambdas of every module in
+    emission order, their facts, and the compiled-protocol entry points."""
+
+    lambdas: list[Lambda]
+    entry: Lambda
+    facts: dict
+    print_entry: Lambda | None = None
+    protocol_entry: Lambda | None = None
+    sequence_functions: dict[str, Lambda] = field(default_factory=dict)
+    argument_constructor: Lambda | None = None
+    layouts: dict[str, object] = field(default_factory=dict)
+
+
+def generate(program: Program) -> str:
+    """Return a complete LLVM module with a native executable entry point."""
+    return ModuleGenerator(program).emit()
+
+
+def compile_component(lambda_: Lambda, context: EntryContext):
+    """Run the IR2 phases for one body (``compile-component`` for a backend
+    whose register allocation LLVM performs)."""
+    ltn_analyze(lambda_, context)
+    component = ir2_convert(lambda_, context)
+    select_representations(component)
+    return component
+
+
+class ModuleGenerator:
+    def __init__(self, program: Program):
+        self.program = program
+        lambdas = program.lambdas
+        self.facts = program.facts
+        self.functions = {
+            lambda_: f"@mule.fn.{index}" for index, lambda_ in enumerate(lambdas)
+        }
+        self.bodies = {
+            lambda_: f"@mule.body.{index}" for index, lambda_ in enumerate(lambdas)
+        }
+        self.bodies_by_name = {
+            lambda_.name: symbol for lambda_, symbol in self.bodies.items()
+        }
+        self.by_name = {lambda_.name: lambda_ for lambda_ in lambdas}
+        self.specialized = {
+            (lambda_, context.id): f"@mule.body.{index}.spec.{variant}"
+            for index, lambda_ in enumerate(lambdas)
+            for variant, context in enumerate(self.variants_of(lambda_))
+        }
+        self.layouts = program.layouts
+        self.sequence_functions = program.sequence_functions
+        self.native_plans = select_native_plans(lambdas, self.facts, self.layouts)
+        self.data: dict[bytes, str] = {}
+        self.auxiliary: list[str] = []
+        self.method_targets: dict[str, Lambda] = {}
+        self.imports: dict[str, object] = {}
+        for lambda_ in lambdas:
+            self._collect(lambda_)
+
+    def _collect(self, lambda_: Lambda) -> None:
+        """Native method predictions (calls still check callable identity) and
+        the imported modules in first-use order."""
+        definitions = {}
+        for block in lambda_.component.blocks():
+            for node in block.nodes():
+                if not isinstance(node, Combination) or node.kind is not CallKind.KNOWN:
+                    continue
+                name = node.fun_info.name
+                if name == "%make_function":
+                    definitions[node] = node.args[0].use().leaf
+                elif name == "%make_class":
+                    info = node.info
+                    methods = node.args[1:] if info.has_base else node.args
+                    for method_name, value in zip(
+                        info.method_names, methods, strict=True
+                    ):
+                        target = definitions.get(value.uses[0]) if value.uses else None
+                        if target is not None:
+                            self.method_targets.setdefault(method_name, target)
+                elif name == "%import":
+                    self.imports.setdefault(node.info.module_name, node.info)
+
+    def variants_of(self, lambda_: Lambda):
+        facts = self.facts.get(lambda_)
+        return facts.variants if facts is not None else ()
+
+    def closure_of(self, lambda_: Lambda) -> bool:
+        """Whether the function body takes a closure parameter."""
+        environment = lambda_.environment
+        return environment is not None and bool(environment.closure)
+
+    def closure_operand(self, gen, lambda_: Lambda, callable_value: str) -> list[str]:
+        """The closure operand for a direct call to ``lambda_`` through an
+        already-guarded callable object, or nothing when it captures nothing."""
+        if not self.closure_of(lambda_):
+            return []
+        closure = gen.operation(
+            f"call ptr @mule_function_closure_of(ptr {callable_value})"
+        )
+        return [f"ptr {closure}"]
+
+    def import_index(self, info) -> int:
+        return list(self.imports).index(info.module_name)
+
+    def attribute_cache(self) -> str:
+        name = f"@mule.cache.{len(self.auxiliary)}"
+        self.auxiliary.append(f"{name} = internal global [2 x i64] zeroinitializer")
+        return name
+
+    def names(self, names: tuple[str, ...]) -> str:
+        if not names:
+            return "null"
+        values = ", ".join(f"ptr {self.text(name)}" for name in names)
+        name = f"@mule.names.{len(self.auxiliary)}"
+        self.auxiliary.append(
+            f"{name} = private constant [{len(names)} x ptr] [{values}]"
+        )
+        return name
+
+    def literal_data(self, value: bytes) -> str:
+        """Produce a NUL-terminated global, retaining embedded NUL bytes."""
+        if value not in self.data:
+            self.data[value] = f"@mule.data.{len(self.data)}"
+        return (
+            f"getelementptr inbounds ([{len(value) + 1} x i8], "
+            f"ptr {self.data[value]}, i64 0, i64 0)"
+        )
+
+    def text(self, value: str) -> str:
+        return self.literal_data(value.encode("utf-8"))
+
+    def contexts(self, lambda_: Lambda):
+        """The general entry context and the guarded variants."""
+        facts = self.facts[lambda_]
+        general = EntryContext(
+            None,
+            facts.types,
+            facts.targets,
+            (UNKNOWN,) * len(lambda_.vars),
+            facts.return_type,
+        )
+        variants = [
+            EntryContext(
+                context.id,
+                context.types,
+                context.targets,
+                context.parameters,
+                context.return_type,
+            )
+            for context in facts.variants
+        ]
+        return general, variants
+
+    def emit(self) -> str:
+        program = self.program
+        functions = []
+        for lambda_ in program.lambdas:
+            general, variants = self.contexts(lambda_)
+            functions.append(self.emit_body(lambda_, general))
+            functions.extend(self.emit_body(lambda_, variant) for variant in variants)
+        for lambda_, plan in self.native_plans.items():
+            facts = self.facts[lambda_]
+            context = EntryContext(
+                "native", facts.types, facts.targets, (), facts.return_type, plan
+            )
+            functions.append(self.emit_body(lambda_, context))
+        functions.extend(
+            native_callbacks(self, layout) for layout in self.layouts.values()
+        )
+        functions.extend(
+            self.import_initializer(info, index)
+            for index, info in enumerate(self.imports.values())
+        )
+        self.auxiliary.extend(
+            f"{layout.schema} = internal global i8 0"
+            for layout in self.layouts.values()
+        )
+        globals_ = []
+        for value, name in self.data.items():
+            escaped = "".join(f"\\{byte:02X}" for byte in value + b"\0")
+            globals_.append(
+                f"{name} = private unnamed_addr constant "
+                f'[{len(value) + 1} x i8] c"{escaped}"'
+            )
+        entry = self.functions[program.entry]
+        self.auxiliary.append(
+            "define internal ptr @mule.initialize.protocols(ptr %globals, ptr %args) {\n"
+            "entry:\n"
+            f"  %sequence = call ptr {self.functions[program.protocol_entry]}(ptr %globals, ptr %args)\n"
+            "  %failed = icmp eq ptr %sequence, null\n"
+            "  call void @mule_release(ptr %sequence)\n"
+            "  br i1 %failed, label %failure, label %print\n"
+            "print:\n"
+            f"  %result = call ptr {self.functions[program.print_entry]}(ptr %globals, ptr %args)\n"
+            "  ret ptr %result\n"
+            "failure:\n"
+            "  ret ptr null\n"
+            "}"
+        )
+        run = (
+            f"call i32 @mule_run_protocols(ptr {entry}, ptr @mule.initialize.protocols)"
+        )
+        if program.argument_constructor is not None:
+            self.auxiliary.append(
+                "define internal ptr @mule.arguments.construct(ptr %class, ptr %view) {\n"
+                "entry:\n"
+                "  %globals = call ptr @mule_protocol_globals()\n"
+                "  %owned.class = call ptr @mule.fast.retain(ptr %class)\n"
+                "  %owned.view = call ptr @mule.fast.retain(ptr %view)\n"
+                f"  %result = call ptr {self.bodies[program.argument_constructor]}(ptr %globals, ptr %owned.class, ptr %owned.view)\n"
+                "  ret ptr %result\n}"
+            )
+        main = (
+            "define i32 @main(i32 %argc, ptr %argv) {\n"
+            "entry:\n"
+            "  call void @mule_set_process_arguments(i32 %argc, ptr %argv)\n"
+            + (
+                "  call void @mule_set_argument_constructor(ptr @mule.arguments.construct)\n"
+                if program.argument_constructor is not None
+                else ""
+            )
+            + f"  %status = {run}\n"
+            + "".join(
+                f"  %import.{index} = load ptr, ptr @mule.import.cache.{index}\n"
+                f"  call void @mule_release(ptr %import.{index})\n"
+                f"  store ptr null, ptr @mule.import.cache.{index}\n"
+                for index in range(len(self.imports))
+            )
+            + "  ret i32 %status\n"
+            "}"
+        )
+        return (
+            "\n\n".join(
+                [
+                    DECLARATIONS,
+                    vops.helpers(),
+                    *globals_,
+                    *self.auxiliary,
+                    *functions,
+                    main,
+                ]
+            )
+            + "\n"
+        )
+
+    def emit_body(self, lambda_: Lambda, context: EntryContext) -> str:
+        component = compile_component(lambda_, context)
+        return FunctionGenerator(self, component).emit()
+
+    def import_initializer(self, info, index):
+        cache = f"@mule.import.cache.{index}"
+        self.auxiliary.append(f"{cache} = internal global ptr null")
+        lines = [
+            f"define internal ptr @mule.import.{index}() {{",
+            "entry:",
+            f"  %cached = load ptr, ptr {cache}",
+            "  %ready = icmp ne ptr %cached, null",
+            "  br i1 %ready, label %existing, label %initialize",
+            "existing:",
+            "  %owned = call ptr @mule_retain(ptr %cached)",
+            "  ret ptr %owned",
+            "initialize:",
+            "  %globals = call ptr @mule_namespace()",
+            f"  store ptr %globals, ptr {cache}",
+        ]
+        fields = [("__name__", info.module_name)]
+        if info.filename is not None:
+            fields.append(("__file__", info.filename))
+        for field_name, value in fields:
+            literal = self.literal_data(value.encode())
+            key = self.text(field_name)
+            label = field_name.strip("_")
+            lines.extend(
+                [
+                    f"  %{label} = call ptr @mule_literal_text(ptr {literal}, i64 {len(value.encode())})",
+                    f"  %status.{label} = call i32 @mule_store_global(ptr %globals, ptr {key}, ptr %{label})",
+                    f"  call void @mule_release(ptr %{label})",
+                    f"  %bad.{label} = icmp slt i32 %status.{label}, 0",
+                    f"  br i1 %bad.{label}, label %failed, label %after.{label}",
+                    f"after.{label}:",
+                ]
+            )
+        if info.native:
+            lines.append(f"  %result = call ptr @{info.initializer}(ptr %globals)")
+        else:
+            lines.extend(
+                [
+                    "  %frame = call i32 @mule_enter_frame()",
+                    "  %bad.frame = icmp slt i32 %frame, 0",
+                    "  br i1 %bad.frame, label %failed, label %execute",
+                    "execute:",
+                    f"  %result = call ptr {self.bodies_by_name[info.initializer]}(ptr %globals)",
+                    "  call void @mule_leave_frame()",
+                ]
+            )
+        lines.extend(
+            [
+                "  %bad.result = icmp eq ptr %result, null",
+                "  call void @mule_release(ptr %result)",
+                "  br i1 %bad.result, label %failed, label %success",
+                "success:",
+                "  %module = call ptr @mule_retain(ptr %globals)",
+                "  ret ptr %module",
+                "failed:",
+                f"  store ptr null, ptr {cache}",
+                "  call void @mule_release(ptr %globals)",
+                "  ret ptr null",
+                "}",
+            ]
+        )
+        return "\n".join(lines)
+
+
+class _ArgumentGuard:
+    """Emit the entry check selected by the parameter fact's own behavior."""
+
+    def __init__(self, gen, value: str):
+        self.gen = gen
+        self.value = value
+
+    def visit_ValueType(self, fact: ValueType) -> str:
+        raise ValueError(f"Unsupported specialization parameter: {fact!r}")
+
+    def visit_UnknownType(self, fact: ValueType) -> str:
+        return "true"
+
+    def visit_IntegerType(self, fact: ValueType) -> str:
+        if not fact.is_fixnum:
+            return self.visit_ValueType(fact)
+        operation = self.gen.operation
+        bits = operation(f"ptrtoint ptr {self.value} to i64")
+        tag = operation(f"and i64 {bits}, 1")
+        tagged = operation(f"icmp ne i64 {tag}, 0")
+        decoded = operation(f"ashr i64 {bits}, 1")
+        lower = operation(f"icmp sge i64 {decoded}, {fact.minimum}")
+        upper = operation(f"icmp sle i64 {decoded}, {fact.maximum}")
+        bounds = operation(f"and i1 {lower}, {upper}")
+        return operation(f"and i1 {tagged}, {bounds}")
+
+    def visit_NoneType(self, fact: ValueType) -> str:
+        return self.gen.operation(f"icmp eq ptr {self.value}, @mule.none")
+
+    def boolean(self) -> tuple[str, str, str]:
+        operation = self.gen.operation
+        true = operation(f"icmp eq ptr {self.value}, @mule.true")
+        false = operation(f"icmp eq ptr {self.value}, @mule.false")
+        return true, false, operation(f"or i1 {true}, {false}")
+
+    def visit_BooleanType(self, fact: ValueType) -> str:
+        true, false, boolean = self.boolean()
+        allows_false = (fact.minimum is None or fact.minimum <= 0) and (
+            fact.maximum is None or fact.maximum >= 0
+        )
+        allows_true = (fact.minimum is None or fact.minimum <= 1) and (
+            fact.maximum is None or fact.maximum >= 1
+        )
+        if allows_false and allows_true:
+            return boolean
+        if allows_true:
+            return true
+        if allows_false:
+            return false
+        return self.gen.operation("icmp eq i1 true, false")
+
+    def visit_ImmortalType(self, fact: ValueType) -> str:
+        _, _, boolean = self.boolean()
+        none = self.gen.operation(f"icmp eq ptr {self.value}, @mule.none")
+        return self.gen.operation(f"or i1 {boolean}, {none}")
+
+
+class FunctionGenerator:
+    """Emit one LLVM function for one IR2 component (one body)."""
+
+    def __init__(self, module: ModuleGenerator, component):
+        self.module = module
+        self.component = component
+        self.lambda_ = component.lambda_
+        self.context = component.context
+        self.plan = self.context.plan
+        self.raw = self.plan is not None
+        self.environment = component.environment
+        self.immortal_values: set[str] = set()
+        self.lines: list[str] = []
+        self.serial = 0
+        self.exception_target: str | None = None
+        self.labels = {block: block.label for block in component.blocks}
+        if self.raw:
+            self.body = self.plan.entry
+        elif self.context.id is not None:
+            self.body = module.specialized[self.lambda_, self.context.id]
+        else:
+            self.body = module.bodies[self.lambda_]
+        self.local_slots: dict[str, str] = {}
+        self.value_tns = []
+        self.local_tns = []
+        self.range_tns = []
+        for tn in component.tns:
+            if tn.primitive_type is not None and tn.sc is RANGE:
+                self.range_tns.append(tn)
+                tn.slot = f"%range.{len(self.range_tns) - 1}"
+            elif tn.leaf is not None or tn.name is not None and tn.name.startswith("$"):
+                self.local_tns.append(tn)
+                tn.slot = f"%local.{len(self.local_tns) - 1}"
+                if tn.leaf is not None:
+                    self.local_slots[tn.leaf.name] = tn.slot
+            else:
+                self.value_tns.append(tn)
+                tn.slot = f"%value.{len(self.value_tns) - 1}"
+        self.owner_slots: dict[object, str] = {}
+        if self.raw:
+            self.owner_slots = {
+                node: f"%owner.{index}"
+                for index, node in enumerate(self.plan.allocations)
+            }
+            self.dependencies = {
+                name: f"%class.{index}"
+                for index, name in enumerate(self.plan.dependencies)
+            }
+        self.max_args = max(
+            (len(vop.args) for block in component.blocks for vop in block.vops),
+            default=0,
+        )
+
+    # Text helpers
+
+    def line(self, text: str) -> None:
+        self.lines.append("  " + text)
+
+    def fresh(self, prefix: str = "t") -> str:
+        self.serial += 1
+        return f"%{prefix}.{self.serial}"
+
+    def operation(self, text: str) -> str:
+        value = self.fresh()
+        self.line(f"{value} = {text}")
+        return value
+
+    def guard(self, failed: str) -> None:
+        continuation = self.fresh("ok")[1:]
+        target = (
+            "error"
+            if self.exception_target is None
+            else "unwind." + self.exception_target
+        )
+        self.line(f"br i1 {failed}, label %{target}, label %{continuation}")
+        self.lines.append(continuation + ":")
+
+    def check_pointer(self, value: str) -> None:
+        self.guard(self.operation(f"icmp eq ptr {value}, null"))
+
+    def check_status(self, value: str) -> None:
+        self.guard(self.operation(f"icmp slt i32 {value}, 0"))
+
+    def propagate(self) -> None:
+        target = (
+            "error"
+            if self.exception_target is None
+            else "unwind." + self.exception_target
+        )
+        self.line(f"br label %{target}")
+
+    # TN access
+
+    def mark_immortal(self, tn, value: str) -> None:
+        if tn.sc in OBJECT and not tn.sc.owned:
+            self.immortal_values.add(value)
+
+    def load(self, ref) -> str:
+        tn = ref.tn
+        value = self.operation(f"load {tn.sc.llvm_type}, ptr {tn.slot}")
+        self.mark_immortal(tn, value)
+        return value
+
+    def take(self, ref) -> str:
+        """Consume a temporary: load its value and clear the slot so the
+        error path no longer releases it."""
+        tn = ref.tn
+        value = self.load(ref)
+        if tn.sc in OBJECT:
+            self.line(f"store ptr null, ptr {tn.slot}")
+        return value
+
+    def store(self, ref, value: str) -> None:
+        tn = ref.tn
+        if tn.sc in OBJECT:
+            self.publish(ref, value)
+            return
+        self.line(f"store {tn.sc.llvm_type} {value}, ptr {tn.slot}")
+
+    def publish(self, ref, value: str) -> None:
+        tn = ref.tn
+        old = self.operation(f"load ptr, ptr {tn.slot}")
+        self.line(f"store ptr {value}, ptr {tn.slot}")
+        self.mark_immortal(tn, old)
+        self.mark_immortal(tn, value)
+        if tn.sc.owned:
+            self.release(old)
+
+    def release(self, value: str) -> None:
+        if value in self.immortal_values:
+            return
+        self.line(f"call void @mule.fast.release(ptr {value})")
+
+    def refine(self, tn, value: str) -> None:
+        """Expose proven representation/range facts after the error check."""
+        self.mark_immortal(tn, value)
+        self.refine_type(tn.type or UNKNOWN, value)
+
+    def refine_type(self, fact: ValueType, value: str, *, nullable=False) -> None:
+        if fact.is_fixnum:
+            bits = self.operation(f"ptrtoint ptr {value} to i64")
+            tagged = None
+            if self.context.id is None:
+                tag = self.operation(f"and i64 {bits}, 1")
+                tagged = self.operation(f"icmp ne i64 {tag}, 0")
+            decoded = self.operation(f"ashr i64 {bits}, 1")
+            lower = self.operation(f"icmp sge i64 {decoded}, {fact.minimum}")
+            upper = self.operation(f"icmp sle i64 {decoded}, {fact.maximum}")
+            bounded = self.operation(f"and i1 {lower}, {upper}")
+            valid = (
+                self.operation(f"and i1 {tagged}, {bounded}")
+                if tagged is not None
+                else bounded
+            )
+            if nullable:
+                missing = self.operation(f"icmp eq ptr {value}, null")
+                valid = self.operation(f"or i1 {missing}, {valid}")
+            self.line(f"call void @llvm.assume(i1 {valid})")
+
+    def pointer_result(self, ref, operation: str, consumed=()) -> None:
+        value = self.operation(operation)
+        self.publish(ref, value)
+        for operand in consumed:
+            self.release(operand)
+        self.check_pointer(value)
+        self.refine(ref.tn, value)
+
+    def native_result(self, ref, value: str, consumed=()) -> None:
+        self.publish(ref, value)
+        for operand in consumed:
+            self.release(operand)
+        self.refine(ref.tn, value)
+
+    def parameter(self, index: int) -> str:
+        return f"%parameter.{index}"
+
+    def local_slot(self, name: str) -> str:
+        return self.local_slots[name]
+
+    def dependency(self, name: str) -> str:
+        return self.dependencies[name]
+
+    def owner_slot(self, node) -> str:
+        return self.owner_slots[node]
+
+    def argv(self, values) -> None:
+        for index, value in enumerate(values):
+            slot = self.operation(f"getelementptr ptr, ptr %argv, i64 {index}")
+            self.line(f"store ptr {value}, ptr {slot}")
+
+    def decode(self, value: str) -> str:
+        bits = self.operation(f"ptrtoint ptr {value} to i64")
+        return self.operation(f"ashr i64 {bits}, 1")
+
+    def encode(self, value: str) -> str:
+        shifted = self.operation(f"shl i64 {value}, 1")
+        tagged = self.operation(f"or i64 {shifted}, 1")
+        return self.operation(f"inttoptr i64 {tagged} to ptr")
+
+    def constant(self, literal) -> str:
+        return literal.accept(vops.LiteralEmitter(self.module))
+
+    def truth(self, tn, value: str) -> str:
+        """An ``i1`` for the truth of a value in ``tn``'s representation."""
+        sc = tn.sc
+        if sc is BOOLEAN:
+            return value
+        if sc is SIGNED:
+            return self.operation(f"icmp ne i64 {value}, 0")
+        if sc is NULL:
+            return "false"
+        if (tn.type or UNKNOWN).is_fixnum:
+            bits = self.operation(f"ptrtoint ptr {value} to i64")
+            nonzero = self.operation(f"icmp ne i64 {bits}, 1")
+            truth = self.operation(f"zext i1 {nonzero} to i32")
+        else:
+            truth = self.operation(f"call i32 @mule.fast.truth(ptr {value})")
+        self.release(value)
+        self.check_status(truth)
+        return self.operation(f"icmp ne i32 {truth}, 0")
+
+    def box(self, tn, value: str) -> str:
+        """An owned object for a raw value."""
+        sc = tn.sc
+        if sc is SIGNED:
+            return self.operation(f"call ptr @mule_box_i64(i64 {value})")
+        if sc is BOOLEAN:
+            wide = self.operation(f"zext i1 {value} to i32")
+            return self.operation(f"call ptr @mule_bool(i32 {wide})")
+        if sc is NULL:
+            return "@mule.none"
+        return value
+
+    def field_address(self, tn, payload: str, name: str) -> str:
+        layout = tn.primitive_type.layout
+        index = layout.info.fields.index(name)
+        return self.operation(f"getelementptr i64, ptr {payload}, i64 {index}")
+
+    def arithmetic(self, opcode: str, left: str, right: str) -> str:
+        if opcode in ("add", "sub", "mul"):
+            if self.lambda_.policy.safety:
+                checked = self.operation(
+                    f"call {{i64, i1}} @llvm.s{opcode}.with.overflow.i64(i64 {left}, i64 {right})"
+                )
+                value = self.operation(f"extractvalue {{i64, i1}} {checked}, 0")
+                overflow = self.operation(f"extractvalue {{i64, i1}} {checked}, 1")
+                failed, continuation = (
+                    self.fresh("overflow")[1:],
+                    self.fresh("bounded")[1:],
+                )
+                self.line(f"br i1 {overflow}, label %{failed}, label %{continuation}")
+                self.lines.append(failed + ":")
+                self.line("call i32 @mule_native_overflow()")
+                self.line("br label %error")
+                self.lines.append(continuation + ":")
+                return value
+            return self.operation(f"{opcode} nsw i64 {left}, {right}")
+        return self.operation(f"{opcode} i64 {left}, {right}")
+
+    # Calls
+
+    def compiled_call(self, function, values, globals_value="%globals") -> str:
+        """Call a compiled stdlib body inside a runtime frame, borrowing the
+        arguments (``CompiledCall``)."""
+        body = (
+            self.module.bodies[function]
+            if isinstance(function, Lambda)
+            else self.module.bodies_by_name[function]
+        )
+        status = self.operation("call i32 @mule_enter_frame()")
+        failed, entered, join = (
+            self.fresh(label)[1:]
+            for label in ("protocol.failed", "protocol.entered", "protocol.join")
+        )
+        bad = self.operation(f"icmp slt i32 {status}, 0")
+        self.line(f"br i1 {bad}, label %{failed}, label %{entered}")
+        self.lines.append(failed + ":")
+        self.line(f"br label %{join}")
+        self.lines.append(entered + ":")
+        owned = [
+            self.operation(f"call ptr @mule.fast.retain(ptr {value})")
+            for value in values
+        ]
+        operands = ", ".join(
+            [f"ptr {globals_value}", *(f"ptr {value}" for value in owned)]
+        )
+        result = self.operation(f"call ptr {body}({operands})")
+        self.line("call void @mule_leave_frame()")
+        self.line(f"br label %{join}")
+        self.lines.append(join + ":")
+        return self.operation(f"phi ptr [null, %{failed}], [{result}, %{entered}]")
+
+    def sequence_call(self, name: str, values) -> str:
+        globals_value = self.operation("call ptr @mule_protocol_globals()")
+        return self.compiled_call(
+            self.module.sequence_functions[name], values, globals_value
+        )
+
+    def tuple_of(self, result, refs) -> str | None:
+        """Build an owned tuple of the given operands, or None when empty.
+        The tuple is parked in ``result``'s slot while it is built so error
+        cleanup releases it."""
+        if not refs:
+            return None
+        taken = [self.take(ref) for ref in refs]
+        self.argv(taken)
+        built = self.operation(
+            f"call ptr @mule_sequence_tuple(i64 {len(taken)}, ptr %argv)"
+        )
+        self.publish(result, built)
+        for value in taken:
+            self.release(value)
+        self.check_pointer(built)
+        return self.take(result)
+
+    def keyword_expression(self, callable_value, receiver, values, keywords):
+        positional = [
+            value for value, name in zip(values, keywords, strict=True) if name is None
+        ]
+        named = [
+            (name, value)
+            for value, name in zip(values, keywords, strict=True)
+            if name is not None
+        ]
+        self.argv([*positional, *(value for name, value in named)])
+        kw_values = self.operation(
+            f"getelementptr ptr, ptr %argv, i64 {len(positional)}"
+        )
+        names = self.module.names(tuple(name for name, value in named))
+        return (
+            f"call ptr @mule_call_keywords(ptr {callable_value}, ptr {receiver}, "
+            f"i64 {len(positional)}, ptr %argv, i64 {len(named)}, ptr {names}, ptr {kw_values})"
+        )
+
+    def call_method(self, info, callable_value, receiver, arguments) -> str:
+        """Guard a predicted method and pass owned arguments to its native body."""
+        module = self.module
+        target = module.method_targets.get(info.name)
+        function = (
+            target
+            if target is not None
+            and target.call_order(info.keywords, len(arguments), receiver=True)
+            is not None
+            else None
+        )
+        fallback_call = (
+            f"call ptr @mule_call_resolved(ptr {callable_value}, ptr {receiver}, "
+            f"i64 {len(arguments)}, ptr %argv)"
+        )
+        if info.keywords:
+            fallback_call = self.keyword_expression(
+                callable_value, receiver, arguments, info.keywords
+            )
+        if function is None:
+            return self.operation(fallback_call)
+        order = function.call_order(info.keywords, len(arguments), receiver=True)
+        normalized = [
+            receiver if index == -1 else arguments[index] if index >= 0 else None
+            for index in order
+        ]
+        matched = self.operation(
+            f"call i32 @mule_function_matches(ptr {callable_value}, "
+            f"ptr {module.functions[function]}, ptr %globals)"
+        )
+        identity = self.operation(f"icmp ne i32 {matched}, 0")
+        bound = self.operation(f"icmp ne ptr {receiver}, null")
+        valid = self.operation(f"and i1 {identity}, {bound}")
+        direct, fallback, entered, failed, join = (
+            self.fresh(label)[1:]
+            for label in (
+                "method.direct",
+                "method.fallback",
+                "method.entered",
+                "method.failed",
+                "method.join",
+            )
+        )
+        self.line(f"br i1 {valid}, label %{direct}, label %{fallback}")
+        self.lines.append(direct + ":")
+        frame = self.operation("call i32 @mule_enter_frame()")
+        rejected = self.operation(f"icmp slt i32 {frame}, 0")
+        self.line(f"br i1 {rejected}, label %{failed}, label %{entered}")
+        self.lines.append(failed + ":")
+        self.line(f"br label %{join}")
+        self.lines.append(entered + ":")
+        normalized = [
+            value
+            if value is not None
+            else self.operation(
+                f"call ptr @mule_function_default(ptr {callable_value}, i32 {-2 - index})"
+            )
+            for index, value in zip(order, normalized, strict=True)
+        ]
+        owned = [
+            value
+            if value in self.immortal_values
+            else self.operation(f"call ptr @mule.fast.retain(ptr {value})")
+            for value in normalized
+        ]
+        operands = ", ".join(
+            [
+                "ptr %globals",
+                *module.closure_operand(self, function, callable_value),
+                *(f"ptr {value}" for value in owned),
+            ]
+        )
+        result = self.operation(f"call ptr {module.bodies[function]}({operands})")
+        self.line("call void @mule_leave_frame()")
+        self.line(f"br label %{join}")
+        self.lines.append(fallback + ":")
+        general = self.operation(fallback_call)
+        self.line(f"br label %{join}")
+        self.lines.append(join + ":")
+        return self.operation(
+            f"phi ptr [null, %{failed}], [{result}, %{entered}], [{general}, %{fallback}]"
+        )
+
+    def argument_guard(self, value: str, expected: ValueType) -> str:
+        """Check representation/range without touching or invoking an object."""
+        return expected.accept(_ArgumentGuard(self, value))
+
+    def call(self, site, callee: str, argument_refs, arguments) -> str:
+        """Dispatch once to a guarded typed entry or the general native entry."""
+        module = self.module
+        keywords = site.keywords
+        target = site.target
+        function = (
+            target
+            if target is not None
+            and target.call_order(keywords, len(arguments)) is not None
+            else None
+        )
+        fallback_call = (
+            self.keyword_expression(callee, "null", arguments, keywords)
+            if keywords
+            else f"call ptr @mule_call(ptr {callee}, i64 {len(arguments)}, ptr %argv)"
+        )
+        if function is None:
+            return self.operation(fallback_call)
+        order = function.call_order(keywords, len(arguments))
+        arguments = [arguments[index] if index >= 0 else None for index in order]
+        argument_types = tuple(
+            (argument_refs[index].tn.type or UNKNOWN) if index >= 0 else None
+            for index in order
+        )
+        join = self.fresh("call.join")[1:]
+        direct = self.fresh("call.direct")[1:]
+        fallback_label = self.fresh("call.fallback")[1:]
+        matched = self.operation(
+            f"call i32 @mule_function_matches(ptr {callee}, "
+            f"ptr {module.functions[function]}, ptr %globals)"
+        )
+        matching = self.operation(f"icmp ne i32 {matched}, 0")
+        self.line(f"br i1 {matching}, label %{direct}, label %{fallback_label}")
+        self.lines.append(direct + ":")
+        incoming = []
+
+        def invoke(context) -> None:
+            entered = self.fresh("call.entered")[1:]
+            failed = self.fresh("call.failed")[1:]
+            frame = self.operation("call i32 @mule_enter_frame()")
+            rejected = self.operation(f"icmp slt i32 {frame}, 0")
+            self.line(f"br i1 {rejected}, label %{failed}, label %{entered}")
+            self.lines.append(failed + ":")
+            self.line(f"br label %{join}")
+            incoming.append(("null", failed))
+            self.lines.append(entered + ":")
+            parameter_facts = (
+                context.parameters if context else [UNKNOWN] * len(arguments)
+            )
+            normalized = [
+                argument
+                if argument is not None
+                else self.operation(
+                    f"call ptr @mule_function_default(ptr {callee}, i32 {-2 - index})"
+                )
+                for index, argument in zip(order, arguments, strict=True)
+            ]
+            owned = [
+                argument
+                if argument in self.immortal_values
+                or fact.is_fixnum
+                or fact.is_immortal
+                else self.operation(f"call ptr @mule.fast.retain(ptr {argument})")
+                for argument, fact in zip(normalized, parameter_facts, strict=True)
+            ]
+            operands = ", ".join(
+                [
+                    "ptr %globals",
+                    *module.closure_operand(self, function, callee),
+                    *(f"ptr {value}" for value in owned),
+                ]
+            )
+            body = (
+                module.specialized[function, context.id]
+                if context
+                else module.bodies[function]
+            )
+            result = self.operation(f"call ptr {body}({operands})")
+            self.line("call void @mule_leave_frame()")
+            if context:
+                # The callable identity and arguments were checked on this arm.
+                # NULL remains an error result; the generic fallback has no fact.
+                self.refine_type(context.return_type, result, nullable=True)
+            self.line(f"br label %{join}")
+            incoming.append((result, entered))
+
+        contexts = sorted(
+            module.variants_of(function),
+            key=lambda context: sum(
+                fact.maximum - fact.minimum if fact.is_fixnum else 2**64
+                for fact in context.parameters
+            ),
+        )
+        if any(index < 0 for index in order):
+            contexts = []
+        for context in contexts:
+            guards = [
+                self.argument_guard(value, expected)
+                for source, value, expected in zip(
+                    argument_types, arguments, context.parameters, strict=True
+                )
+                if not source.dispatch_fits(expected)
+            ]
+            if not guards:
+                invoke(context)
+                break
+            valid = guards[0]
+            for guard in guards[1:]:
+                valid = self.operation(f"and i1 {valid}, {guard}")
+            typed = self.fresh("call.typed")[1:]
+            next_ = self.fresh("call.general")[1:]
+            self.line(f"br i1 {valid}, label %{typed}, label %{next_}")
+            self.lines.append(typed + ":")
+            invoke(context)
+            self.lines.append(next_ + ":")
+        else:
+            invoke(None)
+        self.lines.append(fallback_label + ":")
+        fallback = self.operation(fallback_call)
+        self.line(f"br label %{join}")
+        incoming.append((fallback, fallback_label))
+        self.lines.append(join + ":")
+        alternatives = ", ".join(f"[ {value}, %{label} ]" for value, label in incoming)
+        return self.operation(f"phi ptr {alternatives}")
+
+    # Function emission
+
+    def emit(self) -> str:
+        if self.raw:
+            return self.emit_raw()
+        wrapper = self.wrapper() if self.context.id is None else ""
+        adapter = ""
+        plan = self.module.native_plans.get(self.lambda_)
+        if plan is not None and self.context.id is None:
+            adapter = native_adapter(self, plan)
+            self.body += ".boxed"
+            self.lines = []
+        lambda_ = self.lambda_
+        parameters = ", ".join(
+            ["ptr %globals"]
+            + (["ptr %closure"] if self.module.closure_of(lambda_) else [])
+            + [f"ptr %parameter.{index}" for index in range(len(lambda_.vars))]
+        )
+        attributes = ""
+        if lambda_.policy.speed == 0:
+            attributes = " noinline optnone"
+        elif lambda_.policy.debug == 3:
+            attributes = " noinline"
+        self.lines.append(
+            f"define internal ptr {self.body}({parameters}){attributes} {{"
+        )
+        self.lines.append("entry:")
+        if self.context.id is not None:
+            for index, fact in enumerate(self.context.parameters):
+                value = f"%parameter.{index}"
+                if fact.is_fixnum or fact.is_immortal:
+                    self.immortal_values.add(value)
+                self.refine_type(fact, value)
+        self.line("%return = alloca ptr")
+        self.line("store ptr null, ptr %return")
+        for tn in [*self.local_tns, *self.value_tns]:
+            self.line(f"{tn.slot} = alloca {tn.sc.llvm_type}")
+            self.line(f"store {tn.sc.llvm_type} {tn.sc.zero}, ptr {tn.slot}")
+        for tn in self.range_tns:
+            self.line(f"{tn.slot} = alloca [3 x i64]")
+            self.line(f"store [3 x i64] zeroinitializer, ptr {tn.slot}")
+        self.line(f"%argv = alloca [{max(1, self.max_args)} x ptr]")
+        self.line(f"br label %{self.component.blocks[0].label}")
+        self.emit_blocks()
+        for target in dict.fromkeys(
+            block_exception_target(block.block) for block in self.component.blocks
+        ):
+            if target is None:
+                continue
+            label = self.component.ir2_blocks[target].label
+            self.lines.append("unwind." + label + ":")
+            for tn in self.value_tns:
+                if tn.sc not in OBJECT:
+                    continue
+                value = self.operation(f"load ptr, ptr {tn.slot}")
+                self.line(f"store ptr null, ptr {tn.slot}")
+                self.mark_immortal(tn, value)
+                if tn.sc.owned:
+                    self.release(value)
+            self.line(f"br label %{label}")
+        self.lines.append("error:")
+        self.line("br label %cleanup")
+        self.lines.append("cleanup:")
+        for tn in [*self.local_tns, *self.value_tns]:
+            if tn.sc is DESCRIPTOR:
+                self.release(self.operation(f"load ptr, ptr {tn.slot}"))
+        value = self.operation("load ptr, ptr %return")
+        self.line(f"ret ptr {value}")
+        self.lines.append("}")
+        return wrapper + "\n\n" + adapter + "\n\n" + "\n".join(self.lines)
+
+    def emit_blocks(self) -> None:
+        for block in self.component.blocks:
+            self.lines.append(block.label + ":")
+            target = block_exception_target(block.block)
+            self.exception_target = (
+                self.component.ir2_blocks[target].label if target is not None else None
+            )
+            for vop in block.vops:
+                vop.info.generator(self, vop)
+
+    def emit_raw(self) -> str:
+        """Native entry: borrowed raw slots and scalars, ownership only at edges."""
+        plan = self.plan
+        lambda_ = self.lambda_
+        parameters = ["ptr %globals", "ptr %error.flag"]
+        parameters.extend(
+            f"{rep.llvm_type} %parameter.{index}"
+            for index, rep in enumerate(plan.parameters)
+        )
+        parameters.extend(f"ptr {value}" for value in self.dependencies.values())
+        attributes = " noinline" if lambda_.policy.debug == 3 else ""
+        returned = plan.returned
+        self.lines = [
+            f"define internal {returned.llvm_type} {plan.entry}({', '.join(parameters)}){attributes} {{",
+            "entry:",
+        ]
+        self.line(f"%return = alloca {returned.llvm_type}")
+        self.line(f"store {returned.llvm_type} {returned.zero}, ptr %return")
+        self.line("%call.error = alloca i1")
+        for tn in [*self.local_tns, *self.value_tns]:
+            self.line(f"{tn.slot} = alloca {tn.sc.llvm_type}")
+            if tn.sc in OBJECT:
+                self.line(f"store ptr null, ptr {tn.slot}")
+        for slot in self.owner_slots.values():
+            self.line(f"{slot} = alloca ptr")
+            self.line(f"store ptr null, ptr {slot}")
+        self.line(f"%argv = alloca [{max(1, self.max_args)} x ptr]")
+        self.line(f"br label %{self.component.blocks[0].label}")
+        self.emit_blocks()
+        self.lines.append("error:")
+        self.line("store i1 true, ptr %error.flag")
+        self.line("br label %cleanup")
+        self.lines.append("cleanup:")
+        for slot in self.owner_slots.values():
+            owner = self.operation(f"load ptr, ptr {slot}")
+            self.line(f"call void @mule.fast.release(ptr {owner})")
+        result = self.operation(f"load {returned.llvm_type}, ptr %return")
+        self.line(f"ret {returned.llvm_type} {result}")
+        self.lines.append("}")
+        return "\n".join(self.lines)
+
+    def wrapper_closure(self, lines) -> list[str]:
+        """Fetch the running function's closure from the argument view."""
+        if not self.module.closure_of(self.lambda_):
+            return []
+        lines.append("  %closure = call ptr @mule_closure(ptr %args)")
+        return ["ptr %closure"]
+
+    def binding_wrapper(self) -> str:
+        lambda_ = self.lambda_
+        module = self.module
+        count = len(lambda_.vars)
+        kinds = lambda_.signature.kinds
+        from mule import ast
+
+        positional = sum(
+            kind
+            in (
+                ast.ParameterKind.POSITIONAL_ONLY,
+                ast.ParameterKind.POSITIONAL_OR_KEYWORD,
+            )
+            for kind in kinds
+        )
+        fast = ast.ParameterKind.KEYWORD_ONLY not in kinds
+        lines = [
+            f"define ptr {module.functions[lambda_]}(ptr %globals, ptr %args) {{",
+            "entry:",
+        ]
+        for index in range(count):
+            lines += [
+                f"  %slot.{index} = alloca ptr",
+                f"  store ptr null, ptr %slot.{index}",
+            ]
+        if fast:
+            lines += [
+                f"  %plain.status = call i32 @mule_binding_plain(ptr %args, i32 {positional}, i32 {int(lambda_.signature.variadic)})",
+                "  %fits = icmp ne i32 %plain.status, 0",
+                "  br i1 %fits, label %plain, label %binding",
+                "plain:",
+            ]
+            for index in range(count):
+                getter = (
+                    "mule_rest_args"
+                    if kinds[index] == ast.ParameterKind.VAR_POSITIONAL
+                    else "mule_arg"
+                )
+                lines += [
+                    f"  %plain.{index} = call ptr @{getter}(ptr %args, i32 {index})",
+                    f"  store ptr %plain.{index}, ptr %slot.{index}",
+                    f"  %plain.missing.{index} = icmp eq ptr %plain.{index}, null",
+                    f"  br i1 %plain.missing.{index}, label %failed, label %plain.ok.{index}",
+                    f"plain.ok.{index}:",
+                ]
+            lines.append("  br label %invoke")
+        else:
+            lines.append("  br label %binding")
+        lines += [
+            "binding:",
+            "  %private = call ptr @mule_protocol_globals()",
+            "  %owned.view = call ptr @mule.fast.retain(ptr %args)",
+            "  %owned.namespace = call ptr @mule.fast.retain(ptr %globals)",
+            f"  %bound.result = call ptr {module.bodies_by_name[lambda_.binding]}(ptr %private, ptr %owned.view, ptr %owned.namespace)",
+            "  ret ptr %bound.result",
+            "invoke:",
+        ]
+        for index in range(count):
+            lines.append(f"  %parameter.{index} = load ptr, ptr %slot.{index}")
+        arguments = ", ".join(
+            [
+                "ptr %globals",
+                *self.wrapper_closure(lines),
+                *(f"ptr %parameter.{index}" for index in range(count)),
+            ]
+        )
+        lines += [
+            f"  %result = call ptr {module.bodies[lambda_]}({arguments})",
+            "  ret ptr %result",
+            "failed:",
+        ]
+        for index in range(count):
+            lines += [
+                f"  %old.{index} = load ptr, ptr %slot.{index}",
+                f"  call void @mule.fast.release(ptr %old.{index})",
+            ]
+        lines += ["  ret ptr null", "}"]
+        return "\n".join(lines)
+
+    def wrapper(self) -> str:
+        """General entry validates an argument view and transfers owned arguments."""
+        lambda_ = self.lambda_
+        module = self.module
+        if lambda_.binding is not None:
+            return self.binding_wrapper()
+        count = len(lambda_.vars)
+        variadic = lambda_.signature.variadic
+        fixed = count - int(variadic)
+        check = "mule_check_rest_args" if variadic else "mule_check_args"
+        lines = [
+            f"define ptr {module.functions[lambda_]}(ptr %globals, ptr %args) {{",
+            "entry:",
+        ]
+        for index in range(count):
+            lines.extend(
+                [
+                    f"  %slot.{index} = alloca ptr",
+                    f"  store ptr null, ptr %slot.{index}",
+                ]
+            )
+        lines.extend(
+            [
+                f"  %status = call i32 @{check}(ptr %args, i32 {fixed})",
+                "  %wrong = icmp slt i32 %status, 0",
+                "  br i1 %wrong, label %failed, label %checked",
+                "checked:",
+            ]
+        )
+        for index in range(count):
+            getter = "mule_rest_args" if variadic and index == fixed else "mule_arg"
+            lines.extend(
+                [
+                    f"  %arg.{index} = call ptr @{getter}(ptr %args, i32 {index})",
+                    f"  store ptr %arg.{index}, ptr %slot.{index}",
+                    f"  %missing.{index} = icmp eq ptr %arg.{index}, null",
+                    f"  br i1 %missing.{index}, label %failed, label %arg.ok.{index}",
+                    f"arg.ok.{index}:",
+                ]
+            )
+        arguments = ", ".join(
+            [
+                "ptr %globals",
+                *self.wrapper_closure(lines),
+                *(f"ptr %arg.{index}" for index in range(count)),
+            ]
+        )
+        lines.extend(
+            [
+                f"  %result = call ptr {module.bodies[lambda_]}({arguments})",
+                "  ret ptr %result",
+                "failed:",
+            ]
+        )
+        for index in range(count):
+            lines.extend(
+                [
+                    f"  %old.{index} = load ptr, ptr %slot.{index}",
+                    f"  call void @mule.fast.release(ptr %old.{index})",
+                ]
+            )
+        lines.extend(["  ret ptr null", "}"])
+        return "\n".join(lines)
+
+
+def native_adapter(gen: FunctionGenerator, plan) -> str:
+    """Boxed entry checks physical boundaries once, then calls a raw entry."""
+    parameters = ", ".join(
+        ["ptr %globals", *(f"ptr %parameter.{i}" for i in range(len(plan.parameters)))]
+    )
+    attributes = " noinline" if plan.function.policy.debug == 3 else ""
+    gen.lines = [
+        f"define internal ptr {gen.body}({parameters}){attributes} {{",
+        "entry:",
+    ]
+    gen.line("%result = alloca ptr")
+    gen.line("store ptr null, ptr %result")
+    gen.line("%native.error = alloca i1")
+    gen.line("store i1 false, ptr %native.error")
+    dependencies = []
+    slots = []
+    for index in range(len(plan.dependencies)):
+        slot = f"%dependency.{index}"
+        slots.append(slot)
+        gen.line(f"{slot} = alloca ptr")
+        gen.line(f"store ptr null, ptr {slot}")
+    for index, (name, prediction) in enumerate(plan.dependencies.items()):
+        value = gen.operation(
+            f"call ptr @mule_load_global(ptr %globals, ptr {gen.module.text(name)})"
+        )
+        gen.line(f"store ptr {value}, ptr {slots[index]}")
+        gen.check_pointer(value)
+        matched = gen.operation(
+            f"call i32 @mule_native_class_matches(ptr {value}, ptr {prediction.layout.schema}, ptr %globals)"
+        )
+        wrong = gen.operation(f"icmp eq i32 {matched}, 0")
+        continuation = gen.fresh("layout.ok")[1:]
+        gen.line(f"br i1 {wrong}, label %fallback, label %{continuation}")
+        gen.lines.append(continuation + ":")
+        dependencies.append(value)
+    arguments = [
+        rep.parameter(gen, f"%parameter.{i}") for i, rep in enumerate(plan.parameters)
+    ]
+    call = ["ptr %globals", "ptr %native.error"]
+    call.extend(
+        f"{rep.llvm_type} {value}"
+        for rep, value in zip(plan.parameters, arguments, strict=True)
+    )
+    call.extend(f"ptr {value}" for value in dependencies)
+    result = gen.operation(
+        f"call {plan.returned.llvm_type} {plan.entry}({', '.join(call)})"
+    )
+    failed = gen.operation("load i1, ptr %native.error")
+    gen.guard(failed)
+    boxed = _box_representation(gen, plan.returned, result)
+    gen.line(f"store ptr {boxed}, ptr %result")
+    gen.line("br label %cleanup")
+    if plan.dependencies:
+        gen.lines.append("fallback:")
+        for slot in slots:
+            gen.release(gen.operation(f"load ptr, ptr {slot}"))
+        result = gen.operation(f"call ptr {gen.body}.boxed({parameters})")
+        gen.line(f"ret ptr {result}")
+    gen.lines.append("error:")
+    gen.line("br label %cleanup")
+    gen.lines.append("cleanup:")
+    for slot in slots:
+        gen.release(gen.operation(f"load ptr, ptr {slot}"))
+    for i in range(len(plan.parameters)):
+        gen.release(f"%parameter.{i}")
+    result = gen.operation("load ptr, ptr %result")
+    gen.line(f"ret ptr {result}")
+    gen.lines.append("}")
+    return "\n".join(gen.lines)
+
+
+def _box_representation(gen, representation, value: str) -> str:
+    sc = representation.primitive_type.scs[-1]
+    if sc is SIGNED:
+        return gen.operation(f"call ptr @mule_box_i64(i64 {value})")
+    if sc is BOOLEAN:
+        wide = gen.operation(f"zext i1 {value} to i32")
+        return gen.operation(f"call ptr @mule_bool(i32 {wide})")
+    if sc is NULL:
+        return "@mule.none"
+    raise ValueError(f"{representation!r} cannot be returned from a native entry")
+
+
+def native_callbacks(module: ModuleGenerator, layout) -> str:
+    """Adapt borrowed primitive ABI arguments to owned compiled Mule entries."""
+    initializer = layout.methods["__init__"]
+    count = len(initializer.vars) - 1
+    constructor = [
+        f"define internal ptr {layout.constructor}(ptr %globals, ptr %class, i64 %count, ptr %args) {{",
+        "entry:",
+        f"  %wrong = icmp ne i64 %count, {count}",
+        "  br i1 %wrong, label %error, label %checked",
+        "checked:",
+        "  %owned.class = call ptr @mule.fast.retain(ptr %class)",
+    ]
+    parameters = ["ptr %globals", "ptr %owned.class"]
+    for i in range(count):
+        constructor.extend(
+            [
+                f"  %slot.{i} = getelementptr ptr, ptr %args, i64 {i}",
+                f"  %arg.{i} = load ptr, ptr %slot.{i}",
+                f"  %owned.{i} = call ptr @mule.fast.retain(ptr %arg.{i})",
+            ]
+        )
+        parameters.append(f"ptr %owned.{i}")
+    constructor.extend(
+        [
+            f"  %result = call ptr {module.bodies[layout.protocols['construct']]}({', '.join(parameters)})",
+            "  ret ptr %result",
+            "error:",
+            "  call i32 @mule_native_type_error()",
+            "  ret ptr null",
+            "}",
+        ]
+    )
+    if (
+        initializer.signature.default_parameters
+        or not initializer.signature.positional_body
+    ):
+        constructor = [
+            f"define internal ptr {layout.constructor}(ptr %globals, ptr %class, i64 %count, ptr %args) {{",
+            "entry:",
+            "  %result = call ptr @mule_construct_arguments(ptr %class, i64 %count, ptr %args)",
+            "  ret ptr %result",
+            "}",
+        ]
+    index = [
+        "  %shifted = shl i64 %index, 1",
+        "  %tagged = or i64 %shifted, 1",
+        "  %index.value = inttoptr i64 %tagged to ptr",
+        "  %owned.instance = call ptr @mule.fast.retain(ptr %instance)",
+    ]
+    getter = [
+        f"define internal ptr {layout.getter}(ptr %globals, ptr %instance, i64 %index) {{",
+        "entry:",
+        *index,
+        f"  %result = call ptr {module.bodies[layout.protocols['get_field']]}(ptr %globals, ptr %owned.instance, ptr %index.value)",
+        "  ret ptr %result",
+        "}",
+    ]
+    setter = [
+        f"define internal i32 {layout.setter}(ptr %globals, ptr %instance, i64 %index, ptr %value) {{",
+        "entry:",
+        *index,
+        "  %owned.value = call ptr @mule.fast.retain(ptr %value)",
+        f"  %result = call ptr {module.bodies[layout.protocols['set_field']]}(ptr %globals, ptr %owned.instance, ptr %index.value, ptr %owned.value)",
+        "  %failed = icmp eq ptr %result, null",
+        "  call void @mule.fast.release(ptr %result)",
+        "  %status = select i1 %failed, i32 -1, i32 0",
+        "  ret i32 %status",
+        "}",
+    ]
+    return "\n\n".join("\n".join(lines) for lines in (constructor, getter, setter))
+
+
+_ = (FunctionalKind, IMMEDIATE, CLASS)
+
+__all__ = [
+    "DECLARATIONS",
+    "FunctionGenerator",
+    "ModuleGenerator",
+    "Program",
+    "compile_component",
+    "generate",
+    "native_adapter",
+    "native_callbacks",
+]

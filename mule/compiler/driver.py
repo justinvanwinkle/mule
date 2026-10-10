@@ -8,7 +8,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .llvm import emit
+from . import (
+    argument_protocol,
+    format_protocol,
+    native_protocol,
+    print_protocol,
+    sequence_protocol,
+)
+from .codegen import Program, generate
 from .modules import compile_modules
 
 
@@ -16,8 +23,25 @@ class ToolchainError(RuntimeError):
     """The native toolchain or target runtime could not produce an artifact."""
 
 
+def compile_program(source: str, filename: str = "<unknown>") -> Program:
+    """Compile the main module, its imports, and the compiled stdlib
+    protocols the program needs, through the IR1 phases."""
+    main, modules = compile_modules(source, filename)
+    program = Program(
+        [*main.lambdas, *modules.lambdas], main.entry, {**main.facts, **modules.facts}
+    )
+    program.print_entry = print_protocol.prepare(program)
+    program.protocol_entry, program.sequence_functions = sequence_protocol.prepare(
+        program
+    )
+    program.argument_constructor = argument_protocol.prepare(program)
+    program.layouts = native_protocol.prepare(program)
+    format_protocol.prepare(program)
+    return program
+
+
 def emit_llvm(source: str, filename: str = "<unknown>") -> str:
-    return emit(compile_modules(source, filename))
+    return generate(compile_program(source, filename))
 
 
 def build_runtime(

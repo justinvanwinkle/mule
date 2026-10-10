@@ -3,8 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import ir
-from .frontend import lower
+from .main import compile_source
 
 STDLIB = Path(__file__).resolve().parents[2] / "stdlib"
 NATIVE_MODULES = {"_mule_native": "mule_native_module_init"}
@@ -23,7 +22,9 @@ class ModuleCompiler:
         self.roots = (Path(filename).resolve().parent, STDLIB / "bootstrap", STDLIB)
         self.prefix = prefix
         self.modules = {}
-        self.functions = []
+        # Lambdas and facts of every imported module, in import order.
+        self.lambdas = []
+        self.facts = {}
 
     def path_for(self, name):
         if name in NATIVE_MODULES:
@@ -90,24 +91,27 @@ class ModuleCompiler:
             )
         prefix = f"{self.prefix}mule_import_{len(self.modules)}_"
         descriptor = CompiledModule(name, path, prefix + "mule_module")
-        # Reserve identity before lowering so circular imports share one cache.
+        # Reserve identity before conversion so circular imports share one cache.
         self.modules[name] = descriptor
-        module = lower(
+        compilation = compile_source(
             path.read_text(encoding="utf-8"),
             str(path),
             imports=self,
             prefix=prefix,
             namespace=name,
         )
-        self.functions.extend(module.functions)
+        self.lambdas.extend(compilation.lambdas)
+        self.facts.update(compilation.facts)
         return descriptor
 
     def compile(self, source, filename):
-        main = lower(source, filename, imports=self)
-        module = ir.Module([*main.functions, *self.functions], main.entry)
-        ir.verify(module)
-        return module
+        """Compile the main module; imported modules accumulate on the
+        compiler. Returns the main module's ``Compilation``."""
+        return compile_source(source, filename, imports=self)
 
 
 def compile_modules(source, filename="<unknown>"):
-    return ModuleCompiler(filename).compile(source, filename)
+    """Compile a program's modules. Returns the main compilation and the
+    module compiler holding the imported modules."""
+    compiler = ModuleCompiler(filename)
+    return compiler.compile(source, filename), compiler

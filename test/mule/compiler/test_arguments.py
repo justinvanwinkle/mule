@@ -362,7 +362,8 @@ def test_generated_external_binder_calls_body_without_argument_tuple():
     from mule.compiler import emit_llvm
 
     llvm = emit_llvm("def f(a, b=2):\n    return a + b\nf(a=1)\n")
-    binder = llvm.split("define internal ptr @mule.body.2(")[1].split("\n}\n", 1)[0]
+    bodies = llvm.split("define internal ptr @mule.body.")[1:]
+    binder = next(body for body in bodies if "@mule_binding_count(" in body)
     assert "call ptr @mule.body.1(" in binder
     assert "call ptr @mule_sequence_tuple(" not in binder
 

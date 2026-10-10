@@ -671,7 +671,7 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 if status < 0 || !show(mule_load_global(globals, c"answer".as_ptr())) {
                     return ptr::null_mut();
                 }
-                let builtin = mule_load_global(globals, c"print".as_ptr());
+                let builtin = mule_load_global(globals, c"repr".as_ptr());
                 if builtin.is_null() {
                     return ptr::null_mut();
                 }
@@ -680,10 +680,10 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 println!("callable={}", i32::from(callable));
                 release(builtin);
                 let none = mule_none();
-                let status = mule_store_global(globals, c"print".as_ptr(), none);
+                let status = mule_store_global(globals, c"repr".as_ptr(), none);
                 release(none);
                 if status < 0
-                    || !show(mule_load_global(globals, c"print".as_ptr()))
+                    || !show(mule_load_global(globals, c"repr".as_ptr()))
                     || !show(mule_load_global(globals, c"__name__".as_ptr()))
                 {
                     return ptr::null_mut();
@@ -774,7 +774,7 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 }
             }
             "builtin_call" => {
-                let callable = mule_load_global(globals, c"print".as_ptr());
+                let callable = mule_load_global(globals, c"repr".as_ptr());
                 let value = text("native callback");
                 if callable.is_null() || value.is_null() {
                     release(callable);
@@ -785,10 +785,9 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 let result = mule_call(callable, 1, values.as_ptr());
                 release(callable);
                 release(value);
-                if result.is_null() {
+                if !show(result) {
                     return ptr::null_mut();
                 }
-                release(result);
             }
             "truth" => {
                 let zero = integer("0");

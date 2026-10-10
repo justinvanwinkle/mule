@@ -87,6 +87,8 @@ def compile_toplevel(
     imports=None,
     prefix="",
     namespace="__main__",
+    primitives=None,
+    primitive_data=None,
 ) -> Compilation:
     tree = parse(source, filename)
     initial = Component("initial")
@@ -97,6 +99,8 @@ def compile_toplevel(
         prefix=prefix,
         namespace=namespace,
         component=initial,
+        primitives=primitives,
+        primitive_data=primitive_data,
     )
     bindings = _ImportBindings(converter)
     for statement in tree.statements:
@@ -119,4 +123,20 @@ def compile_toplevel(
         if component.reanalyze:
             find_dfo(component)
     check_ir1_consistency(components)
+    return compilation
+
+
+def compile_source(
+    source: str,
+    filename: str = "<unknown>",
+    *,
+    imports=None,
+    prefix="",
+    namespace="__main__",
+) -> Compilation:
+    """Convert one module and run the IR1 phases over it."""
+    compilation = compile_toplevel(
+        source, filename, imports=imports, prefix=prefix, namespace=namespace
+    )
+    ir1_phases(compilation)
     return compilation

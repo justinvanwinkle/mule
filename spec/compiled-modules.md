@@ -79,6 +79,13 @@ Exports are positional-only physical operations:
 | byte_length(data) | Guard byte storage and return its physical byte length. |
 | read_byte(data, index) | Guard byte storage and bounds, then return an unsigned byte integer. |
 | text_from_codepoints(values) | Guard list/tuple integer storage and codepoint bounds, encode the existing text representation, and allocate owned text. |
+| math_number_kind(value) | Return physical kind 0 for other storage, 1 for integer/boolean storage, or 2 for binary64 storage. |
+| math_to_double(value) | Convert builtin numeric storage to an owned binary64 value using the existing checked conversion. |
+| math_integer_value(value) | Validate/retain integer storage and normalize boolean storage to an integer. |
+| math_integer_bit_length(value) | Return the bit length of the stored integer magnitude. |
+| math_special_method(value, attribute) | Return the existing special-method binding or None; validate text attribute storage. |
+| math_sqrt(value) | Apply physical binary64 square root to float storage, returning the raw IEEE result; Python chooses domain errors. |
+| math_inf, math_nan | Owned binary64 infinity and quiet-NaN constants. |
 
 Only native-created pointer views are available; Python cannot construct one
 from an arbitrary integer. Their storage is process-lifetime borrowed and is

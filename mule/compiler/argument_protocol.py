@@ -4,29 +4,30 @@ from pathlib import Path
 
 from mule import ast
 
-from . import ir
-from .format_protocol import LookupMethod, TextAccess
-from .frontend import lower
-from .protocols import Bindings, Primitive
+from .node import CallKind, Combination
+from .protocols import add_lambdas, compile_protocol
 
 
-def binder_source(function):
+def binder_source(lambda_):
+    signature = lambda_.signature
+    kinds = signature.kinds
+    parameters = lambda_.parameters
     positional = [
         index
-        for index, kind in enumerate(function.parameter_kinds)
+        for index, kind in enumerate(kinds)
         if kind
         in (ast.ParameterKind.POSITIONAL_ONLY, ast.ParameterKind.POSITIONAL_OR_KEYWORD)
     ]
     rest = next(
         (
             index
-            for index, kind in enumerate(function.parameter_kinds)
+            for index, kind in enumerate(kinds)
             if kind == ast.ParameterKind.VAR_POSITIONAL
         ),
         None,
     )
     defaults = {
-        index: offset for offset, index in enumerate(function.default_parameters)
+        index: offset for offset, index in enumerate(signature.default_parameters)
     }
     lines = [
         "def bind(view, body_globals):",
@@ -38,7 +39,7 @@ def binder_source(function):
             f"    if count > {len(positional)}:",
             "        raise TypeError('too many positional arguments')",
         ]
-    for index in range(len(function.parameters)):
+    for index in range(len(parameters)):
         if index == rest:
             lines.append(f"    p{index} = _binding_rest(view, {len(positional)})")
         elif index in positional:
@@ -59,12 +60,12 @@ def binder_source(function):
     ]
     accepted = [
         index
-        for index, kind in enumerate(function.parameter_kinds)
+        for index, kind in enumerate(kinds)
         if kind
         in (ast.ParameterKind.POSITIONAL_OR_KEYWORD, ast.ParameterKind.KEYWORD_ONLY)
     ]
     for branch, index in enumerate(accepted):
-        name = function.parameters[index]
+        name = parameters[index]
         lines += [
             f"        {'if' if branch == 0 else 'elif'} name == {name!r}:",
             f"            if p{index} is not missing:",
@@ -76,7 +77,7 @@ def binder_source(function):
         "            raise TypeError('unexpected keyword argument')",
         "        index += 1",
     ]
-    for index, name in enumerate(function.parameters):
+    for index, name in enumerate(parameters):
         if index == rest:
             continue
         lines.append(f"    if p{index} is missing:")
@@ -88,101 +89,56 @@ def binder_source(function):
             lines.append(
                 f"        raise TypeError({('missing required argument ' + name)!r})"
             )
-    values = ", ".join(f"p{index}" for index in range(len(function.parameters)))
+    values = ", ".join(f"p{index}" for index in range(len(parameters)))
     lines.append(
         f"    return _binding_body(body_globals, view{', ' + values if values else ''})"
     )
     return "\n".join(lines) + "\n"
 
 
-def prepare(module):
-    """Binders enter through native wrappers, never through global name lookup."""
-    calls, references = {}, set()
-    if not any(function.parameter_kinds for function in module.functions) and not any(
-        operation.accept(KeywordCalls())
-        for function in module.functions
-        for block in function.blocks
-        for operation in block.instructions
+def _keyword_calls(lambda_) -> bool:
+    for block in lambda_.component.blocks():
+        for node in block.nodes():
+            if (
+                isinstance(node, Combination)
+                and (
+                    node.kind in (CallKind.FULL, CallKind.GUARDED)
+                    or (
+                        node.kind is CallKind.KNOWN
+                        and node.fun_info.name == "%call_resolved"
+                    )
+                )
+                and node.info is not None
+                and node.info.keywords
+            ):
+                return True
+    return False
+
+
+def prepare(program):
+    """Binders enter through native wrappers, never through global name
+    lookup. Returns the general constructor lambda, or ``None`` when no
+    function needs binding."""
+    if not any(lambda_.signature.kinds for lambda_ in program.lambdas) and not any(
+        _keyword_calls(lambda_) for lambda_ in program.lambdas
     ):
-        return None, calls, references
-    primitives = {
-        name: TextAccess("mule" + name)
-        for name in (
-            "_binding_missing",
-            "_binding_count",
-            "_binding_pos",
-            "_binding_rest",
-            "_binding_keyword_count",
-            "_binding_keyword_name",
-            "_binding_keyword_value",
-            "_binding_default",
-            "_allocate_instance",
-            "_forward_call",
-        )
-    }
-    primitives["_init_method"] = LookupMethod("__init__")
+        return None
 
     def append(source, prefix, body=None):
-        lowered = lower(
+        compilation = compile_protocol(
             source,
             "<compiled argument protocol>",
             prefix=prefix,
             namespace="$mule.arguments",
+            primitive_data={"_binding_body": body} if body is not None else None,
         )
-        functions = lowered.functions[1:]
-        for function in functions:
-            bindings = dict(primitives)
-            if body is not None:
-                bindings["_binding_body"] = BoundBody(body)
-            collector = Bindings(bindings)
-            for block in function.blocks:
-                for operation in block.instructions:
-                    operation.accept(collector)
-            calls.update(
-                ((function.name, result), primitive)
-                for result, primitive in collector.calls.items()
-            )
-            references.update(
-                (function.name, result) for result in collector.references
-            )
-        module.functions.extend(functions)
-        return functions[0].name
+        functions = compilation.lambdas[1:]
+        add_lambdas(program, functions, compilation.facts)
+        return functions[0]
 
-    for index, function in enumerate(tuple(module.functions)):
-        if function.parameter_kinds:
-            function.binding = append(
-                binder_source(function), f"mule_arguments_{index}_", function.name
-            )
+    for index, lambda_ in enumerate(tuple(program.lambdas)):
+        if lambda_.signature.kinds:
+            binder = append(binder_source(lambda_), f"mule_arguments_{index}_", lambda_)
+            lambda_.binding = binder.name
     path = Path(__file__).resolve().parents[2] / "stdlib/_arguments.py"
-    constructor = append(path.read_text(), "mule_arguments_construct_")
-    return constructor, calls, references
-
-
-class KeywordCalls(ir.Visitor):
-    def visit_Call(self, operation):
-        return bool(operation.keywords)
-
-    def visit_CallMethod(self, operation):
-        return bool(operation.keywords)
-
-
-class BoundBody(Primitive):
-    """The external entry's final local call shares the caller's logical frame."""
-
-    def __init__(self, function):
-        self.function = function
-
-    def emit(self, emitter, arguments):
-        globals_value, view, *parameters = arguments
-        owned = [
-            emitter.operation(f"call ptr @mule.fast.retain(ptr {value})")
-            for value in parameters
-        ]
-        operands = [f"ptr {globals_value}"]
-        if emitter.module.closure_of(self.function):
-            closure = emitter.operation(f"call ptr @mule_closure(ptr {view})")
-            operands.append(f"ptr {closure}")
-        operands.extend(f"ptr {value}" for value in owned)
-        return emitter.operation(
-            f"call ptr {emitter.module.bodies[self.function]}({', '.join(operands)})"
-        )
+    return append(path.read_text(), "mule_arguments_construct_")

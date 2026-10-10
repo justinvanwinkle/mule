@@ -186,7 +186,16 @@ class CallKind(Enum):
 class Combination(ValuedNode):
     """A call. ``fun`` yields the callee; ``args`` the operands in order."""
 
-    __slots__ = ("args", "fun", "fun_info", "info", "kind", "predicted", "proven")
+    __slots__ = (
+        "args",
+        "fun",
+        "fun_info",
+        "info",
+        "kind",
+        "predicted",
+        "proven",
+        "template",
+    )
 
     def __init__(self, lexenv, source, fun: Lvar):
         super().__init__(lexenv, source)
@@ -194,7 +203,10 @@ class Combination(ValuedNode):
         self.args: list[Lvar] = []
         self.kind = CallKind.FULL
         self.fun_info = None
+        # Compile-time data for the known function (SBCL passes it as quoted
+        # constants); the backend template chosen by LTN for a known call.
         self.info = None
+        self.template = None
         # A GUARDED call's predicted lambda; ``proven`` when flow analysis
         # established the callee's identity rather than merely predicting it.
         self.predicted: Lambda | None = None

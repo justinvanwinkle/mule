@@ -22,8 +22,13 @@ args = []
 
 [mule]
 status = "pending"
-phase = "compile"
-reason = "syntax is not supported by the native compiler yet"
+phase = "run"
+reason = "NameError: name 'open' is not defined"
+
+[mule.failure]
+stdout = ""
+stderr = "NameError: name 'open' is not defined\n"
+exit_code = 1
 '''
 
 with open('ip.txt', mode='r', encoding='ascii') as f:
