@@ -37,3 +37,25 @@ runtime remain existing platform services. Rust's standard library and required
 platform services accompany the Rust runtime. No external Rust crates are used.
 GMP bindings are handwritten in Rust; no additional third-party runtime library
 was added during the replacement.
+
+## Approved Python standard library sources
+
+The user explicitly requested the released Python 3.15 Python standard library
+sources in `stdlib/`, with optional native accelerator imports removed. The
+Python 3.15.0 source release is vendored under its PSF and historical licenses;
+notices are preserved in `stdlib/LICENSE.cpython`, and source identity/adaptations
+are recorded in `stdlib/UPSTREAM.json` and `stdlib/README.md`.
+
+This approval covers Python library source reuse. It does not permit linking
+CPython, copying its C runtime, using its object ABI internally, or delegating
+generated-program execution to a host evaluator. Native primitives without an
+upstream Python implementation must be provided by Mule under the existing
+compiler/runtime boundary and dependency approval policy.
+
+SBCL's `src/cold/build-order.lisp-expr` specifies language-level sources compiled
+for the target; `src/cold/warm.lisp` and `make-target-2-load.lisp` load target
+language implementation sources during bootstrap. Mule likewise intends to
+compile its language-level library with its own compiler. Reusing the released
+Python algorithms rather than SBCL's Common Lisp standard library is necessary
+to provide Python's APIs and semantics. Vendoring these sources supplies those
+algorithms; target compilation and compiled-module loading remain separate work.
