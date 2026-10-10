@@ -229,7 +229,16 @@ class FunctionBuilder:
                 left = self.load(name)
                 right = self.expression(value)
                 result = self.result()
-                self.emit(ir.Binary(result, op, left, right, inplace=True))
+                self.emit(
+                    ir.Binary(
+                        result,
+                        op,
+                        left,
+                        right,
+                        inplace=True,
+                        reuse_local=name if self.local(name) else None,
+                    )
+                )
                 self.store(name, result)
             case ast.If(condition=condition, body=body, else_body=otherwise):
                 then, other, join = self.block(), self.block(), self.block()

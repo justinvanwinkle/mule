@@ -13,6 +13,7 @@ import struct
 from mule import ast
 from mule.compiler import ir as ir1
 from mule.compiler import llvm_ops
+from mule.compiler.analysis import UNKNOWN, Context, ValueType, analyze
 
 _BINARY = {
     ast.BinaryOperator.ADD: 0,
@@ -75,7 +76,7 @@ declare ptr @mule_bool(i32)
 declare ptr @mule_load_global(ptr, ptr)
 declare i32 @mule_store_global(ptr, ptr, ptr)
 declare ptr @mule_load_local(ptr, ptr)
-declare ptr @mule_binary(i32, ptr, ptr, i32)
+declare ptr @mule_binary_reuse(i32, ptr, ptr, i32, ptr)
 declare ptr @mule_unary(i32, ptr)
 declare ptr @mule_compare(i32, ptr, ptr)
 declare i32 @mule_truth(ptr)
@@ -89,6 +90,7 @@ declare i32 @mule_enter_frame()
 declare void @mule_leave_frame()
 declare i32 @mule_function_matches(ptr, ptr, ptr)
 declare i32 @mule_run(ptr)
+declare void @llvm.assume(i1)
 """
 
 
@@ -101,6 +103,7 @@ def emit(module: ir1.Module) -> str:
 class _ModuleEmitter:
     def __init__(self, module: ir1.Module):
         self.module = module
+        self.analysis = analyze(module)
         self.functions = {
             function.name: f"@mule.fn.{index}"
             for index, function in enumerate(module.functions)
@@ -108,6 +111,11 @@ class _ModuleEmitter:
         self.bodies = {
             function.name: f"@mule.body.{index}"
             for index, function in enumerate(module.functions)
+        }
+        self.specialized = {
+            (function.name, context.id): f"@mule.body.{index}.spec.{variant}"
+            for index, function in enumerate(module.functions)
+            for variant, context in enumerate(self.analysis.variants[function.name])
         }
         self.data: dict[bytes, str] = {}
 
@@ -128,6 +136,11 @@ class _ModuleEmitter:
             _FunctionEmitter(self, function).emit()
             for function in self.module.functions
         ]
+        functions.extend(
+            _FunctionEmitter(self, function, context).emit()
+            for function in self.module.functions
+            for context in self.analysis.variants[function.name]
+        )
         globals_ = []
         for value, name in self.data.items():
             escaped = "".join(f"\\{byte:02X}" for byte in value + b"\0")
@@ -152,14 +165,50 @@ class _ModuleEmitter:
 
 
 class _FunctionEmitter:
-    def __init__(self, module: _ModuleEmitter, function: ir1.Function):
+    def __init__(
+        self,
+        module: _ModuleEmitter,
+        function: ir1.Function,
+        context: Context | None = None,
+    ):
         self.module = module
         self.function = function
+        self.context = context
+        self.facts = context.types if context else module.analysis.types[function.name]
+        self.targets = (
+            context.targets if context else module.analysis.targets[function.name]
+        )
+        self.body = (
+            module.specialized[function.name, context.id]
+            if context
+            else module.bodies[function.name]
+        )
+        self.immortal_values: set[str] = set()
         self.lines: list[str] = []
         self.serial = 0
         self.local_slots = {
             name: f"%local.{index}" for index, name in enumerate(function.locals)
         }
+        parameter_facts = dict(
+            zip(
+                function.parameters,
+                context.parameters if context else [UNKNOWN] * len(function.parameters),
+                strict=True,
+            )
+        )
+        self.immortal_locals = {
+            name
+            for name in function.locals
+            if name not in parameter_facts
+            or parameter_facts[name].is_fixnum
+            or parameter_facts[name].is_immortal
+        }
+        for block in function.blocks:
+            for instruction in block.instructions:
+                if isinstance(instruction, ir1.Store) and instruction.local:
+                    fact = self.facts[instruction.value]
+                    if not (fact.is_fixnum or fact.is_immortal):
+                        self.immortal_locals.discard(instruction.name)
         results = dict.fromkeys(
             instruction.result
             for block in function.blocks
@@ -200,15 +249,51 @@ class _FunctionEmitter:
         slot = self.value_slots[value]
         result = self.operation(f"load ptr, ptr {slot}")
         self.line(f"store ptr null, ptr {slot}")
+        self.mark_immortal(value, result)
         return result
 
+    def mark_immortal(self, result: str, value: str) -> None:
+        fact = self.facts[result]
+        if fact.is_fixnum or fact.is_immortal:
+            self.immortal_values.add(value)
+
+    def refine(self, result: str, value: str) -> None:
+        """Expose proven representation/range facts after the error check."""
+        self.mark_immortal(result, value)
+        self.refine_type(self.facts[result], value)
+
+    def refine_type(self, fact: ValueType, value: str, *, nullable=False) -> None:
+        if fact.is_fixnum:
+            bits = self.operation(f"ptrtoint ptr {value} to i64")
+            tagged = None
+            if self.context is None:
+                tag = self.operation(f"and i64 {bits}, 1")
+                tagged = self.operation(f"icmp ne i64 {tag}, 0")
+            decoded = self.operation(f"ashr i64 {bits}, 1")
+            lower = self.operation(f"icmp sge i64 {decoded}, {fact.minimum}")
+            upper = self.operation(f"icmp sle i64 {decoded}, {fact.maximum}")
+            bounded = self.operation(f"and i1 {lower}, {upper}")
+            valid = (
+                self.operation(f"and i1 {tagged}, {bounded}")
+                if tagged is not None
+                else bounded
+            )
+            if nullable:
+                missing = self.operation(f"icmp eq ptr {value}, null")
+                valid = self.operation(f"or i1 {missing}, {valid}")
+            self.line(f"call void @llvm.assume(i1 {valid})")
+
     def release(self, value: str) -> None:
+        if value in self.immortal_values:
+            return
         self.line(f"call void @mule.fast.release(ptr {value})")
 
     def publish(self, result: str, value: str) -> None:
         slot = self.value_slots[result]
         old = self.operation(f"load ptr, ptr {slot}")
         self.line(f"store ptr {value}, ptr {slot}")
+        self.mark_immortal(result, old)
+        self.mark_immortal(result, value)
         self.release(old)
 
     def pointer_result(self, result: str, operation: str, consumed=()) -> None:
@@ -217,9 +302,10 @@ class _FunctionEmitter:
         for operand in consumed:
             self.release(operand)
         self.check_pointer(value)
+        self.refine(result, value)
 
     def emit(self) -> str:
-        wrapper = self.wrapper()
+        wrapper = self.wrapper() if self.context is None else ""
         parameters = ", ".join(
             ["ptr %globals"]
             + [
@@ -227,11 +313,14 @@ class _FunctionEmitter:
                 for index in range(len(self.function.parameters))
             ]
         )
-        self.lines.append(
-            f"define internal ptr {self.module.bodies[self.function.name]}"
-            f"({parameters}) {{"
-        )
+        self.lines.append(f"define internal ptr {self.body}({parameters}) {{")
         self.lines.append("entry:")
+        if self.context:
+            for index, fact in enumerate(self.context.parameters):
+                value = f"%parameter.{index}"
+                if fact.is_fixnum or fact.is_immortal:
+                    self.immortal_values.add(value)
+                self.refine_type(fact, value)
         self.line("%return = alloca ptr")
         self.line("store ptr null, ptr %return")
         for slot in [*self.local_slots.values(), *self.value_slots.values()]:
@@ -260,8 +349,13 @@ class _FunctionEmitter:
         self.lines.append("error:")
         self.line("br label %cleanup")
         self.lines.append("cleanup:")
-        for slot in [*self.local_slots.values(), *self.value_slots.values()]:
-            self.release(self.operation(f"load ptr, ptr {slot}"))
+        for name, slot in self.local_slots.items():
+            if name not in self.immortal_locals:
+                self.release(self.operation(f"load ptr, ptr {slot}"))
+        for result, slot in self.value_slots.items():
+            value = self.operation(f"load ptr, ptr {slot}")
+            self.mark_immortal(result, value)
+            self.release(value)
         value = self.operation("load ptr, ptr %return")
         self.line(f"ret ptr {value}")
         self.lines.append("}")
@@ -322,6 +416,21 @@ class _FunctionEmitter:
         lines.extend(["  ret ptr null", "}"])
         return "\n".join(lines)
 
+    def decode(self, value: str) -> str:
+        bits = self.operation(f"ptrtoint ptr {value} to i64")
+        return self.operation(f"ashr i64 {bits}, 1")
+
+    def encode(self, value: str) -> str:
+        shifted = self.operation(f"shl i64 {value}, 1")
+        tagged = self.operation(f"or i64 {shifted}, 1")
+        return self.operation(f"inttoptr i64 {tagged} to ptr")
+
+    def native_result(self, result: str, value: str, consumed=()) -> None:
+        self.publish(result, value)
+        for operand in consumed:
+            self.release(operand)
+        self.refine(result, value)
+
     def instruction(self, instruction: ir1.Instruction) -> None:
         match instruction:
             case ir1.Constant(result=result, value=value):
@@ -333,7 +442,12 @@ class _FunctionEmitter:
                     value = self.operation(f"load ptr, ptr {slot}")
                     if clear:
                         self.line(f"store ptr null, ptr {slot}")
-                    helper = "local.move" if clear else "local"
+                    fact = self.facts[result]
+                    helper = (
+                        "local.move"
+                        if clear or fact.is_fixnum or fact.is_immortal
+                        else "local"
+                    )
                     operation = (
                         f"call ptr @mule.fast.{helper}(ptr {value}, ptr {name_pointer})"
                     )
@@ -348,7 +462,8 @@ class _FunctionEmitter:
                     slot = self.local_slots[name]
                     old = self.operation(f"load ptr, ptr {slot}")
                     self.line(f"store ptr {value}, ptr {slot}")
-                    self.release(old)
+                    if name not in self.immortal_locals:
+                        self.release(old)
                 else:
                     status = self.operation(
                         "call i32 @mule_store_global(ptr %globals, "
@@ -364,18 +479,37 @@ class _FunctionEmitter:
                 left=left,
                 right=right,
                 inplace=inplace,
+                reuse_local=reuse_local,
             ):
                 lhs, rhs = self.take(left), self.take(right)
                 opcode = _BINARY[operator]
+                fixnums = self.facts[left].is_fixnum and self.facts[right].is_fixnum
+                primitive = {
+                    0: "add",
+                    1: "sub",
+                    2: "mul",
+                    10: "and",
+                    11: "xor",
+                    12: "or",
+                }
+                if fixnums and self.facts[result].is_fixnum and opcode in primitive:
+                    a, b = self.decode(lhs), self.decode(rhs)
+                    integer = self.operation(f"{primitive[opcode]} i64 {a}, {b}")
+                    self.native_result(result, self.encode(integer), (lhs, rhs))
+                    return
+                prefix = "fixnum" if fixnums else "fast"
+                reuse = (
+                    self.local_slots[reuse_local] if reuse_local is not None else "null"
+                )
                 operation = (
-                    f"@mule.fast.binary.{opcode}"
+                    f"@mule.{prefix}.binary.{opcode}"
                     if opcode in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12)
-                    else "@mule_binary"
+                    else "@mule_binary_reuse"
                 )
                 arguments = (
-                    f"ptr {lhs}, ptr {rhs}, i32 {int(inplace)}"
-                    if operation != "@mule_binary"
-                    else f"i32 {opcode}, ptr {lhs}, ptr {rhs}, i32 {int(inplace)}"
+                    f"ptr {lhs}, ptr {rhs}, i32 {int(inplace)}, ptr {reuse}"
+                    if operation != "@mule_binary_reuse"
+                    else f"i32 {opcode}, ptr {lhs}, ptr {rhs}, i32 {int(inplace)}, ptr {reuse}"
                 )
                 self.pointer_result(
                     result,
@@ -384,14 +518,51 @@ class _FunctionEmitter:
                 )
             case ir1.Unary(result=result, operator=operator, operand=operand):
                 value = self.take(operand)
+                opcode = _UNARY[operator]
+                fixnum = self.facts[operand].is_fixnum
+                if fixnum and self.facts[result].is_fixnum and opcode < 3:
+                    decoded = self.decode(value)
+                    integer = (
+                        decoded
+                        if opcode == 0
+                        else self.operation(
+                            f"sub i64 0, {decoded}"
+                            if opcode == 1
+                            else f"xor i64 {decoded}, -1"
+                        )
+                    )
+                    self.native_result(result, self.encode(integer), (value,))
+                    return
+                if fixnum and opcode == 3:
+                    bits = self.operation(f"ptrtoint ptr {value} to i64")
+                    zero = self.operation(f"icmp eq i64 {bits}, 1")
+                    boolean = self.operation(
+                        f"select i1 {zero}, ptr @mule.true, ptr @mule.false"
+                    )
+                    self.native_result(result, boolean, (value,))
+                    return
+                prefix = "fixnum" if fixnum and opcode < 3 else "fast"
                 self.pointer_result(
                     result,
-                    f"call ptr @mule.fast.unary.{_UNARY[operator]}(ptr {value})",
+                    f"call ptr @mule.{prefix}.unary.{opcode}(ptr {value})",
                     (value,),
                 )
             case ir1.Compare(result=result, operator=operator, left=left, right=right):
                 lhs, rhs = self.take(left), self.take(right)
                 opcode = _COMPARE[operator]
+                if (
+                    opcode < 6
+                    and self.facts[left].is_fixnum
+                    and self.facts[right].is_fixnum
+                ):
+                    a, b = self.decode(lhs), self.decode(rhs)
+                    predicate = ("eq", "ne", "slt", "sle", "sgt", "sge")[opcode]
+                    condition = self.operation(f"icmp {predicate} i64 {a}, {b}")
+                    boolean = self.operation(
+                        f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
+                    )
+                    self.native_result(result, boolean, (lhs, rhs))
+                    return
                 operation = (
                     f"call ptr @mule.fast.compare.{opcode}(ptr {lhs}, ptr {rhs})"
                     if opcode < 8
@@ -408,11 +579,12 @@ class _FunctionEmitter:
                 for index, value in enumerate(values):
                     slot = self.operation(f"getelementptr ptr, ptr %argv, i64 {index}")
                     self.line(f"store ptr {value}, ptr {slot}")
-                value = self.call(function, values)
+                value = self.call(callee, function, args, values)
                 self.publish(result, value)
                 for operand in (function, *values):
                     self.release(operand)
                 self.check_pointer(value)
+                self.refine(result, value)
             case ir1.DefineFunction(result=result, function=function, public_name=name):
                 self.pointer_result(
                     result,
@@ -422,31 +594,114 @@ class _FunctionEmitter:
             case _:
                 raise TypeError(f"Unsupported LLVM instruction: {instruction!r}")
 
-    def call(self, callee: str, arguments: list[str]) -> str:
-        """Guard a native entry; preserve the actual callee for rebinding fallback."""
-        candidates = [
-            function
-            for function in self.module.module.functions
-            if len(function.parameters) == len(arguments)
-        ]
-        if not candidates:
+    @staticmethod
+    def fits(actual: ValueType, expected: ValueType) -> bool:
+        """A caller proof can discharge the specialization's dispatch checks."""
+        if expected.kind == "unknown":
+            return True
+        if expected.is_fixnum:
+            return (
+                actual.is_fixnum
+                and expected.minimum <= actual.minimum
+                and actual.maximum <= expected.maximum
+            )
+        if expected.kind == "bool":
+            return (
+                actual.kind == "bool"
+                and actual.is_immortal
+                and (
+                    expected.minimum is None
+                    or (
+                        actual.minimum is not None
+                        and expected.minimum <= actual.minimum
+                    )
+                )
+                and (
+                    expected.maximum is None
+                    or (
+                        actual.maximum is not None
+                        and actual.maximum <= expected.maximum
+                    )
+                )
+            )
+        if expected.is_immortal:
+            return actual.is_immortal and (
+                expected.kind == "immortal" or actual.kind == expected.kind
+            )
+        return False
+
+    def argument_guard(self, value: str, expected: ValueType) -> str:
+        """Check representation/range without touching or invoking an object."""
+        if expected.is_fixnum:
+            bits = self.operation(f"ptrtoint ptr {value} to i64")
+            tag = self.operation(f"and i64 {bits}, 1")
+            tagged = self.operation(f"icmp ne i64 {tag}, 0")
+            decoded = self.operation(f"ashr i64 {bits}, 1")
+            lower = self.operation(f"icmp sge i64 {decoded}, {expected.minimum}")
+            upper = self.operation(f"icmp sle i64 {decoded}, {expected.maximum}")
+            bounds = self.operation(f"and i1 {lower}, {upper}")
+            return self.operation(f"and i1 {tagged}, {bounds}")
+        if expected.kind == "none":
+            return self.operation(f"icmp eq ptr {value}, @mule.none")
+        true = self.operation(f"icmp eq ptr {value}, @mule.true")
+        false = self.operation(f"icmp eq ptr {value}, @mule.false")
+        boolean = self.operation(f"or i1 {true}, {false}")
+        if expected.kind == "bool":
+            allows_false = (expected.minimum is None or expected.minimum <= 0) and (
+                expected.maximum is None or expected.maximum >= 0
+            )
+            allows_true = (expected.minimum is None or expected.minimum <= 1) and (
+                expected.maximum is None or expected.maximum >= 1
+            )
+            if allows_false and allows_true:
+                return boolean
+            if allows_true:
+                return true
+            if allows_false:
+                return false
+            return self.operation("icmp eq i1 true, false")
+        if expected.kind != "immortal":
+            raise ValueError(f"Unsupported specialization parameter: {expected!r}")
+        none = self.operation(f"icmp eq ptr {value}, @mule.none")
+        return self.operation(f"or i1 {boolean}, {none}")
+
+    def call(
+        self,
+        callee_result: str,
+        callee: str,
+        argument_results: tuple[str, ...],
+        arguments: list[str],
+    ) -> str:
+        """Dispatch once to a guarded typed entry or the general native entry."""
+        target = self.targets.get(callee_result)
+        function = next(
+            (
+                function
+                for function in self.module.module.functions
+                if function.name == target
+                and len(function.parameters) == len(arguments)
+            ),
+            None,
+        )
+        if function is None:
             return self.operation(
                 f"call ptr @mule_call(ptr {callee}, i64 {len(arguments)}, ptr %argv)"
             )
         join = self.fresh("call.join")[1:]
+        direct = self.fresh("call.direct")[1:]
+        fallback_label = self.fresh("call.fallback")[1:]
+        matched = self.operation(
+            f"call i32 @mule_function_matches(ptr {callee}, "
+            f"ptr {self.module.functions[function.name]}, ptr %globals)"
+        )
+        matching = self.operation(f"icmp ne i32 {matched}, 0")
+        self.line(f"br i1 {matching}, label %{direct}, label %{fallback_label}")
+        self.lines.append(direct + ":")
         incoming = []
-        for function in candidates:
-            direct = self.fresh("call.direct")[1:]
-            next_ = self.fresh("call.next")[1:]
+
+        def invoke(context: Context | None) -> None:
             entered = self.fresh("call.entered")[1:]
             failed = self.fresh("call.failed")[1:]
-            matched = self.operation(
-                f"call i32 @mule_function_matches(ptr {callee}, "
-                f"ptr {self.module.functions[function.name]}, ptr %globals)"
-            )
-            matching = self.operation(f"icmp ne i32 {matched}, 0")
-            self.line(f"br i1 {matching}, label %{direct}, label %{next_}")
-            self.lines.append(direct + ":")
             frame = self.operation("call i32 @mule_enter_frame()")
             rejected = self.operation(f"icmp slt i32 {frame}, 0")
             self.line(f"br i1 {rejected}, label %{failed}, label %{entered}")
@@ -454,19 +709,62 @@ class _FunctionEmitter:
             self.line(f"br label %{join}")
             incoming.append(("null", failed))
             self.lines.append(entered + ":")
+            parameter_facts = (
+                context.parameters if context else [UNKNOWN] * len(arguments)
+            )
             owned = [
-                self.operation(f"call ptr @mule.fast.retain(ptr {argument})")
-                for argument in arguments
+                argument
+                if argument in self.immortal_values
+                or fact.is_fixnum
+                or fact.is_immortal
+                else self.operation(f"call ptr @mule.fast.retain(ptr {argument})")
+                for argument, fact in zip(arguments, parameter_facts, strict=True)
             ]
             operands = ", ".join(["ptr %globals", *(f"ptr {value}" for value in owned)])
-            result = self.operation(
-                f"call ptr {self.module.bodies[function.name]}({operands})"
+            body = (
+                self.module.specialized[function.name, context.id]
+                if context
+                else self.module.bodies[function.name]
             )
+            result = self.operation(f"call ptr {body}({operands})")
             self.line("call void @mule_leave_frame()")
+            if context:
+                # The callable identity and arguments were checked on this arm.
+                # NULL remains an error result; the generic fallback has no fact.
+                self.refine_type(context.return_type, result, nullable=True)
             self.line(f"br label %{join}")
             incoming.append((result, entered))
+
+        contexts = sorted(
+            self.module.analysis.variants[function.name],
+            key=lambda context: sum(
+                fact.maximum - fact.minimum if fact.is_fixnum else 2**64
+                for fact in context.parameters
+            ),
+        )
+        for context in contexts:
+            guards = [
+                self.argument_guard(value, expected)
+                for source, value, expected in zip(
+                    argument_results, arguments, context.parameters, strict=True
+                )
+                if not self.fits(self.facts[source], expected)
+            ]
+            if not guards:
+                invoke(context)
+                break
+            valid = guards[0]
+            for guard in guards[1:]:
+                valid = self.operation(f"and i1 {valid}, {guard}")
+            typed = self.fresh("call.typed")[1:]
+            next_ = self.fresh("call.general")[1:]
+            self.line(f"br i1 {valid}, label %{typed}, label %{next_}")
+            self.lines.append(typed + ":")
+            invoke(context)
             self.lines.append(next_ + ":")
-        fallback_label = next_
+        else:
+            invoke(None)
+        self.lines.append(fallback_label + ":")
         fallback = self.operation(
             f"call ptr @mule_call(ptr {callee}, i64 {len(arguments)}, ptr %argv)"
         )
@@ -511,7 +809,12 @@ class _FunctionEmitter:
                 self.line(f"br label %{self.labels[target]}")
             case ir1.Branch(condition=condition, true=true, false=false):
                 value = self.take(condition)
-                truth = self.operation(f"call i32 @mule.fast.truth(ptr {value})")
+                if self.facts[condition].is_fixnum:
+                    bits = self.operation(f"ptrtoint ptr {value} to i64")
+                    nonzero = self.operation(f"icmp ne i64 {bits}, 1")
+                    truth = self.operation(f"zext i1 {nonzero} to i32")
+                else:
+                    truth = self.operation(f"call i32 @mule.fast.truth(ptr {value})")
                 self.release(value)
                 self.check_status(truth)
                 condition = self.operation(f"icmp ne i32 {truth}, 0")

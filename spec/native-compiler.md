@@ -45,11 +45,14 @@ Variables are explicit local slots or dynamic module globals. Verification check
 definitions, consumption, control-flow targets, and dominance before emission.
 LLVM currently uses slots for these results and variables rather than optimized
 SSA construction. Analysis joins local value types and integer intervals to a
-fixed point, widening growing loop bounds. Proven representation facts eliminate
+fixed point, widening growing loop bounds. Interprocedural analysis derives
+integer parameter contexts and return summaries for proven local calls; guarded
+specialized entries preserve general function behavior. Proven representation facts eliminate
 unnecessary checks; unknown operands use guarded native instructions with runtime
 slow paths. See [Native implementation selection](native-lowering.md). Clang
 builds at `-O3`, applying LLVM optimization and native code generation. Rust builds
 the runtime with `opt-level=3` and `panic=abort`, as a statically linked archive.
+The linker discards unused sections and removes Rust dependency debug sections.
 Rust's code generation also uses LLVM. No C runtime source is compiled.
 
 Each source function becomes a native LLVM function. Definitions construct Mule
@@ -69,7 +72,9 @@ calls, builtins, module globals, errors, and reference ownership in Rust.
 the range `[-2**62, 2**62-1]` are encoded as immediate tagged values; small integer
 literals are emitted directly as LLVM constants. Overflow promotes to a Mule
 bigint object containing a GMP integer. Results that fit the native range are
-demoted. Other heap values include floats, text, bytes, functions, and native
+demoted. GMP operands are borrowed and fresh results move into objects without
+limb copies. Unique temporaries and verified local augmented assignments can
+reuse bigint storage without changing saved aliases. Other heap values include floats, text, bytes, functions, and native
 namespace/type/instance objects. This representation belongs to Mule and is not
 CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
 

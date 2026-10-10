@@ -201,6 +201,14 @@ def test_executable_runs_without_python_runtime_dependencies(tmp_path):
         capture_output=True,
         text=True,
     )
+    sections = subprocess.run(
+        ["readelf", "-SW", executable],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert ".debug_info" not in sections.stdout
+    assert ".debug_line" not in sections.stdout
     assert "libpython" not in dynamic.stdout.lower()
     assert "libgmp" in dynamic.stdout
     symbols = [line.split()[-1] for line in imports.stdout.splitlines() if line.split()]

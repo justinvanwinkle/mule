@@ -7,7 +7,7 @@ predicted native entry always needs a runtime identity guard in LLVM lowering.
 """
 
 from collections import defaultdict, deque
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from mule import ast
 from mule.compiler import ir
@@ -50,12 +50,40 @@ _UNBOUND = ValueType("unbound", may_be_unbound=True)
 class Analysis:
     types: dict[str, dict[str, ValueType]]
     targets: dict[str, dict[str, str]]
+    variants: dict[str, tuple[Context, ...]] = field(default_factory=dict)
+    returns: dict[str, ValueType] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class Context:
+    """An internal body valid only after its parameter guards succeed."""
+
+    id: str
+    parameters: tuple[ValueType, ...]
+    types: dict[str, ValueType]
+    targets: dict[str, str]
+    return_type: ValueType
+
+
+@dataclass(frozen=True, slots=True)
+class _CallSite:
+    target: str | None
+    arguments: tuple[ValueType, ...]
+
+
+@dataclass(slots=True)
+class _Body:
+    types: dict[str, ValueType]
+    targets: dict[str, str]
+    return_type: ValueType
+    calls: tuple[_CallSite, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class _Fact:
     type: ValueType = UNKNOWN
     target: str | None = None
+    proven: bool = False
 
 
 _NO_FACT = _Fact(_BOTTOM)
@@ -98,7 +126,11 @@ def _join_fact(left: _Fact, right: _Fact) -> _Fact:
     if right.type.kind == "bottom":
         return left
     target = left.target if left.target == right.target else None
-    return _Fact(_join_type(left.type, right.type), target)
+    return _Fact(
+        _join_type(left.type, right.type),
+        target,
+        target is not None and left.proven and right.proven,
+    )
 
 
 def _widen(old: _Fact, new: _Fact) -> _Fact:
@@ -115,7 +147,7 @@ def _widen(old: _Fact, new: _Fact) -> _Fact:
         ):
             maximum = None
         type_ = replace(type_, minimum=minimum, maximum=maximum)
-    return _Fact(type_, new.target)
+    return _Fact(type_, new.target, new.proven)
 
 
 def _constant(value) -> ValueType:
@@ -175,6 +207,18 @@ def _binary(operator, left: ValueType, right: ValueType) -> ValueType:
             return FLOAT
         if rlo is None or rlo < 0:
             return UNKNOWN
+    if operator == ast.BinaryOperator.ADD:
+        return ValueType(
+            "integer",
+            lo + rlo if lo is not None and rlo is not None else None,
+            hi + rhi if hi is not None and rhi is not None else None,
+        )
+    if operator == ast.BinaryOperator.SUBTRACT:
+        return ValueType(
+            "integer",
+            lo - rhi if lo is not None and rhi is not None else None,
+            hi - rlo if hi is not None and rlo is not None else None,
+        )
     boolean_bits = left.kind == right.kind == "bool" and operator in {
         ast.BinaryOperator.BIT_AND,
         ast.BinaryOperator.BIT_OR,
@@ -188,10 +232,6 @@ def _binary(operator, left: ValueType, right: ValueType) -> ValueType:
         return INTEGER
     minimum = maximum = None
     match operator:
-        case ast.BinaryOperator.ADD:
-            minimum, maximum = lo + rlo, hi + rhi
-        case ast.BinaryOperator.SUBTRACT:
-            minimum, maximum = lo - rhi, hi - rlo
         case ast.BinaryOperator.MULTIPLY:
             values = [lo * rlo, lo * rhi, hi * rlo, hi * rhi]
             minimum, maximum = min(values), max(values)
@@ -321,7 +361,12 @@ def _narrow(type_: ValueType, operator, bound: int, truth: bool) -> ValueType:
     return replace(type_, minimum=minimum, maximum=maximum)
 
 
-def _analyze_function(function: ir.Function, global_targets: dict[str, str]):
+def _analyze_function(
+    function: ir.Function,
+    global_targets: dict[str, str],
+    parameters: tuple[ValueType, ...],
+    resolve_call,
+) -> _Body:
     blocks = {block.label: block for block in function.blocks}
     entry = function.blocks[0].label
     successors = {label: _successors(block) for label, block in blocks.items()}
@@ -341,10 +386,22 @@ def _analyze_function(function: ir.Function, global_targets: dict[str, str]):
             for operand in ir.operands(operation):
                 consumers[operand].add(block.label)
     headers = _loop_headers(entry, successors)
+    parameter_types = dict(zip(function.parameters, parameters, strict=True))
     initial = {
-        name: _Fact(UNKNOWN if name in function.parameters else _UNBOUND)
-        for name in function.locals
+        name: _Fact(parameter_types.get(name, _UNBOUND)) for name in function.locals
     }
+    global_names = {
+        instruction.name
+        for block in function.blocks
+        for instruction in block.instructions
+        if isinstance(instruction, (ir.Load, ir.Store)) and not instruction.local
+    }
+    initial.update(
+        {
+            ("global", name): _Fact(UNKNOWN, global_targets.get(name))
+            for name in global_names
+        }
+    )
     incoming = {}
     edge_states = {}
     visits = defaultdict(int)
@@ -355,6 +412,14 @@ def _analyze_function(function: ir.Function, global_targets: dict[str, str]):
         if label not in queued:
             pending.append(label)
             queued.add(label)
+
+    def invalidate_globals(state):
+        for name in global_names:
+            state["global", name] = _Fact(UNKNOWN, global_targets.get(name))
+
+    def may_run_user_code(*operands):
+        primitive = {"integer", "bool", "float", "none", "text", "bytes", "immortal"}
+        return any(operand.kind not in primitive for operand in operands)
 
     while pending:
         label = pending.popleft()
@@ -389,13 +454,11 @@ def _analyze_function(function: ir.Function, global_targets: dict[str, str]):
                 case ir.Constant(value=value):
                     fact = _Fact(_constant(value))
                 case ir.DefineFunction(function=target):
-                    fact = _Fact(ValueType("function"), target)
+                    fact = _Fact(ValueType("function"), target, True)
                 case ir.Load(name=name, local=local, clear=clear):
-                    fact = (
-                        state[name]
-                        if local
-                        else _Fact(UNKNOWN, global_targets.get(name))
-                    )
+                    fact = state[name if local else ("global", name)]
+                    if not local and fact.target is None:
+                        fact = _Fact(fact.type, global_targets.get(name))
                     if local:
                         if clear:
                             origins = {
@@ -413,12 +476,18 @@ def _analyze_function(function: ir.Function, global_targets: dict[str, str]):
                         for result, origin in origins.items()
                         if origin != name
                     }
+                case ir.Store(name=name, value=value, local=False):
+                    state["global", name] = values[value]
                 case ir.Binary(operator=operator, left=left, right=right):
                     fact = _Fact(
                         _binary(operator, values[left].type, values[right].type)
                     )
+                    if may_run_user_code(values[left].type, values[right].type):
+                        invalidate_globals(state)
                 case ir.Unary(operator=operator, operand=operand):
                     fact = _Fact(_unary(operator, values[operand].type))
+                    if may_run_user_code(values[operand].type):
+                        invalidate_globals(state)
                 case ir.Compare(operator=operator, left=left, right=right):
                     primitive = {"integer", "bool", "float", "none", "text", "bytes"}
                     known = (
@@ -432,8 +501,20 @@ def _analyze_function(function: ir.Function, global_targets: dict[str, str]):
                         ast.ComparisonOperator.NOT_IN,
                     }
                     fact = _Fact(BOOLEAN if known or always_bool else UNKNOWN)
-                case ir.Call():
-                    fact = _Fact(UNKNOWN)
+                    if operator not in {
+                        ast.ComparisonOperator.IS,
+                        ast.ComparisonOperator.IS_NOT,
+                    } and may_run_user_code(values[left].type, values[right].type):
+                        invalidate_globals(state)
+                case ir.Call(callee=callee, args=args):
+                    fact = _Fact(
+                        resolve_call(
+                            values[callee], tuple(values[arg].type for arg in args)
+                        )
+                    )
+                    # Any call can rebind globals. A callee loaded before an
+                    # argument's call remains a separate, already-owned value.
+                    invalidate_globals(state)
             if fact is not None:
                 result = instruction.result
                 joined = _join_fact(values[result], fact)
@@ -441,9 +522,13 @@ def _analyze_function(function: ir.Function, global_targets: dict[str, str]):
                     values[result] = joined
                     for consumer in consumers[result]:
                         schedule(consumer)
+        terminator = blocks[label].terminator
+        if isinstance(terminator, ir.Branch) and may_run_user_code(
+            values[terminator.condition].type
+        ):
+            invalidate_globals(state)
         for target in successors[label]:
             edge = dict(state)
-            terminator = blocks[label].terminator
             if (
                 isinstance(terminator, ir.Branch)
                 and terminator.true != terminator.false
@@ -474,7 +559,9 @@ def _analyze_function(function: ir.Function, global_targets: dict[str, str]):
                             bound.minimum,
                             target == terminator.true,
                         )
-                        edge[local] = _Fact(type_, state[local].target)
+                        edge[local] = _Fact(
+                            type_, state[local].target, state[local].proven
+                        )
             key = label, target
             if edge_states.get(key) != edge:
                 edge_states[key] = edge
@@ -488,7 +575,21 @@ def _analyze_function(function: ir.Function, global_targets: dict[str, str]):
         for result, fact in values.items()
         if fact.target is not None
     }
-    return types, targets
+    returned = _BOTTOM
+    calls = []
+    for label in incoming:
+        block = blocks[label]
+        if isinstance(block.terminator, ir.Return):
+            returned = _join_type(returned, values[block.terminator.value].type)
+        for instruction in block.instructions:
+            if isinstance(instruction, ir.Call):
+                calls.append(
+                    _CallSite(
+                        values[instruction.callee].target,
+                        tuple(values[arg].type for arg in instruction.args),
+                    )
+                )
+    return _Body(types, targets, returned, tuple(calls))
 
 
 def analyze(module: ir.Module) -> Analysis:
@@ -510,9 +611,180 @@ def analyze(module: ir.Module) -> Analysis:
                     and instruction.value in definitions
                 ):
                     global_targets[instruction.name] = definitions[instruction.value]
-    types, targets = {}, {}
+    return _interprocedural(module, global_targets)
+
+
+def _fits(actual: ValueType, expected: ValueType) -> bool:
+    if actual.kind == "bottom" or actual.may_be_unbound:
+        return False
+    if expected.kind == "unknown":
+        return True
+    if actual.kind != expected.kind:
+        return False
+    return (
+        expected.minimum is None
+        or actual.minimum is not None
+        and actual.minimum >= expected.minimum
+    ) and (
+        expected.maximum is None
+        or actual.maximum is not None
+        and actual.maximum <= expected.maximum
+    )
+
+
+def _fixnum_domain(type_: ValueType) -> ValueType | None:
+    """Limit an observed integer interval to the domain an entry can guard."""
+    if type_.kind != "integer" or type_.may_be_unbound:
+        return None
+    minimum = (
+        max(FIXNUM_MIN, type_.minimum) if type_.minimum is not None else FIXNUM_MIN
+    )
+    maximum = (
+        min(FIXNUM_MAX, type_.maximum) if type_.maximum is not None else FIXNUM_MAX
+    )
+    return ValueType("integer", minimum, maximum) if minimum <= maximum else None
+
+
+def _interprocedural(module: ir.Module, global_targets: dict[str, str]) -> Analysis:
+    """Solve local-call arguments/results before publishing specialization facts.
+
+    General entries model externally supplied values. Observed integer contexts
+    and an all-fixnum context describe optional guarded entries, never changes
+    to a function's public contract. Like SBCL's optimistic local-call solving,
+    return summaries start empty, grow by union, and widen cyclic intervals.
+    """
+    functions = {function.name: function for function in module.functions}
+    full = ValueType("integer", FIXNUM_MIN, FIXNUM_MAX)
+    parameters = {}
     for function in module.functions:
-        types[function.name], targets[function.name] = _analyze_function(
-            function, global_targets
+        parameters[function.name, "general"] = (UNKNOWN,) * len(function.parameters)
+        if function.parameters:
+            parameters[function.name, "fixnum"] = (full,) * len(function.parameters)
+    summaries = {key: _BOTTOM for key in parameters}
+    return_changes = defaultdict(int)
+    argument_changes = defaultdict(int)
+    bodies = {}
+
+    while True:
+        changed = False
+        previous_summaries = dict(summaries)
+        previous_parameters = dict(parameters)
+
+        def resolve(
+            callee: _Fact,
+            arguments: tuple[ValueType, ...],
+            context_parameters=previous_parameters,
+            context_summaries=previous_summaries,
+        ) -> ValueType:
+            if callee.type.kind == "bottom" or any(
+                arg.kind == "bottom" for arg in arguments
+            ):
+                return _BOTTOM
+            # A name's predicted target is never sufficient to publish a return
+            # type. Only an already-loaded value with proven identity is local.
+            if not callee.proven or callee.target not in functions:
+                return UNKNOWN
+            target = functions[callee.target]
+            if len(arguments) != len(target.parameters):
+                return UNKNOWN
+            for context in ("observed", "fixnum", "general"):
+                key = target.name, context
+                expected = context_parameters.get(key)
+                if expected is not None and all(
+                    _fits(actual, wanted)
+                    for actual, wanted in zip(arguments, expected, strict=True)
+                ):
+                    return context_summaries[key]
+            return UNKNOWN
+
+        for key, expected in previous_parameters.items():
+            body = _analyze_function(
+                functions[key[0]], global_targets, expected, resolve
+            )
+            bodies[key] = body
+            returned = _join_type(summaries[key], body.return_type)
+            if returned != summaries[key]:
+                return_changes[key] += 1
+                if return_changes[key] > 3:
+                    returned = _widen(_Fact(summaries[key]), _Fact(returned)).type
+                if returned != summaries[key]:
+                    summaries[key] = returned
+                    changed = True
+
+        # The broad guard context is not evidence that callers actually supplied
+        # that broad interval. Propagate observations through general/observed
+        # entries, including recursive calls, independently of that context.
+        seeds = {}
+        for key, body in bodies.items():
+            if key[1] == "fixnum":
+                continue
+            for call in body.calls:
+                target = functions.get(call.target)
+                if (
+                    target is None
+                    or not target.parameters
+                    or len(call.arguments) != len(target.parameters)
+                ):
+                    continue
+                domains = tuple(_fixnum_domain(type_) for type_ in call.arguments)
+                if any(domain is None for domain in domains):
+                    continue
+                if target.name not in seeds:
+                    seeds[target.name] = domains
+                else:
+                    seeds[target.name] = tuple(
+                        _join_type(old, new)
+                        for old, new in zip(seeds[target.name], domains, strict=True)
+                    )
+        contexts_changed = False
+        for name, seed in seeds.items():
+            key = name, "observed"
+            old = parameters.get(key)
+            if old is not None:
+                seed = tuple(_join_type(a, b) for a, b in zip(old, seed, strict=True))
+                if old != seed:
+                    argument_changes[key] += 1
+                    if argument_changes[key] > 3:
+                        seed = tuple(
+                            _fixnum_domain(_widen(_Fact(a), _Fact(b)).type)
+                            for a, b in zip(old, seed, strict=True)
+                        )
+            if old != seed:
+                parameters[key] = seed
+                summaries.setdefault(key, _BOTTOM)
+                changed = True
+                contexts_changed = True
+        if contexts_changed:
+            # A new, narrower callee context can replace a broad summary used
+            # provisionally by callers. Solve returns afresh for the current
+            # context graph rather than permanently retaining that broad type.
+            summaries = {key: _BOTTOM for key in parameters}
+            return_changes.clear()
+        if not changed:
+            break
+
+    types, targets, variants, returns = {}, {}, {}, {}
+    for function in module.functions:
+        key = function.name, "general"
+        types[function.name] = bodies[key].types
+        targets[function.name] = bodies[key].targets
+        returns[function.name] = (
+            summaries[key] if summaries[key].kind != "bottom" else UNKNOWN
         )
-    return Analysis(types, targets)
+        entries = []
+        for identifier in ("observed", "fixnum"):
+            key = function.name, identifier
+            if key not in parameters:
+                continue
+            if (
+                identifier == "observed"
+                and parameters[key] == parameters[function.name, "fixnum"]
+            ):
+                continue
+            body = bodies[key]
+            returned = summaries[key] if summaries[key].kind != "bottom" else UNKNOWN
+            entries.append(
+                Context(identifier, parameters[key], body.types, body.targets, returned)
+            )
+        variants[function.name] = tuple(entries)
+    return Analysis(types, targets, variants, returns)

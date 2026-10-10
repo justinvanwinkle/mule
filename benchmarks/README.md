@@ -65,8 +65,10 @@ environment and site initialization, matching Mule's lack of site initialization
 Warmups warm filesystem/runtime pages; each measured CPython process has its own
 interpreter specialization state.
 
-Mule uses Clang `-O3`, its Rust runtime at `opt-level=3`, type/range analysis,
-inline tagged integer operations, and guarded direct calls. Integer overflow
+Mule uses Clang `-O3`, its Rust runtime at `opt-level=3`, interprocedural type/range
+analysis, specialized internal entries, inline integer operations, and guarded
+direct calls. Its linker discards unused sections and strips debug information.
+Integer overflow
 uses GMP. Global lookups remain dynamic, and unknown types retain runtime checks.
 SBCL uses compiled native functions with `(speed 3) (safety 1)` and integer type
 declarations. Rust uses `-C opt-level=3 -C target-cpu=native`. These settings

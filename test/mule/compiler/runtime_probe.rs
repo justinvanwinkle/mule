@@ -93,6 +93,125 @@ unsafe fn specialized_abi(globals: Value) {
         release(other_scope);
         release(other_globals);
         release(callable);
+        bigint_reuse();
+    }
+}
+
+unsafe fn bigint_reuse() {
+    unsafe {
+        let decimal = "1267650600228229401496703205376";
+        let check = |value, expected: &str| {
+            assert_eq!(
+                formatted_value(value, false, false).unwrap(),
+                expected.as_bytes()
+            );
+        };
+
+        // One owned temporary can donate its existing allocation. The returned
+        // ownership survives release of the consumed operand.
+        let left = integer(decimal);
+        let result = mule_binary_reuse(2, left, small(-2), 0, ptr::null_mut());
+        assert_eq!(result, left);
+        assert_eq!((*left).references, 2);
+        release(left);
+        assert_eq!((*result).references, 1);
+        check(result, "-2535301200456458802993406410752");
+        release(result);
+
+        // An immediately overwritten local and its operand own exactly two
+        // references. Follow the same release/store sequence as LLVM.
+        let mut slot = integer(decimal);
+        let left = retain(slot);
+        let result = mule_binary_reuse(0, left, small(7), 0, &mut slot);
+        assert_eq!(result, left);
+        assert_eq!((*result).references, 3);
+        release(left);
+        release(slot);
+        slot = result;
+        assert_eq!((*slot).references, 1);
+        check(slot, "1267650600228229401496703205383");
+        release(slot);
+
+        // A third owner must keep the original immutable, even for += and a
+        // valid overwrite slot. Caller-visible aliases retain their value.
+        let mut slot = integer(decimal);
+        let alias = retain(slot);
+        let left = retain(slot);
+        let result = mule_binary_reuse(1, left, small(7), 1, &mut slot);
+        assert_ne!(result, left);
+        check(alias, decimal);
+        check(result, "1267650600228229401496703205369");
+        release(left);
+        release(slot);
+        slot = result;
+        release(slot);
+        release(alias);
+
+        // Refcount alone cannot prove a local overwrite. An absent or rebound
+        // slot forbids the two-owner reuse, and an aliased RHS always forbids it.
+        for mode in 0..3 {
+            let original = integer(decimal);
+            let left = retain(original);
+            let mut other_slot = small(99);
+            let result = match mode {
+                0 => mule_binary_reuse(2, left, small(2), 1, ptr::null_mut()),
+                1 => mule_binary_reuse(2, left, small(2), 0, &mut other_slot),
+                _ => {
+                    let mut slot = original;
+                    mule_binary_reuse(2, left, left, 0, &mut slot)
+                }
+            };
+            assert_ne!(result, original);
+            check(original, decimal);
+            assert_eq!(other_slot, small(99));
+            release(result);
+            release(left);
+            release(original);
+        }
+
+        // RHS evaluation can replace the original local. If its former value
+        // is now uniquely owned, reusing that detached value is still safe.
+        let left = integer(decimal);
+        let mut replacement = integer("2535301200456458802993406410752");
+        let result = mule_binary_reuse(2, left, small(2), 0, &mut replacement);
+        assert_eq!(result, left);
+        check(replacement, "2535301200456458802993406410752");
+        release(left);
+        release(result);
+        release(replacement);
+
+        // A smaller result becomes a tag; the old boxed operand is consumed by
+        // the normal ownership protocol rather than retained for the result.
+        let left = integer("4611686018427387904");
+        let result = mule_binary_reuse(1, left, small(1), 0, ptr::null_mut());
+        assert_eq!(result, small(4611686018427387903));
+        assert_eq!((*left).references, 1);
+        release(left);
+
+        let left = integer(decimal);
+        let right = integer("18446744073709551616");
+        let result = mule_binary_reuse(2, left, right, 0, ptr::null_mut());
+        assert_eq!(result, left);
+        check(result, "23384026197294446691258957323460528314494920687616");
+        check(right, "18446744073709551616");
+        release(left);
+        release(result);
+        release(right);
+
+        // Mixed Bool inputs and operations that can raise use the ordinary
+        // immutable path. Sticky errors prevent all mutation.
+        let left = integer(decimal);
+        let result = mule_binary_reuse(2, left, mule_bool(1), 0, ptr::null_mut());
+        assert_ne!(result, left);
+        check(left, decimal);
+        release(result);
+        assert!(mule_binary_reuse(4, left, small(0), 0, ptr::null_mut()).is_null());
+        assert_eq!(error_kind(), "ZeroDivisionError");
+        check(left, decimal);
+        assert!(mule_binary_reuse(2, left, small(2), 0, ptr::null_mut()).is_null());
+        check(left, decimal);
+        clear_error();
+        release(left);
     }
 }
 

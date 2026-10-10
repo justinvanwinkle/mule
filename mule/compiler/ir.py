@@ -37,6 +37,7 @@ class Binary:
     left: str
     right: str
     inplace: bool = False
+    reuse_local: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +170,23 @@ def _verify_function(function: Function, functions: set[str]) -> None:
         for target in targets:
             predecessors[target].add(block.label)
         for index, operation in enumerate(block.instructions):
+            if isinstance(operation, Binary) and operation.reuse_local is not None:
+                following = (
+                    block.instructions[index + 1]
+                    if index + 1 < len(block.instructions)
+                    else None
+                )
+                if (
+                    not operation.inplace
+                    or operation.reuse_local not in function.locals
+                    or not isinstance(following, Store)
+                    or not following.local
+                    or following.name != operation.reuse_local
+                    or following.value != operation.result
+                ):
+                    raise ValueError(
+                        "bigint reuse requires immediate assignment to its local"
+                    )
             if (
                 isinstance(operation, DefineFunction)
                 and operation.function not in functions

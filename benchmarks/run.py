@@ -170,7 +170,7 @@ def main():
         },
         "gil_disabled": bool(sysconfig.get_config_var("Py_GIL_DISABLED")),
         "compiler_settings": {
-            "mule": "native LLVM integer operations and guarded direct calls; clang -O3; Rust runtime opt-level=3; GMP bigints",
+            "mule": "interprocedural type/range analysis, specialized internal entries, native LLVM integer operations and guarded direct calls; clang -O3; Rust runtime opt-level=3; GMP bigints",
             "cpython": "-I -S, same workload.py, normal bytecode interpreter",
             "sbcl": "compiled executable; speed 3, safety 1; fixnum declarations",
             "rust": "edition 2024, opt-level=3, target-cpu=native; u64 integers",

@@ -1,5 +1,5 @@
 {
-  "timestamp_utc": "2026-10-10T00:26:31.515757+00:00",
+  "timestamp_utc": "2026-10-10T01:27:02.210470+00:00",
   "platform": "Linux-7.2.8+deb14-amd64-x86_64-with-glibc2.43",
   "cpu_model": "AMD Ryzen 9 9955HX 16-Core Processor",
   "cpu_affinity": 0,
@@ -15,7 +15,7 @@
   },
   "gil_disabled": false,
   "compiler_settings": {
-    "mule": "current driver: clang -O3, boxed CPython objects",
+    "mule": "interprocedural type/range analysis, specialized internal entries, native LLVM integer operations and guarded direct calls; clang -O3; Rust runtime opt-level=3; GMP bigints",
     "cpython": "-I -S, same workload.py, normal bytecode interpreter",
     "sbcl": "compiled executable; speed 3, safety 1; fixnum declarations",
     "rust": "edition 2024, opt-level=3, target-cpu=native; u64 integers"
@@ -25,7 +25,31 @@
     "workload.lisp": "91b828f02c6ee5101ed5fbd4107e373d4a793c611400a68ee619ca90e3f6a2b9",
     "workload.rs": "9f2552bd8d69012805a909776ee47e1bd0df66a6deb99bf1509c325a4016ec3f",
     "build-lisp.lisp": "be3d8dd66e3813faf9206a09fe6b36166d75fb47ee0d1113e77961f998bd4b35",
-    "run.py": "0889dc5f8d95beb5c01b906feb3b94b190a250bed302c3e7301f48e6e9fad78e"
+    "run.py": "cd916fd964af2559149e80d212399fe43caf6de7ac16ebb2f096daf07b11a588"
+  },
+  "mule_compiler_sha256": {
+    "mule/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "mule/__main__.py": "8fd225d02d58d07932858d0cfdd3257e536778899a841e14d7d0f940a4a2d58e",
+    "mule/ast.py": "0dacc16cc302ee9be8695d4e4e7b62bd85af5cae785842b649c1d165075a7948",
+    "mule/compiler/__init__.py": "e0284983ba1de43c038f50a5f103857ee07f6473fc56e50ad46a0a1781619096",
+    "mule/compiler/analysis.py": "217910070ad8516e2262a10f3df26be18be0889928bacb70c906e4cf0c35d79a",
+    "mule/compiler/driver.py": "d5a509ed11a8de22671c8b70a19e6e1dea102b3591b7ae8014c63dd230c298cb",
+    "mule/compiler/frontend.py": "e5bb9cedd84d1c38213ce047fa3dd1e69efbdb1fc2d765792bcecd95f7176b2b",
+    "mule/compiler/ir.py": "0a6709dd7321a3a6a1b32d7b5e80d22a72a62270997cdb1cace8766bb2b7197f",
+    "mule/compiler/llvm.py": "a41caed5a8d770a1f6d8c3a70f7cf337284289bc02078bff65f6aa8772bb03fc",
+    "mule/compiler/llvm_ops.py": "dfee4466acb81888dc25c9e3fd54acb913853ae41686af9d8a687d15c1c2e345",
+    "mule/parser/__init__.py": "a3800ab1f3ba5d4162e02a8eeb3f7763ee559aa488d8003553a9cd3c9367b31f",
+    "mule/parser/core.py": "bb189ab84f50e0d3af64f6e9ccab1928ce76612e536c60623aeba3cf13b3e941",
+    "mule/parser/expressions.py": "4f40fadc759170101b5ad2b0111e8cb425b30f29aa96d312fbf3e75acae82312",
+    "mule/parser/lexer.py": "c9c819c41f79432af0b32d486545a6880c5be826d56a59d9a7b4a893307c9775",
+    "mule/parser/patterns.py": "1aeb4925f5a4ddc80c8e8b8c244f3564bcca368e6e20d506b559fa7cd1582a2a",
+    "mule/parser/statements.py": "03c272f09678241ff6e06c0b315a1b885de87a289d1f5ef7dfdd6f3a6599847b",
+    "mule/parser/strings.py": "2b37d8482e2b62de09fa5bf70456a694b0b519271d492637f907fa130c1b02b0",
+    "mule/runtime/builtins.rs": "2fced47a289ea9153ee65e7aa0db2f77cb90b214a2eacb6fe83002d306d0bfef",
+    "mule/runtime/gmp.rs": "be4cd3bb7e200e745da69ad22a1d7f4231ef1fa315ca5ae0f1ab2488e06a06c0",
+    "mule/runtime/lib.rs": "699bd8b2f8612329e6cea37f240eb3e98f5b8266f94c960402778f989a70986a",
+    "mule/runtime/numeric.rs": "14b732731f7f4852914a023ffb0a4420a05388011af5fdc4bf6a748852fcd3de",
+    "mule/runtime/object.rs": "50289477d660bd4b7c2737127580efb04d676cd7a90f79d620d72ecfbe0aa3ac"
   },
   "commands": {
     "mule": [
@@ -58,59 +82,59 @@
       "measurements": {
         "mule": {
           "seconds": [
-            0.007047285,
-            0.006776957,
-            0.006536158,
-            0.006321916,
-            0.006410702,
-            0.006545665,
-            0.006570082
+            0.001886903,
+            0.002110862,
+            0.001947958,
+            0.001929554,
+            0.001514737,
+            0.001809669,
+            0.001953047
           ],
-          "median_seconds": 0.006545665,
-          "min_seconds": 0.006321916,
-          "max_seconds": 0.007047285
+          "median_seconds": 0.001929554,
+          "min_seconds": 0.001514737,
+          "max_seconds": 0.002110862
         },
         "cpython": {
           "seconds": [
-            0.006523844,
-            0.005972232,
-            0.006913554,
-            0.005999342,
-            0.00621725,
-            0.005890138,
-            0.005829985
+            0.006645915,
+            0.006126161,
+            0.006289066,
+            0.006223964,
+            0.006709805,
+            0.00627488,
+            0.006277194
           ],
-          "median_seconds": 0.005999342,
-          "min_seconds": 0.005829985,
-          "max_seconds": 0.006913554
+          "median_seconds": 0.006277194,
+          "min_seconds": 0.006126161,
+          "max_seconds": 0.006709805
         },
         "sbcl": {
           "seconds": [
-            0.002866477,
-            0.003301001,
-            0.002841861,
-            0.002686851,
-            0.003093451,
-            0.002665831,
-            0.002623612
+            0.003264904,
+            0.003463836,
+            0.00302292,
+            0.003158434,
+            0.002638581,
+            0.003052737,
+            0.0029156
           ],
-          "median_seconds": 0.002841861,
-          "min_seconds": 0.002623612,
-          "max_seconds": 0.003301001
+          "median_seconds": 0.003052737,
+          "min_seconds": 0.002638581,
+          "max_seconds": 0.003463836
         },
         "rust": {
           "seconds": [
-            0.001986479,
-            0.002010725,
-            0.001458029,
-            0.001462288,
-            0.001500008,
-            0.001436981,
-            0.001486974
+            0.001958437,
+            0.001973926,
+            0.001827402,
+            0.001971542,
+            0.001825528,
+            0.001897833,
+            0.00169772
           ],
-          "median_seconds": 0.001486974,
-          "min_seconds": 0.001436981,
-          "max_seconds": 0.002010725
+          "median_seconds": 0.001897833,
+          "min_seconds": 0.00169772,
+          "max_seconds": 0.001973926
         }
       }
     },
@@ -124,59 +148,59 @@
       "measurements": {
         "mule": {
           "seconds": [
-            3.420958524,
-            3.547612979,
-            3.426507132,
-            3.407944943,
-            3.399991957,
-            3.418320288,
-            3.412813483
+            0.225210458,
+            0.223988089,
+            0.22479466,
+            0.226507708,
+            0.224090743,
+            0.224641855,
+            0.223573817
           ],
-          "median_seconds": 3.418320288,
-          "min_seconds": 3.399991957,
-          "max_seconds": 3.547612979
+          "median_seconds": 0.224641855,
+          "min_seconds": 0.223573817,
+          "max_seconds": 0.226507708
         },
         "cpython": {
           "seconds": [
-            0.973256442,
-            0.968103416,
-            0.974234696,
-            0.978900444,
-            0.967445007,
-            0.967903275,
-            0.979913012
+            0.979728403,
+            0.977051833,
+            0.971195117,
+            0.973235891,
+            1.003364169,
+            0.977907291,
+            0.969605577
           ],
-          "median_seconds": 0.973256442,
-          "min_seconds": 0.967445007,
-          "max_seconds": 0.979913012
+          "median_seconds": 0.977051833,
+          "min_seconds": 0.969605577,
+          "max_seconds": 1.003364169
         },
         "sbcl": {
           "seconds": [
-            0.04686855,
-            0.047224768,
-            0.046958659,
-            0.047051212,
-            0.046785495,
-            0.046299005,
-            0.04679852
+            0.046702453,
+            0.046841734,
+            0.046234076,
+            0.046338752,
+            0.046630578,
+            0.045890813,
+            0.046667949
           ],
-          "median_seconds": 0.04686855,
-          "min_seconds": 0.046299005,
-          "max_seconds": 0.047224768
+          "median_seconds": 0.046630578,
+          "min_seconds": 0.045890813,
+          "max_seconds": 0.046841734
         },
         "rust": {
           "seconds": [
-            0.038393182,
-            0.038267147,
-            0.038865297,
-            0.038665933,
-            0.039099624,
-            0.038694317,
-            0.038630317
+            0.038568121,
+            0.038463154,
+            0.038435423,
+            0.038635077,
+            0.038804464,
+            0.038128368,
+            0.038277096
           ],
-          "median_seconds": 0.038665933,
-          "min_seconds": 0.038267147,
-          "max_seconds": 0.039099624
+          "median_seconds": 0.038463154,
+          "min_seconds": 0.038128368,
+          "max_seconds": 0.038804464
         }
       }
     },
@@ -190,59 +214,59 @@
       "measurements": {
         "mule": {
           "seconds": [
-            0.170536531,
-            0.171377496,
-            0.170041124,
-            0.169877286,
-            0.170271545,
-            0.170807148,
-            0.170289318
+            0.01397016,
+            0.014152822,
+            0.014063184,
+            0.014389094,
+            0.014141972,
+            0.014388142,
+            0.014283207
           ],
-          "median_seconds": 0.170289318,
-          "min_seconds": 0.169877286,
-          "max_seconds": 0.171377496
+          "median_seconds": 0.014152822,
+          "min_seconds": 0.01397016,
+          "max_seconds": 0.014389094
         },
         "cpython": {
           "seconds": [
-            0.050165763,
-            0.05117356,
-            0.050503466,
-            0.050179199,
-            0.050964128,
-            0.050796776,
-            0.051449027
+            0.050723623,
+            0.051504375,
+            0.051427642,
+            0.050635458,
+            0.051573976,
+            0.050541823,
+            0.051372508
           ],
-          "median_seconds": 0.050796776,
-          "min_seconds": 0.050165763,
-          "max_seconds": 0.051449027
+          "median_seconds": 0.051372508,
+          "min_seconds": 0.050541823,
+          "max_seconds": 0.051573976
         },
         "sbcl": {
           "seconds": [
-            0.007874915,
-            0.007828837,
-            0.006963067,
-            0.007902606,
-            0.007664911,
-            0.007971074,
-            0.007749098
+            0.007076311,
+            0.007499863,
+            0.007721218,
+            0.007744501,
+            0.007406489,
+            0.007589943,
+            0.00760438
           ],
-          "median_seconds": 0.007828837,
-          "min_seconds": 0.006963067,
-          "max_seconds": 0.007971074
+          "median_seconds": 0.007589943,
+          "min_seconds": 0.007076311,
+          "max_seconds": 0.007744501
         },
         "rust": {
           "seconds": [
-            0.005747711,
-            0.005833853,
-            0.005567855,
-            0.005483788,
-            0.005751499,
-            0.005480921,
-            0.005553738
+            0.005289705,
+            0.005314482,
+            0.005248929,
+            0.005487156,
+            0.005677792,
+            0.00554333,
+            0.005469081
           ],
-          "median_seconds": 0.005567855,
-          "min_seconds": 0.005480921,
-          "max_seconds": 0.005833853
+          "median_seconds": 0.005469081,
+          "min_seconds": 0.005248929,
+          "max_seconds": 0.005677792
         }
       }
     },
@@ -256,59 +280,59 @@
       "measurements": {
         "mule": {
           "seconds": [
-            3.617280801,
-            3.640464484,
-            3.55597009,
-            3.560342831,
-            3.580037831,
-            3.556962373,
-            3.599875773
+            0.235686238,
+            0.235579268,
+            0.236345162,
+            0.235975141,
+            0.235377371,
+            0.236925571,
+            0.236334565
           ],
-          "median_seconds": 3.580037831,
-          "min_seconds": 3.55597009,
-          "max_seconds": 3.640464484
+          "median_seconds": 0.235975141,
+          "min_seconds": 0.235377371,
+          "max_seconds": 0.236925571
         },
         "cpython": {
           "seconds": [
-            1.017086245,
-            1.015808273,
-            1.033989285,
-            1.014567955,
-            1.023923491,
-            1.020096507,
-            1.013280507
+            1.016444149,
+            1.02105813,
+            1.027034053,
+            1.017497837,
+            1.018433951,
+            1.016496305,
+            1.014209684
           ],
-          "median_seconds": 1.017086245,
-          "min_seconds": 1.013280507,
-          "max_seconds": 1.033989285
+          "median_seconds": 1.017497837,
+          "min_seconds": 1.014209684,
+          "max_seconds": 1.027034053
         },
         "sbcl": {
           "seconds": [
-            0.050463201,
-            0.050736893,
-            0.050698662,
-            0.050557908,
-            0.050556866,
-            0.050909568,
-            0.05047357
+            0.050968522,
+            0.050755803,
+            0.051003077,
+            0.050554266,
+            0.050837096,
+            0.05097817,
+            0.051104517
           ],
-          "median_seconds": 0.050557908,
-          "min_seconds": 0.050463201,
-          "max_seconds": 0.050909568
+          "median_seconds": 0.050968522,
+          "min_seconds": 0.050554266,
+          "max_seconds": 0.051104517
         },
         "rust": {
           "seconds": [
-            0.042224356,
-            0.042434479,
-            0.042170515,
-            0.042353487,
-            0.04232255,
-            0.041957967,
-            0.042093711
+            0.041816945,
+            0.042071232,
+            0.042525402,
+            0.042217626,
+            0.041814661,
+            0.042090608,
+            0.04271644
           ],
-          "median_seconds": 0.042224356,
-          "min_seconds": 0.041957967,
-          "max_seconds": 0.042434479
+          "median_seconds": 0.042090608,
+          "min_seconds": 0.041814661,
+          "max_seconds": 0.04271644
         }
       }
     }

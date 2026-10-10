@@ -76,6 +76,8 @@ def link_llvm(
             compiler,
             "-O3",
             "-Wno-override-module",
+            "-Wl,--gc-sections",
+            "-Wl,--strip-debug",
             str(ir_path),
             str(runtime),
             "-lgmp",

@@ -923,6 +923,24 @@ pub unsafe extern "C" fn mule_binary(op: i32, left: Value, right: Value, inplace
     unsafe { binary(op, left, right, inplace != 0) }
 }
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_binary_reuse(
+    op: i32,
+    left: Value,
+    right: Value,
+    inplace: i32,
+    slot: *mut Value,
+) -> Value {
+    unsafe {
+        if has_error() {
+            return std::ptr::null_mut();
+        }
+        if let Some(result) = numeric::try_binary_reuse(op, left, right, slot) {
+            return result;
+        }
+        binary(op, left, right, inplace != 0)
+    }
+}
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_unary(op: i32, value: Value) -> Value {
     unsafe {
         if op == 3 {

@@ -35,6 +35,7 @@ unsafe extern "C" {
     fn __gmpz_add(result: *mut Mpz, left: *const Mpz, right: *const Mpz);
     fn __gmpz_sub(result: *mut Mpz, left: *const Mpz, right: *const Mpz);
     fn __gmpz_mul(result: *mut Mpz, left: *const Mpz, right: *const Mpz);
+    fn __gmpz_mul_si(result: *mut Mpz, left: *const Mpz, right: c_long);
     fn __gmpz_fdiv_q(result: *mut Mpz, left: *const Mpz, right: *const Mpz);
     fn __gmpz_fdiv_r(result: *mut Mpz, left: *const Mpz, right: *const Mpz);
     fn __gmpz_fdiv_qr(quotient: *mut Mpz, remainder: *mut Mpz, left: *const Mpz, right: *const Mpz);
@@ -172,6 +173,30 @@ impl BigInt {
     }
     pub fn mul(&self, other: &Self) -> Self {
         self.binary(other, __gmpz_mul)
+    }
+    pub fn mul_i64(&self, other: i64) -> Self {
+        let mut result = Self::zero();
+        unsafe { __gmpz_mul_si(&mut result.0, &self.0, other as c_long) };
+        result
+    }
+
+    // GMP permits the output to alias either operand. Take one raw pointer to
+    // our exclusive value rather than overlapping Rust mutable/shared borrows.
+    pub fn add_assign(&mut self, other: &Self) {
+        let value = std::ptr::addr_of_mut!(self.0);
+        unsafe { __gmpz_add(value, value, &other.0) };
+    }
+    pub fn sub_assign(&mut self, other: &Self) {
+        let value = std::ptr::addr_of_mut!(self.0);
+        unsafe { __gmpz_sub(value, value, &other.0) };
+    }
+    pub fn mul_assign(&mut self, other: &Self) {
+        let value = std::ptr::addr_of_mut!(self.0);
+        unsafe { __gmpz_mul(value, value, &other.0) };
+    }
+    pub fn mul_assign_i64(&mut self, other: i64) {
+        let value = std::ptr::addr_of_mut!(self.0);
+        unsafe { __gmpz_mul_si(value, value, other as c_long) };
     }
     pub fn floor_div(&self, other: &Self) -> Self {
         assert_ne!(

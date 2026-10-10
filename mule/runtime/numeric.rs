@@ -2,6 +2,7 @@
 
 use crate::gmp::BigInt;
 use crate::object::{self, Data, Value};
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::ffi::{CStr, c_char};
 use std::ptr::null_mut;
@@ -45,12 +46,18 @@ pub unsafe fn is_integer(value: Value) -> bool {
 }
 
 pub unsafe fn integer_export(value: Value) -> Option<BigInt> {
+    unsafe { integer_view(value) }.map(Cow::into_owned)
+}
+
+/// Borrow a boxed operand while its owning runtime references remain live.
+/// Callers must not mutate/release that object until this view has been dropped.
+unsafe fn integer_view<'a>(value: Value) -> Option<Cow<'a, BigInt>> {
     if let Some(value) = unsafe { small_integer(value) } {
-        return Some(BigInt::from_i64(value));
+        return Some(Cow::Owned(BigInt::from_i64(value)));
     }
     if !value.is_null() {
         if let Data::BigInt(integer) = unsafe { &(*value).data } {
-            return Some(integer.clone());
+            return Some(Cow::Borrowed(integer));
         }
     }
     object::error("TypeError", "an integer is required");
@@ -64,6 +71,16 @@ pub unsafe fn integer_import(integer: &BigInt) -> Value {
         }
     }
     unsafe { object::new_value(Data::BigInt(integer.clone())) }
+}
+
+/// Transfer a freshly computed GMP integer into its runtime box without copying.
+pub unsafe fn integer_import_owned(integer: BigInt) -> Value {
+    if let Some(value) = integer.to_i64() {
+        if (MIN..=MAX).contains(&value) {
+            return object::small(value);
+        }
+    }
+    unsafe { object::new_value(Data::BigInt(integer)) }
 }
 
 #[unsafe(no_mangle)]
@@ -82,10 +99,10 @@ pub unsafe extern "C" fn mule_literal_int(decimal: *const c_char) -> Value {
         if (MIN..=MAX).contains(&value) {
             return object::small(value);
         }
-        return unsafe { integer_import(&BigInt::from_i64(value)) };
+        return unsafe { integer_import_owned(BigInt::from_i64(value)) };
     }
     match BigInt::from_decimal(text) {
-        Some(integer) => unsafe { integer_import(&integer) },
+        Some(integer) => unsafe { integer_import_owned(integer) },
         None => fail("ValueError", "invalid integer literal"),
     }
 }
@@ -321,10 +338,24 @@ unsafe fn integer_binary(op: i32, lhs: Value, rhs: Value) -> Value {
             return result;
         }
     }
-    let Some(a) = (unsafe { integer_export(lhs) }) else {
+    if op == 2 {
+        if let Some(right) = unsafe { small_integer(rhs) } {
+            let Some(left) = (unsafe { integer_view(lhs) }) else {
+                return null_mut();
+            };
+            return unsafe { integer_import_owned(left.mul_i64(right)) };
+        }
+        if let Some(left) = unsafe { small_integer(lhs) } {
+            let Some(right) = (unsafe { integer_view(rhs) }) else {
+                return null_mut();
+            };
+            return unsafe { integer_import_owned(right.mul_i64(left)) };
+        }
+    }
+    let Some(a) = (unsafe { integer_view(lhs) }) else {
         return null_mut();
     };
-    let Some(b) = (unsafe { integer_export(rhs) }) else {
+    let Some(b) = (unsafe { integer_view(rhs) }) else {
         return null_mut();
     };
     let integer = match op {
@@ -388,7 +419,7 @@ unsafe fn integer_binary(op: i32, lhs: Value, rhs: Value) -> Value {
         12 => a.or(&b),
         _ => return fail("TypeError", "unsupported numeric operation"),
     };
-    unsafe { integer_import(&integer) }
+    unsafe { integer_import_owned(integer) }
 }
 
 pub unsafe fn binary(op: i32, left: Value, right: Value) -> Value {
@@ -417,6 +448,60 @@ pub unsafe fn binary(op: i32, left: Value, right: Value) -> Value {
     }
 }
 
+/// Reuse only an exclusively owned boxed integer, or the two references known
+/// to be its local slot and this operation's owned left operand. A slot pointer
+/// is supplied only for an immediately following store back to that local.
+pub unsafe fn try_binary_reuse(
+    op: i32,
+    left: Value,
+    right: Value,
+    slot: *mut Value,
+) -> Option<Value> {
+    unsafe {
+        if !(0..=2).contains(&op)
+            || left.is_null()
+            || right.is_null()
+            || left == right
+            || object::is_fixnum(left)
+            || !matches!(&(*left).data, Data::BigInt(_))
+        {
+            return None;
+        }
+        // Bool arithmetic has separate representation rules. Only exact ints
+        // participate here; the generic path still handles mixed numeric kinds.
+        if !object::is_fixnum(right) && !matches!(&(*right).data, Data::BigInt(_)) {
+            return None;
+        }
+        let references = (*left).references;
+        if references != 1 && !(references == 2 && !slot.is_null() && *slot == left) {
+            return None;
+        }
+        let demoted = if op == 2 && object::is_fixnum(right) {
+            let multiplier = object::fixnum(right);
+            let Data::BigInt(integer) = &mut (*left).data else {
+                unreachable!()
+            };
+            integer.mul_assign_i64(multiplier);
+            integer.to_i64().filter(|value| (MIN..=MAX).contains(value))
+        } else {
+            // `right != left` and the reference proof exclude a shared GMP
+            // object; keep only the other operand borrowed during mutation.
+            let other = integer_view(right)?;
+            let Data::BigInt(integer) = &mut (*left).data else {
+                unreachable!()
+            };
+            match op {
+                0 => integer.add_assign(&other),
+                1 => integer.sub_assign(&other),
+                2 => integer.mul_assign(&other),
+                _ => unreachable!(),
+            }
+            integer.to_i64().filter(|value| (MIN..=MAX).contains(value))
+        };
+        Some(demoted.map_or_else(|| object::retain(left), object::small))
+    }
+}
+
 pub unsafe fn unary(op: i32, value: Value) -> Value {
     if let Some(real) = unsafe { float_value(value) } {
         return match op {
@@ -438,16 +523,16 @@ pub unsafe fn unary(op: i32, value: Value) -> Value {
     } else if op == 0 {
         return unsafe { object::retain(value) };
     }
-    let Some(integer) = (unsafe { integer_export(value) }) else {
+    let Some(integer) = (unsafe { integer_view(value) }) else {
         return null_mut();
     };
     let integer = match op {
         1 => integer.neg(),
         2 => integer.invert(),
-        0 => integer,
+        0 => integer.into_owned(),
         _ => return fail("TypeError", "unsupported unary operation"),
     };
-    unsafe { integer_import(&integer) }
+    unsafe { integer_import_owned(integer) }
 }
 
 fn ordering(value: Ordering) -> i32 {
@@ -470,9 +555,9 @@ pub unsafe fn compare(left: Value, right: Value) -> Option<i32> {
         }) {
             return Some(ordering(a.cmp(&b)));
         }
-        return Some(ordering(
-            unsafe { integer_export(left) }?.compare(&unsafe { integer_export(right) }?),
-        ));
+        let left = unsafe { integer_view(left) }?;
+        let right = unsafe { integer_view(right) }?;
+        return Some(ordering(left.compare(&right)));
     }
     let (real, integer, reverse) = if let Some(real) = af {
         (real, right, true)
@@ -492,7 +577,7 @@ pub unsafe fn compare(left: Value, right: Value) -> Option<i32> {
     let comparison = if real.is_infinite() {
         if real > 0.0 { -1 } else { 1 }
     } else {
-        ordering(unsafe { integer_export(integer) }?.compare_f64(real))
+        ordering(unsafe { integer_view(integer) }?.compare_f64(real))
     };
     Some(if reverse { -comparison } else { comparison })
 }

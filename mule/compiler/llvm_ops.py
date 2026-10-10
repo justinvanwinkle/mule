@@ -106,7 +106,7 @@ _RANGE = """  %test.shifted = shl i64 %result, 1
   %range = icmp eq i64 %result, %test.decoded"""
 
 
-def _binary(op: int) -> str:
+def _binary(op: int, *, fixnums: bool = False) -> str:
     if op in (0, 1, 2):
         intrinsic = {0: "sadd", 1: "ssub", 2: "smul"}[op]
         operation = f"""  %checked = call {{i64, i1}} @llvm.{intrinsic}.with.overflow.i64(i64 %a, i64 %b)
@@ -157,27 +157,34 @@ shift:
     else:
         instruction = {10: "and", 11: "xor", 12: "or"}[op]
         operation = f"  %result = {instruction} i64 %a, %b\n  br label %encode"
-    return f"""define internal ptr @mule.fast.binary.{op}(ptr %left, ptr %right, i32 %inplace) alwaysinline {{
-entry:
-  %left.bits = ptrtoint ptr %left to i64
-  %right.bits = ptrtoint ptr %right to i64
-  %tags = and i64 %left.bits, %right.bits
+    prefix = "fixnum" if fixnums else "fast"
+    guard = (
+        ""
+        if fixnums
+        else """  %tags = and i64 %left.bits, %right.bits
   %tag = and i64 %tags, 1
   %integers = icmp ne i64 %tag, 0
   br i1 %integers, label %fixnums, label %slow
 fixnums:
+"""
+    )
+    return f"""define internal ptr @mule.{prefix}.binary.{op}(ptr %left, ptr %right, i32 %inplace, ptr %reuse) alwaysinline {{
+entry:
+  %left.bits = ptrtoint ptr %left to i64
+  %right.bits = ptrtoint ptr %right to i64
+{guard}
   %a = ashr i64 %left.bits, 1
   %b = ashr i64 %right.bits, 1
 {operation}
 encode:
 {_ENCODE}
 slow:
-  %fallback = call ptr @mule_binary(i32 {op}, ptr %left, ptr %right, i32 %inplace)
+  %fallback = call ptr @mule_binary_reuse(i32 {op}, ptr %left, ptr %right, i32 %inplace, ptr %reuse)
   ret ptr %fallback
 }}"""
 
 
-def _unary(op: int) -> str:
+def _unary(op: int, *, fixnum: bool = False) -> str:
     if op == 3:
         return """define internal ptr @mule.fast.unary.3(ptr %operand) alwaysinline {
 entry:
@@ -201,13 +208,20 @@ negate:
 {_ENCODE}"""
     else:
         operation = f"  %result = xor i64 %decoded, -1\n{_ENCODE}"
-    return f"""define internal ptr @mule.fast.unary.{op}(ptr %operand) alwaysinline {{
-entry:
-  %bits = ptrtoint ptr %operand to i64
-  %tag = and i64 %bits, 1
+    prefix = "fixnum" if fixnum else "fast"
+    guard = (
+        ""
+        if fixnum
+        else """  %tag = and i64 %bits, 1
   %integer = icmp ne i64 %tag, 0
   br i1 %integer, label %fixnum, label %slow
 fixnum:
+"""
+    )
+    return f"""define internal ptr @mule.{prefix}.unary.{op}(ptr %operand) alwaysinline {{
+entry:
+  %bits = ptrtoint ptr %operand to i64
+{guard}
   %decoded = ashr i64 %bits, 1
 {operation}
 slow:
@@ -252,7 +266,9 @@ def helpers() -> str:
             _ownership(),
             _truth(),
             *(_binary(op) for op in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12)),
+            *(_binary(op, fixnums=True) for op in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12)),
             *(_unary(op) for op in range(4)),
+            *(_unary(op, fixnum=True) for op in range(3)),
             *(_compare(op) for op in range(8)),
         ]
     )
