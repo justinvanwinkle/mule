@@ -63,6 +63,108 @@ print(x, y, z)
     assert result.stdout == "exhausted 14 5 6\n9\nempty\n1 2 3\n"
 
 
+def test_unpack_captures_elements_before_target_side_effects(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        """
+class Target:
+    def __setitem__(self, key, value):
+        values[1] = 99
+        print('target', value)
+target = Target()
+values = [10, 20]
+target[0], second = values
+print(second, values[1])
+values = [30, 40]
+pair = (values, None)
+target[0], second = pair
+print(second, values[1])
+a, (b, c) = (1, (2, 3))
+print(a, b, c)
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ("target 10\n20 99\ntarget [30, 99]\nNone 99\n1 2 3\n")
+
+
+def test_unpack_cardinality_and_custom_iterator_effects(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        """
+for values in [(), (1,), (1, 2, 3)]:
+    a = 10
+    b = 20
+    try:
+        a, b = values
+    except ValueError:
+        print('mismatch', a, b)
+class Iterator:
+    def __init__(self, count):
+        self.count = count
+        self.index = 0
+    def __iter__(self):
+        print('iter')
+        return self
+    def __next__(self):
+        print('next', self.index)
+        if self.index == self.count:
+            raise StopIteration
+        self.index += 1
+        return self.index
+a, b = Iterator(2)
+print(a, b)
+try:
+    a, b = Iterator(3)
+except ValueError:
+    print('excess', a, b)
+() = ()
+try:
+    () = (1,)
+except ValueError:
+    print('nonempty')
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "mismatch 10 20\nmismatch 10 20\nmismatch 10 20\n"
+        "iter\nnext 0\nnext 1\nnext 2\n1 2\n"
+        "iter\nnext 0\nnext 1\nnext 2\nexcess 1 2\nnonempty\n"
+    )
+
+
+def test_unpack_keeps_tuple_alive_and_preserves_partial_nested_assignment(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        """
+class Target:
+    def __setitem__(self, key, value):
+        global pair
+        pair = None
+        print('stored', value)
+target = Target()
+pair = ([1], [2])
+target[0], second = pair
+print(second)
+a = 10
+b = 20
+c = 30
+try:
+    a, (b, c) = (1, (2,))
+except ValueError:
+    print(a, b, c)
+try:
+    target[0], (b, c) = ([3], ())
+except ValueError:
+    print('alive', b, c)
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "stored [1]\n[2]\n1 20 30\nstored [3]\nalive 20 30\n"
+
+
 def test_custom_iteration_and_getitem_fallback(tmp_path):
     result = execute(
         tmp_path,

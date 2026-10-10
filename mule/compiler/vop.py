@@ -41,6 +41,8 @@ class StorageClass:
     llvm_type: str
     zero: str
     owned: bool = False
+    # A machine representation rather than an object pointer.
+    raw: bool = False
 
     def __repr__(self):
         return f"<SC {self.name}>"
@@ -51,14 +53,14 @@ DESCRIPTOR = StorageClass("descriptor", "ptr", "null", owned=True)
 # Tagged fixnums, ``True``/``False``/``None``: pointers nothing ever releases.
 IMMEDIATE = StorageClass("immediate", "ptr", "null")
 # Raw machine values.
-SIGNED = StorageClass("signed", "i64", "0")
-BOOLEAN = StorageClass("boolean", "i1", "false")
+SIGNED = StorageClass("signed", "i64", "0", raw=True)
+BOOLEAN = StorageClass("boolean", "i1", "false", raw=True)
 # A borrowed pointer to a native instance's field payload.
-INSTANCE = StorageClass("instance", "ptr", "null")
+INSTANCE = StorageClass("instance", "ptr", "null", raw=True)
 # The value ``None`` held as nothing at all.
-NULL = StorageClass("null", "i64", "0")
+NULL = StorageClass("null", "i64", "0", raw=True)
 # A borrowed pointer to a native class object whose layout was guarded at entry.
-CLASS = StorageClass("class", "ptr", "null")
+CLASS = StorageClass("class", "ptr", "null", raw=True)
 # Counted-loop iteration state: current value, stop, and step words.
 RANGE = StorageClass("range", "[3 x i64]", "zeroinitializer")
 

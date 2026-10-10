@@ -9,7 +9,13 @@ populates the database for Python's operations and Mule's runtime protocols.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .ctype import ValueType
+    from .node import Combination
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +32,7 @@ class FunInfo:
     result: bool = True
     # The compiled stdlib protocol name this operation invokes, if any.
     protocol: str | None = None
-    derive_type: object = None
+    derive_type: Callable[[Combination], ValueType | None] | None = None
     optimizer: object = None
     transforms: tuple = field(default_factory=tuple)
 

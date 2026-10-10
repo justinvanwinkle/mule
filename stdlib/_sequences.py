@@ -332,6 +332,14 @@ def next_item(value):
 
 
 def unpack(value, count):
+    count = _integer_storage(count)
+    if _tuple_storage(value):
+        length = _storage_length(value)
+        if length < count:
+            raise ValueError("not enough values to unpack")
+        if length > count:
+            raise ValueError("too many values to unpack")
+        return value
     iterator = iterate(value)
     result = []
     index = 0

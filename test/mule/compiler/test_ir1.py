@@ -2,7 +2,7 @@
 
 import pytest
 
-from mule.compiler import lower
+from mule.compiler import emit_llvm
 from mule.compiler.debug import InconsistentIR1, check_ir1_consistency
 from mule.compiler.ir1util import block_exception_target, unlink_blocks
 from mule.compiler.main import compile_toplevel
@@ -52,8 +52,8 @@ def test_conversion_produces_consistent_ir1(source):
 
 
 @pytest.mark.parametrize("source", SOURCES)
-def test_bridge_output_verifies(source):
-    lower(source)
+def test_code_generation_accepts_every_converted_construct(source):
+    assert "define i32 @main" in emit_llvm(source)
 
 
 def test_each_lambda_has_its_own_component_with_bind_first():

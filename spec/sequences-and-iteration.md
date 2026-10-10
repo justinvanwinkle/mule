@@ -52,6 +52,56 @@ an owned rest tuple. Internal fixed-arity predictions must not bypass this
 entry for variadic functions, even when the source argument count happens to
 match the number of internal parameters.
 
+## Fixed-length unpacking of builtin tuples
+
+Non-starred unpacking recognizes exact immutable builtin tuple storage before
+entering the general iterator protocol. The length check and shortage/excess
+`ValueError` rules execute in compiled `stdlib/_sequences.py`; the native
+`_tuple_storage` primitive only tests the physical `Data::Args` representation.
+On success the protocol returns the original tuple with an owned reference.
+Other iterables still collect all required elements and check exhaustion before
+any target assignment. Lists are not reused: an earlier target's side effects
+could otherwise change the elements seen by later targets.
+
+The compiler lowers extraction from the unpack result to `%unpack_ref`, whose
+VOP calls the existing checked physical storage read instead of the general
+`getitem` protocol. The compiler temporary keeps the tuple alive across target
+evaluation; each read owns its returned element, and ordinary cleanup handles
+both successful and exceptional assignments. Nested unpacking retains Python's
+target order and can fail after earlier outer targets have been assigned.
+Unpack captures are explicitly expression temporaries: the backend includes
+their slots in handler-transfer cleanup, rather than retaining them as function
+locals after a caught assignment failure. User locals and long-lived compiler
+state such as iterators keep their existing lifetimes. This follows SBCL
+`src/compiler/ir2tran.lisp`, `ir2-convert-throw` and `emit-nlx-start`, which
+distinguish temporary result lifetimes and preserved nonlocal-exit state;
+Mule's reference-counted LLVM paths additionally release the captured tuples.
+
+SBCL `src/compiler/seqtran.lisp`, the `elt` transform, selects `aref` for known
+simple arrays. `src/compiler/array-tran.lisp`, the vector `aref` transform,
+selects `data-vector-ref` with a separate policy-controlled bounds check.
+Mule follows that specialization boundary: unpack establishes builtin tuple
+storage, then extraction uses physical access. Python additionally requires
+exact unpack cardinality and complete iterable capture before target stores;
+those rules remain compiled Python, not Rust dispatch. Mule's reference-counted
+LLVM backend retains checked reads and explicit ownership rather than SBCL's
+garbage-collected vector-load VOP. Exact tuple unpack avoids iterator and
+temporary-container allocation and normal-path exhaustion exceptions; it does
+not yet derive per-element tuple types or emit unchecked field loads.
+
+The known-function database also records successful result types for the tuple
+storage predicate, physical sequence length, and integer-storage validation.
+IR1 flow propagation invokes `FunInfo.derive_type`, following SBCL
+`src/compiler/knownfun.lisp`, `%defknown`, and `src/compiler/ir1opt.lisp`,
+`derive-combination-type`. The predicate is boolean, length is a nonnegative
+integer, and validated integer storage excludes booleans and user objects.
+The private unpack count passes through integer-storage validation, so its
+length comparisons have two proven integer operands without source annotations.
+These primitives cannot run user callbacks or mutate language bindings. They
+remain non-flushable because invalid storage must still raise; no successful
+result fact removes their error path. Tuple length is not assumed to fit a
+fixnum, and arbitrary-precision counts retain their normal representation.
+
 ## Character construction
 
 `chr(value, /)` is compiled Python in `stdlib/_sequences.py`. It reuses the

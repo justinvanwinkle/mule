@@ -14,8 +14,11 @@ The inspected source is `~/checkout/sbcl` at commit
 | --- | --- |
 | `src/compiler/ir1opt.lisp`, `lvar-type-using`, `%lvar-derived-type`, `lvar-conservative-type` (170–225) | Union producer types and use conservative facts where mutation can invalidate assumptions. |
 | `src/compiler/ir1opt.lisp`, `accumulate-optimistic-arg-types`, `publish-optimistic-types`, `solve-optimistic-result-types` (3263–3448) | Propagate argument and result types across local calls, converge recursive facts, and publish only settled types. |
-| `src/compiler/ltn.lisp`, `operand-restriction-ok`, `template-args-ok` (649–705) | Select implementation templates according to operand representations and constants. |
-| `src/compiler/ir2tran.lisp`, `ir2-convert-local-known-call` (1029–1042) | Use an internal call convention with direct argument locations. |
+| `src/compiler/ltn.lisp`, `operand-restriction-ok`, `template-args-ok`, `find-template-for-ltn-policy` (649–705) | Select the cheapest template whose operand restrictions, primitive-type requirements, and policy accept each known call (`ltn.py`). |
+| `src/compiler/vop.lisp`, `vmdef.lisp` | Templates with operand restrictions, costs, and generators; VOPs over TNs with primitive types and storage classes (`vop.py`, `vmdef.py`). |
+| `src/compiler/ir2tran.lisp`, `ir2-convert-block`, `ir2-convert-ref`, `ir2-convert-set`, `ir2-convert-template`, `ir2-convert-local-known-call` (1029–1042) | Convert each IR1 block into VOPs; references, assignments, branches, casts, and returns use fixed templates; calls use the selected template or the guarded full-call template (`ir2tran.py`). |
+| `src/compiler/represent.lisp`, `select-tn-representation`, `select-representations` | Choose each TN's storage class from its primitive type by operand-restriction cost; natively planned bodies hold every value in a machine representation (`represent.py`). |
+| `src/compiler/codegen.lisp`, `generate-code` | Invoke each VOP's generator in block order to emit the function (`codegen.py`, `vops.py`). |
 | `src/compiler/x86-64/arith.lisp`, `+/signed=>integer` (949–975) | Emit machine addition and overflow checks, allocating a bigint only when needed. |
 
 Mule reproduces these mechanisms in Python with LLVM as the required backend.
@@ -27,16 +30,17 @@ library is introduced.
 
 ## Analysis and representation facts
 
-AST nodes and IR operations select visitor methods through their own `accept`
-methods. Tree traversal, operand discovery, control-flow edges, and instruction
-validation are virtual behaviors. IR constants retain concrete Mule literal
-nodes, so neither lowering nor emission classifies host Python values.
+AST and IR1 nodes select visitor methods through their own `accept` methods.
+Tree traversal, operand discovery, and control-flow edges are virtual
+behaviors. Constant leaves retain concrete Mule literal nodes, so neither
+conversion nor code generation classifies host Python values.
 
 Value facts are polymorphic objects with union, widening, arithmetic, narrowing,
-and containment behavior. They do not carry string type tags. LLVM uses their
-representation proofs to select native templates and their visitor dispatch to
-emit entry guards. These compiler objects are separate from the native value
-representation described below.
+and containment behavior. They do not carry string type tags. Template
+selection maps them to primitive types (`fixnum`, `boolean`, `none`,
+`immortal`, `t`) and representation selection maps those to storage classes;
+their visitor dispatch emits entry guards. These compiler objects are separate
+from the native value representation described below.
 
 `mule/compiler/constraint.py` propagates facts over IR1 (`constraint.lisp`'s
 role, adapted to a value-type lattice). It propagates
@@ -76,13 +80,24 @@ contexts supply parameter facts inside the body without annotations.
 
 ## Native operations
 
-`mule/compiler/llvm_ops.py` supplies always-inline LLVM templates for integer
-addition, subtraction, multiplication, floor division, remainder, shifts, bitwise
-operations, unary operations, comparisons, truth testing, and ownership.
-Proven operands and bounded results emit LLVM primitives directly without tag
-or overflow checks. Proven fixnum operands with wider results use templates
-without tag checks but retain overflow recovery. Otherwise templates test tags
-before decoding integers and executing native instructions.
+`mule/compiler/vops.py` defines one template per known operation. Each
+template names the known function it translates, restricts its operands to
+storage classes, and carries the generator that emits its LLVM text; the
+runtime helper templates it emits once per module (`helpers()`) cover integer
+addition, subtraction, multiplication, floor division, remainder, shifts,
+bitwise operations, unary operations, comparisons, truth testing, and
+ownership as always-inline LLVM functions. Proven operands and bounded results
+emit LLVM primitives directly without tag or overflow checks. Proven fixnum
+operands with wider results use helpers without tag checks but retain overflow
+recovery. Otherwise helpers test tags before decoding integers and executing
+native instructions.
+
+Every TN of an object body is either an owned descriptor (released on
+overwrite and on every exit) or an immediate (a tagged fixnum, boolean, or
+`None`, never released). A local is immediate when every value written into
+it is immortal; a temporary is immediate when its derived type is. Owned
+temporaries live in entry-block slots that the shared error path and the
+handler-edge unwind blocks release.
 
 Arithmetic checks both machine overflow and the signed 63-bit representation
 range. Overflow takes the Rust/GMP path, which promotes and subsequently demotes
@@ -113,8 +128,13 @@ that rebinds the global does not replace the already-loaded callable.
 
 ## Raw int64 entries and class protocols
 
-`native.py` selects physical representations after semantic analysis, following
-SBCL's `represent.lisp` separation of semantic type from storage class. Native
+`represent.py` selects physical representations after semantic analysis,
+following SBCL's `represent.lisp` separation of semantic type from storage
+class. A native plan assigns every parameter, local, and value of a lambda a
+machine representation (`signed64`, `boolean`, `none`, an instance payload, or
+a guarded class); the lambda is then generated a third time under that plan,
+where template selection admits only the raw templates and storage-class
+selection prefers machine storage. Native
 class declarations carry stable compiler layout identities, aligned contracts,
 slot indices, and method function identities. Receiver facts select typed slots
 through virtual methods. There is no host-class inspection or class-name type
@@ -169,8 +189,9 @@ and [input/output aliasing conventions](https://gmplib.org/manual/Parameter-Conv
 
 Add/subtract/multiply can reuse a bigint when its only reference is the consumed
 temporary, or when its two references are the consumed operand and the exact
-local slot being immediately replaced. The IR verifier requires that local reuse
-be followed immediately by a store of the result into the same local. Runtime
+local slot being immediately replaced. Conversion records the reuse local only
+for an augmented assignment to a plain local, so the result's store follows
+the operation immediately. Runtime
 reference counts exclude aliases; an RHS that changes the slot cannot authorize
 reuse through that slot. Same-object operands and other numeric representations
 take normal paths. Results still demote to tagged integers when they fit.
@@ -182,14 +203,15 @@ retain optimization level 3.
 
 ## Remaining work and verification
 
-This stage does not specialize arbitrary object/float signatures, keep every numeric
-local unboxed across blocks, perform SBCL's full local-call and constraint
-transformations, or provide a separate implementation-level IR. Speculative global
-call returns remain unknown when the general fallback could return another type.
-LLVM handles SSA promotion, instruction optimization, and register allocation.
+This stage does not specialize arbitrary object/float signatures, mix machine
+and object representations inside one body (a native plan is all or nothing,
+with coercions only at the entry adapter), or perform SBCL's full local-call
+and constraint transformations. Speculative global call returns remain unknown
+when the general fallback could return another type. LLVM handles SSA
+promotion, instruction optimization, and register allocation.
 
-Hand-built IR tests cover type/range joins, widening, unbound locals, and guarded
-target predictions. Native executable tests cover overflow, boolean identity,
+Source-level IR1 tests cover type/range joins, widening, unbound locals, and
+guarded target predictions. Native executable tests cover overflow, boolean identity,
 function rebinding, argument side effects, errors, recursion, and ownership.
 A machine-code test verifies that a bounded integer kernel emits native arithmetic
 without calling operator dispatch helpers. The four-language benchmark measures

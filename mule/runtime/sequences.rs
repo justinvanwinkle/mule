@@ -275,6 +275,16 @@ pub unsafe extern "C" fn mule_storage_append(value: Value, element: Value) -> Va
     }
 }
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_tuple_storage(value: Value) -> Value {
+    unsafe {
+        object::bool_value(
+            !value.is_null()
+                && !object::is_fixnum(value)
+                && matches!(&(*value).data, Data::Args(_)),
+        )
+    }
+}
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_storage_tuple(value: Value) -> Value {
     unsafe {
         if !value.is_null() && !object::is_fixnum(value) {

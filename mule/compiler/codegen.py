@@ -28,7 +28,7 @@ from .ctype import UNKNOWN, ValueType
 from .ir1util import block_exception_target
 from .ir2tran import ir2_convert
 from .ltn import EntryContext, ltn_analyze
-from .node import CallKind, Combination, FunctionalKind, Lambda
+from .node import CallKind, Combination, FunctionalKind, Lambda, LambdaVar
 from .represent import select_native_plans, select_representations
 from .vop import BOOLEAN, CLASS, DESCRIPTOR, IMMEDIATE, NULL, RANGE, SIGNED
 
@@ -119,6 +119,7 @@ declare ptr @mule_storage_read(ptr, ptr)
 declare ptr @mule_storage_write(ptr, ptr, ptr)
 declare ptr @mule_storage_append(ptr, ptr)
 declare ptr @mule_storage_tuple(ptr)
+declare ptr @mule_tuple_storage(ptr)
 declare ptr @mule_storage_compatible(ptr, ptr)
 declare ptr @mule_integer_storage(ptr)
 declare ptr @mule_class_identity(ptr)
@@ -540,6 +541,9 @@ class FunctionGenerator:
             if tn.primitive_type is not None and tn.sc is RANGE:
                 self.range_tns.append(tn)
                 tn.slot = f"%range.{len(self.range_tns) - 1}"
+            elif isinstance(tn.leaf, LambdaVar) and tn.leaf.expression_temporary:
+                self.value_tns.append(tn)
+                tn.slot = f"%value.{len(self.value_tns) - 1}"
             elif tn.leaf is not None or tn.name is not None and tn.name.startswith("$"):
                 self.local_tns.append(tn)
                 tn.slot = f"%local.{len(self.local_tns) - 1}"
@@ -1378,7 +1382,7 @@ def native_adapter(gen: FunctionGenerator, plan) -> str:
     )
     failed = gen.operation("load i1, ptr %native.error")
     gen.guard(failed)
-    boxed = _box_representation(gen, plan.returned, result)
+    boxed = plan.returned.box(gen, result)
     gen.line(f"store ptr {boxed}, ptr %result")
     gen.line("br label %cleanup")
     if plan.dependencies:
@@ -1398,18 +1402,6 @@ def native_adapter(gen: FunctionGenerator, plan) -> str:
     gen.line(f"ret ptr {result}")
     gen.lines.append("}")
     return "\n".join(gen.lines)
-
-
-def _box_representation(gen, representation, value: str) -> str:
-    sc = representation.primitive_type.scs[-1]
-    if sc is SIGNED:
-        return gen.operation(f"call ptr @mule_box_i64(i64 {value})")
-    if sc is BOOLEAN:
-        wide = gen.operation(f"zext i1 {value} to i32")
-        return gen.operation(f"call ptr @mule_bool(i32 {wide})")
-    if sc is NULL:
-        return "@mule.none"
-    raise ValueError(f"{representation!r} cannot be returned from a native entry")
 
 
 def native_callbacks(module: ModuleGenerator, layout) -> str:

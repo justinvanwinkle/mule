@@ -67,12 +67,13 @@ IMMORTAL_TYPES = (FIXNUM, BOOLEAN_T, NONE_T, IMMORTAL_T)
 
 
 def select_representations(component: IR2Component) -> None:
-    if component.context.plan is None:
+    raw = component.context.plan is not None
+    if not raw:
         for tn in component.tns:
             if tn.leaf is not None:
                 tn.primitive_type = _variable_type(tn, component)
     for tn in component.tns:
-        tn.sc = select_tn_representation(tn)
+        tn.sc = select_tn_representation(tn, raw=raw)
 
 
 def _variable_type(tn, component) -> PrimitiveType:
@@ -94,13 +95,17 @@ def _variable_type(tn, component) -> PrimitiveType:
     return IMMORTAL_T
 
 
-def select_tn_representation(tn):
+def select_tn_representation(tn, *, raw=False):
     """The cheapest storage class among the primitive type's candidates,
-    counting one coercion per operand whose restriction excludes it."""
+    counting one coercion per operand whose restriction excludes it. A native
+    body holds every value that has a machine representation in it."""
     if tn.primitive_type is RANGE_T:
         return RANGE
+    candidates = tn.primitive_type.scs
+    if raw and any(sc.raw for sc in candidates):
+        candidates = [sc for sc in candidates if sc.raw]
     best, best_cost = None, None
-    for sc in tn.primitive_type.scs:
+    for sc in candidates:
         cost = 0
         for ref in (*tn.reads, *tn.writes):
             restriction = _restriction(ref)
@@ -157,7 +162,9 @@ class Representation:
     def truth(self):
         raise NotNative
 
-    def boxable(self):
+    def box(self, gen, value):
+        """An owned object for a raw value; representations that cannot
+        leave a native body raise ``NotNative`` during plan selection."""
         raise NotNative
 
     def parameter(self, gen, value):
@@ -174,8 +181,8 @@ class Int64(Representation):
     def truth(self):
         return True
 
-    def boxable(self):
-        return True
+    def box(self, gen, value):
+        return gen.operation(f"call ptr @mule_box_i64(i64 {value})")
 
     def parameter(self, gen, value):
         slot = gen.operation("alloca i64")
@@ -195,15 +202,16 @@ class Boolean(Representation):
     def truth(self):
         return True
 
-    def boxable(self):
-        return True
+    def box(self, gen, value):
+        wide = gen.operation(f"zext i1 {value} to i32")
+        return gen.operation(f"call ptr @mule_bool(i32 {wide})")
 
 
 class Nothing(Representation):
     primitive_type = NONE_T
 
-    def boxable(self):
-        return True
+    def box(self, gen, value):
+        return "@mule.none"
 
 
 @dataclass(frozen=True)
@@ -263,6 +271,13 @@ class Method(Representation):
 
 
 INT64, BOOL, NONE = Int64(), Boolean(), Nothing()
+
+
+class _Probe:
+    """A generator stand-in for representation checks during planning."""
+
+    def operation(self, text):
+        return "0"
 
 
 class _Contract:
@@ -455,7 +470,7 @@ class _Select(NodeVisitor):
             if value is None:
                 raise Deferred
             # Instance escape requires owned-return representation conversion.
-            value.boxable()
+            value.box(_Probe(), "0")
             if self.plan.returned is not None and self.plan.returned != value:
                 raise NotNative
             self.plan.returned = value

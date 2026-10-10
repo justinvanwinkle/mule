@@ -319,10 +319,12 @@ class FunctionConverter:
             self.lambda_.locals.append(var)
         return var
 
-    def temporary(self) -> LambdaVar:
+    def temporary(self, *, expression=False) -> LambdaVar:
         name = f"$merge{self.hidden}"
         self.hidden += 1
-        return self.declare_local(name, hidden=True)
+        var = self.declare_local(name, hidden=True)
+        var.expression_temporary = expression
+        return var
 
     def variable(self, name: str):
         var = self.locals.get(name)
@@ -1953,7 +1955,7 @@ class _AssignmentTarget(ast.Visitor):
         )
         following, values = Ctran(), Lvar()
         function.protocol(ctran, following, values, "unpack", (self.value, count), node)
-        temporary = function.temporary()
+        temporary = function.temporary(expression=True)
         current = Ctran()
         function.set_var(following, current, temporary, values, node)
         for index, target in enumerate(node.elements):
@@ -1962,8 +1964,8 @@ class _AssignmentTarget(ast.Visitor):
             following, position = Ctran(), Lvar()
             function.constant(ctran, following, position, ast.IntegerLiteral(index))
             ctran, element = Ctran(), Lvar()
-            function.protocol(
-                following, ctran, element, "getitem", (loaded, position), node
+            function.known(
+                following, ctran, element, fndb.UNPACK_REF, (loaded, position), node
             )
             current = Ctran()
             target.accept(_AssignmentTarget(function, element, ctran, current))

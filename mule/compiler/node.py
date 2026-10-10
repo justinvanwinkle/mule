@@ -402,7 +402,14 @@ class GlobalVar(BasicVar):
 class LambdaVar(BasicVar):
     """A function local. ``hidden`` marks compiler temporaries."""
 
-    __slots__ = ("arg_info", "hidden", "home", "indirect", "optimistic_type")
+    __slots__ = (
+        "arg_info",
+        "expression_temporary",
+        "hidden",
+        "home",
+        "indirect",
+        "optimistic_type",
+    )
 
     def __init__(self, name: str, *, hidden=False):
         super().__init__(name)
@@ -410,6 +417,9 @@ class LambdaVar(BasicVar):
         self.arg_info = None
         self.indirect = False
         self.hidden = hidden
+        # These captures belong to expression evaluation, not the enclosing
+        # function's locals, and must be released before an exception transfer.
+        self.expression_temporary = False
         self.optimistic_type = None
 
     @property

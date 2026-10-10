@@ -1,7 +1,30 @@
+"""IR1 conversion rejects invalid programs and orders effects as Python does."""
+
 import pytest
 
-from mule import ast
-from mule.compiler import UnsupportedSyntax, ir, lower
+from mule.compiler import UnsupportedSyntax
+from mule.compiler.debug import check_ir1_consistency
+from mule.compiler.main import compile_source
+from mule.compiler.node import (
+    CallKind,
+    Combination,
+    GlobalVar,
+    LambdaVar,
+    NodeVisitor,
+    Ref,
+)
+
+
+def lower(source, filename="<unknown>"):
+    return compile_source(source, filename)
+
+
+def nodes(lambda_):
+    return [node for block in lambda_.component.blocks() for node in block.nodes()]
+
+
+def local_names(lambda_):
+    return tuple(var.name for var in lambda_.locals if not var.hidden)
 
 
 @pytest.mark.parametrize(
@@ -15,7 +38,7 @@ from mule.compiler import UnsupportedSyntax, ir, lower
     ],
 )
 def test_control_flow_graph_verifies_independent_of_block_creation_order(source):
-    ir.verify(lower(source))
+    check_ir1_consistency(lower(source).components)
 
 
 @pytest.mark.parametrize(
@@ -62,81 +85,31 @@ def test_error_preserves_original_filename_and_unicode_columns():
 
 
 def test_late_assignment_classifies_all_function_reads_as_local():
-    module = lower("x = 1\ndef f():\n print(x)\n x = 2\n")
-    function = module.functions[1]
-    assert function.locals == ("x",)
-    collector = LoadCollector()
-    for block in function.blocks:
-        for instruction in block.instructions:
-            instruction.accept(collector)
-    reads = collector.reads
-    assert next(read for read in reads if read.name == "x").local
-    assert not next(read for read in reads if read.name == "print").local
-
-
-def test_ir_rejects_multiply_consumed_expression_result():
-    module = ir.Module(
-        [
-            ir.Function(
-                "module",
-                (),
-                (),
-                [
-                    ir.Block(
-                        "entry",
-                        [
-                            ir.Constant("a", ast.IntegerLiteral(1)),
-                            ir.Binary("b", ast.BinaryOperator.ADD, "a", "a"),
-                        ],
-                        ir.Return("b"),
-                    )
-                ],
-            )
-        ],
-        "module",
+    compilation = lower("x = 1\ndef f():\n print(x)\n x = 2\n")
+    function = compilation.lambdas[1]
+    assert local_names(function) == ("x",)
+    reads = [node for node in nodes(function) if isinstance(node, Ref)]
+    assert isinstance(
+        next(read for read in reads if read.leaf.source_name == "x").leaf, LambdaVar
     )
-    with pytest.raises(ValueError, match="multiply consumed"):
-        ir.verify(module)
-
-
-def test_ir_rejects_value_not_dominating_its_use():
-    module = ir.Module(
-        [
-            ir.Function(
-                "module",
-                (),
-                (),
-                [
-                    ir.Block(
-                        "entry",
-                        [ir.Constant("condition", ast.BooleanLiteral(True))],
-                        ir.Branch("condition", "left", "right"),
-                    ),
-                    ir.Block(
-                        "left",
-                        [ir.Constant("a", ast.IntegerLiteral(1))],
-                        ir.Jump("right"),
-                    ),
-                    ir.Block("right", [], ir.Return("a")),
-                ],
-            )
-        ],
-        "module",
+    assert isinstance(
+        next(read for read in reads if read.leaf.source_name == "print").leaf,
+        GlobalVar,
     )
-    with pytest.raises(ValueError, match="dominate"):
-        ir.verify(module)
 
 
-class LoadCollector(ir.Visitor):
-    def __init__(self):
-        self.reads = []
-
-    def visit_Load(self, instruction):
-        self.reads.append(instruction)
+def class_definitions(lambda_):
+    return [
+        node.info
+        for node in nodes(lambda_)
+        if isinstance(node, Combination)
+        and node.kind is CallKind.KNOWN
+        and node.fun_info.name == "%make_class"
+    ]
 
 
 def test_class_layout_uses_receiver_writes_across_all_methods():
-    module = lower(
+    compilation = lower(
         "class Point:\n"
         " def __init__(point, x):\n"
         "  point.x = x\n"
@@ -146,20 +119,18 @@ def test_class_layout_uses_receiver_writes_across_all_methods():
         "   point.y = 2\n"
         "  return point.x\n"
     )
-    collector = ClassCollector()
-    for instruction in module.functions[0].blocks[0].instructions:
-        instruction.accept(collector)
-    assert len(collector.classes) == 1
-    definition = collector.classes[0]
+    definitions = class_definitions(compilation.lambdas[0])
+    assert len(definitions) == 1
+    definition = definitions[0]
     assert definition.public_name == "Point"
     assert definition.fields == ("x", "y")
     assert definition.method_names == ("__init__", "move")
-    assert module.functions[1].locals == ("point", "x")
-    assert "y" not in module.functions[2].locals
+    assert local_names(compilation.lambdas[1]) == ("point", "x")
+    assert "y" not in local_names(compilation.lambdas[2])
 
 
 def test_class_method_scope_does_not_change_module_global_declarations():
-    module = lower(
+    compilation = lower(
         "class C:\n"
         " def method(self, value):\n"
         "  global answer\n"
@@ -168,8 +139,8 @@ def test_class_method_scope_does_not_change_module_global_declarations():
         "global answer\n"
         "answer = 42\n"
     )
-    assert module.functions[0].locals == ()
-    assert module.functions[1].locals == ("self", "value")
+    assert local_names(compilation.lambdas[0]) == ()
+    assert local_names(compilation.lambdas[1]) == ("self", "value")
 
 
 def test_attribute_assignment_evaluates_value_before_receiver():
@@ -225,42 +196,37 @@ def test_classes_reject_unimplemented_features_explicitly(source):
         lower(source)
 
 
-class ClassCollector(ir.Visitor):
-    def __init__(self):
-        self.classes = []
+class InstructionTrace(NodeVisitor):
+    """The order of variable reads, calls, and attribute operations."""
 
-    def visit_DefineClass(self, instruction):
-        self.classes.append(instruction)
-
-
-class InstructionTrace(ir.Visitor):
     def __init__(self):
         self.events = []
 
-    def visit_Load(self, instruction):
-        if not instruction.name.startswith("$"):
-            self.events.append(("load", instruction.name))
+    def visit_Ref(self, node):
+        leaf = node.leaf
+        if isinstance(leaf, (LambdaVar, GlobalVar)) and not leaf.source_name.startswith(
+            "$"
+        ):
+            self.events.append(("load", leaf.source_name))
 
-    def visit_Call(self, instruction):
-        self.events.append(("call", len(instruction.args)))
-
-    def visit_LoadAttribute(self, instruction):
-        self.events.append(("get", instruction.name))
-
-    def visit_StoreAttribute(self, instruction):
-        self.events.append(("set", instruction.name))
-
-    def visit_ResolveMethod(self, instruction):
-        self.events.append(("resolve", instruction.name))
-
-    def visit_CallMethod(self, instruction):
-        self.events.append(("method-call", len(instruction.args)))
+    def visit_Combination(self, node):
+        if node.kind is not CallKind.KNOWN:
+            self.events.append(("call", len(node.args)))
+            return
+        name = node.fun_info.name
+        if name == "%getattr":
+            self.events.append(("get", node.info.name))
+        elif name == "%setattr":
+            self.events.append(("set", node.info.name))
+        elif name == "%resolve_method":
+            self.events.append(("resolve", node.info.name))
+        elif name == "%call_resolved":
+            self.events.append(("method-call", len(node.args) - 1))
 
 
 def instruction_trace(source):
-    module = lower(source)
+    compilation = lower(source)
     trace = InstructionTrace()
-    for block in module.functions[0].blocks:
-        for instruction in block.instructions:
-            instruction.accept(trace)
+    for node in nodes(compilation.lambdas[0]):
+        node.accept(trace)
     return trace.events

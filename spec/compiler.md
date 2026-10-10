@@ -39,11 +39,13 @@ flow (`Lvar`), leaves, lambdas, blocks, cleanups, and components (`node.py`),
 verified by `check_ir1_consistency` and ordered by `dfo.py`. The IR1 phases
 (`main.ir1_phases`) run the optimization loop (`ir1opt.py`), local-call
 analysis with guarded calls and entry contexts (`locall.py`), flow propagation
-of variable facts (`constraint.py`), and check generation (`checkgen.py`). A
-temporary bridge (`ir1bridge.py`) lowers IR1 and the established facts to the
-earlier control-flow IR, which representation selection and LLVM emission
-still consume; a Rust runtime implements objects and module startup.
-See [Python and LLVM changes](python-changes.md#ir1-implementation).
+of variable facts (`constraint.py`), and check generation (`checkgen.py`). The
+IR2 phases run per lambda and entry context: template selection (`ltn.py`),
+IR2 conversion into VOPs over TNs (`ir2tran.py`, `vop.py`), storage-class
+selection (`represent.py`), and LLVM generation from the templates' generators
+(`vops.py`, `codegen.py`); a Rust runtime implements objects and module startup.
+See [Python and LLVM changes](python-changes.md#ir1-implementation) and
+[IR2 implementation](python-changes.md#ir2-implementation).
 See [Native implementation selection](native-lowering.md). Further optimization,
 broader language support, and an extension-build SDK remain future work.
 CPython linking is prohibited; see [dependency policy](dependencies.md).

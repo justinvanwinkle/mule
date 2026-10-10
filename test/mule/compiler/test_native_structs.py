@@ -4,7 +4,8 @@ import re
 
 import pytest
 
-from mule.compiler import emit_llvm, lower
+from mule.compiler import emit_llvm
+from mule.compiler.main import compile_source as lower
 from test.mule.compiler.test_native import run_native
 
 COUNTER = (

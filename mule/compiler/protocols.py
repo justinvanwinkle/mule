@@ -11,6 +11,7 @@ the program being generated.
 
 from __future__ import annotations
 
+from .ctype import BooleanType, IntegerType
 from .fndb import defknown
 from .main import compile_toplevel, ir1_phases
 from .vops import (
@@ -48,6 +49,7 @@ _TEXT_ACCESS = {
         "_storage_write",
         "_storage_append",
         "_storage_tuple",
+        "_tuple_storage",
         "_storage_compatible",
         "_integer_storage",
         "_text_storage",
@@ -100,7 +102,20 @@ _EMITTERS = {
     "_write_int64": write_int64,
 }
 
-PRIMITIVES = {name: defknown(name, "call", "unsafe") for name in _EMITTERS}
+_RESULT_TYPES = {
+    "_tuple_storage": lambda node: BooleanType(),
+    "_storage_length": lambda node: IntegerType(0, None),
+    "_integer_storage": lambda node: IntegerType(),
+}
+
+PRIMITIVES = {
+    name: defknown(
+        name,
+        *(() if name in _RESULT_TYPES else ("call", "unsafe")),
+        derive_type=_RESULT_TYPES.get(name),
+    )
+    for name in _EMITTERS
+}
 for _name, _emit in _EMITTERS.items():
     primitive(_name, PRIMITIVES[_name], _emit)
 

@@ -26,9 +26,8 @@ values would not perform that conversion.
 Status: implemented. `node.py`, `ir1tran.py`, `ir1tran_lambda.py`,
 `ir1util.py`, `dfo.py`, `debug.py`, `knownfun.py`, `fndb.py`, `policy.py`, and
 `main.py` port the corresponding SBCL files for the supported subset. The
-frontend produces the IR1 graph and `ir1bridge.py` lowers it to the earlier
-control-flow IR for the remaining phases; the generated LLVM is the same up to
-block order and the removal of unreachable blocks.
+converter produces the IR1 graph, the IR1 phases optimize and analyze it, and
+the IR2 phases below generate LLVM from it directly.
 
 Adaptations, each a concrete departure from `node.lisp`/`ir1tran.lisp`:
 
@@ -83,7 +82,8 @@ Adaptations, each a concrete departure from `node.lisp`/`ir1tran.lisp`:
   general protocol at conversion time, as a source transform; the identity
   guard keeps it correct. It becomes an optimizer transform on `%iterate`.
 - Conditional values use hidden temporaries assigned in each branch rather
-  than a multi-use result lvar, matching the bridge's single-producer values.
+  than a multi-use result lvar, so every temporary has one producer; only the
+  `Return` node's result lvar has several uses.
 - `return` statements deliver to one `Return` node per lambda. The node and
   its block are deleted when no path returns normally.
 
@@ -109,10 +109,52 @@ decide checks:
   SBCL's optional-dispatch entry points: one body, facts per entry, return
   summaries grown optimistically and published only after the fixpoint. Copying
   the body (SBCL's inline expansion) becomes necessary once a transform depends
-  on an entry's facts. Optional-dispatch splitting and XEP lambdas wait for the
-  backend to consume IR1, because the current bridge cannot express them.
+  on an entry's facts. Optional-dispatch splitting and XEP lambdas remain
+  future work; code generation's external-entry wrappers stand in for them.
 - `checkgen.py` marks a cast as a runtime check only under a checking policy
   and only when the derived type does not already satisfy the contract.
+
+## IR2 implementation
+
+The backend consumes IR1 directly through SBCL's IR2 phases, run once per
+lambda per entry context (the general entry, each guarded `observed`/`fixnum`
+entry, and the native entry when a representation plan exists):
+
+- `vop.py` defines templates, VOPs, TNs, primitive types, and storage classes
+  (`vop.lisp`). Storage classes describe representations rather than
+  registers: `descriptor` (an owned object reference), `immediate` (a tagged
+  fixnum, boolean, or `None`), and the machine classes `signed`, `boolean`,
+  `null`, `instance`, and `class`. LLVM allocates registers.
+- `vmdef.py` registers templates under the known function they translate in
+  cost order (`define_vop`); the registry lives beside the templates instead
+  of on the `fun-info`.
+- `ltn.py` annotates each lvar with its primitive type and selects the
+  cheapest template whose operand restrictions, primitive-type requirements,
+  policy, and LTN policy accept a known call. The LTN policy is `raw` for the
+  native templates and unrestricted otherwise, standing in for SBCL's
+  `:fast`/`:safe` policies.
+- `ir2tran.py` converts each block to VOPs. The `Bind` node becomes the
+  entry prologue (parameter moves, closure loads, cell allocation);
+  never-returning knowns end their block; a resolved method delivers two
+  locations (method and receiver) the way SBCL delivers multiple values.
+- `represent.py` selects each TN's storage class by the cost of its operand
+  restrictions and refines a local's primitive type from its writers. It also
+  owns the native representation plan: the all-or-nothing decision that a
+  lambda's values all have machine representations, which SBCL does not need
+  because its types are static and Mule needs because class identity is
+  guarded at runtime and the general body must remain.
+- `vops.py` holds every template with its LLVM generator, including the
+  compiled-protocol primitives (underscored names in the compiled stdlib that
+  the converter resolves to known functions) and the runtime helper
+  templates. `codegen.py` drives the phases, assigns slots, emits the
+  ownership and unwind structure, and produces the module's external entries,
+  native adapters, import initializers, and `main`.
+
+Settled departures: no lifetime analysis or packing (owned temporaries have
+entry-block slots and LLVM promotes them); no separate IR2 optimization pass;
+coercion VOPs between representations are not inserted inside a body because
+native plans are uniform, so boxing and unboxing happen in the native entry
+adapter and in the templates that cross into object code.
 
 Settled departures from SBCL's design, with their reasons:
 
@@ -361,10 +403,10 @@ not just SBCL's final assembly stage.
 | VOP generation and assembler | Runtime-call signatures and module/artifact metadata. | Instruction selection, scheduling, assembly/object emission. |
 
 LLVM documents its machine stages in [the code-generator design][llvm-codegen].
-Mule need not reproduce SBCL's architecture VOP catalogs, storage classes,
-register allocator, or assembler. The initial implementation lowers its
-control-flow IR directly to LLVM; a separate implementation-level IR remains
-an open choice for later representation selection and specialization.
+Mule need not reproduce SBCL's architecture VOP catalogs, register allocator,
+or assembler. It keeps IR2's template, VOP, TN, and storage-class structure
+because representation selection and ownership are semantic decisions; see
+[IR2 implementation](#ir2-implementation).
 
 Lowering must satisfy LLVM's SSA, control-flow, type, and target-layout rules.
 Overflow flags, fast-math assumptions, and memory-effect attributes require

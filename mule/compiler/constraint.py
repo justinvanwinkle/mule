@@ -229,8 +229,16 @@ class _Propagation(NodeVisitor):
         return self.derive_known(node)
 
     def derive_known(self, node: Combination):
-        name = node.fun_info.name
+        info = node.fun_info
+        assert info is not None
+        name = info.name
         args = node.args
+        if info.derive_type is not None:
+            value_type = info.derive_type(node)
+            if value_type is not None:
+                if info.may_call or info.unsafe:
+                    self.invalidate()
+                return Fact(value_type)
         if name in _BINARY_OPERATORS:
             left, right = self.type_of(args[0]), self.type_of(args[1])
             fact = Fact(left.binary(_BINARY_OPERATORS[name], right))

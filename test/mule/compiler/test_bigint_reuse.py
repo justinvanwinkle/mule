@@ -2,8 +2,8 @@
 
 import pytest
 
-from mule import ast
-from mule.compiler import ir, lower
+from mule.compiler.main import compile_source
+from mule.compiler.node import CallKind, Combination
 from test.mule.compiler.test_native import run_native
 
 BIG = 2**100 + 7
@@ -54,42 +54,22 @@ def test_bigint_reuse_obeys_operand_evaluation(tmp_path, body, expected):
     assert result.stderr == ""
 
 
-def test_reuse_hint_requires_immediate_store_to_same_local():
-    module = ir.Module(
-        [
-            ir.Function(
-                "entry",
-                (),
-                ("x",),
-                [
-                    ir.Block(
-                        "entry",
-                        [
-                            ir.Constant("left", ast.IntegerLiteral(BIG)),
-                            ir.Constant("right", ast.IntegerLiteral(2)),
-                            ir.Binary(
-                                "product",
-                                ast.BinaryOperator.MULTIPLY,
-                                "left",
-                                "right",
-                                True,
-                                "x",
-                            ),
-                        ],
-                        ir.Return("product"),
-                    )
-                ],
-            )
-        ],
-        "entry",
-    )
-    with pytest.raises(ValueError, match="immediate assignment"):
-        ir.verify(module)
+def inplace_operations(lambda_):
+    return [
+        node
+        for block in lambda_.component.blocks()
+        for node in block.nodes()
+        if isinstance(node, Combination)
+        and node.kind is CallKind.KNOWN
+        and node.fun_info.name == "%imultiply"
+    ]
 
 
 def test_frontend_reuses_only_local_augmented_assignment():
-    module = lower("x = 1\nx *= 2\ndef f():\n x = 1\n x *= 2\n return x\n")
-    global_operation = module.functions[0].blocks[0].instructions[4]
-    local_operation = module.functions[1].blocks[0].instructions[4]
-    assert global_operation.reuse_local is None
-    assert local_operation.reuse_local == "x"
+    compilation = compile_source(
+        "x = 1\nx *= 2\ndef f():\n x = 1\n x *= 2\n return x\n"
+    )
+    global_operation = inplace_operations(compilation.lambdas[0])[0]
+    local_operation = inplace_operations(compilation.lambdas[1])[0]
+    assert global_operation.info.reuse_local is None
+    assert local_operation.info.reuse_local == "x"

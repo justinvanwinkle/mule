@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from mule.compiler import emit_llvm, lower
+from mule.compiler import emit_llvm
+from mule.compiler.main import compile_source as lower
 from test.mule.compiler.test_native import run_native
 
 SIGNED = tuple((f"int{bits}", bits) for bits in (8, 16, 32, 64, 128))

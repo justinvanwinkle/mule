@@ -2,8 +2,9 @@
 
 import pytest
 
-from mule.compiler import emit_llvm, lower
-from mule.compiler.ir import Visitor
+from mule.compiler import emit_llvm
+from mule.compiler.main import compile_source
+from mule.compiler.node import CallKind, Combination
 from test.mule.compiler.test_native import run_native
 
 
@@ -292,26 +293,27 @@ def test_local_annotation_does_not_count_as_runtime_global_use(tmp_path):
 
 
 def test_ir_retains_annotation_expressions_separately_from_contracts():
-    module = lower(
+    compilation = compile_source(
         "module_value: Unknown[int] = 0\n"
         "def identity(value: 'Later') -> list[int]:\n local: bool\n return value\n"
         "class C:\n field: Custom | None\n"
     )
-    function = module.functions[1]
-    assert function.parameter_annotation_expressions[0].value == "Later"
-    assert function.return_annotation_expression.value.identifier == "list"
+    function = compilation.lambdas[1]
+    signature = function.signature
+    assert signature.annotation_expressions[0].value == "Later"
+    assert signature.return_annotation_expression.value.identifier == "list"
     assert function.annotation_expressions["local"].identifier == "bool"
-    assert function.parameter_annotations == (None,)
-    assert function.return_annotation is None
-    entry = module.functions[0]
+    assert signature.annotations == (None,)
+    assert signature.return_annotation is None
+    entry = compilation.lambdas[0]
     assert entry.annotation_expressions["module_value"].value.identifier == "Unknown"
-
-    class Annotations(Visitor):
-        def visit_DefineClass(self, operation):
-            assert operation.annotation_expressions[0][0] == "field"
-            assert operation.annotation_expressions[0][1].left.identifier == "Custom"
-
-    definitions = Annotations()
-    for block in entry.blocks:
-        for operation in block.instructions:
-            operation.accept(definitions)
+    definitions = [
+        node.info
+        for block in entry.component.blocks()
+        for node in block.nodes()
+        if isinstance(node, Combination)
+        and node.kind is CallKind.KNOWN
+        and node.fun_info.name == "%make_class"
+    ]
+    assert definitions[0].annotation_expressions[0][0] == "field"
+    assert definitions[0].annotation_expressions[0][1].left.identifier == "Custom"

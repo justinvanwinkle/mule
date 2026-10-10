@@ -22,7 +22,7 @@ frontend coverage does not establish complete Python compatibility.
 - [Sequence displays and formatting](sequence-displays-and-formatting.md):
   evaluated list/tuple construction and compiled Python formatting protocols.
 - [Native implementation selection](native-lowering.md): implemented analysis,
-  native arithmetic, guarded calls, and their SBCL source references.
+  templates, representation selection, guarded calls, and their SBCL source references.
 - [Optimization policies](optimization-policies.md): target class restrictions,
   native struct representation, safety checks, and debug levels.
 - [Dependency policy](dependencies.md): prohibited CPython linking and library approvals.

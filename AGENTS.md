@@ -60,7 +60,6 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/parser/statements.py`: statements, suites, definitions, and type parameters.
 - `mule/parser/patterns.py`: structural pattern matching grammar.
 - `mule/parser/strings.py`: literal decoding and formatted/template interpolation.
-- `mule/compiler/frontend.py`: public `lower` entry: IR1 conversion then the bridge to the control-flow IR.
 - `mule/compiler/main.py`: compilation driver (`compile_toplevel`), following SBCL `main.lisp`.
 - `mule/compiler/node.py`: IR1 structures (ctrans, lvars, nodes, leaves, lambdas, blocks, components, cleanups), following `node.lisp`.
 - `mule/compiler/ir1tran.py`: AST-to-IR1 conversion with scope classification and semantic validation, following `ir1tran.lisp`.
@@ -75,19 +74,21 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/compiler/locall.py`: local-call analysis: guarded calls through module globals, entry contexts, optimistic argument/result solving, following `locall.lisp`.
 - `mule/compiler/checkgen.py`: decides which casts become runtime checks, following `checkgen.lisp`.
 - `mule/compiler/envanal.py`: environment analysis: closed-over variables and cleanup-point insertion for handler, `finally`, and `with` regions, following `envanal.lisp`.
-- `mule/compiler/ir1bridge.py`: temporary lowering of IR1 and its facts to the control-flow IR until later phases consume IR1 directly.
+- `mule/compiler/vop.py`: IR2 structures (templates, VOPs, TNs, storage classes, primitive types, IR2 blocks), following `vop.lisp`.
+- `mule/compiler/vmdef.py`: template definition and lookup (`define_vop`), following `vmdef.lisp`.
+- `mule/compiler/ltn.py`: lvar annotation and per-call template selection by primitive type and policy, following `ltn.lisp`.
+- `mule/compiler/ir2tran.py`: IR1-to-IR2 conversion: one VOP sequence per block and entry context, following `ir2tran.lisp`.
+- `mule/compiler/represent.py`: storage-class selection per TN and native representation plans, following `represent.lisp`.
+- `mule/compiler/vops.py`: the LLVM backend's templates and generators for every known operation, raw native variants, compiled-protocol primitives, and runtime helper templates.
+- `mule/compiler/codegen.py`: LLVM module generation over IR2: bodies per entry context, ownership slots, error edges, external entries, native adapters, imports, and `main`, following `codegen.lisp`.
 - `mule/compiler/modules.py`: static module resolution and compiled initialization.
-- `mule/compiler/ir.py`: control-flow graph, object results, and graph verification.
 - `mule/compiler/ctype.py`: language-level value types (SBCL CTYPE): polymorphic facts, joins, arithmetic, and representation proofs.
 - `mule/compiler/annotation_types.py`: imported numeric contracts and optimization policies.
-- `mule/compiler/native.py`: raw int64 representation selection and direct local entries.
 - `mule/compiler/native_protocol.py`: compile Mule class protocols and bind physical primitives.
-- `mule/compiler/protocols.py`: shared bindings and calls for compiled language protocols.
+- `mule/compiler/protocols.py`: the compiled-protocol primitive table (underscored names to known functions and templates) and the protocol compilation entry.
 - `mule/compiler/argument_protocol.py`: generate compiled signature binders and constructor forwarding.
 - `mule/compiler/sequence_protocol.py`: compile sequence/exception protocols and bind physical primitives.
 - `mule/compiler/format_protocol.py`: compile formatting protocols and bind text storage primitives.
-- `mule/compiler/llvm.py`: LLVM emission and reference ownership/cleanup.
-- `mule/compiler/llvm_ops.py`: inline native operation templates and runtime slow paths.
 - `mule/runtime/lib.rs`: Rust runtime crate and native ABI.
 - `mule/runtime/object.rs`: tagged values, heap objects, calls, and ownership.
 - `mule/runtime/classes.rs`: fixed instance layouts, immutable method tables,
@@ -99,10 +100,10 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/runtime/gmp.rs`: direct GMP bindings and owned bigint wrapper.
 - `mule/runtime/annotations.rs`: borrowed assertions at checked annotation boundaries.
 - `mule/runtime/native_storage.rs`: raw payload allocation, layout guards, and int64 boxing.
-- `mule/compiler/driver.py`: Clang compilation and executable linking.
+- `mule/compiler/driver.py`: program assembly (`compile_program`), Clang compilation, and executable linking.
 - `mule/__main__.py`: `python -m mule` command-line interface.
 - `test/mule/parser/`: parser and AST tests, fixtures, and AST query helpers.
-- `test/mule/compiler/`: lowering, LLVM, runtime, and native executable tests.
+- `test/mule/compiler/`: IR1, IR2/code generation, runtime, and native executable tests.
 - `examples/`: native compiler examples and upstream performance reference programs.
 - `examples/benchmarks-game/`: unmodified Python 3, Rust, SBCL, and Go comparison sources,
   upstream licenses, expected outputs, and source hashes in `UPSTREAM.json`.

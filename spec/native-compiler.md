@@ -37,17 +37,19 @@ executable = build("examples/factorial.py", "build/factorial")
 
 The pipeline is Mule's lexer/Pratt parser → Mule AST → IR1 flow graph → IR1
 phases (optimization, local-call analysis, flow propagation, check generation)
-→ (bridge) control-flow IR with facts → implementation selection → textual
-LLVM IR → Clang-generated native executable. IR1 is SBCL's representation
-adapted to Python; the bridge exists until the later phases consume IR1
-directly. See [Python and LLVM changes](python-changes.md#ir1-implementation). There is no host AST conversion,
-program source embedding, bytecode generation, or evaluator fallback.
+→ IR2 per lambda and entry context (template selection, VOP conversion,
+representation selection) → textual LLVM IR from the templates' generators →
+Clang-generated native executable. IR1 and IR2 are SBCL's representations
+adapted to Python and LLVM. See [Python and LLVM changes](python-changes.md#ir1-implementation).
+There is no host AST conversion, program source embedding, bytecode generation,
+or evaluator fallback.
 
-The IR separates control-flow blocks from single-consumer object results.
-Variables are explicit local slots or dynamic module globals. Verification checks
-definitions, consumption, control-flow targets, and dominance before emission.
-LLVM currently uses slots for these results and variables rather than optimized
-SSA construction. Flow propagation joins local value types and integer intervals to a
+IR1 separates control transfer (`Ctran`) from single-consumer value flow
+(`Lvar`); IR2 holds every value in a TN whose storage class decides whether it
+is an owned object pointer, an immortal tagged pointer, or a machine value.
+`check_ir1_consistency` verifies the graph before conversion. LLVM receives
+entry-block slots for TNs rather than hand-built SSA; its `mem2reg` promotes
+them. Flow propagation joins local value types and integer intervals to a
 fixed point, widening growing loop bounds. Local-call analysis derives
 integer parameter contexts and return summaries for proven local calls; guarded
 specialized entries preserve general function behavior. Proven representation facts eliminate

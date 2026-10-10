@@ -705,6 +705,19 @@ for _name, _info in fndb.PROTOCOLS.items():
     _define_protocol(_name, _info)
 
 
+@define_vop("unpack-ref", translate=fndb.UNPACK_REF, results=(OBJECT,))
+def unpack_ref(gen, vop):
+    # The unpack protocol captures all elements in an immutable builtin tuple.
+    values = [gen.take(value) for value in vop.args]
+    result = gen.operation(
+        f"call ptr @mule_storage_read(ptr {values[0]}, ptr {values[1]})"
+    )
+    gen.publish(vop.results[0], result)
+    for value in values:
+        gen.release(value)
+    gen.check_pointer(result)
+
+
 @define_vop("catch-exception", translate=fndb.CATCH_EXCEPTION, results=(OBJECT,))
 def catch_exception(gen, vop):
     gen.pointer_result(vop.results[0], "call ptr @mule_catch_exception()")

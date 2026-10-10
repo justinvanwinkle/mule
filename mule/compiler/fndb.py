@@ -46,6 +46,7 @@ HAS_BINDING = defknown("%has_binding")
 # Displays and formatting.
 BUILD_LIST = defknown("%build_list", "flushable")
 BUILD_TUPLE = defknown("%build_tuple", "flushable")
+UNPACK_REF = defknown("%unpack_ref")
 FORMAT = defknown("%format", "call")
 
 # Guarded counted iteration over a builtin range.
@@ -109,6 +110,7 @@ __all__ = [
     "RESOLVE_METHOD",
     "SETATTR",
     "UNARY",
+    "UNPACK_REF",
     "UNWIND",
     "fun_info",
 ]

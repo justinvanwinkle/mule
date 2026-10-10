@@ -352,10 +352,10 @@ except TypeError:
 
 
 def test_repeated_explicit_keyword_is_a_compile_error():
-    from mule.compiler import lower
+    from mule.compiler.main import compile_source
 
     with pytest.raises(SyntaxError, match="keyword argument repeated: value"):
-        lower("def f(value):\n    pass\nf(value=1, value=2)\n")
+        compile_source("def f(value):\n    pass\nf(value=1, value=2)\n")
 
 
 def test_generated_external_binder_calls_body_without_argument_tuple():

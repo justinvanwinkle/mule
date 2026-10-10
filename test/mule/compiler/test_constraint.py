@@ -4,7 +4,7 @@ predictions from source, through the IR1 phases."""
 import pytest
 
 from mule import ast
-from mule.compiler import ir, lower
+from mule.compiler import fndb
 from mule.compiler.ctype import (
     BOTTOM,
     FLOAT,
@@ -18,36 +18,129 @@ from mule.compiler.ctype import (
     NoneType,
     TextType,
 )
+from mule.compiler.main import compile_source
+from mule.compiler.node import (
+    CallKind,
+    Combination,
+    Constant,
+    GlobalVar,
+    If,
+    LambdaVar,
+    Ref,
+    Set,
+)
+
+BINARY_KNOWNS = frozenset(fndb.BINARY.values())
+UNARY_KNOWNS = frozenset(fndb.UNARY.values())
+COMPARE_KNOWNS = frozenset(fndb.COMPARE.values())
 
 
-def function(module, name):
-    return next(f for f in module.functions if f.name == name)
+def lower(source):
+    return compile_source(source)
 
 
-def instructions(function, kind):
+def function(compilation, index):
+    return compilation.lambdas[index]
+
+
+def nodes(lambda_):
+    return [node for block in lambda_.component.blocks() for node in block.nodes()]
+
+
+def knowns(lambda_, infos):
     return [
-        instruction
-        for block in function.blocks
-        for instruction in block.instructions
-        if isinstance(instruction, kind)
+        node
+        for node in nodes(lambda_)
+        if isinstance(node, Combination)
+        and node.kind is CallKind.KNOWN
+        and node.fun_info in infos
     ]
 
 
-def fact(function, instruction, context=None):
-    facts = context.types if context is not None else function.facts
-    return facts[instruction.result]
+def binaries(lambda_):
+    return knowns(lambda_, BINARY_KNOWNS)
 
 
-def last_fact(function, kind, context=None):
-    return fact(function, instructions(function, kind)[-1], context)
+def unaries(lambda_):
+    return knowns(lambda_, UNARY_KNOWNS)
 
 
-def observed(function):
-    return next(context for context in function.variants if context.id == "observed")
+def compares(lambda_):
+    return knowns(lambda_, COMPARE_KNOWNS)
 
 
-def fixnum_context(function):
-    return next(context for context in function.variants if context.id == "fixnum")
+def calls(lambda_):
+    return [
+        node
+        for node in nodes(lambda_)
+        if isinstance(node, Combination)
+        and node.kind in (CallKind.FULL, CallKind.GUARDED)
+    ]
+
+
+def loads(lambda_):
+    """References to variables, local or global, in control order."""
+    return [
+        node
+        for node in nodes(lambda_)
+        if isinstance(node, Ref) and isinstance(node.leaf, (LambdaVar, GlobalVar))
+    ]
+
+
+def stores(lambda_):
+    return [node for node in nodes(lambda_) if isinstance(node, Set)]
+
+
+def constants(lambda_):
+    return [
+        node.leaf.value
+        for node in nodes(lambda_)
+        if isinstance(node, Ref) and isinstance(node.leaf, Constant)
+    ]
+
+
+def branches(lambda_):
+    return [node for node in nodes(lambda_) if isinstance(node, If)]
+
+
+def fact(compilation, lambda_, node, context=None):
+    facts = context.types if context is not None else compilation.facts[lambda_].types
+    return facts.get(node, UNKNOWN)
+
+
+def operand_fact(compilation, lambda_, lvar, context=None):
+    return fact(compilation, lambda_, lvar.use(), context)
+
+
+def last_fact(compilation, lambda_, selector, context=None):
+    return fact(compilation, lambda_, selector(lambda_)[-1], context)
+
+
+def target(compilation, lambda_, call):
+    predicted = compilation.facts[lambda_].targets.get(call.fun.use())
+    return predicted.name if predicted is not None else None
+
+
+def variants(compilation, lambda_):
+    return compilation.facts[lambda_].variants
+
+
+def observed(compilation, lambda_):
+    return next(
+        context
+        for context in variants(compilation, lambda_)
+        if context.id == "observed"
+    )
+
+
+def fixnum_context(compilation, lambda_):
+    return next(
+        context for context in variants(compilation, lambda_) if context.id == "fixnum"
+    )
+
+
+def return_type(compilation, lambda_):
+    return compilation.facts[lambda_].return_type
 
 
 @pytest.mark.parametrize(
@@ -67,10 +160,10 @@ def fixnum_context(function):
     ],
 )
 def test_constant_representation_is_proven(literal, expected, fixnum, immortal):
-    module = lower(f"x = {literal}\n")
-    entry = module.functions[0]
+    compilation = lower(f"x = {literal}\n")
+    entry = function(compilation, 0)
     # A negative literal is a unary operation on a constant; test the stored value.
-    facts = entry.facts[instructions(entry, ir.Store)[0].value]
+    facts = operand_fact(compilation, entry, stores(entry)[0].value)
     assert facts == expected
     assert facts.is_fixnum is fixnum
     assert facts.is_immortal is immortal
@@ -92,135 +185,132 @@ def test_integer_ranges_detect_promotion(
     operator, left, right, minimum, maximum, fixnum
 ):
     # Operands flow through locals so the operation is derived, not folded.
-    module = lower(f"a = {left}\nb = {right}\nx = a {operator} b\n")
-    result = last_fact(module.functions[0], ir.Binary)
+    compilation = lower(f"a = {left}\nb = {right}\nx = a {operator} b\n")
+    result = last_fact(compilation, function(compilation, 0), binaries)
     assert (result.minimum, result.maximum) == (minimum, maximum)
     assert result.is_fixnum is fixnum
 
 
 def test_literal_arithmetic_is_folded_to_a_constant():
-    module = lower("x = 3 + 4\ny = 1 < 2\n")
-    entry = module.functions[0]
-    assert instructions(entry, ir.Binary) == []
-    assert instructions(entry, ir.Compare) == []
-    values = [constant.value for constant in instructions(entry, ir.Constant)]
+    compilation = lower("x = 3 + 4\ny = 1 < 2\n")
+    entry = function(compilation, 0)
+    assert binaries(entry) == []
+    assert compares(entry) == []
+    values = constants(entry)
     assert isinstance(values[0], ast.IntegerLiteral) and values[0].value == 7
     assert isinstance(values[1], ast.BooleanLiteral) and values[1].value is True
 
 
 def test_bool_arithmetic_does_not_decode_heap_bool_as_integer_tag():
-    module = lower("a = True\nb = False\ns = a + b\n")
-    entry = module.functions[0]
-    loads = instructions(entry, ir.Load)
-    assert not fact(entry, loads[0]).is_fixnum
-    assert fact(entry, loads[0]).is_immortal
-    assert last_fact(entry, ir.Binary).is_fixnum
+    compilation = lower("a = True\nb = False\ns = a + b\n")
+    entry = function(compilation, 0)
+    first = loads(entry)[0]
+    assert not fact(compilation, entry, first).is_fixnum
+    assert fact(compilation, entry, first).is_immortal
+    assert last_fact(compilation, entry, binaries).is_fixnum
 
 
 def test_unknown_parameter_operator_can_return_arbitrary_object():
-    module = lower("def f(x):\n return x + 1\n")
-    body = module.functions[1]
-    assert last_fact(body, ir.Load) == UNKNOWN
-    assert last_fact(body, ir.Binary) == UNKNOWN
+    compilation = lower("def f(x):\n return x + 1\n")
+    body = function(compilation, 1)
+    assert last_fact(compilation, body, loads) == UNKNOWN
+    assert last_fact(compilation, body, binaries) == UNKNOWN
 
 
 @pytest.mark.parametrize("operator", ["-", "~"])
 def test_unary_range_follows_integer_bounds(operator):
-    module = lower(f"a = {-(2**62)}\nr = {operator}a\n")
-    result = last_fact(module.functions[0], ir.Unary)
+    compilation = lower(f"a = {-(2**62)}\nr = {operator}a\n")
+    result = last_fact(compilation, function(compilation, 0), unaries)
     assert result.is_fixnum is (operator == "~")
 
 
 def joined(left, right=None):
     else_body = "" if right is None else f"\n else:\n  x = {right}"
-    return lower(f"def f(c):\n if c:\n  x = {left}{else_body}\n return x\n").functions[
-        1
-    ]
+    compilation = lower(f"def f(c):\n if c:\n  x = {left}{else_body}\n return x\n")
+    return compilation, function(compilation, 1)
 
 
 def test_branch_join_unions_integer_bounds():
-    result = last_fact(joined(-3, 8), ir.Load)
+    result = last_fact(*joined(-3, 8), loads)
     assert result.is_fixnum
     assert (result.minimum, result.maximum) == (-3, 8)
 
 
 def test_branch_join_preserves_null_possibility():
-    result = last_fact(joined(3), ir.Load)
+    result = last_fact(*joined(3), loads)
     assert result.may_be_unbound
     assert not result.is_fixnum
     assert not result.is_immortal
 
 
 def test_bool_and_integer_join_is_not_proven_tagged():
-    assert not last_fact(joined("True", 1), ir.Load).is_fixnum
+    assert not last_fact(*joined("True", 1), loads).is_fixnum
 
 
 def test_bool_and_none_join_preserves_immortality():
-    assert last_fact(joined("True", "None"), ir.Load).is_immortal
+    assert last_fact(*joined("True", "None"), loads).is_immortal
 
 
 def test_missing_immortal_assignment_keeps_unbound_load_check():
-    result = last_fact(joined("None"), ir.Load)
+    result = last_fact(*joined("None"), loads)
     assert result.may_be_unbound
     assert not result.is_immortal
 
 
 def loop(*, bounded):
     test = "x < 10" if bounded else "x"
-    return lower(
-        f"def f():\n x = 0\n while {test}:\n  x = x + 1\n return x\n"
-    ).functions[1]
+    compilation = lower(f"def f():\n x = 0\n while {test}:\n  x = x + 1\n return x\n")
+    return compilation, function(compilation, 1)
 
 
 def test_unbounded_loop_widens_and_converges():
-    result = last_fact(loop(bounded=False), ir.Binary)
+    result = last_fact(*loop(bounded=False), binaries)
     assert result.fits(INTEGER)
     assert not result.is_fixnum
     assert result.maximum is None
 
 
 def test_integer_branch_constraint_keeps_bounded_loop_body_tagged():
-    result = last_fact(loop(bounded=True), ir.Binary)
+    result = last_fact(*loop(bounded=True), binaries)
     assert result.is_fixnum
     assert result.maximum == 10
 
 
 def test_bounded_bit_mask_recovers_fixnum_after_loop_widening():
-    module = lower("def f(c):\n x = 0\n while c:\n  x = x + 1\n return x & 255\n")
-    body = module.functions[1]
+    compilation = lower("def f(c):\n x = 0\n while c:\n  x = x + 1\n return x & 255\n")
+    body = function(compilation, 1)
     mask = next(
-        instruction
-        for instruction in instructions(body, ir.Binary)
-        if instruction.operator == ast.BinaryOperator.BIT_AND
+        node
+        for node in binaries(body)
+        if node.fun_info is fndb.BINARY[ast.BinaryOperator.BIT_AND]
     )
-    final = body.facts[mask.left]
-    masked = fact(body, mask)
+    final = operand_fact(compilation, body, mask.args[0])
+    masked = fact(compilation, body, mask)
     assert not final.is_fixnum
     assert masked.is_fixnum
     assert (masked.minimum, masked.maximum) == (0, 255)
 
 
 def test_rebound_global_is_only_a_guarded_target_candidate():
-    module = lower("def f():\n return 7\nf = 3\nresult = f()\n")
-    entry = module.functions[0]
-    call = instructions(entry, ir.Call)[0]
-    assert entry.targets[call.callee] == "mule_fn_1"
-    assert entry.facts[call.callee].fits(INTEGER)
-    assert fact(entry, call) == UNKNOWN
+    compilation = lower("def f():\n return 7\nf = 3\nresult = f()\n")
+    entry = function(compilation, 0)
+    call = calls(entry)[0]
+    assert target(compilation, entry, call) == "mule_fn_1"
+    assert operand_fact(compilation, entry, call.fun).fits(INTEGER)
+    assert fact(compilation, entry, call) == UNKNOWN
 
 
 def test_local_alias_propagates_guarded_candidate():
-    module = lower("def f():\n return 7\ndef g():\n alias = f\n return alias()\n")
-    body = module.functions[2]
-    call = instructions(body, ir.Call)[0]
-    assert body.targets[call.callee] == "mule_fn_1"
-    assert fact(body, call) == UNKNOWN
+    compilation = lower("def f():\n return 7\ndef g():\n alias = f\n return alias()\n")
+    body = function(compilation, 2)
+    call = calls(body)[0]
+    assert target(compilation, body, call) == "mule_fn_1"
+    assert fact(compilation, body, call) == UNKNOWN
 
 
 def test_proven_function_identity_propagates_its_return_summary():
-    module = lower("def target():\n return 7\nresult = target()\n")
-    entry = module.functions[0]
-    result = last_fact(entry, ir.Call)
+    compilation = lower("def target():\n return 7\nresult = target()\n")
+    result = last_fact(compilation, function(compilation, 0), calls)
     assert result.is_fixnum
     assert (result.minimum, result.maximum) == (7, 7)
 
@@ -232,17 +322,17 @@ def test_proven_function_identity_propagates_its_return_summary():
 def test_widened_integer_exponent_preserves_negative_power_type(
     initial, step, expected
 ):
-    module = lower(
+    compilation = lower(
         f"def f(c):\n exponent = {initial}\n power = None\n while c:\n"
         f"  power = 2 ** exponent\n  exponent = exponent + {step}\n return power\n"
     )
-    body = module.functions[1]
+    body = function(compilation, 1)
     power = next(
-        instruction
-        for instruction in instructions(body, ir.Binary)
-        if instruction.operator == ast.BinaryOperator.POWER
+        node
+        for node in binaries(body)
+        if node.fun_info is fndb.BINARY[ast.BinaryOperator.POWER]
     )
-    result = fact(body, power)
+    result = fact(compilation, body, power)
     assert result == expected
     assert not result.is_fixnum
 
@@ -250,160 +340,164 @@ def test_widened_integer_exponent_preserves_negative_power_type(
 @pytest.mark.parametrize("right_target", ["target", "other", None])
 def test_local_candidate_join_requires_same_target_on_every_path(right_target):
     else_body = "" if right_target is None else f"\n else:\n  alias = {right_target}"
-    module = lower(
+    compilation = lower(
         "def target():\n return None\ndef other():\n return None\n"
         f"def f(c):\n if c:\n  alias = target{else_body}\n return alias()\n"
     )
-    body = module.functions[3]
-    call = instructions(body, ir.Call)[0]
-    assert body.targets.get(call.callee) == (
+    body = function(compilation, 3)
+    call = calls(body)[0]
+    assert target(compilation, body, call) == (
         "mule_fn_1" if right_target == "target" else None
     )
-    assert not fact(body, call).is_fixnum
+    assert not fact(compilation, body, call).is_fixnum
 
 
 def test_unknown_rich_comparison_may_return_non_boolean():
-    module = lower("def f(x, y):\n return x < y\n")
-    assert not last_fact(module.functions[1], ir.Compare).is_immortal
+    compilation = lower("def f(x, y):\n return x < y\n")
+    assert not last_fact(compilation, function(compilation, 1), compares).is_immortal
 
 
 def test_not_of_unknown_object_always_returns_immortal_boolean():
-    module = lower("def f(x):\n return not x\n")
-    assert last_fact(module.functions[1], ir.Unary).is_immortal
+    compilation = lower("def f(x):\n return not x\n")
+    assert last_fact(compilation, function(compilation, 1), unaries).is_immortal
 
 
 def integer_calls(arguments):
-    calls = "".join(f"increment({argument})\n" for argument in arguments)
-    return lower(f"def increment(x):\n return x + 1\n{calls}")
+    call_lines = "".join(f"increment({argument})\n" for argument in arguments)
+    return lower(f"def increment(x):\n return x + 1\n{call_lines}")
 
 
 def test_callsite_ranges_join_in_optional_context_not_public_parameters():
-    module = integer_calls(("2", "8"))
-    increment = module.functions[1]
-    context = observed(increment)
+    compilation = integer_calls(("2", "8"))
+    increment = function(compilation, 1)
+    context = observed(compilation, increment)
     assert (context.parameters[0].minimum, context.parameters[0].maximum) == (2, 8)
     assert (context.return_type.minimum, context.return_type.maximum) == (3, 9)
-    parameter = instructions(increment, ir.Load)[0]
-    assert fact(increment, parameter, context).is_fixnum
-    assert fact(increment, parameter) == UNKNOWN
-    assert increment.return_type == UNKNOWN
+    parameter = loads(increment)[0]
+    assert fact(compilation, increment, parameter, context).is_fixnum
+    assert fact(compilation, increment, parameter) == UNKNOWN
+    assert return_type(compilation, increment) == UNKNOWN
 
 
 def test_proven_caller_uses_matching_context_return_range():
-    module = integer_calls(("2", "8"))
-    entry = module.functions[0]
-    first, second = instructions(entry, ir.Call)
-    assert fact(entry, first).is_fixnum
-    assert (fact(entry, first).minimum, fact(entry, first).maximum) == (3, 9)
+    compilation = integer_calls(("2", "8"))
+    entry = function(compilation, 0)
+    first, second = calls(entry)
+    first_fact = fact(compilation, entry, first)
+    assert first_fact.is_fixnum
+    assert (first_fact.minimum, first_fact.maximum) == (3, 9)
     # The first call may run arbitrary code, so the second binding is unproven.
-    assert fact(entry, second) == UNKNOWN
+    assert fact(compilation, entry, second) == UNKNOWN
 
 
 def test_fixnum_context_cannot_assume_fixnum_arithmetic_result_on_overflow():
-    module = integer_calls((str(2**62 - 1),))
-    increment = module.functions[1]
-    context = observed(increment)
+    compilation = integer_calls((str(2**62 - 1),))
+    increment = function(compilation, 1)
+    context = observed(compilation, increment)
     assert context.parameters[0].is_fixnum
     assert not context.return_type.is_fixnum
     assert context.return_type.maximum == 2**62
-    full = fixnum_context(increment)
-    assert fact(increment, instructions(increment, ir.Load)[0], full).is_fixnum
-    assert not last_fact(increment, ir.Binary, full).is_fixnum
+    full = fixnum_context(compilation, increment)
+    assert fact(compilation, increment, loads(increment)[0], full).is_fixnum
+    assert not last_fact(compilation, increment, binaries, full).is_fixnum
 
 
 def test_mixed_calls_do_not_assign_integer_facts_to_bool_float_public_entry():
-    module = integer_calls(("3", "True", "2.0"))
-    entry, increment = module.functions[0], module.functions[1]
-    context = observed(increment)
+    compilation = integer_calls(("3", "True", "2.0"))
+    entry, increment = function(compilation, 0), function(compilation, 1)
+    context = observed(compilation, increment)
     assert (context.parameters[0].minimum, context.parameters[0].maximum) == (3, 3)
-    calls = instructions(entry, ir.Call)
-    assert fact(entry, calls[0]).is_fixnum
-    assert fact(entry, calls[1]) == UNKNOWN
-    assert fact(entry, calls[2]) == UNKNOWN
-    assert fact(increment, instructions(increment, ir.Load)[0]) == UNKNOWN
+    entry_calls = calls(entry)
+    assert fact(compilation, entry, entry_calls[0]).is_fixnum
+    assert fact(compilation, entry, entry_calls[1]) == UNKNOWN
+    assert fact(compilation, entry, entry_calls[2]) == UNKNOWN
+    assert fact(compilation, increment, loads(increment)[0]) == UNKNOWN
 
 
 def test_dynamic_call_has_guarded_fixnum_context_without_observed_integer_seed():
-    module = lower("def increment(x):\n return x + 1\nincrement(argument)\n")
-    entry, increment = module.functions[0], module.functions[1]
-    assert [context.id for context in increment.variants] == ["fixnum"]
-    assert last_fact(entry, ir.Call) == UNKNOWN
+    compilation = lower("def increment(x):\n return x + 1\nincrement(argument)\n")
+    entry, increment = function(compilation, 0), function(compilation, 1)
+    assert [context.id for context in variants(compilation, increment)] == ["fixnum"]
+    assert last_fact(compilation, entry, calls) == UNKNOWN
 
 
 def test_global_store_proves_function_until_an_arbitrary_call():
-    module = lower("def target():\n return 7\nfirst = target()\nsecond = target()\n")
-    entry = module.functions[0]
-    first, second = instructions(entry, ir.Call)
-    assert fact(entry, first).is_fixnum
-    assert entry.facts[second.callee] == UNKNOWN
-    assert fact(entry, second) == UNKNOWN
+    compilation = lower(
+        "def target():\n return 7\nfirst = target()\nsecond = target()\n"
+    )
+    entry = function(compilation, 0)
+    first, second = calls(entry)
+    assert fact(compilation, entry, first).is_fixnum
+    assert operand_fact(compilation, entry, second.fun) == UNKNOWN
+    assert fact(compilation, entry, second) == UNKNOWN
 
 
 def test_loaded_callee_keeps_identity_when_argument_call_rebinds_globals():
-    module = lower("def target(ignored):\n return 7\nresult = target(effect())\n")
-    entry = module.functions[0]
-    assert last_fact(entry, ir.Call).is_fixnum
+    compilation = lower("def target(ignored):\n return 7\nresult = target(effect())\n")
+    assert last_fact(compilation, function(compilation, 0), calls).is_fixnum
 
 
 def test_module_definition_is_not_a_fact_at_another_function_entry():
-    module = lower("def target():\n return 7\ndef wrapper():\n return target()\n")
-    wrapper = module.functions[2]
-    call = instructions(wrapper, ir.Call)[0]
-    assert wrapper.targets[call.callee] == "mule_fn_1"
-    assert wrapper.return_type == UNKNOWN
+    compilation = lower("def target():\n return 7\ndef wrapper():\n return target()\n")
+    wrapper = function(compilation, 2)
+    call = calls(wrapper)[0]
+    assert target(compilation, wrapper, call) == "mule_fn_1"
+    assert return_type(compilation, wrapper) == UNKNOWN
 
 
 @pytest.mark.parametrize("same_target", [False, True])
 def test_joined_global_functions_require_unanimous_proven_identity(same_target):
     second = "first" if same_target else "second"
-    module = lower(
+    compilation = lower(
         "def first():\n return 7\ndef second():\n return 'text'\n"
         f"c = 1\nif c < 2:\n f = first\nelse:\n f = {second}\nresult = f()\n"
     )
-    entry = module.functions[0]
-    result = last_fact(entry, ir.Call)
+    result = last_fact(compilation, function(compilation, 0), calls)
     assert result.is_fixnum is same_target
     if not same_target:
         assert result == UNKNOWN
 
 
 def test_unbound_argument_does_not_seed_or_prove_specialized_call():
-    module = lower(
+    compilation = lower(
         "def increment(x):\n return x + 1\ndef f(c):\n if c:\n  x = 3\n return increment(x)\n"
     )
-    increment, body = module.functions[1], module.functions[2]
-    call = instructions(body, ir.Call)[0]
-    assert body.facts[call.args[0]].may_be_unbound
-    assert fact(body, call) == UNKNOWN
-    assert [context.id for context in increment.variants] == ["fixnum"]
+    increment, body = function(compilation, 1), function(compilation, 2)
+    call = calls(body)[0]
+    assert operand_fact(compilation, body, call.args[0]).may_be_unbound
+    assert fact(compilation, body, call) == UNKNOWN
+    assert [context.id for context in variants(compilation, increment)] == ["fixnum"]
 
 
 def recursive_calls():
-    return lower(
+    compilation = lower(
         "def recursive(n):\n if n < 100:\n  return recursive(n + 1)\n return n\nrecursive(3)\n"
     )
+    return compilation, function(compilation, 1)
 
 
 def test_recursive_argument_propagation_widens_before_publication():
-    recursive = recursive_calls().functions[1]
-    context = observed(recursive)
+    compilation, recursive = recursive_calls()
+    context = observed(compilation, recursive)
     assert context.parameters[0].minimum == 3
     assert context.parameters[0].maximum == 2**62 - 1
-    assert fact(recursive, instructions(recursive, ir.Load)[0]) == UNKNOWN
+    assert fact(compilation, recursive, loads(recursive)[0]) == UNKNOWN
 
 
 def test_recursive_global_candidate_return_remains_unknown():
-    recursive = recursive_calls().functions[1]
-    context = observed(recursive)
+    compilation, recursive = recursive_calls()
+    context = observed(compilation, recursive)
     assert context.parameters[0].is_fixnum
-    assert last_fact(recursive, ir.Binary, context).is_fixnum
-    assert last_fact(recursive, ir.Call, context) == UNKNOWN
+    assert last_fact(compilation, recursive, binaries, context).is_fixnum
+    assert last_fact(compilation, recursive, calls, context) == UNKNOWN
     assert context.return_type == UNKNOWN
 
 
 def test_context_ids_and_cardinality_are_stable():
-    first = integer_calls(("2", "8")).functions[1].variants
-    second = integer_calls(("2", "8")).functions[1].variants
+    first_compilation = integer_calls(("2", "8"))
+    second_compilation = integer_calls(("2", "8"))
+    first = variants(first_compilation, function(first_compilation, 1))
+    second = variants(second_compilation, function(second_compilation, 1))
     assert [(c.id, c.parameters, c.return_type) for c in first] == [
         (c.id, c.parameters, c.return_type) for c in second
     ]
@@ -411,44 +505,41 @@ def test_context_ids_and_cardinality_are_stable():
 
 
 def test_argument_types_propagate_through_multiple_local_calls():
-    module = lower(
+    compilation = lower(
         "def increment(x):\n return x + 1\ndef wrapper(x):\n return increment(x)\nwrapper(3)\n"
     )
-    increment, wrapper = module.functions[1], module.functions[2]
+    increment, wrapper = function(compilation, 1), function(compilation, 2)
     for body in (increment, wrapper):
-        context = observed(body)
+        context = observed(compilation, body)
         assert (context.parameters[0].minimum, context.parameters[0].maximum) == (3, 3)
-    returned = observed(increment).return_type
+    returned = observed(compilation, increment).return_type
     assert (returned.minimum, returned.maximum) == (4, 4)
     # The call inside wrapper is only predicted, so wrapper publishes no range.
-    assert observed(wrapper).return_type == UNKNOWN
-    assert last_fact(module.functions[0], ir.Call) == UNKNOWN
+    assert observed(compilation, wrapper).return_type == UNKNOWN
+    assert last_fact(compilation, function(compilation, 0), calls) == UNKNOWN
 
 
 def test_source_defined_global_call_gets_only_flow_proven_return_facts():
-    module = lower(
+    compilation = lower(
         "def increment(x):\n    return x + 1\ny = increment(3)\nz = increment(4)\n"
     )
-    entry = module.functions[0]
-    calls = instructions(entry, ir.Call)
-    assert fact(entry, calls[0]).is_fixnum
-    assert fact(entry, calls[1]) == UNKNOWN
+    entry = function(compilation, 0)
+    entry_calls = calls(entry)
+    assert fact(compilation, entry, entry_calls[0]).is_fixnum
+    assert fact(compilation, entry, entry_calls[1]) == UNKNOWN
 
 
 @pytest.mark.parametrize("effect", ["x + 1", "not x", "x == 1", "if x:\n    pass"])
 def test_user_operator_or_truth_hook_invalidates_stored_global_function(effect):
-    module = lower(f"def target():\n    return 7\n{effect}\nresult = target()\n")
-    entry = module.functions[0]
-    assert last_fact(entry, ir.Call) == UNKNOWN
+    compilation = lower(f"def target():\n    return 7\n{effect}\nresult = target()\n")
+    assert last_fact(compilation, function(compilation, 0), calls) == UNKNOWN
 
 
 def test_constant_branch_removes_the_dead_arm():
-    module = lower("if True:\n w = 1\nelse:\n w = 0\n")
-    entry = module.functions[0]
-    assert instructions(entry, ir.Branch) == []
-    assert [constant.value.value for constant in instructions(entry, ir.Constant)][
-        :1
-    ] == [1]
+    compilation = lower("if True:\n w = 1\nelse:\n w = 0\n")
+    entry = function(compilation, 0)
+    assert branches(entry) == []
+    assert [literal.value for literal in constants(entry)][:1] == [1]
 
 
 @pytest.mark.parametrize(
