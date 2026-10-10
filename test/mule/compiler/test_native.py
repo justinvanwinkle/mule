@@ -181,3 +181,41 @@ def test_cli_builds_executable_and_llvm_ir(tmp_path):
     )
     assert run.returncode == 0, run.stderr
     assert run.stdout == "42\n"
+
+
+def test_executable_runs_without_python_runtime_dependencies(tmp_path):
+    source = tmp_path / "independent.py"
+    source.write_text("print(2 ** 100, 40 + 2)\n")
+    executable = tmp_path / "independent"
+    build(source, executable)
+    source.unlink()
+    dynamic = subprocess.run(
+        ["readelf", "-d", executable],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    imports = subprocess.run(
+        ["nm", "-D", "--undefined-only", executable],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "libpython" not in dynamic.stdout.lower()
+    assert "libgmp" in dynamic.stdout
+    symbols = [line.split()[-1] for line in imports.stdout.splitlines() if line.split()]
+    assert not any(symbol.startswith(("Py", "_Py")) for symbol in symbols)
+    result = subprocess.run(
+        [executable],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "PYTHONHOME": "/nonexistent-python-installation",
+            "PYTHONPATH": "/nonexistent-python-modules",
+        },
+        timeout=10,
+    )
+    assert result.stdout == "1267650600228229401496703205376 42\n"

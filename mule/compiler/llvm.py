@@ -341,6 +341,9 @@ class _FunctionEmitter:
         if isinstance(value, bool):
             return f"call ptr @mule_bool(i32 {int(value)})"
         if isinstance(value, int):
+            if -(1 << 62) <= value < (1 << 62):
+                tagged = ((value << 1) | 1) & ((1 << 64) - 1)
+                return f"inttoptr i64 {tagged} to ptr"
             return (
                 f"call ptr @mule_literal_int(ptr {self.module.text(_decimal(value))})"
             )

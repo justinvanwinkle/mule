@@ -1,10 +1,10 @@
 # CPython-compatible C extension interface
 
 Status: required compatibility surface and compiler consequences. The
-[initial native compiler](native-compiler.md) links CPython 3.14's object runtime
-and exposes native functions through its C callable interface. A Mule extension
-build SDK and full function/frame compatibility are not implemented yet; extension
-loading and arbitrary extension compatibility have not been validated.
+[initial native compiler](native-compiler.md) uses Mule's own runtime. CPython
+linking is prohibited. A Mule extension build SDK, compatibility headers, and
+full function/frame compatibility are not implemented yet; extension loading and
+arbitrary extension compatibility have not been validated.
 
 Mule must expose a CPython-compatible interface so existing C extension source
 can be built and used with Mule-compiled Python. This constrains the runtime and
@@ -43,23 +43,22 @@ must additionally identify extension dependencies on private `_Py*` or
 version-specific treatment. Do not claim arbitrary wheel compatibility from
 passing a small extension fixture, or advertise `abi3` before verifying it.
 
-## Runtime implementation choices
+## Independently implemented runtime
 
-| Approach | Consequence |
-| --- | --- |
-| Use CPython's runtime/object model beneath Mule's LLVM-generated code | Reuse its objects, API implementation, collection, thread state, and extension loading. Integrate Mule-native functions, frames, exceptions, and module execution with that runtime. |
-| Supply an independently implemented compatible runtime | Supply the headers, symbols, object layouts, lifecycle, type protocols, thread/exception state, and loader behavior required by the selected compatibility profile. |
+Mule must supply the headers, symbols, object layouts, lifecycle, type protocols,
+thread/exception state, and loader behavior required by its compatibility profile.
+It must never obtain those services by linking or embedding CPython. Third-party
+libraries require discussion and license approval under the
+[dependency policy](dependencies.md); GMP is approved for bigint arithmetic.
 
-The initial executable implementation uses CPython's runtime; a separate runtime
-is not implemented. This choice makes the first native compiler executable without
-settling the long-term runtime distribution or compatibility profile. Reusing
-runtime services would not require using CPython's parser, AST, bytecode compiler,
-or bytecode execution for Mule-compiled functions. Conversely, wrapping a native
-entry as a generic callable would not by itself establish function/frame introspection
-compatibility. Those contracts require explicit implementation either way.
+The current runtime uses tagged native integers and its own heap objects and
+callable ABI. A C extension boundary must provide compatible public objects and
+preserve identity, lifetime, and mutation when materializing internal values.
+The current native callable representation does not establish function/frame
+introspection compatibility. Those contracts remain implementation work.
 
-Both approaches need one coherent identity/lifetime model for objects shared
-with extensions. An unrelated heap plus copies at each crossing cannot preserve
+There must be one coherent identity/lifetime model for objects shared with
+extensions. An unrelated heap plus copies at each crossing cannot preserve
 identity, shared mutation, and extension-retained pointers. If a hybrid heap is
 chosen later, stable canonical objects and cross-heap ownership/collection must
 be specified before relying on it.
@@ -211,9 +210,8 @@ Frame/tracing facilities are documented under [profiling and tracing][profiling]
 
 APIs that compile/evaluate Python source also require an execution strategy.
 Routing their inputs through Mule must use Mule's parser and LLVM pipeline.
-If a selected runtime executes other CPython code objects, define that separate
-interoperability boundary explicitly. This document does not choose a bytecode
-fallback for Mule functions.
+CPython execution and bytecode fallbacks are prohibited. Compatibility requires
+Mule's own implementation of the promised execution APIs.
 
 ## Evidence required before a compatibility claim
 

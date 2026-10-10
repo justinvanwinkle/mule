@@ -23,7 +23,7 @@ is unrelated to the Python programming language.
 The SBCL document describes existing behavior, with references pinned to the
 inspected checkout. The adaptation documents describe requirements for Mule and
 mark unresolved choices explicitly. The initial implementation emits textual LLVM
-IR and links native Linux executables against CPython's object runtime. It does
+IR and links native Linux executables against Mule's runtime and GMP. It does
 not yet implement the full analysis, optimization, or compatibility requirements.
 
 ## Implemented compiler boundary
@@ -34,5 +34,5 @@ and [lexing](lexing.md). A limited conversion stage classifies local/global
 bindings, validates supported constructs, and produces a verified control-flow
 IR. LLVM emission and a C runtime implement native functions and module startup.
 Optimization, broader language support, and an extension-build SDK remain future
-work; linking CPython's object runtime does not establish full interface parity.
+work. CPython linking is prohibited; see [dependency policy](dependencies.md).
 Earlier experiments under `old/` do not define the new compiler's contracts.

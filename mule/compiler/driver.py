@@ -1,12 +1,10 @@
 """Build native executables from Mule-generated LLVM IR and the object runtime."""
 
 import os
-import shlex
 import shutil
 import struct
 import subprocess
 import sys
-import sysconfig
 import tempfile
 from pathlib import Path
 
@@ -31,8 +29,8 @@ def build(
 ) -> Path:
     """Compile a source file into a native executable, replacing output on success.
 
-    The initial target is the compiler host's 64-bit Linux CPython 3.14 runtime.
-    Generated code calls object C APIs, never a Python source/bytecode evaluator.
+    The initial target is 64-bit Linux with Mule's own runtime and GMP bigints.
+    Generated programs never link or initialize CPython.
     """
     source_path, output_path = Path(source), Path(output)
     if output_path.resolve() == source_path.resolve():
@@ -47,21 +45,9 @@ def build(
         raise ToolchainError(f"LLVM Clang compiler '{clang}' was not found")
     if sys.platform != "linux" or struct.calcsize("P") != 8:
         raise ToolchainError("the initial native target requires 64-bit Linux")
-    if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 14):
-        raise ToolchainError("the initial object runtime requires a CPython 3.14 host")
-    if sysconfig.get_config_var("Py_GIL_DISABLED"):
-        raise ToolchainError(
-            "the initial object runtime requires a GIL-enabled CPython build"
-        )
-    include = Path(sysconfig.get_path("include"))
-    libdir = Path(sysconfig.get_config_var("LIBDIR"))
-    library = sysconfig.get_config_var("LDLIBRARY")
-    if not (include / "Python.h").is_file() or not (libdir / library).is_file():
-        raise ToolchainError(
-            "CPython 3.14 development headers and shared library are required"
-        )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     runtime = Path(__file__).with_name("runtime.c")
+    numeric = runtime.with_name("numeric.c")
     with tempfile.TemporaryDirectory(
         prefix=".mule-build-", dir=output_path.parent
     ) as directory:
@@ -69,24 +55,16 @@ def build(
         ir_path = temporary / "module.ll"
         binary = temporary / "program"
         ir_path.write_text(llvm)
-        # sys.base_prefix supplies the standard library rather than the project's
-        # virtual environment. The C runtime embeds this path as initialization
-        # configuration, not as program source.
-        home = sys.base_prefix.replace("\\", "\\\\").replace('"', '\\"')
         command = [
             compiler,
             "-O3",
             "-std=c11",
             "-Wno-override-module",
-            f'-DMULE_PYTHON_HOME="{home}"',
-            f"-I{include}",
             str(ir_path),
             str(runtime),
-            f"-L{libdir}",
-            "-lpython3.14",
-            f"-Wl,-rpath,{libdir}",
-            *shlex.split(sysconfig.get_config_var("LIBS") or ""),
-            *shlex.split(sysconfig.get_config_var("SYSLIBS") or ""),
+            str(numeric),
+            "-lgmp",
+            "-lm",
             "-o",
             str(binary),
         ]

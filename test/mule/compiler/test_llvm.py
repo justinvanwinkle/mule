@@ -1,10 +1,7 @@
 """Execute hand-built IR graphs through the real LLVM/runtime boundary."""
 
-import shlex
 import shutil
 import subprocess
-import sys
-import sysconfig
 from pathlib import Path
 
 import pytest
@@ -24,29 +21,26 @@ def execute(tmp_path):
         source = tmp_path / "module.ll"
         source.write_text(emit(module))
         executable = tmp_path / "program"
-        library_dir = sysconfig.get_config_var("LIBDIR")
-        library = sysconfig.get_config_var("LDLIBRARY")
         runtime = Path(__file__).parents[3] / "mule/compiler/runtime.c"
-        subprocess.run(
+        compiled = subprocess.run(
             [
                 clang,
                 "-Wno-override-module",
+                "-O3",
                 str(source),
                 str(runtime),
-                f"-I{sysconfig.get_config_var('INCLUDEPY')}",
-                f'-DMULE_PYTHON_HOME="{sys.base_prefix}"',
-                f"-L{library_dir}",
-                f"-Wl,-rpath,{library_dir}",
-                f"-l{library.removeprefix('lib').removesuffix('.so')}",
-                *shlex.split(sysconfig.get_config_var("LIBS") or ""),
-                *shlex.split(sysconfig.get_config_var("SYSLIBS") or ""),
+                str(runtime.with_name("numeric.c")),
+                f"-I{runtime.parent}",
+                "-lgmp",
+                "-lm",
                 "-o",
                 str(executable),
             ],
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
         )
+        assert compiled.returncode == 0, compiled.stderr
         return subprocess.run(
             [str(executable)], capture_output=True, text=True, check=False
         )

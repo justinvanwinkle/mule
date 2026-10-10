@@ -3,7 +3,8 @@
 The same deterministic scalar workload is implemented in
 [Python](workload.py), [Common Lisp](workload.lisp), and [Rust](workload.rs).
 The Python source runs both through Mule's native compiler and directly through
-CPython. No third-party packages are required.
+CPython. The native Mule build uses the approved GMP library; no third-party
+Python packages are required.
 
 ## Workload
 
@@ -64,8 +65,9 @@ environment and site initialization, matching Mule's lack of site initialization
 Warmups warm filesystem/runtime pages; each measured CPython process has its own
 interpreter specialization state.
 
-Mule uses Clang `-O3` and boxed CPython object operations. It does not yet have
-language-level optimizations such as type inference or unboxing.
+Mule uses Clang `-O3`, its own runtime, tagged native integers, and GMP for bigint
+overflow. It does not yet have language-level optimizations such as type inference
+or direct-call specialization.
 SBCL uses compiled native functions with `(speed 3) (safety 1)` and integer type
 declarations. Rust uses `-C opt-level=3 -C target-cpu=native`. These settings
 compare the current implementations, not equivalent optimization pipelines or
@@ -95,6 +97,6 @@ sbcl --noinform --no-sysinit --no-userinit --script benchmarks/build-lisp.lisp
 rustc --edition=2024 -C opt-level=3 -C target-cpu=native benchmarks/workload.rs -o build/benchmarks/workload-rust
 ```
 
-SBCL's executable includes its Lisp image. Mule's executable depends on its
-CPython runtime installation. Binary size therefore does not directly compare
-total deployment size.
+SBCL's executable includes its Lisp image. Mule dynamically links GMP and the
+platform C/math services and has no Python runtime dependency. Binary size does
+not directly compare total deployment size.

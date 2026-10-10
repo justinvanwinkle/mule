@@ -1,8 +1,8 @@
 # Mule
 
 Mule compiles a small Python subset to native executables through LLVM. It uses
-a handwritten parser, a custom syntax tree, a control-flow IR, and an initial
-CPython 3.14 object runtime. Functions and control flow become native code;
+a handwritten parser, a custom syntax tree, a control-flow IR, and Mule's own
+native runtime. Functions and control flow become native code;
 the compiler does not delegate program execution to a source or bytecode evaluator.
 The broader compiler architecture follows SBCL's compiler, historically called
 Python. See `spec/native-compiler.md` for the implemented subset and target.
@@ -17,9 +17,10 @@ Use Python 3.14 and `uv`. `.python-version` selects 3.14; `pyproject.toml`
 requires Python >=3.14. Runtime dependencies are currently empty. Development
 dependencies are pytest and Ruff, resolved in `uv.lock`.
 
-Native builds additionally require Clang, 64-bit Linux, and a GIL-enabled CPython
-3.14 installation with development headers and a shared library. Executables
-depend on that runtime installation; runtime distribution is not implemented yet.
+Native builds additionally require Clang, 64-bit Linux, and GMP development
+headers and a shared library. Small integers use Mule's tagged native values;
+arbitrary-precision integers use the approved GMP dependency. Executables do not
+depend on a Python runtime installation.
 
 ```sh
 uv sync
@@ -59,6 +60,8 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/compiler/ir.py`: control-flow graph, object results, and graph verification.
 - `mule/compiler/llvm.py`: LLVM emission and reference ownership/cleanup.
 - `mule/compiler/runtime.c`: object operations and native callable runtime.
+- `mule/compiler/runtime.h`: Mule value representation and runtime interfaces.
+- `mule/compiler/numeric.c`: native integer fast paths and GMP bigint operations.
 - `mule/compiler/driver.py`: Clang compilation and executable linking.
 - `mule/__main__.py`: `python -m mule` command-line interface.
 - `test/mule/parser/`: parser and AST tests, fixtures, and AST query helpers.
@@ -71,6 +74,15 @@ Parsing returns Mule AST objects; it does not execute the source.
 
 ## Contracts to preserve
 
+- Mule is an alternative implementation of Python. Never link generated programs,
+  Mule's runtime, or native test executables against CPython, for any reason.
+  Do not include CPython headers or use its runtime APIs or evaluator fallbacks.
+  CPython-compatible C extension support must be implemented by Mule.
+- Discuss every new third-party library with the user before including it.
+  Linked libraries must be LGPL or more permissively licensed; GPL is allowed
+  for non-linked uses. GMP is approved under its LGPLv3-or-later option.
+  See `spec/dependencies.md`. Running the Python compiler host or an explicitly
+  requested external CPython benchmark does not permit CPython linking.
 - The parser builds `mule.ast` nodes directly, independently of the host Python
   parser. Do not substitute `ast.parse`, `compile`, or host-AST conversion for
   Mule's parser.

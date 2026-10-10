@@ -170,7 +170,7 @@ def main():
         },
         "gil_disabled": bool(sysconfig.get_config_var("Py_GIL_DISABLED")),
         "compiler_settings": {
-            "mule": "current driver: clang -O3, boxed CPython objects",
+            "mule": "clang -O3, Mule runtime, tagged native integers, GMP bigints",
             "cpython": "-I -S, same workload.py, normal bytecode interpreter",
             "sbcl": "compiled executable; speed 3, safety 1; fixnum declarations",
             "rust": "edition 2024, opt-level=3, target-cpu=native; u64 integers",
@@ -185,6 +185,18 @@ def main():
                 "workload.rs",
                 "build-lisp.lisp",
                 "run.py",
+            )
+        },
+        "mule_compiler_sha256": {
+            filename: hashlib.sha256((ROOT / filename).read_bytes()).hexdigest()
+            for filename in (
+                "mule/compiler/frontend.py",
+                "mule/compiler/ir.py",
+                "mule/compiler/llvm.py",
+                "mule/compiler/driver.py",
+                "mule/compiler/runtime.h",
+                "mule/compiler/runtime.c",
+                "mule/compiler/numeric.c",
             )
         },
         "commands": commands,
