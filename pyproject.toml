@@ -6,12 +6,17 @@ requires-python = ">=3.14"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest>=8.4", "ruff>=0.14"]
+dev = [
+    "pytest>=8.4",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.14",
+]
 
 [tool.uv]
 package = false
 
 [tool.pytest.ini_options]
+addopts = "-n 6"
 testpaths = ["test"]
 pythonpath = ["."]
 

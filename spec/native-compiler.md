@@ -13,9 +13,9 @@ uv run python -m mule examples/factorial.py -o build/factorial --emit-llvm build
 # prints 1000!
 ```
 
-The target is 64-bit Linux. Clang must be on `PATH`, or supplied through `--clang`.
-GMP development headers and its shared library are required. Generated executables
-link Mule's own runtime, GMP, and the existing platform C/math services. They
+The target is 64-bit Linux. Clang and Rust must be on `PATH`, or supplied through
+`--clang` and `--rustc`. GMP's shared library is required. Generated executables
+link Mule's Rust runtime, GMP, and platform services required by Rust. They
 have no CPython headers, API dependencies, library links, interpreter initialization,
 or Python installation paths. Program source files are read as UTF-8.
 
@@ -45,7 +45,9 @@ Variables are explicit local slots or dynamic module globals. Verification check
 definitions, consumption, control-flow targets, and dominance before emission.
 LLVM currently uses slots for these results and variables rather than optimized
 SSA construction. Mule has no language-level optimization passes yet; Clang
-builds at `-O3`, applying LLVM optimization and native code generation.
+builds at `-O3`, applying LLVM optimization and native code generation. Rust builds
+the runtime with `opt-level=3` and `panic=abort`, as a statically linked archive.
+Rust's code generation also uses LLVM. No C runtime source is compiled.
 
 Each source function becomes a native LLVM function. Definitions construct Mule
 function objects whose entry pointers refer to those native functions and whose
@@ -53,9 +55,10 @@ context carries the module globals. Calls use Mule's callable protocol, retainin
 dynamic rebinding and recursion. The native `main` creates the module environment
 and invokes the compiled module initializer directly.
 
-`runtime.c` implements Mule's objects, strings, truth testing, operators, calls,
-builtins, module globals, errors, and reference ownership. `numeric.c` implements
-native small-integer operations and GMP bigint arithmetic. Signed integers in
+`mule/runtime/` implements Mule's objects, strings, truth testing, operators,
+calls, builtins, module globals, errors, and reference ownership in Rust.
+`numeric.rs` implements native small-integer operations and GMP bigint arithmetic;
+`gmp.rs` owns the GMP integer storage and bindings. Signed integers in
 the range `[-2**62, 2**62-1]` are encoded as immediate tagged values; small integer
 literals are emitted directly as LLVM constants. Overflow promotes to a Mule
 bigint object containing a GMP integer. Results that fit the native range are
@@ -116,7 +119,7 @@ That interface must be implemented by Mule without linking CPython. See the
 [CPython interface requirements](cpython-interface.md) and
 [dependency policy](dependencies.md).
 
-`test/mule/compiler/` tests graph conversion and verification, runtime C helpers,
+`test/mule/compiler/` tests graph conversion and verification, Rust runtime helpers,
 LLVM emission, build failures, and native programs. End-to-end tests assert ELF
 output, remove the source file before executing the binary, and check independent
 expected outputs and runtime failures. They cover recursion, loops, dynamic

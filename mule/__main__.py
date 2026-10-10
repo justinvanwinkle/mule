@@ -15,10 +15,17 @@ def main() -> int:
     parser.add_argument("-o", "--output", type=Path)
     parser.add_argument("--emit-llvm", type=Path, metavar="PATH")
     parser.add_argument("--clang", default="clang")
+    parser.add_argument("--rustc", default="rustc")
     args = parser.parse_args()
     output = args.output or args.source.with_suffix("")
     try:
-        build(args.source, output, llvm_output=args.emit_llvm, clang=args.clang)
+        build(
+            args.source,
+            output,
+            llvm_output=args.emit_llvm,
+            clang=args.clang,
+            rustc=args.rustc,
+        )
     except SyntaxError as error:
         print(
             f"{error.filename}:{error.lineno}:{error.offset}: {error.msg}",

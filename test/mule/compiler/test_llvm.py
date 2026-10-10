@@ -2,12 +2,12 @@
 
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
 from mule import ast
 from mule.compiler import ir
+from mule.compiler.driver import link_llvm
 from mule.compiler.llvm import emit
 
 
@@ -18,29 +18,8 @@ def execute(tmp_path):
         pytest.skip("LLVM emitter execution tests require clang")
 
     def run(module):
-        source = tmp_path / "module.ll"
-        source.write_text(emit(module))
         executable = tmp_path / "program"
-        runtime = Path(__file__).parents[3] / "mule/compiler/runtime.c"
-        compiled = subprocess.run(
-            [
-                clang,
-                "-Wno-override-module",
-                "-O3",
-                str(source),
-                str(runtime),
-                str(runtime.with_name("numeric.c")),
-                f"-I{runtime.parent}",
-                "-lgmp",
-                "-lm",
-                "-o",
-                str(executable),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert compiled.returncode == 0, compiled.stderr
+        link_llvm(emit(module), executable, clang=clang)
         return subprocess.run(
             [str(executable)], capture_output=True, text=True, check=False
         )

@@ -170,7 +170,7 @@ def main():
         },
         "gil_disabled": bool(sysconfig.get_config_var("Py_GIL_DISABLED")),
         "compiler_settings": {
-            "mule": "clang -O3, Mule runtime, tagged native integers, GMP bigints",
+            "mule": "clang -O3, Rust runtime opt-level=3, tagged native integers, GMP bigints",
             "cpython": "-I -S, same workload.py, normal bytecode interpreter",
             "sbcl": "compiled executable; speed 3, safety 1; fixnum declarations",
             "rust": "edition 2024, opt-level=3, target-cpu=native; u64 integers",
@@ -194,9 +194,11 @@ def main():
                 "mule/compiler/ir.py",
                 "mule/compiler/llvm.py",
                 "mule/compiler/driver.py",
-                "mule/compiler/runtime.h",
-                "mule/compiler/runtime.c",
-                "mule/compiler/numeric.c",
+                "mule/runtime/lib.rs",
+                "mule/runtime/object.rs",
+                "mule/runtime/builtins.rs",
+                "mule/runtime/numeric.rs",
+                "mule/runtime/gmp.rs",
             )
         },
         "commands": commands,

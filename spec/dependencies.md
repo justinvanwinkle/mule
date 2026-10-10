@@ -2,6 +2,11 @@
 
 Status: user requirements and approved dependencies.
 
+Mule implementation languages are Python and Rust. The compiler is written in
+Python with eventual self hosting required; the native runtime is written in Rust.
+LLVM IR remains the code generation target. Historical archived code and the
+explicitly requested comparison programs are separate from implementation code.
+
 Mule is an independent Python implementation. Generated programs, Mule's runtime,
 and native test executables must never link CPython. Using CPython's headers or
 runtime implementation, and source/bytecode execution fallbacks, is prohibited.
@@ -28,5 +33,7 @@ arbitrary-precision arithmetic for values outside the native range. There is
 no direct dependency on CPython's object representation or integer code.
 
 Clang/LLVM remain the existing code generation tools. The system C and math
-runtime remain existing platform services. No additional third-party runtime
-library was added during the replacement.
+runtime remain existing platform services. Rust's standard library and required
+platform services accompany the Rust runtime. No external Rust crates are used.
+GMP bindings are handwritten in Rust; no additional third-party runtime library
+was added during the replacement.

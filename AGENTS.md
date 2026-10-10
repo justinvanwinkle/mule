@@ -2,7 +2,7 @@
 
 Mule compiles a small Python subset to native executables through LLVM. It uses
 a handwritten parser, a custom syntax tree, a control-flow IR, and Mule's own
-native runtime. Functions and control flow become native code;
+native Rust runtime. Functions and control flow become native code;
 the compiler does not delegate program execution to a source or bytecode evaluator.
 The broader compiler architecture follows SBCL's compiler, historically called
 Python. See `spec/native-compiler.md` for the implemented subset and target.
@@ -14,11 +14,12 @@ README copy.
 ## Setup and use
 
 Use Python 3.14 and `uv`. `.python-version` selects 3.14; `pyproject.toml`
-requires Python >=3.14. Runtime dependencies are currently empty. Development
+requires Python >=3.14. Python package dependencies are currently empty. Development
 dependencies are pytest and Ruff, resolved in `uv.lock`.
 
-Native builds additionally require Clang, 64-bit Linux, and GMP development
-headers and a shared library. Small integers use Mule's tagged native values;
+Native builds additionally require Clang, Rust, 64-bit Linux, and the GMP shared
+library. The Rust runtime uses handwritten GMP bindings without external crates.
+Small integers use Mule's tagged native values;
 arbitrary-precision integers use the approved GMP dependency. Executables do not
 depend on a Python runtime installation.
 
@@ -59,9 +60,11 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/compiler/frontend.py`: semantic validation and AST-to-IR conversion.
 - `mule/compiler/ir.py`: control-flow graph, object results, and graph verification.
 - `mule/compiler/llvm.py`: LLVM emission and reference ownership/cleanup.
-- `mule/compiler/runtime.c`: object operations and native callable runtime.
-- `mule/compiler/runtime.h`: Mule value representation and runtime interfaces.
-- `mule/compiler/numeric.c`: native integer fast paths and GMP bigint operations.
+- `mule/runtime/lib.rs`: Rust runtime crate and native ABI.
+- `mule/runtime/object.rs`: tagged values, heap objects, calls, and ownership.
+- `mule/runtime/builtins.rs`: builtin functions and module execution.
+- `mule/runtime/numeric.rs`: native integer fast paths and bigint operations.
+- `mule/runtime/gmp.rs`: direct GMP bindings and owned bigint wrapper.
 - `mule/compiler/driver.py`: Clang compilation and executable linking.
 - `mule/__main__.py`: `python -m mule` command-line interface.
 - `test/mule/parser/`: parser and AST tests, fixtures, and AST query helpers.
@@ -74,9 +77,14 @@ Parsing returns Mule AST objects; it does not execute the source.
 
 ## Contracts to preserve
 
+- Approved implementation languages are Python and Rust. The compiler is written
+  in Python and must eventually self host; the native runtime is written in Rust.
+  Do not add C/C++ implementations or C test probes. LLVM IR is the compiler's
+  output. Historical `old/` code and explicitly requested comparison programs
+  do not establish permission to use other implementation languages.
 - Mule is an alternative implementation of Python. Never link generated programs,
   Mule's runtime, or native test executables against CPython, for any reason.
-  Do not include CPython headers or use its runtime APIs or evaluator fallbacks.
+  Do not include CPython headers or use its runtime or evaluator fallbacks.
   CPython-compatible C extension support must be implemented by Mule.
 - Discuss every new third-party library with the user before including it.
   Linked libraries must be LGPL or more permissively licensed; GPL is allowed

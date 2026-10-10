@@ -34,7 +34,7 @@ iterations. Its result is:
 
 ## Run the comparison
 
-From the repository root, with Clang, SBCL, and Rust installed:
+From the repository root, with Clang, SBCL, Rust, and GMP installed:
 
 ```sh
 uv run python benchmarks/run.py
@@ -65,7 +65,7 @@ environment and site initialization, matching Mule's lack of site initialization
 Warmups warm filesystem/runtime pages; each measured CPython process has its own
 interpreter specialization state.
 
-Mule uses Clang `-O3`, its own runtime, tagged native integers, and GMP for bigint
+Mule uses Clang `-O3`, its Rust runtime at `opt-level=3`, tagged native integers, and GMP for bigint
 overflow. It does not yet have language-level optimizations such as type inference
 or direct-call specialization.
 SBCL uses compiled native functions with `(speed 3) (safety 1)` and integer type

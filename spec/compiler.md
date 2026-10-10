@@ -25,6 +25,8 @@ inspected checkout. The adaptation documents describe requirements for Mule and
 mark unresolved choices explicitly. The initial implementation emits textual LLVM
 IR and links native Linux executables against Mule's runtime and GMP. It does
 not yet implement the full analysis, optimization, or compatibility requirements.
+The compiler is written in Python with eventual self hosting required. The
+runtime is written in Rust; these are the approved implementation languages.
 
 ## Implemented compiler boundary
 
@@ -32,7 +34,7 @@ The handwritten lexer and Pratt parser produce `mule.ast` objects without the
 host Python parser or its `ast` module. See [parser](parser.md), [AST](ast.md),
 and [lexing](lexing.md). A limited conversion stage classifies local/global
 bindings, validates supported constructs, and produces a verified control-flow
-IR. LLVM emission and a C runtime implement native functions and module startup.
+IR. LLVM emission and a Rust runtime implement native functions and module startup.
 Optimization, broader language support, and an extension-build SDK remain future
 work. CPython linking is prohibited; see [dependency policy](dependencies.md).
 Earlier experiments under `old/` do not define the new compiler's contracts.
