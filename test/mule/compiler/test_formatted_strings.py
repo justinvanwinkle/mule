@@ -2,7 +2,8 @@
 
 import pytest
 
-from mule.compiler import UnsupportedSyntax, lower
+from mule.compiler import UnsupportedSyntax
+from mule.compiler.main import compile_source as lower
 from test.mule.compiler.test_modules import execute
 
 

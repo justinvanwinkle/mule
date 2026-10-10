@@ -25,6 +25,7 @@ from .ctype import FLOAT, PYTHON_INTEGER, UNKNOWN
 from .vmdef import define_vop
 from .vop import (
     BOOLEAN,
+    CLASS,
     DESCRIPTOR,
     IMMEDIATE,
     INSTANCE,
@@ -153,10 +154,13 @@ def load_local(gen, vop):
 
 @define_vop("load-global", results=(None,))
 def load_global(gen, vop):
+    result = vop.results[0]
+    if result.tn.sc is CLASS:
+        # A native body's class dependency was loaded and guarded at entry.
+        gen.store(result, gen.dependency(vop.codegen_info))
+        return
     name = gen.module.text(vop.codegen_info)
-    gen.pointer_result(
-        vop.results[0], f"call ptr @mule_load_global(ptr %globals, ptr {name})"
-    )
+    gen.pointer_result(result, f"call ptr @mule_load_global(ptr %globals, ptr {name})")
 
 
 @define_vop("move", args=(None,), results=(None,))

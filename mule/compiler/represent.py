@@ -346,7 +346,10 @@ class NativePlan:
     def lvar_type(self, lvar):
         if len(lvar.uses) != 1:
             return None
-        representation = self.values.get(lvar.uses[0])
+        return self.node_type(lvar.uses[0])
+
+    def node_type(self, node):
+        representation = self.values.get(node)
         return representation.primitive_type if representation is not None else None
 
     def var_type(self, var):

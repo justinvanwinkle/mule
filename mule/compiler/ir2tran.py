@@ -197,7 +197,9 @@ class _Converter(NodeVisitor):
         if node.lvar is not None:
             return self.lvar_tn(node.lvar), False
         value_type = self.context.type_of(node)
-        return self.temporary(primitive_type_of(value_type), value_type), True
+        plan = self.context.plan
+        ptype = plan.node_type(node) if plan is not None else None
+        return self.temporary(ptype or primitive_type_of(value_type), value_type), True
 
     def read(self, tn) -> TNRef:
         ref = TNRef(tn, False)
