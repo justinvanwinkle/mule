@@ -1,9 +1,11 @@
 # Mule
 
-Mule is a Python compiler project with an LLVM backend as its stated goal.
-The current implementation is a handwritten Python parser and a custom syntax
-tree. The active package does not yet provide compilation, an LLVM backend,
-or a command-line runner.
+Mule compiles a small Python subset to native executables through LLVM. It uses
+a handwritten parser, a custom syntax tree, a control-flow IR, and an initial
+CPython 3.14 object runtime. Functions and control flow become native code;
+the compiler does not delegate program execution to a source or bytecode evaluator.
+The broader compiler architecture follows SBCL's compiler, historically called
+Python. See `spec/native-compiler.md` for the implemented subset and target.
 
 This file is both the project overview and repository guidance for coding agents.
 `README.md` is a relative symlink to `AGENTS.md`; edit this file, not a separate
@@ -15,11 +17,17 @@ Use Python 3.14 and `uv`. `.python-version` selects 3.14; `pyproject.toml`
 requires Python >=3.14. Runtime dependencies are currently empty. Development
 dependencies are pytest and Ruff, resolved in `uv.lock`.
 
+Native builds additionally require Clang, 64-bit Linux, and a GIL-enabled CPython
+3.14 installation with development headers and a shared library. Executables
+depend on that runtime installation; runtime distribution is not implemented yet.
+
 ```sh
 uv sync
 uv run pytest
 uv run ruff check mule test
 uv run ruff format --check mule test
+uv run python -m mule examples/factorial.py -o build/factorial --emit-llvm build/factorial.ll
+./build/factorial
 ```
 
 The project uses `tool.uv.package = false`: run from the repository rather than
@@ -47,7 +55,15 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/parser/statements.py`: statements, suites, definitions, and type parameters.
 - `mule/parser/patterns.py`: structural pattern matching grammar.
 - `mule/parser/strings.py`: literal decoding and formatted/template interpolation.
+- `mule/compiler/frontend.py`: semantic validation and AST-to-IR conversion.
+- `mule/compiler/ir.py`: control-flow graph, object results, and graph verification.
+- `mule/compiler/llvm.py`: LLVM emission and reference ownership/cleanup.
+- `mule/compiler/runtime.c`: object operations and native callable runtime.
+- `mule/compiler/driver.py`: Clang compilation and executable linking.
+- `mule/__main__.py`: `python -m mule` command-line interface.
 - `test/mule/parser/`: parser and AST tests, fixtures, and AST query helpers.
+- `test/mule/compiler/`: lowering, LLVM, runtime, and native executable tests.
+- `examples/`: source programs that the native compiler can build.
 - `spec/`: initial specifications and explicit boundaries of implemented behavior.
 - `old/`: earlier implementations, including Python bootstrap code, Common Lisp,
   LLVM experiments, a C++ runtime, and generated artifacts. Treat these as
@@ -71,6 +87,10 @@ Parsing returns Mule AST objects; it does not execute the source.
   from invalid syntax by returning a partial or empty tree.
 - Keep shared token state in `Parser`; grammar mixins operate on that state.
   Interpolation fragments must retain coordinates relative to the original source.
+- Reject unsupported compiler syntax explicitly, including unreachable source.
+  Do not add execution fallbacks through the host parser, compiler, or evaluator.
+- Preserve evaluation order, dynamic global lookup, and owned-reference cleanup
+  on success and error paths. `None` is an object, not an unbound-slot marker.
 
 ## Change and verification workflow
 
@@ -88,6 +108,7 @@ Run focused tests while developing, then the full suite for parser or AST change
 
 ```sh
 uv run pytest test/mule/parser/test_entry_points.py
+uv run pytest test/mule/compiler
 uv run pytest
 ```
 
@@ -98,6 +119,6 @@ contracts from proposals, and do not describe future compilation stages as avail
 
 ## Specifications
 
-Start with `spec/index.md`. The initial files describe the current frontend and
-record open decisions for future compiler stages; they are not a complete language
-specification or a commitment to a backend design.
+Start with `spec/index.md`. The files describe the current frontend and native
+compiler, document SBCL's architecture, and record requirements for later stages.
+They do not establish complete Python or C extension compatibility.

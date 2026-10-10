@@ -1,10 +1,10 @@
 # Mule specifications
 
-These specifications record the current Python frontend contracts and document
-SBCL's compiler as the reference for future compiler work. The compiler documents
-separate the existing SBCL architecture from required Python, LLVM, and CPython
-C interface changes. Each file identifies its status; tested frontend coverage
-does not establish complete Python compatibility.
+These specifications record the current Python frontend and native compiler
+contracts and document SBCL's compiler as the reference for further work. The
+compiler documents separate the existing SBCL architecture from required Python,
+LLVM, and CPython C interface changes. Each file identifies its status; tested
+frontend coverage does not establish complete Python compatibility.
 
 ## Contents
 
@@ -12,6 +12,7 @@ does not establish complete Python compatibility.
 - [Syntax tree](ast.md): node representation, traversal, and source coordinates.
 - [Lexing and strings](lexing.md): tokenization and interpolated literals.
 - [Compiler design reference](compiler.md): scope and reading order.
+- [Native compiler](native-compiler.md): implemented subset and executable builds.
 - [SBCL compiler](sbcl-compiler.md): source-backed baseline architecture.
 - [Python and LLVM changes](python-changes.md): retained analysis and required adaptations.
 - [CPython C interface](cpython-interface.md): extension build/runtime compatibility.

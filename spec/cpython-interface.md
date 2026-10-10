@@ -1,7 +1,10 @@
 # CPython-compatible C extension interface
 
-Status: required compatibility surface and compiler consequences. No C API,
-runtime, SDK, or extension loader is implemented in the active package yet.
+Status: required compatibility surface and compiler consequences. The
+[initial native compiler](native-compiler.md) links CPython 3.14's object runtime
+and exposes native functions through its C callable interface. A Mule extension
+build SDK and full function/frame compatibility are not implemented yet; extension
+loading and arbitrary extension compatibility have not been validated.
 
 Mule must expose a CPython-compatible interface so existing C extension source
 can be built and used with Mule-compiled Python. This constrains the runtime and
@@ -40,17 +43,19 @@ must additionally identify extension dependencies on private `_Py*` or
 version-specific treatment. Do not claim arbitrary wheel compatibility from
 passing a small extension fixture, or advertise `abi3` before verifying it.
 
-## Runtime implementation is an open choice
+## Runtime implementation choices
 
 | Approach | Consequence |
 | --- | --- |
 | Use CPython's runtime/object model beneath Mule's LLVM-generated code | Reuse its objects, API implementation, collection, thread state, and extension loading. Integrate Mule-native functions, frames, exceptions, and module execution with that runtime. |
 | Supply an independently implemented compatible runtime | Supply the headers, symbols, object layouts, lifecycle, type protocols, thread/exception state, and loader behavior required by the selected compatibility profile. |
 
-The user requirement does not settle this choice. Reusing runtime services
-would not require using CPython's parser, AST, bytecode compiler, or bytecode
-execution for Mule-compiled functions. Conversely, wrapping a native entry as
-a generic callable would not by itself establish function/frame introspection
+The initial executable implementation uses CPython's runtime; a separate runtime
+is not implemented. This choice makes the first native compiler executable without
+settling the long-term runtime distribution or compatibility profile. Reusing
+runtime services would not require using CPython's parser, AST, bytecode compiler,
+or bytecode execution for Mule-compiled functions. Conversely, wrapping a native
+entry as a generic callable would not by itself establish function/frame introspection
 compatibility. Those contracts require explicit implementation either way.
 
 Both approaches need one coherent identity/lifetime model for objects shared

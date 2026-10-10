@@ -1,9 +1,11 @@
 # Changes required for Python and LLVM
 
 Status: adaptation requirements, organized against the [SBCL baseline](sbcl-compiler.md).
-These stages are not implemented in Mule yet. A requirement here follows from
-the requested language/backend/interface; details marked open require a later
-decision.
+The [initial native compiler](native-compiler.md) implements a small subset of
+conversion, binding, control-flow IR, LLVM lowering, and runtime support. The
+remaining stages and broader semantics below are requirements. A requirement
+here follows from the requested language/backend/interface; details marked open
+require a later decision.
 
 ## What carries over
 
@@ -190,8 +192,9 @@ not just SBCL's final assembly stage.
 
 LLVM documents its machine stages in [the code-generator design][llvm-codegen].
 Mule need not reproduce SBCL's architecture VOP catalogs, storage classes,
-register allocator, or assembler. An implementation-level IR boundary remains
-useful; whether it is a small Mule representation or LLVM IR directly is open.
+register allocator, or assembler. The initial implementation lowers its
+control-flow IR directly to LLVM; a separate implementation-level IR remains
+an open choice for later representation selection and specialization.
 
 Lowering must satisfy LLVM's SSA, control-flow, type, and target-layout rules.
 Overflow flags, fast-math assumptions, and memory-effect attributes require
@@ -204,8 +207,9 @@ See [LLVM's language reference][llvm-ir].
 Replace the FASL protocol with native code plus runtime constants, module
 initialization, compatibility metadata, and source information. Module code
 executes at initialization in Python order; compilation is not module execution.
-Imports and namespace mutation remain runtime operations. AOT versus JIT,
-artifact caching, and executable versus module outputs remain open.
+Imports and namespace mutation remain runtime operations. The initial compiler
+produces AOT native executables. Module/library output, artifact caching, and any
+JIT mode remain future decisions.
 
 Carry AST provenance through IR1 and implementation lowering. Native debug
 metadata and Python traceback/frame/tracing state are separate requirements.
