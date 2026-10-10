@@ -96,6 +96,8 @@ that rebinds the global does not replace the already-loaded callable.
 GMP inputs are borrowed while owned runtime operands keep them alive. Fresh
 results move into Mule objects without copying their limbs. Multiplication by
 a machine integer uses `mpz_mul_si` without constructing a GMP right operand.
+These operations follow GMP's [arithmetic interface](https://gmplib.org/manual/Integer-Arithmetic)
+and [input/output aliasing conventions](https://gmplib.org/manual/Parameter-Conventions).
 
 Add/subtract/multiply can reuse a bigint when its only reference is the consumed
 temporary, or when its two references are the consumed operand and the exact

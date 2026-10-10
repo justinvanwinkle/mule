@@ -1,0 +1,55 @@
+{
+  "source_sha256": "3d821901c6c1a9ed918f3b6423d40002fd64f52328811ab075c6d691eef515cf",
+  "cpu": 0,
+  "repeats": 7,
+  "warmups": 1,
+  "comparison": "same LLVM code and optimized linking; before runtime from HEAD with reuse ABI delegating to old binary; current runtime has GMP borrowing, moves, and storage reuse",
+  "measurements": {
+    "before_gmp_changes": {
+      "seconds": [
+        0.26955003300099634,
+        0.27061777299968526,
+        0.26930339098908007,
+        0.27166307100560516,
+        0.2719158740073908,
+        0.28066060098353773,
+        0.28310783399501815
+      ],
+      "median_seconds": 0.27166307100560516
+    },
+    "current": {
+      "seconds": [
+        0.10789219298749231,
+        0.10760061698965728,
+        0.108069936017273,
+        0.10844688198994845,
+        0.1084192999987863,
+        0.1091490669932682,
+        0.10794534199521877
+      ],
+      "median_seconds": 0.108069936017273
+    }
+  },
+  "baseline_commit": "6b54f85ae3abc30e9c1e64d6c846f89ed193e301",
+  "runtime_source_sha256": {
+    "before": {
+      "builtins.rs": "2fced47a289ea9153ee65e7aa0db2f77cb90b214a2eacb6fe83002d306d0bfef",
+      "gmp.rs": "e20e44bafe08d62240fc06ab7fd56965ec890327265a4223526c9414c6166638",
+      "lib.rs": "699bd8b2f8612329e6cea37f240eb3e98f5b8266f94c960402778f989a70986a",
+      "numeric.rs": "b69fa4a24ed3f7139aadfc68651d505b9abce16650946fe9dcbba14b6eef2238",
+      "object.rs": "5ab32d0a59363c51ccab0b0102b366dcc504f976ce31952a8bea4b645fae43e3"
+    },
+    "current": {
+      "builtins.rs": "2fced47a289ea9153ee65e7aa0db2f77cb90b214a2eacb6fe83002d306d0bfef",
+      "gmp.rs": "be4cd3bb7e200e745da69ad22a1d7f4231ef1fa315ca5ae0f1ab2488e06a06c0",
+      "lib.rs": "699bd8b2f8612329e6cea37f240eb3e98f5b8266f94c960402778f989a70986a",
+      "numeric.rs": "14b732731f7f4852914a023ffb0a4420a05388011af5fdc4bf6a748852fcd3de",
+      "object.rs": "50289477d660bd4b7c2737127580efb04d676cd7a90f79d620d72ecfbe0aa3ac"
+    }
+  },
+  "binary_sha256": {
+    "before": "a09f9a05df3a27f5571366bdc68c4af54dc48f713028365df83818c31b9e978f",
+    "current": "69b58f39d15a20887e0d55a71e298a9280ec56a83f3665af56073064c423e765"
+  },
+  "compiler_settings": "Clang -O3, Rust opt-level=3 panic=abort, --gc-sections --strip-debug; GMP dynamically linked"
+}

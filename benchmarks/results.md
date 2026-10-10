@@ -54,6 +54,27 @@ Milliseconds across seven measured processes:
 | Common Lisp / SBCL | 50.554 | 50.969 | 51.105 |
 | Rust | 41.815 | 42.091 | 42.716 |
 
+## Factorial and bigint reuse
+
+The current `examples/factorial.py` computes 1500! 1,001 times. Seven shuffled
+fresh-process samples, after one warmup, pinned to CPU 0 measured:
+
+| Runtime | Median seconds |
+| --- | ---: |
+| Before GMP changes | 0.271663 |
+| Current | 0.108070 |
+
+This is **2.51x faster**. Both executables use the same current LLVM lowering
+and optimized link settings. The baseline uses the prior committed Rust numeric
+runtime with the new reuse ABI delegated to its original allocating operation;
+the current runtime borrows inputs, moves results, and reuses bigint storage.
+The source is unchanged between the two builds. The program prints nothing, so
+native value/alias tests separately establish arithmetic correctness.
+[Raw factorial samples and source/runtime hashes](results-factorial-gmp.json)
+record this comparison. The rebuilt current binary is 547,456 bytes (535 KiB),
+with GMP dynamically linked; dead section removal and debug stripping reduced
+it from approximately 5.1 MiB.
+
 ## Builds and raw data
 
 - Mule: Clang `-O3`, Rust runtime `opt-level=3`, section garbage collection,
