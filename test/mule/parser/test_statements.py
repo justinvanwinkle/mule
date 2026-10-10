@@ -3,8 +3,8 @@
 import pytest
 
 from mule import ast as A
+from test.mule.parser import ast_query as q
 from test.mule.parser.ast_query import assert_ast_equal, at, nodes, one
-from test.mule.parser.literal import literal
 
 STATEMENTS = [
     # Assignment and deletion (20).
@@ -234,10 +234,6 @@ def n(identifier):
     return A.Name(identifier=identifier)
 
 
-def c(value):
-    return literal(value=value)
-
-
 def call(identifier, *arguments):
     return A.Call(
         function=n(identifier),
@@ -323,15 +319,7 @@ def keyword(value, arg=None):
 
 
 def klass(name="Thing", *, bases=None, keywords=None, decorators=None, body=None):
-    arguments = [
-        A.CallArgument(
-            value=base.value if isinstance(base, A.Unpack) else base,
-            kind=A.ArgumentKind.STARRED
-            if isinstance(base, A.Unpack)
-            else A.ArgumentKind.POSITIONAL,
-        )
-        for base in bases or []
-    ]
+    arguments = bases or []
     return A.ClassDefinition(
         name=name,
         arguments=arguments + (keywords or []),
@@ -340,9 +328,9 @@ def klass(name="Thing", *, bases=None, keywords=None, decorators=None, body=None
     )
 
 
-def branch(condition="ready", body=None, orelse=None):
+def branch(condition=None, body=None, orelse=None):
     return A.If(
-        condition=n(condition) if isinstance(condition, str) else condition,
+        condition=n("ready") if condition is None else condition,
         body=body or [expr("act")],
         else_body=orelse or [],
     )
@@ -393,7 +381,7 @@ def try_(handlers=None, orelse=None, finalbody=None, star_=False):
 
 
 EXPECTED_STATEMENTS = {
-    "assign_name": [assign(n("answer"), c(42))],
+    "assign_name": [assign(n("answer"), A.IntegerLiteral(42))],
     "assign_chain": [A.Assignment(targets=[n("left"), n("right")], value=n("value"))],
     "assign_tuple": [assign(tup(n("left"), n("right")), n("pair"))],
     "assign_list": [assign(lst(n("left"), n("right")), n("pair"))],
@@ -412,12 +400,16 @@ EXPECTED_STATEMENTS = {
     "assign_parenthesized": [assign(n("target"), n("value"))],
     "annotate_name": [ann(n("value"), n("int"))],
     "annotate_value": [ann(n("value"), sub("list", n("int")), lst())],
-    "annotate_attribute": [ann(attr("obj", "value"), n("int"), c(1))],
-    "annotate_subscript": [ann(sub("values", c(0)), n("int"), c(1))],
-    "annotate_parenthesized": [ann(n("value"), n("int"), c(1), parenthesized=True)],
+    "annotate_attribute": [ann(attr("obj", "value"), n("int"), A.IntegerLiteral(1))],
+    "annotate_subscript": [
+        ann(sub("values", A.IntegerLiteral(0)), n("int"), A.IntegerLiteral(1))
+    ],
+    "annotate_parenthesized": [
+        ann(n("value"), n("int"), A.IntegerLiteral(1), parenthesized=True)
+    ],
     "augment_name": [
         A.AugmentedAssignment(
-            target=n("count"), operator=A.BinaryOperator.ADD, value=c(1)
+            target=n("count"), operator=A.BinaryOperator.ADD, value=A.IntegerLiteral(1)
         )
     ],
     "augment_attribute": [
@@ -429,13 +421,19 @@ EXPECTED_STATEMENTS = {
     ],
     "augment_subscript": [
         A.AugmentedAssignment(
-            target=sub("items", c(0)),
+            target=sub("items", A.IntegerLiteral(0)),
             operator=A.BinaryOperator.RIGHT_SHIFT,
             value=n("bits"),
         )
     ],
     "delete_multiple": [
-        A.Delete(targets=[n("first"), attr("obj", "second"), sub("values", c(0))])
+        A.Delete(
+            targets=[
+                n("first"),
+                attr("obj", "second"),
+                sub("values", A.IntegerLiteral(0)),
+            ]
+        )
     ],
     "delete_nested": [
         A.Delete(targets=[tup(n("first"), lst(n("second"), n("third")))])
@@ -487,20 +485,20 @@ EXPECTED_STATEMENTS = {
     "if_block": [branch()],
     "if_inline": [branch()],
     "if_else": [branch(orelse=[expr("wait")])],
-    "if_elif": [branch("first", [expr("a")], [branch("second", [expr("b")])])],
+    "if_elif": [branch(n("first"), [expr("a")], [branch(n("second"), [expr("b")])])],
     "if_elif_else": [
-        branch("first", [expr("a")], [branch("second", [expr("b")], [expr("c")])])
+        branch(n("first"), [expr("a")], [branch(n("second"), [expr("b")], [expr("c")])])
     ],
     "if_multiple_elif": [
         branch(
-            "first",
+            n("first"),
             [expr("a")],
-            [branch("second", [expr("b")], [branch("third", [expr("c")])])],
+            [branch(n("second"), [expr("b")], [branch(n("third"), [expr("c")])])],
         )
     ],
-    "if_nested": [branch("outer", [branch("inner")])],
+    "if_nested": [branch(n("outer"), [branch(n("inner"))])],
     "if_nested_else": [
-        branch("outer", [branch("inner", [expr("a")], [expr("b")])], [expr("c")])
+        branch(n("outer"), [branch(n("inner"), [expr("a")], [expr("b")])], [expr("c")])
     ],
     "if_walrus": [
         branch(
@@ -543,9 +541,9 @@ EXPECTED_STATEMENTS = {
         )
     ],
     "for_attribute": [loop(attr("obj", "item"), body=[A.Pass()])],
-    "for_subscript": [loop(sub("values", c(0)), body=[A.Pass()])],
+    "for_subscript": [loop(sub("values", A.IntegerLiteral(0)), body=[A.Pass()])],
     "for_else": [loop(orelse=[expr("finish")])],
-    "for_break": [loop(body=[branch("item", [A.Break()])])],
+    "for_break": [loop(body=[branch(n("item"), [A.Break()])])],
     "for_continue": [
         loop(
             body=[
@@ -576,8 +574,8 @@ EXPECTED_STATEMENTS = {
     "while_break_continue": [
         while_(
             body=[
-                branch("skip", [A.Continue()]),
-                branch("done", [A.Break()]),
+                branch(n("skip"), [A.Continue()]),
+                branch(n("done"), [A.Break()]),
                 expr("act"),
             ]
         )
@@ -592,8 +590,8 @@ EXPECTED_STATEMENTS = {
     "function_defaults": [
         function(
             parameters=[
-                parameter("first", default=c(1)),
-                parameter("second", default=c(None)),
+                parameter("first", default=A.IntegerLiteral(1)),
+                parameter("second", default=A.NoneLiteral()),
             ]
         )
     ],
@@ -608,11 +606,19 @@ EXPECTED_STATEMENTS = {
         function(parameters=[parameter("first", PO), parameter("second", PO)])
     ],
     "function_positional_only_default": [
-        function(parameters=[parameter("first", PO), parameter("second", default=c(2))])
+        function(
+            parameters=[
+                parameter("first", PO),
+                parameter("second", default=A.IntegerLiteral(2)),
+            ]
+        )
     ],
     "function_keyword_only": [
         function(
-            parameters=[parameter("first", KO), parameter("second", KO, default=c(2))]
+            parameters=[
+                parameter("first", KO),
+                parameter("second", KO, default=A.IntegerLiteral(2)),
+            ]
         )
     ],
     "function_vararg": [function(parameters=[parameter("items", VP)])],
@@ -621,11 +627,11 @@ EXPECTED_STATEMENTS = {
         function(
             parameters=[
                 parameter("a", PO, annotation=n("int")),
-                parameter("b", PO, default=c(2)),
-                parameter("c", default=c(3)),
+                parameter("b", PO, default=A.IntegerLiteral(2)),
+                parameter("c", default=A.IntegerLiteral(3)),
                 parameter("items", VP, annotation=n("str")),
                 parameter("d", KO),
-                parameter("e", KO, default=c(5)),
+                parameter("e", KO, default=A.IntegerLiteral(5)),
                 parameter("options", VK, annotation=n("bool")),
             ],
             returns=n("tuple"),
@@ -638,23 +644,27 @@ EXPECTED_STATEMENTS = {
         function(
             parameters=[
                 parameter("first", annotation=n("int")),
-                parameter("second", KO, annotation=n("str"), default=c("x")),
+                parameter(
+                    "second", KO, annotation=n("str"), default=A.TextLiteral("x")
+                ),
             ],
-            returns=c(None),
+            returns=A.NoneLiteral(),
         )
     ],
     "function_decorator": [function(decorators=[n("decorate")])],
     "function_decorators": [
-        function(decorators=[call("outer", c(1)), attr("package", "inner")])
+        function(
+            decorators=[call("outer", A.IntegerLiteral(1)), attr("package", "inner")]
+        )
     ],
     "function_expression_decorator": [
-        function(decorators=[sub("registry", c("name"))])
+        function(decorators=[sub("registry", A.TextLiteral("name"))])
     ],
     "function_nested": [
         function(
             "outer",
             body=[
-                function("inner", body=[A.Return(value=c(1))]),
+                function("inner", body=[A.Return(value=A.IntegerLiteral(1))]),
                 A.Return(value=n("inner")),
             ],
         )
@@ -663,7 +673,7 @@ EXPECTED_STATEMENTS = {
         function(
             "values",
             body=[
-                A.ExpressionStatement(expression=A.Yield(value=c(1))),
+                A.ExpressionStatement(expression=A.Yield(value=A.IntegerLiteral(1))),
                 A.ExpressionStatement(
                     expression=A.Yield(value=n("source"), from_iterable=True)
                 ),
@@ -688,28 +698,36 @@ EXPECTED_STATEMENTS = {
     "function_docstring": [
         function(
             body=[
-                A.ExpressionStatement(expression=c("documentation")),
-                A.Return(value=c(None)),
+                A.ExpressionStatement(expression=A.TextLiteral("documentation")),
+                A.Return(value=A.NoneLiteral()),
             ]
         )
     ],
     "class_empty": [klass()],
     "class_empty_bases": [klass()],
-    "class_base": [klass(bases=[n("Base")])],
-    "class_multiple_bases": [klass(bases=[n("First"), n("Second")])],
+    "class_base": [klass(bases=[A.CallArgument(n("Base"))])],
+    "class_multiple_bases": [
+        klass(bases=[A.CallArgument(n("First")), A.CallArgument(n("Second"))])
+    ],
     "class_metaclass": [
-        klass(bases=[n("Base")], keywords=[keyword(arg="metaclass", value=n("Meta"))])
+        klass(
+            bases=[A.CallArgument(n("Base"))],
+            keywords=[keyword(arg="metaclass", value=n("Meta"))],
+        )
     ],
     "class_unpack_bases": [
-        klass(bases=[star(n("bases"))], keywords=[keyword(value=n("options"))])
+        klass(
+            bases=[A.CallArgument(n("bases"), A.ArgumentKind.STARRED)],
+            keywords=[keyword(value=n("options"))],
+        )
     ],
     "class_decorators": [
-        klass(decorators=[n("decorate"), call("register", c("thing"))])
+        klass(decorators=[n("decorate"), call("register", A.TextLiteral("thing"))])
     ],
     "class_attributes_method": [
         klass(
             body=[
-                ann(n("value"), n("int"), c(1)),
+                ann(n("value"), n("int"), A.IntegerLiteral(1)),
                 function(
                     "method",
                     parameters=[parameter("self")],
@@ -720,7 +738,10 @@ EXPECTED_STATEMENTS = {
     ],
     "class_nested": [klass("Outer", body=[klass("Inner")])],
     "class_multiline_bases": [
-        klass(bases=[n("Base")], keywords=[keyword(arg="metaclass", value=n("Meta"))])
+        klass(
+            bases=[A.CallArgument(n("Base"))],
+            keywords=[keyword(arg="metaclass", value=n("Meta"))],
+        )
     ],
     "with_simple": [with_([item(n("manager"))], [expr("act")])],
     "with_name": [
@@ -729,7 +750,9 @@ EXPECTED_STATEMENTS = {
     "with_tuple_target": [with_([item(n("manager"), tup(n("first"), n("second")))])],
     "with_star_target": [with_([item(n("manager"), tup(n("first"), star(n("rest"))))])],
     "with_attribute_target": [with_([item(n("manager"), attr("obj", "value"))])],
-    "with_subscript_target": [with_([item(n("manager"), sub("values", c(0)))])],
+    "with_subscript_target": [
+        with_([item(n("manager"), sub("values", A.IntegerLiteral(0)))])
+    ],
     "with_multiple": [
         with_(
             [item(call("first"), n("a")), item(call("second"), n("b"))],
@@ -815,7 +838,7 @@ EXPECTED_STATEMENTS = {
     "async_function_yield": [
         function(
             "values",
-            body=[A.ExpressionStatement(expression=A.Yield(value=c(1)))],
+            body=[A.ExpressionStatement(expression=A.Yield(value=A.IntegerLiteral(1)))],
             async_=True,
         )
     ],
@@ -867,13 +890,19 @@ EXPECTED_STATEMENTS = {
     "return_empty": [function(body=[A.Return()])],
     "return_tuple": [function(body=[A.Return(value=tup(n("first"), n("second")))])],
     "raise_empty": [A.Raise()],
-    "raise_exception": [A.Raise(exception=call("Error", c("message")))],
-    "raise_cause": [A.Raise(exception=call("Error", c("message")), cause=n("cause"))],
+    "raise_exception": [A.Raise(exception=call("Error", A.TextLiteral("message")))],
+    "raise_cause": [
+        A.Raise(exception=call("Error", A.TextLiteral("message")), cause=n("cause"))
+    ],
     "raise_suppressed_cause": [
-        A.Raise(exception=call("Error", c("message")), cause=c(None))
+        A.Raise(
+            exception=call("Error", A.TextLiteral("message")), cause=A.NoneLiteral()
+        )
     ],
     "assert_simple": [A.Assert(condition=n("ready"))],
-    "assert_message": [A.Assert(condition=n("ready"), message=c("not ready"))],
+    "assert_message": [
+        A.Assert(condition=n("ready"), message=A.TextLiteral("not ready"))
+    ],
     "global_multiple": [
         function(
             body=[
@@ -886,7 +915,9 @@ EXPECTED_STATEMENTS = {
         function(
             "outer",
             body=[
-                A.Assignment(targets=[n("first"), n("second")], value=c(0)),
+                A.Assignment(
+                    targets=[n("first"), n("second")], value=A.IntegerLiteral(0)
+                ),
                 function(
                     "inner",
                     body=[
@@ -902,8 +933,8 @@ EXPECTED_STATEMENTS = {
         )
     ],
     "semicolon_statements": [
-        assign(n("first"), c(1)),
-        assign(n("second"), c(2)),
+        assign(n("first"), A.IntegerLiteral(1)),
+        assign(n("second"), A.IntegerLiteral(2)),
         A.Pass(),
     ],
     "explicit_continuation": [
@@ -930,7 +961,7 @@ def test_statement_has_expected_mule_ast(parse, case, source):
 
 def test_chained_assignment_preserves_target_order(parse):
     tree = parse("left = right = source")
-    assignment = one(tree, A.Assignment)
+    assignment = one(tree, q.Assignment)
     assert [target.identifier for target in assignment.targets] == ["left", "right"]
     assert assignment.value.identifier == "source"
 
@@ -938,25 +969,25 @@ def test_chained_assignment_preserves_target_order(parse):
 def test_nested_assignment_keeps_unpack_in_target_tree(parse):
     tree = parse("first, [second, *rest] = values")
     target = at(tree, "statements.0.targets.0")
-    assert isinstance(target, A.Tuple)
+    assert_ast_equal(target, tup(n("first"), lst(n("second"), star(n("rest")))))
     assert target.elements[0].identifier == "first"
-    assert isinstance(target.elements[1], A.List)
+    assert_ast_equal(target.elements[1], lst(n("second"), star(n("rest"))))
     assert target.elements[1].elements[0].identifier == "second"
-    assert one(tree, A.Unpack).value.identifier == "rest"
+    assert one(tree, q.Unpack).value.identifier == "rest"
     assert at(tree, "statements.0.value").identifier == "values"
 
 
 def test_attribute_assignment_retains_receiver_expression(parse):
     tree = parse("obj.value = result")
-    target = one(tree, A.Attribute, attribute="value")
+    target = one(tree, q.Attribute, attribute="value")
     assert target.value.identifier == "obj"
-    assert one(tree, A.Assignment).targets == [target]
-    assert one(tree, A.Assignment).value.identifier == "result"
+    assert one(tree, q.Assignment).targets == [target]
+    assert one(tree, q.Assignment).value.identifier == "result"
 
 
 def test_annotation_records_parenthesized_target(parse):
     tree = parse("plain: int\n(parenthesized): int")
-    annotations = nodes(tree, A.AnnotatedAssignment)
+    annotations = nodes(tree, q.AnnotatedAssignment)
     assert [node.parenthesized for node in annotations] == [False, True]
     assert [node.target.identifier for node in annotations] == [
         "plain",
@@ -967,7 +998,7 @@ def test_annotation_records_parenthesized_target(parse):
 
 def test_augmented_assignment_keeps_target_and_power_operator(parse):
     tree = parse("values[index] **= amount")
-    statement = one(tree, A.AugmentedAssignment)
+    statement = one(tree, q.AugmentedAssignment)
     assert statement.operator is A.BinaryOperator.POWER
     assert statement.target.value.identifier == "values"
     assert statement.target.index.identifier == "index"
@@ -976,12 +1007,11 @@ def test_augmented_assignment_keeps_target_and_power_operator(parse):
 
 def test_delete_preserves_multiple_target_shapes(parse):
     tree = parse("del first, obj.value, values[index]")
-    statement = one(tree, A.Delete)
-    assert [type(target) for target in statement.targets] == [
-        A.Name,
-        A.Attribute,
-        A.Subscript,
-    ]
+    statement = one(tree, q.Delete)
+    assert_ast_equal(
+        statement,
+        A.Delete([n("first"), attr("obj", "value"), sub("values", n("index"))]),
+    )
     assert statement.targets[0].identifier == "first"
     assert statement.targets[1].value.identifier == "obj"
     assert statement.targets[2].index.identifier == "index"
@@ -989,7 +1019,7 @@ def test_delete_preserves_multiple_target_shapes(parse):
 
 def test_relative_import_level_and_aliases(parse):
     tree = parse("from ...package.child import first as local, second")
-    statement = one(tree, A.ImportFrom)
+    statement = one(tree, q.ImportFrom)
     assert statement.level == 3
     assert statement.module == "package.child"
     assert [(item.name, item.alias) for item in statement.items] == [
@@ -1002,18 +1032,23 @@ def test_elif_is_nested_conditional_in_else_body(parse):
     tree = parse("if first: a()\nelif second: b()\nelse: c()")
     outer = at(tree, "statements.0")
     inner = at(tree, "statements.0.else_body.0")
-    assert isinstance(outer, A.If)
-    assert isinstance(inner, A.If)
+    assert_ast_equal(
+        outer,
+        branch(
+            n("first"), [expr("a")], [branch(n("second"), [expr("b")], [expr("c")])]
+        ),
+    )
+    assert_ast_equal(inner, branch(n("second"), [expr("b")], [expr("c")]))
     assert inner.condition.identifier == "second"
     assert inner.else_body[0].expression.function.identifier == "c"
 
 
 def test_for_else_and_unpack_target(parse):
     tree = parse("for head, *tail in rows:\n    consume(head)\nelse:\n    finish()")
-    statement = one(tree, A.For)
-    assert isinstance(statement.target, A.Tuple)
+    statement = one(tree, q.For)
+    assert_ast_equal(statement.target, tup(n("head"), star(n("tail"))))
     assert statement.target.elements[0].identifier == "head"
-    assert isinstance(statement.target.elements[1], A.Unpack)
+    assert_ast_equal(statement.target.elements[1], star(n("tail")))
     assert statement.target.elements[1].value.identifier == "tail"
     assert statement.iterable.identifier == "rows"
     assert statement.else_body[0].expression.function.identifier == "finish"
@@ -1021,7 +1056,7 @@ def test_for_else_and_unpack_target(parse):
 
 def test_with_items_preserve_order_and_optional_targets(parse):
     tree = parse("with first() as value, second(), third() as (a, b): pass")
-    statement = one(tree, A.With)
+    statement = one(tree, q.With)
     assert [item.context.function.identifier for item in statement.items] == [
         "first",
         "second",
@@ -1029,7 +1064,7 @@ def test_with_items_preserve_order_and_optional_targets(parse):
     ]
     assert statement.items[0].target.identifier == "value"
     assert statement.items[1].target is None
-    assert isinstance(statement.items[2].target, A.Tuple)
+    assert_ast_equal(statement.items[2].target, tup(n("a"), n("b")))
     assert [element.identifier for element in statement.items[2].target.elements] == [
         "a",
         "b",
@@ -1040,7 +1075,7 @@ def test_except_star_records_exception_group_handling(parse):
     tree = parse(
         "try: work()\nexcept* Error as errors: recover(errors)\nelse: success()\nfinally: cleanup()"
     )
-    statement = one(tree, A.Try)
+    statement = one(tree, q.Try)
     assert statement.exception_groups is True
     assert statement.handlers[0].exception.identifier == "Error"
     assert statement.handlers[0].binding == "errors"
@@ -1050,7 +1085,7 @@ def test_except_star_records_exception_group_handling(parse):
 
 def test_function_parameters_keep_source_order_and_individual_defaults(parse):
     tree = parse("def function(a, b=2, /, c=3, *items, d, e=5, **options): pass")
-    parameters = one(tree, A.FunctionDefinition).parameters
+    parameters = one(tree, q.FunctionDefinition).parameters
     assert [parameter.name for parameter in parameters] == [
         "a",
         "b",
@@ -1079,7 +1114,7 @@ def test_class_decorators_and_arguments_preserve_source_order(parse):
     tree = parse(
         "@outer\n@inner(1)\nclass Thing(Base, metaclass=Meta, **options): pass"
     )
-    statement = one(tree, A.ClassDefinition)
+    statement = one(tree, q.ClassDefinition)
     assert statement.decorators[0].identifier == "outer"
     assert statement.decorators[1].function.identifier == "inner"
     assert [argument.kind for argument in statement.arguments] == [
@@ -1103,12 +1138,12 @@ def test_async_compound_statements_keep_async_flags(parse):
     tree = parse(
         "async def function():\n    async with manager as value:\n        async for item in values:\n            await consume(item)"
     )
-    function = one(tree, A.FunctionDefinition)
+    function = one(tree, q.FunctionDefinition)
     assert function.name == "function"
     assert function.is_async is True
-    assert one(tree, A.With).is_async is True
-    assert one(tree, A.For).is_async is True
-    assert one(tree, A.Await).value.function.identifier == "consume"
+    assert one(tree, q.With).is_async is True
+    assert one(tree, q.For).is_async is True
+    assert one(tree, q.Await).value.function.identifier == "consume"
 
 
 def test_type_comments_attach_to_assignment_loop_and_function(parse):
@@ -1120,6 +1155,6 @@ def test_type_comments_attach_to_assignment_loop_and_function(parse):
         "    return str(item)\n"
     )
     tree = parse(source, type_comments=True)
-    assert one(tree, A.Assignment).type_comment == "list[int]"
-    assert one(tree, A.For).type_comment == "int"
-    assert one(tree, A.FunctionDefinition).type_comment == "(int) -> str"
+    assert one(tree, q.Assignment).type_comment == "list[int]"
+    assert one(tree, q.For).type_comment == "int"
+    assert one(tree, q.FunctionDefinition).type_comment == "(int) -> str"

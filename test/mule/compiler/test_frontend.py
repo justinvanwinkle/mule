@@ -67,12 +67,11 @@ def test_late_assignment_classifies_all_function_reads_as_local():
     module = lower("x = 1\ndef f():\n print(x)\n x = 2\n")
     function = module.functions[1]
     assert function.locals == ("x",)
-    reads = [
-        instruction
-        for block in function.blocks
-        for instruction in block.instructions
-        if isinstance(instruction, ir.Load)
-    ]
+    collector = LoadCollector()
+    for block in function.blocks:
+        for instruction in block.instructions:
+            instruction.accept(collector)
+    reads = collector.reads
     assert next(read for read in reads if read.name == "x").local
     assert not next(read for read in reads if read.name == "print").local
 
@@ -128,3 +127,11 @@ def test_ir_rejects_value_not_dominating_its_use():
     )
     with pytest.raises(ValueError, match="dominate"):
         ir.verify(module)
+
+
+class LoadCollector(ir.Visitor):
+    def __init__(self):
+        self.reads = []
+
+    def visit_Load(self, instruction):
+        self.reads.append(instruction)

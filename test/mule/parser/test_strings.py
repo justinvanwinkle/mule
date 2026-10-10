@@ -3,87 +3,84 @@
 import pytest
 
 from mule import ast
+from test.mule.parser import ast_query as q
 from test.mule.parser.ast_query import assert_ast_equal, one
-from test.mule.parser.literal import literal
 
 
 @pytest.mark.parametrize(
-    "prefix",
-    ["", "u", "U", "r", "R", "b", "B", "br", "bR", "Br", "BR", "rb", "rB", "Rb", "RB"],
+    "prefix, expected",
+    [(prefix, ast.TextLiteral("hello")) for prefix in ("", "u", "U", "r", "R")]
+    + [
+        (prefix, ast.BytesLiteral(b"hello"))
+        for prefix in ("b", "B", "br", "bR", "Br", "BR", "rb", "rB", "Rb", "RB")
+    ],
 )
-def test_plain_literal_prefixes_accept_all_supported_case_combinations(parse, prefix):
-    expected = b"hello" if "b" in prefix.lower() else "hello"
+def test_plain_literal_prefixes_accept_all_supported_case_combinations(
+    parse, prefix, expected
+):
     assert_ast_equal(
         parse(prefix + "'hello'", mode="eval"),
-        ast.ExpressionInput(literal(expected)),
+        ast.ExpressionInput(expected),
     )
 
 
 @pytest.mark.parametrize(
-    "prefix",
+    "prefix, expected",
     [
-        "f",
-        "F",
-        "fr",
-        "fR",
-        "Fr",
-        "FR",
-        "rf",
-        "rF",
-        "Rf",
-        "RF",
-        "t",
-        "T",
-        "tr",
-        "tR",
-        "Tr",
-        "TR",
-        "rt",
-        "rT",
-        "Rt",
-        "RT",
+        (prefix, ast.FormattedString([ast.Interpolation(ast.Name("name"))]))
+        for prefix in ("f", "F", "fr", "fR", "Fr", "FR", "rf", "rF", "Rf", "RF")
+    ]
+    + [
+        (
+            prefix,
+            ast.TemplateString(
+                [ast.Interpolation(ast.Name("name"), expression_text="name")]
+            ),
+        )
+        for prefix in ("t", "T", "tr", "tR", "Tr", "TR", "rt", "rT", "Rt", "RT")
     ],
 )
 def test_interpolated_literal_prefixes_accept_all_supported_case_combinations(
-    parse, prefix
+    parse, prefix, expected
 ):
-    template = "t" in prefix.lower()
-    field = ast.Interpolation(
-        ast.Name("name"), expression_text="name" if template else None
-    )
-    kind = ast.TemplateString if template else ast.FormattedString
     assert_ast_equal(
-        parse(prefix + "'{name}'", mode="eval"), ast.ExpressionInput(kind([field]))
+        parse(prefix + "'{name}'", mode="eval"), ast.ExpressionInput(expected)
     )
 
 
 @pytest.mark.parametrize(
-    "source,value",
+    "source,expected",
     [
-        (r"'café\N{GRINNING FACE}'", "café😀"),
-        (r"'\U0001f600\101\0'", "😀A\x00"),
-        (r"b'\xff\101\0'", b"\xffA\x00"),
-        (r"b'\u03b1'", b"\\u03b1"),
-        (r"r'\N{GRINNING FACE}'", "\\N{GRINNING FACE}"),
-        ("'first\\\nsecond'", "firstsecond"),
-        (r"'unknown\q'", "unknown\\q"),
+        (r"'café\N{GRINNING FACE}'", ast.TextLiteral("café😀")),
+        (r"'\U0001f600\101\0'", ast.TextLiteral("😀A\x00")),
+        (r"b'\xff\101\0'", ast.BytesLiteral(b"\xffA\x00")),
+        (r"b'\u03b1'", ast.BytesLiteral(b"\\u03b1")),
+        (r"r'\N{GRINNING FACE}'", ast.TextLiteral("\\N{GRINNING FACE}")),
+        ("'first\\\nsecond'", ast.TextLiteral("firstsecond")),
+        (r"'unknown\q'", ast.TextLiteral("unknown\\q")),
     ],
 )
-def test_escape_decoding_preserves_unicode_and_bytes(parse, source, value):
-    assert_ast_equal(parse(source, mode="eval"), ast.ExpressionInput(literal(value)))
+def test_escape_decoding_preserves_unicode_and_bytes(parse, source, expected):
+    assert_ast_equal(parse(source, mode="eval"), ast.ExpressionInput(expected))
 
 
-@pytest.mark.parametrize("prefix", ["f", "t"])
+@pytest.mark.parametrize(
+    "prefix, constructor, expression_text",
+    [("f", ast.FormattedString, None), ("t", ast.TemplateString, "value")],
+)
 @pytest.mark.parametrize("spec", ["#x", "'", "!r", ">10"])
-def test_format_specification_text_is_not_expression_syntax(parse, prefix, spec):
+def test_format_specification_text_is_not_expression_syntax(
+    parse, prefix, constructor, expression_text, spec
+):
     source = prefix + '"{value:' + spec + '}"'
     field = ast.Interpolation(
         ast.Name("value"),
-        format_spec=ast.FormattedString([literal(spec)]),
-        expression_text="value" if prefix == "t" else None,
+        format_spec=ast.FormattedString([ast.TextLiteral(spec)]),
+        expression_text=expression_text,
     )
-    kind = ast.FormattedString if prefix == "f" else ast.TemplateString
-    assert_ast_equal(parse(source, mode="eval"), ast.ExpressionInput(kind([field])))
+    assert_ast_equal(
+        parse(source, mode="eval"), ast.ExpressionInput(constructor([field]))
+    )
 
 
 def test_nested_format_field_can_have_its_own_literal_format_specification(parse):
@@ -95,7 +92,7 @@ def test_nested_format_field_can_have_its_own_literal_format_specification(parse
                     [
                         ast.Interpolation(
                             ast.Name("width"),
-                            format_spec=ast.FormattedString([literal("05")]),
+                            format_spec=ast.FormattedString([ast.TextLiteral("05")]),
                         )
                     ]
                 ),
@@ -118,7 +115,7 @@ def test_comparison_operators_are_not_debug_or_conversion_delimiters(parse):
 
 
 def test_template_expression_text_retains_whitespace_before_format_specification(parse):
-    field = one(parse('t"{ value :#x}"', mode="eval"), ast.Interpolation)
+    field = one(parse('t"{ value :#x}"', mode="eval"), q.Interpolation)
     assert field.expression_text == " value "
     assert field.format_spec.parts[0].value == "#x"
 
@@ -173,7 +170,7 @@ def test_pep701_requires_two_levels_of_nested_format_fields(parse):
 def test_field_comments_after_debug_specifier_preserve_raw_debug_text(parse):
     expected = ast.FormattedString(
         [
-            literal("value= # debug comment\n"),
+            ast.TextLiteral("value= # debug comment\n"),
             ast.Interpolation(ast.Name("value"), conversion="r"),
         ]
     )

@@ -569,6 +569,12 @@ class FunctionType(ValueType):
 
 @dataclass(frozen=True, slots=True)
 class BottomType(ValueType):
+    def accepts(self, actual):
+        return False
+
+    def accepts_dispatch(self, actual):
+        return False
+
     def join(self, other):
         return other
 
@@ -617,6 +623,12 @@ class BottomType(ValueType):
 @dataclass(frozen=True, slots=True)
 class UnboundType(ValueType):
     may_be_unbound: bool = field(default=True, kw_only=True)
+
+    def accepts(self, actual):
+        return False
+
+    def accepts_dispatch(self, actual):
+        return False
 
     def join(self, other):
         return other.join_unbound(self)

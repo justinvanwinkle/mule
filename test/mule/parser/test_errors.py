@@ -159,10 +159,12 @@ def test_syntax_error_identifies_a_source_location(parse, case, source, mode):
     assert error.filename == filename
     # A parser may point at EOF, including the empty line after a final newline.
     lines = source.split("\n")
-    assert isinstance(error.lineno, int)
+    assert error.lineno is not None
     assert 1 <= error.lineno <= len(lines)
-    assert isinstance(error.offset, int)
+    assert error.offset is not None
     assert 1 <= error.offset <= len(lines[error.lineno - 1]) + 1
+    # Coordinates must index the source as character positions, including EOF.
+    assert len(lines[error.lineno - 1][: error.offset - 1]) == error.offset - 1
     if error.end_lineno is not None:
         assert error.lineno <= error.end_lineno <= len(lines)
         if error.end_offset is not None:

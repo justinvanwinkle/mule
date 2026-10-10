@@ -52,6 +52,12 @@ corresponding visitor method, such as `visit_Name` or `visit_IntegerLiteral`.
 Consumers override the syntax they support; dispatch does not use class-name
 lookup, type tests, or a class registry.
 
+Test queries use the same visitor protocol: `nodes(tree, q.Name)` selects name
+nodes, and `q.Literal` explicitly visits all concrete literal subclasses.
+Structural assertions compare dataclass equality, optionally clearing spans on
+deep copies so the original trees keep their source coordinates. Expected trees
+use explicit literal constructors.
+
 `assigned_targets()` exposes syntactic targets on assignments, named expressions,
 deletions, loops, with items, and comprehension clauses. Other nodes return an
 empty tuple; an ordinary name read is not an assignment. Target expressions own

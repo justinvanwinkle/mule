@@ -38,8 +38,8 @@ from mule.ast import (
     Unpack,
     Yield,
 )
+from test.mule.parser import ast_query as q
 from test.mule.parser.ast_query import assert_ast_equal, at, nodes, one
-from test.mule.parser.literal import literal
 
 
 def case(name, source, expected):
@@ -49,32 +49,32 @@ def case(name, source, expected):
 @pytest.mark.parametrize(
     "source, expected",
     [
-        case("none", "None", literal(None)),
-        case("true", "True", literal(True)),
-        case("false", "False", literal(False)),
-        case("ellipsis", "...", literal(Ellipsis)),
-        case("decimal-zero", "0", literal(0)),
-        case("decimal-underscores", "1_000_000", literal(1000000)),
-        case("binary", "0b1010_0101", literal(165)),
-        case("octal", "0o7_55", literal(493)),
-        case("hexadecimal", "0xCA_FE", literal(51966)),
-        case("float-fraction", "12.34", literal(12.34)),
-        case("float-leading-dot", ".5", literal(0.5)),
-        case("float-trailing-dot", "5.", literal(5.0)),
-        case("float-exponent", "1e-9", literal(1e-9)),
-        case("float-exponent-underscores", "1_2.3_4e+5_6", literal(12.34e56)),
-        case("imaginary-integer", "3j", literal(3j)),
-        case("imaginary-float", ".5J", literal(0.5j)),
-        case("single-quoted-string", "'hello'", literal("hello")),
-        case("double-quoted-string", '"hello"', literal("hello")),
-        case("escaped-string", r"'a\n\t\x41\u03b1'", literal("a\n\tA\u03b1")),
-        case("raw-string", r"r'\d+\s*'", literal(r"\d+\s*")),
-        case("unicode-prefix", "u'hello'", literal("hello")),
-        case("bytes", "b'hello'", literal(b"hello")),
-        case("raw-bytes", r"rb'\x41'", literal(rb"\x41")),
-        case("triple-string", "'''first\nsecond'''", literal("first\nsecond")),
-        case("adjacent-strings", "'one' \"two\"", literal("onetwo")),
-        case("adjacent-bytes", "b'one' b'two'", literal(b"onetwo")),
+        case("none", "None", ast.NoneLiteral(None)),
+        case("true", "True", ast.BooleanLiteral(True)),
+        case("false", "False", ast.BooleanLiteral(False)),
+        case("ellipsis", "...", ast.EllipsisLiteral(Ellipsis)),
+        case("decimal-zero", "0", ast.IntegerLiteral(0)),
+        case("decimal-underscores", "1_000_000", ast.IntegerLiteral(1000000)),
+        case("binary", "0b1010_0101", ast.IntegerLiteral(165)),
+        case("octal", "0o7_55", ast.IntegerLiteral(493)),
+        case("hexadecimal", "0xCA_FE", ast.IntegerLiteral(51966)),
+        case("float-fraction", "12.34", ast.FloatLiteral(12.34)),
+        case("float-leading-dot", ".5", ast.FloatLiteral(0.5)),
+        case("float-trailing-dot", "5.", ast.FloatLiteral(5.0)),
+        case("float-exponent", "1e-9", ast.FloatLiteral(1e-9)),
+        case("float-exponent-underscores", "1_2.3_4e+5_6", ast.FloatLiteral(12.34e56)),
+        case("imaginary-integer", "3j", ast.ComplexLiteral(3j)),
+        case("imaginary-float", ".5J", ast.ComplexLiteral(0.5j)),
+        case("single-quoted-string", "'hello'", ast.TextLiteral("hello")),
+        case("double-quoted-string", '"hello"', ast.TextLiteral("hello")),
+        case("escaped-string", r"'a\n\t\x41\u03b1'", ast.TextLiteral("a\n\tA\u03b1")),
+        case("raw-string", r"r'\d+\s*'", ast.TextLiteral(r"\d+\s*")),
+        case("unicode-prefix", "u'hello'", ast.TextLiteral("hello")),
+        case("bytes", "b'hello'", ast.BytesLiteral(b"hello")),
+        case("raw-bytes", r"rb'\x41'", ast.BytesLiteral(rb"\x41")),
+        case("triple-string", "'''first\nsecond'''", ast.TextLiteral("first\nsecond")),
+        case("adjacent-strings", "'one' \"two\"", ast.TextLiteral("onetwo")),
+        case("adjacent-bytes", "b'one' b'two'", ast.BytesLiteral(b"onetwo")),
         case("ascii-name", "identifier", Name("identifier")),
         case("unicode-name", "\u03c0", Name("\u03c0")),
         case("normalized-unicode-name", "\u212a", Name("K")),
@@ -405,7 +405,7 @@ def test_operators(parse, source, expected):
             Dict(
                 [
                     DictEntry(
-                        literal("x"),
+                        ast.TextLiteral("x"),
                         Tuple(
                             [
                                 List([Name("a"), Unpack(Name("b"))]),
@@ -443,8 +443,8 @@ def test_container_displays(parse, source, expected):
             Call(
                 Name("f"),
                 [
-                    CallArgument(literal(1), ArgumentKind.KEYWORD, "a"),
-                    CallArgument(literal(2), ArgumentKind.KEYWORD, "b"),
+                    CallArgument(ast.IntegerLiteral(1), ArgumentKind.KEYWORD, "a"),
+                    CallArgument(ast.IntegerLiteral(2), ArgumentKind.KEYWORD, "b"),
                 ],
             ),
         ),
@@ -490,7 +490,7 @@ def test_container_displays(parse, source, expected):
             Call(
                 Name("f"),
                 [
-                    CallArgument(literal(1), ArgumentKind.KEYWORD, "a"),
+                    CallArgument(ast.IntegerLiteral(1), ArgumentKind.KEYWORD, "a"),
                     CallArgument(Name("b"), ArgumentKind.STARRED),
                 ],
             ),
@@ -502,7 +502,7 @@ def test_container_displays(parse, source, expected):
                 Name("f"),
                 [
                     CallArgument(Name("a"), ArgumentKind.DOUBLE_STARRED),
-                    CallArgument(literal(2), ArgumentKind.KEYWORD, "b"),
+                    CallArgument(ast.IntegerLiteral(2), ArgumentKind.KEYWORD, "b"),
                 ],
             ),
         ),
@@ -545,7 +545,10 @@ def test_container_displays(parse, source, expected):
         case(
             "negative-step",
             "a[::-1]",
-            Subscript(Name("a"), Slice(step=Unary(UnaryOperator.NEGATIVE, literal(1)))),
+            Subscript(
+                Name("a"),
+                Slice(step=Unary(UnaryOperator.NEGATIVE, ast.IntegerLiteral(1))),
+            ),
         ),
         case(
             "mixed-dimensional-slice",
@@ -623,8 +626,8 @@ def test_primary_trailers(parse, source, expected):
             "lambda a=1, b=2: a + b",
             Lambda(
                 [
-                    Parameter("a", default=literal(1)),
-                    Parameter("b", default=literal(2)),
+                    Parameter("a", default=ast.IntegerLiteral(1)),
+                    Parameter("b", default=ast.IntegerLiteral(2)),
                 ],
                 Binary(BinaryOperator.ADD, Name("a"), Name("b")),
             ),
@@ -643,7 +646,9 @@ def test_primary_trailers(parse, source, expected):
             Lambda(
                 [
                     Parameter("a", ParameterKind.KEYWORD_ONLY),
-                    Parameter("b", ParameterKind.KEYWORD_ONLY, default=literal(2)),
+                    Parameter(
+                        "b", ParameterKind.KEYWORD_ONLY, default=ast.IntegerLiteral(2)
+                    ),
                 ],
                 Binary(BinaryOperator.ADD, Name("a"), Name("b")),
             ),
@@ -665,10 +670,12 @@ def test_primary_trailers(parse, source, expected):
             Lambda(
                 [
                     Parameter("a", ParameterKind.POSITIONAL_ONLY),
-                    Parameter("b", default=literal(2)),
+                    Parameter("b", default=ast.IntegerLiteral(2)),
                     Parameter("c", ParameterKind.VAR_POSITIONAL),
                     Parameter("d", ParameterKind.KEYWORD_ONLY),
-                    Parameter("e", ParameterKind.KEYWORD_ONLY, default=literal(3)),
+                    Parameter(
+                        "e", ParameterKind.KEYWORD_ONLY, default=ast.IntegerLiteral(3)
+                    ),
                     Parameter("f", ParameterKind.VAR_KEYWORD),
                 ],
                 Name("a"),
@@ -689,9 +696,10 @@ def test_primary_trailers(parse, source, expected):
             "(lambda x: x + 1)(2)",
             Call(
                 Lambda(
-                    [Parameter("x")], Binary(BinaryOperator.ADD, Name("x"), literal(1))
+                    [Parameter("x")],
+                    Binary(BinaryOperator.ADD, Name("x"), ast.IntegerLiteral(1)),
                 ),
-                [CallArgument(literal(2))],
+                [CallArgument(ast.IntegerLiteral(2))],
             ),
         ),
         case("named-expression", "(x := y)", NamedExpression(Name("x"), Name("y"))),
@@ -787,10 +795,14 @@ def test_low_binding_and_suspension_expressions(parse, source, expected):
                         Name("items"),
                         [
                             Comparison(
-                                Name("x"), [ComparisonOperator.GREATER], [literal(0)]
+                                Name("x"),
+                                [ComparisonOperator.GREATER],
+                                [ast.IntegerLiteral(0)],
                             ),
                             Comparison(
-                                Name("x"), [ComparisonOperator.LESS], [literal(10)]
+                                Name("x"),
+                                [ComparisonOperator.LESS],
+                                [ast.IntegerLiteral(10)],
                             ),
                         ],
                     )
@@ -968,7 +980,9 @@ def test_comprehensions(parse, source, expected):
     "source, expected",
     [
         case("empty-f-string", "f''", FormattedString()),
-        case("f-string-literal", "f'hello'", FormattedString([literal("hello")])),
+        case(
+            "f-string-literal", "f'hello'", FormattedString([ast.TextLiteral("hello")])
+        ),
         case(
             "f-string-replacement",
             "f'{name}'",
@@ -978,13 +992,23 @@ def test_comprehensions(parse, source, expected):
             "f-string-text-and-expression",
             "f'Hello {name}!'",
             FormattedString(
-                [literal("Hello "), Interpolation(Name("name")), literal("!")]
+                [
+                    ast.TextLiteral("Hello "),
+                    Interpolation(Name("name")),
+                    ast.TextLiteral("!"),
+                ]
             ),
         ),
         case(
             "f-string-escaped-braces",
             "f'{{{value}}}'",
-            FormattedString([literal("{"), Interpolation(Name("value")), literal("}")]),
+            FormattedString(
+                [
+                    ast.TextLiteral("{"),
+                    Interpolation(Name("value")),
+                    ast.TextLiteral("}"),
+                ]
+            ),
         ),
         case(
             "f-string-repr",
@@ -1007,7 +1031,8 @@ def test_comprehensions(parse, source, expected):
             FormattedString(
                 [
                     Interpolation(
-                        Name("value"), format_spec=FormattedString([literal("08.2f")])
+                        Name("value"),
+                        format_spec=FormattedString([ast.TextLiteral("08.2f")]),
                     )
                 ]
             ),
@@ -1022,9 +1047,9 @@ def test_comprehensions(parse, source, expected):
                         format_spec=FormattedString(
                             [
                                 Interpolation(Name("width")),
-                                literal("."),
+                                ast.TextLiteral("."),
                                 Interpolation(Name("precision")),
-                                literal("f"),
+                                ast.TextLiteral("f"),
                             ]
                         ),
                     )
@@ -1035,14 +1060,20 @@ def test_comprehensions(parse, source, expected):
             "f-string-debug",
             "f'{value=}'",
             FormattedString(
-                [literal("value="), Interpolation(Name("value"), conversion="r")]
+                [
+                    ast.TextLiteral("value="),
+                    Interpolation(Name("value"), conversion="r"),
+                ]
             ),
         ),
         case(
             "f-string-debug-whitespace",
             "f'{ value = }'",
             FormattedString(
-                [literal(" value = "), Interpolation(Name("value"), conversion="r")]
+                [
+                    ast.TextLiteral(" value = "),
+                    Interpolation(Name("value"), conversion="r"),
+                ]
             ),
         ),
         case(
@@ -1050,9 +1081,10 @@ def test_comprehensions(parse, source, expected):
             "f'{value=:04}'",
             FormattedString(
                 [
-                    literal("value="),
+                    ast.TextLiteral("value="),
                     Interpolation(
-                        Name("value"), format_spec=FormattedString([literal("04")])
+                        Name("value"),
+                        format_spec=FormattedString([ast.TextLiteral("04")]),
                     ),
                 ]
             ),
@@ -1061,7 +1093,10 @@ def test_comprehensions(parse, source, expected):
             "f-string-debug-conversion",
             "f'{value=!s}'",
             FormattedString(
-                [literal("value="), Interpolation(Name("value"), conversion="s")]
+                [
+                    ast.TextLiteral("value="),
+                    Interpolation(Name("value"), conversion="s"),
+                ]
             ),
         ),
         case(
@@ -1073,19 +1108,23 @@ def test_comprehensions(parse, source, expected):
             "adjacent-ordinary-and-f-strings",
             "'prefix' f'{value}' 'suffix'",
             FormattedString(
-                [literal("prefix"), Interpolation(Name("value")), literal("suffix")]
+                [
+                    ast.TextLiteral("prefix"),
+                    Interpolation(Name("value")),
+                    ast.TextLiteral("suffix"),
+                ]
             ),
         ),
         case(
             "raw-f-string",
             r"rf'\n{value}'",
-            FormattedString([literal(r"\n"), Interpolation(Name("value"))]),
+            FormattedString([ast.TextLiteral(r"\n"), Interpolation(Name("value"))]),
         ),
         case(
             "pep701-reused-quote",
             'f"{mapping["key"]}"',
             FormattedString(
-                [Interpolation(Subscript(Name("mapping"), literal("key")))]
+                [Interpolation(Subscript(Name("mapping"), ast.TextLiteral("key")))]
             ),
         ),
         case(
@@ -1095,7 +1134,7 @@ def test_comprehensions(parse, source, expected):
                 [
                     Interpolation(
                         Call(
-                            Attribute(literal("\n"), "join"),
+                            Attribute(ast.TextLiteral("\n"), "join"),
                             [CallArgument(Name("items"))],
                         )
                     )
@@ -1143,7 +1182,12 @@ def test_multiplication_binds_above_addition(parse):
 
 def test_power_binds_above_unary_minus_on_left(parse):
     expression = at(parse("-a ** b", mode="eval"), "expression")
-    assert isinstance(expression, Unary)
+    assert_ast_equal(
+        expression,
+        Unary(
+            UnaryOperator.NEGATIVE, Binary(BinaryOperator.POWER, Name("a"), Name("b"))
+        ),
+    )
     assert expression.operator is UnaryOperator.NEGATIVE
     assert expression.operand.operator is BinaryOperator.POWER
 
@@ -1151,7 +1195,7 @@ def test_power_binds_above_unary_minus_on_left(parse):
 def test_power_accepts_unary_minus_on_right(parse):
     expression = at(parse("a ** -b", mode="eval"), "expression")
     assert expression.operator is BinaryOperator.POWER
-    assert isinstance(expression.right, Unary)
+    assert_ast_equal(expression.right, Unary(UnaryOperator.NEGATIVE, Name("b")))
     assert expression.right.operator is UnaryOperator.NEGATIVE
 
 
@@ -1170,7 +1214,7 @@ def test_bitwise_operator_binding_order(parse):
 
 
 def test_comparison_chain_is_one_node(parse):
-    comparison = one(parse("a < b is not c not in d", mode="eval"), Comparison)
+    comparison = one(parse("a < b is not c not in d", mode="eval"), q.Comparison)
     assert comparison.left.identifier == "a"
     assert comparison.operators == [
         ComparisonOperator.LESS,
@@ -1183,7 +1227,9 @@ def test_comparison_chain_is_one_node(parse):
 def test_not_binds_below_comparisons(parse):
     expression = at(parse("not a in b", mode="eval"), "expression")
     assert expression.operator is UnaryOperator.NOT
-    assert isinstance(expression.operand, Comparison)
+    assert_ast_equal(
+        expression.operand, Comparison(Name("a"), [ComparisonOperator.IN], [Name("b")])
+    )
     assert expression.operand.operators == [ComparisonOperator.IN]
 
 
@@ -1199,22 +1245,27 @@ def test_boolean_chains_flatten_at_their_own_precedence(parse):
 def test_parentheses_preserve_nested_boolean_nodes(parse):
     expression = at(parse("a and (b and c)", mode="eval"), "expression")
     assert len(expression.operands) == 2
-    assert isinstance(expression.operands[1], Boolean)
+    assert_ast_equal(
+        expression.operands[1], Boolean(BooleanOperator.AND, [Name("b"), Name("c")])
+    )
     assert [value.identifier for value in expression.operands[1].operands] == ["b", "c"]
 
 
 def test_conditional_expression_associates_right(parse):
     expression = at(parse("a if b else c if d else e", mode="eval"), "expression")
-    assert isinstance(expression, Conditional)
+    assert_ast_equal(
+        expression,
+        Conditional(Name("b"), Name("a"), Conditional(Name("d"), Name("c"), Name("e"))),
+    )
     assert expression.then.identifier == "a"
     assert expression.condition.identifier == "b"
-    assert isinstance(expression.otherwise, Conditional)
+    assert_ast_equal(expression.otherwise, Conditional(Name("d"), Name("c"), Name("e")))
     assert expression.otherwise.condition.identifier == "d"
 
 
 def test_lambda_parameters_keep_source_order_and_categories(parse):
     parameters = one(
-        parse("lambda a, /, b=2, *rest, c, d=3, **kw: a", mode="eval"), Lambda
+        parse("lambda a, /, b=2, *rest, c, d=3, **kw: a", mode="eval"), q.Lambda
     ).parameters
     assert [parameter.name for parameter in parameters] == [
         "a",
@@ -1239,14 +1290,16 @@ def test_lambda_parameters_keep_source_order_and_categories(parse):
 
 
 def test_named_expression_separates_target_from_complete_rhs(parse):
-    expression = one(parse("(result := a or b)", mode="eval"), NamedExpression)
+    expression = one(parse("(result := a or b)", mode="eval"), q.NamedExpression)
     assert expression.target.identifier == "result"
-    assert isinstance(expression.value, Boolean)
+    assert_ast_equal(
+        expression.value, Boolean(BooleanOperator.OR, [Name("a"), Name("b")])
+    )
     assert expression.value.operator is BooleanOperator.OR
 
 
 def test_call_preserves_source_order_across_argument_kinds(parse):
-    call = one(parse("f(key=b, *items, **options)", mode="eval"), Call)
+    call = one(parse("f(key=b, *items, **options)", mode="eval"), q.Call)
     assert [argument.kind for argument in call.arguments] == [
         ArgumentKind.KEYWORD,
         ArgumentKind.STARRED,
@@ -1261,10 +1314,21 @@ def test_call_preserves_source_order_across_argument_kinds(parse):
 
 
 def test_multidimensional_subscript_mixes_slice_and_index(parse):
-    subscript = one(parse("matrix[1:limit:2, index, ...]", mode="eval"), Subscript)
-    assert isinstance(subscript.index, Tuple)
+    subscript = one(parse("matrix[1:limit:2, index, ...]", mode="eval"), q.Subscript)
+    assert_ast_equal(
+        subscript.index,
+        Tuple(
+            [
+                Slice(ast.IntegerLiteral(1), Name("limit"), ast.IntegerLiteral(2)),
+                Name("index"),
+                ast.EllipsisLiteral(),
+            ]
+        ),
+    )
     first, second, third = subscript.index.elements
-    assert isinstance(first, Slice)
+    assert_ast_equal(
+        first, Slice(ast.IntegerLiteral(1), Name("limit"), ast.IntegerLiteral(2))
+    )
     assert first.lower.value == 1
     assert first.upper.identifier == "limit"
     assert first.step.value == 2
@@ -1274,12 +1338,12 @@ def test_multidimensional_subscript_mixes_slice_and_index(parse):
 
 def test_comprehension_destructuring_belongs_to_clause_target(parse):
     comprehension = one(
-        parse("[a for a, *rest in rows if a]", mode="eval"), Comprehension
+        parse("[a for a, *rest in rows if a]", mode="eval"), q.Comprehension
     )
     clause = comprehension.clauses[0]
-    assert isinstance(clause.target, Tuple)
+    assert_ast_equal(clause.target, Tuple([Name("a"), Unpack(Name("rest"))]))
     assert clause.target.elements[0].identifier == "a"
-    assert isinstance(clause.target.elements[1], Unpack)
+    assert_ast_equal(clause.target.elements[1], Unpack(Name("rest")))
     assert clause.target.elements[1].value.identifier == "rest"
     assert comprehension.element.identifier == "a"
     assert clause.iterable.identifier == "rows"
@@ -1288,7 +1352,8 @@ def test_comprehension_destructuring_belongs_to_clause_target(parse):
 
 def test_comprehension_async_flags_and_filters_belong_to_each_clause(parse):
     comprehension = one(
-        parse("[y async for x in xs if x for y in x if y]", mode="eval"), Comprehension
+        parse("[y async for x in xs if x for y in x if y]", mode="eval"),
+        q.Comprehension,
     )
     assert [clause.is_async for clause in comprehension.clauses] == [True, False]
     assert [
@@ -1299,9 +1364,9 @@ def test_comprehension_async_flags_and_filters_belong_to_each_clause(parse):
 
 def test_yield_delegation_is_explicit(parse):
     tree = parse("def f():\n    yield a, b\n    yield from items\n")
-    yielded = one(tree, Yield, from_iterable=False)
-    delegated = one(tree, Yield, from_iterable=True)
-    assert isinstance(yielded.value, Tuple)
+    yielded = one(tree, q.Yield, from_iterable=False)
+    delegated = one(tree, q.Yield, from_iterable=True)
+    assert_ast_equal(yielded.value, Tuple([Name("a"), Name("b")]))
     assert [element.identifier for element in yielded.value.elements] == ["a", "b"]
     assert delegated.value.identifier == "items"
 
@@ -1310,7 +1375,7 @@ def test_await_wraps_primary_before_power(parse):
     tree = parse("await f().value ** exponent", mode="eval")
     expression = at(tree, "expression")
     assert expression.operator is BinaryOperator.POWER
-    assert isinstance(expression.left, Await)
-    assert isinstance(expression.left.value, Attribute)
+    assert_ast_equal(expression.left, Await(Attribute(Call(Name("f"), []), "value")))
+    assert_ast_equal(expression.left.value, Attribute(Call(Name("f"), []), "value"))
     assert expression.left.value.attribute == "value"
-    assert len(nodes(tree, Call)) == 1
+    assert len(nodes(tree, q.Call)) == 1

@@ -8,8 +8,8 @@ Expected trees are authored by hand, independently of a host Python parser.
 import pytest
 
 from mule import ast as a
+from test.mule.parser import ast_query as q
 from test.mule.parser.ast_query import assert_ast_equal, at, nodes, one
-from test.mule.parser.literal import literal
 
 
 def name(identifier):
@@ -91,7 +91,7 @@ def template(*parts):
 
 def precision_spec():
     return a.FormattedString(
-        [field("width"), literal("."), field("precision"), literal("f")]
+        [field("width"), a.TextLiteral("."), field("precision"), a.TextLiteral("f")]
     )
 
 
@@ -330,8 +330,8 @@ MODERN_CASES = [
         "type = 1\ntype.attr = 2",
         a.Module(
             [
-                a.Assignment([name("type")], literal(1)),
-                a.Assignment([a.Attribute(name("type"), "attr")], literal(2)),
+                a.Assignment([name("type")], a.IntegerLiteral(1)),
+                a.Assignment([a.Attribute(name("type"), "attr")], a.IntegerLiteral(2)),
             ]
         ),
     ),
@@ -340,10 +340,10 @@ MODERN_CASES = [
         "match = 1\ncase = match + 2",
         a.Module(
             [
-                a.Assignment([name("match")], literal(1)),
+                a.Assignment([name("match")], a.IntegerLiteral(1)),
                 a.Assignment(
                     [name("case")],
-                    a.Binary(a.BinaryOperator.ADD, name("match"), literal(2)),
+                    a.Binary(a.BinaryOperator.ADD, name("match"), a.IntegerLiteral(2)),
                 ),
             ]
         ),
@@ -351,7 +351,7 @@ MODERN_CASES = [
     (
         "fstring-quote-reuse",
         'result = f"{mapping["key"]}"',
-        formatted(a.Interpolation(a.Subscript(name("mapping"), literal("key")))),
+        formatted(a.Interpolation(a.Subscript(name("mapping"), a.TextLiteral("key")))),
     ),
     (
         "fstring-comment",
@@ -364,7 +364,7 @@ MODERN_CASES = [
         formatted(
             a.Interpolation(
                 a.Call(
-                    a.Attribute(literal("\n"), "join"),
+                    a.Attribute(a.TextLiteral("\n"), "join"),
                     [a.CallArgument(name("lines"))],
                 )
             )
@@ -378,21 +378,21 @@ MODERN_CASES = [
     (
         "fstring-debug",
         'result = f"{value=}"',
-        formatted(literal("value="), field(conversion="r")),
+        formatted(a.TextLiteral("value="), field(conversion="r")),
     ),
     (
         "fstring-debug-spaces",
         'result = f"{ value = }"',
-        formatted(literal(" value = "), field(conversion="r")),
+        formatted(a.TextLiteral(" value = "), field(conversion="r")),
     ),
     (
         "fstring-conversions",
         'result = f"{value!s} {value!r} {value!a}"',
         formatted(
             field(conversion="s"),
-            literal(" "),
+            a.TextLiteral(" "),
             field(conversion="r"),
-            literal(" "),
+            a.TextLiteral(" "),
             field(conversion="a"),
         ),
     ),
@@ -404,17 +404,17 @@ MODERN_CASES = [
     (
         "fstring-escaped-braces",
         'result = f"{{literal}} {value}"',
-        formatted(literal("{literal} "), field()),
+        formatted(a.TextLiteral("{literal} "), field()),
     ),
     (
         "fstring-raw-prefix",
         'result = rf"\\path\\{value}"',
-        formatted(literal("\\path\\"), field()),
+        formatted(a.TextLiteral("\\path\\"), field()),
     ),
     (
         "fstring-adjacent",
         'result = "prefix" f"{value}" "suffix"',
-        formatted(literal("prefix"), field(), literal("suffix")),
+        formatted(a.TextLiteral("prefix"), field(), a.TextLiteral("suffix")),
     ),
     (
         "fstring-lambda",
@@ -424,7 +424,7 @@ MODERN_CASES = [
                 a.Call(
                     a.Lambda(
                         [a.Parameter("x")],
-                        a.Binary(a.BinaryOperator.ADD, name("x"), literal(1)),
+                        a.Binary(a.BinaryOperator.ADD, name("x"), a.IntegerLiteral(1)),
                     ),
                     [a.CallArgument(name("value"))],
                 )
@@ -470,12 +470,14 @@ MODERN_CASES = [
     (
         "tstring-basic",
         'result = t"hello {name}"',
-        template(literal("hello "), field("name", expression_text="name")),
+        template(a.TextLiteral("hello "), field("name", expression_text="name")),
     ),
     (
         "tstring-debug",
         'result = t"{value=}"',
-        template(literal("value="), field(conversion="r", expression_text="value")),
+        template(
+            a.TextLiteral("value="), field(conversion="r", expression_text="value")
+        ),
     ),
     (
         "tstring-conversion",
@@ -490,12 +492,12 @@ MODERN_CASES = [
     (
         "tstring-raw",
         'result = rt"\\path\\{name}"',
-        template(literal("\\path\\"), field("name", expression_text="name")),
+        template(a.TextLiteral("\\path\\"), field("name", expression_text="name")),
     ),
     (
         "tstring-prefix-order",
         'result = tr"{name}\\n"',
-        template(field("name", expression_text="name"), literal("\\n")),
+        template(field("name", expression_text="name"), a.TextLiteral("\\n")),
     ),
     (
         "tstring-concatenation",
@@ -510,7 +512,7 @@ MODERN_CASES = [
         'result = t"{mapping["key"]}"',
         template(
             a.Interpolation(
-                a.Subscript(name("mapping"), literal("key")),
+                a.Subscript(name("mapping"), a.TextLiteral("key")),
                 expression_text='mapping["key"]',
             )
         ),
@@ -538,8 +540,12 @@ MODERN_CASES = [
                 a.Match(
                     name("subject"),
                     [
-                        a.MatchCase(a.LiteralPattern(literal(value)), [a.Pass()])
-                        for value in (None, True, False)
+                        a.MatchCase(a.LiteralPattern(value), [a.Pass()])
+                        for value in (
+                            a.NoneLiteral(),
+                            a.BooleanLiteral(True),
+                            a.BooleanLiteral(False),
+                        )
                     ],
                 )
             ]
@@ -548,19 +554,29 @@ MODERN_CASES = [
     (
         "match-signed-literal",
         "match subject:\n    case -3:\n        pass",
-        matched(a.LiteralPattern(a.Unary(a.UnaryOperator.NEGATIVE, literal(3)))),
+        matched(
+            a.LiteralPattern(a.Unary(a.UnaryOperator.NEGATIVE, a.IntegerLiteral(3)))
+        ),
     ),
     (
         "match-complex-literal",
         "match subject:\n    case 1 + 2j:\n        pass",
         matched(
-            a.LiteralPattern(a.Binary(a.BinaryOperator.ADD, literal(1), literal(2j)))
+            a.LiteralPattern(
+                a.Binary(
+                    a.BinaryOperator.ADD, a.IntegerLiteral(1), a.ComplexLiteral(2j)
+                )
+            )
         ),
     ),
     (
         "match-or",
         "match subject:\n    case 1 | 2 | 3:\n        pass",
-        matched(a.OrPattern([a.LiteralPattern(literal(value)) for value in (1, 2, 3)])),
+        matched(
+            a.OrPattern(
+                [a.LiteralPattern(a.IntegerLiteral(value)) for value in (1, 2, 3)]
+            )
+        ),
     ),
     (
         "match-as",
@@ -578,7 +594,7 @@ MODERN_CASES = [
         matched(
             a.CapturePattern("value"),
             guard=a.Comparison(
-                name("value"), [a.ComparisonOperator.GREATER], [literal(0)]
+                name("value"), [a.ComparisonOperator.GREATER], [a.IntegerLiteral(0)]
             ),
         ),
     ),
@@ -587,7 +603,8 @@ MODERN_CASES = [
         'match subject:\n    case {"key": value, **rest}:\n        pass',
         matched(
             a.MappingPattern(
-                [a.PatternEntry(literal("key"), a.CapturePattern("value"))], "rest"
+                [a.PatternEntry(a.TextLiteral("key"), a.CapturePattern("value"))],
+                "rest",
             )
         ),
     ),
@@ -621,7 +638,7 @@ MODERN_CASES = [
             a.MappingPattern(
                 [
                     a.PatternEntry(
-                        literal("key"),
+                        a.TextLiteral("key"),
                         a.SequencePattern(
                             [
                                 a.ClassPattern(name("Point"), [a.CapturePattern("x")]),
@@ -650,7 +667,7 @@ MODERN_CASES = [
         "π = 3\n变量 = π\ncafé = 变量",
         a.Module(
             [
-                a.Assignment([name("π")], literal(3)),
+                a.Assignment([name("π")], a.IntegerLiteral(3)),
                 a.Assignment([name("变量")], name("π")),
                 a.Assignment([name("café")], name("变量")),
             ]
@@ -661,7 +678,7 @@ MODERN_CASES = [
         "K = 1\nresult = K",
         a.Module(
             [
-                a.Assignment([name("K")], literal(1)),
+                a.Assignment([name("K")], a.IntegerLiteral(1)),
                 a.Assignment([name("result")], name("K")),
             ]
         ),
@@ -669,12 +686,16 @@ MODERN_CASES = [
     (
         "explicit-line-continuation",
         "result = 1 + \\\n    2",
-        assigned(a.Binary(a.BinaryOperator.ADD, literal(1), literal(2))),
+        assigned(
+            a.Binary(a.BinaryOperator.ADD, a.IntegerLiteral(1), a.IntegerLiteral(2))
+        ),
     ),
     (
         "implicit-line-continuation",
         "result = (\n    1 +  # comment\n    2\n)",
-        assigned(a.Binary(a.BinaryOperator.ADD, literal(1), literal(2))),
+        assigned(
+            a.Binary(a.BinaryOperator.ADD, a.IntegerLiteral(1), a.IntegerLiteral(2))
+        ),
     ),
     (
         "crlf",
@@ -689,32 +710,32 @@ MODERN_CASES = [
     (
         "string-adjacency",
         "result = 'first' \"second\" '''third'''",
-        assigned(literal("firstsecondthird")),
+        assigned(a.TextLiteral("firstsecondthird")),
     ),
     (
         "bytes-adjacency",
         "result = b'first' br'\\second'",
-        assigned(literal(b"first\\second")),
+        assigned(a.BytesLiteral(b"first\\second")),
     ),
     (
         "triple-quoted-string",
         "result = '''first\nsecond\nthird'''",
-        assigned(literal("first\nsecond\nthird")),
+        assigned(a.TextLiteral("first\nsecond\nthird")),
     ),
     (
         "raw-string",
         'result = r"C:\\folder\\file"',
-        assigned(literal("C:\\folder\\file")),
+        assigned(a.TextLiteral("C:\\folder\\file")),
     ),
     (
         "encoding-cookie",
         "# coding: utf-8\nmessage = 'café'",
-        assigned(literal("café"), "message"),
+        assigned(a.TextLiteral("café"), "message"),
     ),
     (
         "comment-with-no-final-newline",
         "value = 1 # final comment",
-        assigned(literal(1), "value"),
+        assigned(a.IntegerLiteral(1), "value"),
     ),
     (
         "semicolon-newline",
@@ -726,7 +747,7 @@ MODERN_CASES = [
                     subscript("tuple", name("T"), name("T")),
                     [a.TypeParameter("T")],
                 ),
-                a.Assignment([name("result")], literal(1)),
+                a.Assignment([name("result")], a.IntegerLiteral(1)),
             ]
         ),
     ),
@@ -741,14 +762,14 @@ def test_modern_syntax_builds_mule_tree(parse, case, source, expected):
 
 
 def test_alias_name_is_a_declaration_not_an_expression(parse):
-    declaration = one(parse("type Pair[T] = tuple[T, T]"), a.TypeAlias)
+    declaration = one(parse("type Pair[T] = tuple[T, T]"), q.TypeAlias)
     assert declaration.name == "Pair"
     assert [parameter.name for parameter in declaration.type_parameters] == ["T"]
-    assert not nodes(declaration, a.Name, identifier="Pair")
+    assert not nodes(declaration, q.Name, identifier="Pair")
 
 
 def test_generic_bound_and_default_have_distinct_fields(parse):
-    parameter = one(parse("type Box[T: int = bool] = list[T]"), a.TypeParameter)
+    parameter = one(parse("type Box[T: int = bool] = list[T]"), q.TypeParameter)
     assert parameter.name == "T"
     assert parameter.bound.identifier == "int"
     assert parameter.default.identifier == "bool"
@@ -756,7 +777,7 @@ def test_generic_bound_and_default_have_distinct_fields(parse):
 
 def test_variadic_type_parameters_keep_their_kinds(parse):
     parameters = nodes(
-        parse("type CallableShape[*Ts, **P] = tuple[*Ts]"), a.TypeParameter
+        parse("type CallableShape[*Ts, **P] = tuple[*Ts]"), q.TypeParameter
     )
     assert [(parameter.name, parameter.kind) for parameter in parameters] == [
         ("Ts", a.TypeParameterKind.TYPE_VAR_TUPLE),
@@ -766,7 +787,7 @@ def test_variadic_type_parameters_keep_their_kinds(parse):
 
 def test_generic_function_type_parameters_are_separate_from_arguments(parse):
     function = one(
-        parse("def identity[T](value: T) -> T:\n    return value"), a.FunctionDefinition
+        parse("def identity[T](value: T) -> T:\n    return value"), q.FunctionDefinition
     )
     assert [parameter.name for parameter in function.type_parameters] == ["T"]
     assert [parameter.name for parameter in function.parameters] == ["value"]
@@ -776,39 +797,58 @@ def test_generic_function_type_parameters_are_separate_from_arguments(parse):
 
 def test_fstring_debug_conversion_defaults_to_repr(parse):
     tree = parse('f"{ value = }"')
-    interpolation = one(tree, a.Interpolation)
+    interpolation = one(tree, q.Interpolation)
     assert interpolation.conversion == "r"
     assert interpolation.expression.identifier == "value"
-    assert one(tree, a.Literal).value == " value = "
+    assert one(tree, q.Literal).value == " value = "
 
 
 def test_fstring_dynamic_format_spec_contains_nested_fields(parse):
     tree = parse('f"{value:{width}.{precision}f}"')
-    assert [part.expression.identifier for part in nodes(tree, a.Interpolation)] == [
+    assert [part.expression.identifier for part in nodes(tree, q.Interpolation)] == [
         "value",
         "width",
         "precision",
     ]
-    assert isinstance(
-        at(tree, "statements.0.expression.parts.0.format_spec"), a.FormattedString
+    assert_ast_equal(
+        at(tree, "statements.0.expression.parts.0.format_spec"),
+        a.FormattedString(
+            [field("width"), a.TextLiteral("."), field("precision"), a.TextLiteral("f")]
+        ),
     )
 
 
 def test_template_string_preserves_interpolation_expression_text(parse):
     tree = parse('t"hello { name.upper() !r}"')
-    assert isinstance(at(tree, "statements.0.expression"), a.TemplateString)
-    interpolation = one(tree, a.Interpolation)
+    assert_ast_equal(
+        at(tree, "statements.0.expression"),
+        a.TemplateString(
+            [
+                a.TextLiteral("hello "),
+                a.Interpolation(
+                    a.Call(a.Attribute(name("name"), "upper"), []),
+                    conversion="r",
+                    expression_text=" name.upper() ",
+                ),
+            ]
+        ),
+    )
+    interpolation = one(tree, q.Interpolation)
     assert interpolation.expression_text == " name.upper() "
     assert interpolation.conversion == "r"
-    assert isinstance(interpolation.expression, a.Call)
+    assert_ast_equal(
+        interpolation.expression, a.Call(a.Attribute(name("name"), "upper"), [])
+    )
 
 
 def test_unparenthesized_exception_types_become_tuple(parse):
     handler = one(
         parse("try:\n    run()\nexcept ValueError, TypeError:\n    pass"),
-        a.ExceptionHandler,
+        q.ExceptionHandler,
     )
-    assert isinstance(handler.exception, a.Tuple)
+    assert_ast_equal(
+        handler.exception, a.Tuple([name("ValueError"), name("TypeError")])
+    )
     assert [value.identifier for value in handler.exception.elements] == [
         "ValueError",
         "TypeError",
@@ -819,7 +859,7 @@ def test_unparenthesized_exception_types_become_tuple(parse):
 def test_mapping_pattern_keeps_rest_capture_outside_entries(parse):
     pattern = one(
         parse('match value:\n    case {"key": item, **rest}:\n        pass'),
-        a.MappingPattern,
+        q.MappingPattern,
     )
     assert [entry.key.value for entry in pattern.entries] == ["key"]
     assert [entry.pattern.name for entry in pattern.entries] == ["item"]
@@ -828,7 +868,7 @@ def test_mapping_pattern_keeps_rest_capture_outside_entries(parse):
 
 def test_unicode_names_normalize_and_use_character_locations(parse):
     tree = parse("K = π\n")
-    target = one(tree, a.Name, identifier="K")
+    target = one(tree, q.Name, identifier="K")
     assert target.span == a.Span(a.Position(1, 0), a.Position(1, 1))
-    value = one(tree, a.Name, identifier="π")
+    value = one(tree, q.Name, identifier="π")
     assert value.span == a.Span(a.Position(1, 4), a.Position(1, 5))

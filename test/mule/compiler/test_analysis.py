@@ -8,6 +8,7 @@ from mule.compiler.analysis import (
     BOTTOM,
     FLOAT,
     INTEGER,
+    UNBOUND,
     UNKNOWN,
     BooleanType,
     BytesType,
@@ -966,3 +967,10 @@ def test_semantic_containment_and_dispatch_proofs(
 ):
     assert actual.fits(expected) is semantic_match
     assert actual.dispatch_fits(expected) is dispatch_match
+
+
+@pytest.mark.parametrize("actual", [UNKNOWN, IntegerType(3, 3), BOTTOM, UNBOUND])
+@pytest.mark.parametrize("expected", [BOTTOM, UNBOUND])
+def test_nonvalue_expectations_cannot_prove_a_call_argument(actual, expected):
+    assert not actual.fits(expected)
+    assert not actual.dispatch_fits(expected)

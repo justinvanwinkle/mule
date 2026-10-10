@@ -3,6 +3,7 @@
 import pytest
 
 from mule import ast
+from test.mule.parser import ast_query as q
 from test.mule.parser.ast_query import assert_ast_equal, one
 
 
@@ -21,13 +22,13 @@ def test_wildcard_cannot_be_a_class_or_value_pattern(parse, pattern):
 
 
 def test_standalone_wildcard_is_an_uncaptured_pattern(parse):
-    pattern = one(parse("match subject:\n    case _: pass\n"), ast.CapturePattern)
+    pattern = one(parse("match subject:\n    case _: pass\n"), q.CapturePattern)
     assert_ast_equal(pattern, ast.CapturePattern(None))
 
 
 def test_mapping_key_can_qualify_an_underscore_name(parse):
     pattern = one(
-        parse("match subject:\n    case {_.value: item}: pass\n"), ast.MappingPattern
+        parse("match subject:\n    case {_.value: item}: pass\n"), q.MappingPattern
     )
     assert_ast_equal(
         pattern,

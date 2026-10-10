@@ -1,7 +1,6 @@
 import pytest
 
 from mule import ast
-from test.mule.parser.literal import literal
 
 from .ast_query import assert_ast_equal, at
 
@@ -15,7 +14,7 @@ from .ast_query import assert_ast_equal, at
         pytest.param(
             "x = 1",
             "exec",
-            ast.Module([ast.Assignment([ast.Name("x")], literal(1))]),
+            ast.Module([ast.Assignment([ast.Name("x")], ast.IntegerLiteral(1))]),
             id="module-without-final-newline",
         ),
         pytest.param(
@@ -23,8 +22,8 @@ from .ast_query import assert_ast_equal, at
             "exec",
             ast.Module(
                 [
-                    ast.Assignment([ast.Name("x")], literal(1)),
-                    ast.Assignment([ast.Name("y")], literal(2)),
+                    ast.Assignment([ast.Name("x")], ast.IntegerLiteral(1)),
+                    ast.Assignment([ast.Name("y")], ast.IntegerLiteral(2)),
                 ]
             ),
             id="multiple-statements",
@@ -33,7 +32,7 @@ from .ast_query import assert_ast_equal, at
             "x + 1",
             "eval",
             ast.ExpressionInput(
-                ast.Binary(ast.BinaryOperator.ADD, ast.Name("x"), literal(1))
+                ast.Binary(ast.BinaryOperator.ADD, ast.Name("x"), ast.IntegerLiteral(1))
             ),
             id="expression",
         ),
@@ -41,14 +40,16 @@ from .ast_query import assert_ast_equal, at
             "\n(x + 1)\n",
             "eval",
             ast.ExpressionInput(
-                ast.Binary(ast.BinaryOperator.ADD, ast.Name("x"), literal(1))
+                ast.Binary(ast.BinaryOperator.ADD, ast.Name("x"), ast.IntegerLiteral(1))
             ),
             id="padded-expression",
         ),
         pytest.param(
             "1, 2",
             "eval",
-            ast.ExpressionInput(ast.Tuple([literal(1), literal(2)])),
+            ast.ExpressionInput(
+                ast.Tuple([ast.IntegerLiteral(1), ast.IntegerLiteral(2)])
+            ),
             id="expression-tuple",
         ),
         pytest.param(
@@ -60,7 +61,9 @@ from .ast_query import assert_ast_equal, at
         pytest.param(
             "x = 1\n",
             "single",
-            ast.InteractiveInput([ast.Assignment([ast.Name("x")], literal(1))]),
+            ast.InteractiveInput(
+                [ast.Assignment([ast.Name("x")], ast.IntegerLiteral(1))]
+            ),
             id="interactive-assignment",
         ),
         pytest.param(
@@ -68,8 +71,8 @@ from .ast_query import assert_ast_equal, at
             "single",
             ast.InteractiveInput(
                 [
-                    ast.Assignment([ast.Name("a")], literal(1)),
-                    ast.Assignment([ast.Name("b")], literal(2)),
+                    ast.Assignment([ast.Name("a")], ast.IntegerLiteral(1)),
+                    ast.Assignment([ast.Name("b")], ast.IntegerLiteral(2)),
                 ]
             ),
             id="interactive-semicolons",

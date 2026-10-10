@@ -1,5 +1,4 @@
 from mule import ast
-from test.mule.parser.literal import literal
 
 
 def test_walk_visits_root_and_nested_children_in_source_order():
@@ -11,7 +10,7 @@ def test_walk_visits_root_and_nested_children_in_source_order():
 
 def test_children_visits_direct_nodes_without_descending():
     left = ast.Name("left")
-    right = ast.Unary(ast.UnaryOperator.NEGATIVE, literal(1))
+    right = ast.Unary(ast.UnaryOperator.NEGATIVE, ast.IntegerLiteral(1))
     root = ast.Binary(ast.BinaryOperator.ADD, left, right)
     assert list(ast.children(root)) == [left, right]
 
@@ -20,11 +19,11 @@ def test_walk_visits_nodes_in_call_argument_records():
     call = ast.Call(
         ast.Name("f"), [ast.CallArgument(ast.Name("items"), ast.ArgumentKind.STARRED)]
     )
-    assert [type(node) for node in ast.walk(call)] == [
-        ast.Call,
-        ast.Name,
-        ast.CallArgument,
-        ast.Name,
+    assert list(ast.walk(call)) == [
+        call,
+        call.function,
+        call.arguments[0],
+        call.arguments[0].value,
     ]
 
 
@@ -42,16 +41,16 @@ def test_node_list_defaults_are_independently_owned():
 
 def test_missing_parameter_default_differs_from_none_literal():
     required = ast.Parameter("required")
-    optional = ast.Parameter("optional", default=literal(None))
+    optional = ast.Parameter("optional", default=ast.NoneLiteral())
     assert required.default is None
-    assert optional.default == literal(None)
+    assert optional.default == ast.NoneLiteral()
 
 
 def test_calls_preserve_interleaved_argument_order():
     call = ast.Call(
         ast.Name("f"),
         [
-            ast.CallArgument(literal(1), ast.ArgumentKind.KEYWORD, "named"),
+            ast.CallArgument(ast.IntegerLiteral(1), ast.ArgumentKind.KEYWORD, "named"),
             ast.CallArgument(ast.Name("items"), ast.ArgumentKind.STARRED),
         ],
     )
@@ -75,11 +74,12 @@ def test_unpacked_dictionary_entry_has_no_key():
 
 def test_pattern_walk_reaches_capture_and_mapping_key():
     pattern = ast.MappingPattern(
-        [ast.PatternEntry(literal("key"), ast.CapturePattern("item"))], rest="rest"
+        [ast.PatternEntry(ast.TextLiteral("key"), ast.CapturePattern("item"))],
+        rest="rest",
     )
-    assert [type(node) for node in ast.walk(pattern)] == [
-        ast.MappingPattern,
-        ast.PatternEntry,
-        ast.TextLiteral,
-        ast.CapturePattern,
+    assert list(ast.walk(pattern)) == [
+        pattern,
+        pattern.entries[0],
+        pattern.entries[0].key,
+        pattern.entries[0].pattern,
     ]

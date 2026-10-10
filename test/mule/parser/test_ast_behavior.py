@@ -3,28 +3,26 @@
 import pytest
 
 from mule import ast
+from test.mule.parser.ast_query import assert_ast_equal
 
 
 @pytest.mark.parametrize(
-    ("source", "constructor", "value"),
+    ("source", "expected"),
     [
-        ("12", ast.IntegerLiteral, 12),
-        ("1.5", ast.FloatLiteral, 1.5),
-        ("2j", ast.ComplexLiteral, 2j),
-        ("True", ast.BooleanLiteral, True),
-        ("False", ast.BooleanLiteral, False),
-        ("None", ast.NoneLiteral, None),
-        ("'text'", ast.TextLiteral, "text"),
-        ("b'bytes'", ast.BytesLiteral, b"bytes"),
-        ("...", ast.EllipsisLiteral, Ellipsis),
+        ("12", ast.IntegerLiteral(12)),
+        ("1.5", ast.FloatLiteral(1.5)),
+        ("2j", ast.ComplexLiteral(2j)),
+        ("True", ast.BooleanLiteral(True)),
+        ("False", ast.BooleanLiteral(False)),
+        ("None", ast.NoneLiteral()),
+        ("'text'", ast.TextLiteral("text")),
+        ("b'bytes'", ast.BytesLiteral(b"bytes")),
+        ("...", ast.EllipsisLiteral()),
     ],
 )
-def test_parser_selects_literal_class_at_its_grammar_boundary(
-    parse, source, constructor, value
-):
+def test_parser_selects_literal_class_at_its_grammar_boundary(parse, source, expected):
     expression = parse(source, mode="eval").expression
-    assert type(expression) is constructor
-    assert expression.value == value
+    assert_ast_equal(expression, expected)
     assert list(expression.children()) == []
 
 

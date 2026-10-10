@@ -1,15 +1,12 @@
 from collections.abc import Callable
-from importlib import import_module
 
 import pytest
 
 from mule.ast import Node
+from mule.parser import parse as parse_source
 
 
 @pytest.fixture
 def parse() -> Callable[..., Node]:
-    """Resolve the production entry point without preventing test collection."""
-    module = import_module("mule.parser")
-    if not hasattr(module, "parse"):
-        pytest.fail("mule.parser.parse is not implemented yet", pytrace=False)
-    return module.parse
+    """Expose the production entry point to parser tests."""
+    return parse_source
