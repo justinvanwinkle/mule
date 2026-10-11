@@ -32,6 +32,7 @@ from .vops import (
 _LOOKUPS = {
     "_getitem_method": "__getitem__",
     "_setitem_method": "__setitem__",
+    "_delitem_method": "__delitem__",
     "_iter_method": "__iter__",
     "_next_method": "__next__",
     "_index_method": "__index__",
@@ -47,6 +48,8 @@ _TEXT_ACCESS = {
         "_storage_read",
         "_storage_write",
         "_storage_append",
+        "_storage_insert",
+        "_storage_delete",
         "_storage_tuple",
         "_tuple_storage",
         "_storage_compatible",

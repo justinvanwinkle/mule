@@ -12,7 +12,7 @@ def run_native(tmp_path, source):
     source_path = tmp_path / "program.py"
     source_path.write_text(source)
     executable = tmp_path / "program"
-    build(source_path, executable)
+    build(source_path, executable, optimize=False)
     assert executable.read_bytes().startswith(b"\x7fELF")
     source_path.unlink()
     return subprocess.run(
@@ -163,6 +163,7 @@ def test_cli_builds_executable_and_llvm_ir(tmp_path):
             "-m",
             "mule.compiler",
             str(source),
+            "-O0",
             "-o",
             str(executable),
             "--emit-llvm",
@@ -187,7 +188,7 @@ def test_executable_runs_without_python_runtime_dependencies(tmp_path):
     source = tmp_path / "independent.py"
     source.write_text("print(2 ** 100, 40 + 2)\n")
     executable = tmp_path / "independent"
-    build(source, executable)
+    build(source, executable, optimize=False)
     source.unlink()
     dynamic = subprocess.run(
         ["readelf", "-d", executable],

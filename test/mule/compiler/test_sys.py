@@ -32,7 +32,7 @@ def argv_program(tmp_path_factory):
     (directory / "_mule_codecs.py").write_text(
         "raise RuntimeError('local codec module loaded')\n"
     )
-    executable = build(source, directory / "program")
+    executable = build(source, directory / "program", optimize=False)
     for path in directory.glob("*.py"):
         path.unlink()
     return executable
@@ -70,7 +70,7 @@ def test_argv_rejects_undecodable_bytes_without_lossy_replacement(argv_program):
 def test_native_operations_require_an_explicit_import(tmp_path):
     source = tmp_path / "main.py"
     source.write_text("print(read_pointer(None, 0))\n")
-    executable = build(source, tmp_path / "program")
+    executable = build(source, tmp_path / "program", optimize=False)
     result = subprocess.run(
         [executable], check=False, capture_output=True, text=True, timeout=10
     )
@@ -88,7 +88,7 @@ def test_compiled_sys_argv_supplies_a_workload_size(tmp_path):
         " total += value\n"
         "print(total)\n"
     )
-    executable = build(source, tmp_path / "program")
+    executable = build(source, tmp_path / "program", optimize=False)
     source.unlink()
     result = subprocess.run(
         [executable, "10"], check=False, capture_output=True, text=True, timeout=10

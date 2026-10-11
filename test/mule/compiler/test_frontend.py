@@ -4,6 +4,7 @@ import pytest
 
 from mule.compiler import UnsupportedSyntax
 from mule.compiler.debug import check_ir1_consistency
+from mule.compiler.ir1util import class_method_definitions
 from mule.compiler.main import compile_source
 from mule.compiler.node import (
     CallKind,
@@ -78,10 +79,10 @@ def test_unsupported_syntax_fails_explicitly_even_when_unreachable(source):
 
 def test_error_preserves_original_filename_and_unicode_columns():
     with pytest.raises(UnsupportedSyntax) as caught:
-        lower("名 = 1\n名 = {2}\n", "unicode.py")
+        lower("名 = 1\n名 = (x for x in 2)\n", "unicode.py")
     error = caught.value
     assert (error.filename, error.lineno, error.offset) == ("unicode.py", 2, 5)
-    assert error.text == "名 = {2}\n"
+    assert error.text == "名 = (x for x in 2)\n"
 
 
 def test_late_assignment_classifies_all_function_reads_as_local():
@@ -124,7 +125,8 @@ def test_class_layout_uses_receiver_writes_across_all_methods():
     definition = definitions[0]
     assert definition.public_name == "Point"
     assert definition.fields == ("x", "y")
-    assert definition.method_names == ("__init__", "move")
+    methods = class_method_definitions(compilation.lambdas[0])[definition.identity]
+    assert tuple(methods) == ("__init__", "move")
     assert local_names(compilation.lambdas[1]) == ("point", "x")
     assert "y" not in local_names(compilation.lambdas[2])
 
@@ -181,14 +183,9 @@ def test_method_call_resolves_attribute_before_argument_side_effects():
 @pytest.mark.parametrize(
     "source",
     [
-        "@decorator\nclass C:\n pass\n",
         "class C[T]:\n pass\n",
         "class C(A, B):\n pass\n",
         "class C(metaclass=Meta):\n pass\n",
-        "class C:\n x = 1\n",
-        "class C:\n if True:\n  pass\n",
-        "def f():\n class C:\n  pass\n",
-        "class C:\n @decorator\n def f(self):\n  pass\n",
     ],
 )
 def test_classes_reject_unimplemented_features_explicitly(source):

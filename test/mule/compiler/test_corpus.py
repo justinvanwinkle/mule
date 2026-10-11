@@ -23,7 +23,7 @@ def test_reference_output(case, tmp_path):
 def test_native_output(case, tmp_path, request):
     executable = tmp_path / "program"
     try:
-        build(case.path, executable)
+        build(case.path, executable, optimize=False)
     except SyntaxError as error:
         if case.matches_compile_gap(error):
             expected_gap(case, request)

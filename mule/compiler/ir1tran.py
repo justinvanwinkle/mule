@@ -124,6 +124,16 @@ class ClassBindingInfo:
 
 
 @dataclass(slots=True, eq=False)
+class ComprehensionScope:
+    """An inlined comprehension's hidden variables, by source name."""
+
+    variables: dict[str, LambdaVar]
+    # Class bodies already being converted when the comprehension started;
+    # the comprehension's names skip the innermost of them.
+    class_depth: int
+
+
+@dataclass(slots=True, eq=False)
 class ClassScope:
     """A class body being converted inline in its enclosing function.
 
@@ -339,6 +349,8 @@ class FunctionConverter:
         self.defining_class = defining_class
         # Class bodies being converted inline here, innermost last.
         self.class_scopes: list[ClassScope] = []
+        # Comprehensions being converted inline here, innermost last.
+        self.comprehension_scopes: list[ComprehensionScope] = []
         self.qualname = (
             parent.qualified(origin.name)
             if parent is not None and isinstance(origin, ast.FunctionDefinition)
@@ -396,7 +408,17 @@ class FunctionConverter:
         var.expression_temporary = expression
         return var
 
+    def comprehension_variable(self, name: str) -> LambdaVar | None:
+        for scope in reversed(self.comprehension_scopes):
+            var = scope.variables.get(name)
+            if var is not None:
+                return var
+        return None
+
     def variable(self, name: str):
+        var = self.comprehension_variable(name)
+        if var is not None:
+            return var
         if self.class_scopes and name in self.class_scopes[-1].globals:
             return self.converter.global_var(name)
         var = self.locals.get(name)
@@ -419,8 +441,13 @@ class FunctionConverter:
         """The nearest enclosing function's variable bound to ``name``, if
         any. Class bodies are not function scopes and are skipped."""
         scope = self.parent
-        while scope is not None and not scope.is_module:
-            if name in scope.globals:
+        while scope is not None:
+            # An inlined comprehension's targets belong to the function
+            # converting it, including the module body.
+            var = scope.comprehension_variable(name)
+            if var is not None:
+                return var
+            if scope.is_module or name in scope.globals:
                 return None
             var = scope.locals.get(name)
             if var is not None:
@@ -448,11 +475,20 @@ class FunctionConverter:
 
     def class_binding(self, name) -> ClassScope | None:
         """The class body whose namespace holds ``name``, if it is bound there."""
+        if self.comprehension_variable(name) is not None:
+            return None
+        if (
+            self.comprehension_scopes
+            and self.comprehension_scopes[-1].class_depth == len(self.class_scopes)
+        ):
+            return None
         if self.class_scopes and name in self.class_scopes[-1].bound:
             return self.class_scopes[-1]
         return None
 
     def annotation_for(self, name):
+        if self.comprehension_variable(name) is not None:
+            return None
         if self.local(name):
             return self.annotations.get(name)
         if name not in self.globals and self.enclosing_local(name) is not None:
@@ -716,9 +752,11 @@ class FunctionConverter:
         """Convert into ``block`` in the environment enclosing ``cleanup``."""
         return _CleanupBlockScope(self, block, cleanup)
 
-    def finish_cleanup_block(self, frontier: Ctran) -> None:
-        """Connect the inserted block's open frontier to the original successor."""
-        block = frontier.block
+    def finish_cleanup_block(self, frontier: Ctran, block: Block) -> None:
+        """Connect the open frontier of the code converted into the inserted
+        ``block`` to the edge's original successor. Cleanup code with its own
+        control flow, such as a ``try`` inside a ``finally`` suite, leaves its
+        frontier in a later block."""
         self.jump(frontier, self._cleanup_edges.pop(block))
 
     # Expression helpers shared by several translators
@@ -1021,11 +1059,17 @@ class _CleanupBlockScope:
         )
         self.saved_class_scopes = self.function.class_scopes
         self.function.class_scopes = list(self.cleanup.class_scopes)
+        # Blocks the cleanup code creates belong to the lambda's component;
+        # the conversion-time component has been split away by now.
+        converter = self.function.converter
+        self.saved_component = converter.component
+        converter.component = self.function.lambda_.component
         return self.block.start
 
     def __exit__(self, *exc):
         self.function.lexenv = self.saved
         self.function.class_scopes = self.saved_class_scopes
+        self.function.converter.component = self.saved_component
 
 
 class _Expressions(ast.Visitor):
@@ -1077,6 +1121,126 @@ class _Expressions(ast.Visitor):
         ctran, value = function.value(start, node.value)
         ctran, index = function.value(ctran, node.index)
         function.protocol(ctran, next_, result, "getitem", (value, index), node)
+
+    def visit_Slice(self, node):
+        function = self.function
+        start, next_, result = self.frame
+        bounds = tuple(
+            bound if bound is not None else ast.NoneLiteral(None, span=node.span)
+            for bound in (node.lower, node.upper, node.step)
+        )
+        function.protocol(start, next_, result, "make_slice", bounds, node)
+
+    def visit_Dict(self, node):
+        """Keys and values are evaluated left to right, then inserted in order."""
+        function = self.function
+        start, next_, result = self.frame
+        flat = []
+        for entry in node.entries:
+            if entry.key is None:
+                function.error(
+                    "dictionary unpacking in displays is not supported yet",
+                    entry,
+                    unsupported=True,
+                )
+            flat.extend((entry.key, entry.value))
+        ctran, items = Ctran(), Lvar()
+        function.known(start, ctran, items, fndb.BUILD_TUPLE, tuple(flat), node)
+        function.protocol(ctran, next_, result, "build_dict", (items,), node)
+
+    def visit_Set(self, node):
+        function = self.function
+        start, next_, result = self.frame
+        for element in node.elements:
+            if isinstance(element, ast.Unpack):
+                function.error(
+                    "starred set display elements are not supported yet",
+                    element,
+                    unsupported=True,
+                )
+        ctran, items = Ctran(), Lvar()
+        function.known(start, ctran, items, fndb.BUILD_TUPLE, tuple(node.elements), node)
+        function.protocol(ctran, next_, result, "build_set", (items,), node)
+
+    def visit_Comprehension(self, node):
+        """A list, set or dict comprehension, inlined in the enclosing function
+        as Python 3.12 and later do (PEP 709). The first iterable is evaluated
+        in the enclosing scope. The clause targets are bound to hidden
+        variables, so they neither see nor change enclosing bindings of the
+        same names, and inside a class body the comprehension's other names
+        skip the class namespace, as they did when comprehensions were
+        functions. SBCL likewise expands iteration forms into its ordinary
+        variable and loop constructs rather than adding a special form."""
+        function = self.function
+        start, next_, result = self.frame
+        if node.kind == ast.ComprehensionKind.GENERATOR:
+            function.error(
+                "generator expressions are not supported yet", node, unsupported=True
+            )
+        if any(clause.is_async for clause in node.clauses):
+            function.error(
+                "asynchronous comprehensions are not supported yet",
+                node,
+                unsupported=True,
+            )
+        if node.accept(_ComprehensionAssignment()):
+            function.error(
+                "assignment expressions in comprehensions are not supported yet",
+                node,
+                unsupported=True,
+            )
+        span = node.span
+        ctran, iterable = function.value(start, node.clauses[0].iterable)
+        held = function.temporary()
+        current = Ctran()
+        function.set_var(ctran, current, held, iterable, node)
+        targets = set()
+        for clause in node.clauses:
+            clause.target.accept(_BoundNames(targets))
+        variables = {name: function.temporary() for name in sorted(targets)}
+        accumulator = function.temporary()
+        variables["$iterable"], variables["$result"] = held, accumulator
+
+        result_name = ast.Name("$result", span=span)
+        if node.kind == ast.ComprehensionKind.DICT:
+            initial = ast.Dict([], span=span)
+            add = ast.Assignment(
+                [ast.Subscript(result_name, node.key, span=span)],
+                node.element,
+                span=span,
+            )
+        else:
+            if node.kind == ast.ComprehensionKind.LIST:
+                initial, method = ast.List([], span=span), "append"
+            else:
+                initial, method = ast.Set([], span=span), "add"
+            add = ast.ExpressionStatement(
+                ast.Call(
+                    ast.Attribute(result_name, method, span=span),
+                    [ast.CallArgument(node.element, span=span)],
+                    span=span,
+                ),
+                span=span,
+            )
+        body = [add]
+        for index in range(len(node.clauses) - 1, -1, -1):
+            clause = node.clauses[index]
+            for condition in reversed(clause.conditions):
+                body = [ast.If(condition, body, span=span)]
+            source = ast.Name("$iterable", span=span) if index == 0 else clause.iterable
+            body = [ast.For(clause.target, source, body, span=span)]
+        statements = [ast.Assignment([result_name], initial, span=span), *body]
+
+        function.comprehension_scopes.append(
+            ComprehensionScope(variables, len(function.class_scopes))
+        )
+        try:
+            frontier = function.convert_body(current, statements)
+        finally:
+            function.comprehension_scopes.pop()
+        ctran = Ctran()
+        function.discard(frontier, ctran, held.name, node)
+        function.ref(ctran, next_, result, accumulator, node, final=True)
 
     def visit_List(self, node):
         self.sequence(node, fndb.BUILD_LIST)
@@ -2033,7 +2197,12 @@ class _Statements(ast.Visitor):
             converter.location(node),
             identity,
             identity if native is not None else None,
-            tuple(native.annotation_expressions.items()) if native is not None else (),
+            tuple(
+                (statement.target.identifier, statement.annotation)
+                for statement in body
+                if isinstance(statement, ast.AnnotatedAssignment)
+                and isinstance(statement.target, ast.Name)
+            ),
         )
         following, created = Ctran(), Lvar()
         function.known(
@@ -2313,8 +2482,37 @@ class _DeleteTarget(ast.Visitor):
 
     def visit_Node(self, node):
         self.function.error(
-            "only identifier deletion targets are supported yet", node, unsupported=True
+            "only identifier, attribute and subscript deletion targets are supported",
+            node,
+            unsupported=True,
         )
+
+    def visit_Subscript(self, node):
+        function = self.function
+        ctran, value = function.value(self.start, node.value)
+        ctran, index = function.value(ctran, node.index)
+        function.protocol(ctran, self.next, None, "delitem", (value, index), node)
+
+    def visit_Attribute(self, node):
+        function = self.function
+        ctran, value = function.value(self.start, node.value)
+        following, name = Ctran(), Lvar()
+        function.constant(ctran, following, name, ast.TextLiteral(node.attribute))
+        function.protocol(
+            following, self.next, None, "delete_attribute", (value, name), node
+        )
+
+    def visit_Tuple(self, node):
+        if not node.elements:
+            self.function.flow(self.start, self.next)
+            return
+        current = self.start
+        for index, element in enumerate(node.elements):
+            following = self.next if index == len(node.elements) - 1 else Ctran()
+            element.accept(_DeleteTarget(self.function, current, following))
+            current = following
+
+    visit_List = visit_Tuple
 
     def visit_Name(self, node):
         function = self.function
@@ -2912,6 +3110,15 @@ class _ReceiverFieldTarget(ast.Visitor):
         self.fields = fields
         self.declaration = declaration
 
+    def visit_Tuple(self, node):
+        for element in node.elements:
+            element.accept(self)
+
+    visit_List = visit_Tuple
+
+    def visit_Unpack(self, node):
+        node.value.accept(self)
+
     def visit_Attribute(self, node):
         if node.value.accept(self.receiver):
             if self.declaration is not None and node.attribute not in self.fields:
@@ -3013,6 +3220,20 @@ class _BoundNames(ast.Visitor):
         self.names.add(node.identifier)
 
 
+class _ComprehensionAssignment(ast.Visitor):
+    """Whether a comprehension contains an assignment expression, which binds
+    in the enclosing scope rather than the comprehension's."""
+
+    def visit_Node(self, node):
+        return any(child.accept(self) for child in node.children())
+
+    def visit_NamedExpression(self, node):
+        return True
+
+    def visit_Lambda(self, node):
+        return False
+
+
 class _ClassMethods(ast.Visitor):
     """Function definitions a class body executes directly, including those
     under its compound statements, but not inside nested scopes."""
@@ -3053,6 +3274,10 @@ class _AnnotationShadows(_ImportNames):
             target.accept(_AnnotationShadowTarget(self.names))
         for child in node.children():
             child.accept(self)
+
+    def visit_Comprehension(self, node):
+        # Only the first iterable is evaluated in this scope.
+        node.clauses[0].iterable.accept(self)
 
     def visit_Lambda(self, node):
         # Only defaults run in this scope; the body is another scope.
@@ -3099,6 +3324,10 @@ class _ScopeVisitor(_ImportNames):
         node.target.accept(self)
         if node.value is not None:
             node.value.accept(self)
+
+    def visit_Comprehension(self, node):
+        # Only the first iterable is evaluated in this scope.
+        node.clauses[0].iterable.accept(self)
 
     def visit_Lambda(self, node):
         # Only defaults run in this scope; the body is another scope.
@@ -3152,6 +3381,10 @@ class _LocalBindings(_ImportNames):
             target.accept(self.target_visitor)
         for child in node.children():
             child.accept(self)
+
+    def visit_Comprehension(self, node):
+        # Only the first iterable is evaluated in this scope.
+        node.clauses[0].iterable.accept(self)
 
     def visit_Lambda(self, node):
         # Only defaults run in this scope; the body is another scope.

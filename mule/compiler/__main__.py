@@ -18,6 +18,14 @@ def main() -> int:
     parser.add_argument("--emit-llvm", type=Path, metavar="PATH")
     parser.add_argument("--clang", default="clang")
     parser.add_argument("--rustc", default="rustc")
+    parser.add_argument(
+        "-O",
+        dest="level",
+        type=int,
+        choices=(0, 3),
+        default=3,
+        help="3: -O3 with full LTO (default); 0: -O0 without LTO, much faster to build",
+    )
     parser.add_argument("-v", "--verbose", action="count", default=0)
     args = parser.parse_args()
     configure(args.verbose)
@@ -29,6 +37,7 @@ def main() -> int:
             llvm_output=args.emit_llvm,
             clang=args.clang,
             rustc=args.rustc,
+            optimize=args.level == 3,
         )
     except SyntaxError as error:
         print(

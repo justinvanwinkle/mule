@@ -11,6 +11,7 @@ from _mule_native import bytes_from_values as _bytes_from_values
 from _mule_native import byte_length as _byte_length
 from _mule_native import read_byte as _read_byte
 from _mule_native import text_from_codepoints as _from_codepoints
+from _slice import is_slice, positions
 from _unicode_data import (
     fold_full,
     is_alpha,
@@ -951,6 +952,16 @@ def ord(value, /):
 
 class TextStorage:
     def __getitem__(self, index):
+        if is_slice(index):
+            start, stop, step, count = positions(index, _text_length(self))
+            if step == 1:
+                return _text_slice(self, start, start + count)
+            codes = []
+            offset = 0
+            while offset < count:
+                codes.append(_text_codepoint(self, start + offset * step))
+                offset += 1
+            return _from_codepoints(codes)
         size = _text_length(self)
         index = _index(index)
         if index < 0:

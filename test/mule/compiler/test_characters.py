@@ -17,7 +17,7 @@ def character_program(tmp_path_factory):
         "character = chr(int(argv[1]))\n"
         "print(len(character), repr(character), repr(character[0]))\n"
     )
-    executable = build(source, directory / "program")
+    executable = build(source, directory / "program", optimize=False)
     source.unlink()
     return executable
 

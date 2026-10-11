@@ -155,13 +155,11 @@ def _leave_handler_body(function, cleanup, block) -> None:
     with function.in_cleanup_block(block, cleanup) as start:
         if cleanup.binding is not None:
             following = Ctran()
-            function.set_var(
-                start, following, function.variable(cleanup.binding), None, source
-            )
+            function.unbind(start, following, cleanup.binding, source, missing_ok=True)
             start = following
         following = Ctran()
         function.known(start, following, None, fndb.LEAVE_HANDLER, (), source)
-        function.finish_cleanup_block(following)
+        function.finish_cleanup_block(following, block)
 
 
 def _run_finally_body(function, cleanup, block) -> None:
@@ -170,7 +168,7 @@ def _run_finally_body(function, cleanup, block) -> None:
     with function.in_cleanup_block(block, cleanup) as start:
         frontier = function.convert_body(start, cleanup.info)
         if frontier is not None:
-            function.finish_cleanup_block(frontier)
+            function.finish_cleanup_block(frontier, block)
 
 
 def _exit_context(function, cleanup, block) -> None:
@@ -195,7 +193,7 @@ def _exit_context(function, cleanup, block) -> None:
             source,
             function.call_info(source),
         )
-        function.finish_cleanup_block(following)
+        function.finish_cleanup_block(following, block)
 
 
 _CLEANUP_CODE = {

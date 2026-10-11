@@ -132,7 +132,7 @@ print(is_alpha(0x10FFFF), lower_full(0x10FFFF), upper_full(0x1E943))
 def test_unicode_data_compiles_and_runs_natively(tmp_path):
     source = tmp_path / "main.py"
     source.write_text(NATIVE_PROGRAM)
-    executable = build(source, tmp_path / "program")
+    executable = build(source, tmp_path / "program", optimize=False)
     result = subprocess.run(
         [executable], check=False, capture_output=True, text=True, timeout=10
     )

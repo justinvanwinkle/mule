@@ -81,6 +81,11 @@ PROTOCOLS = {
         "exception_instance",
         "set_exception_cause",
         "ellipsis_value",
+        "make_slice",
+        "delitem",
+        "delete_attribute",
+        "build_dict",
+        "build_set",
     )
 }
 

@@ -1,5 +1,6 @@
 """Build native executables from Mule LLVM IR and its Rust runtime."""
 
+import hashlib
 import os
 import shutil
 import struct
@@ -44,8 +45,8 @@ def compile_program(
     program.protocol_entry, program.sequence_functions = sequence_protocol.prepare(
         program
     )
-    program.argument_constructor, program.argument_binder = (
-        argument_protocol.prepare(program)
+    program.argument_constructor, program.argument_binder = argument_protocol.prepare(
+        program
     )
     program.layouts = native_protocol.prepare(program)
     format_protocol.prepare(program)
@@ -63,9 +64,17 @@ def emit_llvm(
 
 
 def build_runtime(
-    directory: Path, *, rustc: str = "rustc", crate_type: str = "staticlib"
+    directory: Path,
+    *,
+    rustc: str = "rustc",
+    crate_type: str = "staticlib",
+    lto: bool = True,
 ) -> Path:
-    """Build the Rust runtime without third-party Rust packages."""
+    """Build the Rust runtime without third-party Rust packages.
+
+    With ``lto`` a static library holds LLVM bitcode for whole-program
+    optimization with the program; without it, native objects for a plain link.
+    """
     compiler = shutil.which(rustc)
     if compiler is None:
         raise ToolchainError(f"Rust compiler '{rustc}' was not found")
@@ -88,7 +97,7 @@ def build_runtime(
         "-o",
         str(library),
     ]
-    if crate_type == "staticlib":
+    if crate_type == "staticlib" and lto:
         command.extend(
             ["-C", "linker-plugin-lto", "-C", "lto=fat", "-C", "codegen-units=1"]
         )
@@ -97,6 +106,44 @@ def build_runtime(
         raise ToolchainError(
             f"Rust runtime compilation failed:\n{result.stderr.strip()}"
         )
+    return library
+
+
+def cache_directory() -> Path:
+    base = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
+    return Path(base) / "mule"
+
+
+def runtime_library(rustc: str, *, lto: bool) -> Path:
+    """The runtime static library, built once per runtime source, rustc version
+    and LTO mode, and shared by every build."""
+    try:
+        version = subprocess.run(
+            [rustc, "--version", "--verbose"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        raise ToolchainError(f"Rust compiler '{rustc}' was not found") from error
+    if version.returncode:
+        raise ToolchainError(
+            "Rust runtime compilation failed: "
+            f"'{rustc} --version --verbose' exited with status {version.returncode}"
+        )
+    digest = hashlib.sha256(f"lto={lto}\0{version.stdout}\0".encode())
+    sources = Path(__file__).parents[1] / "runtime"
+    for path in sorted(sources.glob("*.rs")):
+        digest.update(path.name.encode() + b"\0" + path.read_bytes() + b"\0")
+    entry = cache_directory() / "runtime" / digest.hexdigest()
+    library = entry / "libmule_runtime.a"
+    if library.is_file():
+        return library
+    entry.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".build-", dir=entry) as directory:
+        built = build_runtime(Path(directory), rustc=rustc, lto=lto)
+        # Concurrent builds produce the same library; the rename is atomic.
+        os.replace(built, library)
     return library
 
 
@@ -119,9 +166,18 @@ def lto_linker(rustc: str) -> Path:
 
 
 def link_llvm(
-    llvm: str, output: Path, *, clang: str = "clang", rustc: str = "rustc"
+    llvm: str,
+    output: Path,
+    *,
+    clang: str = "clang",
+    rustc: str = "rustc",
+    optimize: bool = True,
 ) -> Path:
-    """Compile LLVM and link the Rust runtime, replacing output only on success."""
+    """Compile LLVM and link the Rust runtime, replacing output only on success.
+
+    ``optimize`` selects -O3 with full LTO across the program and runtime;
+    otherwise the program is compiled at -O0 and linked without LTO, which is
+    an order of magnitude faster to build."""
     compiler = shutil.which(clang)
     if compiler is None:
         raise ToolchainError(f"LLVM Clang compiler '{clang}' was not found")
@@ -135,16 +191,22 @@ def link_llvm(
         ir_path = temporary / "module.ll"
         binary = temporary / "program"
         ir_path.write_text(llvm)
-        runtime = build_runtime(temporary, rustc=rustc)
+        runtime = runtime_library(rustc, lto=optimize)
         linker = lto_linker(rustc)
+        if optimize:
+            optimization = [
+                "-O3",
+                "-flto=full",
+                "-Wl,--lto-O3",
+                "-Wl,--lto-CGO3",
+                "-Wl,--threads=1",
+            ]
+        else:
+            optimization = ["-O0"]
         command = [
             compiler,
-            "-O3",
-            "-flto=full",
+            *optimization,
             f"--ld-path={linker}",
-            "-Wl,--lto-O3",
-            "-Wl,--lto-CGO3",
-            "-Wl,--threads=1",
             "-Wno-override-module",
             "-Wl,--gc-sections",
             "-Wl,--strip-debug",
@@ -175,6 +237,7 @@ def build(
     llvm_output: str | Path | None = None,
     clang: str = "clang",
     rustc: str = "rustc",
+    optimize: bool = True,
 ) -> Path:
     """Compile a source file into a native executable, replacing output on success.
 
@@ -193,7 +256,7 @@ def build(
         str(source_path),
         roots=search_path(source_path.resolve().parent),
     )
-    link_llvm(llvm, output_path, clang=clang, rustc=rustc)
+    link_llvm(llvm, output_path, clang=clang, rustc=rustc, optimize=optimize)
     if llvm_output is not None:
         llvm_path.parent.mkdir(parents=True, exist_ok=True)
         llvm_path.write_text(llvm)

@@ -330,90 +330,12 @@ unsafe extern "C" fn tuple(_: Value, args: Value) -> Value {
         }
     }
 }
-unsafe extern "C" fn dict(_: Value, args: Value) -> Value {
-    unsafe {
-        if arity(args, 0, 0).is_none() {
-            std::ptr::null_mut()
-        } else {
-            object::namespace()
-        }
-    }
-}
 unsafe extern "C" fn list(_: Value, args: Value) -> Value {
     unsafe {
         if arity(args, 0, 0).is_none() {
             std::ptr::null_mut()
         } else {
             object::list()
-        }
-    }
-}
-unsafe extern "C" fn type_(_: Value, args: Value) -> Value {
-    unsafe {
-        if arity(args, 3, 3).is_none() {
-            return std::ptr::null_mut();
-        }
-        let name = arg(args, 0);
-        let bases = arg(args, 1);
-        let attributes = arg(args, 2);
-        if object::is_fixnum(name) || object::is_fixnum(bases) || object::is_fixnum(attributes) {
-            return fail(
-                "TypeError",
-                "type requires a name, empty bases, and namespace",
-            );
-        }
-        if !matches!(&(*bases).data, Data::Args(values) if values.is_empty())
-            || !matches!(&(*attributes).data, Data::Namespace(_))
-        {
-            return fail(
-                "TypeError",
-                "type requires a name, empty bases, and namespace",
-            );
-        }
-        let Data::Text(name) = &(*name).data else {
-            return fail("TypeError", "type requires a text name");
-        };
-        let Some(name) = name.to_rust_string() else {
-            return fail("UnicodeDecodeError", "invalid type name");
-        };
-        if name.contains('\0') {
-            return fail("ValueError", "type name contains NUL");
-        }
-        object::new_value(Data::Type {
-            name: name.into(),
-            attributes: object::retain(attributes),
-        })
-    }
-}
-unsafe extern "C" fn setattr(_: Value, args: Value) -> Value {
-    unsafe {
-        if arity(args, 3, 3).is_none() {
-            return std::ptr::null_mut();
-        }
-        let receiver = arg(args, 0);
-        let name = arg(args, 1);
-        if object::is_fixnum(receiver) || object::is_fixnum(name) {
-            return fail(
-                "TypeError",
-                "setattr requires a type and text attribute name",
-            );
-        }
-        let Data::Type { attributes, .. } = &(*receiver).data else {
-            return fail("TypeError", "setattr requires a type");
-        };
-        let Data::Text(name) = &(*name).data else {
-            return fail("TypeError", "setattr requires a text attribute name");
-        };
-        let Some(name) = name.to_rust_string() else {
-            return fail("UnicodeDecodeError", "invalid attribute name");
-        };
-        if name.contains('\0') {
-            return fail("ValueError", "attribute name contains NUL");
-        }
-        if object::bind(*attributes, &name, arg(args, 2)) {
-            object::none_value()
-        } else {
-            std::ptr::null_mut()
         }
     }
 }
@@ -432,10 +354,7 @@ pub unsafe fn namespace() -> Value {
                 ("bool", bool_),
                 ("float", float),
                 ("tuple", tuple),
-                ("dict", dict),
                 ("list", list),
-                ("type", type_),
-                ("setattr", setattr),
             ];
             for (name, entry) in entries {
                 let function = object::function(std::ptr::null_mut(), *entry, name);

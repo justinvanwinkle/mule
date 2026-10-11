@@ -6,7 +6,13 @@ execute as native Python functions and classes, in a private module namespace.
 
 from _mule_native import text_from_codepoints as _text_from_codepoints
 from _str import TextStorage, ascii, decode, format, ord, repr, str
+from _attributes import delattr, getattr, hasattr, setattr, type
 from _descriptors import classmethod, property, staticmethod, super
+from _dict import build_dict as _build_dict
+from _dict import build_set as _build_set
+from _dict import dict, frozenset, hash, set
+from _mule_native import bytes_from_values as _bytes_from_values
+from _slice import is_slice, positions, slice
 
 # ruff: noqa: F821
 
@@ -208,6 +214,35 @@ def getitem(value, index):
     return method(index)
 
 
+def delitem(value, index):
+    method = _delitem_method(value)
+    if method is None:
+        raise TypeError("object does not support item deletion")
+    method(index)
+
+
+def sorted(iterable, /, *, key=None, reverse=False):
+    result = list(iterable)
+    result.sort(key=key, reverse=reverse)
+    return result
+
+
+def delete_attribute(value, name):
+    delattr(value, name)
+
+
+def make_slice(start, stop, step):
+    return slice(start, stop, step)
+
+
+def build_dict(flat):
+    return _build_dict(flat)
+
+
+def build_set(items):
+    return _build_set(items)
+
+
 def setitem(value, index, item):
     method = _setitem_method(value)
     if method is None:
@@ -247,42 +282,329 @@ class SequenceIterator:
         return item
 
 
-class ListStorage:
+def _selected(sequence, bounds):
+    """The elements a slice selects, in order, as a new list."""
+    start, stop, step, count = positions(bounds, _storage_length(sequence))
+    result = []
+    index = 0
+    while index < count:
+        _storage_append(result, _storage_read(sequence, start + index * step))
+        index += 1
+    return result
+
+
+def _list_position(sequence, index):
+    """An insertion position: negative indexes count from the end, then clamp."""
+    length = _storage_length(sequence)
+    index = integer_index(index)
+    if index < 0:
+        index += length
+        if index < 0:
+            index = 0
+    elif index > length:
+        index = length
+    return index
+
+
+def _require_list(value, operation):
+    if _type_name(value) != "list":
+        raise TypeError(
+            f'can only {operation} list (not "{_type_name(value)}") to list'
+        )
+
+
+def _repeat(sequence, count):
+    count = integer_index(count)
+    result = []
+    while count > 0:
+        index = 0
+        length = _storage_length(sequence)
+        while index < length:
+            _storage_append(result, _storage_read(sequence, index))
+            index += 1
+        count -= 1
+    return result
+
+
+def _sequence_order(left, right):
+    """The pair that orders two sequences lexicographically: the first unequal
+    elements, or else the two lengths."""
+    index = 0
+    left_length, right_length = _storage_length(left), _storage_length(right)
+    while index < left_length and index < right_length:
+        a = _storage_read(left, index)
+        b = _storage_read(right, index)
+        if not (a is b or a == b):
+            return a, b
+        index += 1
+    return left_length, right_length
+
+
+def _merge_sort(items, keys):
+    """Stable merge sort of ``items`` by ``keys``, comparing with ``<`` only."""
+    length = _storage_length(items)
+    width = 1
+    while width < length:
+        sorted_items, sorted_keys = [], []
+        low = 0
+        while low < length:
+            middle = low + width if low + width < length else length
+            high = low + 2 * width if low + 2 * width < length else length
+            left, right = low, middle
+            while left < middle and right < high:
+                if _storage_read(keys, right) < _storage_read(keys, left):
+                    _storage_append(sorted_items, _storage_read(items, right))
+                    _storage_append(sorted_keys, _storage_read(keys, right))
+                    right += 1
+                else:
+                    _storage_append(sorted_items, _storage_read(items, left))
+                    _storage_append(sorted_keys, _storage_read(keys, left))
+                    left += 1
+            while left < middle:
+                _storage_append(sorted_items, _storage_read(items, left))
+                _storage_append(sorted_keys, _storage_read(keys, left))
+                left += 1
+            while right < high:
+                _storage_append(sorted_items, _storage_read(items, right))
+                _storage_append(sorted_keys, _storage_read(keys, right))
+                right += 1
+            low = high
+        items, keys = sorted_items, sorted_keys
+        width *= 2
+    return items
+
+
+def _reverse_in_place(sequence):
+    low, high = 0, _storage_length(sequence) - 1
+    while low < high:
+        a = _storage_read(sequence, low)
+        _storage_write(sequence, low, _storage_read(sequence, high))
+        _storage_write(sequence, high, a)
+        low += 1
+        high -= 1
+
+
+class _OrderedSequence:
+    """Equality and lexicographic ordering shared by list and tuple."""
+
+    def __eq__(self, other):
+        return sequence_equal(self, other)
+
+    def __ne__(self, other):
+        return not sequence_equal(self, other)
+
+    def __lt__(self, other):
+        a, b = _ordered_pair(self, other)
+        return a < b
+
+    def __le__(self, other):
+        a, b = _ordered_pair(self, other)
+        return a <= b
+
+    def __gt__(self, other):
+        a, b = _ordered_pair(self, other)
+        return a > b
+
+    def __ge__(self, other):
+        a, b = _ordered_pair(self, other)
+        return a >= b
+
+    def __iter__(self):
+        return SequenceIterator(self)
+
+    def count(self, value):
+        found = 0
+        index = 0
+        while index < _storage_length(self):
+            item = _storage_read(self, index)
+            if item is value or item == value:
+                found += 1
+            index += 1
+        return found
+
+    def index(self, value, start=0, stop=None):
+        length = _storage_length(self)
+        start = _list_position(self, start)
+        stop = length if stop is None else _list_position(self, stop)
+        while start < stop:
+            item = _storage_read(self, start)
+            if item is value or item == value:
+                return start
+            start += 1
+        raise ValueError(f"{value!r} is not in {_type_name(self)}")
+
+
+def _ordered_pair(left, right):
+    if not _storage_compatible(left, right):
+        raise TypeError(
+            f"'<' not supported between instances of '{_type_name(left)}' and "
+            f"'{_type_name(right)}'"
+        )
+    return _sequence_order(left, right)
+
+
+class ListStorage(_OrderedSequence):
     def __getitem__(self, index):
+        if is_slice(index):
+            return _selected(self, index)
         return _storage_read(self, storage_index(self, index))
 
     def __setitem__(self, index, value):
-        _storage_write(self, storage_index(self, index), value)
+        if not is_slice(index):
+            _storage_write(self, storage_index(self, index), value)
+            return
+        items = list(value)
+        start, stop, step, count = positions(index, _storage_length(self))
+        if step == 1:
+            _storage_delete(self, start, stop if stop > start else start)
+            offset = 0
+            while offset < _storage_length(items):
+                _storage_insert(self, start + offset, _storage_read(items, offset))
+                offset += 1
+            return
+        if _storage_length(items) != count:
+            raise ValueError(
+                f"attempt to assign sequence of size {_storage_length(items)} "
+                f"to extended slice of size {count}"
+            )
+        offset = 0
+        while offset < count:
+            _storage_write(self, start + offset * step, _storage_read(items, offset))
+            offset += 1
+
+    def __delitem__(self, index):
+        if not is_slice(index):
+            position = storage_index(self, index)
+            _storage_delete(self, position, position + 1)
+            return
+        start, stop, step, count = positions(index, _storage_length(self))
+        if step < 0:
+            start, step = start + (count - 1) * step, -step
+        offset = count
+        while offset > 0:
+            offset -= 1
+            position = start + offset * step
+            _storage_delete(self, position, position + 1)
+
+    def __add__(self, other):
+        _require_list(other, "concatenate")
+        result = self.copy()
+        result.extend(other)
+        return result
+
+    def __iadd__(self, other):
+        self.extend(other)
+        return self
+
+    def __mul__(self, count):
+        return _repeat(self, count)
+
+    def __rmul__(self, count):
+        return _repeat(self, count)
+
+    def __imul__(self, count):
+        repeated = _repeat(self, count)
+        _storage_delete(self, 0, _storage_length(self))
+        self.extend(repeated)
+        return self
+
+    def __reversed__(self):
+        result = self.copy()
+        _reverse_in_place(result)
+        return SequenceIterator(result)
 
     def append(self, value):
         _storage_append(self, value)
 
-    def __iter__(self):
-        return SequenceIterator(self)
+    def extend(self, iterable):
+        if iterable is self:
+            iterable = self.copy()
+        for item in iterable:
+            _storage_append(self, item)
 
-    def __eq__(self, other):
-        return sequence_equal(self, other)
+    def insert(self, index, value):
+        _storage_insert(self, _list_position(self, index), value)
 
-    def __ne__(self, other):
-        return not sequence_equal(self, other)
+    def pop(self, index=-1):
+        length = _storage_length(self)
+        if length == 0:
+            raise IndexError("pop from empty list")
+        index = integer_index(index)
+        if index < 0:
+            index += length
+        if index < 0 or index >= length:
+            raise IndexError("pop index out of range")
+        item = _storage_read(self, index)
+        _storage_delete(self, index, index + 1)
+        return item
+
+    def remove(self, value):
+        index = 0
+        while index < _storage_length(self):
+            item = _storage_read(self, index)
+            if item is value or item == value:
+                _storage_delete(self, index, index + 1)
+                return
+            index += 1
+        raise ValueError("list.remove(x): x not in list")
+
+    def clear(self):
+        _storage_delete(self, 0, _storage_length(self))
+
+    def copy(self):
+        result = []
+        index = 0
+        while index < _storage_length(self):
+            _storage_append(result, _storage_read(self, index))
+            index += 1
+        return result
+
+    def reverse(self):
+        _reverse_in_place(self)
+
+    def sort(self, *, key=None, reverse=False):
+        items = self.copy()
+        if reverse:
+            _reverse_in_place(items)
+        keys = items
+        if key is not None:
+            keys = []
+            for item in items:
+                _storage_append(keys, key(item))
+        items = _merge_sort(items, keys)
+        if reverse:
+            _reverse_in_place(items)
+        _storage_delete(self, 0, _storage_length(self))
+        self.extend(items)
 
 
-class TupleStorage:
+class TupleStorage(_OrderedSequence):
     def __getitem__(self, index):
+        if is_slice(index):
+            return _storage_tuple(_selected(self, index))
         return _storage_read(self, storage_index(self, index))
 
-    def __iter__(self):
-        return SequenceIterator(self)
+    def __add__(self, other):
+        if not _tuple_storage(other):
+            raise TypeError(
+                f'can only concatenate tuple (not "{_type_name(other)}") to tuple'
+            )
+        result = list(self)
+        for item in other:
+            _storage_append(result, item)
+        return _storage_tuple(result)
 
-    def __eq__(self, other):
-        return sequence_equal(self, other)
+    def __mul__(self, count):
+        return _storage_tuple(_repeat(self, count))
 
-    def __ne__(self, other):
-        return not sequence_equal(self, other)
+    def __rmul__(self, count):
+        return _storage_tuple(_repeat(self, count))
 
 
 class BytesStorage:
     def __getitem__(self, index):
+        if is_slice(index):
+            return _bytes_from_values(_selected(self, index))
         return _storage_read(self, storage_index(self, index))
 
     def __iter__(self):
@@ -555,6 +877,17 @@ _install_builtin("ascii", ascii)
 _install_builtin("format", format)
 _install_builtin("min", min)
 _install_builtin("max", max)
+_install_builtin("dict", dict)
+_install_builtin("getattr", getattr)
+_install_builtin("hasattr", hasattr)
+_install_builtin("setattr", setattr)
+_install_builtin("delattr", delattr)
+_install_builtin("type", type)
+_install_builtin("sorted", sorted)
+_install_builtin("set", set)
+_install_builtin("frozenset", frozenset)
+_install_builtin("hash", hash)
+_install_builtin("slice", slice)
 _install_builtin("staticmethod", staticmethod)
 _install_builtin("classmethod", classmethod)
 _install_builtin("property", property)

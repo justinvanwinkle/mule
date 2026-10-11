@@ -2,6 +2,8 @@
 
 import argparse
 import json
+import os
+import signal
 import subprocess
 import sys
 from collections import Counter
@@ -129,23 +131,46 @@ class Outcome:
     stats: dict | None = None
 
 
+def run_bounded(command, *, timeout, cwd, input=None, encoding="utf-8"):
+    """Run a command in its own session and kill the whole session on timeout.
+
+    subprocess.run only kills the direct child, leaving a grandchild such as the
+    compiler's clang running and using a CPU after the timeout. Standard input
+    is /dev/null unless input is given, so a test that reads it sees end of
+    file instead of waiting on the caller's terminal."""
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL if input is None else subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding=encoding,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(input, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        os.killpg(process.pid, signal.SIGKILL)
+        error.stdout, error.stderr = process.communicate()
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
 def compile_source(source, executable, timeout):
-    return subprocess.run(
+    return run_bounded(
         [
             sys.executable,
             "-B",
             "-m",
             "mule.compiler",
+            "-O0",
             str(source),
             "-o",
             str(executable),
         ],
         cwd=ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
         timeout=timeout,
-        check=False,
     )
 
 
@@ -193,15 +218,7 @@ def run_entry(entry, directory, timeout=120.0):
             if binary.read(4) != b"\x7fELF":
                 raise ValueError("compiler output is not a native ELF executable")
         phase = "test-execution"
-        result = subprocess.run(
-            [str(executable)],
-            cwd=directory,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=timeout,
-            check=False,
-        )
+        result = run_bounded([str(executable)], cwd=directory, timeout=timeout)
         stats = json.loads(result_file.read_text()) if result_file.is_file() else None
         tests_run = stats.get("tests_run", 0) if stats is not None else 0
         passed = (
@@ -269,14 +286,11 @@ def run_bootstrap(entry, cases, directory, timeout):
     results = []
     for case in cases:
         try:
-            result = subprocess.run(
+            result = run_bounded(
                 [str(executable)],
                 input=case.name + "\n",
                 cwd=directory,
-                capture_output=True,
-                text=True,
                 timeout=timeout,
-                check=False,
             )
             lines = result.stdout.splitlines()
             executed = "MULE_TEST_START " + case.name in lines
@@ -298,7 +312,7 @@ def run_bootstrap(entry, cases, directory, timeout):
                 }
             )
         except subprocess.TimeoutExpired as error:
-            stdout = (error.stdout or b"").decode("utf-8", errors="replace")
+            stdout = error.stdout or ""
             results.append(
                 {
                     "name": case.name,

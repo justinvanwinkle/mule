@@ -59,7 +59,7 @@ except AttributeError:
     package = directory / "_mule_native"
     package.mkdir()
     (package / "__init__.py").write_text("raise RuntimeError('local package')\n")
-    executable = build(source, directory / "program")
+    executable = build(source, directory / "program", optimize=False)
     for path in directory.rglob("*.py"):
         path.unlink()
     return executable

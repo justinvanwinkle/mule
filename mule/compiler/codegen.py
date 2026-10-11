@@ -133,6 +133,8 @@ declare ptr @mule_storage_length(ptr)
 declare ptr @mule_storage_read(ptr, ptr)
 declare ptr @mule_storage_write(ptr, ptr, ptr)
 declare ptr @mule_storage_append(ptr, ptr)
+declare ptr @mule_storage_insert(ptr, ptr, ptr)
+declare ptr @mule_storage_delete(ptr, ptr, ptr)
 declare ptr @mule_storage_tuple(ptr)
 declare ptr @mule_tuple_storage(ptr)
 declare i32 @mule_tuple_shape_matches(ptr, i64)
@@ -324,7 +326,7 @@ class ModuleGenerator:
 
     def attribute_cache(self) -> str:
         name = f"@mule.cache.{len(self.auxiliary)}"
-        self.auxiliary.append(f"{name} = internal global [2 x i64] zeroinitializer")
+        self.auxiliary.append(f"{name} = internal global [3 x i64] zeroinitializer")
         return name
 
     def names(self, names: tuple[str, ...]) -> str:
@@ -650,6 +652,45 @@ class ModuleGenerator:
             ]
         )
         return "\n".join(lines)
+
+
+def _value_tns_live_in(component, candidates) -> dict:
+    """Backward liveness of the cross-block temporaries in ``candidates``:
+    for each IR2 block, those read on some path from its start before being
+    written. Error edges count as successors."""
+    uses, defs, successors = {}, {}, {}
+    for block in component.blocks:
+        used, defined = set(), set()
+        for vop in block.vops:
+            for ref in vop.args:
+                if ref.tn in candidates and ref.tn not in defined:
+                    used.add(ref.tn)
+            for ref in vop.results:
+                if ref.tn in candidates:
+                    defined.add(ref.tn)
+        uses[block], defs[block] = used, defined
+        following = [
+            component.ir2_blocks[succ]
+            for succ in block.block.succ
+            if succ in component.ir2_blocks
+        ]
+        target = block_exception_target(block.block)
+        if target is not None and target in component.ir2_blocks:
+            following.append(component.ir2_blocks[target])
+        successors[block] = following
+    live = {block: set(uses[block]) for block in component.blocks}
+    changed = True
+    while changed:
+        changed = False
+        for block in reversed(component.blocks):
+            out = set()
+            for succ in successors[block]:
+                out |= live[succ]
+            incoming = uses[block] | (out - defs[block])
+            if incoming != live[block]:
+                live[block] = incoming
+                changed = True
+    return live
 
 
 class _ArgumentGuard:
@@ -1428,15 +1469,22 @@ class FunctionGenerator:
         self.entry_end = len(self.lines)
         self.line(f"br label %{self.component.blocks[0].label}")
         self.emit_blocks()
+        handler_live = None
         for target in dict.fromkeys(
             block_exception_target(block.block) for block in self.component.blocks
         ):
             if target is None:
                 continue
+            if handler_live is None:
+                handler_live = _value_tns_live_in(self.component, set(self.value_tns))
             label = self.component.ir2_blocks[target].label
             self.lines.append("unwind." + label + ":")
+            # Values the handler still uses were computed before its region
+            # was entered, like the stack below an SBCL catch block; only the
+            # temporaries the transfer abandons are released.
+            live = handler_live[self.component.ir2_blocks[target]]
             for tn in self.value_tns:
-                if tn.sc not in OBJECT:
+                if tn.sc not in OBJECT or tn in live:
                     continue
                 value = self.operation(f"load ptr, ptr {tn.slot}")
                 self.line(f"store ptr null, ptr {tn.slot}")

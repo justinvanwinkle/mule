@@ -1,7 +1,10 @@
 //! Bootstrap fixed-layout class storage and attribute dispatch.
 //!
 //! A class is built from the namespace its body filled: every binding becomes
-//! a class attribute, merged over the base's attributes. Instances store the
+//! one of its own attributes, and lookup continues through its base. Assigning
+//! a class attribute afterwards changes that table and advances a global
+//! epoch that invalidates every attribute cache, as CPython's type attribute
+//! cache is invalidated by type version tags. Instances store the
 //! fixed fields the compiler found assigned through method receivers. Lookup
 //! follows Python's order: a data descriptor on the class, then an instance
 //! field, then the class attribute (binding functions and calling `__get__`),
@@ -16,30 +19,60 @@ use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_CLASS_ID: AtomicUsize = AtomicUsize::new(1);
+/// Advanced by every class attribute assignment; caches record the epoch.
+static ATTRIBUTE_EPOCH: AtomicUsize = AtomicUsize::new(1);
 pub struct ClassLayout {
     pub id: usize,
     pub name: String,
     pub base: Value,
     pub fields: Vec<String>,
-    /// Own and inherited class attributes; own bindings replace inherited ones.
+    /// The class's own attributes, in definition order.
     pub attributes: Vec<(String, Value)>,
     field_lookup: HashMap<String, usize>,
     attribute_lookup: HashMap<String, usize>,
-    initializer: Option<usize>,
-    boolean: Option<usize>,
-    length: Option<usize>,
-    callable: Option<usize>,
-    getattribute: Option<usize>,
-    getattr: Option<usize>,
     pub(crate) native: Option<NativeLayout>,
 }
 
 impl ClassLayout {
+    /// The class defining `name` (this class or a base), how many bases up
+    /// it is, and the attribute's index in that class's own table.
+    fn find(&self, name: &str) -> Option<(&ClassLayout, usize, usize)> {
+        let mut layout = self;
+        let mut depth = 0;
+        loop {
+            if let Some(index) = layout.attribute_lookup.get(name) {
+                return Some((layout, depth, *index));
+            }
+            layout = unsafe { base_layout(layout)? };
+            depth += 1;
+        }
+    }
+
     /// The raw class attribute, borrowed, or NULL when absent.
     pub fn method(&self, name: &str) -> Value {
-        self.attribute_lookup
-            .get(name)
-            .map_or(std::ptr::null_mut(), |index| self.attributes[*index].1)
+        self.find(name)
+            .map_or(std::ptr::null_mut(), |(layout, _, index)| layout.attributes[index].1)
+    }
+
+    /// The class `depth` bases up from this one.
+    fn ancestor(&self, depth: usize) -> &ClassLayout {
+        let mut layout = self;
+        for _ in 0..depth {
+            layout = unsafe { base_layout(layout) }.expect("cached base chain");
+        }
+        layout
+    }
+}
+
+unsafe fn base_layout<'a>(layout: &ClassLayout) -> Option<&'a ClassLayout> {
+    unsafe {
+        if layout.base.is_null() {
+            return None;
+        }
+        match &(*layout.base).data {
+            Data::Class(base) => Some(base),
+            _ => None,
+        }
     }
 }
 
@@ -107,7 +140,7 @@ pub type NativeConstructor = unsafe extern "C" fn(Value, Value, isize, *const Va
 pub type NativeGetter = unsafe extern "C" fn(Value, Value, i64) -> Value;
 pub type NativeSetter = unsafe extern "C" fn(Value, Value, i64, Value) -> i32;
 
-/// LLVM reserves two zero-initialized machine words per attribute site.
+/// LLVM reserves three zero-initialized machine words per attribute site.
 /// IDs never repeat, so an expired class cannot make a cache entry valid again.
 /// The encoding is a property of the class and name alone: whether the
 /// receiver is an instance or the class itself is applied when it is used.
@@ -116,6 +149,7 @@ pub type NativeSetter = unsafe extern "C" fn(Value, Value, i64, Value) -> i32;
 pub struct AttrCache {
     pub class_id: usize,
     pub encoded: usize,
+    pub epoch: usize,
 }
 const FIELD: usize = 1;
 const METHOD: usize = 2;
@@ -124,6 +158,9 @@ const DESCRIPTOR: usize = 4;
 const DATA_DESCRIPTOR: usize = 5;
 const KIND: usize = 7;
 const SHIFT: u32 = 3;
+// Class attribute encodings pack the defining class's depth above the index.
+const DEPTH_SHIFT: u32 = 24;
+const INDEX_MASK: usize = (1 << DEPTH_SHIFT) - 1;
 
 unsafe fn name<'a>(value: *const c_char) -> Option<&'a str> {
     unsafe {
@@ -167,8 +204,7 @@ unsafe fn instance_layout<'a>(value: Value) -> Option<&'a ClassLayout> {
 unsafe fn is_data_descriptor(value: Value) -> bool {
     unsafe {
         instance_layout(value).is_some_and(|layout| {
-            layout.attribute_lookup.contains_key("__set__")
-                || layout.attribute_lookup.contains_key("__delete__")
+            layout.find("__set__").is_some() || layout.find("__delete__").is_some()
         })
     }
 }
@@ -182,7 +218,7 @@ unsafe fn attribute_kind(value: Value) -> usize {
             return METHOD;
         }
         match instance_layout(value) {
-            Some(layout) if layout.attribute_lookup.contains_key("__get__") => {
+            Some(layout) if layout.find("__get__").is_some() => {
                 if is_data_descriptor(value) {
                     DATA_DESCRIPTOR
                 } else {
@@ -196,9 +232,9 @@ unsafe fn attribute_kind(value: Value) -> usize {
 
 fn encoded(layout: &ClassLayout, attribute: &str, cache: *mut AttrCache) -> Option<usize> {
     unsafe {
-        let class_attribute = layout.attribute_lookup.get(attribute).map(|index| {
-            let kind = attribute_kind(layout.attributes[*index].1);
-            (index << SHIFT) | kind
+        let class_attribute = layout.find(attribute).map(|(owner, depth, index)| {
+            let kind = attribute_kind(owner.attributes[index].1);
+            (((depth << DEPTH_SHIFT) | index) << SHIFT) | kind
         });
         let resolved = match class_attribute {
             Some(encoded) if encoded & KIND == DATA_DESCRIPTOR => Some(encoded),
@@ -212,6 +248,7 @@ fn encoded(layout: &ClassLayout, attribute: &str, cache: *mut AttrCache) -> Opti
             if !cache.is_null() {
                 (*cache).encoded = encoded;
                 (*cache).class_id = layout.id;
+                (*cache).epoch = ATTRIBUTE_EPOCH.load(Ordering::Relaxed);
             }
         }
         resolved
@@ -221,7 +258,10 @@ fn encoded(layout: &ClassLayout, attribute: &str, cache: *mut AttrCache) -> Opti
 #[inline]
 unsafe fn cached(layout: &ClassLayout, cache: *mut AttrCache) -> Option<usize> {
     unsafe {
-        if !cache.is_null() && (*cache).class_id == layout.id {
+        if !cache.is_null()
+            && (*cache).class_id == layout.id
+            && (*cache).epoch == ATTRIBUTE_EPOCH.load(Ordering::Relaxed)
+        {
             return Some((*cache).encoded);
         }
         None
@@ -255,7 +295,7 @@ pub unsafe fn bind_class_attribute(value: Value, instance: Value, owner: Value) 
 /// return the function with the receiver in `bound`, avoiding a bound method.
 unsafe fn class_attribute(
     layout: &ClassLayout,
-    index: usize,
+    position: usize,
     kind: usize,
     receiver: Value,
     instance: bool,
@@ -263,7 +303,8 @@ unsafe fn class_attribute(
     bound: *mut Value,
 ) -> Value {
     unsafe {
-        let value = layout.attributes[index].1;
+        let defining = layout.ancestor(position >> DEPTH_SHIFT);
+        let value = defining.attributes[position & INDEX_MASK].1;
         if kind == METHOD && instance {
             *bound = object::retain(receiver);
             return object::retain(value);
@@ -307,9 +348,10 @@ unsafe fn resolved(
         // An unset field, or a field name read through the class, falls back
         // to a class attribute of the same name.
         let attribute = name(attribute)?;
-        let index = *layout.attribute_lookup.get(attribute)?;
-        let kind = attribute_kind(layout.attributes[index].1);
-        let value = class_attribute(layout, index, kind, receiver, instance, owner, bound);
+        let (defining, depth, index) = layout.find(attribute)?;
+        let kind = attribute_kind(defining.attributes[index].1);
+        let position = (depth << DEPTH_SHIFT) | index;
+        let value = class_attribute(layout, position, kind, receiver, instance, owner, bound);
         (!value.is_null()).then_some(value)
     }
 }
@@ -333,15 +375,8 @@ unsafe fn text(value: &str) -> Value {
 /// Call class attribute `index` as a method of `receiver`, as Python's
 /// implicit special-method calls do: through the class, with the descriptor
 /// protocol applied to anything that is not a plain function.
-unsafe fn call_attribute(
-    layout: &ClassLayout,
-    index: usize,
-    receiver: Value,
-    owner: Value,
-    args: &[Value],
-) -> Value {
+unsafe fn call_attribute(value: Value, receiver: Value, owner: Value, args: &[Value]) -> Value {
     unsafe {
-        let value = layout.attributes[index].1;
         if attribute_kind(value) == METHOD {
             return object::call_with_receiver(value, receiver, args);
         }
@@ -356,19 +391,13 @@ unsafe fn call_attribute(
 }
 
 /// Call an instance's `__getattribute__` or `__getattr__` hook with the name.
-unsafe fn call_hook(
-    layout: &ClassLayout,
-    index: usize,
-    receiver: Value,
-    owner: Value,
-    attribute: *const c_char,
-) -> Value {
+unsafe fn call_hook(hook: Value, receiver: Value, owner: Value, attribute: *const c_char) -> Value {
     unsafe {
         let Some(attribute) = name(attribute) else {
             return std::ptr::null_mut();
         };
         let attribute = text(attribute);
-        let result = call_attribute(layout, index, receiver, owner, &[attribute]);
+        let result = call_attribute(hook, receiver, owner, &[attribute]);
         object::release(attribute);
         result
     }
@@ -389,8 +418,9 @@ unsafe fn resolve(
         }
         if let Some((layout, instance, owner)) = layout(receiver) {
             if instance {
-                if let Some(index) = layout.getattribute {
-                    return call_hook(layout, index, receiver, owner, attribute);
+                let hook = layout.method("__getattribute__");
+                if !hook.is_null() {
+                    return call_hook(hook, receiver, owner, attribute);
                 }
             }
             let encoded = match cached(layout, cache) {
@@ -413,8 +443,9 @@ unsafe fn resolve(
                 }
             }
             if instance {
-                if let Some(index) = layout.getattr {
-                    return call_hook(layout, index, receiver, owner, attribute);
+                let hook = layout.method("__getattr__");
+                if !hook.is_null() {
+                    return call_hook(hook, receiver, owner, attribute);
                 }
             }
             let Some(attribute) = name(attribute) else {
@@ -426,33 +457,20 @@ unsafe fn resolve(
             return std::ptr::null_mut();
         };
         if !receiver.is_null() && !object::is_fixnum(receiver) {
-            let (attributes, instance) = match &(*receiver).data {
-                Data::Namespace(_) => (receiver, false),
-                Data::Type { attributes, .. } => (*attributes, false),
-                Data::Instance { ty, .. } => match &(**ty).data {
-                    Data::Type { attributes, .. } => (*attributes, true),
-                    _ => unreachable!(),
-                },
-                _ => {
-                    let method = crate::sequences::binding(receiver, attribute);
-                    if !method.is_null() {
-                        *bound = object::retain(receiver);
-                        return object::retain(method);
-                    }
-                    return missing(None, false, attribute);
+            if matches!(&(*receiver).data, Data::Namespace(_)) {
+                // Module attributes are their namespace's bindings.
+                let value = object::lookup(receiver, attribute);
+                if !value.is_null() {
+                    return object::retain(value);
                 }
-            };
-            let method = object::lookup(attributes, attribute);
-            if method.is_null() {
                 return missing(None, false, attribute);
             }
-            if object::is_fixnum(method) {
+            let method = crate::sequences::binding(receiver, attribute);
+            if !method.is_null() {
+                *bound = object::retain(receiver);
                 return object::retain(method);
             }
-            if matches!(&(*method).data, Data::Function { .. }) && instance {
-                *bound = object::retain(receiver);
-            }
-            return object::retain(method);
+            return missing(None, false, attribute);
         }
         missing(None, false, attribute)
     }
@@ -476,8 +494,9 @@ pub unsafe fn construct(class: Value, args: &[Value]) -> Value {
             ty: object::retain(class),
             fields: fields.into_boxed_slice(),
         });
-        if let Some(index) = layout.initializer {
-            let result = call_attribute(layout, index, instance, class, args);
+        let initializer = layout.method("__init__");
+        if !initializer.is_null() {
+            let result = call_attribute(initializer, instance, class, args);
             if result.is_null() {
                 object::release(instance);
                 return result;
@@ -531,16 +550,11 @@ pub unsafe fn special_method(receiver: Value, attribute: &str, args: &[Value]) -
         let Some((layout, _, owner)) = layout(receiver) else {
             return std::ptr::null_mut();
         };
-        let index = match attribute {
-            "__bool__" => layout.boolean,
-            "__len__" => layout.length,
-            "__call__" => layout.callable,
-            _ => layout.attribute_lookup.get(attribute).copied(),
-        };
-        let Some(index) = index else {
-            return std::ptr::null_mut();
-        };
-        call_attribute(layout, index, receiver, owner, args)
+        let value = layout.method(attribute);
+        if value.is_null() {
+            return value;
+        }
+        call_attribute(value, receiver, owner, args)
     }
 }
 
@@ -605,18 +619,8 @@ unsafe fn create_class(
                 fields.push(attribute.into());
             }
         }
-        let mut attributes: Vec<(String, Value)> = inherited.map_or_else(Vec::new, |layout| {
-            layout
-                .attributes
-                .iter()
-                .map(|(n, value)| (n.clone(), object::retain(*value)))
-                .collect()
-        });
-        let mut attribute_lookup: HashMap<String, usize> = attributes
-            .iter()
-            .enumerate()
-            .map(|(i, (n, _))| (n.clone(), i))
-            .collect();
+        let mut attributes: Vec<(String, Value)> = Vec::with_capacity(bindings.len());
+        let mut attribute_lookup: HashMap<String, usize> = HashMap::new();
         for (attribute, value) in bindings {
             if let Some(index) = attribute_lookup.get(attribute) {
                 let old = attributes[*index].1;
@@ -627,24 +631,22 @@ unsafe fn create_class(
                 attributes.push((attribute.clone(), object::retain(*value)));
             }
         }
-        // A data descriptor takes precedence over an instance field of the
-        // same name, so the field's slot is never reached.
-        if native.is_none() {
-            field_lookup.retain(|field, _| {
-                attribute_lookup
-                    .get(field)
-                    .is_none_or(|index| !is_data_descriptor(attributes[*index].1))
-            });
+        // Defining equality without a hash makes instances unhashable, as
+        // CPython's type creation sets `__hash__` to None.
+        let defines = |wanted: &str| bindings.iter().any(|(key, _)| key == wanted);
+        if defines("__eq__") && !defines("__hash__") {
+            let none = object::none_value();
+            if let Some(index) = attribute_lookup.get("__hash__") {
+                let old = attributes[*index].1;
+                attributes[*index].1 = object::retain(none);
+                object::release(old);
+            } else {
+                attribute_lookup.insert("__hash__".into(), attributes.len());
+                attributes.push(("__hash__".into(), object::retain(none)));
+            }
         }
         let id = NEXT_CLASS_ID.fetch_add(1, Ordering::Relaxed);
         assert_ne!(id, 0, "class identity space exhausted");
-        let special = |name: &str| attribute_lookup.get(name).copied();
-        let initializer = special("__init__");
-        let boolean = special("__bool__");
-        let length = special("__len__");
-        let callable = special("__call__");
-        let getattribute = special("__getattribute__");
-        let getattr = special("__getattr__");
         object::new_value(Data::Class(Box::new(ClassLayout {
             id,
             name: class_name.into(),
@@ -653,12 +655,6 @@ unsafe fn create_class(
             attributes,
             field_lookup,
             attribute_lookup,
-            initializer,
-            boolean,
-            length,
-            callable,
-            getattribute,
-            getattr,
             native,
         })))
     }
@@ -805,8 +801,10 @@ pub unsafe extern "C" fn mule_set_attr_cached(
         }
         if let Some((layout, instance, _)) = layout(receiver) {
             if !instance {
-                object::error("TypeError", "compiled classes are immutable");
-                return -1;
+                let Some(attribute) = name(attribute) else {
+                    return -1;
+                };
+                return set_class_attribute(receiver, attribute, value);
             }
             let encoded = match cached(layout, cache) {
                 Some(encoded) => Some(encoded),
@@ -834,7 +832,11 @@ pub unsafe extern "C" fn mule_set_attr_cached(
                     return 0;
                 }
                 Some(DATA_DESCRIPTOR) => {
-                    let descriptor = layout.attributes[index.unwrap()].1;
+                    let position = index.unwrap();
+                    let descriptor = layout
+                        .ancestor(position >> DEPTH_SHIFT)
+                        .attributes[position & INDEX_MASK]
+                        .1;
                     let result = special_method(descriptor, "__set__", &[receiver, value]);
                     if result.is_null() {
                         if !object::has_error() {
@@ -863,16 +865,39 @@ pub unsafe extern "C" fn mule_set_attr_cached(
             if let Data::Namespace(_) = &(*receiver).data {
                 return if object::bind(receiver, attribute, value) { 0 } else { -1 };
             }
-            if let Data::Type { attributes, .. } = &(*receiver).data {
-                return if object::bind(*attributes, attribute, value) {
-                    0
-                } else {
-                    -1
-                };
-            }
         }
         missing(None, false, attribute);
         -1
+    }
+}
+
+/// Bind one of a class's own attributes, as `type.__setattr__` does, and
+/// invalidate every attribute cache. Typed native classes stay fixed because
+/// compiled code relies on their layout and methods.
+unsafe fn set_class_attribute(class: Value, attribute: &str, value: Value) -> i32 {
+    unsafe {
+        let Data::Class(layout) = &mut (*class).data else {
+            unreachable!();
+        };
+        if layout.native.is_some() {
+            object::error(
+                "TypeError",
+                &format!("cannot set '{attribute}' attribute of typed native class '{}'", layout.name),
+            );
+            return -1;
+        }
+        if let Some(index) = layout.attribute_lookup.get(attribute) {
+            let old = layout.attributes[*index].1;
+            layout.attributes[*index].1 = object::retain(value);
+            object::release(old);
+        } else {
+            layout
+                .attribute_lookup
+                .insert(attribute.into(), layout.attributes.len());
+            layout.attributes.push((attribute.into(), object::retain(value)));
+        }
+        ATTRIBUTE_EPOCH.fetch_add(1, Ordering::Relaxed);
+        0
     }
 }
 
@@ -1071,6 +1096,136 @@ unsafe extern "C" fn instance_field(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe fn c_name(attribute: Value) -> Option<std::ffi::CString> {
+    unsafe {
+        let attribute = text_argument(attribute)?;
+        let Ok(attribute) = std::ffi::CString::new(attribute) else {
+            object::error("ValueError", "attribute name contains a NUL character");
+            return None;
+        };
+        Some(attribute)
+    }
+}
+
+unsafe extern "C" fn get_attribute(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver, attribute]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(attribute) = c_name(attribute) else {
+            return std::ptr::null_mut();
+        };
+        mule_get_attr(receiver, attribute.as_ptr())
+    }
+}
+
+unsafe extern "C" fn set_attribute(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver, attribute, value]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(attribute) = c_name(attribute) else {
+            return std::ptr::null_mut();
+        };
+        if mule_set_attr(receiver, attribute.as_ptr(), value) < 0 {
+            return std::ptr::null_mut();
+        }
+        object::none_value()
+    }
+}
+
+/// Delete an attribute: a class's own attribute, an instance field, or
+/// through a data descriptor's `__delete__`.
+unsafe extern "C" fn delete_attribute(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver, attribute]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(attribute) = text_argument(attribute) else {
+            return std::ptr::null_mut();
+        };
+        let Some((layout, instance, _)) = layout(receiver) else {
+            return missing(None, false, &attribute);
+        };
+        if !instance {
+            let Data::Class(layout) = &mut (*receiver).data else {
+                unreachable!();
+            };
+            if layout.native.is_some() {
+                return fail("TypeError", "cannot delete attributes of a typed native class");
+            }
+            let Some(index) = layout.attribute_lookup.remove(&attribute) else {
+                return missing(Some(layout), false, &attribute);
+            };
+            let (_, old) = layout.attributes.remove(index);
+            for position in layout.attribute_lookup.values_mut() {
+                if *position > index {
+                    *position -= 1;
+                }
+            }
+            object::release(old);
+            ATTRIBUTE_EPOCH.fetch_add(1, Ordering::Relaxed);
+            return object::none_value();
+        }
+        let descriptor = layout.method(&attribute);
+        if !descriptor.is_null() && is_data_descriptor(descriptor) {
+            let result = special_method(descriptor, "__delete__", &[receiver]);
+            if result.is_null() && !object::has_error() {
+                return fail("AttributeError", "attribute cannot be deleted");
+            }
+            return result;
+        }
+        if let (Some(index), Data::Instance { fields, .. }) =
+            (layout.field_lookup.get(&attribute), &mut (*receiver).data)
+        {
+            let old = fields[*index];
+            if !old.is_null() {
+                fields[*index] = std::ptr::null_mut();
+                object::release(old);
+                return object::none_value();
+            }
+        }
+        missing(Some(layout), true, &attribute)
+    }
+}
+
+/// `type(name, bases, namespace)` after compiled code has validated the
+/// arguments: the base (or None) and the namespace's names and values in order.
+unsafe extern "C" fn new_class(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class_name, base, names, values]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let (Some(class_name), Data::Args(names), Data::Args(values)) =
+            (text_argument(class_name), &(*names).data, &(*values).data)
+        else {
+            return fail("TypeError", "class names and values must be tuples");
+        };
+        let Ok(class_name) = std::ffi::CString::new(class_name) else {
+            return fail("ValueError", "type name contains a NUL character");
+        };
+        let namespace = object::namespace();
+        for (name, value) in names.iter().zip(values) {
+            let Some(name) = text_argument(*name) else {
+                object::release(namespace);
+                return std::ptr::null_mut();
+            };
+            if !object::bind(namespace, &name, *value) {
+                object::release(namespace);
+                return std::ptr::null_mut();
+            }
+        }
+        let base = if base == object::none_value() {
+            std::ptr::null_mut()
+        } else {
+            base
+        };
+        let class = create_class(class_name.as_ptr(), base, 0, std::ptr::null(), namespace, None);
+        object::release(namespace);
+        class
+    }
+}
+
 /// Bind the class storage operations compiled descriptor and `super` code
 /// uses into the compiler-owned native namespace.
 pub unsafe fn populate(globals: Value) -> bool {
@@ -1078,7 +1233,11 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 7] = [
+        let exports: [(&str, object::Native); 11] = [
+            ("get_attribute", get_attribute),
+            ("set_attribute", set_attribute),
+            ("delete_attribute", delete_attribute),
+            ("new_class", new_class),
             ("is_class", is_class),
             ("class_of", class_of),
             ("class_base", class_base),

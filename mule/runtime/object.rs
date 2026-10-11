@@ -59,10 +59,6 @@ pub enum Data {
     },
     List(Vec<Value>),
     Namespace(Vec<(String, Value)>),
-    Type {
-        name: String,
-        attributes: Value,
-    },
     Class(Box<crate::classes::ClassLayout>),
     Instance {
         ty: Value,
@@ -168,7 +164,6 @@ pub unsafe fn release(value: Value) {
                     release(*value);
                 }
             }
-            Data::Type { attributes, .. } => release(*attributes),
             Data::Class(layout) => {
                 release(layout.base);
                 for (_, method) in &layout.attributes {
@@ -365,16 +360,6 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
             return std::ptr::null_mut();
         }
         match &(*callable).data {
-            Data::Type { .. } => {
-                if !args.is_empty() {
-                    error("TypeError", "instance constructor takes no arguments");
-                    return std::ptr::null_mut();
-                }
-                return new_value(Data::Instance {
-                    ty: retain(callable),
-                    fields: Box::new([]),
-                });
-            }
             Data::Class(_) => return crate::classes::construct(callable, args),
             Data::BoundMethod { receiver, method } => {
                 return call_with_receiver(*method, *receiver, args);
@@ -484,23 +469,10 @@ pub unsafe fn special(value: Value, name: &str, args: &[Value]) -> Value {
             Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => *ty,
             _ => return std::ptr::null_mut(),
         };
-        let attributes = match &(*ty).data {
-            Data::Type { attributes, .. } => *attributes,
-            Data::Class(_) => return crate::classes::special_method(value, name, args),
+        match &(*ty).data {
+            Data::Class(_) => crate::classes::special_method(value, name, args),
             _ => unreachable!(),
-        };
-        let method = lookup(attributes, name);
-        if method.is_null() {
-            return method;
         }
-        retain(method);
-        let result = if is_fixnum(method) {
-            call(method, args)
-        } else {
-            call_with_receiver(method, value, args)
-        };
-        release(method);
-        result
     }
 }
 pub unsafe fn truth(value: Value) -> Option<bool> {
@@ -1036,9 +1008,7 @@ pub unsafe fn formatted_value(
             Data::ForeignCString { .. } => b"<foreign C string pointer>".to_vec(),
             Data::Class(layout) => format!("<class '{}'>", layout.name).into_bytes(),
             Data::BoundMethod { .. } => b"<bound native method>".to_vec(),
-            Data::Type { name, .. } => format!("<class '{name}'>").into_bytes(),
             Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => match &(**ty).data {
-                Data::Type { name, .. } => format!("<{name} object>").into_bytes(),
                 Data::Class(layout) => format!("<{} object>", layout.name).into_bytes(),
                 _ => unreachable!(),
             },
@@ -1285,7 +1255,6 @@ pub unsafe extern "C" fn mule_lookup_special(value: Value, name: *const c_char) 
                         bound
                     };
                 }
-                Data::Type { attributes, .. } => lookup(*attributes, name),
                 _ => unreachable!(),
             },
             _ => crate::sequences::binding(value, name),
@@ -1405,10 +1374,9 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
                 Data::Namespace(_) => "dict",
                 Data::Function { .. } => "function",
                 Data::BoundMethod { .. } => "method",
-                Data::Class(_) | Data::Type { .. } => "type",
+                Data::Class(_) => "type",
                 Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => {
                     match &(**ty).data {
-                        Data::Type { name, .. } => name.as_str(),
                         Data::Class(layout) => layout.name.as_str(),
                         _ => unreachable!(),
                     }

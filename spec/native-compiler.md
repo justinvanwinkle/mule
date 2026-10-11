@@ -44,7 +44,14 @@ at `--script` and leaves the remaining arguments in `*posix-argv*` for user code
 in-process loader, so it builds the whole program into an executable first; the
 cache plays the role of reusing `compile-file` output.
 
-`python -m mule.compiler` builds an executable without running it. `-o` defaults to the source path without its suffix. `--emit-llvm PATH` optionally
+`python -m mule.compiler` builds an executable without running it. `-o` defaults to the source path without its suffix.
+`-O3` (the default, and what the `mule` command uses) compiles and links with full
+LTO across the program and the runtime. `-O0` compiles the program without
+optimization and links it without LTO, which is roughly ten times faster to
+build; the test suite uses it except where a test inspects optimized machine
+code, and the conformance suite keeps `-O3`. The Rust runtime static library is
+built once per runtime source, `rustc` version and LTO mode, and kept in
+`$XDG_CACHE_HOME/mule/runtime`. `--emit-llvm PATH` optionally
 saves the generated IR. Output paths must differ from the source and each other.
 An existing executable is replaced only after native compilation and linking
 succeed. A later failure saving optional LLVM output does not undo that executable.

@@ -302,6 +302,60 @@ pub unsafe extern "C" fn mule_storage_append(value: Value, element: Value) -> Va
         null_mut()
     }
 }
+/// Insert an element before a position no greater than the list's length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_storage_insert(
+    value: Value,
+    position: Value,
+    element: Value,
+) -> Value {
+    unsafe {
+        let Some(index) = index(position) else {
+            return null_mut();
+        };
+        if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::List(values) = &mut (*value).data {
+                if index > values.len() {
+                    object::error("IndexError", "storage index out of range");
+                    return null_mut();
+                }
+                if values.try_reserve(1).is_err() {
+                    object::error("MemoryError", "list allocation failed");
+                    return null_mut();
+                }
+                values.insert(index, object::retain(element));
+                return object::none_value();
+            }
+        }
+        object::error("TypeError", "mutable list storage is required");
+        null_mut()
+    }
+}
+/// Remove the elements in positions [start, stop) of a list.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_storage_delete(value: Value, start: Value, stop: Value) -> Value {
+    unsafe {
+        let (Some(start), Some(stop)) = (index(start), index(stop)) else {
+            return null_mut();
+        };
+        if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::List(values) = &mut (*value).data {
+                if start > stop || stop > values.len() {
+                    object::error("IndexError", "storage index out of range");
+                    return null_mut();
+                }
+                // Release after removal: a destructor may observe the list.
+                let removed: Vec<Value> = values.drain(start..stop).collect();
+                for element in removed {
+                    object::release(element);
+                }
+                return object::none_value();
+            }
+        }
+        object::error("TypeError", "mutable list storage is required");
+        null_mut()
+    }
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_tuple_storage(value: Value) -> Value {
     unsafe {

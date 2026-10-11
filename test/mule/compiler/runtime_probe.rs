@@ -353,30 +353,18 @@ unsafe fn class_ownership(globals: Value) {
         let init = function(globals, initialize_slot, c"initialize_slot");
         let add = function(globals, add_slot, c"add_slot");
         let fields = [c"value".as_ptr(), c"callback".as_ptr()];
-        let names = [c"__init__".as_ptr(), c"add".as_ptr()];
-        let methods = [init, add];
-        let base = mule_class(
-            c"Base".as_ptr(),
-            ptr::null_mut(),
-            2,
-            fields.as_ptr(),
-            2,
-            names.as_ptr(),
-            methods.as_ptr(),
-        );
+        let namespace = mule_namespace();
+        assert_eq!(mule_store_global(namespace, c"__init__".as_ptr(), init), 0);
+        assert_eq!(mule_store_global(namespace, c"add".as_ptr(), add), 0);
+        let base = mule_class(c"Base".as_ptr(), ptr::null_mut(), 2, fields.as_ptr(), namespace);
         assert!(!base.is_null());
+        release(namespace);
         release(init);
         release(add);
         let extra = [c"extra".as_ptr()];
-        let derived = mule_class(
-            c"Derived".as_ptr(),
-            base,
-            1,
-            extra.as_ptr(),
-            0,
-            ptr::null(),
-            ptr::null(),
-        );
+        let namespace = mule_namespace();
+        let derived = mule_class(c"Derived".as_ptr(), base, 1, extra.as_ptr(), namespace);
+        release(namespace);
         let values = [small(42)];
         let instance = mule_call(derived, 1, values.as_ptr());
         assert!(!instance.is_null());
@@ -460,15 +448,9 @@ unsafe fn class_ownership(globals: Value) {
 
         // An expired class cannot validate a reused site's cached slot index.
         let new_fields = [c"unused".as_ptr(), c"value".as_ptr()];
-        let later = mule_class(
-            c"Later".as_ptr(),
-            ptr::null_mut(),
-            2,
-            new_fields.as_ptr(),
-            0,
-            ptr::null(),
-            ptr::null(),
-        );
+        let namespace = mule_namespace();
+        let later = mule_class(c"Later".as_ptr(), ptr::null_mut(), 2, new_fields.as_ptr(), namespace);
+        release(namespace);
         let later_instance = mule_call(later, 0, ptr::null());
         assert_eq!(
             mule_set_attr(later_instance, c"value".as_ptr(), small(99)),
@@ -488,9 +470,13 @@ unsafe fn class_ownership(globals: Value) {
         );
         assert_eq!(error_kind(), "AttributeError");
         clear_error();
-        assert_eq!(mule_set_attr(later, c"value".as_ptr(), small(1)), -1);
-        assert_eq!(error_kind(), "TypeError");
-        clear_error();
+        // Class attributes are assignable; the instance's own field still wins.
+        assert_eq!(mule_set_attr(later, c"value".as_ptr(), small(1)), 0);
+        assert_eq!(mule_get_attr(later, c"value".as_ptr()), small(1));
+        assert_eq!(
+            mule_get_attr_cached(later_instance, c"value".as_ptr(), &mut cache),
+            small(99)
+        );
         release(later_instance);
         release(later);
         assert!(!has_error());
@@ -502,10 +488,8 @@ unsafe fn dynamic_tagged_attributes() {
         let attributes = namespace();
         assert!(bind(attributes, "number", small(42)));
         assert!(bind(attributes, "__bool__", small(42)));
-        let class = new_value(Data::Type {
-            name: "Dynamic".into(),
-            attributes,
-        });
+        let class = mule_class(c"Dynamic".as_ptr(), ptr::null_mut(), 0, ptr::null(), attributes);
+        release(attributes);
         assert_eq!(mule_get_attr(class, c"number".as_ptr()), small(42));
         let instance = mule_call(class, 0, ptr::null());
         assert_eq!(mule_get_attr(instance, c"number".as_ptr()), small(42));

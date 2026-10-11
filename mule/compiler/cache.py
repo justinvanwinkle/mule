@@ -14,16 +14,11 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .driver import ToolchainError, emit_llvm, link_llvm
+from .driver import ToolchainError, cache_directory, emit_llvm, link_llvm
 from .inputs import recording, unchanged
 
 CACHE_FORMAT = 1
 COMPILER_SOURCES = Path(__file__).resolve().parents[1]
-
-
-def cache_directory():
-    base = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
-    return Path(base) / "mule"
 
 
 def toolchain_identity(command):

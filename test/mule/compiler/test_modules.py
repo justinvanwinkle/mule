@@ -12,7 +12,7 @@ def execute(tmp_path, sources, main):
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source)
-    executable = build(tmp_path / "main.py", tmp_path / "program")
+    executable = build(tmp_path / "main.py", tmp_path / "program", optimize=False)
     for source in tmp_path.rglob("*.py"):
         source.unlink()
     return subprocess.run(
