@@ -360,7 +360,7 @@ class _UnixSelectorEventLoop(selector_events.BaseSelectorEventLoop):
                 "os.sendfile() is not available")
         try:
             fileno = file.fileno()
-        except (AttributeError, io.UnsupportedOperation):
+        except (AttributeError, io.UnsupportedOperation) as err:
             raise exceptions.SendfileNotAvailableError("not a regular file")
         try:
             fsize = os.fstat(fileno).st_size
@@ -900,8 +900,8 @@ class _PidfdChildWatcher:
                 pid)
         else:
             returncode = waitstatus_to_exitcode(status)
-        finally:
-            os.close(pidfd)
+
+        os.close(pidfd)
         callback(pid, returncode, *args)
 
 class _ThreadedChildWatcher:

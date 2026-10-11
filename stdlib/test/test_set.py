@@ -188,10 +188,7 @@ class TestJointOps:
         self.assertEqual(type(i), self.basetype)
         self.assertRaises(PassThru, self.s.symmetric_difference, check_pass_thru())
         self.assertRaises(TypeError, self.s.symmetric_difference, [[]])
-        constructors = (set, frozenset,
-                        dict.fromkeys, frozendict.fromkeys,
-                        str, list, tuple)
-        for C in constructors:
+        for C in set, frozenset, dict.fromkeys, str, list, tuple:
             self.assertEqual(self.thetype('abcba').symmetric_difference(C('cdc')), set('abd'))
             self.assertEqual(self.thetype('abcba').symmetric_difference(C('efgfe')), set('abcefg'))
             self.assertEqual(self.thetype('abcba').symmetric_difference(C('ccb')), set('a'))
@@ -672,7 +669,7 @@ class TestSet(TestJointOps, unittest.TestCase):
         with check_unhashable_element():
             myset.discard(elem)
 
-        # Only TypeError exception is overridden,
+        # Only TypeError exception is overriden,
         # other exceptions are left unchanged.
         class HashError:
             def __hash__(self):
@@ -1590,14 +1587,6 @@ class TestOnlySetsDict(TestOnlySetsInBinaryOps, unittest.TestCase):
     def setUp(self):
         self.set   = set((1, 2, 3))
         self.other = {1:2, 3:4}
-        self.otherIsIterable = True
-
-#------------------------------------------------------------------------------
-
-class TestOnlySetsFrozenDict(TestOnlySetsInBinaryOps, unittest.TestCase):
-    def setUp(self):
-        self.set   = set((1, 2, 3))
-        self.other = frozendict({1:2, 3:4})
         self.otherIsIterable = True
 
 #------------------------------------------------------------------------------

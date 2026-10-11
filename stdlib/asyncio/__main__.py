@@ -12,16 +12,13 @@ import threading
 import types
 import warnings
 
-try:
-    from _colorize import get_theme
-    from _pyrepl.console import InteractiveColoredConsole as InteractiveConsole
-except ModuleNotFoundError:
-    from code import InteractiveConsole
+from _colorize import get_theme
+from _pyrepl.console import InteractiveColoredConsole
 
 from . import futures
 
 
-class AsyncIOInteractiveConsole(InteractiveConsole):
+class AsyncIOInteractiveConsole(InteractiveColoredConsole):
 
     def __init__(self, locals, loop):
         super().__init__(locals, filename="<stdin>")
@@ -115,17 +112,13 @@ class REPLThread(threading.Thread):
             if CAN_USE_PYREPL:
                 theme = get_theme().syntax
                 ps1 = f"{theme.prompt}{ps1}{theme.reset}"
-                import_line = f'{theme.keyword}import{theme.reset} asyncio'
-            else:
-                import_line = "import asyncio"
-            console.write(f"{ps1}{import_line}\n")
+            console.write(f"{ps1}import asyncio\n")
 
             if CAN_USE_PYREPL:
                 from _pyrepl.simple_interact import (
                     run_multiline_interactive_console,
                 )
                 try:
-                    sys.ps1 = ps1
                     run_multiline_interactive_console(console)
                 except SystemExit:
                     # expected via the `exit` and `quit` commands
@@ -159,35 +152,24 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         prog="python3 -m asyncio",
         description="Interactive asyncio shell and CLI tools",
+        color=True,
     )
     subparsers = parser.add_subparsers(help="sub-commands", dest="command")
     ps = subparsers.add_parser(
         "ps", help="Display a table of all pending tasks in a process"
     )
     ps.add_argument("pid", type=int, help="Process ID to inspect")
-    ps.add_argument(
-        "--retries",
-        type=int,
-        default=3,
-        help="Number of retries on transient attach errors",
-    )
     pstree = subparsers.add_parser(
         "pstree", help="Display a tree of all pending tasks in a process"
     )
     pstree.add_argument("pid", type=int, help="Process ID to inspect")
-    pstree.add_argument(
-        "--retries",
-        type=int,
-        default=3,
-        help="Number of retries on transient attach errors",
-    )
     args = parser.parse_args()
     match args.command:
         case "ps":
-            asyncio.tools.display_awaited_by_tasks_table(args.pid, retries=args.retries)
+            asyncio.tools.display_awaited_by_tasks_table(args.pid)
             sys.exit(0)
         case "pstree":
-            asyncio.tools.display_awaited_by_tasks_tree(args.pid, retries=args.retries)
+            asyncio.tools.display_awaited_by_tasks_tree(args.pid)
             sys.exit(0)
         case None:
             pass  # continue to the interactive shell
@@ -203,10 +185,7 @@ if __name__ == '__main__':
     if not sys.flags.ignore_environment and os.getenv('PYTHON_BASIC_REPL'):
         CAN_USE_PYREPL = False
     else:
-        try:
-            from _pyrepl.main import CAN_USE_PYREPL
-        except ModuleNotFoundError:
-            CAN_USE_PYREPL = False
+        from _pyrepl.main import CAN_USE_PYREPL
 
     return_code = 0
     loop = asyncio.new_event_loop()

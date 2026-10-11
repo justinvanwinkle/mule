@@ -13,7 +13,6 @@ import warnings
 
 from test import support
 from test.support import os_helper
-from test.support import warnings_helper
 
 try:
     import _testlimitedcapi
@@ -1622,15 +1621,6 @@ class IDNACodecTest(unittest.TestCase):
         self.assertEqual("python.org.".encode("idna"), b"python.org.")
         self.assertEqual("pyth\xf6n.org".encode("idna"), b"xn--pythn-mua.org")
         self.assertEqual("pyth\xf6n.org.".encode("idna"), b"xn--pythn-mua.org.")
-
-    @support.subTests(['unicode', 'encoded'], [
-        ('\N{CHEROKEE LETTER A}\N{CHEROKEE LETTER A}', b"xn--58da"),
-        ('\N{GEORGIAN CAPITAL LETTER AN}.', b"xn--7md."),
-        ('\N{CYRILLIC LETTER PALOCHKA}.example', b"xn--d5a.example"),
-        ('\N{ROMAN NUMERAL REVERSED ONE HUNDRED}.example.', b"xn--q5g.example."),
-    ])
-    def test_new_unicode_case_folding(self, unicode, encoded):
-        self.assertEqual(unicode.encode("idna"), encoded)
 
     def test_builtin_encode_invalid(self):
         for case, expected in self.invalid_encode_testcases:
@@ -3883,38 +3873,38 @@ class Rot13UtilTest(unittest.TestCase):
 class CodecNameNormalizationTest(unittest.TestCase):
     """Test codec name normalization"""
     def test_codecs_lookup(self):
+        FOUND = (1, 2, 3, 4)
+        NOT_FOUND = (None, None, None, None)
         def search_function(encoding):
-            if encoding.startswith("test."):
-                return (encoding, 2, 3, 4)
+            if encoding == "aaa_8":
+                return FOUND
             else:
-                return None
+                return NOT_FOUND
 
         codecs.register(search_function)
         self.addCleanup(codecs.unregister, search_function)
-        self.assertEqual(codecs.lookup('test.aaa_8'), ('test.aaa_8', 2, 3, 4))
-        self.assertEqual(codecs.lookup('TEST.AAA-8'), ('test.aaa-8', 2, 3, 4))
-        self.assertEqual(codecs.lookup('TEST.AAA 8'), ('test.aaa-8', 2, 3, 4))
-        self.assertEqual(codecs.lookup('TEST.AAA---8'), ('test.aaa---8', 2, 3, 4))
-        self.assertEqual(codecs.lookup('TEST.AAA   8'), ('test.aaa---8', 2, 3, 4))
-        self.assertEqual(codecs.lookup('TEST.AAA.8'), ('test.aaa.8', 2, 3, 4))
-        self.assertEqual(codecs.lookup('TEST.AAA...8'), ('test.aaa...8', 2, 3, 4))
-        with self.assertWarns(DeprecationWarning):
-            self.assertEqual(codecs.lookup('TEST.AAA\xe9\u20ac-8'), ('test.aaa\xe9\u20ac-8', 2, 3, 4))
+        self.assertEqual(FOUND, codecs.lookup('aaa_8'))
+        self.assertEqual(FOUND, codecs.lookup('AAA-8'))
+        self.assertEqual(FOUND, codecs.lookup('AAA---8'))
+        self.assertEqual(FOUND, codecs.lookup('AAA   8'))
+        self.assertEqual(FOUND, codecs.lookup('aaa\xe9\u20ac-8'))
+        self.assertEqual(NOT_FOUND, codecs.lookup('AAA.8'))
+        self.assertEqual(NOT_FOUND, codecs.lookup('AAA...8'))
+        self.assertEqual(NOT_FOUND, codecs.lookup('BBB-8'))
+        self.assertEqual(NOT_FOUND, codecs.lookup('BBB.8'))
+        self.assertEqual(NOT_FOUND, codecs.lookup('a\xe9\u20ac-8'))
 
     def test_encodings_normalize_encoding(self):
+        # encodings.normalize_encoding() ignores non-ASCII characters.
         normalize = encodings.normalize_encoding
         self.assertEqual(normalize('utf_8'), 'utf_8')
+        self.assertEqual(normalize('utf\xE9\u20AC\U0010ffff-8'), 'utf_8')
         self.assertEqual(normalize('utf   8'), 'utf_8')
         # encodings.normalize_encoding() doesn't convert
         # characters to lower case.
         self.assertEqual(normalize('UTF 8'), 'UTF_8')
         self.assertEqual(normalize('utf.8'), 'utf.8')
         self.assertEqual(normalize('utf...8'), 'utf...8')
-
-        # Non-ASCII *encoding* is deprecated.
-        msg = "Support for non-ascii encoding names will be removed in 3.17"
-        with warnings_helper.check_warnings((msg, DeprecationWarning)):
-            self.assertEqual(normalize('utf\xE9\u20AC\U0010ffff-8'), 'utf_8')
 
 
 class CodecCacheTest(unittest.TestCase):

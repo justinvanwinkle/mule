@@ -1,12 +1,14 @@
-import importlib
 import re
 import textwrap
 import unittest
+import warnings
+import importlib
+import contextlib
 
+from . import fixtures
 from importlib.metadata import (
     Distribution,
     PackageNotFoundError,
-    Prepared,
     distribution,
     entry_points,
     files,
@@ -15,7 +17,12 @@ from importlib.metadata import (
     version,
 )
 
-from . import fixtures
+
+@contextlib.contextmanager
+def suppress_known_deprecation():
+    with warnings.catch_warnings(record=True) as ctx:
+        warnings.simplefilter('default', category=DeprecationWarning)
+        yield ctx
 
 
 class APITests(
@@ -146,13 +153,13 @@ class APITests(
         classifiers = md.get_all('Classifier')
         assert 'Topic :: Software Development :: Libraries' in classifiers
 
-    def test_missing_key(self):
+    def test_missing_key_legacy(self):
         """
-        Requesting a missing key raises KeyError.
+        Requesting a missing key will still return None, but warn.
         """
         md = metadata('distinfo-pkg')
-        with self.assertRaises(KeyError):
-            md['does-not-exist']
+        with suppress_known_deprecation():
+            assert md['does-not-exist'] is None
 
     def test_get_key(self):
         """
@@ -314,34 +321,3 @@ class InvalidateCache(unittest.TestCase):
     def test_invalidate_cache(self):
         # No externally observable behavior, but ensures test coverage...
         importlib.invalidate_caches()
-
-
-class PreparedTests(unittest.TestCase):
-    @fixtures.parameterize(
-        # Simple
-        dict(input='sample', expected='sample'),
-        # Mixed case
-        dict(input='Sample', expected='sample'),
-        dict(input='SAMPLE', expected='sample'),
-        dict(input='SaMpLe', expected='sample'),
-        # Separator conversions
-        dict(input='sample-pkg', expected='sample_pkg'),
-        dict(input='sample.pkg', expected='sample_pkg'),
-        dict(input='sample_pkg', expected='sample_pkg'),
-        # Multiple separators
-        dict(input='sample---pkg', expected='sample_pkg'),
-        dict(input='sample___pkg', expected='sample_pkg'),
-        dict(input='sample...pkg', expected='sample_pkg'),
-        # Mixed separators
-        dict(input='sample-._pkg', expected='sample_pkg'),
-        dict(input='sample_.-pkg', expected='sample_pkg'),
-        # Complex
-        dict(input='Sample__Pkg-name.foo', expected='sample_pkg_name_foo'),
-        dict(input='Sample__Pkg.name__foo', expected='sample_pkg_name_foo'),
-        # Uppercase with separators
-        dict(input='SAMPLE-PKG', expected='sample_pkg'),
-        dict(input='Sample.Pkg', expected='sample_pkg'),
-        dict(input='SAMPLE_PKG', expected='sample_pkg'),
-    )
-    def test_normalize(self, input, expected):
-        self.assertEqual(Prepared.normalize(input), expected)

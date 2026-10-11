@@ -571,15 +571,6 @@ class _ProactorDatagramTransport(_ProactorBasePipeTransport,
             else:
                 self._read_fut = self._loop._proactor.recvfrom(self._sock,
                                                                self.max_size)
-        except ConnectionResetError as exc:
-            # WSARecvFrom() reports a stale ICMP port unreachable
-            # notification as a synchronous ConnectionResetError when the
-            # same socket was used to send to an address that is not
-            # listening.  This is transient, so reschedule the read loop
-            # instead of leaving it dead.
-            self._protocol.error_received(exc)
-            if not self._closing:
-                self._loop.call_soon(self._loop_reading)
         except OSError as exc:
             self._protocol.error_received(exc)
         except exceptions.CancelledError:
@@ -647,7 +638,7 @@ class BaseProactorEventLoop(base_events.BaseEventLoop):
             signal.set_wakeup_fd(self._csock.fileno())
 
     def _make_socket_transport(self, sock, protocol, waiter=None,
-                               extra=None, server=None, context=None):
+                               extra=None, server=None):
         return _ProactorSocketTransport(self, sock, protocol, waiter,
                                         extra, server)
 
@@ -656,7 +647,7 @@ class BaseProactorEventLoop(base_events.BaseEventLoop):
             *, server_side=False, server_hostname=None,
             extra=None, server=None,
             ssl_handshake_timeout=None,
-            ssl_shutdown_timeout=None, context=None):
+            ssl_shutdown_timeout=None):
         ssl_protocol = sslproto.SSLProtocol(
                 self, protocol, sslcontext, waiter,
                 server_side, server_hostname,
@@ -738,7 +729,7 @@ class BaseProactorEventLoop(base_events.BaseEventLoop):
     async def _sock_sendfile_native(self, sock, file, offset, count):
         try:
             fileno = file.fileno()
-        except (AttributeError, io.UnsupportedOperation):
+        except (AttributeError, io.UnsupportedOperation) as err:
             raise exceptions.SendfileNotAvailableError("not a regular file")
         try:
             fsize = os.fstat(fileno).st_size
@@ -841,7 +832,7 @@ class BaseProactorEventLoop(base_events.BaseEventLoop):
     def _start_serving(self, protocol_factory, sock,
                        sslcontext=None, server=None, backlog=100,
                        ssl_handshake_timeout=None,
-                       ssl_shutdown_timeout=None, context=None):
+                       ssl_shutdown_timeout=None):
 
         def loop(f=None):
             try:

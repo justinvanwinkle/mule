@@ -38,11 +38,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import unicodedata
 from collections import deque
-from typing import TYPE_CHECKING
 
 
 # types
-if TYPE_CHECKING:
+if False:
     from .types import EventTuple
 
 

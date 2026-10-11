@@ -6,7 +6,6 @@ import unittest
 from concurrent import futures
 
 from test import support
-from test.support import warnings_helper
 from test.support.script_helper import assert_python_ok
 
 from .util import (
@@ -50,7 +49,6 @@ class ExecutorShutdownTest:
         self.assertFalse(err)
         self.assertEqual(out.strip(), b"apple")
 
-    @support.force_not_colorized
     def test_submit_after_interpreter_shutdown(self):
         # Test the atexit hook for shutdown of worker threads and processes
         rc, out, err = assert_python_ok('-c', """if 1:
@@ -79,14 +77,12 @@ class ExecutorShutdownTest:
         self.assertIn("RuntimeError: cannot schedule new futures", err.decode())
         self.assertEqual(out.strip(), b"runtime-error")
 
-    @warnings_helper.ignore_fork_in_thread_deprecation_warnings()
     def test_hang_issue12364(self):
         fs = [self.executor.submit(time.sleep, 0.1) for _ in range(50)]
         self.executor.shutdown()
         for f in fs:
             f.result()
 
-    @warnings_helper.ignore_fork_in_thread_deprecation_warnings()
     def test_cancel_futures(self):
         assert self.worker_count <= 5, "test needs few workers"
         fs = [self.executor.submit(time.sleep, .1) for _ in range(50)]
@@ -133,7 +129,6 @@ class ExecutorShutdownTest:
         self.assertFalse(err)
         self.assertEqual(out.strip(), b"apple")
 
-    @warnings_helper.ignore_fork_in_thread_deprecation_warnings()
     def test_hang_gh94440(self):
         """shutdown(wait=True) doesn't hang when a future was submitted and
         quickly canceled right before shutdown.
@@ -177,7 +172,6 @@ class ThreadPoolShutdownTest(ThreadPoolMixin, ExecutorShutdownTest, BaseTestCase
         for t in self.executor._threads:
             t.join()
 
-    @warnings_helper.ignore_fork_in_thread_deprecation_warnings()
     def test_context_manager_shutdown(self):
         with futures.ThreadPoolExecutor(max_workers=5) as e:
             executor = e
@@ -187,7 +181,6 @@ class ThreadPoolShutdownTest(ThreadPoolMixin, ExecutorShutdownTest, BaseTestCase
         for t in executor._threads:
             t.join()
 
-    @warnings_helper.ignore_fork_in_thread_deprecation_warnings()
     def test_del_shutdown(self):
         executor = futures.ThreadPoolExecutor(max_workers=5)
         res = executor.map(abs, range(-5, 5))
@@ -201,7 +194,6 @@ class ThreadPoolShutdownTest(ThreadPoolMixin, ExecutorShutdownTest, BaseTestCase
         # executor got shutdown.
         assert all([r == abs(v) for r, v in zip(res, range(-5, 5))])
 
-    @warnings_helper.ignore_fork_in_thread_deprecation_warnings()
     def test_shutdown_no_wait(self):
         # Ensure that the executor cleans up the threads when calling
         # shutdown with wait=False
@@ -216,7 +208,7 @@ class ThreadPoolShutdownTest(ThreadPoolMixin, ExecutorShutdownTest, BaseTestCase
         # executor got shutdown.
         assert all([r == abs(v) for r, v in zip(res, range(-5, 5))])
 
-    @warnings_helper.ignore_fork_in_thread_deprecation_warnings()
+
     def test_thread_names_assigned(self):
         executor = futures.ThreadPoolExecutor(
             max_workers=5, thread_name_prefix='SpecialPool')
@@ -229,7 +221,6 @@ class ThreadPoolShutdownTest(ThreadPoolMixin, ExecutorShutdownTest, BaseTestCase
             self.assertRegex(t.name, r'^SpecialPool_[0-4]$')
             t.join()
 
-    @warnings_helper.ignore_fork_in_thread_deprecation_warnings()
     def test_thread_names_default(self):
         executor = futures.ThreadPoolExecutor(max_workers=5)
         executor.map(abs, range(-5, 5))
@@ -261,7 +252,6 @@ class ThreadPoolShutdownTest(ThreadPoolMixin, ExecutorShutdownTest, BaseTestCase
 
 
 class ProcessPoolShutdownTest(ExecutorShutdownTest):
-    @warnings_helper.ignore_fork_in_thread_deprecation_warnings()
     def test_processes_terminate(self):
         def acquire_lock(lock):
             lock.acquire()
@@ -285,7 +275,6 @@ class ProcessPoolShutdownTest(ExecutorShutdownTest):
         for p in processes.values():
             p.join()
 
-    @warnings_helper.ignore_fork_in_thread_deprecation_warnings()
     def test_context_manager_shutdown(self):
         with futures.ProcessPoolExecutor(
                 max_workers=5, mp_context=self.get_context()) as e:
@@ -296,7 +285,6 @@ class ProcessPoolShutdownTest(ExecutorShutdownTest):
         for p in processes.values():
             p.join()
 
-    @warnings_helper.ignore_fork_in_thread_deprecation_warnings()
     def test_del_shutdown(self):
         executor = futures.ProcessPoolExecutor(
                 max_workers=5, mp_context=self.get_context())
@@ -319,7 +307,6 @@ class ProcessPoolShutdownTest(ExecutorShutdownTest):
         # executor got shutdown.
         assert all([r == abs(v) for r, v in zip(res, range(-5, 5))])
 
-    @warnings_helper.ignore_fork_in_thread_deprecation_warnings()
     def test_shutdown_no_wait(self):
         # Ensure that the executor cleans up the processes when calling
         # shutdown with wait=False

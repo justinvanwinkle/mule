@@ -101,7 +101,7 @@ def driver_source(entry, result_file, stdlib=STDLIB):
         + STRICT_RESULT
         + f"module = importlib.import_module({name!r})\n"
         "if hasattr(module, 'test_main'):\n"
-        "    raise RuntimeError('legacy test_main is not supported by Python 3.15 regrtest')\n"
+        "    raise RuntimeError('legacy test_main is not supported by Python 3.14 regrtest')\n"
         "loader = unittest.TestLoader()\n"
         "suite = loader.loadTestsFromModule(module)\n"
         "runner = unittest.TextTestRunner(resultclass=StrictResult, verbosity=1)\n"

@@ -158,6 +158,7 @@ def _readmodule(module, path, inpackage=None):
         return _readmodule(submodule, parent['__path__'], package)
 
     # Search the path for the module.
+    f = None
     if inpackage is not None:
         search_path = path
     else:

@@ -1,6 +1,5 @@
 "Test , coverage %."
 
-from idlelib import zzdummy  # Replace with the module to test.
 import unittest
 from test.support import requires
 from tkinter import Tk
@@ -22,7 +21,6 @@ class Test(unittest.TestCase):
         cls.root.destroy()
         del cls.root
 
-    @unittest.skip('Dummy test')
     def test_init(self):
         self.assertTrue(True)
 

@@ -2,27 +2,12 @@ import unittest
 
 from asyncio import tools
 
-import _remote_debugging
+from collections import namedtuple
 
-
-def LocationInfo(lineno, end_lineno=None, col_offset=None, end_col_offset=None):
-    return _remote_debugging.LocationInfo((lineno, end_lineno, col_offset, end_col_offset))
-
-
-def FrameInfo(funcname, filename, location, opcode=None):
-    return _remote_debugging.FrameInfo((filename, location, funcname, opcode))
-
-
-def CoroInfo(call_stack, task_name):
-    return _remote_debugging.CoroInfo((call_stack, task_name))
-
-
-def TaskInfo(task_id, task_name, coroutine_stack, awaited_by):
-    return _remote_debugging.TaskInfo((task_id, task_name, coroutine_stack, awaited_by))
-
-
-def AwaitedInfo(thread_id, awaited_by):
-    return _remote_debugging.AwaitedInfo((thread_id, awaited_by))
+FrameInfo = namedtuple('FrameInfo', ['funcname', 'filename', 'lineno'])
+CoroInfo = namedtuple('CoroInfo', ['call_stack', 'task_name'])
+TaskInfo = namedtuple('TaskInfo', ['task_id', 'task_name', 'coroutine_stack', 'awaited_by'])
+AwaitedInfo = namedtuple('AwaitedInfo', ['thread_id', 'awaited_by'])
 
 
 # mock output of get_all_awaited_by function.
@@ -48,33 +33,33 @@ TEST_INPUTS_TREE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("awaiter3", "/path/to/app.py", LocationInfo(130)),
-                                    FrameInfo("awaiter2", "/path/to/app.py", LocationInfo(120)),
-                                    FrameInfo("awaiter", "/path/to/app.py", LocationInfo(110))
+                                    FrameInfo("awaiter3", "/path/to/app.py", 130),
+                                    FrameInfo("awaiter2", "/path/to/app.py", 120),
+                                    FrameInfo("awaiter", "/path/to/app.py", 110)
                                 ],
                                 task_name=4
                             ),
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("awaiterB3", "/path/to/app.py", LocationInfo(190)),
-                                    FrameInfo("awaiterB2", "/path/to/app.py", LocationInfo(180)),
-                                    FrameInfo("awaiterB", "/path/to/app.py", LocationInfo(170))
+                                    FrameInfo("awaiterB3", "/path/to/app.py", 190),
+                                    FrameInfo("awaiterB2", "/path/to/app.py", 180),
+                                    FrameInfo("awaiterB", "/path/to/app.py", 170)
                                 ],
                                 task_name=5
                             ),
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("awaiterB3", "/path/to/app.py", LocationInfo(190)),
-                                    FrameInfo("awaiterB2", "/path/to/app.py", LocationInfo(180)),
-                                    FrameInfo("awaiterB", "/path/to/app.py", LocationInfo(170))
+                                    FrameInfo("awaiterB3", "/path/to/app.py", 190),
+                                    FrameInfo("awaiterB2", "/path/to/app.py", 180),
+                                    FrameInfo("awaiterB", "/path/to/app.py", 170)
                                 ],
                                 task_name=6
                             ),
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("awaiter3", "/path/to/app.py", LocationInfo(130)),
-                                    FrameInfo("awaiter2", "/path/to/app.py", LocationInfo(120)),
-                                    FrameInfo("awaiter", "/path/to/app.py", LocationInfo(110))
+                                    FrameInfo("awaiter3", "/path/to/app.py", 130),
+                                    FrameInfo("awaiter2", "/path/to/app.py", 120),
+                                    FrameInfo("awaiter", "/path/to/app.py", 110)
                                 ],
                                 task_name=7
                             )
@@ -87,9 +72,9 @@ TEST_INPUTS_TREE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("_aexit", "", LocationInfo(0)),
-                                    FrameInfo("__aexit__", "", LocationInfo(0)),
-                                    FrameInfo("main", "", LocationInfo(0))
+                                    FrameInfo("_aexit", "", 0),
+                                    FrameInfo("__aexit__", "", 0),
+                                    FrameInfo("main", "", 0)
                                 ],
                                 task_name=2
                             )
@@ -102,9 +87,9 @@ TEST_INPUTS_TREE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("_aexit", "", LocationInfo(0)),
-                                    FrameInfo("__aexit__", "", LocationInfo(0)),
-                                    FrameInfo("main", "", LocationInfo(0))
+                                    FrameInfo("_aexit", "", 0),
+                                    FrameInfo("__aexit__", "", 0),
+                                    FrameInfo("main", "", 0)
                                 ],
                                 task_name=2
                             )
@@ -117,10 +102,10 @@ TEST_INPUTS_TREE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("_aexit", "", LocationInfo(0)),
-                                    FrameInfo("__aexit__", "", LocationInfo(0)),
-                                    FrameInfo("blocho_caller", "", LocationInfo(0)),
-                                    FrameInfo("bloch", "", LocationInfo(0))
+                                    FrameInfo("_aexit", "", 0),
+                                    FrameInfo("__aexit__", "", 0),
+                                    FrameInfo("blocho_caller", "", 0),
+                                    FrameInfo("bloch", "", 0)
                                 ],
                                 task_name=8
                             )
@@ -133,10 +118,10 @@ TEST_INPUTS_TREE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("_aexit", "", LocationInfo(0)),
-                                    FrameInfo("__aexit__", "", LocationInfo(0)),
-                                    FrameInfo("blocho_caller", "", LocationInfo(0)),
-                                    FrameInfo("bloch", "", LocationInfo(0))
+                                    FrameInfo("_aexit", "", 0),
+                                    FrameInfo("__aexit__", "", 0),
+                                    FrameInfo("blocho_caller", "", 0),
+                                    FrameInfo("bloch", "", 0)
                                 ],
                                 task_name=8
                             )
@@ -149,10 +134,10 @@ TEST_INPUTS_TREE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("_aexit", "", LocationInfo(0)),
-                                    FrameInfo("__aexit__", "", LocationInfo(0)),
-                                    FrameInfo("blocho_caller", "", LocationInfo(0)),
-                                    FrameInfo("bloch", "", LocationInfo(0))
+                                    FrameInfo("_aexit", "", 0),
+                                    FrameInfo("__aexit__", "", 0),
+                                    FrameInfo("blocho_caller", "", 0),
+                                    FrameInfo("bloch", "", 0)
                                 ],
                                 task_name=9
                             )
@@ -165,10 +150,10 @@ TEST_INPUTS_TREE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("_aexit", "", LocationInfo(0)),
-                                    FrameInfo("__aexit__", "", LocationInfo(0)),
-                                    FrameInfo("blocho_caller", "", LocationInfo(0)),
-                                    FrameInfo("bloch", "", LocationInfo(0))
+                                    FrameInfo("_aexit", "", 0),
+                                    FrameInfo("__aexit__", "", 0),
+                                    FrameInfo("blocho_caller", "", 0),
+                                    FrameInfo("bloch", "", 0)
                                 ],
                                 task_name=9
                             )
@@ -237,7 +222,7 @@ TEST_INPUTS_TREE = [
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main2", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main2", "", 0)],
                                 task_name=5
                             )
                         ]
@@ -248,7 +233,7 @@ TEST_INPUTS_TREE = [
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main2", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main2", "", 0)],
                                 task_name=5
                             )
                         ]
@@ -259,7 +244,7 @@ TEST_INPUTS_TREE = [
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main2", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main2", "", 0)],
                                 task_name=5
                             )
                         ]
@@ -281,7 +266,7 @@ TEST_INPUTS_TREE = [
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main", "", 0)],
                                 task_name=1
                             )
                         ]
@@ -292,7 +277,7 @@ TEST_INPUTS_TREE = [
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main", "", 0)],
                                 task_name=1
                             )
                         ]
@@ -303,7 +288,7 @@ TEST_INPUTS_TREE = [
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main", "", 0)],
                                 task_name=1
                             )
                         ]
@@ -362,7 +347,7 @@ TEST_INPUTS_TREE = [
                             coroutine_stack=[],
                             awaited_by=[
                                 CoroInfo(
-                                    call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                    call_stack=[FrameInfo("main", "", 0)],
                                     task_name=4
                                 )
                             ]
@@ -373,7 +358,7 @@ TEST_INPUTS_TREE = [
                             coroutine_stack=[],
                             awaited_by=[
                                 CoroInfo(
-                                    call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                    call_stack=[FrameInfo("main", "", 0)],
                                     task_name=4
                                 )
                             ]
@@ -384,7 +369,7 @@ TEST_INPUTS_TREE = [
                             coroutine_stack=[],
                             awaited_by=[
                                 CoroInfo(
-                                    call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                    call_stack=[FrameInfo("main", "", 0)],
                                     task_name=4
                                 )
                             ]
@@ -430,11 +415,11 @@ TEST_INPUTS_CYCLES_TREE = [
                             coroutine_stack=[],
                             awaited_by=[
                                 CoroInfo(
-                                    call_stack=[FrameInfo("awaiter2", "", LocationInfo(0))],
+                                    call_stack=[FrameInfo("awaiter2", "", 0)],
                                     task_name=4
                                 ),
                                 CoroInfo(
-                                    call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                    call_stack=[FrameInfo("main", "", 0)],
                                     task_name=2
                                 )
                             ]
@@ -445,7 +430,7 @@ TEST_INPUTS_CYCLES_TREE = [
                             coroutine_stack=[],
                             awaited_by=[
                                 CoroInfo(
-                                    call_stack=[FrameInfo("awaiter", "", LocationInfo(0))],
+                                    call_stack=[FrameInfo("awaiter", "", 0)],
                                     task_name=3
                                 )
                             ]
@@ -477,9 +462,9 @@ TEST_INPUTS_CYCLES_TREE = [
                             awaited_by=[
                                 CoroInfo(
                                     call_stack=[
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("task_b", "", LocationInfo(0))
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("task_b", "", 0)
                                     ],
                                     task_name=4
                                 )
@@ -492,17 +477,17 @@ TEST_INPUTS_CYCLES_TREE = [
                             awaited_by=[
                                 CoroInfo(
                                     call_stack=[
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("task_c", "", LocationInfo(0))
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("task_c", "", 0)
                                     ],
                                     task_name=5
                                 ),
                                 CoroInfo(
                                     call_stack=[
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("task_a", "", LocationInfo(0))
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("task_a", "", 0)
                                     ],
                                     task_name=3
                                 )
@@ -515,8 +500,8 @@ TEST_INPUTS_CYCLES_TREE = [
                             awaited_by=[
                                 CoroInfo(
                                     call_stack=[
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("nested", "", LocationInfo(0))
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("nested", "", 0)
                                     ],
                                     task_name=6
                                 )
@@ -529,9 +514,9 @@ TEST_INPUTS_CYCLES_TREE = [
                             awaited_by=[
                                 CoroInfo(
                                     call_stack=[
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("task_b", "", LocationInfo(0))
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("task_b", "", 0)
                                     ],
                                     task_name=4
                                 )
@@ -568,33 +553,33 @@ TEST_INPUTS_TABLE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("awaiter3", "", LocationInfo(0)),
-                                    FrameInfo("awaiter2", "", LocationInfo(0)),
-                                    FrameInfo("awaiter", "", LocationInfo(0))
+                                    FrameInfo("awaiter3", "", 0),
+                                    FrameInfo("awaiter2", "", 0),
+                                    FrameInfo("awaiter", "", 0)
                                 ],
                                 task_name=4
                             ),
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("awaiter1_3", "", LocationInfo(0)),
-                                    FrameInfo("awaiter1_2", "", LocationInfo(0)),
-                                    FrameInfo("awaiter1", "", LocationInfo(0))
+                                    FrameInfo("awaiter1_3", "", 0),
+                                    FrameInfo("awaiter1_2", "", 0),
+                                    FrameInfo("awaiter1", "", 0)
                                 ],
                                 task_name=5
                             ),
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("awaiter1_3", "", LocationInfo(0)),
-                                    FrameInfo("awaiter1_2", "", LocationInfo(0)),
-                                    FrameInfo("awaiter1", "", LocationInfo(0))
+                                    FrameInfo("awaiter1_3", "", 0),
+                                    FrameInfo("awaiter1_2", "", 0),
+                                    FrameInfo("awaiter1", "", 0)
                                 ],
                                 task_name=6
                             ),
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("awaiter3", "", LocationInfo(0)),
-                                    FrameInfo("awaiter2", "", LocationInfo(0)),
-                                    FrameInfo("awaiter", "", LocationInfo(0))
+                                    FrameInfo("awaiter3", "", 0),
+                                    FrameInfo("awaiter2", "", 0),
+                                    FrameInfo("awaiter", "", 0)
                                 ],
                                 task_name=7
                             )
@@ -607,9 +592,9 @@ TEST_INPUTS_TABLE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("_aexit", "", LocationInfo(0)),
-                                    FrameInfo("__aexit__", "", LocationInfo(0)),
-                                    FrameInfo("main", "", LocationInfo(0))
+                                    FrameInfo("_aexit", "", 0),
+                                    FrameInfo("__aexit__", "", 0),
+                                    FrameInfo("main", "", 0)
                                 ],
                                 task_name=2
                             )
@@ -622,9 +607,9 @@ TEST_INPUTS_TABLE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("_aexit", "", LocationInfo(0)),
-                                    FrameInfo("__aexit__", "", LocationInfo(0)),
-                                    FrameInfo("main", "", LocationInfo(0))
+                                    FrameInfo("_aexit", "", 0),
+                                    FrameInfo("__aexit__", "", 0),
+                                    FrameInfo("main", "", 0)
                                 ],
                                 task_name=2
                             )
@@ -637,10 +622,10 @@ TEST_INPUTS_TABLE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("_aexit", "", LocationInfo(0)),
-                                    FrameInfo("__aexit__", "", LocationInfo(0)),
-                                    FrameInfo("blocho_caller", "", LocationInfo(0)),
-                                    FrameInfo("bloch", "", LocationInfo(0))
+                                    FrameInfo("_aexit", "", 0),
+                                    FrameInfo("__aexit__", "", 0),
+                                    FrameInfo("blocho_caller", "", 0),
+                                    FrameInfo("bloch", "", 0)
                                 ],
                                 task_name=8
                             )
@@ -653,10 +638,10 @@ TEST_INPUTS_TABLE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("_aexit", "", LocationInfo(0)),
-                                    FrameInfo("__aexit__", "", LocationInfo(0)),
-                                    FrameInfo("blocho_caller", "", LocationInfo(0)),
-                                    FrameInfo("bloch", "", LocationInfo(0))
+                                    FrameInfo("_aexit", "", 0),
+                                    FrameInfo("__aexit__", "", 0),
+                                    FrameInfo("blocho_caller", "", 0),
+                                    FrameInfo("bloch", "", 0)
                                 ],
                                 task_name=8
                             )
@@ -669,10 +654,10 @@ TEST_INPUTS_TABLE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("_aexit", "", LocationInfo(0)),
-                                    FrameInfo("__aexit__", "", LocationInfo(0)),
-                                    FrameInfo("blocho_caller", "", LocationInfo(0)),
-                                    FrameInfo("bloch", "", LocationInfo(0))
+                                    FrameInfo("_aexit", "", 0),
+                                    FrameInfo("__aexit__", "", 0),
+                                    FrameInfo("blocho_caller", "", 0),
+                                    FrameInfo("bloch", "", 0)
                                 ],
                                 task_name=9
                             )
@@ -685,10 +670,10 @@ TEST_INPUTS_TABLE = [
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("_aexit", "", LocationInfo(0)),
-                                    FrameInfo("__aexit__", "", LocationInfo(0)),
-                                    FrameInfo("blocho_caller", "", LocationInfo(0)),
-                                    FrameInfo("bloch", "", LocationInfo(0))
+                                    FrameInfo("_aexit", "", 0),
+                                    FrameInfo("__aexit__", "", 0),
+                                    FrameInfo("blocho_caller", "", 0),
+                                    FrameInfo("bloch", "", 0)
                                 ],
                                 task_name=9
                             )
@@ -812,7 +797,7 @@ TEST_INPUTS_TABLE = [
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main2", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main2", "", 0)],
                                 task_name=5
                             )
                         ]
@@ -823,7 +808,7 @@ TEST_INPUTS_TABLE = [
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main2", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main2", "", 0)],
                                 task_name=5
                             )
                         ]
@@ -834,7 +819,7 @@ TEST_INPUTS_TABLE = [
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main2", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main2", "", 0)],
                                 task_name=5
                             )
                         ]
@@ -856,7 +841,7 @@ TEST_INPUTS_TABLE = [
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main", "", 0)],
                                 task_name=1
                             )
                         ]
@@ -867,7 +852,7 @@ TEST_INPUTS_TABLE = [
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main", "", 0)],
                                 task_name=1
                             )
                         ]
@@ -878,7 +863,7 @@ TEST_INPUTS_TABLE = [
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main", "", 0)],
                                 task_name=1
                             )
                         ]
@@ -931,7 +916,7 @@ TEST_INPUTS_TABLE = [
                             coroutine_stack=[],
                             awaited_by=[
                                 CoroInfo(
-                                    call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                    call_stack=[FrameInfo("main", "", 0)],
                                     task_name=4
                                 )
                             ]
@@ -942,7 +927,7 @@ TEST_INPUTS_TABLE = [
                             coroutine_stack=[],
                             awaited_by=[
                                 CoroInfo(
-                                    call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                    call_stack=[FrameInfo("main", "", 0)],
                                     task_name=4
                                 )
                             ]
@@ -953,7 +938,7 @@ TEST_INPUTS_TABLE = [
                             coroutine_stack=[],
                             awaited_by=[
                                 CoroInfo(
-                                    call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                    call_stack=[FrameInfo("main", "", 0)],
                                     task_name=4
                                 )
                             ]
@@ -994,11 +979,11 @@ TEST_INPUTS_TABLE = [
                             coroutine_stack=[],
                             awaited_by=[
                                 CoroInfo(
-                                    call_stack=[FrameInfo("awaiter2", "", LocationInfo(0))],
+                                    call_stack=[FrameInfo("awaiter2", "", 0)],
                                     task_name=4
                                 ),
                                 CoroInfo(
-                                    call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                    call_stack=[FrameInfo("main", "", 0)],
                                     task_name=2
                                 )
                             ]
@@ -1009,7 +994,7 @@ TEST_INPUTS_TABLE = [
                             coroutine_stack=[],
                             awaited_by=[
                                 CoroInfo(
-                                    call_stack=[FrameInfo("awaiter", "", LocationInfo(0))],
+                                    call_stack=[FrameInfo("awaiter", "", 0)],
                                     task_name=3
                                 )
                             ]
@@ -1048,9 +1033,9 @@ TEST_INPUTS_TABLE = [
                             awaited_by=[
                                 CoroInfo(
                                     call_stack=[
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("task_b", "", LocationInfo(0))
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("task_b", "", 0)
                                     ],
                                     task_name=4
                                 )
@@ -1063,17 +1048,17 @@ TEST_INPUTS_TABLE = [
                             awaited_by=[
                                 CoroInfo(
                                     call_stack=[
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("task_c", "", LocationInfo(0))
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("task_c", "", 0)
                                     ],
                                     task_name=5
                                 ),
                                 CoroInfo(
                                     call_stack=[
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("task_a", "", LocationInfo(0))
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("task_a", "", 0)
                                     ],
                                     task_name=3
                                 )
@@ -1086,8 +1071,8 @@ TEST_INPUTS_TABLE = [
                             awaited_by=[
                                 CoroInfo(
                                     call_stack=[
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("nested", "", LocationInfo(0))
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("nested", "", 0)
                                     ],
                                     task_name=6
                                 )
@@ -1100,9 +1085,9 @@ TEST_INPUTS_TABLE = [
                             awaited_by=[
                                 CoroInfo(
                                     call_stack=[
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("nested", "", LocationInfo(0)),
-                                        FrameInfo("task_b", "", LocationInfo(0))
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("nested", "", 0),
+                                        FrameInfo("task_b", "", 0)
                                     ],
                                     task_name=4
                                 )
@@ -1305,7 +1290,7 @@ class TestAsyncioToolsBasic(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main", "", 0)],
                                 task_name=3
                             )
                         ]
@@ -1316,7 +1301,7 @@ class TestAsyncioToolsBasic(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main", "", 0)],
                                 task_name=2
                             )
                         ]
@@ -1346,7 +1331,7 @@ class TestAsyncioToolsBasic(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main", "", 0)],
                                 task_name=2
                             )
                         ]
@@ -1357,7 +1342,7 @@ class TestAsyncioToolsBasic(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main", "", 0)],
                                 task_name=3
                             )
                         ]
@@ -1394,7 +1379,7 @@ class TestAsyncioToolsBasic(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main", "", 0)],
                                 task_name=2
                             )
                         ]
@@ -1405,7 +1390,7 @@ class TestAsyncioToolsBasic(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("main", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("main", "", 0)],
                                 task_name=3
                             )
                         ]
@@ -1432,11 +1417,11 @@ class TestAsyncioToolsBasic(unittest.TestCase):
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("c1", "", LocationInfo(0)),
-                                    FrameInfo("c2", "", LocationInfo(0)),
-                                    FrameInfo("c3", "", LocationInfo(0)),
-                                    FrameInfo("c4", "", LocationInfo(0)),
-                                    FrameInfo("c5", "", LocationInfo(0))
+                                    FrameInfo("c1", "", 0),
+                                    FrameInfo("c2", "", 0),
+                                    FrameInfo("c3", "", 0),
+                                    FrameInfo("c4", "", 0),
+                                    FrameInfo("c5", "", 0)
                                 ],
                                 task_name=11
                             )
@@ -1476,7 +1461,7 @@ class TestAsyncioToolsBasic(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("call1", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("call1", "", 0)],
                                 task_name=2
                             )
                         ]
@@ -1487,7 +1472,7 @@ class TestAsyncioToolsBasic(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("call2", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("call2", "", 0)],
                                 task_name=3
                             )
                         ]
@@ -1498,11 +1483,11 @@ class TestAsyncioToolsBasic(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("call3", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("call3", "", 0)],
                                 task_name=1
                             ),
                             CoroInfo(
-                                call_stack=[FrameInfo("call4", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("call4", "", 0)],
                                 task_name=2
                             )
                         ]
@@ -1526,7 +1511,7 @@ class TestAsyncioToolsBasic(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("foo", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("foo", "", 0)],
                                 task_name=2
                             )
                         ]
@@ -1570,7 +1555,7 @@ class TestAsyncioToolsEdgeCases(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("loopback", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("loopback", "", 0)],
                                 task_name=1
                             )
                         ]
@@ -1594,7 +1579,7 @@ class TestAsyncioToolsEdgeCases(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("coro", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("coro", "", 0)],
                                 task_name=999
                             )
                         ]
@@ -1618,11 +1603,11 @@ class TestAsyncioToolsEdgeCases(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("frameA", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("frameA", "", 0)],
                                 task_name=2
                             ),
                             CoroInfo(
-                                call_stack=[FrameInfo("frameA", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("frameA", "", 0)],
                                 task_name=3
                             )
                         ]
@@ -1666,7 +1651,7 @@ class TestAsyncioToolsEdgeCases(unittest.TestCase):
                         coroutine_stack=[],
                         awaited_by=[
                             CoroInfo(
-                                call_stack=[FrameInfo("f1", "", LocationInfo(0))],
+                                call_stack=[FrameInfo("f1", "", 0)],
                                 task_name=2
                             )
                         ]
@@ -1697,8 +1682,8 @@ class TestAsyncioToolsEdgeCases(unittest.TestCase):
                         awaited_by=[
                             CoroInfo(
                                 call_stack=[
-                                    FrameInfo("f1", "", LocationInfo(0)),
-                                    FrameInfo("f2", "", LocationInfo(0))
+                                    FrameInfo("f1", "", 0),
+                                    FrameInfo("f2", "", 0)
                                 ],
                                 task_name=2
                             )

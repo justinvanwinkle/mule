@@ -97,7 +97,7 @@ class LocalPathInfo(PathInfo):
     __slots__ = ('_path', '_exists', '_is_dir', '_is_file', '_is_symlink')
 
     def __init__(self, path):
-        self._path = os.fspath(path)
+        self._path = str(path)
         self._exists = None
         self._is_dir = None
         self._is_file = None
@@ -139,13 +139,15 @@ class ReadableLocalPath(_ReadablePath, LexicalPath):
     Simple implementation of a ReadablePath class for local filesystem paths.
     """
     __slots__ = ('info',)
-    __fspath__ = LexicalPath.__vfspath__
 
     def __init__(self, *pathsegments):
         super().__init__(*pathsegments)
         self.info = LocalPathInfo(self)
 
-    def __open_reader__(self):
+    def __fspath__(self):
+        return str(self)
+
+    def __open_rb__(self, buffering=-1):
         return open(self, 'rb')
 
     def iterdir(self):
@@ -161,10 +163,12 @@ class WritableLocalPath(_WritablePath, LexicalPath):
     """
 
     __slots__ = ()
-    __fspath__ = LexicalPath.__vfspath__
 
-    def __open_writer__(self, mode):
-        return open(self, f'{mode}b')
+    def __fspath__(self):
+        return str(self)
+
+    def __open_wb__(self, buffering=-1):
+        return open(self, 'wb')
 
     def mkdir(self, mode=0o777):
         os.mkdir(self, mode)

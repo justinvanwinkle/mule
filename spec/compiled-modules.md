@@ -1,7 +1,7 @@
 # Compiled modules and the first upstream test execution
 
 Status: implemented initial static module linking and native test execution.
-All six methods in the unchanged Python 3.15 `test.test_int_literal` module execute
+All six methods in the unchanged Python 3.14 `test.test_int_literal` module execute
 and pass. General unittest support remains incomplete.
 
 ## SBCL correspondence and required adaptations

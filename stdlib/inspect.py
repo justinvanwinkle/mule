@@ -153,9 +153,9 @@ import importlib.machinery
 import itertools
 import linecache
 import os
-lazy import re
+import re
 import sys
-lazy import tokenize
+import tokenize
 import token
 import types
 import functools
@@ -163,9 +163,9 @@ import builtins
 from keyword import iskeyword
 from operator import attrgetter
 from collections import namedtuple, OrderedDict
-from _weakref import ref as make_weakref
+from weakref import ref as make_weakref
 
-# Create constants for the compiler flags in Include/cpython/code.h
+# Create constants for the compiler flags in Include/code.h
 # We try to get them from dis to avoid duplication
 mod_dict = globals()
 for k, v in dis.COMPILER_FLAG_NAMES.items():
@@ -421,6 +421,7 @@ def iscode(object):
         co_freevars         tuple of names of free variables
         co_posonlyargcount  number of positional only arguments
         co_kwonlyargcount   number of keyword only arguments (not including ** arg)
+        co_lnotab           encoded mapping of line numbers to bytecode indices
         co_name             name with which this code object was defined
         co_names            tuple of names other than arguments and function locals
         co_nlocals          number of local variables
@@ -711,8 +712,8 @@ def _findclass(func):
         return None
     return cls
 
-def _finddoc(obj, *, search_in_class=True):
-    if search_in_class and isclass(obj):
+def _finddoc(obj):
+    if isclass(obj):
         for base in obj.__mro__:
             if base is not object:
                 try:
@@ -752,12 +753,6 @@ def _finddoc(obj, *, search_in_class=True):
         cls = _findclass(obj.fget)
         if cls is None or getattr(cls, name) is not obj:
             return None
-    # Should be tested before ismethoddescriptor()
-    elif isinstance(obj, functools.cached_property):
-        name = obj.attrname
-        cls = _findclass(obj.func)
-        if cls is None or getattr(cls, name) is not obj:
-            return None
     elif ismethoddescriptor(obj) or isdatadescriptor(obj):
         name = obj.__name__
         cls = obj.__objclass__
@@ -778,37 +773,19 @@ def _finddoc(obj, *, search_in_class=True):
             return doc
     return None
 
-def _getowndoc(obj):
-    """Get the documentation string for an object if it is not
-    inherited from its class."""
-    try:
-        doc = object.__getattribute__(obj, '__doc__')
-        if doc is None:
-            return None
-        if obj is not type:
-            typedoc = type(obj).__doc__
-            if isinstance(typedoc, str) and typedoc == doc:
-                return None
-        return doc
-    except AttributeError:
-        return None
-
-def getdoc(object, *, fallback_to_class_doc=True, inherit_class_doc=True):
+def getdoc(object):
     """Get the documentation string for an object.
 
     All tabs are expanded to spaces.  To clean up docstrings that are
     indented to line up with blocks of code, any whitespace than can be
     uniformly removed from the second line onwards is removed."""
-    if fallback_to_class_doc:
-        try:
-            doc = object.__doc__
-        except AttributeError:
-            return None
-    else:
-        doc = _getowndoc(object)
+    try:
+        doc = object.__doc__
+    except AttributeError:
+        return None
     if doc is None:
         try:
-            doc = _finddoc(object, search_in_class=inherit_class_doc)
+            doc = _finddoc(object)
         except (AttributeError, TypeError):
             return None
     if not isinstance(doc, str):
@@ -1259,19 +1236,17 @@ def getargs(co):
 FullArgSpec = namedtuple('FullArgSpec',
     'args, varargs, varkw, defaults, kwonlyargs, kwonlydefaults, annotations')
 
-def getfullargspec(func, *, annotation_format=Format.VALUE):
+def getfullargspec(func):
     """Get the names and default values of a callable object's parameters.
 
-    A FullArgSpec namedtuple is returned, which has the following attributes:
+    A tuple of seven things is returned:
+    (args, varargs, varkw, defaults, kwonlyargs, kwonlydefaults, annotations).
     'args' is a list of the parameter names.
     'varargs' and 'varkw' are the names of the * and ** parameters or None.
     'defaults' is an n-tuple of the default values of the last n parameters.
     'kwonlyargs' is a list of keyword-only parameter names.
     'kwonlydefaults' is a dictionary mapping names from kwonlyargs to defaults.
     'annotations' is a dictionary mapping parameter names to annotations.
-
-    The *annotation_format* parameter controls the format of the annotations.
-    See the annotationlib documentation for details.
 
     Notable differences from inspect.signature():
       - the "self" parameter is always reported, even for bound methods
@@ -1298,8 +1273,7 @@ def getfullargspec(func, *, annotation_format=Format.VALUE):
                                        follow_wrapper_chains=False,
                                        skip_bound_arg=False,
                                        sigcls=Signature,
-                                       eval_str=False,
-                                       annotation_format=annotation_format)
+                                       eval_str=False)
     except Exception as ex:
         # Most of the times 'signature' will raise ValueError.
         # But, it can also raise AttributeError, and, maybe something
@@ -1641,6 +1615,7 @@ def getframeinfo(frame, context=1):
 
 def getlineno(frame):
     """Get the line number from a frame object, allowing for optimization."""
+    # FrameType.f_lineno is now a descriptor that grovels co_lnotab
     return frame.f_lineno
 
 _FrameInfo = namedtuple('_FrameInfo', ('frame',) + Traceback._fields)
@@ -1734,8 +1709,7 @@ def _shadowed_dict_from_weakref_mro_tuple(*weakref_mro):
             class_dict = dunder_dict['__dict__']
             if not (type(class_dict) is types.GetSetDescriptorType and
                     class_dict.__name__ == "__dict__" and
-                    (class_dict.__objclass__ is object or
-                     class_dict.__objclass__ is entry)):
+                    class_dict.__objclass__ is entry):
                 return class_dict
     return _sentinel
 
@@ -1819,7 +1793,13 @@ def getgeneratorstate(generator):
       GEN_SUSPENDED: Currently suspended at a yield expression.
       GEN_CLOSED: Execution has completed.
     """
-    return generator.gi_state
+    if generator.gi_running:
+        return GEN_RUNNING
+    if generator.gi_suspended:
+        return GEN_SUSPENDED
+    if generator.gi_frame is None:
+        return GEN_CLOSED
+    return GEN_CREATED
 
 
 def getgeneratorlocals(generator):
@@ -1855,7 +1835,13 @@ def getcoroutinestate(coroutine):
       CORO_SUSPENDED: Currently suspended at an await expression.
       CORO_CLOSED: Execution has completed.
     """
-    return coroutine.cr_state
+    if coroutine.cr_running:
+        return CORO_RUNNING
+    if coroutine.cr_suspended:
+        return CORO_SUSPENDED
+    if coroutine.cr_frame is None:
+        return CORO_CLOSED
+    return CORO_CREATED
 
 
 def getcoroutinelocals(coroutine):
@@ -1888,7 +1874,13 @@ def getasyncgenstate(agen):
       AGEN_SUSPENDED: Currently suspended at a yield expression.
       AGEN_CLOSED: Execution has completed.
     """
-    return agen.ag_state
+    if agen.ag_running:
+        return AGEN_RUNNING
+    if agen.ag_suspended:
+        return AGEN_SUSPENDED
+    if agen.ag_frame is None:
+        return AGEN_CLOSED
+    return AGEN_CREATED
 
 
 def getasyncgenlocals(agen):
@@ -2129,6 +2121,7 @@ def _signature_strip_non_python_syntax(signature):
 
     current_parameter = 0
     OP = token.OP
+    ERRORTOKEN = token.ERRORTOKEN
 
     # token stream always starts with ENCODING token, skip it
     t = next(token_stream)
@@ -2205,8 +2198,7 @@ def _signature_fromstr(cls, obj, s, skip_bound_arg=True):
             except NameError:
                 raise ValueError
 
-        if isinstance(value, (str, int, float, bytes, bool, type(None),
-                              sentinel)):
+        if isinstance(value, (str, int, float, bytes, bool, type(None))):
             return ast.Constant(value)
         raise ValueError
 
@@ -3364,113 +3356,22 @@ class BufferFlags(enum.IntFlag):
     WRITE = 0x200
 
 
-def _get_details_for_cli(module, nominal_target, resolved_target):
-    # Determine if the given module name is an alias for another module,
-    # or if it is reexporting a name that is actually defined elsewhere
-    resolved_module = getmodule(resolved_target)
-    if resolved_module is not None and resolved_module is not module:
-        # Referenced target indicates it was defined somewhere else,
-        # so report the details of that module rather than the lookup module
-        module = resolved_module
-    reported_module_name = module.__name__
-    # Ensure the reported source file reflects the actual defining location
-    try:
-        source_file = getsourcefile(resolved_target)
-    except Exception:
-        try:
-            source_file = getsourcefile(module)
-        except Exception:
-            source_file = None
-    # Determine if the nominal target location is its defining location
-    if resolved_target is module:
-        reported_target = reported_module_name
-    else:
-        reported_qualname = getattr(resolved_target, "__qualname__", None)
-        if not reported_qualname:
-            reported_qualname = nominal_target.partition(":")[2]
-        reported_target = f"{reported_module_name}:{reported_qualname}"
-        # Special case for looking up functions in frozen modules
-        if source_file == f"<frozen {reported_module_name}>":
-            source_file = module.__file__
-    # Populate the actual details to be reported
-    details = {
-        "target": reported_target,
-        "origin": module.__spec__.origin,
-        "cached": module.__spec__.cached,
-        "source": source_file,
-    }
-    if reported_target != nominal_target:
-        details["alias"] = nominal_target
-    error = None
-    if not source_file:
-        if module.__name__ in sys.builtin_module_names:
-            error = "No source code available for builtin module"
-        else:
-            error = "No source code available for defining module"
-    if resolved_target is module:
-        details["loader"] = repr(module.__spec__.loader)
-        if hasattr(module, '__path__'):
-            details["submodule_paths"] = str(module.__path__)
-    elif source_file:
-            try:
-                __, lineno = findsource(resolved_target)
-            except Exception:
-                error = "Failed to retrieve source code for given target"
-            else:
-                details["lineno"] = lineno
-    if error:
-        details["error"] = error
-    return details
-
-def _render_details_for_cli(details):
-    resolved_target = details["target"]
-    alias = details.get("alias")
-    if alias:
-        rendered_target = f'{resolved_target} (looked up as "{alias}")'
-    else:
-        rendered_target = resolved_target
-    lines = [
-        f'Target: {rendered_target}',
-        f'Origin: {details["origin"]}',
-        f'Source: {details["source"]}',
-        f'Cached: {details["cached"]}',
-    ]
-    loader = details.get("loader")
-    if loader:
-        lines.append(f'Loader: {loader}')
-        submodule_paths = details.get("submodule_paths")
-        if submodule_paths:
-            lines.append(f'Submodule search paths: {submodule_paths}')
-    else:
-        error = details.get("error")
-        if error:
-            # The error is only informational when retrieving object details
-            lines.append(error)
-        else:
-            lines.append(f'Line: {details["lineno"]}')
-
-    lines.append("")
-    return "\n".join(lines)
-
-
 def _main():
     """ Logic for inspecting an object given at command line """
     import argparse
     import importlib
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(color=True)
     parser.add_argument(
         'object',
          help="The object to be analysed. "
-              "It supports the `module:qualname` syntax")
+              "It supports the 'module:qualname' syntax")
     parser.add_argument(
         '-d', '--details', action='store_true',
         help='Display info about the module rather than its source code')
 
     args = parser.parse_args()
 
-    # We don't use `pkgutil.resolve_name` here because we want to obtain
-    # references to both the module *and* the fully resolved target object
     target = args.object
     mod_name, has_attrs, attrs = target.partition(":")
     try:
@@ -3488,16 +3389,29 @@ def _main():
         for part in parts:
             obj = getattr(obj, part)
 
-    details = _get_details_for_cli(module, target, obj)
+    if module.__name__ in sys.builtin_module_names:
+        print("Can't get info for builtin modules.", file=sys.stderr)
+        sys.exit(1)
+
     if args.details:
-        print(_render_details_for_cli(details))
-    else:
-        # Attempt to render target source details
-        error = details.get("error")
-        if error:
-            sys.exit(error)
+        print('Target: {}'.format(target))
+        print('Origin: {}'.format(getsourcefile(module)))
+        print('Cached: {}'.format(module.__cached__))
+        if obj is module:
+            print('Loader: {}'.format(repr(module.__loader__)))
+            if hasattr(module, '__path__'):
+                print('Submodule search path: {}'.format(module.__path__))
         else:
-            print(getsource(obj))
+            try:
+                __, lineno = findsource(obj)
+            except Exception:
+                pass
+            else:
+                print('Line: {}'.format(lineno))
+
+        print('\n')
+    else:
+        print(getsource(obj))
 
 
 if __name__ == "__main__":

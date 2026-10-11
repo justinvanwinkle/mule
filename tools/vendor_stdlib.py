@@ -1,18 +1,18 @@
-"""Vendor Python 3.15.0 library sources and select their Python fallbacks.
+"""Vendor Python 3.14.7 library sources and select their Python fallbacks.
 
-Usage: uv run python -m tools.vendor_stdlib path/to/Python-3.15.0.tar.xz
+Usage: uv run python -m tools.vendor_stdlib path/to/Python-3.14.7.tar.xz
 """
 
 import argparse
 import hashlib
-import json
 import tarfile
 from pathlib import Path, PurePosixPath
 
 from .stdlib_io import adapt_io
 
-VERSION = "3.15.0"
-ARCHIVE_SHA256 = "ba4bed1ba346b916890b76d9e320451420aa69f6408997d33c66482eeae3d575"
+# 3.14.7 matches the host CPython used as the conformance oracle.
+VERSION = "3.14.7"
+ARCHIVE_SHA256 = "3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81"
 SOURCE_URL = f"https://www.python.org/ftp/python/{VERSION}/Python-{VERSION}.tar.xz"
 TEST_DIRECTORIES = {"test", "tests", "idle_test"}
 
@@ -224,7 +224,7 @@ def vendor(archive, destination):
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
     if checksum != ARCHIVE_SHA256:
         raise ValueError(
-            "archive does not match the official Python 3.15.0 release checksum"
+            f"archive does not match the official Python {VERSION} release checksum"
         )
     sources = {}
     test_files = {}
@@ -253,10 +253,7 @@ def vendor(archive, destination):
                 sources[str(relative)] = content.decode("utf-8")
             else:
                 resources[str(relative)] = content
-    original_hashes = {
-        name: hashlib.sha256(text.encode()).hexdigest()
-        for name, text in sources.items()
-    }
+    original = dict(sources)
     adapt(sources)
     destination.mkdir(parents=True, exist_ok=True)
     for name in directories:
@@ -270,32 +267,7 @@ def vendor(archive, destination):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
     (destination / "LICENSE.cpython").write_bytes(license_text)
-    manifest = {
-        "version": VERSION,
-        "source": SOURCE_URL,
-        "archive_sha256": checksum,
-        "test_directory_names": sorted(TEST_DIRECTORIES),
-        "files": {
-            name: {
-                "upstream_sha256": original_hashes[name],
-                "vendored_sha256": hashlib.sha256(text.encode()).hexdigest(),
-            }
-            for name, text in sorted(sources.items())
-        },
-        "test_files": {
-            name: hashlib.sha256(content).hexdigest()
-            for name, content in sorted(test_files.items())
-        },
-        "resource_files": {
-            name: hashlib.sha256(content).hexdigest()
-            for name, content in sorted(resources.items())
-        },
-    }
-    (destination / "UPSTREAM.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    modified = sum(
-        details["upstream_sha256"] != details["vendored_sha256"]
-        for details in manifest["files"].values()
-    )
+    modified = sum(sources[name] != text for name, text in original.items())
     print(
         f"Vendored {len(sources)} Python files; selected Python fallbacks in {modified} files."
     )

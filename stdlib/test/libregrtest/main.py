@@ -26,7 +26,7 @@ from .utils import (
     strip_py_suffix, count, format_duration,
     printlist, get_temp_dir, get_work_dir, exit_timeout,
     display_header, cleanup_temp_dir, print_warning,
-    is_cross_compiled, get_host_runner, display_title,
+    is_cross_compiled, get_host_runner,
     EXIT_TIMEOUT)
 
 
@@ -126,7 +126,6 @@ class Regrtest:
         self.coverage: bool = ns.trace
         self.coverage_dir: StrPath | None = ns.coverdir
         self._tmp_dir: StrPath | None = ns.tempdir
-        self.pythoninfo: bool = ns.pythoninfo
 
         # Randomize
         self.randomize: bool = ns.randomize
@@ -323,7 +322,9 @@ class Regrtest:
         title = f"Bisect {test}"
         if progress:
             title = f"{title} ({progress})"
-        display_title(title)
+        print(title)
+        print("#" * len(title))
+        print()
 
         cmd = runtests.create_python_cmd()
         cmd.extend([
@@ -344,7 +345,9 @@ class Regrtest:
         exitcode = proc.returncode
 
         title = f"{title}: exit code {exitcode}"
-        display_title(title)
+        print(title)
+        print("#" * len(title))
+        print(flush=True)
 
         if exitcode:
             print(f"Bisect failed with exit code {exitcode}")
@@ -749,15 +752,6 @@ class Regrtest:
             )
         return self._tmp_dir
 
-    def run_pythoninfo(self):
-        from test import pythoninfo
-        try:
-            pythoninfo.main()
-        except SystemExit:
-            # Ignore non-zero exit code on purpose
-            pass
-        print()
-
     def main(self, tests: TestList | None = None) -> NoReturn:
         if self.want_add_python_opts:
             self._add_python_opts()
@@ -770,9 +764,6 @@ class Regrtest:
 
         if self.want_wait:
             input("Press any key to continue...")
-
-        if self.pythoninfo:
-            self.run_pythoninfo()
 
         setup_test_dir(self.test_dir)
         selected, tests = self.find_tests(tests)

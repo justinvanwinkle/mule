@@ -239,11 +239,11 @@ class Unparser(NodeVisitor):
             self.traverse(node.value)
 
     def visit_Import(self, node):
-        self.fill("lazy import " if node.is_lazy else "import ")
+        self.fill("import ")
         self.interleave(lambda: self.write(", "), self.traverse, node.names)
 
     def visit_ImportFrom(self, node):
-        self.fill("lazy from " if node.is_lazy else "from ")
+        self.fill("from ")
         self.write("." * (node.level or 0))
         if node.module:
             self.write(node.module)
@@ -738,13 +738,9 @@ class Unparser(NodeVisitor):
 
     def visit_DictComp(self, node):
         with self.delimit("{", "}"):
-            if node.value:
-                self.traverse(node.key)
-                self.write(": ")
-                self.traverse(node.value)
-            else:
-                self.write("**")
-                self.traverse(node.key)
+            self.traverse(node.key)
+            self.write(": ")
+            self.traverse(node.value)
             for gen in node.generators:
                 self.traverse(gen)
 

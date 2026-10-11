@@ -12,15 +12,15 @@ line = 16
 
 ["async_/async_generators"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/inspect.py"
-line = 156
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["async_/async_with"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/contextlib.py"
-line = 9
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["async_/asyncio_gather"]
 phase = "compile"
@@ -35,15 +35,15 @@ line = 16
 
 ["async_/coroutine_basics"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/inspect.py"
-line = 156
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["async_/coroutine_errors"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/inspect.py"
-line = 156
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["async_/custom_awaitables"]
 phase = "compile"
@@ -53,9 +53,9 @@ line = 27
 
 ["async_/mini_event_loop"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/collections/__init__.py"
-line = 35
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["builtins/attribute_builtins"]
 phase = "compile"
@@ -184,15 +184,15 @@ line = 5
 
 ["classes/dataclasses_advanced"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/dataclasses.py"
-line = 8
+reason = "no compilable Python module named 'builtins'"
+file = "stdlib/enum.py"
+line = 2
 
 ["classes/dataclasses_basic"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/dataclasses.py"
-line = 8
+reason = "no compilable Python module named 'builtins'"
+file = "stdlib/enum.py"
+line = 2
 
 ["classes/descriptors"]
 phase = "compile"
@@ -395,9 +395,9 @@ line = 2
 
 ["control_flow/match_class"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/dataclasses.py"
-line = 8
+reason = "no compilable Python module named 'builtins'"
+file = "stdlib/enum.py"
+line = 2
 
 ["control_flow/match_guards"]
 phase = "compile"
@@ -411,9 +411,9 @@ line = 5
 
 ["control_flow/match_mapping"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/collections/__init__.py"
-line = 35
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["control_flow/match_nested_loops_soft_keywords"]
 phase = "compile"
@@ -442,9 +442,9 @@ line = 52
 
 ["control_flow/truthiness"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/collections/__init__.py"
-line = 35
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["control_flow/walrus"]
 phase = "compile"
@@ -514,9 +514,9 @@ line = 165
 
 ["exceptions/generators_and_context_managers"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/contextlib.py"
-line = 9
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["exceptions/handler_scope_and_exc_info"]
 phase = "run"
@@ -591,9 +591,9 @@ line = 4
 
 ["functions/generic_functions_pep695"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/typing.py"
-line = 31
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["functions/lambdas"]
 phase = "compile"
@@ -617,9 +617,9 @@ line = 19
 
 ["functions/type_alias_statement"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/typing.py"
-line = 31
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["generators/basic_yield"]
 phase = "compile"
@@ -643,9 +643,9 @@ line = 3
 
 ["generators/generator_state"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/inspect.py"
-line = 156
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["generators/pep479_stopiteration"]
 phase = "compile"
@@ -789,9 +789,9 @@ line = 22
 
 ["protocols/context_manager_errors"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/contextlib.py"
-line = 9
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["protocols/context_managers"]
 phase = "compile"
@@ -927,33 +927,33 @@ line = 66
 
 ["stdlib/collections_abc_checks"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/collections/__init__.py"
-line = 35
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["stdlib/collections_counter_defaultdict"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/collections/__init__.py"
-line = 35
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["stdlib/collections_namedtuple_deque"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/collections/__init__.py"
-line = 35
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["stdlib/collections_ordereddict_chainmap"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/collections/__init__.py"
-line = 35
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["stdlib/contextlib_module"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/contextlib.py"
-line = 9
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["stdlib/copy_module"]
 phase = "compile"
@@ -1040,9 +1040,9 @@ line = 21
 
 ["stdlib/typing_module"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/typing.py"
-line = 31
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["strings/bytearray_mutation"]
 phase = "compile"
@@ -1199,9 +1199,9 @@ line = 109
 
 ["weird/generator_scheduler"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/collections/__init__.py"
-line = 35
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["weird/index_protocol_everywhere"]
 phase = "compile"
@@ -1216,9 +1216,9 @@ line = 5
 
 ["weird/mutation_during_iteration"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/collections/__init__.py"
-line = 35
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["weird/name_mangling"]
 phase = "compile"
@@ -1252,15 +1252,15 @@ line = 83
 
 ["weird/syntax_oddities"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/contextlib.py"
-line = 9
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+file = "stdlib/abc.py"
+line = 41
 
 ["weird/tiny_interpreter"]
 phase = "compile"
-reason = "expected end of statement"
-file = "stdlib/dataclasses.py"
-line = 8
+reason = "no compilable Python module named 'builtins'"
+file = "stdlib/enum.py"
+line = 2
 
 ["weird/tuple_iadd_mutation"]
 phase = "run"

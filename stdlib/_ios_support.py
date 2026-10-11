@@ -10,15 +10,12 @@ except ImportError:
 else:
     # ctypes is available. Load the ObjC library, and wrap the objc_getClass,
     # sel_registerName methods
-    # find_library() resolves a system library through the dyld shared cache,
-    # which needs _dyld_shared_cache_contains_path(); that is unavailable before
-    # iOS 14, so fall back to the bare name, which dyld resolves by itself.
-    lib = util.find_library("objc") or "libobjc.dylib"
-
-    try:
-        objc = cdll.LoadLibrary(lib)
-    except OSError:
+    lib = util.find_library("objc")
+    if lib is None:
+        # Failed to load the objc library
         raise ImportError("ObjC runtime library couldn't be loaded")
+
+    objc = cdll.LoadLibrary(lib)
     objc.objc_getClass.restype = c_void_p
     objc.objc_getClass.argtypes = [c_char_p]
     objc.sel_registerName.restype = c_void_p

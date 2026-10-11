@@ -18,9 +18,9 @@ timeout = 5.0
 [mule]
 status = "pending"
 phase = "compile"
-reason = "expected end of statement"
-compile_error_file = "stdlib/dataclasses.py"
-compile_error_line = 8
+reason = "no compilable Python module named 'builtins'"
+compile_error_file = "stdlib/enum.py"
+compile_error_line = 2
 '''
 
 from dataclasses import astuple, dataclass

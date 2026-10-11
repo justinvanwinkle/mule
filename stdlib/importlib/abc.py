@@ -37,16 +37,6 @@ class MetaPathFinder(metaclass=abc.ABCMeta):
         This method is used by importlib.invalidate_caches().
         """
 
-    def discover(self, parent=None):
-        """An optional method which searches for possible specs with given *parent*
-        module spec. If *parent* is *None*, MetaPathFinder.discover will search
-        for top-level modules.
-
-        Returns an iterable of possible specs.
-        """
-        return ()
-
-
 _register(MetaPathFinder, machinery.BuiltinImporter, machinery.FrozenImporter,
           machinery.PathFinder, machinery.WindowsRegistryFinder)
 
@@ -59,15 +49,6 @@ class PathEntryFinder(metaclass=abc.ABCMeta):
         """An optional method for clearing the finder's cache, if any.
         This method is used by PathFinder.invalidate_caches().
         """
-
-    def discover(self, parent=None):
-        """An optional method which searches for possible specs with given
-        *parent* module spec. If *parent* is *None*, PathEntryFinder.discover
-        will search for top-level modules.
-
-        Returns an iterable of possible specs.
-        """
-        return ()
 
 _register(PathEntryFinder, machinery.FileFinder)
 
@@ -119,7 +100,7 @@ class InspectLoader(Loader):
         source = self.get_source(fullname)
         if source is None:
             return None
-        return self.source_to_code(source, '<string>', fullname)
+        return self.source_to_code(source)
 
     @abc.abstractmethod
     def get_source(self, fullname):
@@ -131,14 +112,15 @@ class InspectLoader(Loader):
         raise ImportError
 
     @staticmethod
-    def source_to_code(data, path='<string>', fullname=None):
+    def source_to_code(data, path='<string>'):
         """Compile 'data' into a code object.
 
         The 'data' argument can be anything that compile() can handle. The'path'
         argument should be where the data was retrieved (when applicable)."""
-        return compile(data, path, 'exec', dont_inherit=True, module=fullname)
+        return compile(data, path, 'exec', dont_inherit=True)
 
     exec_module = _bootstrap_external._LoaderBasics.exec_module
+    load_module = _bootstrap_external._LoaderBasics.load_module
 
 _register(InspectLoader, machinery.BuiltinImporter, machinery.FrozenImporter, machinery.NamespaceLoader)
 
@@ -173,8 +155,9 @@ class ExecutionLoader(InspectLoader):
         try:
             path = self.get_filename(fullname)
         except ImportError:
-            path = '<string>'
-        return self.source_to_code(source, path, fullname)
+            return self.source_to_code(source)
+        else:
+            return self.source_to_code(source, path)
 
 _register(
     ExecutionLoader,

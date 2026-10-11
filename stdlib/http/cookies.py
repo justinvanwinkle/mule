@@ -132,7 +132,6 @@ Finis.
 import re
 import string
 import types
-lazy import warnings
 
 __all__ = ["CookieError", "BaseCookie", "SimpleCookie"]
 
@@ -391,8 +390,7 @@ class Morsel(dict):
     def __repr__(self):
         return '<%s: %s>' % (self.__class__.__name__, self.OutputString())
 
-    def _js_output(self, attrs=None):
-        """Internal implementation without deprecation warning."""
+    def js_output(self, attrs=None):
         import urllib.parse
         # Print javascript
         output_string = self.OutputString(attrs)
@@ -408,14 +406,6 @@ class Morsel(dict):
         // end hiding -->
         </script>
         """ % (output_encoded,)
-
-    def js_output(self, attrs=None):
-        warnings._deprecated(
-            "http.cookies.Morsel.js_output",
-            message=warnings._DEPRECATED_MSG + "; use output() instead",
-            remove=(3, 19),
-        )
-        return self._js_output(attrs)
 
     def OutputString(self, attrs=None):
         # Build up our result
@@ -551,15 +541,10 @@ class BaseCookie(dict):
 
     def js_output(self, attrs=None):
         """Return a string suitable for JavaScript."""
-        warnings._deprecated(
-            "http.cookies.BaseCookie.js_output",
-            message=warnings._DEPRECATED_MSG + "; use output() instead",
-            remove=(3, 19),
-        )
         result = []
         items = sorted(self.items())
         for key, value in items:
-            result.append(value._js_output(attrs))
+            result.append(value.js_output(attrs))
         return _nulljoin(result)
 
     def load(self, rawdata):

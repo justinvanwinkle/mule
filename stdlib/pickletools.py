@@ -16,8 +16,6 @@ import pickle
 import re
 import sys
 
-lazy from _colorize import decolor, get_theme
-
 __all__ = ['dis', 'genops', 'optimize']
 
 bytes_types = pickle.bytes_types
@@ -2211,32 +2209,6 @@ for i, d in enumerate(opcodes):
     name2i[d.name] = i
     code2i[d.code] = i
 
-# Group opcode names into categories for colourised CLI output.
-_opcode_categories = frozendict(
-    op_call=frozenset({
-        "BUILD", "EXT1", "EXT2", "EXT4", "GLOBAL", "INST", "NEWOBJ",
-        "NEWOBJ_EX", "OBJ", "REDUCE", "STACK_GLOBAL",
-    }),
-    op_container=frozenset({
-        "ADDITEMS", "APPEND", "APPENDS", "DICT", "EMPTY_DICT", "EMPTY_LIST",
-        "EMPTY_SET", "EMPTY_TUPLE", "FROZENSET", "LIST", "SETITEM",
-        "SETITEMS", "TUPLE", "TUPLE1", "TUPLE2", "TUPLE3",
-    }),
-    op_memo=frozenset({
-        "BINGET", "BINPUT", "GET", "LONG_BINGET", "LONG_BINPUT", "MEMOIZE",
-        "PUT",
-    }),
-    op_meta=frozenset({"BINPERSID", "FRAME", "MARK", "PERSID", "PROTO"}),
-    op_stack=frozenset({"DUP", "POP", "POP_MARK", "STOP"}),
-)
-_opcode_color_attr = frozendict({
-    name: attr
-    for attr, names in _opcode_categories.items()
-    for name in names
-})
-assert _opcode_color_attr.keys() <= name2i.keys(), (
-    f"unknown opcodes: {_opcode_color_attr.keys() - name2i.keys()}"
-)
 del name2i, code2i, i, d
 
 ##############################################################################
@@ -2471,19 +2443,13 @@ def dis(pickle, out=None, memo=None, indentlevel=4, annotate=0):
     indentchunk = ' ' * indentlevel
     errormsg = None
     annocol = annotate  # column hint for annotations
-    t = get_theme(tty_file=out).pickletools
     for opcode, arg, pos in genops(pickle):
         if pos is not None:
-            print(f"{t.position}{pos:5d}:{t.reset}", end=' ', file=out)
+            print("%5d:" % pos, end=' ', file=out)
 
-        attr = _opcode_color_attr.get(opcode.name)
-        opcode_color = getattr(t, attr) if attr else ""
-        opcode_reset = t.reset if attr else ""
-        line = (
-            f"{t.opcode_code}{repr(opcode.code)[1:-1]:<4}{t.reset} "
-            f"{indentchunk * len(markstack)}"
-            f"{opcode_color}{opcode.name}{opcode_reset}"
-        )
+        line = "%-4s %s%s" % (repr(opcode.code)[1:-1],
+                              indentchunk * len(markstack),
+                              opcode.name)
 
         maxproto = max(maxproto, opcode.proto)
         before = opcode.stack_before    # don't mutate
@@ -2544,26 +2510,18 @@ def dis(pickle, out=None, memo=None, indentlevel=4, annotate=0):
             line += ' ' * (10 - len(opcode.name))
             if arg is not None:
                 if opcode.name in ("STRING", "BINSTRING", "SHORT_BINSTRING"):
-                    arg_text = ascii(arg)
+                    line += ' ' + ascii(arg)
                 else:
-                    arg_text = repr(arg)
-                arg_color = (
-                    t.arg_number
-                    if isinstance(arg, (int, float))
-                    else t.arg_string
-                )
-                line += f" {arg_color}{arg_text}{t.reset}"
+                    line += ' ' + repr(arg)
             if markmsg:
-                line += f" {t.mark}{markmsg}{t.reset}"
+                line += ' ' + markmsg
         if annotate:
-            visible_len = len(decolor(line))
-            line += ' ' * (annocol - visible_len)
+            line += ' ' * (annocol - len(line))
             # make a mild effort to align annotations
-            annocol = max(visible_len, annocol)
+            annocol = len(line)
             if annocol > 50:
                 annocol = annotate
-            doc = opcode.doc.split('\n', 1)[0]
-            line += f" {t.annotation}{doc}{t.reset}"
+            line += ' ' + opcode.doc.split('\n', 1)[0]
         print(line, file=out)
 
         if errormsg:
@@ -2583,11 +2541,7 @@ def dis(pickle, out=None, memo=None, indentlevel=4, annotate=0):
 
         stack.extend(after)
 
-    print(
-        "highest protocol among opcodes =",
-        f"{t.proto}{maxproto}{t.reset}",
-        file=out,
-    )
+    print("highest protocol among opcodes =", maxproto, file=out)
     if stack:
         raise ValueError("stack not empty after STOP: %r" % stack)
 
@@ -2885,9 +2839,12 @@ __test__ = {'disassembler_test': _dis_test,
            }
 
 
-def _main(args=None):
+if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='disassemble one or more pickle files')
+    parser = argparse.ArgumentParser(
+        description='disassemble one or more pickle files',
+        color=True,
+    )
     parser.add_argument(
         'pickle_file',
         nargs='+', help='the pickle file')
@@ -2899,7 +2856,7 @@ def _main(args=None):
         help='preserve memo between disassemblies')
     parser.add_argument(
         '-l', '--indentlevel', default=4, type=int,
-        help='the number of blanks by which to indent a new `MARK` level')
+        help='the number of blanks by which to indent a new MARK level')
     parser.add_argument(
         '-a', '--annotate',  action='store_true',
         help='annotate each line with a short opcode description')
@@ -2907,7 +2864,7 @@ def _main(args=None):
         '-p', '--preamble', default="==> {name} <==",
         help='if more than one pickle file is specified, print this before'
         ' each disassembly')
-    args = parser.parse_args(args)
+    args = parser.parse_args()
     annotate = 30 if args.annotate else 0
     memo = {} if args.memo else None
     if args.output is None:
@@ -2928,7 +2885,3 @@ def _main(args=None):
     finally:
         if output is not sys.stdout:
             output.close()
-
-
-if __name__ == "__main__":
-    _main()

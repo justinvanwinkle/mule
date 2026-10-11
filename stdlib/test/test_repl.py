@@ -39,8 +39,8 @@ def spawn_repl(*args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, custom=F
     # line option '-i' and the process name set to '<stdin>'.
     # The directory of argv[0] must match the directory of the Python
     # executable for the Popen() call to python to succeed as the directory
-    # path may be used by PyConfig_Get("module_search_paths") to build the
-    # default module search path.
+    # path may be used by Py_GetPath() to build the default module search
+    # path.
     stdin_fname = os.path.join(os.path.dirname(sys.executable), "<stdin>")
     cmd_line = [stdin_fname]
     # Isolated mode implies -EPs and ignores PYTHON* variables.
@@ -294,7 +294,7 @@ class TestInteractiveInterpreter(unittest.TestCase):
         expected_lines = [
             '    def f(x, x): ...',
             '             ^',
-            "SyntaxError: duplicate parameter 'x' in function definition"
+            "SyntaxError: duplicate argument 'x' in function definition"
         ]
         self.assertEqual(output.splitlines()[4:-1], expected_lines)
 
@@ -433,13 +433,6 @@ class TestAsyncioREPL(unittest.TestCase):
         p = spawn_asyncio_repl()
         p.stdin.write(user_input)
         user_input2 = "async def set_var(): var.set('ok')\n"
-        try:
-            import _pyrepl # noqa: F401
-        except ModuleNotFoundError:
-            # If we're going to be forced into the regular REPL, then we need an
-            # extra newline here. Omit it by default to catch any breakage to
-            # the new REPL's behavior.
-            user_input2 += "\n"
         p.stdin.write(user_input2)
         user_input3 = "await set_var()\n"
         p.stdin.write(user_input3)

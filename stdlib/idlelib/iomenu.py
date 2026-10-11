@@ -5,13 +5,11 @@ import sys
 import tempfile
 import tokenize
 
-from tkinter import TclVersion
 from tkinter import filedialog
 from tkinter import messagebox
 from tkinter.simpledialog import askstring  # loadfile encoding.
 
 from idlelib.config import idleConf
-from idlelib import macosx
 from idlelib.util import py_extensions
 
 py_extensions = ' '.join("*"+ext for ext in py_extensions)
@@ -386,10 +384,8 @@ class IOBinding:
         ("All files", "*"),
         )
 
-    save_filetypes = filetypes
-
-    # Output windows (Shell, Output) are not Python source, so they save
-    # with text files listed first and default to ".txt" (gh-65339).
+    # Output windows (Shell, Output) are not Python source, so they list
+    # text files first and default to ".txt" (gh-65339).
     text_filetypes = (
         ("Text files", "*.txt", "TEXT"),
         ("Python files", py_extensions, "TEXT"),
@@ -409,12 +405,7 @@ class IOBinding:
 
     def defaultfilename(self, mode="open"):
         if self.filename:
-            dirname, base = os.path.split(self.filename)
-            if base[:1] == '~' and TclVersion < 9 and not macosx.isAquaTk():
-                # Tcl before version 9 substitutes a leading tilde in
-                # a file name (gh-59568).  The macOS dialog does not.
-                base = os.path.join(os.curdir, base)
-            return dirname, base
+            return os.path.split(self.filename)
         elif self.dirname:
             return self.dirname, ""
         else:
@@ -429,7 +420,7 @@ class IOBinding:
         if not self.savedialog:
             self.savedialog = filedialog.SaveAs(
                     parent=self.text,
-                    filetypes=self.save_filetypes,
+                    filetypes=self.filetypes,
                     defaultextension=self.defaultextension)
         filename = self.savedialog.show(initialdir=dir, initialfile=base)
         return filename

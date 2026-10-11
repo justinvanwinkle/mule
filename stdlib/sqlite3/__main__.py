@@ -10,12 +10,9 @@ import sys
 from argparse import ArgumentParser
 from code import InteractiveConsole
 from textwrap import dedent
-from _colorize import get_theme, theme_no_color
-
-from ._completer import completer
 
 
-def execute(c, sql, suppress_errors=True, theme=theme_no_color):
+def execute(c, sql, suppress_errors=True):
     """Helper that wraps execution of SQL code.
 
     This is used both by the REPL and by direct execution from the CLI.
@@ -28,15 +25,11 @@ def execute(c, sql, suppress_errors=True, theme=theme_no_color):
         for row in c.execute(sql):
             print(row)
     except sqlite3.Error as e:
-        t = theme.traceback
         tp = type(e).__name__
         try:
-            tp += f" ({e.sqlite_errorname})"
+            print(f"{tp} ({e.sqlite_errorname}): {e}", file=sys.stderr)
         except AttributeError:
-            pass
-        print(
-            f"{t.type}{tp}{t.reset}: {t.message}{e}{t.reset}", file=sys.stderr
-        )
+            print(f"{tp}: {e}", file=sys.stderr)
         if not suppress_errors:
             sys.exit(1)
 
@@ -44,11 +37,10 @@ def execute(c, sql, suppress_errors=True, theme=theme_no_color):
 class SqliteInteractiveConsole(InteractiveConsole):
     """A simple SQLite REPL."""
 
-    def __init__(self, connection, use_color=False):
+    def __init__(self, connection):
         super().__init__()
         self._con = connection
         self._cur = connection.cursor()
-        self._use_color = use_color
 
     def runsource(self, source, filename="<input>", symbol="single"):
         """Override runsource, the core of the InteractiveConsole REPL.
@@ -56,42 +48,37 @@ class SqliteInteractiveConsole(InteractiveConsole):
         Return True if more input is needed; buffering is done automatically.
         Return False if input is a complete statement ready for execution.
         """
-        theme = get_theme(force_no_color=not self._use_color)
-
         if not source or source.isspace():
             return False
-        # Remember to update CLI_COMMANDS in _completer.py
         if source[0] == ".":
             match source[1:].strip():
                 case "version":
-                    print(sqlite3.sqlite_version)
+                    print(f"{sqlite3.sqlite_version}")
                 case "help":
-                    t = theme.syntax
-                    print(f"Enter SQL code or one of the below commands, and press enter.\n\n"
-                          f"{t.builtin}.version{t.reset}    Print underlying SQLite library version\n"
-                          f"{t.builtin}.help{t.reset}       Print this help message\n"
-                          f"{t.builtin}.quit{t.reset}       Exit the CLI, equivalent to CTRL-D\n")
+                    print("Enter SQL code and press enter.")
                 case "quit":
                     sys.exit(0)
                 case "":
                     pass
                 case _ as unknown:
-                    t = theme.traceback
-                    self.write(f'{t.type}Error{t.reset}: {t.message}unknown '
-                               f'command: "{unknown}"{t.reset}\n')
+                    self.write("Error: unknown command or invalid arguments:"
+                               f'  "{unknown}".\n')
         else:
             if not sqlite3.complete_statement(source):
                 return True
-            execute(self._cur, source, theme=theme)
+            execute(self._cur, source)
         return False
 
 
 def main(*args):
-    parser = ArgumentParser(description="Python sqlite3 CLI")
+    parser = ArgumentParser(
+        description="Python sqlite3 CLI",
+        color=True,
+    )
     parser.add_argument(
         "filename", type=str, default=":memory:", nargs="?",
         help=(
-            "SQLite database to open (defaults to `:memory:`). "
+            "SQLite database to open (defaults to ':memory:'). "
             "A new database is created if the file does not previously exist."
         ),
     )
@@ -99,7 +86,7 @@ def main(*args):
         "sql", type=str, nargs="?",
         help=(
             "An SQL query to execute. "
-            "Any returned rows are printed to `stdout`."
+            "Any returned rows are printed to stdout."
         ),
     )
     parser.add_argument(
@@ -126,26 +113,22 @@ def main(*args):
         Each command will be run using execute() on the cursor.
         Type ".help" for more information; type ".quit" or {eofkey} to quit.
     """).strip()
-
-    theme = get_theme()
-    s = theme.syntax
-
-    # Use RL_PROMPT_START_IGNORE (\001) and RL_PROMPT_END_IGNORE (\002) to
-    # bracket non-printing characters. This tells readline to ignore them
-    # when calculating screen space for redisplay during history scrolling.
-    sys.ps1 = f"\001{s.prompt}\002sqlite> \001{s.reset}\002"
-    sys.ps2 = f"\001{s.prompt}\002    ... \001{s.reset}\002"
+    sys.ps1 = "sqlite> "
+    sys.ps2 = "    ... "
 
     con = sqlite3.connect(args.filename, isolation_level=None)
     try:
         if args.sql:
             # SQL statement provided on the command-line; execute it directly.
-            execute(con, args.sql, suppress_errors=False, theme=theme)
+            execute(con, args.sql, suppress_errors=False)
         else:
             # No SQL provided; start the REPL.
-            with completer(con):
-                console = SqliteInteractiveConsole(con, use_color=True)
-                console.interact(banner, exitmsg="")
+            console = SqliteInteractiveConsole(con)
+            try:
+                import readline  # noqa: F401
+            except ImportError:
+                pass
+            console.interact(banner, exitmsg="")
     finally:
         con.close()
 

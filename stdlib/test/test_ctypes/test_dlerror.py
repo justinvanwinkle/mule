@@ -30,9 +30,8 @@ void *foo(void)
 """
 
 
-@unittest.skipIf(not sys.platform.startswith('linux')
-                 or platform.machine().startswith('parisc'),
-                 'test requires GNU IFUNC support')
+@unittest.skipUnless(sys.platform.startswith('linux'),
+                     'test requires GNU IFUNC support')
 @unittest.skipIf(test.support.linked_to_musl(), "Requires glibc")
 class TestNullDlsym(unittest.TestCase):
     """GH-126554: Ensure that we catch NULL dlsym return values

@@ -605,7 +605,7 @@ class IOBase(metaclass=abc.ABCMeta):
             res += b
             if res.endswith(b"\n"):
                 break
-        return res.take_bytes()
+        return bytes(res)
 
     def __iter__(self):
         self._checkClosed()
@@ -678,7 +678,7 @@ class RawIOBase(IOBase):
         if n < 0 or n > len(b):
             raise ValueError(f"readinto returned {n} outside buffer size {len(b)}")
         del b[n:]
-        return b.take_bytes()
+        return bytes(b)
 
     def readall(self):
         """Read until EOF, using multiple read() call."""
@@ -686,7 +686,7 @@ class RawIOBase(IOBase):
         while data := self.read(DEFAULT_BUFFER_SIZE):
             res += data
         if res:
-            return res.take_bytes()
+            return bytes(res)
         else:
             # b'' or None
             return data
@@ -934,28 +934,16 @@ class BytesIO(BufferedIOBase):
     _buffer = None
 
     def __init__(self, initial_bytes=None):
-        # Use to keep self._buffer and self._pos consistent.
-        self._lock = Lock()
-
         buf = bytearray()
         if initial_bytes is not None:
             buf += initial_bytes
-
-        with self._lock:
-            self._buffer = buf
-            self._pos = 0
+        self._buffer = buf
+        self._pos = 0
 
     def __getstate__(self):
         if self.closed:
             raise ValueError("__getstate__ on closed file")
-        with self._lock:
-            state = self.__dict__.copy()
-        del state['_lock']
-        return state
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
-        self._lock = Lock()
+        return self.__dict__.copy()
 
     def getvalue(self):
         """Return the bytes value (contents) of the buffer
@@ -988,16 +976,14 @@ class BytesIO(BufferedIOBase):
                 raise TypeError(f"{size!r} is not an integer")
             else:
                 size = size_index()
-
-        with self._lock:
-            if size < 0:
-                size = len(self._buffer)
-            if len(self._buffer) <= self._pos:
-                return b""
-            newpos = min(len(self._buffer), self._pos + size)
-            b = self._buffer[self._pos : newpos]
-            self._pos = newpos
-            return bytes(b)
+        if size < 0:
+            size = len(self._buffer)
+        if len(self._buffer) <= self._pos:
+            return b""
+        newpos = min(len(self._buffer), self._pos + size)
+        b = self._buffer[self._pos : newpos]
+        self._pos = newpos
+        return bytes(b)
 
     def read1(self, size=-1):
         """This is the same as read.
@@ -1015,14 +1001,13 @@ class BytesIO(BufferedIOBase):
             if n == 0:
                 return 0
 
-            with self._lock:
-                pos = self._pos
-                if pos > len(self._buffer):
-                    # Pad buffer to pos with null bytes.
-                    self._buffer.resize(pos)
-                self._buffer[pos:pos + n] = view
-                self._pos += n
-            return n
+            pos = self._pos
+            if pos > len(self._buffer):
+                # Pad buffer to pos with null bytes.
+                self._buffer.resize(pos)
+            self._buffer[pos:pos + n] = view
+            self._pos += n
+        return n
 
     def seek(self, pos, whence=0):
         if self.closed:
@@ -1038,11 +1023,9 @@ class BytesIO(BufferedIOBase):
                 raise ValueError("negative seek position %r" % (pos,))
             self._pos = pos
         elif whence == 1:
-            with self._lock:
-                self._pos = max(0, self._pos + pos)
+            self._pos = max(0, self._pos + pos)
         elif whence == 2:
-            with self._lock:
-                self._pos = max(0, len(self._buffer) + pos)
+            self._pos = max(0, len(self._buffer) + pos)
         else:
             raise ValueError("unsupported whence value")
         return self._pos
@@ -1055,20 +1038,18 @@ class BytesIO(BufferedIOBase):
     def truncate(self, pos=None):
         if self.closed:
             raise ValueError("truncate on closed file")
-
-        with self._lock:
-            if pos is None:
-                pos = self._pos
+        if pos is None:
+            pos = self._pos
+        else:
+            try:
+                pos_index = pos.__index__
+            except AttributeError:
+                raise TypeError(f"{pos!r} is not an integer")
             else:
-                try:
-                    pos_index = pos.__index__
-                except AttributeError:
-                    raise TypeError(f"{pos!r} is not an integer")
-                else:
-                    pos = pos_index()
-                if pos < 0:
-                    raise ValueError("negative truncate position %r" % (pos,))
-            del self._buffer[pos:]
+                pos = pos_index()
+            if pos < 0:
+                raise ValueError("negative truncate position %r" % (pos,))
+        del self._buffer[pos:]
         return pos
 
     def readable(self):
@@ -1557,7 +1538,6 @@ class FileIO(RawIOBase):
     _writable = False
     _appending = False
     _seekable = None
-    _truncate = False
     _closefd = True
 
     def __init__(self, file, mode='r', closefd=True, opener=None):
@@ -1618,7 +1598,6 @@ class FileIO(RawIOBase):
             flags = 0
         elif 'w' in mode:
             self._writable = True
-            self._truncate = True
             flags = os.O_CREAT | os.O_TRUNC
         elif 'a' in mode:
             self._writable = True
@@ -1800,7 +1779,7 @@ class FileIO(RawIOBase):
         assert len(result) - bytes_read >= 1, \
             "os.readinto buffer size 0 will result in erroneous EOF / returns 0"
         result.resize(bytes_read)
-        return result.take_bytes()
+        return bytes(result)
 
     def readinto(self, buffer):
         """Same as RawIOBase.readinto()."""
@@ -1944,10 +1923,7 @@ class FileIO(RawIOBase):
                 return 'ab'
         elif self._readable:
             if self._writable:
-                if self._truncate:
-                    return 'wb+'
-                else:
-                    return 'rb+'
+                return 'rb+'
             else:
                 return 'rb'
         else:

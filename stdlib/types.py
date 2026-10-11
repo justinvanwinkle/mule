@@ -55,10 +55,7 @@ try:
     raise TypeError
 except TypeError as exc:
     TracebackType = type(exc.__traceback__)
-
-_f = (lambda: sys._getframe())()
-FrameType = type(_f)
-FrameLocalsProxyType = type(_f.f_locals)
+    FrameType = type(exc.__traceback__.tb_frame)
 
 GetSetDescriptorType = type(FunctionType.__code__)
 MemberDescriptorType = type(FunctionType.__globals__)
@@ -72,9 +69,6 @@ NotImplementedType = type(NotImplemented)
 
 # CapsuleType cannot be accessed from pure Python,
 # so there is no fallback definition.
-
-# LazyImportType in pure Python cannot be guaranteed
-# without overriding the filter, so there is no fallback.
 
 del sys, _f, _g, _C, _c, _ag, _cell_factory  # Not for export
 
@@ -254,6 +248,7 @@ class DynamicClassAttribute:
 
 
 class _GeneratorWrapper:
+    # TODO: Implement this in C.
     def __init__(self, gen):
         self.__wrapped = gen
         self.__isgen = gen.__class__ is GeneratorType
@@ -280,12 +275,6 @@ class _GeneratorWrapper:
     @property
     def gi_suspended(self):
         return self.__wrapped.gi_suspended
-    @property
-    def gi_state(self):
-        return self.__wrapped.gi_state
-    @property
-    def cr_state(self):
-        return self.__wrapped.gi_state.replace('GEN_', 'CORO_')
     cr_code = gi_code
     cr_frame = gi_frame
     cr_running = gi_running
@@ -318,6 +307,7 @@ def coroutine(func):
         # Check if 'func' is a generator function.
         # (0x20 == CO_GENERATOR)
         if co_flags & 0x20:
+            # TODO: Implement this in C.
             co = func.__code__
             # 0x100 == CO_ITERABLE_COROUTINE
             func.__code__ = co.replace(co_flags=co.co_flags | 0x100)

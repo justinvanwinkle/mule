@@ -66,9 +66,9 @@ def _maybe_compile(compiler, source, filename, symbol, flags):
             try:
                 compiler(source + "\n", filename, symbol, flags=flags)
                 return None
-            except _IncompleteInputError:
+            except _IncompleteInputError as e:
                 return None
-            except SyntaxError:
+            except SyntaxError as e:
                 pass
                 # fallthrough
 

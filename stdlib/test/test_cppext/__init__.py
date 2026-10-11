@@ -6,7 +6,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import sysconfig
 import unittest
 from test import support
 
@@ -51,9 +50,6 @@ class BaseTests:
                 env['CPYTHON_TEST_CPP_STD'] = std
             if limited:
                 env['CPYTHON_TEST_LIMITED'] = '1'
-            if support.MS_WINDOWS and sysconfig.is_python_build():
-                env['CPYTHON_EXTRA_INCDIRS'] = os.path.split(sysconfig.get_config_h_filename())[0]
-                env['CPYTHON_EXTRA_LIBDIRS'] = os.path.split(sys.executable)[0]
             env['CPYTHON_TEST_EXT_NAME'] = extension_name
             env['TEST_INTERNAL_C_API'] = str(int(self.TEST_INTERNAL_C_API))
             if extra_cflags:

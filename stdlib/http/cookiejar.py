@@ -1032,13 +1032,10 @@ class DefaultCookiePolicy(CookiePolicy):
                 if j == 0:  # domain like .foo.bar
                     tld = domain[i+1:]
                     sld = domain[j+1:i]
-                    known_slds = (
-                        "co", "ac", "com", "edu", "org", "net",
-                        "gov", "mil", "int", "aero", "biz", "cat", "coop",
-                        "info", "jobs", "mobi", "museum", "name", "pro",
-                        "travel", "eu", "tv", "or", "nom", "sch", "web",
-                    )
-                    if sld.lower() in known_slds and len(tld) == 2:
+                    if sld.lower() in ("co", "ac", "com", "edu", "org", "net",
+                       "gov", "mil", "int", "aero", "biz", "cat", "coop",
+                       "info", "jobs", "mobi", "museum", "name", "pro",
+                       "travel", "eu") and len(tld) == 2:
                         # domain like .co.uk
                         _debug("   country-code second level domain %s", domain)
                         return False

@@ -20,9 +20,9 @@ args = ["--unique"]
 [mule]
 status = "pending"
 phase = "compile"
-reason = "expected end of statement"
-compile_error_file = "stdlib/argparse.py"
-compile_error_line = 95
+reason = "class bodies support only a leading docstring, instance methods, bare typed native fields, and pass"
+compile_error_file = "stdlib/abc.py"
+compile_error_line = 41
 '''
 
 import argparse, sys

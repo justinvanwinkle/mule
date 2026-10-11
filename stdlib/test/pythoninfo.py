@@ -570,7 +570,6 @@ def collect_sysconfig(info_add):
 
     for name in (
         'ABIFLAGS',
-        'ALT_SOABI',
         'ANDROID_API_LEVEL',
         'CC',
         'CCSHARED',
@@ -586,7 +585,6 @@ def collect_sysconfig(info_add):
         'PY_CFLAGS',
         'PY_CFLAGS_NODIST',
         'PY_CORE_LDFLAGS',
-        'PY_CORE_EXE_LDFLAGS',
         'PY_LDFLAGS',
         'PY_LDFLAGS_NODIST',
         'PY_STDMODULE_CFLAGS',
@@ -596,9 +594,7 @@ def collect_sysconfig(info_add):
         'Py_REMOTE_DEBUG',
         'SHELL',
         'SOABI',
-        'SOABI_PLATFORM',
         'TEST_MODULES',
-        'VAPTH',
         'abs_builddir',
         'abs_srcdir',
         'prefix',
@@ -721,16 +717,6 @@ def collect_zlib(info_add):
 
     attributes = ('ZLIB_VERSION', 'ZLIB_RUNTIME_VERSION', 'ZLIBNG_VERSION')
     copy_attributes(info_add, zlib, 'zlib.%s', attributes)
-
-
-def collect_zstd(info_add):
-    try:
-        import _zstd
-    except ImportError:
-        return
-
-    attributes = ('zstd_version',)
-    copy_attributes(info_add, _zstd, 'zstd.%s', attributes)
 
 
 def collect_expat(info_add):
@@ -1023,17 +1009,10 @@ def collect_windows(info_add):
 
     try:
         import _winapi
-    except ImportError:
+        dll_path = _winapi.GetModuleFileName(sys.dllhandle)
+        info_add('windows.dll_path', dll_path)
+    except (ImportError, AttributeError):
         pass
-    else:
-        try:
-            dll_path = _winapi.GetModuleFileName(sys.dllhandle)
-            info_add('windows.dll_path', dll_path)
-        except AttributeError:
-            pass
-
-        call_func(info_add, 'windows.ansi_code_page', _winapi, 'GetACP')
-        call_func(info_add, 'windows.oem_code_page', _winapi, 'GetOEMCP')
 
     # Get operating system caption and version using WMI
     data = wmi_query("SELECT Caption, Version FROM Win32_OperatingSystem")
@@ -1318,12 +1297,6 @@ def collect_system(info_add):
             info_add('system.hardware', hardware)
 
 
-def collect_importlib(info_add):
-    import importlib.machinery
-    info_add('importlib.extension_suffixes',
-             importlib.machinery.EXTENSION_SUFFIXES)
-
-
 def collect_info(info):
     error = False
     info_add = info.add
@@ -1363,10 +1336,8 @@ def collect_info(info):
         collect_tkinter,
         collect_windows,
         collect_zlib,
-        collect_zstd,
         collect_libregrtest_utils,
         collect_system,
-        collect_importlib,
 
         # Collecting from tests should be last as they have side effects.
         collect_test_socket,
@@ -1389,9 +1360,9 @@ def collect_info(info):
 
 
 def dump_info(info, file=None):
-    title = "Python build information"
+    title = "Python debug information"
     print(title)
-    print("#" * len(title))
+    print("=" * len(title))
     print()
 
     infos = info.get_infos()

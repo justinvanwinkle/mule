@@ -92,12 +92,7 @@ class ABCMeta(type):
     def __instancecheck__(cls, instance):
         """Override for isinstance(instance, cls)."""
         # Inline the cache checking
-        try:
-            subclass = instance.__class__
-        except AttributeError:
-            # Fall back to the type when the instance has no __class__,
-            # matching the behaviour of the built-in isinstance() (gh-153772).
-            subclass = type(instance)
+        subclass = instance.__class__
         if subclass in cls._abc_cache:
             return True
         subtype = type(instance)

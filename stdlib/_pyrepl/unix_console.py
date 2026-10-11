@@ -31,27 +31,14 @@ import termios
 import time
 import types
 import platform
-from collections.abc import Callable
-from dataclasses import dataclass
 from fcntl import ioctl
-from typing import TYPE_CHECKING, cast, overload
-
-from _colorize import ANSIColors
 
 from . import terminfo
 from .console import Console, Event
 from .fancy_termios import tcgetattr, tcsetattr, TermState
-from .render import (
-    EMPTY_RENDER_LINE,
-    LineUpdate,
-    RenderLine,
-    RenderedScreen,
-    requires_cursor_resync,
-    diff_render_lines,
-    render_cells,
-)
-from .trace import trace, trace_text
+from .trace import trace
 from .unix_eventqueue import EventQueue
+from .utils import wlen
 
 # declare posix optional to allow None assignment on other platforms
 posix: types.ModuleType | None
@@ -60,12 +47,14 @@ try:
 except ImportError:
     posix = None
 
+TYPE_CHECKING = False
+
 # types
 if TYPE_CHECKING:
-    from typing import AbstractSet, IO, Literal
-
-type _MoveFunc = Callable[[int, int], None]
-type _PendingWrite = tuple[str | bytes, bool]
+    from typing import AbstractSet, IO, Literal, overload, cast
+else:
+    overload = lambda func: None
+    cast = lambda typ, val: val
 
 
 class InvalidTerminal(RuntimeError):
@@ -151,47 +140,7 @@ except AttributeError:
     poll = MinimalPoll  # type: ignore[assignment]
 
 
-@dataclass(frozen=True, slots=True)
-class UnixRefreshPlan:
-    """Instructions for updating the terminal after a screen change.
-
-    After the user types ``e`` to complete ``name``::
-
-        Before: >>> def greet(nam|):
-                                 ▲
-                        LineUpdate here: insert_char "e"
-
-         After: >>> def greet(name|):
-                                  ▲
-
-    Only the changed cells are sent to the terminal; unchanged rows
-    are skipped entirely.
-    """
-
-    grow_lines: int
-    """Number of blank lines to append at the bottom to accommodate new content."""
-    use_tall_mode: bool
-    """Use absolute cursor addressing via ``cup`` instead of relative moves.
-    Activated when content exceeds one screen height."""
-    offset: int
-    """Vertical scroll offset: the buffer row displayed at the top of the terminal window."""
-    reverse_scroll: int
-    """Number of lines to scroll backwards (content moves down)."""
-    forward_scroll: int
-    """Number of lines to scroll forwards (content moves up)."""
-    line_updates: tuple[LineUpdate, ...]
-    cleared_lines: tuple[int, ...]
-    """Row indices to erase (old content with no replacement)."""
-    rendered_screen: RenderedScreen
-    cursor: tuple[int, int]
-
-
 class UnixConsole(Console):
-    __buffer: list[_PendingWrite]
-    __gone_tall: bool
-    __move: _MoveFunc
-    __offset: int
-
     def __init__(
         self,
         f_in: IO[bytes] | int = 0,
@@ -270,7 +219,7 @@ class UnixConsole(Console):
         self.event_queue = EventQueue(
             self.input_fd, self.encoding, self.terminfo
         )
-        self.cursor_visible = True
+        self.cursor_visible = 1
 
         signal.signal(signal.SIGCONT, self._sigcont_handler)
 
@@ -290,50 +239,34 @@ class UnixConsole(Console):
         """
         self.encoding = encoding
 
-    def refresh(self, rendered_screen: RenderedScreen) -> None:
+    def refresh(self, screen, c_xy):
         """
         Refresh the console screen.
 
         Parameters:
-        - rendered_screen: Structured rendered screen contents and cursor.
+        - screen (list): List of strings representing the screen contents.
+        - c_xy (tuple): Cursor position (x, y) on the screen.
         """
-        c_xy = rendered_screen.cursor
-        trace(
-            "unix.refresh start cursor={cursor} lines={lines} prev_lines={prev_lines} "
-            "offset={offset} posxy={posxy}",
-            cursor=c_xy,
-            lines=len(rendered_screen.composed_lines),
-            prev_lines=len(self._rendered_screen.composed_lines),
-            offset=self.__offset,
-            posxy=self.posxy,
-        )
-        plan = self.__plan_refresh(rendered_screen, c_xy)
-        self.__apply_refresh_plan(plan)
-
-    def __plan_refresh(
-        self,
-        rendered_screen: RenderedScreen,
-        c_xy: tuple[int, int],
-    ) -> UnixRefreshPlan:
         cx, cy = c_xy
-        height = self.height
-        old_offset = offset = self.__offset
-        prev_composed = self._rendered_screen.composed_lines
-        previous_lines = list(prev_composed)
-        next_lines = list(rendered_screen.composed_lines)
-        line_count = len(next_lines)
-
-        grow_lines = 0
         if not self.__gone_tall:
-            grow_lines = max(
-                min(line_count, height) - len(prev_composed),
-                0,
-            )
-            previous_lines.extend([EMPTY_RENDER_LINE] * grow_lines)
-        elif len(previous_lines) < line_count:
-            previous_lines.extend([EMPTY_RENDER_LINE] * (line_count - len(previous_lines)))
+            while len(self.screen) < min(len(screen), self.height):
+                self.__hide_cursor()
+                if self.screen:
+                    self.__move(0, len(self.screen) - 1)
+                    self.__write("\n")
+                self.posxy = 0, len(self.screen)
+                self.screen.append("")
+        else:
+            while len(self.screen) < len(screen):
+                self.screen.append("")
 
-        use_tall_mode = self.__gone_tall or line_count > height
+        if len(screen) > self.height:
+            self.__gone_tall = 1
+            self.__move = self.__move_tall
+
+        px, py = self.posxy
+        old_offset = offset = self.__offset
+        height = self.height
 
         # we make sure the cursor is on the screen, and that we're
         # using all of the screen if we can
@@ -341,115 +274,56 @@ class UnixConsole(Console):
             offset = cy
         elif cy >= offset + height:
             offset = cy - height + 1
-        elif offset > 0 and line_count < offset + height:
-            offset = max(line_count - height, 0)
-            next_lines.append(EMPTY_RENDER_LINE)
+        elif offset > 0 and len(screen) < offset + height:
+            offset = max(len(screen) - height, 0)
+            screen.append("")
 
-        oldscr = previous_lines[old_offset : old_offset + height]
-        newscr = next_lines[offset : offset + height]
+        oldscr = self.screen[old_offset : old_offset + height]
+        newscr = screen[offset : offset + height]
 
-        reverse_scroll = 0
-        forward_scroll = 0
+        # use hardware scrolling if we have it.
         if old_offset > offset and self._ri:
-            reverse_scroll = old_offset - offset
-            for _ in range(reverse_scroll):
-                if oldscr:
-                    oldscr.pop(-1)
-                oldscr.insert(0, EMPTY_RENDER_LINE)
-        elif old_offset < offset and self._ind:
-            forward_scroll = offset - old_offset
-            for _ in range(forward_scroll):
-                if oldscr:
-                    oldscr.pop(0)
-                oldscr.append(EMPTY_RENDER_LINE)
-
-        line_updates: list[LineUpdate] = []
-        px, _ = self.posxy
-        for y, oldline, newline in zip(range(offset, offset + height), oldscr, newscr):
-            update = self.__plan_changed_line(y, oldline, newline, px)
-            if update is not None:
-                line_updates.append(update)
-
-        cleared_lines = tuple(range(offset + len(newscr), offset + len(oldscr)))
-        console_rendered_screen = RenderedScreen(tuple(next_lines), c_xy)
-        trace(
-            "unix.refresh plan grow={grow} tall={tall} offset={offset} "
-            "reverse_scroll={reverse_scroll} forward_scroll={forward_scroll} "
-            "updates={updates} clears={clears}",
-            grow=grow_lines,
-            tall=use_tall_mode,
-            offset=offset,
-            reverse_scroll=reverse_scroll,
-            forward_scroll=forward_scroll,
-            updates=len(line_updates),
-            clears=len(cleared_lines),
-        )
-        return UnixRefreshPlan(
-            grow_lines=grow_lines,
-            use_tall_mode=use_tall_mode,
-            offset=offset,
-            reverse_scroll=reverse_scroll,
-            forward_scroll=forward_scroll,
-            line_updates=tuple(line_updates),
-            cleared_lines=cleared_lines,
-            rendered_screen=console_rendered_screen,
-            cursor=(cx, cy),
-        )
-
-    def __apply_refresh_plan(self, plan: UnixRefreshPlan) -> None:
-        cx, cy = plan.cursor
-        trace(
-            "unix.refresh apply cursor={cursor} updates={updates} clears={clears}",
-            cursor=plan.cursor,
-            updates=len(plan.line_updates),
-            clears=len(plan.cleared_lines),
-        )
-        visual_style = self.begin_redraw_visualization()
-        screen_line_count = len(self._rendered_screen.composed_lines)
-
-        for _ in range(plan.grow_lines):
-            self.__hide_cursor()
-            if screen_line_count:
-                self.__move(0, screen_line_count - 1)
-                self.__write("\n")
-            self.posxy = 0, screen_line_count
-            screen_line_count += 1
-
-        if plan.use_tall_mode and not self.__gone_tall:
-            self.__gone_tall = True
-            self.__move = self.__move_tall
-
-        old_offset = self.__offset
-        if plan.reverse_scroll:
             self.__hide_cursor()
             self.__write_code(self._cup, 0, 0)
             self.posxy = 0, old_offset
-            for _ in range(plan.reverse_scroll):
+            for i in range(old_offset - offset):
                 self.__write_code(self._ri)
-        elif plan.forward_scroll:
+                oldscr.pop(-1)
+                oldscr.insert(0, "")
+        elif old_offset < offset and self._ind:
             self.__hide_cursor()
             self.__write_code(self._cup, self.height - 1, 0)
             self.posxy = 0, old_offset + self.height - 1
-            for _ in range(plan.forward_scroll):
+            for i in range(offset - old_offset):
                 self.__write_code(self._ind)
+                oldscr.pop(0)
+                oldscr.append("")
 
-        self.__offset = plan.offset
+        self.__offset = offset
 
-        for update in plan.line_updates:
-            self.__apply_line_update(update, visual_style)
+        for (
+            y,
+            oldline,
+            newline,
+        ) in zip(range(offset, offset + height), oldscr, newscr):
+            if oldline != newline:
+                self.__write_changed_line(y, oldline, newline, px)
 
-        for y in plan.cleared_lines:
+        y = len(newscr)
+        while y < len(oldscr):
             self.__hide_cursor()
             self.__move(0, y)
             self.posxy = 0, y
             self.__write_code(self._el)
+            y += 1
 
         self.__show_cursor()
+
+        self.screen = screen.copy()
         self.move_cursor(cx, cy)
         self.flushoutput()
-        self.sync_rendered_screen(plan.rendered_screen, self.posxy)
 
-    def move_cursor(self, x: int, y: int) -> None:
+    def move_cursor(self, x, y):
         """
         Move the cursor to the specified position on the screen.
 
@@ -458,25 +332,16 @@ class UnixConsole(Console):
         - y (int): Y coordinate.
         """
         if y < self.__offset or y >= self.__offset + self.height:
-            trace(
-                "unix.move_cursor offscreen x={x} y={y} offset={offset} height={height}",
-                x=x,
-                y=y,
-                offset=self.__offset,
-                height=self.height,
-            )
-            self.event_queue.insert(Event("scroll", ""))
+            self.event_queue.insert(Event("scroll", None))
         else:
-            trace("unix.move_cursor x={x} y={y}", x=x, y=y)
             self.__move(x, y)
             self.posxy = x, y
             self.flushoutput()
 
-    def prepare(self) -> None:
+    def prepare(self):
         """
         Prepare the console for input/output operations.
         """
-        trace("unix.prepare")
         self.__buffer = []
 
         self.__svtermstate = tcgetattr(self.input_fd)
@@ -488,23 +353,21 @@ class UnixConsole(Console):
         raw.iflag |= termios.BRKINT
         raw.lflag &= ~(termios.ICANON | termios.ECHO | termios.IEXTEN)
         raw.lflag |= termios.ISIG
-        raw.cc[termios.VMIN] = b"\x01"
-        raw.cc[termios.VTIME] = b"\x00"
+        raw.cc[termios.VMIN] = 1
+        raw.cc[termios.VTIME] = 0
         self.__input_fd_set(raw)
-        self.__rawtermstate = raw
 
-        # Apple Terminal will re-wrap lines for us unless we preempt the
-        # damage.
+        # In macOS terminal we need to deactivate line wrap via ANSI escape code
         if self.is_apple_terminal:
             os.write(self.output_fd, b"\033[?7l")
 
+        self.screen = []
         self.height, self.width = self.getheightwidth()
 
         self.posxy = 0, 0
-        self.__gone_tall = False
+        self.__gone_tall = 0
         self.__move = self.__move_short
         self.__offset = 0
-        self.sync_rendered_screen(RenderedScreen.empty(), self.posxy)
 
         self.__maybe_write_code(self._smkx)
 
@@ -515,12 +378,10 @@ class UnixConsole(Console):
 
         self.__enable_bracketed_paste()
 
-    def restore(self) -> None:
+    def restore(self):
         """
         Restore the console to the default state
         """
-        trace("unix.restore")
-        self.__write(ANSIColors.RESET)
         self.__disable_bracketed_paste()
         self.__maybe_write_code(self._rmkx)
         self.flushoutput()
@@ -585,7 +446,7 @@ class UnixConsole(Console):
             or bool(self.pollob.poll(timeout))
         )
 
-    def set_cursor_vis(self, visible: bool) -> None:
+    def set_cursor_vis(self, visible):
         """
         Set the visibility of the cursor.
 
@@ -653,12 +514,10 @@ class UnixConsole(Console):
         """
         Finish console operations and flush the output buffer.
         """
-        rendered_lines = self._rendered_screen.composed_lines
-        y = len(rendered_lines) - 1
-        while y >= 0 and not rendered_lines[y].text:
+        y = len(self.screen) - 1
+        while y >= 0 and not self.screen[y]:
             y -= 1
         self.__move(0, min(y, self.height + self.__offset - 1))
-        self.__write(ANSIColors.RESET)
         self.__write("\n\r")
         self.flushoutput()
 
@@ -683,7 +542,7 @@ class UnixConsole(Console):
             while not self.event_queue.empty():
                 e2 = self.event_queue.get()
                 e.data += e2.data
-                e.raw += e2.raw
+                e.raw += e.raw
 
             amount = struct.unpack("i", ioctl(self.input_fd, FIONREAD, b"\0\0\0\0"))[0]
             trace("getpending({a})", a=amount)
@@ -707,7 +566,7 @@ class UnixConsole(Console):
             while not self.event_queue.empty():
                 e2 = self.event_queue.get()
                 e.data += e2.data
-                e.raw += e2.raw
+                e.raw += e.raw
 
             amount = 10000
             raw = self.__read(amount)
@@ -720,31 +579,18 @@ class UnixConsole(Console):
         """
         Clear the console screen.
         """
-        trace("unix.clear")
         self.__write_code(self._clear)
-        self.__gone_tall = True
+        self.__gone_tall = 1
         self.__move = self.__move_tall
         self.posxy = 0, 0
-        self.sync_rendered_screen(RenderedScreen.empty(), self.posxy)
+        self.screen = []
 
     @property
     def input_hook(self):
         # avoid inline imports here so the repl doesn't get flooded
         # with import logging from -X importtime=2
         if posix is not None and posix._is_inputhook_installed():
-            return self.__run_input_hook
-
-    def __run_input_hook(self):
-        # gh-152907: input hooks expect cooked output, but pyrepl runs with
-        # OPOST disabled.  Restore the saved output flags around the hook
-        # (only oflag; input must stay raw at the prompt).
-        cooked = self.__rawtermstate.copy()
-        cooked.oflag = self.__svtermstate.oflag
-        self.__input_fd_set(cooked)
-        try:
-            return posix._inputhook()
-        finally:
-            self.__input_fd_set(self.__rawtermstate)
+            return posix._inputhook
 
     def __enable_bracketed_paste(self) -> None:
         os.write(self.output_fd, b"\x1b[?2004h")
@@ -788,178 +634,98 @@ class UnixConsole(Console):
 
         self.__move = self.__move_short
 
-    @staticmethod
-    def __cell_index_from_x(line: RenderLine, x_coord: int) -> int:
-        width = 0
-        index = 0
-        while index < len(line.cells) and width < x_coord:
-            width += line.cells[index].width
-            index += 1
-        return index
+    def __write_changed_line(self, y, oldline, newline, px_coord):
+        # this is frustrating; there's no reason to test (say)
+        # self.dch1 inside the loop -- but alternative ways of
+        # structuring this function are equally painful (I'm trying to
+        # avoid writing code generators these days...)
+        minlen = min(wlen(oldline), wlen(newline))
+        x_pos = 0
+        x_coord = 0
 
-    def __plan_changed_line(
-        self,
-        y: int,
-        oldline: RenderLine,
-        newline: RenderLine,
-        px_coord: int,
-    ) -> LineUpdate | None:
-        # NOTE: The shared replace_char / replace_span / rewrite_suffix logic
-        # is duplicated in WindowsConsole.__plan_changed_line. Keep changes to
-        # these common cases synchronised between the two files. Yes, this is
-        # duplicated on purpose; the two backends agree just enough to make a
-        # shared helper a trap. Unix-only cases (insert_char, delete_then_insert)
-        # rely on terminal capabilities (ich1/dch1) that are unavailable on
-        # Windows.
-        diff = diff_render_lines(oldline, newline)
-        if diff is None:
-            return None
+        px_pos = 0
+        j = 0
+        for c in oldline:
+            if j >= px_coord:
+                break
+            j += wlen(c)
+            px_pos += 1
 
-        start_cell = diff.start_cell
-        start_x = diff.start_x
-
-        if (
-            self.ich1
-            and not diff.old_cells
-            and (visible_new_cells := tuple(
-                cell for cell in diff.new_cells if cell.width
-            ))
-            and len(visible_new_cells) == 1
-            and all(cell.width == 0 for cell in diff.new_cells[1:])
-            and oldline.cells[start_cell:] == newline.cells[start_cell + 1 :]
+        # reuse the oldline as much as possible, but stop as soon as we
+        # encounter an ESCAPE, because it might be the start of an escape
+        # sequence
+        while (
+            x_coord < minlen
+            and oldline[x_pos] == newline[x_pos]
+            and newline[x_pos] != "\x1b"
         ):
-            px_cell = self.__cell_index_from_x(oldline, px_coord)
+            x_coord += wlen(newline[x_pos])
+            x_pos += 1
+
+        # if we need to insert a single character right after the first detected change
+        if oldline[x_pos:] == newline[x_pos + 1 :] and self.ich1:
             if (
                 y == self.posxy[1]
-                and start_x > self.posxy[0]
-                and oldline.cells[px_cell:start_cell]
-                == newline.cells[px_cell + 1 : start_cell + 1]
+                and x_coord > self.posxy[0]
+                and oldline[px_pos:x_pos] == newline[px_pos + 1 : x_pos + 1]
             ):
-                start_cell = px_cell
-                start_x = px_coord
-            planned_cells = diff.new_cells
-            changed_cell = visible_new_cells[0]
-            return LineUpdate(
-                kind="insert_char",
-                y=y,
-                start_cell=start_cell,
-                start_x=start_x,
-                cells=planned_cells,
-                char_width=changed_cell.width,
-                reset_to_margin=requires_cursor_resync(planned_cells),
-            )
+                x_pos = px_pos
+                x_coord = px_coord
+            character_width = wlen(newline[x_pos])
+            self.__move(x_coord, y)
+            self.__write_code(self.ich1)
+            self.__write(newline[x_pos])
+            self.posxy = x_coord + character_width, y
 
-        if (
-            len(diff.old_cells) == 1
-            and len(diff.new_cells) == 1
-            and diff.old_cells[0].width == diff.new_cells[0].width
+        # if it's a single character change in the middle of the line
+        elif (
+            x_coord < minlen
+            and oldline[x_pos + 1 :] == newline[x_pos + 1 :]
+            and wlen(oldline[x_pos]) == wlen(newline[x_pos])
         ):
-            planned_cells = diff.new_cells
-            changed_cell = planned_cells[0]
-            return LineUpdate(
-                kind="replace_char",
-                y=y,
-                start_cell=start_cell,
-                start_x=start_x,
-                cells=planned_cells,
-                char_width=changed_cell.width,
-                reset_to_margin=requires_cursor_resync(planned_cells),
-            )
+            character_width = wlen(newline[x_pos])
+            self.__move(x_coord, y)
+            self.__write(newline[x_pos])
+            self.posxy = x_coord + character_width, y
 
-        if diff.old_changed_width == diff.new_changed_width:
-            planned_cells = diff.new_cells
-            return LineUpdate(
-                kind="replace_span",
-                y=y,
-                start_cell=start_cell,
-                start_x=start_x,
-                cells=planned_cells,
-                char_width=diff.new_changed_width,
-                reset_to_margin=requires_cursor_resync(planned_cells),
-            )
-
-        if (
+        # if this is the last character to fit in the line and we edit in the middle of the line
+        elif (
             self.dch1
             and self.ich1
-            and newline.width == self.width
-            and start_x < newline.width - 2
-            and newline.cells[start_cell + 1 : -1] == oldline.cells[start_cell:-2]
+            and wlen(newline) == self.width
+            and x_coord < wlen(newline) - 2
+            and newline[x_pos + 1 : -1] == oldline[x_pos:-2]
         ):
-            planned_cells = (newline.cells[start_cell],)
-            changed_cell = planned_cells[0]
-            return LineUpdate(
-                kind="delete_then_insert",
-                y=y,
-                start_cell=start_cell,
-                start_x=start_x,
-                cells=planned_cells,
-                char_width=changed_cell.width,
-                reset_to_margin=requires_cursor_resync(planned_cells),
-            )
-
-        suffix_cells = newline.cells[start_cell:]
-        return LineUpdate(
-            kind="rewrite_suffix",
-            y=y,
-            start_cell=start_cell,
-            start_x=start_x,
-            cells=suffix_cells,
-            char_width=sum(cell.width for cell in suffix_cells),
-            clear_eol=oldline.width > newline.width,
-            reset_to_margin=requires_cursor_resync(suffix_cells),
-        )
-
-    def __apply_line_update(
-        self,
-        update: LineUpdate,
-        visual_style: str | None = None,
-    ) -> None:
-        text = render_cells(update.cells, visual_style) if visual_style else update.text
-        trace(
-            "unix.refresh update kind={kind} y={y} x={x} text={text} "
-            "clear_eol={clear_eol} reset_to_margin={reset}",
-            kind=update.kind,
-            y=update.y,
-            x=update.start_x,
-            text=trace_text(text),
-            clear_eol=update.clear_eol,
-            reset=update.reset_to_margin,
-        )
-        if update.kind == "insert_char":
-            self.__move(update.start_x, update.y)
-            self.__write_code(self.ich1)
-            self.__write(text)
-            self.posxy = update.start_x + update.char_width, update.y
-        elif update.kind in {"replace_char", "replace_span"}:
-            self.__move(update.start_x, update.y)
-            self.__write(text)
-            self.posxy = update.start_x + update.char_width, update.y
-        elif update.kind == "delete_then_insert":
             self.__hide_cursor()
-            self.__move(self.width - 2, update.y)
-            self.posxy = self.width - 2, update.y
+            self.__move(self.width - 2, y)
+            self.posxy = self.width - 2, y
             self.__write_code(self.dch1)
-            self.__move(update.start_x, update.y)
+
+            character_width = wlen(newline[x_pos])
+            self.__move(x_coord, y)
             self.__write_code(self.ich1)
-            self.__write(text)
-            self.posxy = update.start_x + update.char_width, update.y
+            self.__write(newline[x_pos])
+            self.posxy = character_width + 1, y
+
         else:
             self.__hide_cursor()
-            self.__move(update.start_x, update.y)
-            if update.clear_eol:
+            self.__move(x_coord, y)
+            if wlen(oldline) > wlen(newline):
                 self.__write_code(self._el)
-            self.__write(text)
-            self.posxy = update.start_x + update.char_width, update.y
+            self.__write(newline[x_pos:])
+            self.posxy = wlen(newline), y
 
-        if update.reset_to_margin:
-            # Non-SGR terminal controls can affect the cursor position.
-            self.move_cursor(0, update.y)
+        if "\x1b" in newline:
+            # ANSI escape characters are present, so we can't assume
+            # anything about the position of the cursor.  Moving the cursor
+            # to the left margin should work to get to a known position.
+            self.move_cursor(0, y)
 
     def __write(self, text):
-        self.__buffer.append((text, False))
+        self.__buffer.append((text, 0))
 
     def __write_code(self, fmt, *args):
-        self.__buffer.append((terminfo.tparm(fmt, *args), True))
+        self.__buffer.append((terminfo.tparm(fmt, *args), 1))
 
     def __maybe_write_code(self, fmt, *args):
         if fmt:
@@ -1010,38 +776,29 @@ class UnixConsole(Console):
         self.__write_code(self._cup, y - self.__offset, x)
 
     def __sigwinch(self, signum, frame):
-        self.event_queue.insert(Event("resize", ""))
+        self.event_queue.insert(Event("resize", None))
 
     def __hide_cursor(self):
         if self.cursor_visible:
             self.__maybe_write_code(self._civis)
-            self.cursor_visible = False
+            self.cursor_visible = 0
 
     def __show_cursor(self):
         if not self.cursor_visible:
             self.__maybe_write_code(self._cnorm)
-            self.cursor_visible = True
+            self.cursor_visible = 1
 
     def repaint(self):
-        composed = self._rendered_screen.composed_lines
-        trace(
-            "unix.repaint gone_tall={gone_tall} screen_lines={lines} offset={offset}",
-            gone_tall=self.__gone_tall,
-            lines=len(composed),
-            offset=self.__offset,
-        )
         if not self.__gone_tall:
             self.posxy = 0, self.posxy[1]
             self.__write("\r")
-            ns = len(composed) * ["\000" * self.width]
+            ns = len(self.screen) * ["\000" * self.width]
+            self.screen = ns
         else:
             self.posxy = 0, self.__offset
             self.__move(0, self.__offset)
             ns = self.height * ["\000" * self.width]
-        self.sync_rendered_screen(
-            RenderedScreen.from_screen_lines(ns, self.posxy),
-            self.posxy,
-        )
+            self.screen = ns
 
     def __tputs(self, fmt, prog=delayprog):
         """A Python implementation of the curses tputs function; the

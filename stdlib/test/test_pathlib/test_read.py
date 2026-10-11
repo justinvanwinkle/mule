@@ -13,10 +13,10 @@ from .support.zip_path import ReadableZipPath, ZipPathGround
 
 if is_pypi:
     from pathlib_abc import PathInfo, _ReadablePath
-    from pathlib_abc._os import vfsopen
+    from pathlib_abc._os import magic_open
 else:
     from pathlib.types import PathInfo, _ReadablePath
-    from pathlib._os import vfsopen
+    from pathlib._os import magic_open
 
 
 class ReadTestBase:
@@ -32,15 +32,9 @@ class ReadTestBase:
 
     def test_open_r(self):
         p = self.root / 'fileA'
-        with vfsopen(p, 'r', encoding='utf-8') as f:
+        with magic_open(p, 'r', encoding='utf-8') as f:
             self.assertIsInstance(f, io.TextIOBase)
             self.assertEqual(f.read(), 'this is file A\n')
-
-    def test_open_r_buffering_error(self):
-        p = self.root / 'fileA'
-        self.assertRaises(ValueError, vfsopen, p, 'r', buffering=0)
-        self.assertRaises(ValueError, vfsopen, p, 'r', buffering=1)
-        self.assertRaises(ValueError, vfsopen, p, 'r', buffering=1024)
 
     @unittest.skipIf(
         not getattr(sys.flags, 'warn_default_encoding', 0),
@@ -49,17 +43,17 @@ class ReadTestBase:
     def test_open_r_encoding_warning(self):
         p = self.root / 'fileA'
         with self.assertWarns(EncodingWarning) as wc:
-            with vfsopen(p, 'r'):
+            with magic_open(p, 'r'):
                 pass
         self.assertEqual(wc.filename, __file__)
 
     def test_open_rb(self):
         p = self.root / 'fileA'
-        with vfsopen(p, 'rb') as f:
+        with magic_open(p, 'rb') as f:
             self.assertEqual(f.read(), b'this is file A\n')
-        self.assertRaises(ValueError, vfsopen, p, 'rb', encoding='utf8')
-        self.assertRaises(ValueError, vfsopen, p, 'rb', errors='strict')
-        self.assertRaises(ValueError, vfsopen, p, 'rb', newline='')
+        self.assertRaises(ValueError, magic_open, p, 'rb', encoding='utf8')
+        self.assertRaises(ValueError, magic_open, p, 'rb', errors='strict')
+        self.assertRaises(ValueError, magic_open, p, 'rb', newline='')
 
     def test_read_bytes(self):
         p = self.root / 'fileA'
@@ -328,11 +322,6 @@ class ReadTestBase:
             self.assertTrue((p / 'brokenLinkLoop').info.is_symlink())
         self.assertFalse((p / 'fileA\udfff').info.is_symlink())
         self.assertFalse((p / 'fileA\x00').info.is_symlink())
-
-    def test_invalid_mode(self):
-        p = self.root / 'fileA'
-        with self.assertRaisesRegex(ValueError, 'invalid mode'):
-            vfsopen(p, 'q')
 
 
 class ZipPathReadTest(ReadTestBase, unittest.TestCase):

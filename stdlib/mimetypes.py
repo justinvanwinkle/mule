@@ -241,7 +241,7 @@ class MimeTypes:
         list of standard types, else to the list of non-standard
         types.
         """
-        with open(filename, encoding='utf-8') as fp:
+        with open(filename, encoding='utf-8', errors='surrogateescape') as fp:
             self.readfp(fp, strict)
 
     def readfp(self, fp, strict=True):
@@ -432,7 +432,7 @@ def init(files=None):
 
 def read_mime_types(file):
     try:
-        f = open(file, encoding='utf-8')
+        f = open(file, encoding='utf-8', errors='surrogateescape')
     except OSError:
         return None
     with f:
@@ -474,8 +474,6 @@ def _default_mime_types():
     types_map = _types_map_default = {
         '.js'     : 'text/javascript',
         '.mjs'    : 'text/javascript',
-        '.dcm'    : 'application/dicom',
-        '.efi'    : 'application/efi',
         '.epub'   : 'application/epub+zip',
         '.gz'     : 'application/gzip',
         '.json'   : 'application/json',
@@ -485,35 +483,26 @@ def _default_mime_types():
         '.wiz'    : 'application/msword',
         '.nq'     : 'application/n-quads',
         '.nt'     : 'application/n-triples',
-        '.cjs'    : 'application/node',
         '.bin'    : 'application/octet-stream',
         '.a'      : 'application/octet-stream',
+        '.dll'    : 'application/octet-stream',
+        '.exe'    : 'application/octet-stream',
         '.o'      : 'application/octet-stream',
         '.obj'    : 'application/octet-stream',
         '.so'     : 'application/octet-stream',
         '.oda'    : 'application/oda',
         '.ogx'    : 'application/ogg',
         '.pdf'    : 'application/pdf',
-        '.ai'     : 'application/pdf',
         '.p7c'    : 'application/pkcs7-mime',
         '.ps'     : 'application/postscript',
+        '.ai'     : 'application/postscript',
         '.eps'    : 'application/postscript',
-        '.rtf'    : 'application/rtf',
-        '.sql'    : 'application/sql',
-        '.texi'   : 'application/texinfo',
-        '.texinfo': 'application/texinfo',
-        '.toml'   : 'application/toml',
         '.trig'   : 'application/trig',
         '.m3u'    : 'application/vnd.apple.mpegurl',
         '.m3u8'   : 'application/vnd.apple.mpegurl',
-        '.dll'    : 'application/vnd.microsoft.portable-executable',
-        '.exe'    : 'application/vnd.microsoft.portable-executable',
-        '.cab'    : 'application/vnd.ms-cab-compressed',
         '.xls'    : 'application/vnd.ms-excel',
         '.xlb'    : 'application/vnd.ms-excel',
         '.eot'    : 'application/vnd.ms-fontobject',
-        '.chm'    : 'application/vnd.ms-htmlhelp',
-        '.thmx'   : 'application/vnd.ms-officetheme',
         '.ppt'    : 'application/vnd.ms-powerpoint',
         '.pot'    : 'application/vnd.ms-powerpoint',
         '.ppa'    : 'application/vnd.ms-powerpoint',
@@ -527,8 +516,6 @@ def _default_mime_types():
         '.xlsx'   : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         '.docx'   : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         '.rar'    : 'application/vnd.rar',
-        '.sqlite3': 'application/vnd.sqlite3',
-        '.sqlite' : 'application/vnd.sqlite3',
         '.wasm'   : 'application/wasm',
         '.7z'     : 'application/x-7z-compressed',
         '.bcpio'  : 'application/x-bcpio',
@@ -558,6 +545,8 @@ def _default_mime_types():
         '.tar'    : 'application/x-tar',
         '.tcl'    : 'application/x-tcl',
         '.tex'    : 'application/x-tex',
+        '.texi'   : 'application/x-texinfo',
+        '.texinfo': 'application/x-texinfo',
         '.roff'   : 'application/x-troff',
         '.t'      : 'application/x-troff',
         '.tr'     : 'application/x-troff',
@@ -595,15 +584,11 @@ def _default_mime_types():
         '.aiff'   : 'audio/x-aiff',
         '.ra'     : 'audio/x-pn-realaudio',
         '.wav'    : 'audio/vnd.wave',
-        '.weba'   : 'audio/webm',
-        '.ttc'    : 'font/collection',
         '.otf'    : 'font/otf',
         '.ttf'    : 'font/ttf',
+        '.weba'   : 'audio/webm',
         '.woff'   : 'font/woff',
         '.woff2'  : 'font/woff2',
-        '.hjif'   : 'haptics/hjif',
-        '.hmpg'   : 'haptics/hmpg',
-        '.ivs'    : 'haptics/ivs',
         '.avif'   : 'image/avif',
         '.bmp'    : 'image/bmp',
         '.emf'    : 'image/emf',
@@ -617,7 +602,6 @@ def _default_mime_types():
         '.jpeg'   : 'image/jpeg',
         '.jpm'    : 'image/jpm',
         '.jpx'    : 'image/jpx',
-        '.jxl'    : 'image/jxl',
         '.heic'   : 'image/heic',
         '.heif'   : 'image/heif',
         '.png'    : 'image/png',
@@ -660,6 +644,7 @@ def _default_mime_types():
         '.pl'     : 'text/plain',
         '.srt'    : 'text/plain',
         '.rtx'    : 'text/richtext',
+        '.rtf'    : 'text/rtf',
         '.tsv'    : 'text/tab-separated-values',
         '.vtt'    : 'text/vtt',
         '.py'     : 'text/x-python',
@@ -692,9 +677,11 @@ def _default_mime_types():
 
     # Please sort these too
     common_types = _common_types_default = {
+        '.rtf' : 'application/rtf',
         '.apk' : 'application/vnd.android.package-archive',
         '.midi': 'audio/midi',
         '.mid' : 'audio/midi',
+        '.jpg' : 'image/jpg',
         '.pict': 'image/pict',
         '.pct' : 'image/pict',
         '.pic' : 'image/pict',
@@ -709,7 +696,7 @@ def _parse_args(args):
     from argparse import ArgumentParser
 
     parser = ArgumentParser(
-        description='map filename extensions to MIME types',
+        description='map filename extensions to MIME types', color=True
     )
     parser.add_argument(
         '-e', '--extension',

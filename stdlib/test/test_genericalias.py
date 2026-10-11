@@ -17,7 +17,7 @@ from dataclasses import Field
 from functools import partial, partialmethod, cached_property
 from graphlib import TopologicalSorter
 from logging import LoggerAdapter, StreamHandler
-from mailbox import Mailbox
+from mailbox import Mailbox, _PartialFile
 try:
     import ctypes
 except ImportError:
@@ -100,9 +100,7 @@ _UNPACKED_TUPLES = [
 
 class BaseTest(unittest.TestCase):
     """Test basics."""
-    generic_types = [type, tuple, list, dict, frozendict,
-                     set, frozenset, enumerate, memoryview,
-                     slice,
+    generic_types = [type, tuple, list, dict, set, frozenset, enumerate, memoryview,
                      defaultdict, deque,
                      SequenceMatcher,
                      dircmp,
@@ -118,7 +116,7 @@ class BaseTest(unittest.TestCase):
                      Iterable, Iterator,
                      Reversible,
                      Container, Collection,
-                     Mailbox,
+                     Mailbox, _PartialFile,
                      ContextVar, Token,
                      Field,
                      Set, MutableSet,

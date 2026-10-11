@@ -1,4 +1,3 @@
-import collections.abc
 import unittest
 import tkinter
 from test import support
@@ -63,33 +62,7 @@ class DefaultRootTest(AbstractDefaultRootTest, unittest.TestCase):
         self.assertRaises(RuntimeError, tkinter.PhotoImage)
 
 
-class BaseImageTest:
-    def create(self):
-        return self.image_class('::img::test', master=self.root,
-                                file=self.testfile)
-
-    def test_bug_100814(self):
-        # gh-100814: Passing a callable option value causes AttributeError.
-        with self.assertRaises(tkinter.TclError):
-            self.image_class('::img::test', master=self.root, spam=print)
-        image = self.image_class('::img::test', master=self.root)
-        with self.assertRaises(tkinter.TclError):
-            image.configure(spam=print)
-
-    def test_iterable_protocol(self):
-        image = self.create()
-        self.assertNotIsSubclass(self.image_class, collections.abc.Iterable)
-        self.assertNotIsSubclass(self.image_class, collections.abc.Container)
-        self.assertNotIsInstance(image, collections.abc.Iterable)
-        self.assertNotIsInstance(image, collections.abc.Container)
-        with self.assertRaisesRegex(TypeError, 'is not iterable'):
-            iter(image)
-        with self.assertRaisesRegex(TypeError, 'is not a container or iterable'):
-            image in image
-
-
-class BitmapImageTest(BaseImageTest, AbstractTkTest, unittest.TestCase):
-    image_class = tkinter.BitmapImage
+class BitmapImageTest(AbstractTkTest, unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -172,14 +145,25 @@ class BitmapImageTest(BaseImageTest, AbstractTkTest, unittest.TestCase):
         self.assertEqual(image['foreground'],
                          '-foreground {} {} #000000 yellow')
 
+    def test_bug_100814(self):
+        # gh-100814: Passing a callable option value causes AttributeError.
+        with self.assertRaises(tkinter.TclError):
+            tkinter.BitmapImage('::img::test', master=self.root, spam=print)
+        image = tkinter.BitmapImage('::img::test', master=self.root)
+        with self.assertRaises(tkinter.TclError):
+            image.configure(spam=print)
 
-class PhotoImageTest(BaseImageTest, AbstractTkTest, unittest.TestCase):
-    image_class = tkinter.PhotoImage
+
+class PhotoImageTest(AbstractTkTest, unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
         AbstractTkTest.setUpClass.__func__(cls)
         cls.testfile = support.findfile('python.gif', subdir='tkinterdata')
+
+    def create(self):
+        return tkinter.PhotoImage('::img::test', master=self.root,
+                                  file=self.testfile)
 
     def colorlist(self, *args):
         if tkinter.TkVersion >= 8.6 and self.wantobjects:
@@ -303,6 +287,14 @@ class PhotoImageTest(BaseImageTest, AbstractTkTest, unittest.TestCase):
         self.assertEqual(image['palette'], '256')
         image.configure(palette='3/4/2')
         self.assertEqual(image['palette'], '3/4/2')
+
+    def test_bug_100814(self):
+        # gh-100814: Passing a callable option value causes AttributeError.
+        with self.assertRaises(tkinter.TclError):
+            tkinter.PhotoImage('::img::test', master=self.root, spam=print)
+        image = tkinter.PhotoImage('::img::test', master=self.root)
+        with self.assertRaises(tkinter.TclError):
+            image.configure(spam=print)
 
     def test_blank(self):
         image = self.create()

@@ -1,22 +1,14 @@
 import abc
+import io
 import itertools
 import os
 import pathlib
-from collections.abc import Iterable, Iterator
-from typing import (
-    Any,
-    BinaryIO,
-    Literal,
-    NoReturn,
-    Optional,
-    Protocol,
-    Text,
-    TextIO,
-    overload,
-    runtime_checkable,
-)
+from typing import Any, BinaryIO, Iterable, Iterator, NoReturn, Text, Optional
+from typing import runtime_checkable, Protocol
+from typing import Union
 
-StrPath = str | os.PathLike[str]
+
+StrPath = Union[str, os.PathLike[str]]
 
 __all__ = ["ResourceReader", "Traversable", "TraversableResources"]
 
@@ -90,13 +82,11 @@ class Traversable(Protocol):
         with self.open('rb') as strm:
             return strm.read()
 
-    def read_text(
-        self, encoding: Optional[str] = None, errors: Optional[str] = None
-    ) -> str:
+    def read_text(self, encoding: Optional[str] = None) -> str:
         """
         Read contents of self as text
         """
-        with self.open(encoding=encoding, errors=errors) as strm:
+        with self.open(encoding=encoding) as strm:
             return strm.read()
 
     @abc.abstractmethod
@@ -142,14 +132,8 @@ class Traversable(Protocol):
         """
         return self.joinpath(child)
 
-    @overload
-    def open(self, mode: Literal['r'] = 'r', *args: Any, **kwargs: Any) -> TextIO: ...
-
-    @overload
-    def open(self, mode: Literal['rb'], *args: Any, **kwargs: Any) -> BinaryIO: ...
-
     @abc.abstractmethod
-    def open(self, mode: str = 'r', *args: Any, **kwargs: Any) -> TextIO | BinaryIO:
+    def open(self, mode='r', *args, **kwargs):
         """
         mode may be 'r' or 'rb' to open as text or binary. Return a handle
         suitable for reading (same as pathlib.Path.open).
@@ -176,7 +160,7 @@ class TraversableResources(ResourceReader):
     def files(self) -> "Traversable":
         """Return a Traversable object for the loaded package."""
 
-    def open_resource(self, resource: StrPath) -> BinaryIO:
+    def open_resource(self, resource: StrPath) -> io.BufferedReader:
         return self.files().joinpath(resource).open('rb')
 
     def resource_path(self, resource: Any) -> NoReturn:

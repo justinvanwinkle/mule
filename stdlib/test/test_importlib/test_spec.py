@@ -52,10 +52,7 @@ class ModuleSpecTests:
     def setUp(self):
         self.name = 'spam'
         self.path = 'spam.py'
-        try:
-            self.cached = self.util.cache_from_source(self.path)
-        except NotImplementedError:
-            self.cached = None
+        self.cached = self.util.cache_from_source(self.path)
         self.loader = TestLoader()
         self.spec = self.machinery.ModuleSpec(self.name, self.loader)
         self.loc_spec = self.machinery.ModuleSpec(self.name, self.loader,
@@ -187,8 +184,6 @@ class ModuleSpecTests:
 
         self.assertIs(spec.cached, None)
 
-    @unittest.skipIf(sys.implementation.cache_tag is None,
-                     "sys.implementation.cache_tag is None")
     def test_cached_source(self):
         expected = self.util.cache_from_source(self.path)
 
@@ -229,10 +224,7 @@ class ModuleSpecMethodsTests:
     def setUp(self):
         self.name = 'spam'
         self.path = 'spam.py'
-        try:
-            self.cached = self.util.cache_from_source(self.path)
-        except NotImplementedError:
-            self.cached = None
+        self.cached = self.util.cache_from_source(self.path)
         self.loader = TestLoader()
         self.spec = self.machinery.ModuleSpec(self.name, self.loader)
         self.loc_spec = self.machinery.ModuleSpec(self.name, self.loader,
@@ -295,6 +287,20 @@ class ModuleSpecMethodsTests:
                 loaded = self.bootstrap._load(self.spec)
             self.assertNotIn(self.spec.name, sys.modules)
 
+    def test_load_legacy_attributes_immutable(self):
+        module = object()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ImportWarning)
+            class ImmutableLoader(TestLoader):
+                def load_module(self, name):
+                    sys.modules[name] = module
+                    return module
+            self.spec.loader = ImmutableLoader()
+            with CleanImport(self.spec.name):
+                loaded = self.bootstrap._load(self.spec)
+
+                self.assertIs(sys.modules[self.spec.name], module)
+
     # reload()
 
     def test_reload(self):
@@ -344,6 +350,7 @@ class ModuleSpecMethodsTests:
         self.assertIs(loaded.__spec__, self.spec)
         self.assertNotHasAttr(loaded, '__path__')
         self.assertNotHasAttr(loaded, '__file__')
+        self.assertNotHasAttr(loaded, '__cached__')
 
 
 (Frozen_ModuleSpecMethodsTests,
@@ -357,10 +364,7 @@ class FactoryTests:
     def setUp(self):
         self.name = 'spam'
         self.path = os.path.abspath('spam.py')
-        try:
-            self.cached = self.util.cache_from_source(self.path)
-        except NotImplementedError:
-            self.cached = None
+        self.cached = self.util.cache_from_source(self.path)
         self.loader = TestLoader()
         self.fileloader = TestLoader(self.path)
         self.pkgloader = TestLoader(self.path, True)

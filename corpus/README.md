@@ -91,8 +91,9 @@ filenames to their contents. Pending cases use `status = "pending"`, an observed
 Compile gaps match the diagnostic and originating
 source file; imported-library gaps use `compile_error_file` relative to the
 repository and `compile_error_line` to pin the known blocker. Other source errors
-remain failures. Python 3.15 lazy imports currently block argparse, dataclasses
-and collections; string initialization additionally needs the `_string` module.
+remain failures. Class bodies in `abc` currently block argparse and collections,
+and the missing `builtins` module blocks dataclasses through `enum`; string
+initialization additionally needs the `_string` module.
 
 Expected outputs come from published examples or fixed inputs verified against
 isolated CPython, independently of Mule. `source_sha256` identifies the upstream

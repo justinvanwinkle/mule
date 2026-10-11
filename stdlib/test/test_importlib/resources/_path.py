@@ -1,6 +1,10 @@
-import functools
 import pathlib
-from typing import Protocol, Union, runtime_checkable
+import functools
+
+from typing import Dict, Union
+from typing import runtime_checkable
+from typing import Protocol
+
 
 ####
 # from jaraco.path 3.7.1
@@ -12,7 +16,7 @@ class Symlink(str):
     """
 
 
-FilesSpec = dict[str, Union[str, bytes, Symlink, 'FilesSpec']]
+FilesSpec = Dict[str, Union[str, bytes, Symlink, 'FilesSpec']]
 
 
 @runtime_checkable
@@ -28,13 +32,13 @@ class TreeMaker(Protocol):
     def symlink_to(self, target): ...  # pragma: no cover
 
 
-def _ensure_tree_maker(obj: str | TreeMaker) -> TreeMaker:
+def _ensure_tree_maker(obj: Union[str, TreeMaker]) -> TreeMaker:
     return obj if isinstance(obj, TreeMaker) else pathlib.Path(obj)  # type: ignore[return-value]
 
 
 def build(
     spec: FilesSpec,
-    prefix: str | TreeMaker = pathlib.Path(),  # type: ignore[assignment]
+    prefix: Union[str, TreeMaker] = pathlib.Path(),  # type: ignore[assignment]
 ):
     """
     Build a set of files/directories, as described by the spec.
@@ -66,7 +70,7 @@ def build(
 
 
 @functools.singledispatch
-def create(content: str | bytes | FilesSpec, path):
+def create(content: Union[str, bytes, FilesSpec], path):
     path.mkdir(exist_ok=True)
     build(content, prefix=path)  # type: ignore[arg-type]
 

@@ -183,15 +183,12 @@ class BaseContext(object):
         from .spawn import set_executable
         set_executable(executable)
 
-    def set_forkserver_preload(self, module_names, *, on_error='ignore'):
+    def set_forkserver_preload(self, module_names):
         '''Set list of module names to try to load in forkserver process.
-
-        The on_error parameter controls how import failures are handled:
-        "ignore" (default) silently ignores failures, "warn" emits warnings,
-        and "fail" raises exceptions breaking the forkserver context.
+        This is really just a hint.
         '''
         from .forkserver import set_forkserver_preload
-        set_forkserver_preload(module_names, on_error=on_error)
+        set_forkserver_preload(module_names)
 
     def get_context(self, method=None):
         if method is None:

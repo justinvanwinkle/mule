@@ -580,8 +580,6 @@ class TextTest(AbstractTkTest, unittest.TestCase):
         self.assertRaises(TclError, text.search, '', 0)
         self.assertRaises(TclError, text.search, '', '')
         self.assertRaises(TclError, text.search, '', 'invalid')
-        self.assertRaises(TclError, text.search, '', '1.0', 0)
-        self.assertRaises(TclError, text.search, '', '1.0', '')
         self.assertRaises(TclError, text.search, '', '1.0', 'invalid')
 
         text.insert('1.0',
@@ -614,78 +612,9 @@ class TextTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(text.search('TEST', '1.0'), '')
         self.assertEqual(text.search('TEST', '1.0', nocase=True), '1.10')
 
-        self.assertEqual(text.search('.*line', '1.0', regexp=True), '2.0')
-        self.assertEqual(text.search('.*line', '1.0', regexp=True, nolinestop=True), '1.0')
-
-        self.assertEqual(text.search('test', '1.0', '1.13'), '1.10')
-        self.assertEqual(text.search('test', '1.0', '1.13', strictlimits=True), '')
-        self.assertEqual(text.search('test', '1.0', '1.14', strictlimits=True), '1.10')
-
         var = tkinter.Variable(self.root)
         self.assertEqual(text.search('test', '1.0', count=var), '1.10')
         self.assertEqual(var.get(), 4 if self.wantobjects else '4')
-
-        # TODO: Add test for elide=True
-
-    def test_search_all(self):
-        text = self.text
-
-        # pattern and index are obligatory arguments.
-        self.assertRaises(TclError, text.search_all, None, '1.0')
-        self.assertRaises(TclError, text.search_all, 'a', None)
-        self.assertRaises(TclError, text.search_all, None, None)
-
-        # Keyword-only arguments
-        self.assertRaises(TypeError, text.search_all, 'a', '1.0', 'end', None)
-
-        # Invalid text index.
-        self.assertRaises(TclError, text.search_all, '', 0)
-        self.assertRaises(TclError, text.search_all, '', '')
-        self.assertRaises(TclError, text.search_all, '', 'invalid')
-        self.assertRaises(TclError, text.search_all, '', '1.0', 0)
-        self.assertRaises(TclError, text.search_all, '', '1.0', '')
-        self.assertRaises(TclError, text.search_all, '', '1.0', 'invalid')
-
-        def eq(res, expected):
-            self.assertIsInstance(res, tuple)
-            self.assertEqual([str(i) for i in res], expected)
-
-        text.insert('1.0', 'ababa\naba\n64-bit')
-
-        eq(text.search_all('aba', '1.0'), ['1.0', '2.0'])
-        eq(text.search_all('aba', '1.0', 'end'), ['1.0', '2.0'])
-        eq(text.search_all('aba', '1.1', 'end'), ['1.2', '2.0'])
-        eq(text.search_all('aba', '1.1'), ['1.2', '2.0', '1.0'])
-
-        res = text.search_all('', '1.0')  # empty pattern
-        eq(res[:5], ['1.0', '1.1', '1.2', '1.3', '1.4'])
-        eq(res[-5:], ['3.2', '3.3', '3.4', '3.5', '3.6'])
-        eq(text.search_all('nonexistent', '1.0'), [])
-        eq(text.search_all('-bit', '1.0'), ['3.2'])  # starts with a hyphen
-
-        eq(text.search_all('aba', '1.0', 'end', forwards=True), ['1.0', '2.0'])
-        eq(text.search_all('aba', 'end', '1.0', backwards=True), ['2.0', '1.2'])
-
-        eq(text.search_all('aba', '1.0', overlap=True), ['1.0', '1.2', '2.0'])
-        eq(text.search_all('aba', 'end', '1.0', overlap=True, backwards=True), ['2.0', '1.2', '1.0'])
-
-        eq(text.search_all('aba', '1.0', exact=True), ['1.0', '2.0'])
-        eq(text.search_all('a.a', '1.0', exact=True), [])
-        eq(text.search_all('a.a', '1.0', regexp=True), ['1.0', '2.0'])
-
-        eq(text.search_all('ABA', '1.0'), [])
-        eq(text.search_all('ABA', '1.0', nocase=True), ['1.0', '2.0'])
-
-        eq(text.search_all('a.a', '1.0', regexp=True), ['1.0', '2.0'])
-        eq(text.search_all('a.a', '1.0', regexp=True, nolinestop=True), ['1.0', '1.4'])
-
-        eq(text.search_all('aba', '1.0', '2.2'), ['1.0', '2.0'])
-        eq(text.search_all('aba', '1.0', '2.2', strictlimits=True), ['1.0'])
-        eq(text.search_all('aba', '1.0', '2.3', strictlimits=True), ['1.0', '2.0'])
-
-        var = tkinter.Variable(self.root)
-        eq(text.search_all('aba', '1.0', count=var), ['1.0', '2.0'])
-        self.assertEqual(var.get(), (3, 3) if self.wantobjects else '3 3')
 
         # TODO: Add test for elide=True
 

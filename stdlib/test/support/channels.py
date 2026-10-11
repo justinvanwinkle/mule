@@ -6,8 +6,8 @@ from concurrent.interpreters import _crossinterp
 
 # aliases:
 from _interpchannels import (
-    ChannelError, ChannelNotFoundError, ChannelClosedError,  # noqa: F401
-    ChannelEmptyError, ChannelNotEmptyError,  # noqa: F401
+    ChannelError, ChannelNotFoundError, ChannelClosedError,
+    ChannelEmptyError, ChannelNotEmptyError,
 )
 from concurrent.interpreters._crossinterp import (
     UNBOUND_ERROR, UNBOUND_REMOVE,

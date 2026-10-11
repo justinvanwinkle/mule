@@ -119,11 +119,10 @@ EXTRA_QUEUED_CALLS = 1
 
 
 # On Windows, WaitForMultipleObjects is used to wait for processes to finish.
-# It can wait on, at most, 64 objects. There is an overhead of three objects:
+# It can wait on, at most, 63 objects. There is an overhead of two objects:
 # - the result queue reader
 # - the thread wakeup reader
-# - the SIGINT handler
-_MAX_WINDOWS_WORKERS = 64 - 3
+_MAX_WINDOWS_WORKERS = 63 - 2
 
 # Hack to embed stringification of remote traceback in local traceback
 
@@ -564,22 +563,9 @@ class _ExecutorManagerThread(threading.Thread):
         # All pending tasks are to be marked failed with a
         # BrokenProcessPool error, as separate instances to avoid sharing
         # a traceback (gh-101267).
-        cause_str = None
+        cause_tb = None
         if cause is not None:
-            cause_str = ''.join(cause)
-        else:
-            # No cause known, so report any processes that have
-            # terminated with nonzero exit codes, e.g. from a
-            # segfault. Multiple may terminate simultaneously,
-            # so include all of them in the traceback.
-            errors = []
-            for p in self.processes.values():
-                if p.exitcode is not None and p.exitcode != 0:
-                    errors.append(f"Process {p.pid} terminated abruptly "
-                                  f"with exit code {p.exitcode}")
-            if errors:
-                cause_str = "\n".join(errors)
-        cause_tb = f"\n'''\n{cause_str}'''" if cause_str else None
+            cause_tb = f"\n'''\n{''.join(cause)}'''"
 
         if bpe_message is None:
             bpe_message = ("A process in the process pool was terminated "

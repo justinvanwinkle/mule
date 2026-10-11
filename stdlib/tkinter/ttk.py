@@ -12,6 +12,8 @@ maintaining the widget state and invoking callbacks, all aspects
 of the widgets appearance lies at Themes.
 """
 
+__version__ = "0.3.1"
+
 __author__ = "Guilherme Polo <ggpolo@gmail.com>"
 
 __all__ = ["Button", "Checkbutton", "Combobox", "Entry", "Frame", "Label",
@@ -1659,12 +1661,3 @@ class OptionMenu(Menubutton):
         except AttributeError:
             pass
         super().destroy()
-
-
-def __getattr__(name):
-    if name == "__version__":
-        from warnings import _deprecated
-
-        _deprecated("__version__", remove=(3, 20))
-        return "0.3.1"  # Do not change
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

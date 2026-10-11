@@ -30,8 +30,9 @@ def initscr():
               fd=_sys.__stdout__.fileno())
     stdscr = _curses.initscr()
     for key, value in _curses.__dict__.items():
-        if key.startswith('ACS_') or key in ('LINES', 'COLS'):
+        if key[0:4] == 'ACS_' or key in ('LINES', 'COLS'):
             setattr(curses, key, value)
+
     return stdscr
 
 # This is a similar wrapper for start_color(), which adds the COLORS and
@@ -40,9 +41,12 @@ def initscr():
 
 def start_color():
     import _curses, curses
-    _curses.start_color()
-    curses.COLORS = _curses.COLORS
-    curses.COLOR_PAIRS = _curses.COLOR_PAIRS
+    retval = _curses.start_color()
+    if hasattr(_curses, 'COLORS'):
+        curses.COLORS = _curses.COLORS
+    if hasattr(_curses, 'COLOR_PAIRS'):
+        curses.COLOR_PAIRS = _curses.COLOR_PAIRS
+    return retval
 
 # Import Python has_key() implementation if _curses doesn't contain has_key()
 
@@ -81,11 +85,10 @@ def wrapper(func, /, *args, **kwds):
         # Start color, too.  Harmless if the terminal doesn't have
         # color; user can test with has_color() later on.  The try/catch
         # works around a minor bit of over-conscientiousness in the curses
-        # module -- the error return from C start_color() is ignorable,
-        # unless they are raised by the interpreter due to other issues.
+        # module -- the error return from C start_color() is ignorable.
         try:
             start_color()
-        except _curses.error:
+        except:
             pass
 
         return func(stdscr, *args, **kwds)

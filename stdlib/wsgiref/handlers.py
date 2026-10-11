@@ -69,8 +69,7 @@ def read_environ():
 
                 # Python 3's http.server.CGIHTTPRequestHandler decodes
                 # using the urllib.unquote default of UTF-8, amongst other
-                # issues. While the CGI handler is removed in 3.15, this
-                # is kept for legacy reasons.
+                # issues.
                 elif (
                     software.startswith('simplehttp/')
                     and 'python/3' in software

@@ -109,9 +109,8 @@ class TestCParser(unittest.TestCase):
                     encoding="utf-8",
                 ).strip()
 
-            platlib_path = get_sysconfig_path("platlib")
-            purelib_path = get_sysconfig_path("purelib")
-            stack.enter_context(import_helper.DirsOnSysPath(platlib_path, purelib_path))
+            sitepackages = get_sysconfig_path("platlib")
+            stack.enter_context(import_helper.DirsOnSysPath(sitepackages))
             cls.addClassCleanup(stack.pop_all().close)
 
     @support.requires_venv_with_pip()
@@ -359,9 +358,9 @@ class TestCParser(unittest.TestCase):
         grammar_source = """
         start[mod_ty]: a[asdl_stmt_seq*]=import_from+ NEWLINE ENDMARKER { _PyAST_Module(a, NULL, p->arena)}
         import_from[stmt_ty]: ( a='from' !'import' c=simple_name 'import' d=import_as_names_from {
-                                _PyAST_ImportFrom(c->v.Name.id, d, 0, 0, EXTRA) }
+                                _PyAST_ImportFrom(c->v.Name.id, d, 0, EXTRA) }
                             | a='from' '.' 'import' c=import_as_names_from {
-                                _PyAST_ImportFrom(NULL, c, 1, 0, EXTRA) }
+                                _PyAST_ImportFrom(NULL, c, 1, EXTRA) }
                             )
         simple_name[expr_ty]: NAME
         import_as_names_from[asdl_alias_seq*]: a[asdl_alias_seq*]=','.import_as_name_from+ { a }

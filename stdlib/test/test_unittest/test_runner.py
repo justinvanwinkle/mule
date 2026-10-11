@@ -13,7 +13,6 @@ from test.test_unittest.support import (
     LoggingResult,
     ResultWithNoStartTestRunStopTestRun,
 )
-from test.support.testcase import ExceptionIsLikeMixin
 
 
 def resultFactory(*_):
@@ -605,7 +604,7 @@ class TestClassCleanup(unittest.TestCase):
 
 
 @support.force_not_colorized_test_class
-class TestModuleCleanUp(ExceptionIsLikeMixin, unittest.TestCase):
+class TestModuleCleanUp(unittest.TestCase):
     def test_add_and_do_ModuleCleanup(self):
         module_cleanups = []
 
@@ -647,49 +646,10 @@ class TestModuleCleanUp(ExceptionIsLikeMixin, unittest.TestCase):
                          [(module_cleanup_good, (1, 2, 3),
                            dict(four='hello', five='goodbye')),
                           (module_cleanup_bad, (), {})])
-        with self.assertRaises(Exception) as e:
+        with self.assertRaises(CustomError) as e:
             unittest.case.doModuleCleanups()
-        self.assertExceptionIsLike(e.exception,
-                ExceptionGroup('module cleanup failed',
-                               [CustomError('CleanUpExc')]))
+        self.assertEqual(str(e.exception), 'CleanUpExc')
         self.assertEqual(unittest.case._module_cleanups, [])
-
-    def test_doModuleCleanup_with_multiple_errors_in_addModuleCleanup(self):
-        def module_cleanup_bad1():
-            raise TypeError('CleanUpExc1')
-
-        def module_cleanup_bad2():
-            raise ValueError('CleanUpExc2')
-
-        class Module:
-            unittest.addModuleCleanup(module_cleanup_bad1)
-            unittest.addModuleCleanup(module_cleanup_bad2)
-        with self.assertRaises(ExceptionGroup) as e:
-            unittest.case.doModuleCleanups()
-        self.assertExceptionIsLike(e.exception,
-                ExceptionGroup('module cleanup failed', [
-                    ValueError('CleanUpExc2'),
-                    TypeError('CleanUpExc1'),
-                ]))
-
-    def test_doModuleCleanup_with_exception_group_in_addModuleCleanup(self):
-        def module_cleanup_bad():
-            raise ExceptionGroup('CleanUpExc', [
-                ValueError('CleanUpExc2'),
-                TypeError('CleanUpExc1'),
-            ])
-
-        class Module:
-            unittest.addModuleCleanup(module_cleanup_bad)
-        with self.assertRaises(ExceptionGroup) as e:
-            unittest.case.doModuleCleanups()
-        self.assertExceptionIsLike(e.exception,
-                ExceptionGroup('module cleanup failed', [
-                    ExceptionGroup('CleanUpExc', [
-                        ValueError('CleanUpExc2'),
-                        TypeError('CleanUpExc1'),
-                    ]),
-                ]))
 
     def test_addModuleCleanup_arg_errors(self):
         cleanups = []
@@ -911,11 +871,9 @@ class TestModuleCleanUp(ExceptionIsLikeMixin, unittest.TestCase):
         ordering = []
         blowUp = True
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestableTest)
-        with self.assertRaises(Exception) as cm:
+        with self.assertRaises(CustomError) as cm:
             suite.debug()
-        self.assertExceptionIsLike(cm.exception,
-                ExceptionGroup('module cleanup failed',
-                               [CustomError('CleanUpExc')]))
+        self.assertEqual(str(cm.exception), 'CleanUpExc')
         self.assertEqual(ordering, ['setUpModule', 'setUpClass', 'test',
                                     'tearDownClass', 'tearDownModule', 'cleanup_exc'])
         self.assertEqual(unittest.case._module_cleanups, [])

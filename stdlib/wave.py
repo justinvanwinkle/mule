@@ -15,13 +15,15 @@ This returns an instance of a class with the following public methods:
       getsampwidth()  -- returns sample width in bytes
       getframerate()  -- returns sampling frequency
       getnframes()    -- returns number of audio frames
-      getformat()     -- returns frame encoding (WAVE_FORMAT_PCM, WAVE_FORMAT_IEEE_FLOAT
-                         or WAVE_FORMAT_EXTENSIBLE)
       getcomptype()   -- returns compression type ('NONE' for linear samples)
       getcompname()   -- returns human-readable version of
                          compression type ('not compressed' linear samples)
       getparams()     -- returns a namedtuple consisting of all of the
                          above in the above order
+      getmarkers()    -- returns None (for compatibility with the
+                         old aifc module)
+      getmark(id)     -- raises an error since the mark does not
+                         exist (for compatibility with the old aifc module)
       readframes(n)   -- returns at most n frames of audio
       rewind()        -- rewind to the beginning of the audio stream
       setpos(pos)     -- seek to the specified position
@@ -44,9 +46,6 @@ This returns an instance of a class with the following public methods:
       setsampwidth(n) -- set the sample width
       setframerate(n) -- set the frame rate
       setnframes(n)   -- set the number of frames
-      setformat(format)
-                      -- set the frame format. Only WAVE_FORMAT_PCM and
-                         WAVE_FORMAT_IEEE_FLOAT are supported.
       setcomptype(type, name)
                       -- set the compression type and the
                          human-readable compression type
@@ -74,26 +73,16 @@ is destroyed.
 
 from collections import namedtuple
 import builtins
-import os
 import struct
 import sys
 
 
-__all__ = [
-    "open",
-    "Error",
-    "Wave_read",
-    "Wave_write",
-    "WAVE_FORMAT_PCM",
-    "WAVE_FORMAT_IEEE_FLOAT",
-    "WAVE_FORMAT_EXTENSIBLE",
-]
+__all__ = ["open", "Error", "Wave_read", "Wave_write"]
 
 class Error(Exception):
     pass
 
 WAVE_FORMAT_PCM = 0x0001
-WAVE_FORMAT_IEEE_FLOAT = 0x0003
 WAVE_FORMAT_EXTENSIBLE = 0xFFFE
 # Derived from uuid.UUID("00000001-0000-0010-8000-00aa00389b71").bytes_le
 KSDATAFORMAT_SUBTYPE_PCM = b'\x01\x00\x00\x00\x00\x00\x10\x00\x80\x00\x00\xaa\x008\x9bq'
@@ -111,7 +100,7 @@ def _byteswap(data, width):
         for j in range(width):
             swapped_data[i + width - 1 - j] = data[i + j]
 
-    return swapped_data.take_bytes()
+    return bytes(swapped_data)
 
 
 class _Chunk:
@@ -240,10 +229,6 @@ class Wave_read:
               available through the getsampwidth() method
     _framerate -- the sampling frequency
               available through the getframerate() method
-    _format -- frame format
-              One of WAVE_FORMAT_PCM, WAVE_FORMAT_IEEE_FLOAT
-              or WAVE_FORMAT_EXTENSIBLE available through
-              getformat() method
     _comptype -- the AIFF-C compression type ('NONE' if AIFF)
               available through the getcomptype() method
     _compname -- the human-readable AIFF-C compression type
@@ -293,7 +278,7 @@ class Wave_read:
 
     def __init__(self, f):
         self._i_opened_the_file = None
-        if isinstance(f, (bytes, str, os.PathLike)):
+        if isinstance(f, str):
             f = builtins.open(f, 'rb')
             self._i_opened_the_file = f
         # else, assume it is an open file object already
@@ -345,9 +330,6 @@ class Wave_read:
     def getframerate(self):
         return self._framerate
 
-    def getformat(self):
-        return self._format
-
     def getcomptype(self):
         return self._comptype
 
@@ -358,6 +340,16 @@ class Wave_read:
         return _wave_params(self.getnchannels(), self.getsampwidth(),
                        self.getframerate(), self.getnframes(),
                        self.getcomptype(), self.getcompname())
+
+    def getmarkers(self):
+        import warnings
+        warnings._deprecated("Wave_read.getmarkers", remove=(3, 15))
+        return None
+
+    def getmark(self, id):
+        import warnings
+        warnings._deprecated("Wave_read.getmark", remove=(3, 15))
+        raise Error('no marks')
 
     def setpos(self, pos):
         if pos < 0 or pos > self._nframes:
@@ -388,16 +380,16 @@ class Wave_read:
 
     def _read_fmt_chunk(self, chunk):
         try:
-            self._format, self._nchannels, self._framerate, dwAvgBytesPerSec, wBlockAlign = struct.unpack_from('<HHLLH', chunk.read(14))
+            wFormatTag, self._nchannels, self._framerate, dwAvgBytesPerSec, wBlockAlign = struct.unpack_from('<HHLLH', chunk.read(14))
         except struct.error:
             raise EOFError from None
-        if self._format not in (WAVE_FORMAT_PCM, WAVE_FORMAT_IEEE_FLOAT, WAVE_FORMAT_EXTENSIBLE):
-            raise Error('unknown format: %r' % (self._format,))
+        if wFormatTag != WAVE_FORMAT_PCM and wFormatTag != WAVE_FORMAT_EXTENSIBLE:
+            raise Error('unknown format: %r' % (wFormatTag,))
         try:
             sampwidth = struct.unpack_from('<H', chunk.read(2))[0]
         except struct.error:
             raise EOFError from None
-        if self._format == WAVE_FORMAT_EXTENSIBLE:
+        if wFormatTag == WAVE_FORMAT_EXTENSIBLE:
             try:
                 cbSize, wValidBitsPerSample, dwChannelMask = struct.unpack_from('<HHL', chunk.read(8))
                 # Read the entire UUID from the chunk
@@ -440,8 +432,6 @@ class Wave_write:
               set through the setsampwidth() or setparams() method
     _framerate -- the sampling frequency
               set through the setframerate() or setparams() method
-    _format -- frame format
-              set through setformat() method
     _nframes -- the number of audio frames written to the header
               set through the setnframes() or setparams() method
 
@@ -455,7 +445,7 @@ class Wave_write:
 
     def __init__(self, f):
         self._i_opened_the_file = None
-        if isinstance(f, (bytes, str, os.PathLike)):
+        if isinstance(f, str):
             f = builtins.open(f, 'wb')
             self._i_opened_the_file = f
         try:
@@ -469,14 +459,12 @@ class Wave_write:
         self._file = file
         self._convert = None
         self._nchannels = 0
-        self._format = WAVE_FORMAT_PCM
         self._sampwidth = 0
         self._framerate = 0
         self._nframes = 0
         self._nframeswritten = 0
         self._datawritten = 0
         self._datalength = 0
-        self._fact_sample_count_pos = None
         self._headerwritten = False
 
     def __del__(self):
@@ -506,10 +494,7 @@ class Wave_write:
     def setsampwidth(self, sampwidth):
         if self._datawritten:
             raise Error('cannot change parameters after starting to write')
-        if self._format == WAVE_FORMAT_IEEE_FLOAT:
-            if sampwidth not in (4, 8):
-                raise Error('unsupported sample width for IEEE float format')
-        elif sampwidth < 1 or sampwidth > 4:
+        if sampwidth < 1 or sampwidth > 4:
             raise Error('bad sample width')
         self._sampwidth = sampwidth
 
@@ -521,10 +506,9 @@ class Wave_write:
     def setframerate(self, framerate):
         if self._datawritten:
             raise Error('cannot change parameters after starting to write')
-        framerate = int(round(framerate))
         if framerate <= 0:
             raise Error('bad frame rate')
-        self._framerate = framerate
+        self._framerate = int(round(framerate))
 
     def getframerate(self):
         if not self._framerate:
@@ -547,18 +531,6 @@ class Wave_write:
         self._comptype = comptype
         self._compname = compname
 
-    def setformat(self, format):
-        if self._datawritten:
-            raise Error('cannot change parameters after starting to write')
-        if format not in (WAVE_FORMAT_IEEE_FLOAT, WAVE_FORMAT_PCM):
-            raise Error('unsupported wave format')
-        if format == WAVE_FORMAT_IEEE_FLOAT and self._sampwidth and self._sampwidth not in (4, 8):
-            raise Error('unsupported sample width for IEEE float format')
-        self._format = format
-
-    def getformat(self):
-        return self._format
-
     def getcomptype(self):
         return self._comptype
 
@@ -566,15 +538,10 @@ class Wave_write:
         return self._compname
 
     def setparams(self, params):
+        nchannels, sampwidth, framerate, nframes, comptype, compname = params
         if self._datawritten:
             raise Error('cannot change parameters after starting to write')
-        if len(params) == 6:
-            nchannels, sampwidth, framerate, nframes, comptype, compname = params
-            format = WAVE_FORMAT_PCM
-        else:
-            nchannels, sampwidth, framerate, nframes, comptype, compname, format = params
         self.setnchannels(nchannels)
-        self.setformat(format)
         self.setsampwidth(sampwidth)
         self.setframerate(framerate)
         self.setnframes(nframes)
@@ -585,6 +552,21 @@ class Wave_write:
             raise Error('not all parameters set')
         return _wave_params(self._nchannels, self._sampwidth, self._framerate,
               self._nframes, self._comptype, self._compname)
+
+    def setmark(self, id, pos, name):
+        import warnings
+        warnings._deprecated("Wave_write.setmark", remove=(3, 15))
+        raise Error('setmark() not supported')
+
+    def getmark(self, id):
+        import warnings
+        warnings._deprecated("Wave_write.getmark", remove=(3, 15))
+        raise Error('no marks')
+
+    def getmarkers(self):
+        import warnings
+        warnings._deprecated("Wave_write.getmarkers", remove=(3, 15))
+        return None
 
     def tell(self):
         return self._nframeswritten
@@ -611,8 +593,6 @@ class Wave_write:
         try:
             if self._file:
                 self._ensure_header_written(0)
-                if self._datawritten & 1:
-                    self._file.write(b'\x00')
                 if self._datalength != self._datawritten:
                     self._patchheader()
                 self._file.flush()
@@ -637,9 +617,6 @@ class Wave_write:
                 raise Error('sampling rate not specified')
             self._write_header(datasize)
 
-    def _needs_fact_chunk(self):
-        return self._format == WAVE_FORMAT_IEEE_FLOAT
-
     def _write_header(self, initlength):
         assert not self._headerwritten
         self._file.write(b'RIFF')
@@ -650,23 +627,12 @@ class Wave_write:
             self._form_length_pos = self._file.tell()
         except (AttributeError, OSError):
             self._form_length_pos = None
-        has_fact = self._needs_fact_chunk()
-        header_overhead = 36 + (12 if has_fact else 0)
-        self._file.write(struct.pack('<L4s4sLHHLLHH',
-            header_overhead + self._datalength + (self._datalength & 1), b'WAVE', b'fmt ', 16,
-            self._format, self._nchannels, self._framerate,
+        self._file.write(struct.pack('<L4s4sLHHLLHH4s',
+            36 + self._datalength, b'WAVE', b'fmt ', 16,
+            WAVE_FORMAT_PCM, self._nchannels, self._framerate,
             self._nchannels * self._framerate * self._sampwidth,
             self._nchannels * self._sampwidth,
-            self._sampwidth * 8))
-        if has_fact:
-            self._file.write(b'fact')
-            self._file.write(struct.pack('<L', 4))
-            try:
-                self._fact_sample_count_pos = self._file.tell()
-            except (AttributeError, OSError):
-                self._fact_sample_count_pos = None
-            self._file.write(struct.pack('<L', self._nframes))
-        self._file.write(b'data')
+            self._sampwidth * 8, b'data'))
         if self._form_length_pos is not None:
             self._data_length_pos = self._file.tell()
         self._file.write(struct.pack('<L', self._datalength))
@@ -677,13 +643,8 @@ class Wave_write:
         if self._datawritten == self._datalength:
             return
         curpos = self._file.tell()
-        header_overhead = 36 + (12 if self._needs_fact_chunk() else 0)
         self._file.seek(self._form_length_pos, 0)
-        self._file.write(struct.pack('<L', header_overhead + self._datawritten + (self._datawritten & 1)))
-        if self._fact_sample_count_pos is not None:
-            self._file.seek(self._fact_sample_count_pos, 0)
-            nframes = self._datawritten // (self._nchannels * self._sampwidth)
-            self._file.write(struct.pack('<L', nframes))
+        self._file.write(struct.pack('<L', 36 + self._datawritten))
         self._file.seek(self._data_length_pos, 0)
         self._file.write(struct.pack('<L', self._datawritten))
         self._file.seek(curpos, 0)

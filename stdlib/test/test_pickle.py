@@ -59,8 +59,6 @@ class PyUnpicklerTests(AbstractUnpickleTests, unittest.TestCase):
     truncated_errors = (pickle.UnpicklingError, EOFError,
                         AttributeError, ValueError,
                         struct.error, IndexError, ImportError)
-    truncated_data_error = (EOFError, '')
-    size_overflow_error = (pickle.UnpicklingError, 'exceeds')
 
     def loads(self, buf, **kwds):
         f = io.BytesIO(buf)
@@ -105,8 +103,6 @@ class InMemoryPickleTests(AbstractPickleTests, AbstractUnpickleTests,
     truncated_errors = (pickle.UnpicklingError, EOFError,
                         AttributeError, ValueError,
                         struct.error, IndexError, ImportError)
-    truncated_data_error = ((pickle.UnpicklingError, EOFError), '')
-    size_overflow_error = ((OverflowError, pickle.UnpicklingError), 'exceeds')
 
     def dumps(self, arg, protocol=None, **kwargs):
         return pickle.dumps(arg, protocol, **kwargs)
@@ -379,8 +375,6 @@ if has_c_implementation:
         unpickler = _pickle.Unpickler
         bad_stack_errors = (pickle.UnpicklingError,)
         truncated_errors = (pickle.UnpicklingError,)
-        truncated_data_error = (pickle.UnpicklingError, 'truncated')
-        size_overflow_error = (OverflowError, 'exceeds')
 
     class CPicklingErrorTests(PyPicklingErrorTests):
         pickler = _pickle.Pickler
@@ -524,7 +518,7 @@ if has_c_implementation:
                 0)  # Write buffer is cleared after every dump().
 
         def test_unpickler(self):
-            basesize = support.calcobjsize('2P2n3P 2P2n2i5P 2P5n8P2n3i')
+            basesize = support.calcobjsize('2P2n2P 2P2n2i5P 2P5n8P2n3i')
             unpickler = _pickle.Unpickler
             P = struct.calcsize('P')  # Size of memo table entry.
             n = struct.calcsize('n')  # Size of mark table entry.

@@ -11,6 +11,7 @@ from types import FunctionType, MethodType, BuiltinFunctionType
 import pyclbr
 from unittest import TestCase, main as unittest_main
 from test.test_importlib import util as test_importlib_util
+import warnings
 
 
 StaticMethodType = type(staticmethod(lambda: None))
@@ -245,6 +246,9 @@ class PyclbrTest(TestCase):
         # These were once some of the longest modules.
         cm('random', ignore=('Random',))  # from _random import Random as CoreGenerator
         cm('pickle', ignore=('partial', 'PickleBuffer'))
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', DeprecationWarning)
+            cm('sre_parse', ignore=('dump', 'groups', 'pos')) # from sre_constants import *; property
         with temporary_main_spec():
             cm(
                 'pdb',
@@ -252,8 +256,7 @@ class PyclbrTest(TestCase):
                 ignore=('Union', '_ModuleTarget', '_ScriptTarget', '_ZipTarget', 'curframe_locals',
                         '_InteractState', 'rlcompleter'),
             )
-        cm('pydoc', ignore=('input', 'output',  # properties
-                            'getpager', 'plainpager', )) # aliases
+        cm('pydoc', ignore=('input', 'output',))  # properties
 
         # Tests for modules inside packages
         cm('email.parser')

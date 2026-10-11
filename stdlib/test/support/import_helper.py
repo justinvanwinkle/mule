@@ -4,7 +4,6 @@ import importlib
 import importlib.machinery
 import importlib.util
 import os
-import py_compile
 import shutil
 import sys
 import textwrap
@@ -50,31 +49,20 @@ def forget(modname):
         # combinations of PEP 3147/488 and legacy pyc files.
         unlink(source + 'c')
         for opt in ('', 1, 2):
-            try:
-                unlink(importlib.util.cache_from_source(source, optimization=opt))
-            except NotImplementedError:
-                pass
+            unlink(importlib.util.cache_from_source(source, optimization=opt))
 
 
-def make_legacy_pyc(source, allow_compile=False):
+def make_legacy_pyc(source):
     """Move a PEP 3147/488 pyc file to its legacy pyc location.
 
     :param source: The file system path to the source file.  The source file
-        does not need to exist, however the PEP 3147/488 pyc file must exist or
-        allow_compile must be set.
-    :param allow_compile: If True, uses py_compile to create a .pyc if it does
-        not exist. This should be passed as True if cache_tag may be None.
+        does not need to exist, however the PEP 3147/488 pyc file must exist.
     :return: The file system path to the legacy pyc file.
     """
+    pyc_file = importlib.util.cache_from_source(source)
     assert source.endswith('.py')
     legacy_pyc = source + 'c'
-    try:
-        pyc_file = importlib.util.cache_from_source(source)
-        shutil.move(pyc_file, legacy_pyc)
-    except FileNotFoundError, NotImplementedError:
-        if not allow_compile:
-            raise
-        py_compile.compile(source, legacy_pyc, doraise=True)
+    shutil.move(pyc_file, legacy_pyc)
     return legacy_pyc
 
 
@@ -325,7 +313,7 @@ def ready_to_import(name=None, source=""):
                 sys.modules.pop(name, None)
 
 
-def ensure_lazy_imports(imported_module, modules_to_block, *, additional_code=None):
+def ensure_lazy_imports(imported_module, modules_to_block):
     """Test that when imported_module is imported, none of the modules in
     modules_to_block are imported as a side effect."""
     modules_to_block = frozenset(modules_to_block)
@@ -343,16 +331,6 @@ def ensure_lazy_imports(imported_module, modules_to_block, *, additional_code=No
             raise AssertionError(f'unexpectedly imported after importing {imported_module}: {{after}}')
         """
     )
-    if additional_code:
-        script += additional_code
-        script += textwrap.dedent(
-            f"""
-            if unexpected := modules_to_block & sys.modules.keys():
-                after = ", ".join(unexpected)
-                raise AssertionError(f'unexpectedly imported after additional code: {{after}}')
-            """
-        )
-
     from .script_helper import assert_python_ok
     assert_python_ok("-S", "-c", script)
 

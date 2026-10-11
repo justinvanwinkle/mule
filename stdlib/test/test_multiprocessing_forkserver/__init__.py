@@ -10,9 +10,6 @@ if support.PGO:
 if sys.platform == "win32":
     raise unittest.SkipTest("forkserver is not available on Windows")
 
-if not support.has_fork_support:
-    raise unittest.SkipTest("requires working os.fork()")
-
 # The forkserver start method requires passing file descriptors over a Unix
 # socket, which is not available on every platform (e.g. Solaris/illumos).
 if "forkserver" not in multiprocessing.get_all_start_methods():

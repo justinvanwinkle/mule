@@ -1,6 +1,4 @@
-import collections.abc
 import functools
-import os
 import platform
 import sys
 import textwrap
@@ -453,20 +451,15 @@ class MiscTest(AbstractTkTest, unittest.TestCase):
         self.root.update_idletasks()
         f.focus_force()
         self.root.update()
-        # The window manager can take the focus away, and then focus_get()
-        # and focus_displayof() return None.
-        if self.root.focus_displayof() is not None:
-            self.assertIs(self.root.focus_get(), f)
-            self.assertIs(self.root.focus_displayof(), f)
+        self.assertIs(self.root.focus_get(), f)
+        self.assertIs(self.root.focus_displayof(), f)
         self.assertIs(f.focus_lastfor(), f)
         b = tkinter.Button(f)
         b.pack()
         self.root.update()
         b.focus_set()
         self.root.update()
-        if self.root.focus_displayof() is not None:
-            self.assertIs(self.root.focus_get(), b)
-        self.assertIs(f.focus_lastfor(), b)
+        self.assertIs(self.root.focus_get(), b)
 
     def test_focus_methods_unresolvable(self):
         # The focus may be on a widget that tkinter did not create and so
@@ -747,39 +740,8 @@ class MiscTest(AbstractTkTest, unittest.TestCase):
         widget.selection_range(0, 'end')
         self.assertEqual(widget.selection_get(), '\u20ac\0abc\x00def')
 
-    def test_iterable_protocol(self):
-        widget = tkinter.Entry(self.root)
-        self.assertNotIsSubclass(tkinter.Entry, collections.abc.Iterable)
-        self.assertNotIsSubclass(tkinter.Entry, collections.abc.Container)
-        self.assertNotIsInstance(widget, collections.abc.Iterable)
-        self.assertNotIsInstance(widget, collections.abc.Container)
-        with self.assertRaisesRegex(TypeError, 'is not iterable'):
-            iter(widget)
-        with self.assertRaisesRegex(TypeError, 'is not a container or iterable'):
-            widget in widget
-
 
 class TkTest(AbstractTkTest, unittest.TestCase):
-
-    def test_readprofile(self):
-        # gh-153333: profile scripts are decoded with their own coding cookie,
-        # not the locale encoding.  Two cookies so no locale can mask the bug.
-        profiles = {
-            '.RpClass.py': ('latin-1', "self._rp_latin1 = 'caf\xe9'"),
-            '.rpbase.py': ('utf-8', "self._rp_utf8 = 'caf\xe9'"),
-        }
-        self.addCleanup(self.root.__dict__.pop, '_rp_latin1', None)
-        self.addCleanup(self.root.__dict__.pop, '_rp_utf8', None)
-        with (os_helper.temp_dir() as home,
-              os_helper.EnvironmentVarGuard() as env):
-            env['HOME'] = home
-            for filename, (encoding, body) in profiles.items():
-                script = '# -*- coding: %s -*-\n%s\n' % (encoding, body)
-                with open(os.path.join(home, filename), 'wb') as f:
-                    f.write(script.encode(encoding))
-            self.root.readprofile('rpbase', 'RpClass')
-        self.assertEqual(self.root._rp_latin1, 'caf\xe9')
-        self.assertEqual(self.root._rp_utf8, 'caf\xe9')
 
     def test_className(self):
         # The className argument sets the class of the root window.  Tk
@@ -1202,9 +1164,7 @@ class EventTest(AbstractTkTest, unittest.TestCase):
 
         f.focus_force()
         self.root.update()
-        # The window manager can take the focus away and give it back,
-        # which makes Tk generate additional focus events.
-        self.assertGreaterEqual(len(events), 1, events)
+        self.assertEqual(len(events), 1, events)
         e = events[0]
         self.assertIs(e.type, tkinter.EventType.FocusIn)
         self.assertIs(e.widget, f)
@@ -1225,8 +1185,6 @@ class EventTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(e.x_root, '??')
         self.assertEqual(e.y_root, '??')
         self.assertEqual(e.delta, 0)
-        self.assertEqual(e.user_data, '??')
-        self.assertEqual(e.detail, 'NotifyAncestor')
         self.assertEqual(repr(e), '<FocusIn event>')
 
     def test_configure(self):
@@ -1260,8 +1218,6 @@ class EventTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(e.x_root, '??')
         self.assertEqual(e.y_root, '??')
         self.assertEqual(e.delta, 0)
-        self.assertEqual(e.user_data, '??')
-        self.assertEqual(e.detail, '??')
         self.assertEqual(repr(e), '<Configure event x=0 y=0 width=150 height=100>')
 
     def test_event_generate_key_press(self):
@@ -1298,8 +1254,6 @@ class EventTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(e.x_root, -1)
         self.assertEqual(e.y_root, -1)
         self.assertEqual(e.delta, 0)
-        self.assertEqual(e.user_data, '??')
-        self.assertEqual(e.detail, '??')
         self.assertEqual(repr(e),
             f"<KeyPress event state={e.state:#x} "
             f"keysym=z keycode={e.keycode} char='z' x={e.x} y={e.y}>")
@@ -1335,16 +1289,7 @@ class EventTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(e.x_root, 100 + f.winfo_rootx())
         self.assertEqual(e.y_root, 50 + f.winfo_rooty())
         self.assertEqual(e.delta, 0)
-        self.assertEqual(e.user_data, '??')
-        self.assertEqual(e.detail, 'NotifyAncestor')
         self.assertEqual(repr(e), '<Enter event focus=False x=100 y=50>')
-
-        f.event_generate('<Enter>', x=100, y=50, detail='NotifyPointer')
-        self.assertEqual(len(events), 2, events)
-        e = events[1]
-        self.assertIs(e.type, tkinter.EventType.Enter)
-        self.assertEqual(e.user_data, '??')
-        self.assertEqual(e.detail, 'NotifyPointer')
 
     def test_event_generate_button_press(self):
         f = tkinter.Frame(self.root, width=150, height=100)
@@ -1378,8 +1323,6 @@ class EventTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(e.x_root, f.winfo_rootx() + 100)
         self.assertEqual(e.y_root, f.winfo_rooty() + 50)
         self.assertEqual(e.delta, 0)
-        self.assertEqual(e.user_data, '??')
-        self.assertEqual(e.detail, '??')
         self.assertEqual(repr(e), '<ButtonPress event num=1 x=100 y=50>')
 
     def test_event_generate_motion(self):
@@ -1414,8 +1357,6 @@ class EventTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(e.x_root, f.winfo_rootx() + 100)
         self.assertEqual(e.y_root, f.winfo_rooty() + 50)
         self.assertEqual(e.delta, 0)
-        self.assertEqual(e.user_data, '??')
-        self.assertEqual(e.detail, '??')
         self.assertEqual(repr(e), '<Motion event state=Button1 x=100 y=50>')
 
     def test_event_generate_mouse_wheel(self):
@@ -1450,11 +1391,9 @@ class EventTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(e.x_root, f.winfo_rootx() + 100)
         self.assertEqual(e.y_root, f.winfo_rooty() + 50)
         self.assertEqual(e.delta, -5)
-        self.assertEqual(e.user_data, '??')
-        self.assertEqual(e.detail, '??')
         self.assertEqual(repr(e), '<MouseWheel event delta=-5 x=100 y=50>')
 
-    def test_event_generate_virtual_event(self):
+    def test_generate_event_virtual_event(self):
         f = tkinter.Frame(self.root, width=150, height=100)
         f.pack()
         self.root.wait_visibility()  # needed on Windows
@@ -1486,17 +1425,8 @@ class EventTest(AbstractTkTest, unittest.TestCase):
         self.assertEqual(e.x_root, f.winfo_rootx() + 50)
         self.assertEqual(e.y_root, -1)
         self.assertEqual(e.delta, 0)
-        self.assertEqual(e.user_data, '')
-        self.assertEqual(e.detail, '??')
         self.assertEqual(repr(e),
             f"<VirtualEvent event x=50 y=0>")
-
-        f.event_generate('<<Spam>>', data='spam')
-        self.assertEqual(len(events), 2, events)
-        e = events[1]
-        self.assertIs(e.type, tkinter.EventType.VirtualEvent)
-        self.assertEqual(e.user_data, 'spam')
-        self.assertEqual(e.detail, '??')
 
 
 class BindTest(AbstractTkTest, unittest.TestCase):
@@ -1619,8 +1549,6 @@ class BindTest(AbstractTkTest, unittest.TestCase):
         self.assertNotIn(funcid, script)
         self.assertNotIn(funcid2, script)
         self.assertIn(funcid3, script)
-        self.assertCommandNotExist(funcid)
-        self.assertCommandNotExist(funcid2)
         self.assertCommandExist(funcid3)
 
     def test_bind_class(self):
@@ -1665,8 +1593,8 @@ class BindTest(AbstractTkTest, unittest.TestCase):
         unbind_class('Test', event)
         self.assertEqual(bind_class('Test', event), '')
         self.assertEqual(bind_class('Test'), ())
-        self.assertCommandNotExist(funcid)
-        self.assertCommandNotExist(funcid2)
+        self.assertCommandExist(funcid)
+        self.assertCommandExist(funcid2)
 
         unbind_class('Test', event)  # idempotent
 
@@ -1694,8 +1622,8 @@ class BindTest(AbstractTkTest, unittest.TestCase):
         self.assertNotIn(funcid, script)
         self.assertNotIn(funcid2, script)
         self.assertIn(funcid3, script)
-        self.assertCommandNotExist(funcid)
-        self.assertCommandNotExist(funcid2)
+        self.assertCommandExist(funcid)
+        self.assertCommandExist(funcid2)
         self.assertCommandExist(funcid3)
 
     def test_bind_all(self):
@@ -1737,8 +1665,8 @@ class BindTest(AbstractTkTest, unittest.TestCase):
         unbind_all(event)
         self.assertEqual(bind_all(event), '')
         self.assertNotIn(event, bind_all())
-        self.assertCommandNotExist(funcid)
-        self.assertCommandNotExist(funcid2)
+        self.assertCommandExist(funcid)
+        self.assertCommandExist(funcid2)
 
         unbind_all(event)  # idempotent
 
@@ -1766,8 +1694,8 @@ class BindTest(AbstractTkTest, unittest.TestCase):
         self.assertNotIn(funcid, script)
         self.assertNotIn(funcid2, script)
         self.assertIn(funcid3, script)
-        self.assertCommandNotExist(funcid)
-        self.assertCommandNotExist(funcid2)
+        self.assertCommandExist(funcid)
+        self.assertCommandExist(funcid2)
         self.assertCommandExist(funcid3)
 
     def _test_tag_bind(self, w):

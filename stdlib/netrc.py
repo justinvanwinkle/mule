@@ -48,12 +48,11 @@ class _netrclex:
     def get_token(self):
         if self.pushback:
             return self.pushback.pop(0)
-        token = None
+        token = ""
         fiter = iter(self._read_char, "")
         for ch in fiter:
             if ch in self.whitespace:
                 continue
-            token = ""
             if ch == '"':
                 for ch in fiter:
                     if ch == '"':
@@ -96,10 +95,10 @@ class netrc:
         while 1:
             # Look for a machine, default, or macdef top-level keyword
             saved_lineno = lexer.lineno
-            tt = lexer.get_token()
-            if tt is None:
+            toplevel = tt = lexer.get_token()
+            if not tt:
                 break
-            elif tt.startswith('#'):
+            elif tt[0] == '#':
                 if lexer.lineno == saved_lineno and len(tt) == 1:
                     lexer.instream.readline()
                 continue
@@ -136,45 +135,40 @@ class netrc:
             while 1:
                 prev_lineno = lexer.lineno
                 tt = lexer.get_token()
-                if tt is not None and tt.startswith('#'):
+                if tt.startswith('#'):
                     if lexer.lineno == prev_lineno:
                         lexer.instream.readline()
                     continue
-                if tt in {None, 'machine', 'default', 'macdef'}:
+                if tt in {'', 'machine', 'default', 'macdef'}:
                     self.hosts[entryname] = (login, account, password)
                     lexer.push_token(tt)
                     break
                 elif tt == 'login' or tt == 'user':
-                    login = lexer.get_token() or ''
+                    login = lexer.get_token()
                 elif tt == 'account':
-                    account = lexer.get_token() or ''
+                    account = lexer.get_token()
                 elif tt == 'password':
-                    password = lexer.get_token() or ''
+                    password = lexer.get_token()
                 else:
                     raise NetrcParseError("bad follower token %r" % tt,
                                           file, lexer.lineno)
+            self._security_check(fp, default_netrc, self.hosts[entryname][0])
 
-        if _can_security_check() and default_netrc:
-            for entry in self.hosts.values():
-                if entry[0] != "anonymous":
-                    # Raises on security issue; once passed once can exit.
-                    self._security_check(fp)
-                    return
-
-    def _security_check(self, fp):
-        prop = os.fstat(fp.fileno())
-        current_user_id = os.getuid()
-        if prop.st_uid != current_user_id:
-            fowner = _getpwuid(prop.st_uid)
-            user = _getpwuid(current_user_id)
-            raise NetrcParseError(
-                f"~/.netrc file owner ({fowner}) does not match"
-                f" current user ({user})")
-        if (prop.st_mode & (stat.S_IRWXG | stat.S_IRWXO)):
-            raise NetrcParseError(
-                "~/.netrc access too permissive: access"
-                " permissions must restrict access to only"
-                " the owner")
+    def _security_check(self, fp, default_netrc, login):
+        if _can_security_check() and default_netrc and login != "anonymous":
+            prop = os.fstat(fp.fileno())
+            current_user_id = os.getuid()
+            if prop.st_uid != current_user_id:
+                fowner = _getpwuid(prop.st_uid)
+                user = _getpwuid(current_user_id)
+                raise NetrcParseError(
+                    (f"~/.netrc file owner ({fowner}, {user}) does not match"
+                     " current user"))
+            if (prop.st_mode & (stat.S_IRWXG | stat.S_IRWXO)):
+                raise NetrcParseError(
+                    "~/.netrc access too permissive: access"
+                    " permissions must restrict access to only"
+                    " the owner")
 
     def authenticators(self, host):
         """Return a (user, account, password) tuple for given host."""

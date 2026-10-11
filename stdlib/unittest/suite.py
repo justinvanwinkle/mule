@@ -223,11 +223,6 @@ class TestSuite(BaseTestSuite):
                 if result._moduleSetUpFailed:
                     try:
                         case.doModuleCleanups()
-                    except ExceptionGroup as eg:
-                        for e in eg.exceptions:
-                            self._createClassOrModuleLevelException(result, e,
-                                                                    'setUpModule',
-                                                                    currentModule)
                     except Exception as e:
                         self._createClassOrModuleLevelException(result, e,
                                                                 'setUpModule',
@@ -240,15 +235,15 @@ class TestSuite(BaseTestSuite):
         errorName = f'{method_name} ({parent})'
         self._addClassOrModuleLevelException(result, exc, errorName, info)
 
-    def _addClassOrModuleLevelException(self, result, exc, errorName,
+    def _addClassOrModuleLevelException(self, result, exception, errorName,
                                         info=None):
         error = _ErrorHolder(errorName)
         addSkip = getattr(result, 'addSkip', None)
-        if addSkip is not None and isinstance(exc, case.SkipTest):
-            addSkip(error, str(exc))
+        if addSkip is not None and isinstance(exception, case.SkipTest):
+            addSkip(error, str(exception))
         else:
             if not info:
-                result.addError(error, (type(exc), exc, exc.__traceback__))
+                result.addError(error, sys.exc_info())
             else:
                 result.addError(error, info)
 
@@ -278,13 +273,6 @@ class TestSuite(BaseTestSuite):
                                                             previousModule)
             try:
                 case.doModuleCleanups()
-            except ExceptionGroup as eg:
-                if isinstance(result, _DebugResult):
-                    raise
-                for e in eg.exceptions:
-                    self._createClassOrModuleLevelException(result, e,
-                                                            'tearDownModule',
-                                                            previousModule)
             except Exception as e:
                 if isinstance(result, _DebugResult):
                     raise

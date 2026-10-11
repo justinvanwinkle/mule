@@ -9,10 +9,9 @@ import posixpath
 from . import is_pypi
 
 if is_pypi:
-    from pathlib_abc import vfspath, _JoinablePath
+    from pathlib_abc import _JoinablePath
 else:
     from pathlib.types import _JoinablePath
-    from pathlib._os import vfspath
 
 
 class LexicalPath(_JoinablePath):
@@ -23,20 +22,20 @@ class LexicalPath(_JoinablePath):
         self._segments = pathsegments
 
     def __hash__(self):
-        return hash(vfspath(self))
+        return hash(str(self))
 
     def __eq__(self, other):
         if not isinstance(other, LexicalPath):
             return NotImplemented
-        return vfspath(self) == vfspath(other)
+        return str(self) == str(other)
 
-    def __vfspath__(self):
+    def __str__(self):
         if not self._segments:
             return ''
         return self.parser.join(*self._segments)
 
     def __repr__(self):
-        return f'{type(self).__name__}({vfspath(self)!r})'
+        return f'{type(self).__name__}({str(self)!r})'
 
     def with_segments(self, *pathsegments):
         return type(self)(*pathsegments)

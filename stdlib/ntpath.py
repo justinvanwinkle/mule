@@ -29,7 +29,7 @@ __all__ = ["normcase","isabs","join","splitdrive","splitroot","split","splitext"
            "abspath","curdir","pardir","sep","pathsep","defpath","altsep",
            "extsep","devnull","realpath","supports_unicode_filenames","relpath",
            "samefile", "sameopenfile", "samestat", "commonpath", "isjunction",
-           "isdevdrive", "ALL_BUT_LAST", "ALLOW_MISSING"]
+           "isdevdrive", "ALLOW_MISSING"]
 
 def _get_bothseps(path):
     if isinstance(path, bytes):
@@ -47,7 +47,7 @@ try:
         LOCALE_NAME_INVARIANT as _LOCALE_NAME_INVARIANT,
         LCMAP_LOWERCASE as _LCMAP_LOWERCASE)
 
-    def normcase(s, /):
+    def normcase(s):
         """Normalize case of pathname.
 
         Makes all characters lowercase and all slashes into backslashes.
@@ -66,7 +66,7 @@ try:
                                   _LCMAP_LOWERCASE,
                                   s.replace('/', '\\'))
 except ImportError:
-    def normcase(s, /):
+    def normcase(s):
         """Normalize case of pathname.
 
         Makes all characters lowercase and all slashes into backslashes.
@@ -77,7 +77,7 @@ except ImportError:
         return s.replace('/', '\\').lower()
 
 
-def isabs(s, /):
+def isabs(s):
     """Test whether a path is absolute"""
     s = os.fspath(s)
     if isinstance(s, bytes):
@@ -96,7 +96,7 @@ def isabs(s, /):
 
 
 # Join two (or more) paths.
-def join(path, /, *paths):
+def join(path, *paths):
     path = os.fspath(path)
     if isinstance(path, bytes):
         sep = b'\\'
@@ -143,7 +143,7 @@ def join(path, /, *paths):
 # Split a path in a drive specification (a drive letter followed by a
 # colon) and the path specification.
 # It is always true that drivespec + pathspec == p
-def splitdrive(p, /):
+def splitdrive(p):
     """Split a pathname into drive/UNC sharepoint and relative path specifiers.
     Returns a 2-tuple (drive_or_unc, path); either part may be empty.
 
@@ -168,7 +168,7 @@ def splitdrive(p, /):
     return drive, root + tail
 
 
-def splitroot(p, /):
+def splitroot(p):
     """Split a pathname into drive, root and tail.
 
     The tail contains anything after the root."""
@@ -218,7 +218,7 @@ def splitroot(p, /):
 # join(head, tail) == p holds.
 # The resulting head won't end in '/' unless it is the root.
 
-def split(p, /):
+def split(p):
     """Split a pathname.
 
     Return tuple (head, tail) where tail is everything after the final
@@ -239,7 +239,7 @@ def split(p, /):
 # pathname component; the root is everything before that.
 # It is always true that root + ext == p.
 
-def splitext(p, /):
+def splitext(p):
     p = os.fspath(p)
     if isinstance(p, bytes):
         return genericpath._splitext(p, b'\\', b'/', b'.')
@@ -250,14 +250,14 @@ splitext.__doc__ = genericpath._splitext.__doc__
 
 # Return the tail (basename) part of a path.
 
-def basename(p, /):
+def basename(p):
     """Returns the final component of a pathname"""
     return split(p)[1]
 
 
 # Return the head (dirname) part of a path.
 
-def dirname(p, /):
+def dirname(p):
     """Returns the directory component of a pathname"""
     return split(p)[0]
 
@@ -552,7 +552,7 @@ try:
     from nt import _findfirstfile, _getfinalpathname, readlink as _nt_readlink
 except ImportError:
     # realpath is a no-op on systems without _getfinalpathname support.
-    def realpath(path, /, *, strict=False):
+    def realpath(path, *, strict=False):
         return abspath(path)
 else:
     def _readlink_deep(path, ignored_error=OSError):
@@ -653,7 +653,7 @@ else:
                 tail = join(name, tail) if tail else name
         return tail
 
-    def realpath(path, /, *, strict=False):
+    def realpath(path, *, strict=False):
         path = normpath(path)
         if isinstance(path, bytes):
             prefix = b'\\\\?\\'
@@ -677,8 +677,7 @@ else:
 
         if strict is ALLOW_MISSING:
             ignored_error = FileNotFoundError
-        elif strict is ALL_BUT_LAST:
-            ignored_error = FileNotFoundError
+            strict = True
         elif strict:
             ignored_error = ()
         else:
@@ -698,12 +697,6 @@ else:
                 raise OSError(str(ex)) from None
             path = normpath(path)
         except ignored_error as ex:
-            if strict is ALL_BUT_LAST:
-                dirname, basename = split(path)
-                if not basename:
-                    dirname, basename = split(path)
-                if not isdir(dirname):
-                    raise
             initial_winerror = ex.winerror
             path = _getfinalpathname_nonstrict(path,
                                                ignored_error=ignored_error)
@@ -721,7 +714,7 @@ else:
             try:
                 if _getfinalpathname(spath) == path:
                     path = spath
-            except ValueError:
+            except ValueError as ex:
                 # Unexpected, as an invalid path should not have gained a prefix
                 # at any point, but we ignore this error just in case.
                 pass

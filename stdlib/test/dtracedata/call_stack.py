@@ -5,16 +5,16 @@ def function_1():
 def function_2():
     function_1()
 
-# CALL with positional args
+# CALL_FUNCTION_VAR
 def function_3(dummy, dummy2):
     pass
 
-# CALL_KW (keyword arguments)
+# CALL_FUNCTION_KW
 def function_4(**dummy):
     return 1
     return 2  # unreachable
 
-# CALL_FUNCTION_EX (unpacking)
+# CALL_FUNCTION_VAR_KW
 def function_5(dummy, dummy2, **dummy3):
     if False:
         return 7

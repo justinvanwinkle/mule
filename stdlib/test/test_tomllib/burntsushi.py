@@ -7,8 +7,19 @@
 import datetime
 from typing import Any
 
+# Aliases for converting TOML compliance format [1] to BurntSushi format [2]
+# [1] https://github.com/toml-lang/compliance/blob/db7c3211fda30ff9ddb10292f4aeda7e2e10abc4/docs/json-encoding.md  # noqa: E501
+# [2] https://github.com/BurntSushi/toml-test/blob/4634fdf3a6ecd6aaea5f4cdcd98b2733c2694993/README.md  # noqa: E501
+_aliases = {
+    "boolean": "bool",
+    "offset datetime": "datetime",
+    "local datetime": "datetime-local",
+    "local date": "date-local",
+    "local time": "time-local",
+}
 
-def convert(obj):
+
+def convert(obj):  # noqa: C901
     if isinstance(obj, str):
         return {"type": "string", "value": obj}
     elif isinstance(obj, bool):
@@ -42,25 +53,31 @@ def convert(obj):
 def normalize(obj: Any) -> Any:
     """Normalize test objects.
 
-    This normalizes primitive values (e.g. floats)."""
+    This normalizes primitive values (e.g. floats), and also converts from
+    TOML compliance format [1] to BurntSushi format [2].
+
+    [1] https://github.com/toml-lang/compliance/blob/db7c3211fda30ff9ddb10292f4aeda7e2e10abc4/docs/json-encoding.md  # noqa: E501
+    [2] https://github.com/BurntSushi/toml-test/blob/4634fdf3a6ecd6aaea5f4cdcd98b2733c2694993/README.md  # noqa: E501
+    """
     if isinstance(obj, list):
         return [normalize(item) for item in obj]
     if isinstance(obj, dict):
         if "type" in obj and "value" in obj:
             type_ = obj["type"]
+            norm_type = _aliases.get(type_, type_)
             value = obj["value"]
-            if type_ == "float":
+            if norm_type == "float":
                 norm_value = _normalize_float_str(value)
-            elif type_ in {"datetime", "datetime-local"}:
+            elif norm_type in {"datetime", "datetime-local"}:
                 norm_value = _normalize_datetime_str(value)
-            elif type_ == "time-local":
+            elif norm_type == "time-local":
                 norm_value = _normalize_localtime_str(value)
             else:
                 norm_value = value
 
-            if type_ == "array":
+            if norm_type == "array":
                 return [normalize(item) for item in value]
-            return {"type": type_, "value": norm_value}
+            return {"type": norm_type, "value": norm_value}
         return {k: normalize(v) for k, v in obj.items()}
     raise AssertionError("Burntsushi fixtures should be dicts/lists only")
 

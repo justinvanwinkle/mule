@@ -10,7 +10,7 @@ from concurrent.futures._base import (
 from concurrent.futures.process import _check_system_limits
 
 from test import support
-from test.support import threading_helper, warnings_helper
+from test.support import threading_helper
 
 
 def create_future(state=PENDING, exception=None, result=None):
@@ -51,8 +51,7 @@ class ExecutorMixin:
                 max_workers=self.worker_count,
                 mp_context=self.get_context(),
                 **self.executor_kwargs)
-            with warnings_helper.ignore_fork_in_thread_deprecation_warnings():
-                self.manager = self.get_context().Manager()
+            self.manager = self.get_context().Manager()
         else:
             self.executor = self.executor_type(
                 max_workers=self.worker_count,

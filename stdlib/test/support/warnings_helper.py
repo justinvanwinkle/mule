@@ -1,9 +1,9 @@
 import contextlib
+import functools
 import importlib
 import re
 import sys
 import warnings
-
 
 
 def import_deprecated(name):
@@ -42,32 +42,20 @@ def check_syntax_warning(testcase, statement, errtext='',
     testcase.assertEqual(warns, [])
 
 
-@contextlib.contextmanager
-def ignore_warnings(*, category, message=''):
+def ignore_warnings(*, category):
     """Decorator to suppress warnings.
 
-    Can also be used as a context manager. This is not preferred,
-    because it makes diffs more noisy and tools like 'git blame' less useful.
-    But, it's useful for async functions.
+    Use of context managers to hide warnings make diffs
+    more noisy and tools like 'git blame' less useful.
     """
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', category=category, message=message)
-        yield
-
-
-@contextlib.contextmanager
-def ignore_fork_in_thread_deprecation_warnings():
-    """Suppress deprecation warnings related to forking in multi-threaded code.
-
-    See gh-135427
-
-    Can be used as decorator (preferred) or context manager.
-    """
-    with ignore_warnings(
-        message=".*fork.*may lead to deadlocks in the child.*",
-        category=DeprecationWarning,
-    ):
-        yield
+    def decorator(test):
+        @functools.wraps(test)
+        def wrapper(self, *args, **kwargs):
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', category=category)
+                return test(self, *args, **kwargs)
+        return wrapper
+    return decorator
 
 
 class WarningsRecorder(object):

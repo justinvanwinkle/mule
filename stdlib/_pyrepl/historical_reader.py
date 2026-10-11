@@ -90,7 +90,7 @@ class restore_history(commands.Command):
             if r.get_unicode() != r.history[r.historyi]:
                 r.buffer = list(r.history[r.historyi])
                 r.pos = len(r.buffer)
-                r.invalidate_buffer(0)
+                r.dirty = True
 
 
 class first_history(commands.Command):
@@ -130,11 +130,10 @@ class yank_arg(commands.Command):
             o = len(r.yank_arg_yanked)
         else:
             o = 0
-        start = r.pos - o
         b[r.pos - o : r.pos] = list(w)
         r.yank_arg_yanked = w
         r.pos += len(w) - o
-        r.invalidate_buffer(start)
+        r.dirty = True
 
 
 class forward_history_isearch(commands.Command):
@@ -143,7 +142,7 @@ class forward_history_isearch(commands.Command):
         r.isearch_direction = ISEARCH_DIRECTION_FORWARDS
         r.isearch_start = r.historyi, r.pos
         r.isearch_term = ""
-        r.invalidate_prompt()
+        r.dirty = True
         r.push_input_trans(r.isearch_trans)
 
 
@@ -151,7 +150,7 @@ class reverse_history_isearch(commands.Command):
     def do(self) -> None:
         r = self.reader
         r.isearch_direction = ISEARCH_DIRECTION_BACKWARDS
-        r.invalidate_prompt()
+        r.dirty = True
         r.isearch_term = ""
         r.push_input_trans(r.isearch_trans)
         r.isearch_start = r.historyi, r.pos
@@ -164,7 +163,7 @@ class isearch_cancel(commands.Command):
         r.pop_input_trans()
         r.select_item(r.isearch_start[0])
         r.pos = r.isearch_start[1]
-        r.invalidate_prompt()
+        r.dirty = True
 
 
 class isearch_add_character(commands.Command):
@@ -172,7 +171,7 @@ class isearch_add_character(commands.Command):
         r = self.reader
         b = r.buffer
         r.isearch_term += self.event[-1]
-        r.invalidate_prompt()
+        r.dirty = True
         p = r.pos + len(r.isearch_term) - 1
         if b[p : p + 1] != [r.isearch_term[-1]]:
             r.isearch_next()
@@ -183,7 +182,7 @@ class isearch_backspace(commands.Command):
         r = self.reader
         if len(r.isearch_term) > 0:
             r.isearch_term = r.isearch_term[:-1]
-            r.invalidate_prompt()
+            r.dirty = True
         else:
             r.error("nothing to rubout")
 
@@ -208,7 +207,7 @@ class isearch_end(commands.Command):
         r.isearch_direction = ISEARCH_DIRECTION_NONE
         r.console.forgetinput()
         r.pop_input_trans()
-        r.invalidate_prompt()
+        r.dirty = True
 
 
 @dataclass
@@ -242,6 +241,7 @@ class HistoricalReader(Reader):
             isearch_end,
             isearch_add_character,
             isearch_cancel,
+            isearch_add_character,
             isearch_backspace,
             isearch_forwards,
             isearch_backwards,
@@ -279,7 +279,8 @@ class HistoricalReader(Reader):
         self.buffer = list(buf)
         self.historyi = i
         self.pos = len(self.buffer)
-        self.invalidate_buffer(0)
+        self.dirty = True
+        self.last_refresh_cache.invalidated = True
 
     def get_item(self, i: int) -> str:
         if i != len(self.history):
@@ -357,7 +358,7 @@ class HistoricalReader(Reader):
                 if forwards and not match_prefix:
                     self.pos = 0
                     self.buffer = []
-                    self.invalidate_buffer(0)
+                    self.dirty = True
                 else:
                     self.error("not found")
                 return

@@ -214,6 +214,7 @@ class StreamReaderProtocol(FlowControlMixin, protocols.Protocol):
         return self._stream_reader_wr()
 
     def _replace_transport(self, transport):
+        loop = self._loop
         self._transport = transport
         self._over_ssl = transport.get_extra_info('sslcontext') is not None
         reader = self._stream_reader
@@ -273,6 +274,7 @@ class StreamReaderProtocol(FlowControlMixin, protocols.Protocol):
                 self._closed.set_exception(exc)
         super().connection_lost(exc)
         self._stream_reader_wr = None
+        self._stream_writer = None
         self._task = None
         self._transport = None
 
@@ -674,7 +676,8 @@ class StreamReader:
             # adds data which makes separator be found. That's why we check for
             # EOF *after* inspecting the buffer.
             if self._eof:
-                chunk = self._buffer.take_bytes()
+                chunk = bytes(self._buffer)
+                self._buffer.clear()
                 raise exceptions.IncompleteReadError(chunk, None)
 
             # _wait_for_data() will resume reading if stream was paused.
@@ -684,9 +687,10 @@ class StreamReader:
             raise exceptions.LimitOverrunError(
                 'Separator is found, but chunk is longer than limit', match_start)
 
-        chunk = self._buffer.take_bytes(match_end)
+        chunk = self._buffer[:match_end]
+        del self._buffer[:match_end]
         self._maybe_resume_transport()
-        return chunk
+        return bytes(chunk)
 
     async def read(self, n=-1):
         """Read up to `n` bytes from the stream.
@@ -721,16 +725,20 @@ class StreamReader:
             # collect everything in self._buffer, but that would
             # deadlock if the subprocess sends more than self.limit
             # bytes.  So just call self.read(self._limit) until EOF.
-            joined = bytearray()
-            while block := await self.read(self._limit):
-                joined += block
-            return joined.take_bytes()
+            blocks = []
+            while True:
+                block = await self.read(self._limit)
+                if not block:
+                    break
+                blocks.append(block)
+            return b''.join(blocks)
 
         if not self._buffer and not self._eof:
             await self._wait_for_data('read')
 
         # This will work right even if buffer is less than n bytes
-        data = self._buffer.take_bytes(min(len(self._buffer), n))
+        data = bytes(memoryview(self._buffer)[:n])
+        del self._buffer[:n]
 
         self._maybe_resume_transport()
         return data
@@ -761,12 +769,18 @@ class StreamReader:
 
         while len(self._buffer) < n:
             if self._eof:
-                incomplete = self._buffer.take_bytes()
+                incomplete = bytes(self._buffer)
+                self._buffer.clear()
                 raise exceptions.IncompleteReadError(incomplete, n)
 
             await self._wait_for_data('readexactly')
 
-        data = self._buffer.take_bytes(n)
+        if len(self._buffer) == n:
+            data = bytes(self._buffer)
+            self._buffer.clear()
+        else:
+            data = bytes(memoryview(self._buffer)[:n])
+            del self._buffer[:n]
         self._maybe_resume_transport()
         return data
 

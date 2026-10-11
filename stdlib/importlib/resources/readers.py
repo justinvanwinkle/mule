@@ -3,14 +3,15 @@ from __future__ import annotations
 import collections
 import contextlib
 import itertools
-import operator
 import pathlib
+import operator
 import re
 import warnings
 import zipfile
 from collections.abc import Iterator
 
 from . import abc
+
 from ._itertools import only
 
 

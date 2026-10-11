@@ -1,5 +1,12 @@
 """A powerful, extensible, and easy-to-use option parser.
 
+By Greg Ward <gward@python.net>
+
+Originally distributed as Optik.
+
+For support, use the optik-users@lists.sourceforge.net mailing list
+(http://lists.sourceforge.net/lists/listinfo/optik-users).
+
 Simple usage example:
 
    from optparse import OptionParser
@@ -13,6 +20,8 @@ Simple usage example:
 
    (options, args) = parser.parse_args()
 """
+
+__version__ = "1.5.3"
 
 __all__ = ['Option',
            'make_option',
@@ -400,12 +409,10 @@ def _parse_num(val, type):
 def _parse_int(val):
     return _parse_num(val, int)
 
-_builtin_cvt = frozendict({
-    "int": (_parse_int, _("integer")),
-    "long": (_parse_int, _("integer")),
-    "float": (float, _("floating-point")),
-    "complex": (complex, _("complex")),
-})
+_builtin_cvt = { "int" : (_parse_int, _("integer")),
+                 "long" : (_parse_int, _("integer")),
+                 "float" : (float, _("floating-point")),
+                 "complex" : (complex, _("complex")) }
 
 def check_builtin(option, opt, value):
     (cvt, what) = _builtin_cvt[option.type]
@@ -1367,7 +1374,7 @@ class OptionParser (OptionContainer):
         self.values = values
 
         try:
-            self._process_args(largs, rargs, values)
+            stop = self._process_args(largs, rargs, values)
         except (BadOptionError, OptionValueError) as err:
             self.error(str(err))
 
@@ -1662,12 +1669,3 @@ def _match_abbrev(s, wordmap):
 # which will become a factory function when there are many Option
 # classes.
 make_option = Option
-
-
-def __getattr__(name):
-    if name == "__version__":
-        from warnings import _deprecated
-
-        _deprecated("__version__", remove=(3, 20))
-        return "1.5.3"  # Do not change
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

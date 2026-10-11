@@ -2,7 +2,7 @@ import collections
 import types
 import unittest
 from test.support import (skip_emscripten_stack_overflow,
-                          skip_wasi_stack_overflow, skip_if_huge_c_stack,
+                          skip_wasi_stack_overflow, run_with_limited_c_stack,
                           exceeds_recursion_limit)
 
 class TestExceptionGroupTypeHierarchy(unittest.TestCase):
@@ -236,18 +236,6 @@ class StrAndReprTests(unittest.TestCase):
             "ExceptionGroup('test', deque([ValueError(1), TypeError(2)]))"
         )
 
-    def test_repr_small_size_args(self):
-        eg = ExceptionGroup("msg", [ValueError()])
-        eg.args = ()
-        # repr of the ExceptionGroup with empty args should not crash
-        self.assertEqual(repr(eg), "ExceptionGroup('msg', (ValueError(),))")
-
-        eg.args = (1,)
-        # repr of the ExceptionGroup with 1-size args should not crash
-        self.assertEqual(repr(eg), "ExceptionGroup('msg', (ValueError(),))")
-
-
-
     def test_repr_raises(self):
         class MySeq(collections.abc.Sequence):
             def __init__(self, raises):
@@ -269,7 +257,7 @@ class StrAndReprTests(unittest.TestCase):
         seq = MySeq(None)
         with self.assertRaisesRegex(
             TypeError,
-            r".*MySeq\.__repr__\(\) must return a str, not NoneType"
+            r"__repr__ returned non-string \(type NoneType\)"
         ):
             ExceptionGroup("test", seq)
 
@@ -549,7 +537,7 @@ class DeepRecursionInSplitAndSubgroup(unittest.TestCase):
             e = ExceptionGroup('eg', [e])
         return e
 
-    @skip_if_huge_c_stack()
+    @run_with_limited_c_stack()
     @skip_emscripten_stack_overflow()
     @skip_wasi_stack_overflow()
     def test_deep_split(self):
@@ -557,7 +545,7 @@ class DeepRecursionInSplitAndSubgroup(unittest.TestCase):
         with self.assertRaises(RecursionError):
             e.split(TypeError)
 
-    @skip_if_huge_c_stack()
+    @run_with_limited_c_stack()
     @skip_emscripten_stack_overflow()
     @skip_wasi_stack_overflow()
     def test_deep_subgroup(self):

@@ -207,7 +207,7 @@ def test_annotated_attribute_assignment_executes_value_but_not_annotation(
             marks=pytest.mark.xfail(
                 strict=True,
                 raises=SyntaxError,
-                reason="Compiling Python 3.15 typing requires lazy import support",
+                reason="Compiling typing requires general class bodies (abc)",
             ),
         ),
         pytest.param(
@@ -216,7 +216,7 @@ def test_annotated_attribute_assignment_executes_value_but_not_annotation(
             marks=pytest.mark.xfail(
                 strict=True,
                 raises=SyntaxError,
-                reason="Compiling Python 3.15 typing requires lazy import support",
+                reason="Compiling typing requires general class bodies (abc)",
             ),
         ),
         pytest.param(

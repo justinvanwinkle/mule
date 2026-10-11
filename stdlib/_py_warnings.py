@@ -369,15 +369,9 @@ def _setoption(arg):
     if message or module:
         import re
     if message:
-        if len(message) >= 2 and message[0] == message[-1] == '/':
-            message = message[1:-1]
-        else:
-            message = re.escape(message)
+        message = re.escape(message)
     if module:
-        if len(module) >= 2 and module[0] == module[-1] == '/':
-            module = module[1:-1]
-        else:
-            module = re.escape(module) + r'\z'
+        module = re.escape(module) + r'\z'
     if lineno:
         try:
             lineno = int(lineno)
@@ -387,23 +381,7 @@ def _setoption(arg):
             raise _wm._OptionError("invalid lineno %r" % (lineno,)) from None
     else:
         lineno = 0
-    try:
-        _wm.filterwarnings(action, message, category, module, lineno)
-    except re.PatternError if message or module else ():
-        if message:
-            try:
-                re.compile(message)
-            except re.PatternError:
-                raise _wm._OptionError(f"invalid regular expression for "
-                                       f"message: {message!r}") from None
-        if module:
-            try:
-                re.compile(module)
-            except re.PatternError:
-                raise _wm._OptionError(f"invalid regular expression for "
-                                       f"module: {module!r}") from None
-        # Should never happen.
-        raise
+    _wm.filterwarnings(action, message, category, module, lineno)
 
 
 # Helper for _setoption()
@@ -471,12 +449,9 @@ def warn(message, category=None, stacklevel=1, source=None,
     # Check category argument
     if category is None:
         category = UserWarning
-    elif not isinstance(category, type):
-        raise TypeError(f"category must be a Warning subclass, not "
-                        f"'{type(category).__name__}'")
-    elif not issubclass(category, Warning):
-        raise TypeError(f"category must be a Warning subclass, not "
-                        f"class '{category.__name__}'")
+    if not (isinstance(category, type) and issubclass(category, Warning)):
+        raise TypeError("category must be a Warning subclass, "
+                        "not '{:s}'".format(type(category).__name__))
     if not isinstance(skip_file_prefixes, tuple):
         # The C version demands a tuple for implementation performance.
         raise TypeError('skip_file_prefixes must be a tuple of strs.')
@@ -520,43 +495,14 @@ def warn(message, category=None, stacklevel=1, source=None,
     )
 
 
-def _match_filename(pattern, filename, *, MS_WINDOWS=(sys.platform == 'win32')):
-    if not filename:
-        return pattern.match('<unknown>') is not None
-    if filename[0] == '<' and filename[-1] == '>':
-        return pattern.match(filename) is not None
-
-    is_py = (filename[-3:].lower() == '.py'
-             if MS_WINDOWS else
-             filename.endswith('.py'))
-    if is_py:
-        filename = filename[:-3]
-    if pattern.match(filename):  # for backward compatibility
-        return True
-    if MS_WINDOWS:
-        if not is_py and filename[-4:].lower() == '.pyw':
-            filename = filename[:-4]
-            is_py = True
-        if is_py and filename[-9:].lower() in (r'\__init__', '/__init__'):
-            filename = filename[:-9]
-        filename = filename.replace('\\', '/')
-    else:
-        if is_py and filename.endswith('/__init__'):
-            filename = filename[:-9]
-    filename = filename.replace('/', '.')
-    i = 0
-    while True:
-        if pattern.match(filename, i):
-            return True
-        i = filename.find('.', i) + 1
-        if not i:
-            return False
-
-
 def warn_explicit(message, category, filename, lineno,
                   module=None, registry=None, module_globals=None,
                   source=None):
     lineno = int(lineno)
+    if module is None:
+        module = filename or "<unknown>"
+        if module[-3:].lower() == ".py":
+            module = module[:-3] # XXX What about leading pathname?
     if isinstance(message, Warning):
         text = str(message)
         category = message.__class__
@@ -578,11 +524,9 @@ def warn_explicit(message, category, filename, lineno,
             action, msg, cat, mod, ln = item
             if ((msg is None or msg.match(text)) and
                 issubclass(category, cat) and
-                (ln == 0 or lineno == ln) and
-                (mod is None or (_match_filename(mod, filename)
-                                 if module is None else
-                                 mod.match(module)))):
-                    break
+                (mod is None or mod.match(module)) and
+                (ln == 0 or lineno == ln)):
+                break
         else:
             action = _wm.defaultaction
         # Early exit actions
@@ -620,18 +564,17 @@ def warn_explicit(message, category, filename, lineno,
     linecache.getlines(filename, module_globals)
 
     # Print message and context
-    msg = _wm.WarningMessage(message, category, filename, lineno,
-                             module=module, source=source)
+    msg = _wm.WarningMessage(message, category, filename, lineno, source=source)
     _wm._showwarnmsg(msg)
 
 
 class WarningMessage(object):
 
     _WARNING_DETAILS = ("message", "category", "filename", "lineno", "file",
-                        "line", "source", "module")
+                        "line", "source")
 
     def __init__(self, message, category, filename, lineno, file=None,
-                 line=None, source=None, module=None):
+                 line=None, source=None):
         self.message = message
         self.category = category
         self.filename = filename
@@ -639,14 +582,12 @@ class WarningMessage(object):
         self.file = file
         self.line = line
         self.source = source
-        self.module = module
         self._category_name = category.__name__ if category else None
 
     def __str__(self):
-        return ("{message : %r, category : %r, module : %r, "
-                "filename : %r, lineno : %s, line : %r}" % (
-                    self.message, self._category_name, self.module,
-                    self.filename, self.lineno, self.line))
+        return ("{message : %r, category : %r, filename : %r, lineno : %s, "
+                    "line : %r}" % (self.message, self._category_name,
+                                    self.filename, self.lineno, self.line))
 
     def __repr__(self):
         return f'<{type(self).__qualname__} {self}>'

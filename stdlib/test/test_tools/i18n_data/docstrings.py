@@ -1,7 +1,7 @@
 """Module docstring"""
 
 # Test docstring extraction
-from gettext import gettext as _  # noqa: F401
+from gettext import gettext as _
 
 
 # Empty docstring

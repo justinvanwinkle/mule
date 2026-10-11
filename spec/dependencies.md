@@ -40,11 +40,12 @@ was added during the replacement.
 
 ## Approved Python standard library sources
 
-The user explicitly requested the released Python 3.15 Python standard library
-sources in `stdlib/`, with optional native accelerator imports removed. The
-Python 3.15.0 source release is vendored under its PSF and historical licenses;
-notices are preserved in `stdlib/LICENSE.cpython`, and source identity/adaptations
-are recorded in `stdlib/UPSTREAM.json` and `stdlib/README.md`.
+The user explicitly requested the released Python 3.14 Python standard library
+sources in `stdlib/`, with optional native accelerator imports removed, replacing
+an earlier Python 3.15.0 import. The Python 3.14.7 source release, matching the
+host CPython used as the conformance oracle, is vendored under its PSF and historical licenses;
+notices are preserved in `stdlib/LICENSE.cpython`, and the release and its
+adaptations are described in `stdlib/README.md`.
 
 This approval covers Python library source reuse. It does not permit linking
 CPython, copying its C runtime, using its object ABI internally, or delegating

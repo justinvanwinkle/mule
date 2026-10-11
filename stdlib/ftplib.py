@@ -314,9 +314,9 @@ class FTP:
         port = sock.getsockname()[1] # Get proper port
         host = self.sock.getsockname()[0] # Get proper host
         if self.af == socket.AF_INET:
-            self.sendport(host, port)
+            resp = self.sendport(host, port)
         else:
-            self.sendeprt(host, port)
+            resp = self.sendeprt(host, port)
         if self.timeout is not _GLOBAL_DEFAULT_TIMEOUT:
             sock.settimeout(self.timeout)
         return sock
@@ -455,7 +455,7 @@ class FTP:
         """
         if callback is None:
             callback = print_line
-        self.sendcmd('TYPE A')
+        resp = self.sendcmd('TYPE A')
         with self.transfercmd(cmd) as conn, \
                  conn.makefile('r', encoding=self.encoding) as fp:
             while 1:
@@ -960,7 +960,7 @@ def test():
         elif file[:2] == '-d':
             cmd = 'CWD'
             if file[2:]: cmd = cmd + ' ' + file[2:]
-            ftp.sendcmd(cmd)
+            resp = ftp.sendcmd(cmd)
         elif file == '-p':
             ftp.set_pasv(not ftp.passiveserver)
         else:

@@ -14,21 +14,19 @@ to modify the meaning of the API call itself.
 """
 
 import collections
-import contextvars
 import collections.abc
 import concurrent.futures
 import errno
 import heapq
 import itertools
-import math
 import os
 import socket
 import stat
 import subprocess
-import sys
 import threading
 import time
 import traceback
+import sys
 import warnings
 import weakref
 
@@ -291,7 +289,6 @@ class Server(events.AbstractServer):
         self._ssl_shutdown_timeout = ssl_shutdown_timeout
         self._serving = False
         self._serving_forever_fut = None
-        self._context = contextvars.copy_context()
 
     def __repr__(self):
         return f'<{self.__class__.__name__} sockets={self.sockets!r}>'
@@ -321,7 +318,7 @@ class Server(events.AbstractServer):
             self._loop._start_serving(
                 self._protocol_factory, sock, self._ssl_context,
                 self, self._backlog, self._ssl_handshake_timeout,
-                self._ssl_shutdown_timeout, context=self._context)
+                self._ssl_shutdown_timeout)
 
     def get_loop(self):
         return self._loop
@@ -511,8 +508,7 @@ class BaseEventLoop(events.AbstractEventLoop):
             extra=None, server=None,
             ssl_handshake_timeout=None,
             ssl_shutdown_timeout=None,
-            call_connection_made=True,
-            context=None):
+            call_connection_made=True):
         """Create SSL transport."""
         raise NotImplementedError
 
@@ -954,7 +950,7 @@ class BaseEventLoop(events.AbstractEventLoop):
         try:
             return await self._sock_sendfile_native(sock, file,
                                                     offset, count)
-        except exceptions.SendfileNotAvailableError:
+        except exceptions.SendfileNotAvailableError as exc:
             if not fallback:
                 raise
         return await self._sock_sendfile_fallback(sock, file,
@@ -1216,28 +1212,21 @@ class BaseEventLoop(events.AbstractEventLoop):
             self, sock, protocol_factory, ssl,
             server_hostname, server_side=False,
             ssl_handshake_timeout=None,
-            ssl_shutdown_timeout=None, context=None):
+            ssl_shutdown_timeout=None):
 
-        try:
-            sock.setblocking(False)
-            context = context if context is not None else contextvars.copy_context()
+        sock.setblocking(False)
 
-            protocol = protocol_factory()
-            waiter = self.create_future()
-            if ssl:
-                sslcontext = None if isinstance(ssl, bool) else ssl
-                transport = self._make_ssl_transport(
-                    sock, protocol, sslcontext, waiter,
-                    server_side=server_side, server_hostname=server_hostname,
-                    ssl_handshake_timeout=ssl_handshake_timeout,
-                    ssl_shutdown_timeout=ssl_shutdown_timeout,
-                    context=context)
-            else:
-                transport = self._make_socket_transport(sock, protocol, waiter, context=context)
-        except:
-            # gh-153133: close the socket if the transport is never created.
-            sock.close()
-            raise
+        protocol = protocol_factory()
+        waiter = self.create_future()
+        if ssl:
+            sslcontext = None if isinstance(ssl, bool) else ssl
+            transport = self._make_ssl_transport(
+                sock, protocol, sslcontext, waiter,
+                server_side=server_side, server_hostname=server_hostname,
+                ssl_handshake_timeout=ssl_handshake_timeout,
+                ssl_shutdown_timeout=ssl_shutdown_timeout)
+        else:
+            transport = self._make_socket_transport(sock, protocol, waiter)
 
         try:
             await waiter
@@ -1282,7 +1271,7 @@ class BaseEventLoop(events.AbstractEventLoop):
             try:
                 return await self._sendfile_native(transport, file,
                                                    offset, count)
-            except exceptions.SendfileNotAvailableError:
+            except exceptions.SendfileNotAvailableError as exc:
                 if not fallback:
                     raise
 
@@ -2033,10 +2022,7 @@ class BaseEventLoop(events.AbstractEventLoop):
         event_list = None
 
         # Handle 'later' callbacks that are ready.
-        now = self.time()
-        # Ensure that `end_time` is strictly increasing
-        # when the clock resolution is too small.
-        end_time = now + max(self._clock_resolution, math.ulp(now))
+        end_time = self.time() + self._clock_resolution
         while self._scheduled:
             handle = self._scheduled[0]
             if handle._when >= end_time:

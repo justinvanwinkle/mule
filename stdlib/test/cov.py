@@ -1,7 +1,8 @@
 """A minimal hook for gathering line coverage of the standard library.
 
-Designed to be used with -Xpresite=test.cov:enable which means:
-
+Designed to be used with -Xpresite= which means:
+* it installs itself on import
+* it's not imported as `__main__` so can't use the ifmain idiom
 * it can't import anything besides `sys` to avoid tainting gathered coverage
 * filenames are not normalized
 
@@ -44,5 +45,4 @@ def disable():
     mon.free_tool_id(mon.COVERAGE_ID)
 
 
-if __name__ == "__main__":
-    enable()
+enable()

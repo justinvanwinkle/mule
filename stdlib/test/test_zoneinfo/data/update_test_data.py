@@ -120,6 +120,3 @@ def update_test_data(fname: str = "zoneinfo_data.json") -> None:
 
 if __name__ == "__main__":
     update_test_data()
-
-    print("Remember to update the HAS_TZDATA_PKG version requirement in "
-          "test_zoneinfo.py!")

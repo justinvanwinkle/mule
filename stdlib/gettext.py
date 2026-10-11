@@ -111,9 +111,8 @@ _binary_ops = (
     ('+', '-'),
     ('*', '/', '%'),
 )
-_binary_ops = frozendict({op: i for i, ops in enumerate(_binary_ops, 1)
-                          for op in ops})
-_c2py_ops = frozendict({'||': 'or', '&&': 'and', '/': '//'})
+_binary_ops = {op: i for i, ops in enumerate(_binary_ops, 1) for op in ops}
+_c2py_ops = {'||': 'or', '&&': 'and', '/': '//'}
 
 
 def _parse(tokens, priority=-1):
