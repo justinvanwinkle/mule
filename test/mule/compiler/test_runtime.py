@@ -53,10 +53,12 @@ def runtime_probe(tmp_path_factory):
         ("globals", "42\ncallable=1\nNone\n'__main__'\n"),
         ("function", "42\n"),
         ("function_metadata", "definitions=10000\n'first'\n'second'\n42\n42\n4\n"),
-        ("builtin_call", "\"'native callback'\"\n"),
+        ("builtin_call", "15\n"),
         ("truth", "0 1\n"),
         ("class_ownership", "classes=ok\n"),
         ("dynamic_tagged_attributes", "dynamic=ok\n"),
+        ("tuple_slots", "'owned child'\n"),
+        ("owned_tuple", "'transferred child'\n"),
     ],
 )
 def test_runtime_values_and_direct_native_calls(runtime_probe, scenario, output):

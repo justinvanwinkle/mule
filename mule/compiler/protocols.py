@@ -56,6 +56,9 @@ _TEXT_ACCESS = {
         "_text_length",
         "_text_character",
         "_text_codepoint",
+        "_text_slice",
+        "_text_join",
+        "_type_name",
         "_class_identity",
         "_class_parent",
         "_raised_class",
@@ -79,12 +82,12 @@ _TEXT_ACCESS = {
         "_forward_call",
     )
 }
-_TEXT_ACCESS["_invalid_specification"] = "mule_invalid_string_format"
 _COMPILED_CALLS = {
     "_string_protocol": "mule_format_string",
-    "_alignment_protocol": "mule_format_align_string",
     "_decimal_protocol": "mule_format_decimal_integer",
     "_percent_decimal_protocol": "mule_format_percent_decimal",
+    "_format_value_protocol": "mule_format_format_value",
+    "_representation_protocol": "mule_format_representation",
 }
 _EMITTERS = {
     **{name: lookup_method(method) for name, method in _LOOKUPS.items()},
@@ -117,7 +120,12 @@ PRIMITIVES = {
     for name in _EMITTERS
 }
 for _name, _emit in _EMITTERS.items():
-    primitive(_name, PRIMITIVES[_name], _emit)
+    primitive(
+        _name,
+        PRIMITIVES[_name],
+        _emit,
+        consumes_arguments=_name in _COMPILED_CALLS or _name == "_initialize",
+    )
 
 
 def compile_protocol(

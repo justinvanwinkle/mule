@@ -1,6 +1,6 @@
 //! Mule values and the native-code ABI. Heap ownership is explicit at this boundary;
 //! generated code retains each live value and releases it on normal and error exits.
-use crate::{builtins, gmp::BigInt, numeric};
+use crate::{builtins, gmp::BigInt, numeric, text::Text};
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_void};
 
@@ -15,7 +15,7 @@ pub enum Data {
     Bool(bool),
     BigInt(BigInt),
     Float(f64),
-    Text(Vec<u8>),
+    Text(Text),
     Bytes(Vec<u8>),
     ForeignPointerVector {
         base: *const *const c_char,
@@ -526,7 +526,8 @@ pub unsafe fn truth(value: Value) -> Option<bool> {
             Data::Bool(value) => *value,
             Data::BigInt(integer) => integer.sign() != 0,
             Data::Float(value) => *value != 0.0,
-            Data::Text(value) | Data::Bytes(value) => !value.is_empty(),
+            Data::Text(value) => !value.is_empty(),
+            Data::Bytes(value) => !value.is_empty(),
             Data::Args(value) | Data::List(value) => !value.is_empty(),
             Data::Namespace(bindings) => !bindings.is_empty(),
             Data::Instance { .. } | Data::NativeInstance { .. } => {
@@ -596,6 +597,29 @@ pub unsafe fn length_result(result: Value) -> Option<usize> {
         }
     }
 }
+/// Python's binary-operator special methods by compiled operator code:
+/// the forward, reflected, and in-place names, and the operator's symbol.
+const BINARY_METHODS: [(&str, &str, &str, &str); 13] = [
+    ("__add__", "__radd__", "__iadd__", "+"),
+    ("__sub__", "__rsub__", "__isub__", "-"),
+    ("__mul__", "__rmul__", "__imul__", "*"),
+    ("__truediv__", "__rtruediv__", "__itruediv__", "/"),
+    ("__floordiv__", "__rfloordiv__", "__ifloordiv__", "//"),
+    ("__mod__", "__rmod__", "__imod__", "%"),
+    ("__matmul__", "__rmatmul__", "__imatmul__", "@"),
+    ("__pow__", "__rpow__", "__ipow__", "**"),
+    ("__lshift__", "__rlshift__", "__ilshift__", "<<"),
+    ("__rshift__", "__rrshift__", "__irshift__", ">>"),
+    ("__and__", "__rand__", "__iand__", "&"),
+    ("__xor__", "__rxor__", "__ixor__", "^"),
+    ("__or__", "__ror__", "__ior__", "|"),
+];
+unsafe fn numeric_operand(value: Value) -> bool {
+    unsafe {
+        numeric::is_integer(value)
+            || (!value.is_null() && !is_fixnum(value) && matches!(&(*value).data, Data::Float(_)))
+    }
+}
 pub unsafe fn binary(op: i32, left: Value, right: Value, inplace: bool) -> Value {
     unsafe {
         if has_error() {
@@ -603,14 +627,10 @@ pub unsafe fn binary(op: i32, left: Value, right: Value, inplace: bool) -> Value
         }
         if !left.is_null() && !right.is_null() && !is_fixnum(left) && !is_fixnum(right) {
             match (&(*left).data, &(*right).data) {
-                (Data::Text(a), Data::Text(b)) | (Data::Bytes(a), Data::Bytes(b)) if op == 0 => {
+                (Data::Bytes(a), Data::Bytes(b)) if op == 0 => {
                     let mut result = a.clone();
                     result.extend_from_slice(b);
-                    return new_value(if matches!(&(*left).data, Data::Text(_)) {
-                        Data::Text(result)
-                    } else {
-                        Data::Bytes(result)
-                    });
+                    return new_value(Data::Bytes(result));
                 }
                 (Data::List(a), Data::List(b)) if op == 0 => {
                     // Snapshot borrowed values before mutating either aliased list.
@@ -631,65 +651,115 @@ pub unsafe fn binary(op: i32, left: Value, right: Value, inplace: bool) -> Value
             }
         }
         if op == 2 {
-            let (string, count) = if !left.is_null()
+            let repeated = if !left.is_null()
                 && !is_fixnum(left)
-                && matches!(&(*left).data, Data::Text(_) | Data::Bytes(_))
+                && matches!(&(*left).data, Data::Bytes(_))
                 && numeric::is_integer(right)
             {
-                (left, right)
+                Some((left, right))
             } else if !right.is_null()
                 && !is_fixnum(right)
-                && matches!(&(*right).data, Data::Text(_) | Data::Bytes(_))
+                && matches!(&(*right).data, Data::Bytes(_))
                 && numeric::is_integer(left)
             {
-                (right, left)
+                Some((right, left))
             } else {
-                return numeric::binary(op, left, right);
+                None
             };
-            let Some(count) = numeric::integer_export(count) else {
+            if let Some((bytes, count)) = repeated {
+                return repeat_bytes(bytes, count);
+            }
+        }
+        if numeric_operand(left) && numeric_operand(right) {
+            return numeric::binary(op, left, right);
+        }
+        dispatch_binary(op, left, right, inplace)
+    }
+}
+unsafe fn repeat_bytes(bytes: Value, count: Value) -> Value {
+    unsafe {
+        let Some(count) = numeric::integer_export(count) else {
+            return std::ptr::null_mut();
+        };
+        let Data::Bytes(data) = &(*bytes).data else {
+            unreachable!()
+        };
+        let count = if count.sign() <= 0 || data.is_empty() {
+            0
+        } else {
+            let Some(count) = count
+                .to_u64()
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|count| data.len().checked_mul(*count).is_some())
+            else {
+                error("OverflowError", "repeated bytes are too large");
                 return std::ptr::null_mut();
             };
-            let data = match &(*string).data {
-                Data::Text(data) | Data::Bytes(data) => data,
-                _ => unreachable!(),
-            };
-            let result = if count.sign() <= 0 || data.is_empty() {
-                Vec::new()
-            } else {
-                let Some(count) = count.to_u64().and_then(|value| usize::try_from(value).ok())
-                else {
-                    error("OverflowError", "repeated string too large");
-                    return std::ptr::null_mut();
-                };
-                let Some(length) = data.len().checked_mul(count) else {
-                    error("OverflowError", "repeated string too large");
-                    return std::ptr::null_mut();
-                };
-                let mut result = Vec::new();
-                if result.try_reserve_exact(length).is_err() {
-                    error("MemoryError", "repeated string allocation failed");
-                    return std::ptr::null_mut();
-                }
-                for _ in 0..count {
-                    result.extend_from_slice(data);
-                }
-                result
-            };
-            return new_value(if matches!(&(*string).data, Data::Text(_)) {
-                Data::Text(result)
-            } else {
-                Data::Bytes(result)
-            });
+            count
+        };
+        let mut result = Vec::new();
+        if result.try_reserve_exact(data.len() * count).is_err() {
+            error("MemoryError", "repeated bytes allocation failed");
+            return std::ptr::null_mut();
         }
-        numeric::binary(op, left, right)
+        for _ in 0..count {
+            result.extend_from_slice(data);
+        }
+        new_value(Data::Bytes(result))
+    }
+}
+/// Try the in-place, forward, then reflected special method, as Python's
+/// binary-operator protocol does for operands without a native operation.
+unsafe fn dispatch_binary(op: i32, left: Value, right: Value, inplace: bool) -> Value {
+    unsafe {
+        let Some(&(method, reflected, inplace_method, symbol)) =
+            usize::try_from(op).ok().and_then(|op| BINARY_METHODS.get(op))
+        else {
+            error("SystemError", "unknown binary operation");
+            return std::ptr::null_mut();
+        };
+        if inplace {
+            let result = special(left, inplace_method, &[right]);
+            if !result.is_null() || has_error() {
+                return result;
+            }
+        }
+        let result = special(left, method, &[right]);
+        if !result.is_null() || has_error() {
+            return result;
+        }
+        let result = special(right, reflected, &[left]);
+        if !result.is_null() || has_error() {
+            return result;
+        }
+        let (Some(left), Some(right)) = (type_name(left), type_name(right)) else {
+            return std::ptr::null_mut();
+        };
+        error(
+            "TypeError",
+            &format!("unsupported operand type(s) for {symbol}: '{left}' and '{right}'"),
+        );
+        std::ptr::null_mut()
     }
 }
 unsafe fn contains(container: Value, item: Value) -> Option<bool> {
     unsafe {
         if !container.is_null() && !is_fixnum(container) {
             match &(*container).data {
-                Data::Text(haystack) | Data::Bytes(haystack) => {
-                    if matches!(&(*container).data, Data::Bytes(_)) && numeric::is_integer(item) {
+                Data::Text(_) | Data::Instance { .. } | Data::NativeInstance { .. } => {
+                    let result = special(container, "__contains__", &[item]);
+                    if result.is_null() {
+                        if !has_error() {
+                            error("TypeError", "object does not support containment");
+                        }
+                        return None;
+                    }
+                    let found = truth(result);
+                    release(result);
+                    return found;
+                }
+                Data::Bytes(haystack) => {
+                    if numeric::is_integer(item) {
                         let integer = numeric::integer_export(item)?;
                         let Some(byte) =
                             integer.to_u64().and_then(|value| u8::try_from(value).ok())
@@ -700,12 +770,7 @@ unsafe fn contains(container: Value, item: Value) -> Option<bool> {
                         return Some(haystack.contains(&byte));
                     }
                     if !item.is_null() && !is_fixnum(item) {
-                        let needle = match (&(*container).data, &(*item).data) {
-                            (Data::Text(_), Data::Text(data))
-                            | (Data::Bytes(_), Data::Bytes(data)) => Some(data),
-                            _ => None,
-                        };
-                        if let Some(needle) = needle {
+                        if let Data::Bytes(needle) = &(*item).data {
                             return Some(
                                 needle.is_empty()
                                     || haystack
@@ -781,15 +846,15 @@ pub unsafe fn compare(op: i32, left: Value, right: Value) -> Value {
             numeric::compare(left, right)
         } else if !left.is_null() && !right.is_null() && !is_fixnum(left) && !is_fixnum(right) {
             match (&(*left).data, &(*right).data) {
-                (Data::Text(a), Data::Text(b)) | (Data::Bytes(a), Data::Bytes(b)) => {
-                    Some(match a.cmp(b) {
-                        std::cmp::Ordering::Less => -1,
-                        std::cmp::Ordering::Equal => 0,
-                        std::cmp::Ordering::Greater => 1,
-                    })
-                }
+                (Data::Text(a), Data::Text(b)) => Some(a.cmp(b)),
+                (Data::Bytes(a), Data::Bytes(b)) => Some(a.cmp(b)),
                 _ => None,
             }
+            .map(|ordering| match ordering {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            })
         } else {
             None
         };
@@ -813,61 +878,24 @@ pub unsafe fn compare(op: i32, left: Value, right: Value) -> Value {
         if op < 2 {
             return bool_value((left == right) == (op == 0));
         }
-        error("TypeError", "incompatible comparison operands");
+        let (Some(left), Some(right)) = (type_name(left), type_name(right)) else {
+            return std::ptr::null_mut();
+        };
+        let symbol = ["==", "!=", "<", "<=", ">", ">="][op as usize];
+        error(
+            "TypeError",
+            &format!("'{symbol}' not supported between instances of '{left}' and '{right}'"),
+        );
         std::ptr::null_mut()
     }
 }
 
-pub fn decode_text(data: &[u8]) -> Option<Vec<u32>> {
-    let mut result = Vec::new();
-    let mut offset = 0;
-    while offset < data.len() {
-        let first = data[offset];
-        offset += 1;
-        if first < 128 {
-            result.push(u32::from(first));
-            continue;
-        }
-        let (count, mut value, minimum) = match first {
-            0xc2..=0xdf => (1, u32::from(first & 31), 0x80),
-            0xe0..=0xef => (2, u32::from(first & 15), 0x800),
-            0xf0..=0xf4 => (3, u32::from(first & 7), 0x10000),
-            _ => {
-                error("UnicodeDecodeError", "invalid UTF-8 text");
-                return None;
-            }
-        };
-        if data.len() - offset < count {
-            error("UnicodeDecodeError", "incomplete UTF-8 text");
-            return None;
-        }
-        for _ in 0..count {
-            let byte = data[offset];
-            offset += 1;
-            if byte & 0xc0 != 0x80 {
-                error("UnicodeDecodeError", "invalid UTF-8 text");
-                return None;
-            }
-            value = (value << 6) | u32::from(byte & 63);
-        }
-        if value < minimum || value > 0x10ffff {
-            error("UnicodeDecodeError", "invalid UTF-8 text");
-            return None;
-        }
-        result.push(value);
-    }
-    Some(result)
-}
-fn quoted(data: &[u8], bytes: bool, ascii_only: bool) -> Option<Vec<u8>> {
-    let quote = if data.contains(&b'\'') && !data.contains(&b'"') {
+fn quoted(codes: impl Iterator<Item = u32> + Clone, bytes: bool, ascii_only: bool) -> Option<Vec<u8>> {
+    let has = |wanted: u8| codes.clone().any(|code| code == u32::from(wanted));
+    let quote = if has(b'\'') && !has(b'"') {
         b'"'
     } else {
         b'\''
-    };
-    let codes = if bytes {
-        data.iter().map(|value| u32::from(*value)).collect()
-    } else {
-        decode_text(data)?
     };
     let mut result = Vec::new();
     if bytes {
@@ -891,14 +919,7 @@ fn quoted(data: &[u8], bytes: bool, ascii_only: bool) -> Option<Vec<u8>> {
             || matches!(code, 0x2028 | 0x2029 | 0xfeff)
             || code & 0xffff >= 0xfffe
         {
-            let escape = if code <= 255 {
-                format!("\\x{code:02x}")
-            } else if code <= 65535 {
-                format!("\\u{code:04x}")
-            } else {
-                format!("\\U{code:08x}")
-            };
-            result.extend_from_slice(escape.as_bytes());
+            result.extend_from_slice(ascii_escape(code).as_bytes());
         } else {
             let mut buffer = [0; 4];
             result.extend_from_slice(char::from_u32(code)?.encode_utf8(&mut buffer).as_bytes());
@@ -906,6 +927,15 @@ fn quoted(data: &[u8], bytes: bool, ascii_only: bool) -> Option<Vec<u8>> {
     }
     result.push(quote);
     Some(result)
+}
+fn ascii_escape(code: u32) -> String {
+    if code <= 0xff {
+        format!("\\x{code:02x}")
+    } else if code <= 0xffff {
+        format!("\\u{code:04x}")
+    } else {
+        format!("\\U{code:08x}")
+    }
 }
 fn float_repr(value: f64) -> String {
     if value.is_nan() {
@@ -943,18 +973,42 @@ pub unsafe fn formatted_value(
             }
             Data::BigInt(value) => value.to_decimal().into_bytes(),
             Data::Float(value) => float_repr(*value).into_bytes(),
-            Data::Text(data) if !representation => {
-                if decode_text(data)?
-                    .iter()
-                    .any(|code| (0xd800..=0xdfff).contains(code))
-                {
+            Data::Text(data) if !representation => match data.to_utf8() {
+                Ok(bytes) => bytes,
+                Err(_) => {
                     error("UnicodeEncodeError", "cannot encode surrogate to UTF-8");
                     return None;
                 }
-                data.clone()
+            },
+            Data::Text(data) => {
+                // The compiled str protocol owns repr; the quoting below serves
+                // only runtimes linked without it, such as the runtime probe.
+                let method = crate::sequences::binding(value, "__repr__");
+                if method.is_null() {
+                    quoted(data.codepoints(), false, ascii_only)?
+                } else {
+                    let result = call_with_receiver(method, value, &[]);
+                    if result.is_null() {
+                        return None;
+                    }
+                    let Data::Text(text) = &(*result).data else {
+                        release(result);
+                        error("TypeError", "__repr__ returned non-string");
+                        return None;
+                    };
+                    let mut bytes = Vec::new();
+                    for code in text.codepoints() {
+                        if ascii_only && code >= 0x80 {
+                            bytes.extend_from_slice(ascii_escape(code).as_bytes());
+                        } else {
+                            crate::text::append_wtf8(&mut bytes, code);
+                        }
+                    }
+                    release(result);
+                    bytes
+                }
             }
-            Data::Text(data) => quoted(data, false, ascii_only)?,
-            Data::Bytes(data) => quoted(data, true, ascii_only)?,
+            Data::Bytes(data) => quoted(data.iter().map(|value| u32::from(*value)), true, ascii_only)?,
             Data::Args(values) | Data::List(values) => {
                 let list = matches!(&(*value).data, Data::List(_));
                 let mut result = vec![if list { b'[' } else { b'(' }];
@@ -976,7 +1030,7 @@ pub unsafe fn formatted_value(
                     if index > 0 {
                         result.extend_from_slice(b", ");
                     }
-                    result.extend(quoted(name.as_bytes(), false, ascii_only)?);
+                    result.extend(quoted(name.chars().map(u32::from), false, ascii_only)?);
                     result.extend_from_slice(b": ");
                     result.extend(formatted_value(*value, true, ascii_only)?);
                 }
@@ -1051,11 +1105,16 @@ unsafe fn literal_bytes(data: *const c_char, length: isize, text: bool) -> Value
         } else {
             std::slice::from_raw_parts(data.cast::<u8>(), length as usize).to_vec()
         };
-        new_value(if text {
-            Data::Text(bytes)
-        } else {
-            Data::Bytes(bytes)
-        })
+        if !text {
+            return new_value(Data::Bytes(bytes));
+        }
+        match Text::from_wtf8(&bytes) {
+            Ok(text) => new_value(Data::Text(text)),
+            Err(message) => {
+                error("UnicodeDecodeError", message);
+                std::ptr::null_mut()
+            }
+        }
     }
 }
 #[unsafe(no_mangle)]
@@ -1178,6 +1237,40 @@ pub unsafe extern "C" fn mule_sequence_tuple(count: isize, values: *const Value)
             .map_or(std::ptr::null_mut(), |values| new_value(Data::Args(values)))
     }
 }
+
+/// Transfer an evaluated compiler buffer into tuple storage without retaining.
+///
+/// For nonnegative `count`, each entry must contain one independently owned,
+/// live value reference (including separately owned occurrences of aliases).
+/// A valid buffer's references are consumed on success and recoverable reserve
+/// failure. Invalid negative counts or NULL nonempty buffers transfer nothing.
+/// The buffer memory itself remains borrowed. Object allocation still uses the
+/// runtime's infallible `Box::new`; pending errors are never cleared here.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_sequence_tuple_owned(
+    count: isize,
+    values: *const Value,
+) -> Value {
+    unsafe {
+        if count < 0 || (count != 0 && values.is_null()) {
+            error("SystemError", "invalid sequence buffer");
+            return std::ptr::null_mut();
+        }
+        let count = count as usize;
+        let mut result = Vec::new();
+        if result.try_reserve_exact(count).is_err() {
+            for index in 0..count {
+                release(*values.add(index));
+            }
+            error("MemoryError", "sequence allocation failed");
+            return std::ptr::null_mut();
+        }
+        if count != 0 {
+            result.extend_from_slice(std::slice::from_raw_parts(values, count));
+        }
+        new_value(Data::Args(result))
+    }
+}
 /// Return an owned callable from the receiver's class method table, or None
 /// when absent. Instance fields are intentionally not consulted.
 #[unsafe(no_mangle)]
@@ -1215,7 +1308,7 @@ pub unsafe extern "C" fn mule_lookup_special(value: Value, name: *const c_char) 
 pub unsafe extern "C" fn mule_render_text(value: Value, representation: i32) -> Value {
     unsafe {
         formatted_value(value, representation != 0, false)
-            .map_or(std::ptr::null_mut(), |bytes| new_value(Data::Text(bytes)))
+            .map_or(std::ptr::null_mut(), |bytes| text_value(&bytes))
     }
 }
 #[unsafe(no_mangle)]
@@ -1230,12 +1323,24 @@ pub unsafe extern "C" fn mule_text_result(value: Value) -> Value {
         std::ptr::null_mut()
     }
 }
+/// Own a new `str` holding formatted UTF-8 output.
+pub unsafe fn text_value(bytes: &[u8]) -> Value {
+    unsafe {
+        match Text::from_wtf8(bytes) {
+            Ok(text) => new_value(Data::Text(text)),
+            Err(message) => {
+                error("UnicodeDecodeError", message);
+                std::ptr::null_mut()
+            }
+        }
+    }
+}
 /// Physical Unicode storage access for compiled Mule text algorithms.
-unsafe fn text_storage<'a>(value: Value) -> Option<&'a [u8]> {
+pub unsafe fn text_storage<'a>(value: Value) -> Option<&'a Text> {
     unsafe {
         if !value.is_null() && !is_fixnum(value) {
-            if let Data::Text(bytes) = &(*value).data {
-                return Some(bytes);
+            if let Data::Text(text) = &(*value).data {
+                return Some(text);
             }
         }
         error("TypeError", "text storage is required");
@@ -1245,17 +1350,14 @@ unsafe fn text_storage<'a>(value: Value) -> Option<&'a [u8]> {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_text_length(value: Value) -> Value {
     unsafe {
-        let Some(bytes) = text_storage(value) else {
-            return std::ptr::null_mut();
-        };
-        decode_text(bytes).map_or(std::ptr::null_mut(), |characters| {
-            numeric::integer_from_usize(characters.len())
+        text_storage(value).map_or(std::ptr::null_mut(), |text| {
+            numeric::integer_from_usize(text.len())
         })
     }
 }
-unsafe fn text_position(value: Value, index: Value) -> Option<(u32, usize, usize)> {
+unsafe fn text_position(value: Value, index: Value) -> Option<(&'static Text, usize)> {
     unsafe {
-        let bytes = text_storage(value)?;
+        let text = text_storage(value)?;
         let index = if is_fixnum(index) {
             usize::try_from(fixnum(index)).ok()
         } else {
@@ -1263,76 +1365,151 @@ unsafe fn text_position(value: Value, index: Value) -> Option<(u32, usize, usize
                 .to_u64()
                 .and_then(|value| usize::try_from(value).ok())
         };
-        let characters = decode_text(bytes)?;
-        let Some(index) = index.filter(|index| *index < characters.len()) else {
+        let Some(index) = index.filter(|index| *index < text.len()) else {
             error("IndexError", "text storage index out of range");
             return None;
         };
-        let encoded_size = |value: u32| {
-            if value < 0x80 {
-                1
-            } else if value < 0x800 {
-                2
-            } else if value < 0x10000 {
-                3
-            } else {
-                4
-            }
-        };
-        let start = characters[..index]
-            .iter()
-            .map(|value| encoded_size(*value))
-            .sum();
-        let codepoint = characters[index];
-        Some((codepoint, start, start + encoded_size(codepoint)))
+        Some((text, index))
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_text_character(value: Value, index: Value) -> Value {
     unsafe {
-        let Some((_, start, end)) = text_position(value, index) else {
+        let Some((text, index)) = text_position(value, index) else {
             return std::ptr::null_mut();
         };
-        let Some(bytes) = text_storage(value) else {
+        match text.slice(index, index + 1) {
+            Ok(character) => new_value(Data::Text(character)),
+            Err(_) => {
+                error("MemoryError", "text storage allocation failed");
+                std::ptr::null_mut()
+            }
+        }
+    }
+}
+/// The Python type name of a value, for error messages.
+pub unsafe fn type_name(value: Value) -> Option<String> {
+    unsafe {
+        if value.is_null() {
+            error("SystemError", "NULL type name operand");
+            return None;
+        }
+        if is_fixnum(value) {
+            return Some("int".into());
+        }
+        Some(
+            match &(*value).data {
+                Data::None => "NoneType",
+                Data::Bool(_) => "bool",
+                Data::BigInt(_) => "int",
+                Data::Float(_) => "float",
+                Data::Text(_) => "str",
+                Data::Bytes(_) => "bytes",
+                Data::List(_) => "list",
+                Data::Args(_) => "tuple",
+                Data::Namespace(_) => "dict",
+                Data::Function { .. } => "function",
+                Data::BoundMethod { .. } => "method",
+                Data::StaticMethod(_) => "staticmethod",
+                Data::Class(_) | Data::Type { .. } => "type",
+                Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => {
+                    match &(**ty).data {
+                        Data::Type { name, .. } => name.as_str(),
+                        Data::Class(layout) => layout.name.as_str(),
+                        _ => unreachable!(),
+                    }
+                }
+                Data::ForeignPointerVector { .. } | Data::ForeignCString { .. } => {
+                    "foreign pointer"
+                }
+                Data::ArgumentView { .. } | Data::ReceiverArgs { .. } | Data::KeywordArgs { .. } => {
+                    error("SystemError", "argument view cannot escape a native call");
+                    return None;
+                }
+            }
+            .into(),
+        )
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_type_name(value: Value) -> Value {
+    unsafe {
+        type_name(value).map_or(std::ptr::null_mut(), |name| {
+            new_value(Data::Text(Text::from_rust_str(&name)))
+        })
+    }
+}
+/// Copy `text[start:stop]`; the compiled caller has clamped both bounds.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_slice(value: Value, start: Value, stop: Value) -> Value {
+    unsafe {
+        let Some(text) = text_storage(value) else {
             return std::ptr::null_mut();
         };
-        new_value(Data::Text(bytes[start..end].to_vec()))
+        let bound = |bound: Value| {
+            if is_fixnum(bound) {
+                usize::try_from(fixnum(bound)).ok()
+            } else {
+                None
+            }
+        };
+        let (Some(start), Some(stop)) = (bound(start), bound(stop)) else {
+            error("IndexError", "text slice bounds must be nonnegative small integers");
+            return std::ptr::null_mut();
+        };
+        match text.slice(start, stop) {
+            Ok(slice) => new_value(Data::Text(slice)),
+            Err(_) => {
+                error("MemoryError", "text storage allocation failed");
+                std::ptr::null_mut()
+            }
+        }
+    }
+}
+/// Concatenate a list or tuple of `str` pieces into one new string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_join(pieces: Value) -> Value {
+    unsafe {
+        let values = if !pieces.is_null() && !is_fixnum(pieces) {
+            match &(*pieces).data {
+                Data::List(values) | Data::Args(values) => Some(values),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let Some(values) = values else {
+            error("TypeError", "text join requires list or tuple storage");
+            return std::ptr::null_mut();
+        };
+        let mut texts = Vec::with_capacity(values.len());
+        for value in values {
+            if is_fixnum(*value) || value.is_null() {
+                error("TypeError", "text join requires str pieces");
+                return std::ptr::null_mut();
+            }
+            let Data::Text(text) = &(**value).data else {
+                error("TypeError", "text join requires str pieces");
+                return std::ptr::null_mut();
+            };
+            texts.push(text);
+        }
+        match Text::join(texts.into_iter()) {
+            Ok(text) => new_value(Data::Text(text)),
+            Err(_) => {
+                error("MemoryError", "text storage allocation failed");
+                std::ptr::null_mut()
+            }
+        }
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_text_codepoint(value: Value, index: Value) -> Value {
     unsafe {
-        text_position(value, index).map_or(std::ptr::null_mut(), |(codepoint, _, _)| {
-            numeric::integer_from_usize(codepoint as usize)
+        text_position(value, index).map_or(std::ptr::null_mut(), |(text, index)| {
+            small(i64::from(text.get(index).expect("index was checked")))
         })
     }
-}
-/// Encode a validated codepoint into physical text storage, including surrogates.
-pub(crate) fn append_text_codepoint(bytes: &mut Vec<u8>, code: u32) {
-    debug_assert!(code <= 0x10ffff);
-    if code < 0x80 {
-        bytes.push(code as u8);
-    } else if code < 0x800 {
-        bytes.extend_from_slice(&[(0xc0 | (code >> 6)) as u8, (0x80 | (code & 0x3f)) as u8]);
-    } else if code < 0x10000 {
-        bytes.extend_from_slice(&[
-            (0xe0 | (code >> 12)) as u8,
-            (0x80 | ((code >> 6) & 0x3f)) as u8,
-            (0x80 | (code & 0x3f)) as u8,
-        ]);
-    } else {
-        bytes.extend_from_slice(&[
-            (0xf0 | (code >> 18)) as u8,
-            (0x80 | ((code >> 12) & 0x3f)) as u8,
-            (0x80 | ((code >> 6) & 0x3f)) as u8,
-            (0x80 | (code & 0x3f)) as u8,
-        ]);
-    }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mule_invalid_string_format() -> Value {
-    error("ValueError", "unsupported string format specification");
-    std::ptr::null_mut()
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_load_global(globals: Value, name: *const c_char) -> Value {

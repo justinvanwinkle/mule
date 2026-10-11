@@ -1,6 +1,7 @@
 //! Initial builtins implemented with Rust I/O and Mule values.
 use crate::gmp::BigInt;
 use crate::numeric;
+use crate::text::Text;
 use crate::object::{self, Data, Native, Object, Value};
 use std::cell::Cell;
 use std::ffi::c_void;
@@ -29,7 +30,8 @@ unsafe fn text(value: Value) -> Option<Vec<u8>> {
     unsafe {
         if !value.is_null() && !object::is_fixnum(value) {
             match &(*value).data {
-                Data::Text(bytes) | Data::Bytes(bytes) => Some(bytes.clone()),
+                Data::Text(text) => Some(text.to_wtf8()),
+                Data::Bytes(bytes) => Some(bytes.clone()),
                 _ => None,
             }
         } else {
@@ -46,10 +48,13 @@ pub unsafe extern "C" fn mule_stdout_write(value: Value) -> Value {
         if value.is_null() || object::is_fixnum(value) {
             return fail("TypeError", "stdout storage write requires text");
         }
-        let Data::Text(bytes) = &(*value).data else {
+        let Data::Text(text) = &(*value).data else {
             return fail("TypeError", "stdout storage write requires text");
         };
-        if io::stdout().lock().write_all(bytes).is_err() {
+        let Ok(bytes) = text.to_utf8() else {
+            return fail("UnicodeEncodeError", "cannot encode surrogate to UTF-8");
+        };
+        if io::stdout().lock().write_all(&bytes).is_err() {
             return fail("OSError", "output failed");
         }
         object::none_value()
@@ -111,10 +116,7 @@ unsafe extern "C" fn len(_: Value, args: Value) -> Value {
         }
         let length = match &(*value).data {
             Data::Bytes(value) => value.len(),
-            Data::Text(value) => match object::decode_text(value) {
-                Some(value) => value.len(),
-                None => return std::ptr::null_mut(),
-            },
+            Data::Text(value) => value.len(),
             Data::Args(value) | Data::List(value) => value.len(),
             Data::Namespace(value) => value.len(),
             Data::Instance { .. } | Data::NativeInstance { .. } => {
@@ -133,38 +135,6 @@ unsafe extern "C" fn len(_: Value, args: Value) -> Value {
             _ => return fail("TypeError", "object has no len"),
         };
         numeric::integer_from_usize(length)
-    }
-}
-unsafe fn format(args: Value, representation: bool, ascii_only: bool) -> Value {
-    unsafe {
-        if arity(args, 1, 1).is_none() {
-            return std::ptr::null_mut();
-        }
-        object::formatted_value(arg(args, 0), representation, ascii_only)
-            .map_or(std::ptr::null_mut(), |value| {
-                object::new_value(Data::Text(value))
-            })
-    }
-}
-unsafe extern "C" fn repr(_: Value, args: Value) -> Value {
-    unsafe { format(args, true, false) }
-}
-unsafe extern "C" fn ascii(_: Value, args: Value) -> Value {
-    unsafe { format(args, true, true) }
-}
-unsafe extern "C" fn str_(_: Value, args: Value) -> Value {
-    unsafe {
-        let Some(count) = arity(args, 0, 1) else {
-            return std::ptr::null_mut();
-        };
-        if count == 0 {
-            return object::new_value(Data::Text(Vec::new()));
-        }
-        let value = arg(args, 0);
-        if !object::is_fixnum(value) && matches!(&(*value).data, Data::Text(_)) {
-            return object::retain(value);
-        }
-        format(args, false, false)
     }
 }
 unsafe extern "C" fn input(_: Value, args: Value) -> Value {
@@ -193,7 +163,7 @@ unsafe extern "C" fn input(_: Value, args: Value) -> Value {
                         line.pop();
                     }
                 }
-                object::new_value(Data::Text(line.into_bytes()))
+                object::new_value(Data::Text(Text::from_rust_str(&line)))
             }
             Err(error) => fail(
                 if error.kind() == io::ErrorKind::InvalidData {
@@ -412,7 +382,7 @@ unsafe extern "C" fn type_(_: Value, args: Value) -> Value {
         let Data::Text(name) = &(*name).data else {
             return fail("TypeError", "type requires a text name");
         };
-        let Ok(name) = std::str::from_utf8(name) else {
+        let Some(name) = name.to_rust_string() else {
             return fail("UnicodeDecodeError", "invalid type name");
         };
         if name.contains('\0') {
@@ -443,13 +413,13 @@ unsafe extern "C" fn setattr(_: Value, args: Value) -> Value {
         let Data::Text(name) = &(*name).data else {
             return fail("TypeError", "setattr requires a text attribute name");
         };
-        let Ok(name) = std::str::from_utf8(name) else {
+        let Some(name) = name.to_rust_string() else {
             return fail("UnicodeDecodeError", "invalid attribute name");
         };
         if name.contains('\0') {
             return fail("ValueError", "attribute name contains NUL");
         }
-        if object::bind(*attributes, name, arg(args, 2)) {
+        if object::bind(*attributes, &name, arg(args, 2)) {
             object::none_value()
         } else {
             std::ptr::null_mut()
@@ -469,9 +439,6 @@ pub unsafe fn namespace() -> Value {
                 ("input", input),
                 ("len", len),
                 ("bool", bool_),
-                ("ascii", ascii),
-                ("repr", repr),
-                ("str", str_),
                 ("float", float),
                 ("tuple", tuple),
                 ("dict", dict),
@@ -506,7 +473,7 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
             };
         }
         let globals = object::namespace();
-        let name = object::new_value(Data::Text(b"__main__".to_vec()));
+        let name = object::new_value(Data::Text(Text::from_rust_str("__main__")));
         object::bind(globals, "__name__", name);
         object::release(name);
         object::bind(globals, "__builtins__", namespace());

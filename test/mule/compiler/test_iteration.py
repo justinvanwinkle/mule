@@ -165,6 +165,62 @@ except ValueError:
     assert result.stdout == "stored [1]\n[2]\n1 20 30\nstored [3]\nalive 20 30\n"
 
 
+def test_unpack_errors_preserve_targets_and_release_captures(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        """
+class Target:
+    def __setitem__(self, key, value):
+        print('received', value)
+        raise ValueError('setter')
+target = Target()
+try:
+    target[0], second = (['owned'], [2])
+except ValueError:
+    print('caught setter')
+first, second = ([3], [4])
+print(first, second)
+calls = 0
+def source():
+    global calls
+    calls += 1
+    return ([5], [6])
+first, second = source()
+print(calls, first, second)
+def unbound():
+    try:
+        first, second = missing
+    except UnboundLocalError:
+        print('unbound')
+    missing = ([], [])
+unbound()
+class Broken:
+    def __init__(self, fail):
+        self.fail = fail
+        self.step = 0
+    def __iter__(self):
+        return self
+    def __next__(self):
+        self.step += 1
+        if self.step == self.fail:
+            raise RuntimeError('iterator')
+        return [self.step]
+for fail in (2, 3):
+    first, second = (['first'], ['second'])
+    try:
+        first, second = Broken(fail)
+    except RuntimeError:
+        print(first, second)
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "received ['owned']\ncaught setter\n[3] [4]\n1 [5] [6]\nunbound\n"
+        "['first'] ['second']\n['first'] ['second']\n"
+    )
+
+
 def test_custom_iteration_and_getitem_fallback(tmp_path):
     result = execute(
         tmp_path,

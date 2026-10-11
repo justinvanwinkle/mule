@@ -535,6 +535,60 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 dynamic_tagged_attributes();
                 println!("dynamic=ok");
             }
+            "tuple_slots" => {
+                let owned = text("owned child");
+                let values = [owned, mule_none()];
+                let tuple = mule_sequence_tuple(2, values.as_ptr());
+                release(owned);
+                assert_eq!(mule_tuple_shape_matches(tuple, 2), 1);
+                assert_eq!(mule_tuple_shape_matches(tuple, 1), 0);
+                assert_eq!(mule_tuple_shape_matches(small(2), 2), 0);
+                let list = mule_sequence_list(2, values.as_ptr());
+                assert_eq!(mule_tuple_shape_matches(list, 2), 0);
+                release(list);
+                let child = mule_tuple_slot(tuple, 0);
+                let none = mule_tuple_slot(tuple, 1);
+                release(tuple);
+                assert_eq!(none, mule_none());
+                release(none);
+                if !show(child) {
+                    return ptr::null_mut();
+                }
+            }
+            "owned_tuple" => {
+                let child = text("transferred child");
+                let values = [retain(child), retain(child)];
+                let tuple = mule_sequence_tuple_owned(2, values.as_ptr());
+                assert!(!tuple.is_null());
+                assert_eq!((*child).references, 3);
+                let extracted = mule_tuple_slot(tuple, 1);
+                release(tuple);
+                release(child);
+                assert_eq!((*extracted).references, 1);
+                if !show(extracted) {
+                    return ptr::null_mut();
+                }
+                let empty = mule_sequence_tuple_owned(0, ptr::null());
+                assert_eq!(mule_tuple_shape_matches(empty, 0), 1);
+                release(empty);
+
+                let held = text("pending failure");
+                let transferred = [retain(held)];
+                error("ValueError", "original failure");
+                let pending_tuple = mule_sequence_tuple_owned(1, transferred.as_ptr());
+                assert!(!pending_tuple.is_null());
+                assert_eq!(error_kind(), "ValueError");
+                release(pending_tuple);
+                assert_eq!((*held).references, 1);
+                clear_error();
+                release(held);
+                assert!(mule_sequence_tuple_owned(-1, ptr::null()).is_null());
+                assert_eq!(error_kind(), "SystemError");
+                clear_error();
+                assert!(mule_sequence_tuple_owned(1, ptr::null()).is_null());
+                assert_eq!(error_kind(), "SystemError");
+                clear_error();
+            }
             "literals" => {
                 for value in [
                     integer("-123456789012345678901234567890"),
@@ -671,7 +725,7 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 if status < 0 || !show(mule_load_global(globals, c"answer".as_ptr())) {
                     return ptr::null_mut();
                 }
-                let builtin = mule_load_global(globals, c"repr".as_ptr());
+                let builtin = mule_load_global(globals, c"len".as_ptr());
                 if builtin.is_null() {
                     return ptr::null_mut();
                 }
@@ -680,10 +734,10 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 println!("callable={}", i32::from(callable));
                 release(builtin);
                 let none = mule_none();
-                let status = mule_store_global(globals, c"repr".as_ptr(), none);
+                let status = mule_store_global(globals, c"len".as_ptr(), none);
                 release(none);
                 if status < 0
-                    || !show(mule_load_global(globals, c"repr".as_ptr()))
+                    || !show(mule_load_global(globals, c"len".as_ptr()))
                     || !show(mule_load_global(globals, c"__name__".as_ptr()))
                 {
                     return ptr::null_mut();
@@ -774,7 +828,7 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 }
             }
             "builtin_call" => {
-                let callable = mule_load_global(globals, c"repr".as_ptr());
+                let callable = mule_load_global(globals, c"len".as_ptr());
                 let value = text("native callback");
                 if callable.is_null() || value.is_null() {
                     release(callable);

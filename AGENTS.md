@@ -104,6 +104,10 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/__main__.py`: `python -m mule` command-line interface.
 - `test/mule/parser/`: parser and AST tests, fixtures, and AST query helpers.
 - `test/mule/compiler/`: IR1, IR2/code generation, runtime, and native executable tests.
+- `conformance/`: authored Python feature programs compared with CPython as the oracle;
+  `gaps.toml` records known Mule gaps. See `conformance/README.md`.
+- `test/conformance/` and `tools/record_conformance_gaps.py`: conformance discovery,
+  comparison, and gap recording.
 - `examples/`: native compiler examples and upstream performance reference programs.
 - `examples/benchmarks-game/`: unmodified Python 3, Rust, SBCL, and Go comparison sources,
   upstream licenses, expected outputs, and source hashes in `UPSTREAM.json`.

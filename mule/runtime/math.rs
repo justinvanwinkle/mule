@@ -110,7 +110,7 @@ unsafe extern "C" fn special_method(_: Value, args: Value) -> Value {
             object::error("TypeError", "method name storage requires text");
             return null_mut();
         };
-        let Ok(name) = CString::new(bytes.as_slice()) else {
+        let Ok(name) = CString::new(bytes.to_wtf8()) else {
             object::error("ValueError", "method name contains a NUL character");
             return null_mut();
         };

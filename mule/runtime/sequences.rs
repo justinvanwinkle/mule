@@ -135,9 +135,9 @@ pub unsafe fn binding(value: Value, name: &str) -> Value {
 pub unsafe extern "C" fn mule_install_builtin(name: Value, value: Value) -> Value {
     unsafe {
         if !name.is_null() && !object::is_fixnum(name) {
-            if let Data::Text(bytes) = &(*name).data {
-                if let Ok(name) = std::str::from_utf8(bytes) {
-                    if object::bind(crate::builtins::namespace(), name, value) {
+            if let Data::Text(name) = &(*name).data {
+                if let Some(name) = name.to_rust_string() {
+                    if object::bind(crate::builtins::namespace(), &name, value) {
                         return object::none_value();
                     }
                 }
@@ -183,6 +183,30 @@ unsafe fn index(value: Value) -> Option<usize> {
         result
     }
 }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_tuple_shape_matches(value: Value, arity: usize) -> i32 {
+    unsafe {
+        if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::Args(values) = &(*value).data {
+                return i32::from(values.len() == arity);
+            }
+        }
+        0
+    }
+}
+
+/// Compiler-proved physical access: a live builtin tuple, an in-range index,
+/// and initialized non-NULL elements. The returned element is owned.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_tuple_slot(value: Value, index: usize) -> Value {
+    unsafe {
+        let Data::Args(values) = &(*value).data else {
+            std::hint::unreachable_unchecked();
+        };
+        object::retain(*values.as_ptr().add(index))
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_storage_length(value: Value) -> Value {
     unsafe {
@@ -403,7 +427,7 @@ pub unsafe extern "C" fn mule_catch_exception() -> Value {
             object::error(&kind, &message);
             return null_mut();
         }
-        let message = object::new_value(Data::Text(message.into_bytes()));
+        let message = object::new_value(Data::Text(crate::text::Text::from_rust_str(&message)));
         let result = object::call(class, &[message]);
         object::release(message);
         result

@@ -199,6 +199,11 @@ documentation or changing class layout, construction or method dispatch.
   assignment raises `NameError`. A captured variable that is never assigned
   after binding (a parameter, for example) is copied into the closure when
   the function object is created. Nested class definitions remain unsupported.
+- `lambda` expressions. A lambda converts as a function named `<lambda>` whose
+  body is a single `return`, through the same function-creation path as `def`:
+  defaults are evaluated left to right in the enclosing scope when the lambda
+  expression runs, and bindings inside the body (an assignment expression, for
+  example) belong to the lambda's own scope, not the enclosing one.
 - `del name` for locals, globals, and captured variables. Deleting an unbound
   name raises the same error a read would; later reads see the name unbound.
 

@@ -89,6 +89,39 @@ print(add(), add(2), add(amount=3, scale=2))
     )
 
 
+def test_lambdas_bind_defaults_early_and_keep_their_own_scope(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        """
+x = 1
+early = lambda a=x: a
+x = 2
+print(early(), (lambda: x)())
+print((lambda a, /, b, *rest, c=5: (a, b, rest, c))(1, 2, 3, c=4))
+curry = lambda a: lambda b: lambda c: a + b + c
+print(curry(1)(2)(3))
+def counter():
+    count = 0
+    peek = lambda: count
+    def bump():
+        nonlocal count
+        count += 1
+    bump()
+    bump()
+    return peek()
+print(counter())
+z = 'global'
+def walrus_stays_inside():
+    f = lambda: (z := 5)
+    return f(), z
+print(walrus_stays_inside())
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1 2\n(1, 2, (3,), 4)\n6\n2\n(5, 'global')\n"
+
+
 def test_environment_analysis_marks_assigned_captures_indirect():
     compilation = compile_toplevel(
         "def outer(a, b):\n"

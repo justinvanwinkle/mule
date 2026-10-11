@@ -1051,6 +1051,25 @@ class _Expressions(ast.Visitor):
         start, next_, result = self.frame
         self.function.comparison(start, next_, result, node)
 
+    def visit_Lambda(self, node):
+        """A lambda is an anonymous function whose body returns one expression,
+        converted like ``def`` as SBCL converts ``lambda`` and named functions
+        through the same ``ir1-convert-lambda`` path."""
+        function = self.function
+        start, next_, result = self.frame
+        definition = ast.FunctionDefinition(
+            "<lambda>",
+            node.parameters,
+            [ast.Return(node.body, span=node.body.span)],
+            span=node.span,
+        )
+        lambda_ = function.converter.function(
+            definition, function.lambda_.policy, parent=function
+        )
+        function.define_function(
+            start, next_, result, lambda_, definition, definition.name
+        )
+
 
 class _Statements(ast.Visitor):
     """Statement translators. Each links between the frame's start and next;
@@ -1705,23 +1724,8 @@ class _Statements(ast.Visitor):
         lambda_ = function.converter.function(
             node, function.lambda_.policy, parent=function
         )
-        current = start
-        defaults = []
-        for parameter in node.parameters:
-            if parameter.default is not None:
-                current, value = function.value(current, parameter.default)
-                defaults.append(value)
-        ctran, created = function.make_function(
-            current,
-            lambda_,
-            node.name,
-            defaults,
-            tuple(
-                lambda_.signature.annotations[index]
-                for index in lambda_.signature.default_parameters
-            ),
-            node,
-        )
+        ctran, created = Ctran(), Lvar()
+        function.define_function(start, ctran, created, lambda_, node, node.name)
         function.store(ctran, next_, node.name, created, node)
 
     def visit_ClassDefinition(self, node):
@@ -1792,22 +1796,11 @@ class _Statements(ast.Visitor):
             )
             for statement in method.body:
                 statement.accept(collector)
-            defaults = []
-            for parameter in method.parameters:
-                if parameter.default is not None:
-                    current, value = function.value(current, parameter.default)
-                    defaults.append(value)
-            current, created = function.make_function(
-                current,
-                lambda_,
-                method.name,
-                defaults,
-                tuple(
-                    lambda_.signature.annotations[index]
-                    for index in lambda_.signature.default_parameters
-                ),
-                method,
+            ctran, created = Ctran(), Lvar()
+            function.define_function(
+                current, ctran, created, lambda_, method, method.name
             )
+            current = ctran
             # Repeated definitions preserve Python's last-definition-wins behavior.
             previous = methods.get(method.name)
             if previous is not None:
@@ -1841,30 +1834,39 @@ class _Statements(ast.Visitor):
         function.store(ctran, next_, node.name, created, node)
 
 
-def _make_function(
-    self, start, lambda_, public_name, defaults, default_contracts, node
-):
-    """Reference the converted lambda and create its runtime function object."""
-    enclose = Enclose(self.lexenv, node, [lambda_])
-    link_node_to_previous_ctran(enclose, start)
+def _define_function(self, start, next_, result, lambda_, definition, public_name):
+    """Evaluate the definition's defaults in this scope, left to right, then
+    reference the converted lambda and create its runtime function object."""
+    current = start
+    defaults = []
+    for parameter in definition.parameters:
+        if parameter.default is not None:
+            current, value = self.value(current, parameter.default)
+            defaults.append(value)
+    enclose = Enclose(self.lexenv, definition, [lambda_])
+    link_node_to_previous_ctran(enclose, current)
     ctran = Ctran()
     use_ctran(enclose, ctran)
     following, fun = Ctran(), Lvar()
-    self.ref(ctran, following, fun, lambda_, node)
-    ctran, created = Ctran(), Lvar()
+    self.ref(ctran, following, fun, lambda_, definition)
+    default_contracts = tuple(
+        lambda_.signature.annotations[index]
+        for index in lambda_.signature.default_parameters
+    )
     self.known(
         following,
-        ctran,
-        created,
+        next_,
+        result,
         fndb.MAKE_FUNCTION,
         (fun, *defaults),
-        node,
-        FunctionInfo(public_name, default_contracts, self.converter.location(node)),
+        definition,
+        FunctionInfo(
+            public_name, default_contracts, self.converter.location(definition)
+        ),
     )
-    return ctran, created
 
 
-FunctionConverter.make_function = _make_function
+FunctionConverter.define_function = _define_function
 
 
 class _RangeName(ast.Visitor):
@@ -2533,6 +2535,9 @@ class _ReceiverFields(ast.Visitor):
     def visit_FunctionDefinition(self, node):
         pass
 
+    def visit_Lambda(self, node):
+        pass
+
     def visit_ClassDefinition(self, node):
         pass
 
@@ -2589,6 +2594,12 @@ class _AnnotationShadows(_ImportNames):
         for child in node.children():
             child.accept(self)
 
+    def visit_Lambda(self, node):
+        # Only defaults run in this scope; the body is another scope.
+        for parameter in node.parameters:
+            if parameter.default is not None:
+                parameter.default.accept(self)
+
     def visit_FunctionDefinition(self, node):
         self.names.add(node.name)
 
@@ -2628,6 +2639,12 @@ class _ScopeVisitor(_ImportNames):
         node.target.accept(self)
         if node.value is not None:
             node.value.accept(self)
+
+    def visit_Lambda(self, node):
+        # Only defaults run in this scope; the body is another scope.
+        for parameter in node.parameters:
+            if parameter.default is not None:
+                parameter.default.accept(self)
 
     def visit_FunctionDefinition(self, node):
         self.seen.add(node.name)
@@ -2679,6 +2696,12 @@ class _LocalBindings(_ImportNames):
             target.accept(self.target_visitor)
         for child in node.children():
             child.accept(self)
+
+    def visit_Lambda(self, node):
+        # Only defaults run in this scope; the body is another scope.
+        for parameter in node.parameters:
+            if parameter.default is not None:
+                parameter.default.accept(self)
 
     def visit_FunctionDefinition(self, node):
         # The definition binds its name here; the body is another scope.

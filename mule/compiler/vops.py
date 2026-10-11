@@ -337,8 +337,7 @@ def full_call(gen, vop):
     gen.argv(values)
     value = gen.call(site, function, arguments, values)
     gen.publish(result, value)
-    for operand in (function, *values):
-        gen.release(operand)
+    gen.release(function)
     gen.check_pointer(value)
     gen.refine(result.tn, value)
 
@@ -356,8 +355,6 @@ def _binary_generic(gen, vop, opcode, *, inplace):
     if opcode == 5 and not (left_type.fits(PYTHON_INTEGER) or left_type.fits(FLOAT)):
         value = gen.compiled_call("mule_format_modulo", (lhs, rhs))
         gen.publish(result, value)
-        gen.release(lhs)
-        gen.release(rhs)
         gen.check_pointer(value)
         gen.refine(result.tn, value)
         return
@@ -545,12 +542,13 @@ def call_resolved(gen, vop):
     gen.argv(values)
     value = gen.call_method(vop.codegen_info, function, receiver, values)
     gen.publish(vop.results[0], value)
-    for operand in (function, receiver, *values):
-        gen.release(operand)
+    gen.release(function)
     gen.check_pointer(value)
 
 
-@define_vop("make-function", translate=fndb.MAKE_FUNCTION, results=(OBJECT,))
+@define_vop(
+    "make-function", translate=fndb.MAKE_FUNCTION, results=(OBJECT, OBJECT, OBJECT)
+)
 def make_function(gen, vop):
     result = vop.results[0]
     definition = vop.codegen_info
@@ -562,8 +560,13 @@ def make_function(gen, vop):
     closure_refs = vop.args[len(vop.args) - closure_count :]
     native = module.functions[target]
     name = module.text(info.public_name)
-    defaults = gen.tuple_of(result, defaults_refs)
-    closure = gen.tuple_of(result, closure_refs)
+    defaults_slot, closure_slot = vop.results[1:]
+    defaults = gen.tuple_of(defaults_slot, defaults_refs)
+    closure = gen.tuple_of(closure_slot, closure_refs)
+    if defaults is not None:
+        defaults = gen.take(defaults_slot)
+    if closure is not None:
+        closure = gen.take(closure_slot)
     if defaults is None and target.binding is not None:
         defaults = "null"
     consumed = [value for value in (defaults, closure) if value not in (None, "null")]
@@ -646,7 +649,12 @@ def build_list(gen, vop):
 
 @define_vop("build-tuple", translate=fndb.BUILD_TUPLE, results=(OBJECT,))
 def build_tuple(gen, vop):
-    _sequence(gen, vop, "mule_sequence_tuple")
+    values = [gen.take(element) for element in vop.args]
+    gen.argv(values)
+    gen.pointer_result(
+        vop.results[0],
+        f"call ptr @mule_sequence_tuple_owned(i64 {len(values)}, ptr %argv)",
+    )
 
 
 @define_vop("format", translate=fndb.FORMAT, args=(OBJECT, OBJECT), results=(OBJECT,))
@@ -658,14 +666,11 @@ def format_(gen, vop):
         protocol = {"s": "string", "r": "representation"}[conversion]
         converted = gen.compiled_call("mule_format_" + protocol, [value])
         gen.publish(result, converted)
-        gen.release(value)
         gen.check_pointer(converted)
         value = gen.take(result)
     specification = gen.take(vop.args[1])
     formatted = gen.compiled_call("mule_format_format_value", [value, specification])
     gen.publish(result, formatted)
-    gen.release(value)
-    gen.release(specification)
     gen.check_pointer(formatted)
 
 
@@ -725,26 +730,60 @@ def _define_protocol(name, info):
         arguments = [gen.take(value) for value in vop.args]
         result = gen.sequence_call(name, arguments)
         gen.publish(vop.results[0], result)
-        for value in arguments:
-            gen.release(value)
         gen.check_pointer(result)
 
 
+@define_vop("structural-unpack", translate=fndb.PROTOCOLS["unpack"], results=(OBJECT,))
+def structural_unpack(gen, vop):
+    value, count = [gen.take(argument) for argument in vop.args]
+    if vop.codegen_info.proved:
+        gen.publish(vop.results[0], value)
+        gen.release(count)
+        return
+    matched = gen.operation(
+        f"call i32 @mule_tuple_shape_matches(ptr {value}, i64 {vop.codegen_info.arity})"
+    )
+    valid = gen.operation(f"icmp ne i32 {matched}, 0")
+    fast = gen.fresh("unpack.tuple")[1:]
+    slow = gen.fresh("unpack.iterable")[1:]
+    done = gen.fresh("unpack.done")[1:]
+    gen.line(f"br i1 {valid}, label %{fast}, label %{slow}")
+    gen.lines.append(fast + ":")
+    gen.publish(vop.results[0], value)
+    gen.release(count)
+    gen.line(f"br label %{done}")
+    gen.lines.append(slow + ":")
+    result = gen.sequence_call("unpack", [value, count])
+    gen.publish(vop.results[0], result)
+    gen.check_pointer(result)
+    gen.line(f"br label %{done}")
+    gen.lines.append(done + ":")
+
+
 for _name, _info in fndb.PROTOCOLS.items():
-    _define_protocol(_name, _info)
+    if _name != "unpack":
+        _define_protocol(_name, _info)
 
 
 @define_vop("unpack-ref", translate=fndb.UNPACK_REF, results=(OBJECT,))
 def unpack_ref(gen, vop):
-    # The unpack protocol captures all elements in an immutable builtin tuple.
-    values = [gen.take(value) for value in vop.args]
-    result = gen.operation(
-        f"call ptr @mule_storage_read(ptr {values[0]}, ptr {values[1]})"
-    )
+    access = vop.codegen_info
+    parent = gen.load(vop.args[0]) if access.borrow_parent else gen.take(vop.args[0])
+    position = gen.take(vop.args[1])
+    if access.proved:
+        result = gen.operation(
+            f"call ptr @mule_tuple_slot(ptr {parent}, i64 {access.index})"
+        )
+    else:
+        result = gen.operation(
+            f"call ptr @mule_storage_read(ptr {parent}, ptr {position})"
+        )
     gen.publish(vop.results[0], result)
-    for value in values:
-        gen.release(value)
-    gen.check_pointer(result)
+    if not access.borrow_parent:
+        gen.release(parent)
+    gen.release(position)
+    if not access.proved:
+        gen.check_pointer(result)
 
 
 @define_vop("catch-exception", translate=fndb.CATCH_EXCEPTION, results=(OBJECT,))
@@ -777,7 +816,6 @@ def assertion_failure(gen, vop):
 def raise_(gen, vop):
     value = gen.take(vop.args[0])
     result = gen.sequence_call("raise_value", [value])
-    gen.release(value)
     gen.release(result)
     gen.propagate()
 
@@ -797,18 +835,20 @@ def unwind(gen, vop):
 # modules call by underscored name.
 
 
-def primitive(name, info, emit):
+def primitive(name, info, emit, *, consumes_arguments=False):
     """Register ``emit(gen, vop, values)`` as the template of ``info``: the
-    operands are consumed, the result published, and the operands released
-    before the result is checked."""
+    operands leave their TNs and the result is published before error checking.
+    Borrowed physical primitives need caller release; compiled calls consume
+    their arguments on every arm."""
 
     @define_vop(f"primitive-{name}", translate=info, results=(OBJECT,))
     def generator(gen, vop):
         values = [gen.take(value) for value in vop.args]
         result = emit(gen, vop, values)
         gen.publish(vop.results[0], result)
-        for value in values:
-            gen.release(value)
+        if not consumes_arguments:
+            for value in values:
+                gen.release(value)
         gen.check_pointer(result)
 
     return generator
@@ -879,16 +919,7 @@ def allocate(gen, vop, values):
 
 def initialize(gen, vop, values):
     layout = vop.codegen_info
-    target = gen.module.bodies[layout.methods["__init__"]]
-    status = gen.operation("call i32 @mule_enter_frame()")
-    gen.check_status(status)
-    owned = [
-        gen.operation(f"call ptr @mule.fast.retain(ptr {value})") for value in values
-    ]
-    params = ", ".join(["ptr %globals", *(f"ptr {value}" for value in owned)])
-    result = gen.operation(f"call ptr {target}({params})")
-    gen.line("call void @mule_leave_frame()")
-    return result
+    return gen.compiled_call(layout.methods["__init__"], values)
 
 
 def invalid_initializer(gen, vop, values):

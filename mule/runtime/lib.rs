@@ -20,6 +20,7 @@ pub mod numeric;
 pub mod object;
 pub mod process;
 pub mod sequences;
+pub mod text;
 pub use sequences::*;
 
 pub use annotations::*;

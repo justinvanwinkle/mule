@@ -2,6 +2,7 @@
 
 import pytest
 
+from mule.compiler import fndb
 from mule.compiler.codegen import FunctionGenerator, ModuleGenerator, compile_component
 from mule.compiler.ctype import (
     BOTTOM,
@@ -12,8 +13,8 @@ from mule.compiler.ctype import (
     TupleType,
 )
 from mule.compiler.driver import compile_program
-from mule.compiler.node import Combination, Set
 from mule.compiler.main import compile_source
+from mule.compiler.node import Combination, Set
 from mule.compiler.protocols import compile_protocol
 
 
@@ -41,7 +42,8 @@ def test_successful_unknown_iterable_unpack_proves_tuple_capture_arity():
     assert function.component is not None
     nodes = [node for block in function.component.blocks() for node in block.nodes()]
     unpack = next(
-        node for node in nodes
+        node
+        for node in nodes
         if isinstance(node, Combination)
         and node.fun_info is not None
         and node.fun_info.name == "%unpack"
@@ -50,7 +52,11 @@ def test_successful_unknown_iterable_unpack_proves_tuple_capture_arity():
     assert isinstance(capture, TupleType)
     assert capture.arity == 2
     for node in nodes:
-        if isinstance(node, Combination) and node.fun_info is not None and node.fun_info.name == "%unpack_ref":
+        if (
+            isinstance(node, Combination)
+            and node.fun_info is not None
+            and node.fun_info.name == "%unpack_ref"
+        ):
             assert compilation.facts[function].types[node] == UNKNOWN
 
 
@@ -99,6 +105,14 @@ def test_tuple_comparison_still_invalidates_globals_for_element_callbacks():
     assert not TupleType(2).is_immortal
 
 
+def test_tuple_control_flow_join_with_non_tuple_discards_tuple_proof():
+    compilation = compile_source(
+        "def choose(flag):\n if flag:\n  return (1, 2)\n return [1, 2]\n"
+    )
+    assert compilation.facts is not None
+    assert compilation.facts[compilation.lambdas[1]].return_type == UNKNOWN
+
+
 @pytest.mark.parametrize(
     "primitive,expected",
     [
@@ -143,3 +157,12 @@ def test_unpack_capture_belongs_to_exception_transfer_cleanup():
     generator = FunctionGenerator(module, compile_component(function, general))
     capture_tn = generator.environment.vars[capture]
     assert capture_tn in generator.value_tns
+    accesses = [
+        vop
+        for block in generator.component.blocks
+        for vop in block.vops
+        if vop.info.translate is fndb.UNPACK_REF
+    ]
+    assert accesses
+    for access in accesses:
+        assert access.args[0].tn is capture_tn

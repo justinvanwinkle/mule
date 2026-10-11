@@ -54,19 +54,32 @@ match the number of internal parameters.
 
 ## Fixed-length unpacking of builtin tuples
 
-Non-starred unpacking recognizes exact immutable builtin tuple storage before
-entering the general iterator protocol. The length check and shortage/excess
-`ValueError` rules execute in compiled `stdlib/_sequences.py`; the native
-`_tuple_storage` primitive only tests the physical `Data::Args` representation.
-On success the protocol returns the original tuple with an owned reference.
+Non-starred unpacking lowers to a structural check/capture followed by ordinary
+target bindings. On exact builtin tuples of matching arity, the check transfers
+the existing owned value directly into the capture: no protocol call, runtime
+frame, count conversion, or container allocation executes. A `TupleType` arity
+proof removes the check too. Otherwise `stdlib/_sequences.py` handles iteration
+and shortage/excess `ValueError`, returning a normalized immutable tuple.
 Other iterables still collect all required elements and check exhaustion before
 any target assignment. Lists are not reused: an earlier target's side effects
 could otherwise change the elements seen by later targets.
 
-The compiler lowers extraction from the unpack result to `%unpack_ref`, whose
-VOP calls the existing checked physical storage read instead of the general
-`getitem` protocol. The compiler temporary keeps the tuple alive across target
-evaluation; each read owns its returned element, and ordinary cleanup handles
+Successful `%unpack` establishes exact builtin tuple arity even when the input
+was a general iterable. `%build_tuple` and literal tuples also establish arity
+facts; incompatible control-flow joins discard only the arity proof. Elements
+remain unknown, and tuple comparison can still run their user callbacks.
+
+Extraction lowers to `%unpack_ref` with a compile-time integer index. Where tuple
+kind and bounds are proved, its VOP calls the unchecked physical `mule_tuple_slot`
+primitive, which loads and retains the element without generic indexing, boxed
+index conversion, or repeated type/bounds checks. This unsafe ABI requires live
+`Data::Args` storage, an in-range index, and initialized non-null elements.
+Unproved reads retain the existing checked storage primitive.
+
+The compiler temporary keeps the tuple alive across target evaluation. Its sole
+structural-read consumers borrow that owning TN directly, without copying or
+retaining the parent. Each read still owns its returned element. The expression
+capture's explicit discard and boxed-entry cleanup handle
 both successful and exceptional assignments. Nested unpacking retains Python's
 target order and can fail after earlier outer targets have been assigned.
 Unpack captures are explicitly expression temporaries: the backend includes
@@ -77,6 +90,13 @@ state such as iterators keep their existing lifetimes. This follows SBCL
 distinguish temporary result lifetimes and preserved nonlocal-exit state;
 Mule's reference-counted LLVM paths additionally release the captured tuples.
 
+SBCL `src/code/macros.lisp`, `destructuring-bind`, invokes `expand-ds-bind` in
+`src/compiler/parse-lambda-list.lisp`, which binds the checker result and emits
+ordinary `pop` accesses. Its `check-ds-list` validates shape without constructing
+another list. Primitive references then pass through `ir2-convert-reffer` and the
+backend's `slot` VOP. Mule follows the same check-then-bind representation;
+Python's arbitrary-iterable fallback remains compiled Python, not Rust dispatch.
+
 SBCL `src/compiler/seqtran.lisp`, the `elt` transform, selects `aref` for known
 simple arrays. `src/compiler/array-tran.lisp`, the vector `aref` transform,
 selects `data-vector-ref` with a separate policy-controlled bounds check.
@@ -84,10 +104,10 @@ Mule follows that specialization boundary: unpack establishes builtin tuple
 storage, then extraction uses physical access. Python additionally requires
 exact unpack cardinality and complete iterable capture before target stores;
 those rules remain compiled Python, not Rust dispatch. Mule's reference-counted
-LLVM backend retains checked reads and explicit ownership rather than SBCL's
-garbage-collected vector-load VOP. Exact tuple unpack avoids iterator and
-temporary-container allocation and normal-path exhaustion exceptions; it does
-not yet derive per-element tuple types or emit unchecked field loads.
+LLVM backend requires explicit owned children and a dominating captured owner
+rather than SBCL's garbage-collected vector roots. Raw native entries do not yet
+support these operations; their separate cleanup must be extended before adding
+owned tuple temporaries there. No new caches or per-element tuple types are used.
 
 The known-function database also records successful result types for the tuple
 storage predicate, physical sequence length, and integer-storage validation.

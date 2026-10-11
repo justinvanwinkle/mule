@@ -50,13 +50,16 @@ declare i32 @mule_namespace_bound(ptr, ptr)
 declare i32 @mule_assertion_failure(ptr)
 declare ptr @mule_sequence_list(i64, ptr)
 declare ptr @mule_sequence_tuple(i64, ptr)
+declare ptr @mule_sequence_tuple_owned(i64, ptr)
 declare ptr @mule_lookup_special(ptr, ptr)
 declare ptr @mule_render_text(ptr, i32)
 declare ptr @mule_text_result(ptr)
 declare ptr @mule_text_length(ptr)
 declare ptr @mule_text_character(ptr, ptr)
 declare ptr @mule_text_codepoint(ptr, ptr)
-declare ptr @mule_invalid_string_format()
+declare ptr @mule_text_slice(ptr, ptr, ptr)
+declare ptr @mule_text_join(ptr)
+declare ptr @mule_type_name(ptr)
 declare ptr @mule_load_local(ptr, ptr)
 declare ptr @mule_binary_reuse(i32, ptr, ptr, i32, ptr)
 declare ptr @mule_unary(i32, ptr)
@@ -126,6 +129,8 @@ declare ptr @mule_storage_write(ptr, ptr, ptr)
 declare ptr @mule_storage_append(ptr, ptr)
 declare ptr @mule_storage_tuple(ptr)
 declare ptr @mule_tuple_storage(ptr)
+declare i32 @mule_tuple_shape_matches(ptr, i64)
+declare nonnull ptr @mule_tuple_slot(ptr, i64)
 declare ptr @mule_storage_compatible(ptr, ptr)
 declare ptr @mule_integer_storage(ptr)
 declare ptr @mule_class_identity(ptr)
@@ -386,17 +391,12 @@ class ModuleGenerator:
             result = f"%literal.{index}.tuple"
             lines.extend(
                 [
-                    f"  {result} = call ptr @mule_sequence_tuple(i64 {len(operands)}, ptr %literal.argv)",
+                    f"  {result} = call ptr @mule_sequence_tuple_owned(i64 {len(operands)}, ptr %literal.argv)",
                     f"  store ptr {result}, ptr {constant.slot}",
                 ]
             )
-            for value, address in operands:
-                lines.extend(
-                    [
-                        f"  call void @mule.fast.release(ptr {value})",
-                        f"  store ptr null, ptr {address}",
-                    ]
-                )
+            for _, address in operands:
+                lines.append(f"  store ptr null, ptr {address}")
             lines.extend(
                 [
                     f"  %literal.{index}.bad = icmp eq ptr {result}, null",
@@ -954,8 +954,11 @@ class FunctionGenerator:
     # Calls
 
     def compiled_call(self, function, values, globals_value="%globals") -> str:
-        """Call a compiled stdlib body inside a runtime frame, borrowing the
-        arguments (``CompiledCall``)."""
+        """Transfer owned arguments to a compiled body inside a runtime frame.
+
+        The body owns its parameters on every return. Failed frame entry leaves
+        them here, so that arm consumes them before returning the error result.
+        """
         body = (
             self.module.bodies[function]
             if isinstance(function, Lambda)
@@ -969,14 +972,12 @@ class FunctionGenerator:
         bad = self.operation(f"icmp slt i32 {status}, 0")
         self.line(f"br i1 {bad}, label %{failed}, label %{entered}")
         self.lines.append(failed + ":")
+        for value in values:
+            self.release(value)
         self.line(f"br label %{join}")
         self.lines.append(entered + ":")
-        owned = [
-            self.operation(f"call ptr @mule.fast.retain(ptr {value})")
-            for value in values
-        ]
         operands = ", ".join(
-            [f"ptr {globals_value}", *(f"ptr {value}" for value in owned)]
+            [f"ptr {globals_value}", *(f"ptr {value}" for value in values)]
         )
         result = self.operation(f"call ptr {body}({operands})")
         self.line("call void @mule_leave_frame()")
@@ -993,19 +994,17 @@ class FunctionGenerator:
     def tuple_of(self, result, refs) -> str | None:
         """Build an owned tuple of the given operands, or None when empty.
         The tuple is parked in ``result``'s slot while it is built so error
-        cleanup releases it."""
+        cleanup releases it. The returned pointer borrows that slot until taken."""
         if not refs:
             return None
         taken = [self.take(ref) for ref in refs]
         self.argv(taken)
         built = self.operation(
-            f"call ptr @mule_sequence_tuple(i64 {len(taken)}, ptr %argv)"
+            f"call ptr @mule_sequence_tuple_owned(i64 {len(taken)}, ptr %argv)"
         )
         self.publish(result, built)
-        for value in taken:
-            self.release(value)
         self.check_pointer(built)
-        return self.take(result)
+        return self.load(result)
 
     def keyword_expression(self, callable_value, receiver, values, keywords):
         positional = [
@@ -1027,7 +1026,7 @@ class FunctionGenerator:
         )
 
     def call_method(self, info, callable_value, receiver, arguments) -> str:
-        """Guard a predicted method and pass owned arguments to its native body."""
+        """Consume receiver/arguments on direct, fallback, and rejected arms."""
         module = self.module
         target = module.method_targets.get(info.name)
         function = (
@@ -1046,7 +1045,10 @@ class FunctionGenerator:
                 callable_value, receiver, arguments, info.keywords
             )
         if function is None:
-            return self.operation(fallback_call)
+            result = self.operation(fallback_call)
+            for value in (receiver, *arguments):
+                self.release(value)
+            return result
         order = function.call_order(info.keywords, len(arguments), receiver=True)
         normalized = [
             receiver if index == -1 else arguments[index] if index >= 0 else None
@@ -1075,22 +1077,18 @@ class FunctionGenerator:
         rejected = self.operation(f"icmp slt i32 {frame}, 0")
         self.line(f"br i1 {rejected}, label %{failed}, label %{entered}")
         self.lines.append(failed + ":")
+        for value in (receiver, *arguments):
+            self.release(value)
         self.line(f"br label %{join}")
         self.lines.append(entered + ":")
-        normalized = [
-            value
-            if value is not None
-            else self.operation(
-                f"call ptr @mule_function_default(ptr {callable_value}, i32 {-2 - index})"
-            )
-            for index, value in zip(order, normalized, strict=True)
-        ]
-        owned = [
-            value
-            if value in self.immortal_values
-            else self.operation(f"call ptr @mule.fast.retain(ptr {value})")
-            for value in normalized
-        ]
+        owned = []
+        for index, value in zip(order, normalized, strict=True):
+            if value is None:
+                borrowed = self.operation(
+                    f"call ptr @mule_function_default(ptr {callable_value}, i32 {-2 - index})"
+                )
+                value = self.operation(f"call ptr @mule.fast.retain(ptr {borrowed})")
+            owned.append(value)
         operands = ", ".join(
             [
                 "ptr %globals",
@@ -1103,6 +1101,8 @@ class FunctionGenerator:
         self.line(f"br label %{join}")
         self.lines.append(fallback + ":")
         general = self.operation(fallback_call)
+        for value in (receiver, *arguments):
+            self.release(value)
         self.line(f"br label %{join}")
         self.lines.append(join + ":")
         return self.operation(
@@ -1114,7 +1114,12 @@ class FunctionGenerator:
         return expected.accept(_ArgumentGuard(self, value))
 
     def call(self, site, callee: str, argument_refs, arguments) -> str:
-        """Dispatch once to a guarded typed entry or the general native entry."""
+        """Dispatch once, consuming owned arguments on every arm.
+
+        Direct entries take parameter ownership. External fallback borrows the
+        original evaluation-order buffer, so that arm releases its references.
+        The separately owned callable stays with the caller across all arms.
+        """
         module = self.module
         keywords = site.keywords
         target = site.target
@@ -1130,8 +1135,12 @@ class FunctionGenerator:
             else f"call ptr @mule_call(ptr {callee}, i64 {len(arguments)}, ptr %argv)"
         )
         if function is None:
-            return self.operation(fallback_call)
+            result = self.operation(fallback_call)
+            for value in arguments:
+                self.release(value)
+            return result
         order = function.call_order(keywords, len(arguments))
+        supplied = arguments
         arguments = [arguments[index] if index >= 0 else None for index in order]
         argument_types = tuple(
             (argument_refs[index].tn.type or UNKNOWN) if index >= 0 else None
@@ -1156,28 +1165,21 @@ class FunctionGenerator:
             rejected = self.operation(f"icmp slt i32 {frame}, 0")
             self.line(f"br i1 {rejected}, label %{failed}, label %{entered}")
             self.lines.append(failed + ":")
+            for argument in supplied:
+                self.release(argument)
             self.line(f"br label %{join}")
             incoming.append(("null", failed))
             self.lines.append(entered + ":")
-            parameter_facts = (
-                context.parameters if context else [UNKNOWN] * len(arguments)
-            )
-            normalized = [
-                argument
-                if argument is not None
-                else self.operation(
-                    f"call ptr @mule_function_default(ptr {callee}, i32 {-2 - index})"
-                )
-                for index, argument in zip(order, arguments, strict=True)
-            ]
-            owned = [
-                argument
-                if argument in self.immortal_values
-                or fact.is_fixnum
-                or fact.is_immortal
-                else self.operation(f"call ptr @mule.fast.retain(ptr {argument})")
-                for argument, fact in zip(normalized, parameter_facts, strict=True)
-            ]
+            owned = []
+            for index, argument in zip(order, arguments, strict=True):
+                if argument is None:
+                    borrowed = self.operation(
+                        f"call ptr @mule_function_default(ptr {callee}, i32 {-2 - index})"
+                    )
+                    argument = self.operation(
+                        f"call ptr @mule.fast.retain(ptr {borrowed})"
+                    )
+                owned.append(argument)
             operands = ", ".join(
                 [
                     "ptr %globals",
@@ -1232,6 +1234,8 @@ class FunctionGenerator:
             invoke(None)
         self.lines.append(fallback_label + ":")
         fallback = self.operation(fallback_call)
+        for argument in supplied:
+            self.release(argument)
         self.line(f"br label %{join}")
         incoming.append((fallback, fallback_label))
         self.lines.append(join + ":")

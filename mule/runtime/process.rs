@@ -1,6 +1,7 @@
 //! Trusted process-lifetime foreign storage; compiled Python owns decoding policy.
 
 use crate::numeric;
+use crate::text::Text;
 use crate::object::{self, Data, Native, Value};
 use std::cell::Cell;
 use std::ffi::{CStr, c_char};
@@ -197,11 +198,8 @@ unsafe extern "C" fn text_from_codepoints(_: Value, args: Value) -> Value {
                 "text_from_codepoints requires list or tuple storage",
             );
         };
-        let mut bytes = Vec::new();
-        let Some(capacity) = values.len().checked_mul(4) else {
-            return fail("MemoryError", "text storage allocation is too large");
-        };
-        if bytes.try_reserve_exact(capacity).is_err() {
+        let mut codes = Vec::new();
+        if codes.try_reserve_exact(values.len()).is_err() {
             return fail("MemoryError", "text storage allocation failed");
         }
         for value in values {
@@ -216,9 +214,47 @@ unsafe extern "C" fn text_from_codepoints(_: Value, args: Value) -> Value {
             let Some(code) = code.filter(|code| *code <= 0x10ffff) else {
                 return fail("ValueError", "text codepoint must be in range(0x110000)");
             };
-            object::append_text_codepoint(&mut bytes, code as u32);
+            codes.push(code as u32);
         }
-        object::new_value(Data::Text(bytes))
+        match Text::from_codepoints(codes.into_iter()) {
+            Ok(text) => object::new_value(Data::Text(text)),
+            Err(_) => fail("MemoryError", "text storage allocation failed"),
+        }
+    }
+}
+
+unsafe extern "C" fn bytes_from_values(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else {
+            return null_mut();
+        };
+        let values = if !value.is_null() && !object::is_fixnum(value) {
+            match &(*value).data {
+                Data::List(values) | Data::Args(values) => Some(values),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let Some(values) = values else {
+            return fail("TypeError", "bytes_from_values requires list or tuple storage");
+        };
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(values.len()).is_err() {
+            return fail("MemoryError", "byte storage allocation failed");
+        }
+        for value in values {
+            let byte = if object::is_fixnum(*value) {
+                u8::try_from(object::fixnum(*value)).ok()
+            } else {
+                None
+            };
+            let Some(byte) = byte else {
+                return fail("ValueError", "byte must be in range(0, 256)");
+            };
+            bytes.push(byte);
+        }
+        object::new_value(Data::Bytes(bytes))
     }
 }
 
@@ -250,12 +286,13 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
         if !bound {
             return null_mut();
         }
-        let exports: [(&str, Native); 5] = [
+        let exports: [(&str, Native); 6] = [
             ("read_pointer", read_pointer),
             ("read_c_string", read_c_string),
             ("byte_length", byte_length),
             ("read_byte", read_byte),
             ("text_from_codepoints", text_from_codepoints),
+            ("bytes_from_values", bytes_from_values),
         ];
         for (name, entry) in exports {
             let function = object::function(null_mut(), entry, name);
@@ -341,7 +378,7 @@ mod tests {
             assert!(invoke(module, "read_pointer", &[vector, object::small(0)]).is_null());
             assert_eq!(object::error_kind(), "IndexError");
             object::clear_error();
-            let text = object::new_value(Data::Text(Vec::new()));
+            let text = object::new_value(Data::Text(Text::empty()));
             for (name, args) in [
                 ("byte_length", vec![text]),
                 ("read_byte", vec![text, object::small(0)]),
@@ -382,15 +419,12 @@ mod tests {
                     Data::List(values)
                 });
                 let result = invoke(module, "text_from_codepoints", &[sequence]);
-                let Data::Text(bytes) = &(*result).data else {
+                let Data::Text(text) = &(*result).data else {
                     panic!("expected text")
                 };
+                assert_eq!(text.kind(), 4);
                 assert_eq!(
-                    bytes,
-                    b"\x00\x7f\xc2\x80\xdf\xbf\xe0\xa0\x80\xed\xa0\x80\xed\xbf\xbf\xef\xbf\xbf\xf0\x90\x80\x80\xf4\x8f\xbf\xbf"
-                );
-                assert_eq!(
-                    object::decode_text(bytes).unwrap(),
+                    text.codepoints().collect::<Vec<_>>(),
                     codes.map(|code| code as u32)
                 );
                 object::release(result);
@@ -404,7 +438,7 @@ mod tests {
                 object::release(sequence);
             }
             let sequence =
-                object::new_value(Data::List(vec![object::new_value(Data::Text(Vec::new()))]));
+                object::new_value(Data::List(vec![object::new_value(Data::Text(Text::empty()))]));
             assert!(invoke(module, "text_from_codepoints", &[sequence]).is_null());
             assert_eq!(object::error_kind(), "TypeError");
             object::clear_error();

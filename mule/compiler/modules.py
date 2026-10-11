@@ -18,9 +18,11 @@ class CompiledModule:
 
 
 class ModuleCompiler:
-    def __init__(self, filename, *, prefix=""):
+    def __init__(self, filename, *, prefix="", primitives=None):
         self.roots = (Path(filename).resolve().parent, STDLIB / "bootstrap", STDLIB)
         self.prefix = prefix
+        # Modules imported by a compiled protocol share its physical primitives.
+        self.primitives = primitives
         self.modules = {}
         # Lambdas and facts of every imported module, in import order.
         self.lambdas = []
@@ -99,6 +101,7 @@ class ModuleCompiler:
             imports=self,
             prefix=prefix,
             namespace=name,
+            primitives=self.primitives,
         )
         self.lambdas.extend(compilation.lambdas)
         self.facts.update(compilation.facts)

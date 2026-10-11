@@ -27,8 +27,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from mule import ast
+
 from . import fndb, vops
-from .ctype import UNKNOWN
+from .ctype import UNKNOWN, TupleType
 from .ltn import EntryContext, primitive_type_of
 from .node import (
     Bind,
@@ -66,6 +68,19 @@ class LocalAccess:
 
     name: str
     move: bool
+
+
+@dataclass(frozen=True, slots=True)
+class UnpackCheck:
+    arity: int
+    proved: bool
+
+
+@dataclass(frozen=True, slots=True)
+class UnpackSlot:
+    index: int
+    proved: bool
+    borrow_parent: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,6 +314,13 @@ class _Converter(NodeVisitor):
         leaf = node.leaf
         if isinstance(leaf, (KnownFunction, Lambda)):
             return
+        if self.borrows_unpack_capture(node):
+            # The capture dominates this infallible slot read and remains owned
+            # until the assignment's explicit discard or exception transfer.
+            assert isinstance(leaf, LambdaVar)
+            assert node.lvar is not None and node.lvar.info is not None
+            node.lvar.info.locs.append(self.var_tn(leaf))
+            return
         result, discard = self.result_tn(node)
         if isinstance(leaf, Constant):
             self.emit(vops.CONSTANT, node, results=(result,), info=leaf.value)
@@ -327,6 +349,43 @@ class _Converter(NodeVisitor):
             raise TypeError(f"no IR2 conversion for a reference to {leaf!r}")
         if discard:
             self.emit_discard(node, result)
+
+    def borrows_unpack_capture(self, node):
+        leaf = node.leaf
+        if not (
+            isinstance(leaf, LambdaVar)
+            and leaf.expression_temporary
+            and node.lvar is not None
+            and len(node.lvar.uses) == 1
+        ):
+            return False
+        consumer = node.lvar.dest
+        if not (
+            isinstance(consumer, Combination)
+            and consumer.kind is CallKind.KNOWN
+            and consumer.fun_info is fndb.UNPACK_REF
+        ):
+            return False
+        shape = self.context.type_of(node)
+        index = self.constant_index(consumer.args[1])
+        return (
+            isinstance(shape, TupleType)
+            and not shape.may_be_unbound
+            and shape.arity is not None
+            and index < shape.arity
+        )
+
+    @staticmethod
+    def constant_index(lvar):
+        producer = lvar.use()
+        if not (
+            isinstance(producer, Ref)
+            and isinstance(producer.leaf, Constant)
+            and isinstance(producer.leaf.value, ast.IntegerLiteral)
+            and producer.leaf.value.value >= 0
+        ):
+            raise ValueError("structural unpack requires a fixed nonnegative index")
+        return producer.leaf.value.value
 
     def visit_Set(self, node: Set):
         var = node.var
@@ -404,6 +463,36 @@ class _Converter(NodeVisitor):
             self.convert_call_resolved(node)
         elif name in ("%range_prepare", "%range_available", "%range_advance"):
             self.convert_range(node)
+        elif name == "%unpack":
+            arity = self.constant_index(node.args[1])
+            shape = self.context.type_of(node.args[0].use())
+            self.convert_template(
+                node,
+                [self.lvar_tn(arg) for arg in node.args],
+                UnpackCheck(
+                    arity,
+                    isinstance(shape, TupleType)
+                    and not shape.may_be_unbound
+                    and shape.arity == arity,
+                ),
+            )
+        elif name == "%unpack_ref":
+            index = self.constant_index(node.args[1])
+            shape = self.context.type_of(node.args[0].use())
+            args = [self.lvar_tn(arg) for arg in node.args]
+            self.convert_template(
+                node,
+                args,
+                UnpackSlot(
+                    index,
+                    isinstance(shape, TupleType)
+                    and not shape.may_be_unbound
+                    and shape.arity is not None
+                    and index < shape.arity,
+                    isinstance(args[0].leaf, LambdaVar)
+                    and args[0].leaf.expression_temporary,
+                ),
+            )
         else:
             self.convert_template(node, [self.lvar_tn(arg) for arg in node.args])
 
@@ -458,9 +547,16 @@ class _Converter(NodeVisitor):
         closure = lambda_.environment.closure if lambda_.environment else ()
         captured = [self.captured_value(node, var) for var in closure]
         defaults = [self.lvar_tn(arg) for arg in node.args[1:]]
-        self.convert_template(
-            node, [*defaults, *captured], FunctionObject(lambda_, node.info)
+        result, discard = self.result_tn(node)
+        self.emit(
+            node.template,
+            node,
+            args=[*defaults, *captured],
+            results=(result, self.temporary(), self.temporary()),
+            info=FunctionObject(lambda_, node.info),
         )
+        if discard:
+            self.emit_discard(node, result)
 
     def convert_resolve_method(self, node: Combination):
         receiver = self.lvar_tn(node.args[0])

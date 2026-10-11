@@ -45,6 +45,52 @@ only(optional=14, required=15)
     assert result.stdout == "1 2 () 3 None\n4 5 (6, 7) 9 8\n10 11 () 12 None\n15 14\n"
 
 
+def test_internal_calls_transfer_heap_values_defaults_and_aliases(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        """
+def identity(value):
+    return value
+print(identity(['owned']))
+print(identity(identity) is identity)
+def pair(first, second=['default']):
+    return first, second
+first, second = pair(second=['second'], first=['first'])
+print(first, second, pair(['new'])[1])
+def capture(seed):
+    def get(value=seed):
+        return value
+    return get
+get = capture(['captured'])
+print(get(), get(value=['replacement']))
+class Receiver:
+    def get(self, value=['method']):
+        return value
+print(Receiver().get(), Receiver().get(value=['supplied']))
+def failing(value):
+    raise ValueError('body')
+try:
+    failing(['temporary'])
+except ValueError:
+    print('caught body')
+def recursive(value):
+    return recursive(value)
+try:
+    recursive(['deep'])
+except RecursionError:
+    print('caught frame')
+print(identity(['alive']))
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "['owned']\nTrue\n['first'] ['second'] ['default']\n"
+        "['captured'] ['replacement']\n['method'] ['supplied']\n"
+        "caught body\ncaught frame\n['alive']\n"
+    )
+
+
 def test_keyword_evaluation_order_and_dynamic_callee(tmp_path):
     result = execute(
         tmp_path,

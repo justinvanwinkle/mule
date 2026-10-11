@@ -5,6 +5,7 @@ execute as native Python functions and classes, in a private module namespace.
 """
 
 from _mule_native import text_from_codepoints as _text_from_codepoints
+from _str import TextStorage, ascii, decode, format, ord, repr, str
 
 # ruff: noqa: F821
 
@@ -279,20 +280,15 @@ class TupleStorage:
         return not sequence_equal(self, other)
 
 
-class TextStorage:
-    def __getitem__(self, index):
-        return _storage_read(self, storage_index(self, index))
-
-    def __iter__(self):
-        return SequenceIterator(self)
-
-
 class BytesStorage:
     def __getitem__(self, index):
         return _storage_read(self, storage_index(self, index))
 
     def __iter__(self):
         return SequenceIterator(self)
+
+    def decode(self, encoding="utf-8", errors="strict"):
+        return decode(self, encoding, errors)
 
 
 def sequence_equal(left, right):
@@ -551,6 +547,11 @@ _install_builtin("next", next)
 _install_builtin("list", list)
 _install_builtin("tuple", tuple)
 _install_builtin("chr", chr)
+_install_builtin("ord", ord)
+_install_builtin("str", str)
+_install_builtin("repr", repr)
+_install_builtin("ascii", ascii)
+_install_builtin("format", format)
 _install_builtin("min", min)
 _install_builtin("max", max)
 _install_builtin("BaseException", BaseException)

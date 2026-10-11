@@ -7,7 +7,6 @@ from .protocols import add_lambdas, compile_protocol
 ROLES = (
     "string",
     "representation",
-    "align_string",
     "format_value",
     "decimal_integer",
     "percent_decimal",

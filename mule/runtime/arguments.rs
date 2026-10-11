@@ -377,7 +377,7 @@ pub unsafe extern "C" fn mule_binding_keyword_name(view: Value, offset: Value) -
         let Some(name) = object::name_from_c(*names.add(offset)) else {
             return std::ptr::null_mut();
         };
-        object::new_value(Data::Text(name.as_bytes().to_vec()))
+        object::new_value(Data::Text(crate::text::Text::from_rust_str(name)))
     }
 }
 #[unsafe(no_mangle)]

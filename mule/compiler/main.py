@@ -133,10 +133,16 @@ def compile_source(
     imports=None,
     prefix="",
     namespace="__main__",
+    primitives=None,
 ) -> Compilation:
     """Convert one module and run the IR1 phases over it."""
     compilation = compile_toplevel(
-        source, filename, imports=imports, prefix=prefix, namespace=namespace
+        source,
+        filename,
+        imports=imports,
+        prefix=prefix,
+        namespace=namespace,
+        primitives=primitives,
     )
     ir1_phases(compilation)
     return compilation
