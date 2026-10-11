@@ -27,6 +27,7 @@ from .vop import (
     BOOLEAN,
     CLASS,
     DESCRIPTOR,
+    DOUBLE,
     IMMEDIATE,
     INSTANCE,
     NULL,
@@ -86,6 +87,21 @@ _RAW_COMPARE = {
     ast.ComparisonOperator.GREATER: "sgt",
     ast.ComparisonOperator.GREATER_EQUAL: "sge",
 }
+_RAW_FLOAT_BINARY = {
+    ast.BinaryOperator.ADD: "fadd",
+    ast.BinaryOperator.SUBTRACT: "fsub",
+    ast.BinaryOperator.MULTIPLY: "fmul",
+    ast.BinaryOperator.DIVIDE: "fdiv",
+}
+# Ordered predicates: a NaN operand compares unequal, as in Python.
+_RAW_FLOAT_COMPARE = {
+    ast.ComparisonOperator.EQUAL: "oeq",
+    ast.ComparisonOperator.NOT_EQUAL: "une",
+    ast.ComparisonOperator.LESS: "olt",
+    ast.ComparisonOperator.LESS_EQUAL: "ole",
+    ast.ComparisonOperator.GREATER: "ogt",
+    ast.ComparisonOperator.GREATER_EQUAL: "oge",
+}
 
 
 def decimal(value: int) -> str:
@@ -113,7 +129,7 @@ def decimal(value: int) -> str:
 def constant(gen, vop):
     result = vop.results[0]
     literal = vop.codegen_info
-    if result.tn.sc in (SIGNED, BOOLEAN, NULL):
+    if result.tn.sc in (SIGNED, BOOLEAN, NULL, DOUBLE):
         gen.store(result, literal.accept(_RawLiteral()))
         return
     gen.pointer_result(result, gen.constant(literal))
@@ -126,11 +142,20 @@ class _RawLiteral(ast.Visitor):
     def visit_IntegerLiteral(self, literal):
         return str(literal.value)
 
+    def visit_FloatLiteral(self, literal):
+        return double_constant(literal.value)
+
     def visit_BooleanLiteral(self, literal):
         return "true" if literal.value else "false"
 
     def visit_NoneLiteral(self, literal):
         return "0"
+
+
+def double_constant(value: float) -> str:
+    """LLVM's exact hexadecimal spelling of a binary64 constant."""
+    bits = struct.unpack(">Q", struct.pack(">d", value))[0]
+    return f"0x{bits:016X}"
 
 
 @define_vop("load-local", args=(None,), results=(None,))
@@ -895,7 +920,7 @@ def write_int64(gen, vop, values):
 
 # Raw templates: native bodies over machine representations.
 
-RAW_SCALAR = (SIGNED, BOOLEAN, NULL)
+RAW_SCALAR = (SIGNED, BOOLEAN, NULL, DOUBLE)
 
 
 def _raw_binary(operator, opcode):
@@ -915,10 +940,34 @@ for _operator, _opcode in _RAW_BINARY.items():
     _raw_binary(_operator, _opcode)
 
 
+def _raw_float_binary(operator, opcode, restriction):
+    """Float arithmetic over ``double`` operands, or a mix with one ``i64``
+    operand that is converted first, as Python converts the integer."""
+    suffix = "-".join(sc.name for sc in restriction)
+
+    @define_vop(
+        f"raw-float-{operator.name.lower()}-{suffix}",
+        translate=(fndb.BINARY[operator], fndb.INPLACE_BINARY[operator]),
+        args=tuple((sc,) for sc in restriction),
+        results=((DOUBLE,),),
+        cost=1 if restriction == (DOUBLE, DOUBLE) else 2,
+        ltn_policy=RAW,
+    )
+    def generator(gen, vop):
+        left, right = (gen.double(operand) for operand in vop.args)
+        gen.store(vop.results[0], gen.float_arithmetic(opcode, left, right))
+
+
+_MIXED = ((DOUBLE, DOUBLE), (SIGNED, DOUBLE), (DOUBLE, SIGNED))
+for _operator, _opcode in _RAW_FLOAT_BINARY.items():
+    for _restriction in _MIXED:
+        _raw_float_binary(_operator, _opcode, _restriction)
+
+
 @define_vop(
     "raw-not",
     translate=fndb.UNARY[ast.UnaryOperator.NOT],
-    args=((SIGNED, BOOLEAN),),
+    args=((SIGNED, BOOLEAN, DOUBLE),),
     results=((BOOLEAN,),),
     ltn_policy=RAW,
 )
@@ -951,6 +1000,30 @@ def raw_negative(gen, vop):
 
 
 @define_vop(
+    "raw-float-positive",
+    translate=fndb.UNARY[ast.UnaryOperator.POSITIVE],
+    args=((DOUBLE,),),
+    results=((DOUBLE,),),
+    cost=1,
+    ltn_policy=RAW,
+)
+def raw_float_positive(gen, vop):
+    gen.store(vop.results[0], gen.take(vop.args[0]))
+
+
+@define_vop(
+    "raw-float-negative",
+    translate=fndb.UNARY[ast.UnaryOperator.NEGATIVE],
+    args=((DOUBLE,),),
+    results=((DOUBLE,),),
+    cost=1,
+    ltn_policy=RAW,
+)
+def raw_float_negative(gen, vop):
+    gen.store(vop.results[0], gen.operation(f"fneg double {gen.take(vop.args[0])}"))
+
+
+@define_vop(
     "raw-invert",
     translate=fndb.UNARY[ast.UnaryOperator.INVERT],
     args=((SIGNED,),),
@@ -979,6 +1052,72 @@ def _raw_compare(operator, predicate):
 
 for _operator, _predicate in _RAW_COMPARE.items():
     _raw_compare(_operator, _predicate)
+
+
+def _raw_float_compare(operator, predicate):
+    @define_vop(
+        f"raw-float-compare-{operator.name.lower()}",
+        translate=fndb.COMPARE[operator],
+        args=((DOUBLE,), (DOUBLE,)),
+        results=((BOOLEAN,),),
+        cost=1,
+        ltn_policy=RAW,
+    )
+    def generator(gen, vop):
+        left, right = (gen.take(operand) for operand in vop.args)
+        gen.store(
+            vop.results[0], gen.operation(f"fcmp {predicate} double {left}, {right}")
+        )
+
+
+for _operator, _predicate in _RAW_FLOAT_COMPARE.items():
+    _raw_float_compare(_operator, _predicate)
+
+# Python compares an integer with a float exactly, never by converting the
+# integer, so a mixed comparison orders the pair through a helper that returns
+# -1, 0, 1, or 2 (unordered) and tests the code it needs.
+_ORDER_TESTS = {
+    ast.ComparisonOperator.EQUAL: "icmp eq i32 {code}, 0",
+    ast.ComparisonOperator.NOT_EQUAL: "icmp ne i32 {code}, 0",
+    ast.ComparisonOperator.LESS: "icmp eq i32 {code}, -1",
+    ast.ComparisonOperator.LESS_EQUAL: "icmp sle i32 {code}, 0",
+    ast.ComparisonOperator.GREATER: "icmp eq i32 {code}, 1",
+    ast.ComparisonOperator.GREATER_EQUAL: "icmp ult i32 {code}, 2",
+}
+_SWAPPED = {
+    ast.ComparisonOperator.EQUAL: ast.ComparisonOperator.EQUAL,
+    ast.ComparisonOperator.NOT_EQUAL: ast.ComparisonOperator.NOT_EQUAL,
+    ast.ComparisonOperator.LESS: ast.ComparisonOperator.GREATER,
+    ast.ComparisonOperator.LESS_EQUAL: ast.ComparisonOperator.GREATER_EQUAL,
+    ast.ComparisonOperator.GREATER: ast.ComparisonOperator.LESS,
+    ast.ComparisonOperator.GREATER_EQUAL: ast.ComparisonOperator.LESS_EQUAL,
+}
+
+
+def _raw_mixed_compare(operator, restriction):
+    integer_first = restriction[0] is SIGNED
+    tested = operator if integer_first else _SWAPPED[operator]
+
+    @define_vop(
+        f"raw-mixed-compare-{operator.name.lower()}-{restriction[0].name}",
+        translate=fndb.COMPARE[operator],
+        args=tuple((sc,) for sc in restriction),
+        results=((BOOLEAN,),),
+        cost=2,
+        ltn_policy=RAW,
+    )
+    def generator(gen, vop):
+        left, right = (gen.take(operand) for operand in vop.args)
+        integer, double = (left, right) if integer_first else (right, left)
+        code = gen.operation(
+            f"call i32 @mule.compare.i64.double(i64 {integer}, double {double})"
+        )
+        gen.store(vop.results[0], gen.operation(_ORDER_TESTS[tested].format(code=code)))
+
+
+for _operator in _RAW_FLOAT_COMPARE:
+    _raw_mixed_compare(_operator, (SIGNED, DOUBLE))
+    _raw_mixed_compare(_operator, (DOUBLE, SIGNED))
 
 
 @define_vop(
@@ -1318,11 +1457,48 @@ slow:
 }}"""
 
 
+# Exact ordering of a machine integer against a binary64: doubles beyond the
+# i64 range order by sign, and in-range doubles split into an integer part,
+# which is compared as an integer, and a fraction that breaks ties.
+MIXED_COMPARE = """define internal i32 @mule.compare.i64.double(i64 %integer, double %double) alwaysinline {
+entry:
+  %unordered = fcmp uno double %double, %double
+  br i1 %unordered, label %nan, label %ordered
+nan:
+  ret i32 2
+ordered:
+  %above = fcmp oge double %double, 0x43E0000000000000
+  br i1 %above, label %less, label %bounded.above
+less:
+  ret i32 -1
+bounded.above:
+  %below = fcmp olt double %double, 0xC3E0000000000000
+  br i1 %below, label %greater, label %bounded
+greater:
+  ret i32 1
+bounded:
+  %truncated = fptosi double %double to i64
+  %whole = sitofp i64 %truncated to double
+  %fraction = fsub double %double, %whole
+  %integer.less = icmp slt i64 %integer, %truncated
+  %integer.equal = icmp eq i64 %integer, %truncated
+  %fraction.positive = fcmp ogt double %fraction, 0.0
+  %fraction.zero = fcmp oeq double %fraction, 0.0
+  %tie.less = and i1 %integer.equal, %fraction.positive
+  %is.less = or i1 %integer.less, %tie.less
+  %is.equal = and i1 %integer.equal, %fraction.zero
+  %sign = select i1 %is.less, i32 -1, i32 1
+  %code = select i1 %is.equal, i32 0, i32 %sign
+  ret i32 %code
+}"""
+
+
 def helpers() -> str:
     """Native guarded templates; LLVM removes unused templates after inlining."""
     return "\n\n".join(
         [
             INTRINSICS,
+            MIXED_COMPARE,
             _ownership(),
             _truth(),
             *(_binary_helper(op) for op in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12)),
@@ -1364,8 +1540,7 @@ class LiteralEmitter(ast.Visitor):
         return f"call ptr @mule_literal_int(ptr {self.module.text(decimal(value))})"
 
     def visit_FloatLiteral(self, literal: ast.FloatLiteral) -> str:
-        bits = struct.unpack(">Q", struct.pack(">d", literal.value))[0]
-        return f"call ptr @mule_literal_float(double 0x{bits:016X})"
+        return f"call ptr @mule_literal_float(double {double_constant(literal.value)})"
 
     def visit_TextLiteral(self, literal: ast.TextLiteral) -> str:
         encoded = literal.value.encode("utf-8", "surrogatepass")

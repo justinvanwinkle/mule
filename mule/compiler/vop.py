@@ -55,6 +55,7 @@ IMMEDIATE = StorageClass("immediate", "ptr", "null")
 # Raw machine values.
 SIGNED = StorageClass("signed", "i64", "0", raw=True)
 BOOLEAN = StorageClass("boolean", "i1", "false", raw=True)
+DOUBLE = StorageClass("double", "double", "0.0", raw=True)
 # A borrowed pointer to a native instance's field payload.
 INSTANCE = StorageClass("instance", "ptr", "null", raw=True)
 # The value ``None`` held as nothing at all.
@@ -94,6 +95,8 @@ NONE_T = PrimitiveType("none", (IMMEDIATE, NULL))
 IMMORTAL_T = PrimitiveType("immortal", (IMMEDIATE,))
 # A machine integer that may exceed the fixnum range (``int64`` contracts).
 SIGNED64 = PrimitiveType("signed64", (SIGNED, DESCRIPTOR))
+# A binary64 float (``float``/``float64`` contracts): raw, or a boxed object.
+FLOAT64 = PrimitiveType("float64", (DOUBLE, DESCRIPTOR))
 # Loop state.
 RANGE_T = PrimitiveType("range-state", (RANGE,))
 # A native class object: owned, or borrowed once its layout is guarded.
@@ -287,7 +290,9 @@ __all__ = [
     "CLASS",
     "CLASS_T",
     "DESCRIPTOR",
+    "DOUBLE",
     "FIXNUM",
+    "FLOAT64",
     "IMMEDIATE",
     "IMMORTAL_T",
     "INSTANCE",

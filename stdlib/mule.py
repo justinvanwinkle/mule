@@ -66,11 +66,11 @@ class uint128:
 
 
 class float16:
-    """IEEE binary16 float annotation; storage lowering is not implemented yet."""
+    """IEEE binary16 float annotation; native storage uses binary64 only."""
 
 
 class float32:
-    """IEEE binary32 float annotation; storage lowering is not implemented yet."""
+    """IEEE binary32 float annotation; native storage uses binary64 only."""
 
 
 class float64:

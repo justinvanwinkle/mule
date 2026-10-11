@@ -144,6 +144,49 @@ pub unsafe extern "C" fn mule_box_i64(value: i64) -> Value {
     }
 }
 
+/// Extract the binary64 physical representation of a float into a borrowed
+/// output word. Integers are not converted: the compiler promotes them itself.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_unbox_f64(value: Value, output: *mut f64) -> i32 {
+    if object::has_error() {
+        return -1;
+    }
+    if output.is_null() {
+        object::error("SystemError", "NULL float output");
+        return -1;
+    }
+    let float = if value.is_null() || object::is_fixnum(value) {
+        None
+    } else {
+        match unsafe { &(*value).data } {
+            Data::Float(float) => Some(*float),
+            _ => None,
+        }
+    };
+    if let Some(float) = float {
+        unsafe { *output = float };
+        0
+    } else {
+        object::error("TypeError", "expected mule.float64");
+        -1
+    }
+}
+
+/// Publish a raw binary64 float as an owned generic value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_box_f64(value: f64) -> Value {
+    if object::has_error() {
+        return std::ptr::null_mut();
+    }
+    unsafe { object::new_value(Data::Float(value)) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mule_native_zero_division() -> i32 {
+    object::error("ZeroDivisionError", "float division by zero");
+    -1
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mule_native_type_error() -> i32 {
     object::error("TypeError", "expected native class layout");

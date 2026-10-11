@@ -33,7 +33,7 @@ from .ir2tran import ir2_convert
 from .ltn import EntryContext, ltn_analyze
 from .node import CallKind, Combination, FunctionalKind, Lambda, LambdaVar
 from .represent import select_native_plans, select_representations
-from .vop import BOOLEAN, CLASS, DESCRIPTOR, IMMEDIATE, NULL, RANGE, SIGNED
+from .vop import BOOLEAN, CLASS, DESCRIPTOR, DOUBLE, IMMEDIATE, NULL, RANGE, SIGNED
 
 OBJECT = vops.OBJECT
 
@@ -91,6 +91,9 @@ declare ptr @mule_native_new(ptr)
 declare ptr @mule_native_payload(ptr)
 declare i32 @mule_unbox_i64(ptr, ptr)
 declare ptr @mule_box_i64(i64)
+declare i32 @mule_unbox_f64(ptr, ptr)
+declare ptr @mule_box_f64(double)
+declare i32 @mule_native_zero_division()
 declare i32 @mule_native_type_error()
 declare i32 @mule_native_initializer_error()
 declare i32 @mule_native_overflow()
@@ -876,6 +879,8 @@ class FunctionGenerator:
             return value
         if sc is SIGNED:
             return self.operation(f"icmp ne i64 {value}, 0")
+        if sc is DOUBLE:
+            return self.operation(f"fcmp une double {value}, 0.0")
         if sc is NULL:
             return "false"
         if (tn.type or UNKNOWN).is_fixnum:
@@ -898,7 +903,27 @@ class FunctionGenerator:
             return self.operation(f"call ptr @mule_bool(i32 {wide})")
         if sc is NULL:
             return "@mule.none"
+        if sc is DOUBLE:
+            return self.operation(f"call ptr @mule_box_f64(double {value})")
         return value
+
+    def double(self, ref) -> str:
+        """A ``double`` for an operand held as a double or a signed word."""
+        value = self.take(ref)
+        if ref.tn.sc is SIGNED:
+            return self.operation(f"sitofp i64 {value} to double")
+        return value
+
+    def float_arithmetic(self, opcode: str, left: str, right: str) -> str:
+        if opcode == "fdiv" and self.lambda_.policy.safety:
+            zero = self.operation(f"fcmp oeq double {right}, 0.0")
+            failed, continuation = self.fresh("zero")[1:], self.fresh("nonzero")[1:]
+            self.line(f"br i1 {zero}, label %{failed}, label %{continuation}")
+            self.lines.append(failed + ":")
+            self.line("call i32 @mule_native_zero_division()")
+            self.line("br label %error")
+            self.lines.append(continuation + ":")
+        return self.operation(f"{opcode} double {left}, {right}")
 
     def field_address(self, tn, payload: str, name: str) -> str:
         layout = tn.primitive_type.layout

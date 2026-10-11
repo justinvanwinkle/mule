@@ -49,6 +49,7 @@ from .vop import (
     BOOLEAN_T,
     CLASS_T,
     FIXNUM,
+    FLOAT64,
     IMMORTAL_T,
     NONE_T,
     RANGE,
@@ -150,6 +151,9 @@ class Representation:
     def python_integer(self):
         raise NotNative
 
+    def python_float(self):
+        raise NotNative
+
     def field(self, name):
         raise NotNative
 
@@ -189,6 +193,30 @@ class Int64(Representation):
         status = gen.operation(f"call i32 @mule_unbox_i64(ptr {value}, ptr {slot})")
         gen.check_status(status)
         return gen.operation(f"load i64, ptr {slot}")
+
+
+class Float64(Representation):
+    llvm_type = "double"
+    zero = "0.0"
+    primitive_type = FLOAT64
+
+    def numeric(self):
+        return self
+
+    def python_float(self):
+        return self
+
+    def truth(self):
+        return True
+
+    def box(self, gen, value):
+        return gen.operation(f"call ptr @mule_box_f64(double {value})")
+
+    def parameter(self, gen, value):
+        slot = gen.operation("alloca double")
+        status = gen.operation(f"call i32 @mule_unbox_f64(ptr {value}, ptr {slot})")
+        gen.check_status(status)
+        return gen.operation(f"load double, ptr {slot}")
 
 
 class Boolean(Representation):
@@ -270,7 +298,7 @@ class Method(Representation):
         return self.receiver.primitive_type
 
 
-INT64, BOOL, NONE = Int64(), Boolean(), Nothing()
+INT64, FLOAT, BOOL, NONE = Int64(), Float64(), Boolean(), Nothing()
 
 
 class _Probe:
@@ -289,7 +317,13 @@ class _Contract:
             raise NotNative
         return INT64
 
-    visit_FloatContract = visit_Contract
+    def visit_FloatContract(self, contract):
+        # The runtime stores every float as binary64; narrower widths would
+        # need their own rounding at each operation.
+        if contract.bits != 64:
+            raise NotNative
+        return FLOAT
+
     visit_PythonIntegerContract = visit_Contract
 
 
@@ -307,6 +341,11 @@ class _AssertionContract(_Contract):
     def visit_PythonIntegerContract(self, contract):
         return self.representation.python_integer()
 
+    def visit_FloatContract(self, contract):
+        if contract.bits != 64:
+            raise NotNative
+        return self.representation.python_float()
+
 
 class _Literal(ast.Visitor):
     def visit_Node(self, node):
@@ -316,6 +355,9 @@ class _Literal(ast.Visitor):
         if not -(1 << 63) <= node.value < (1 << 63):
             raise NotNative
         return INT64
+
+    def visit_FloatLiteral(self, node):
+        return FLOAT
 
     def visit_BooleanLiteral(self, node):
         return BOOL
@@ -344,9 +386,12 @@ class NativePlan:
         return f"@mule.native.{self.index}"
 
     def lvar_type(self, lvar):
-        if len(lvar.uses) != 1:
+        """The primitive type every producer of ``lvar`` delivers, or None
+        when a producer has no representation or they disagree."""
+        types = {self.node_type(use) for use in lvar.uses}
+        if len(types) != 1:
             return None
-        return self.node_type(lvar.uses[0])
+        return types.pop()
 
     def node_type(self, node):
         representation = self.values.get(node)
@@ -370,6 +415,12 @@ _BINARY = {
     ast.BinaryOperator.BIT_AND,
     ast.BinaryOperator.BIT_OR,
     ast.BinaryOperator.BIT_XOR,
+}
+_FLOAT_BINARY = {
+    ast.BinaryOperator.ADD,
+    ast.BinaryOperator.SUBTRACT,
+    ast.BinaryOperator.MULTIPLY,
+    ast.BinaryOperator.DIVIDE,
 }
 _COMPARE = {
     ast.ComparisonOperator.EQUAL,
@@ -484,11 +535,7 @@ class _Select(NodeVisitor):
         name = node.fun_info.name
         args = node.args
         if name in _BINARY_NAMES:
-            if _BINARY_NAMES[name] not in _BINARY:
-                raise NotNative
-            self.value(args[0]).numeric()
-            self.value(args[1]).numeric()
-            return INT64
+            return self.binary(_BINARY_NAMES[name], args)
         if name in _UNARY_NAMES:
             operator = _UNARY_NAMES[name]
             value = self.value(args[0])
@@ -496,12 +543,13 @@ class _Select(NodeVisitor):
                 value.truth()
                 return BOOL
             value.numeric()
-            return INT64
+            if operator == ast.UnaryOperator.INVERT and value is FLOAT:
+                raise NotNative
+            return value if value is FLOAT else INT64
         if name in _COMPARE_NAMES:
             if _COMPARE_NAMES[name] not in _COMPARE:
                 raise NotNative
-            self.value(args[0]).numeric()
-            self.value(args[1]).numeric()
+            self.numeric_operands(args)
             return BOOL
         if name == "%getattr":
             return self.value(args[0]).field(node.info.name)
@@ -516,6 +564,21 @@ class _Select(NodeVisitor):
         if name == "%call_resolved":
             return self.call_method(node)
         raise NotNative
+
+    def numeric_operands(self, args):
+        return self.value(args[0]).numeric(), self.value(args[1]).numeric()
+
+    def binary(self, operator, args):
+        left, right = self.numeric_operands(args)
+        if FLOAT in (left, right):
+            # Python rounds the integer operand to a float before a mixed
+            # operation, as ``sitofp`` does.
+            if operator not in _FLOAT_BINARY:
+                raise NotNative
+            return FLOAT
+        if operator not in _BINARY:
+            raise NotNative
+        return INT64
 
     def call_method(self, node):
         if node.info.keywords:
@@ -724,8 +787,11 @@ def _select_function(lambda_, index, facts, layouts, bindings, plans) -> NativeP
             negation = (
                 name in _UNARY_NAMES and _UNARY_NAMES[name] != ast.UnaryOperator.NOT
             )
-            if (arithmetic or negation) and (
-                node not in constrained and not types.get(node, UNKNOWN).fits(int64)
+            if (
+                (arithmetic or negation)
+                and plan.values.get(node) is not FLOAT
+                and node not in constrained
+                and not types.get(node, UNKNOWN).fits(int64)
             ):
                 raise NotNative
     return plan
@@ -749,10 +815,12 @@ def _result_contracts(lambda_, blocks) -> set:
 
 __all__ = [
     "BOOL",
+    "FLOAT",
     "INT64",
     "NONE",
     "Boolean",
     "Class",
+    "Float64",
     "Instance",
     "Int64",
     "Method",

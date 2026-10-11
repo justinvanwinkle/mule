@@ -126,13 +126,13 @@ the actual callee through the runtime. Both routes use the same recursion guard.
 Arguments still evaluate after the callee and before the guard, so an argument
 that rebinds the global does not replace the already-loaded callable.
 
-## Raw int64 entries and class protocols
+## Raw int64, float64, and class entries
 
 `represent.py` selects physical representations after semantic analysis,
 following SBCL's `represent.lisp` separation of semantic type from storage
 class. A native plan assigns every parameter, local, and value of a lambda a
-machine representation (`signed64`, `boolean`, `none`, an instance payload, or
-a guarded class); the lambda is then generated a third time under that plan,
+machine representation (`signed64`, `float64`, `boolean`, `none`, an instance
+payload, or a guarded class); the lambda is then generated a third time under that plan,
 where template selection admits only the raw templates and storage-class
 selection prefers machine storage. Native
 class declarations carry stable compiler layout identities, aligned contracts,
@@ -148,6 +148,21 @@ methods and scalar callers use raw entries; generic interfaces supply coercions
 at entry and exit. Safety-zero contract arithmetic uses LLVM `nsw`; positive
 safety uses overflow intrinsics and reports `OverflowError` before a field write.
 The boxed path remains available for unsupported signatures and operations.
+
+`float` and `float64` contracts select the `double` storage class, as SBCL's
+`double-float` declarations select `double-reg`. Float parameters are unboxed
+once at the adapter (`mule_unbox_f64`, which rejects integers the way the
+`float` contract does) and results are boxed at return (`mule_box_f64`).
+Addition, subtraction, multiplication, true division, negation, and the ordered
+comparisons use LLVM `fadd`/`fsub`/`fmul`/`fdiv`/`fneg`/`fcmp`; `fdiv` checks
+for a zero divisor under positive safety and raises `ZeroDivisionError`. A mixed
+operation with an `int64` operand converts the integer with `sitofp`, the same
+rounding Python applies before a mixed operation. A mixed comparison does not
+convert: Python compares the exact values, so the templates call an LLVM helper
+that orders an `i64` against a `double` exactly. Floor division, modulo, power,
+and narrower float widths (`float16`, `float32`, `float128`) keep the boxed
+body: the runtime stores every float as binary64, and a narrower contract would
+need its own rounding after each operation, as SBCL's `single-float` has.
 
 Local method edges require an available raw body with no mutable-global
 dependencies. Cyclic call components remain boxed until native stack checking
@@ -203,7 +218,8 @@ retain optimization level 3.
 
 ## Remaining work and verification
 
-This stage does not specialize arbitrary object/float signatures, mix machine
+This stage does not specialize unannotated float signatures, store floats in
+native class fields, mix machine
 and object representations inside one body (a native plan is all or nothing,
 with coercions only at the entry adapter), or perform SBCL's full local-call
 and constraint transformations. Speculative global call returns remain unknown
