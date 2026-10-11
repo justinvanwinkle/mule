@@ -87,6 +87,9 @@ class ValueType:
     def join_function(self, left):
         return self.join_unknown(left)
 
+    def join_tuple(self, left):
+        return self.join_unknown(left)
+
     def join_unbound(self, left):
         return self.with_unbound()
 
@@ -185,6 +188,9 @@ class ValueType:
         return False
 
     def fits_function(self, expected):
+        return False
+
+    def fits_tuple(self, expected):
         return False
 
 
@@ -621,6 +627,40 @@ class FunctionType(ValueType):
 
 
 @dataclass(frozen=True, slots=True)
+class TupleType(ValueType):
+    """Exact builtin tuple storage, with bounded arity information only.
+
+    Elements remain unknown: even an immutable tuple may contain objects whose
+    comparison invokes user code. This fact does not imply immortal ownership.
+    """
+
+    arity: int | None = None
+
+    def annotation_conflict(self, contract):
+        return True
+
+    def join(self, other):
+        return other.join_tuple(self)
+
+    def join_tuple(self, left):
+        return TupleType(
+            self.arity if self.arity == left.arity else None,
+            may_be_unbound=self.may_be_unbound or left.may_be_unbound,
+        )
+
+    def accepts(self, actual):
+        return actual.fits_tuple(self)
+
+    def accepts_dispatch(self, actual):
+        return actual.fits_tuple(self)
+
+    def fits_tuple(self, expected):
+        return not self.may_be_unbound and (
+            expected.arity is None or self.arity == expected.arity
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class BottomType(ValueType):
     def accepts(self, actual):
         return False
@@ -642,6 +682,7 @@ class BottomType(ValueType):
     join_text = join_unknown
     join_bytes = join_unknown
     join_function = join_unknown
+    join_tuple = join_unknown
     join_unbound = join_unknown
 
     def normalized_bottom(self):
@@ -697,6 +738,7 @@ class UnboundType(ValueType):
     join_text = join_unknown
     join_bytes = join_unknown
     join_function = join_unknown
+    join_tuple = join_unknown
     join_unbound = join_unknown
 
 

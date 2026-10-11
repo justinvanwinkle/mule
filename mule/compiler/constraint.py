@@ -35,6 +35,7 @@ from .ctype import (
     IntegerType,
     NoneType,
     TextType,
+    TupleType,
     ValueType,
 )
 from .ir1util import block_exception_target
@@ -125,6 +126,9 @@ class _LiteralFacts(ast.Visitor):
 
     def visit_BytesLiteral(self, node):
         return BytesType()
+
+    def visit_Tuple(self, node):
+        return TupleType(len(node.elements))
 
 
 def constant_type(literal) -> ValueType:
@@ -239,6 +243,12 @@ class _Propagation(NodeVisitor):
                 if info.may_call or info.unsafe:
                     self.invalidate()
                 return Fact(value_type)
+        if name == "%build_tuple":
+            return Fact(TupleType(len(args)))
+        if name == "%unpack":
+            self.invalidate()
+            arity = self.type_of(args[1]).exact_integer()
+            return Fact(TupleType(arity if arity is not None and arity >= 0 else None))
         if name in _BINARY_OPERATORS:
             left, right = self.type_of(args[0]), self.type_of(args[1])
             fact = Fact(left.binary(_BINARY_OPERATORS[name], right))

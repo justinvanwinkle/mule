@@ -3,10 +3,100 @@
 import pytest
 
 from mule.compiler.codegen import FunctionGenerator, ModuleGenerator, compile_component
-from mule.compiler.ctype import BooleanType, IntegerType
+from mule.compiler.ctype import (
+    BOTTOM,
+    UNBOUND,
+    UNKNOWN,
+    BooleanType,
+    IntegerType,
+    TupleType,
+)
 from mule.compiler.driver import compile_program
 from mule.compiler.node import Combination, Set
+from mule.compiler.main import compile_source
 from mule.compiler.protocols import compile_protocol
+
+
+@pytest.mark.parametrize(
+    "source,arity",
+    [
+        ("def value():\n return (None, None)\n", 2),
+        ("def value(item):\n return (item, None)\n", 2),
+        ("def value(flag):\n if flag:\n  return (1, 2)\n return (3, 4)\n", 2),
+        ("def value(flag):\n if flag:\n  return (1,)\n return (2, 3)\n", None),
+    ],
+)
+def test_tuple_results_retain_exact_builtin_arity(source, arity):
+    compilation = compile_source(source)
+    assert compilation.facts is not None
+    result = compilation.facts[compilation.lambdas[1]].return_type
+    assert isinstance(result, TupleType)
+    assert result.arity == arity
+
+
+def test_successful_unknown_iterable_unpack_proves_tuple_capture_arity():
+    compilation = compile_source("def capture(value):\n a, b = value\n return a\n")
+    assert compilation.facts is not None
+    function = compilation.lambdas[1]
+    assert function.component is not None
+    nodes = [node for block in function.component.blocks() for node in block.nodes()]
+    unpack = next(
+        node for node in nodes
+        if isinstance(node, Combination)
+        and node.fun_info is not None
+        and node.fun_info.name == "%unpack"
+    )
+    capture = compilation.facts[function].types[unpack]
+    assert isinstance(capture, TupleType)
+    assert capture.arity == 2
+    for node in nodes:
+        if isinstance(node, Combination) and node.fun_info is not None and node.fun_info.name == "%unpack_ref":
+            assert compilation.facts[function].types[node] == UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "left,right,expected",
+    [
+        (TupleType(2), TupleType(2), TupleType(2)),
+        (TupleType(2), TupleType(3), TupleType()),
+        (TupleType(2), TupleType(), TupleType()),
+        (TupleType(2), UNKNOWN, UNKNOWN),
+        (TupleType(2), IntegerType(), UNKNOWN),
+        (TupleType(2), BOTTOM, TupleType(2)),
+        (TupleType(2), UNBOUND, TupleType(2, may_be_unbound=True)),
+        (TupleType(2), UNKNOWN.with_unbound(), UNKNOWN.with_unbound()),
+    ],
+)
+def test_tuple_arity_joins_preserve_only_common_facts(left, right, expected):
+    assert left.join(right) == expected
+    assert right.join(left) == expected
+
+
+@pytest.mark.parametrize(
+    "actual,expected,fits",
+    [
+        (TupleType(2), TupleType(2), True),
+        (TupleType(2), TupleType(), True),
+        (TupleType(), TupleType(2), False),
+        (TupleType(2), TupleType(3), False),
+        (TupleType(2, may_be_unbound=True), TupleType(), False),
+        (TupleType(2), UNKNOWN, True),
+        (UNKNOWN, TupleType(), False),
+    ],
+)
+def test_tuple_arity_fits_respect_unknown_and_unbound_values(actual, expected, fits):
+    assert actual.fits(expected) is fits
+    assert actual.dispatch_fits(expected) is fits
+
+
+def test_tuple_comparison_still_invalidates_globals_for_element_callbacks():
+    compilation = compile_source(
+        "def compare(item):\n global result\n result = (1, 2)\n"
+        " same = (item,) == (item,)\n return result\n"
+    )
+    assert compilation.facts is not None
+    assert compilation.facts[compilation.lambdas[1]].return_type == UNKNOWN
+    assert not TupleType(2).is_immortal
 
 
 @pytest.mark.parametrize(
