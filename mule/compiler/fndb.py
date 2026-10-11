@@ -45,7 +45,7 @@ HAS_BINDING = defknown("%has_binding")
 
 # Displays and formatting.
 BUILD_LIST = defknown("%build_list", "flushable")
-BUILD_TUPLE = defknown("%build_tuple", "flushable")
+BUILD_TUPLE = defknown("%build_tuple", "flushable", "foldable")
 UNPACK_REF = defknown("%unpack_ref")
 FORMAT = defknown("%format", "call")
 

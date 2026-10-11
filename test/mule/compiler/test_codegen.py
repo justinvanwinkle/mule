@@ -1,8 +1,25 @@
 """Code generation preserves values and ownership through the real runtime."""
 
+import struct
+
 import pytest
 
+from mule import ast
+from mule.compiler.codegen import _ConstantKey
 from test.mule.compiler.test_native import run_native
+
+
+def test_constant_pool_keys_preserve_float_bits_and_scalar_types():
+    def key(value):
+        return ast.Tuple([value]).accept(_ConstantKey())
+
+    assert key(ast.FloatLiteral(0.0)) != key(ast.FloatLiteral(-0.0))
+    assert key(ast.BooleanLiteral(True)) != key(ast.IntegerLiteral(1))
+    assert key(ast.IntegerLiteral(1)) != key(ast.FloatLiteral(1.0))
+    first_nan = struct.unpack(">d", bytes.fromhex("7ff8000000000001"))[0]
+    second_nan = struct.unpack(">d", bytes.fromhex("7ff8000000000002"))[0]
+    assert key(ast.FloatLiteral(first_nan)) == key(ast.FloatLiteral(first_nan))
+    assert key(ast.FloatLiteral(first_nan)) != key(ast.FloatLiteral(second_nan))
 
 
 @pytest.mark.parametrize(

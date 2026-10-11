@@ -362,7 +362,7 @@ class Leaf:
 class Constant(Leaf):
     __slots__ = ("value",)
 
-    def __init__(self, value: ast.Literal):
+    def __init__(self, value: ast.Literal | ast.Tuple):
         super().__init__()
         self.value = value
 

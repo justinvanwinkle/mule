@@ -1,7 +1,7 @@
 # Sequence displays and compiled formatting
 
-Status: implemented list and tuple displays, basic compiled f-strings, and
-integer decimal percent formatting.
+Status: implemented list and tuple displays, immutable tuple constant loading,
+basic compiled f-strings, and integer decimal percent formatting.
 
 SBCL `src/compiler/ir2tran.lisp`, `(list ir2-convert)`, takes evaluated argument
 lvars and emits known-size construction VOPs; `src/compiler/srctran.lisp`,
@@ -13,6 +13,51 @@ rather than Common Lisp cons cells; tuples require immutable contiguous storage.
 Rust primitives allocate and retain the already evaluated element buffer. They
 do not evaluate expressions or implement container algorithms. Existing Rust
 container printing and comparison remain documented bootstrap debt.
+
+## Immutable tuple constants
+
+IR1 folds `%build_tuple` when every evaluated operand is already a supported
+immutable constant: `None`, boolean, integer, float, text, bytes, or a recursively
+constant tuple. It uses the normal constant-reference graph rewrite and preserves
+source spans. Lists, unresolved bindings, calls, and other dynamic operands remain
+ordinary construction operations. Existing scalar folding determines eligibility;
+this increment does not add scalar unary folding or new literal kinds.
+
+The LLVM module owns a pool of these tuples. Typed recursive keys keep boolean,
+integer, float, text, and byte values distinct; floating-point keys preserve the
+IEEE binary64 bits, including signed zero and NaN payloads. Nested tuples are
+initialized before their parents. Identical constants share an ordinary immutable
+tuple; they are not marked immortal. Each pool slot owns one reference, and each
+evaluation obtains another owned reference through its generated load helper.
+Tuples containing mutable or dynamically evaluated values remain fresh.
+
+SBCL `src/compiler/ir1opt.lisp`, `constant-fold-call` and `%constant-fold-call`,
+rewrites eligible construction calls to constants. `src/compiler/dump.lisp`,
+`dump-object` and `fasl-constant-already-dumped-p`, loads constant objects and
+preserves sharing. Mule follows these separate fold and constant-loading stages.
+Its LLVM executable does not use an SBCL FASL or forge Rust `Object`/`Vec` layouts:
+generated startup code constructs tuple storage with the existing physical Rust
+allocator. This is a logically immutable pool, not memory mapped read-only storage.
+
+Pool initialization runs inside the existing runtime startup error boundary,
+before any compiled module body, including private protocol modules. The argument
+buffer owns scalar and child references until construction completes. Reported
+allocation failures release those temporaries and abort startup; `main` releases
+every initialized pool root, in reverse dependency order, after runtime/import
+cleanup on both successful and failed execution. Null uninitialized slots are safe
+to release. A load helper's non-null result contract applies only after successful
+initialization; initialization itself checks every fallible allocation.
+
+Python permits sharing equal immutable values, so this changes tuple identity
+without changing element values or mutation behavior. The concrete LLVM adaptation
+eagerly allocates all emitted tuple constants before module execution, rather than
+allocating them at individual expression visits or serializing them in a Lisp
+image. Native-reported allocation errors can therefore occur during startup before
+user side effects. No user expression, callback, or mutable constructor is moved
+into this initialization phase. Dynamic tuple allocation and the existing runtime's
+infallible-allocation limitations are unchanged.
+
+## Compiled formatting
 
 SBCL `src/compiler/srctran.lisp`, the `format` transform near line 8934, compiles
 constant format strings through `formatter`. Mule's parsed f-strings similarly

@@ -21,7 +21,10 @@ body (``@mule.body.N``); guarded entries (``.spec.V``) and native entries
 
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass, field
+
+from mule import ast
 
 from . import vops
 from .ctype import UNKNOWN, ValueType
@@ -170,6 +173,41 @@ def compile_component(lambda_: Lambda, context: EntryContext):
     return component
 
 
+class _ConstantKey(ast.Visitor):
+    """Pool equality preserves scalar types and exact floating-point bits."""
+
+    def visit_Node(self, node):
+        raise TypeError("unsupported constant-pool element")
+
+    def visit_NoneLiteral(self, node):
+        return ("none",)
+
+    def visit_BooleanLiteral(self, node):
+        return "bool", node.value
+
+    def visit_IntegerLiteral(self, node):
+        return "int", node.value
+
+    def visit_FloatLiteral(self, node):
+        return "float", struct.pack(">d", node.value)
+
+    def visit_TextLiteral(self, node):
+        return "text", node.value
+
+    def visit_BytesLiteral(self, node):
+        return "bytes", node.value
+
+    def visit_Tuple(self, node):
+        return "tuple", tuple(element.accept(self) for element in node.elements)
+
+
+@dataclass(frozen=True, slots=True)
+class TupleConstant:
+    literal: ast.Tuple
+    slot: str
+    entry: str
+
+
 class ModuleGenerator:
     def __init__(self, program: Program):
         self.program = program
@@ -194,6 +232,7 @@ class ModuleGenerator:
         self.sequence_functions = program.sequence_functions
         self.native_plans = select_native_plans(lambdas, self.facts, self.layouts)
         self.data: dict[bytes, str] = {}
+        self.tuple_constants: dict[tuple, TupleConstant] = {}
         self.auxiliary: list[str] = []
         self.method_targets: dict[str, Lambda] = {}
         self.imports: dict[str, object] = {}
@@ -272,6 +311,110 @@ class ModuleGenerator:
     def text(self, value: str) -> str:
         return self.literal_data(value.encode("utf-8"))
 
+    def constant_tuple(self, literal: ast.Tuple) -> str:
+        """Register dependencies before their parent, sharing only typed values."""
+        key = literal.accept(_ConstantKey())
+        existing = self.tuple_constants.get(key)
+        if existing is not None:
+            return existing.entry
+        for element in literal.elements:
+            if isinstance(element, ast.Tuple):
+                self.constant_tuple(element)
+        index = len(self.tuple_constants)
+        constant = TupleConstant(
+            literal, f"@mule.literal.slot.{index}", f"@mule.literal.tuple.{index}"
+        )
+        self.tuple_constants[key] = constant
+        self.auxiliary.extend(
+            [
+                f"{constant.slot} = internal global ptr null",
+                (
+                    f"define internal nonnull ptr {constant.entry}() alwaysinline {{\n"
+                    "entry:\n"
+                    f"  %value = load ptr, ptr {constant.slot}\n"
+                    "  %owned = call ptr @mule.fast.retain(ptr %value)\n"
+                    "  ret ptr %owned\n}"
+                ),
+            ]
+        )
+        return constant.entry
+
+    def initialize_tuple_constants(self) -> str:
+        """Construct the pool inside the runtime's startup error boundary.
+
+        The argument buffer owns each scalar/child reference until construction
+        finishes. On failure it is unwound here; main releases initialized roots.
+        """
+        if not self.tuple_constants:
+            return ""
+        count = max(
+            1,
+            max(
+                len(constant.literal.elements)
+                for constant in self.tuple_constants.values()
+            ),
+        )
+        lines = [
+            f"  %literal.argv = alloca [{count} x ptr]",
+            f"  store [{count} x ptr] zeroinitializer, ptr %literal.argv",
+        ]
+        for index, constant in enumerate(self.tuple_constants.values()):
+            operands = []
+            for position, element in enumerate(constant.literal.elements):
+                value = f"%literal.{index}.value.{position}"
+                address = f"%literal.{index}.arg.{position}"
+                operation = element.accept(vops.LiteralEmitter(self))
+                lines.extend(
+                    [
+                        f"  {value} = {operation}",
+                        f"  {address} = getelementptr [{count} x ptr], ptr %literal.argv, i64 0, i64 {position}",
+                        f"  store ptr {value}, ptr {address}",
+                    ]
+                )
+                operands.append((value, address))
+                if operation.startswith("call "):
+                    lines.extend(
+                        [
+                            f"  %literal.{index}.bad.{position} = icmp eq ptr {value}, null",
+                            f"  br i1 %literal.{index}.bad.{position}, label %literal.failure, label %literal.{index}.after.{position}",
+                            f"literal.{index}.after.{position}:",
+                        ]
+                    )
+            result = f"%literal.{index}.tuple"
+            lines.extend(
+                [
+                    f"  {result} = call ptr @mule_sequence_tuple(i64 {len(operands)}, ptr %literal.argv)",
+                    f"  store ptr {result}, ptr {constant.slot}",
+                ]
+            )
+            for value, address in operands:
+                lines.extend(
+                    [
+                        f"  call void @mule.fast.release(ptr {value})",
+                        f"  store ptr null, ptr {address}",
+                    ]
+                )
+            lines.extend(
+                [
+                    f"  %literal.{index}.bad = icmp eq ptr {result}, null",
+                    f"  br i1 %literal.{index}.bad, label %literal.failure, label %literal.{index}.ready",
+                    f"literal.{index}.ready:",
+                ]
+            )
+        lines.extend(["  br label %protocols", "literal.failure:"])
+        for position in range(count):
+            address = f"%literal.failed.arg.{position}"
+            value = f"%literal.failed.value.{position}"
+            lines.extend(
+                [
+                    f"  {address} = getelementptr [{count} x ptr], ptr %literal.argv, i64 0, i64 {position}",
+                    f"  {value} = load ptr, ptr {address}",
+                    f"  call void @mule.fast.release(ptr {value})",
+                ]
+            )
+        lines.extend(["  ret ptr null", "protocols:"])
+        return "\n".join(lines) + "\n"
+
     def contexts(self, lambda_: Lambda):
         """The general entry context and the guarded variants."""
         facts = self.facts[lambda_]
@@ -318,6 +461,7 @@ class ModuleGenerator:
             f"{layout.schema} = internal global i8 0"
             for layout in self.layouts.values()
         )
+        literal_initialization = self.initialize_tuple_constants()
         globals_ = []
         for value, name in self.data.items():
             escaped = "".join(f"\\{byte:02X}" for byte in value + b"\0")
@@ -329,7 +473,8 @@ class ModuleGenerator:
         self.auxiliary.append(
             "define internal ptr @mule.initialize.protocols(ptr %globals, ptr %args) {\n"
             "entry:\n"
-            f"  %sequence = call ptr {self.functions[program.protocol_entry]}(ptr %globals, ptr %args)\n"
+            + literal_initialization
+            + f"  %sequence = call ptr {self.functions[program.protocol_entry]}(ptr %globals, ptr %args)\n"
             "  %failed = icmp eq ptr %sequence, null\n"
             "  call void @mule_release(ptr %sequence)\n"
             "  br i1 %failed, label %failure, label %print\n"
@@ -368,6 +513,14 @@ class ModuleGenerator:
                 f"  call void @mule_release(ptr %import.{index})\n"
                 f"  store ptr null, ptr @mule.import.cache.{index}\n"
                 for index in range(len(self.imports))
+            )
+            + "".join(
+                f"  %literal.root.{index} = load ptr, ptr {constant.slot}\n"
+                f"  call void @mule_release(ptr %literal.root.{index})\n"
+                f"  store ptr null, ptr {constant.slot}\n"
+                for index, constant in reversed(
+                    list(enumerate(self.tuple_constants.values()))
+                )
             )
             + "  ret i32 %status\n"
             "}"
@@ -1067,8 +1220,11 @@ class FunctionGenerator:
             return self.emit_raw()
         wrapper = self.wrapper() if self.context.id is None else ""
         adapter = ""
+        # Every object entry of a natively planned lambda, general or guarded,
+        # becomes the adapter that checks the plan's boundaries and calls the
+        # raw entry; its own body remains as the fallback.
         plan = self.module.native_plans.get(self.lambda_)
-        if plan is not None and self.context.id is None:
+        if plan is not None:
             adapter = native_adapter(self, plan)
             self.body += ".boxed"
             self.lines = []

@@ -2,14 +2,16 @@
 
 import pytest
 
+from mule import ast
 from mule.compiler import emit_llvm
 from mule.compiler.debug import InconsistentIR1, check_ir1_consistency
 from mule.compiler.ir1util import block_exception_target, unlink_blocks
-from mule.compiler.main import compile_toplevel
+from mule.compiler.main import compile_source, compile_toplevel
 from mule.compiler.node import (
     Bind,
     CallKind,
     Combination,
+    Constant,
     Exit,
     FunctionalKind,
     If,
@@ -17,6 +19,7 @@ from mule.compiler.node import (
     Return,
     Set,
 )
+from test.mule.parser.ast_query import assert_ast_equal
 
 SOURCES = [
     "x = 1\n",
@@ -155,3 +158,75 @@ def test_consistency_check_rejects_broken_links():
     unlink_blocks(branch, branch.last.consequent)
     with pytest.raises(InconsistentIR1):
         check_ir1_consistency(compilation.components)
+
+
+@pytest.mark.parametrize(
+    "expression,expected",
+    [
+        ("()", ast.Tuple([])),
+        ("(None, None)", ast.Tuple([ast.NoneLiteral(), ast.NoneLiteral()])),
+        (
+            "(True, 1, 1.5, 'text', b'bytes', None)",
+            ast.Tuple(
+                [
+                    ast.BooleanLiteral(True),
+                    ast.IntegerLiteral(1),
+                    ast.FloatLiteral(1.5),
+                    ast.TextLiteral("text"),
+                    ast.BytesLiteral(b"bytes"),
+                    ast.NoneLiteral(),
+                ]
+            ),
+        ),
+        (
+            "(1, (None, (False, 2)))",
+            ast.Tuple(
+                [
+                    ast.IntegerLiteral(1),
+                    ast.Tuple(
+                        [
+                            ast.NoneLiteral(),
+                            ast.Tuple(
+                                [ast.BooleanLiteral(False), ast.IntegerLiteral(2)]
+                            ),
+                        ]
+                    ),
+                ]
+            ),
+        ),
+        (
+            "(1 + 2, (3 * 4,))",
+            ast.Tuple([ast.IntegerLiteral(3), ast.Tuple([ast.IntegerLiteral(12)])]),
+        ),
+        ("(18446744073709551616,)", ast.Tuple([ast.IntegerLiteral(2**64)])),
+    ],
+)
+def test_immutable_tuple_result_is_an_ir1_constant(expression, expected):
+    compilation = compile_source(f"def value():\n return {expression}\n")
+    function = compilation.lambdas[1]
+    returned = function.return_
+    assert returned is not None
+    producer = returned.result.use()
+    assert isinstance(producer, Ref)
+    assert isinstance(producer.leaf, Constant)
+    assert isinstance(producer.leaf.value, ast.Tuple)
+    assert_ast_equal(producer.leaf.value, expected)
+    assert producer.source is not None
+    assert producer.leaf.value.span is not None
+    assert producer.leaf.value.span == producer.source.span
+    check_ir1_consistency(compilation.components)
+
+
+@pytest.mark.parametrize(
+    "expression", ["([1], None)", "(item(), None)", "(missing, None)"]
+)
+def test_dynamic_or_mutable_tuple_keeps_runtime_construction(expression):
+    compilation = compile_source(f"def value():\n return {expression}\n")
+    function = compilation.lambdas[1]
+    returned = function.return_
+    assert returned is not None
+    producer = returned.result.use()
+    assert isinstance(producer, Combination)
+    assert producer.fun_info is not None
+    assert producer.fun_info.name == "%build_tuple"
+    check_ir1_consistency(compilation.components)

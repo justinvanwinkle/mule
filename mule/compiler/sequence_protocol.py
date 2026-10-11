@@ -2,8 +2,10 @@
 
 from pathlib import Path
 
+from mule import ast
+
 from .modules import ModuleCompiler
-from .node import CallKind, Combination, GlobalVar, NodeVisitor, Ref
+from .node import CallKind, Combination, Constant, GlobalVar, NodeVisitor, Ref
 from .protocols import add_lambdas, compile_protocol
 
 BUILTIN_NAMES = frozenset(
@@ -59,7 +61,9 @@ class NeedsProtocols(NodeVisitor):
             self.needed = True
 
     def visit_Ref(self, node):
-        if isinstance(node.leaf, GlobalVar) and node.leaf.name in BUILTIN_NAMES:
+        if (isinstance(node.leaf, GlobalVar) and node.leaf.name in BUILTIN_NAMES) or (
+            isinstance(node.leaf, Constant) and isinstance(node.leaf.value, ast.Tuple)
+        ):
             self.needed = True
 
 

@@ -9,9 +9,9 @@ SBCL uses. Type-dependent rewrites attach here as transforms once the facts
 established by ``constraint.py`` and ``locall.py`` are consulted per node.
 
 Python semantics shape the effect attributes in ``fndb.py``: nearly every
-operator may run user code, so folding is limited to integer and boolean
-literals, and a reference to a possibly unbound name is never deleted because
-reading it raises.
+operator may run user code, so arithmetic folding is limited to integer and
+boolean literals. Immutable tuples of supported constants also fold, while
+a reference to a possibly unbound name is never deleted because reading it raises.
 """
 
 from __future__ import annotations
@@ -104,6 +104,9 @@ def _optimize_block(block) -> bool:
                 flush_combination(node)
                 changed = True
                 continue
+            if node.fun_info.name == "%build_tuple" and node.fun_info.foldable:
+                changed |= _constant_fold_tuple(node)
+                continue
             if (
                 node.fun_info.name in _BINARY_NAMES
                 or node.fun_info.name in _COMPARE_NAMES
@@ -119,6 +122,35 @@ def _literal(lvar):
     if isinstance(use, Ref) and isinstance(use.leaf, Constant):
         return use.leaf.value
     return None
+
+
+def _immutable_literal(literal):
+    if isinstance(literal, ast.Tuple):
+        return all(_immutable_literal(element) for element in literal.elements)
+    return isinstance(
+        literal,
+        (
+            ast.NoneLiteral,
+            ast.BooleanLiteral,
+            ast.IntegerLiteral,
+            ast.FloatLiteral,
+            ast.TextLiteral,
+            ast.BytesLiteral,
+        ),
+    )
+
+
+def _constant_fold_tuple(node: Combination) -> bool:
+    """Capture immutable evaluated constants, never mutable or dynamic operands."""
+    if node.lvar is None:
+        return False
+    literals = [_literal(arg) for arg in node.args]
+    if not all(_immutable_literal(literal) for literal in literals):
+        return False
+    folded = ast.Tuple(literals)
+    folded.span = node.source.span if node.source is not None else None
+    replace_combination_with_constant(node, folded)
+    return True
 
 
 def _constant_fold(node: Combination) -> bool:

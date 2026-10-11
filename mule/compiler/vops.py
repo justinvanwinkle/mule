@@ -1387,6 +1387,9 @@ class LiteralEmitter(ast.Visitor):
     def visit_EllipsisLiteral(self, literal: ast.EllipsisLiteral) -> str:
         return self.visit_Literal(literal)
 
+    def visit_Tuple(self, node: ast.Tuple) -> str:
+        return f"call ptr {self.module.constant_tuple(node)}()"
+
 
 CONSTANT = constant
 LOAD_LOCAL = load_local
