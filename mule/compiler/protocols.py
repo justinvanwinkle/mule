@@ -16,7 +16,6 @@ from .fndb import defknown
 from .main import compile_toplevel, ir1_phases
 from .vops import (
     allocate,
-    binding_body,
     compiled_call,
     initialize,
     invalid_initializer,
@@ -97,7 +96,6 @@ _EMITTERS = {
     "_render_representation": render_text(True),
     "_text_result": text_result,
     "_numeric_modulo": numeric_modulo,
-    "_binding_body": binding_body,
     "_allocate": allocate,
     "_initialize": initialize,
     "_invalid_initializer": invalid_initializer,

@@ -16,17 +16,27 @@ from . import (
     sequence_protocol,
 )
 from .codegen import Program, generate
-from .modules import compile_modules
+from .inputs import read_source
+from .modules import compile_modules, search_path
 
 
 class ToolchainError(RuntimeError):
     """The native toolchain or target runtime could not produce an artifact."""
 
 
-def compile_program(source: str, filename: str = "<unknown>") -> Program:
+def compile_program(
+    source: str,
+    filename: str = "<unknown>",
+    *,
+    roots: tuple[Path, ...] | None = None,
+    package: str | None = None,
+) -> Program:
     """Compile the main module, its imports, and the compiled stdlib
-    protocols the program needs, through the IR1 phases."""
-    main, modules = compile_modules(source, filename)
+    protocols the program needs, through the IR1 phases.
+
+    ``roots`` is the module search path; ``package`` is the package of a main
+    module run with ``-m``, for its relative imports."""
+    main, modules = compile_modules(source, filename, roots=roots, package=package)
     program = Program(
         [*main.lambdas, *modules.lambdas], main.entry, {**main.facts, **modules.facts}
     )
@@ -34,14 +44,22 @@ def compile_program(source: str, filename: str = "<unknown>") -> Program:
     program.protocol_entry, program.sequence_functions = sequence_protocol.prepare(
         program
     )
-    program.argument_constructor = argument_protocol.prepare(program)
+    program.argument_constructor, program.argument_binder = (
+        argument_protocol.prepare(program)
+    )
     program.layouts = native_protocol.prepare(program)
     format_protocol.prepare(program)
     return program
 
 
-def emit_llvm(source: str, filename: str = "<unknown>") -> str:
-    return generate(compile_program(source, filename))
+def emit_llvm(
+    source: str,
+    filename: str = "<unknown>",
+    *,
+    roots: tuple[Path, ...] | None = None,
+    package: str | None = None,
+) -> str:
+    return generate(compile_program(source, filename, roots=roots, package=package))
 
 
 def build_runtime(
@@ -170,7 +188,11 @@ def build(
         llvm_path = Path(llvm_output)
         if llvm_path.resolve() in (source_path.resolve(), output_path.resolve()):
             raise ValueError("LLVM output must differ from source and executable")
-    llvm = emit_llvm(source_path.read_text(encoding="utf-8"), str(source_path))
+    llvm = emit_llvm(
+        read_source(source_path),
+        str(source_path),
+        roots=search_path(source_path.resolve().parent),
+    )
     link_llvm(llvm, output_path, clang=clang, rustc=rustc)
     if llvm_output is not None:
         llvm_path.parent.mkdir(parents=True, exist_ok=True)

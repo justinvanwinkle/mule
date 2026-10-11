@@ -131,7 +131,15 @@ class Outcome:
 
 def compile_source(source, executable, timeout):
     return subprocess.run(
-        [sys.executable, "-B", "-m", "mule", str(source), "-o", str(executable)],
+        [
+            sys.executable,
+            "-B",
+            "-m",
+            "mule.compiler",
+            str(source),
+            "-o",
+            str(executable),
+        ],
         cwd=ROOT,
         capture_output=True,
         text=True,

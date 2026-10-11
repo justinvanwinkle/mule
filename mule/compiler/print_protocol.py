@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from .inputs import read_source
 from .protocols import add_lambdas, compile_protocol
 
 
@@ -10,7 +11,7 @@ def prepare(program):
     namespace even without a direct load, so it is always compiled."""
     path = Path(__file__).resolve().parents[2] / "stdlib/_print.py"
     compilation = compile_protocol(
-        path.read_text(), str(path), prefix="mule_print_", namespace="$mule.print"
+        read_source(path), str(path), prefix="mule_print_", namespace="$mule.print"
     )
     add_lambdas(program, compilation.lambdas, compilation.facts)
     return compilation.entry

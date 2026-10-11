@@ -8,7 +8,7 @@ is a real executable before broader language support or optimization.
 Run from the repository with Python 3.14 and `uv`:
 
 ```sh
-uv run python -m mule examples/factorial.py -o build/factorial --emit-llvm build/factorial.ll
+uv run python -m mule.compiler examples/factorial.py -o build/factorial --emit-llvm build/factorial.ll
 ./build/factorial
 ```
 
@@ -18,7 +18,33 @@ link Mule's Rust runtime, GMP, and platform services required by Rust. They
 have no CPython headers, API dependencies, library links, interpreter initialization,
 or Python installation paths. Program source files are read as UTF-8.
 
-`-o` defaults to the source path without its suffix. `--emit-llvm PATH` optionally
+`uv run mule` runs a program the way the `python` command does:
+`mule script.py args`, `mule -m module args` (a package runs its `__main__`
+submodule), `mule -c command args` and `mule - args`. Options end at the program;
+the remaining arguments become `sys.argv[1:]`, and `sys.argv[0]` is the script as
+given, the module's absolute file path, `-c` or `-`. Only those options and `-h`
+are accepted, and there is no interactive mode. Imports search the script's
+directory (or the working directory for `-m`, `-c` and `-`), `PYTHONPATH`,
+Mule's `stdlib/`, then the host environment's site-packages, in `sys.path` order.
+Third-party packages compile from the same sources CPython would import.
+
+The program is compiled to an executable in `$XDG_CACHE_HOME/mule` (default
+`~/.cache/mule`) that then replaces the `mule` process through `execv`, so the
+program's exit status and standard streams are its own. An entry is keyed by the
+compiler sources, the Clang and Rust versions, and the main program; its manifest
+records the digest of every source file the compilation read and every module
+path it probed and found absent. The entry is reused only while all of them are
+unchanged, so editing an imported module or adding a file that would shadow one
+rebuilds the program. A first run costs a full native build; later runs start the
+cached executable directly.
+
+SBCL `src/code/toplevel.lisp`, `toplevel-init`, also stops option processing
+at `--script` and leaves the remaining arguments in `*posix-argv*` for user code;
+`process-script` then `load`s the script, compiling each toplevel form in process. Mule has no
+in-process loader, so it builds the whole program into an executable first; the
+cache plays the role of reusing `compile-file` output.
+
+`python -m mule.compiler` builds an executable without running it. `-o` defaults to the source path without its suffix. `--emit-llvm PATH` optionally
 saves the generated IR. Output paths must differ from the source and each other.
 An existing executable is replaced only after native compilation and linking
 succeed. A later failure saving optional LLVM output does not undo that executable.

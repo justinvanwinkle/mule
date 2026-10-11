@@ -31,12 +31,13 @@ uv sync
 uv run pytest
 uv run ruff check mule test
 uv run ruff format --check mule test
-uv run python -m mule examples/factorial.py -o build/factorial --emit-llvm build/factorial.ll
+uv run python -m mule.compiler examples/factorial.py -o build/factorial --emit-llvm build/factorial.ll
 ./build/factorial
+uv run mule examples/factorial.py
 ```
 
-The project uses `tool.uv.package = false`: run from the repository rather than
-assuming an installed distribution or console entry point.
+`uv sync` installs the project editable with a `mule` console command that runs
+programs like `python` does; see `spec/native-compiler.md`.
 
 ```python
 from mule.parser import parse
@@ -101,7 +102,10 @@ Parsing returns Mule AST objects; it does not execute the source.
 - `mule/runtime/annotations.rs`: borrowed assertions at checked annotation boundaries.
 - `mule/runtime/native_storage.rs`: raw payload allocation, layout guards, and int64 boxing.
 - `mule/compiler/driver.py`: program assembly (`compile_program`), Clang compilation, and executable linking.
-- `mule/__main__.py`: `python -m mule` command-line interface.
+- `mule/__main__.py`: the `mule` command (`python`-style `mule script.py`, `-m`, `-c`, `-`).
+- `mule/compiler/__main__.py`: `python -m mule.compiler` executable builder.
+- `mule/compiler/cache.py` and `mule/compiler/inputs.py`: cached executables for the
+  `mule` command, validated against every source file read or probed.
 - `test/mule/parser/`: parser and AST tests, fixtures, and AST query helpers.
 - `test/mule/compiler/`: IR1, IR2/code generation, runtime, and native executable tests.
 - `conformance/`: authored Python feature programs compared with CPython as the oracle;
@@ -194,7 +198,7 @@ than decoding it as text.
 Mule compilation can be attempted separately:
 
 ```sh
-uv run python -m mule examples/benchmarks-game/nbody/nbody.py \
+uv run python -m mule.compiler examples/benchmarks-game/nbody/nbody.py \
   -o build/benchmarks-game/nbody-mule --emit-llvm build/benchmarks-game/nbody-mule.ll
 ```
 

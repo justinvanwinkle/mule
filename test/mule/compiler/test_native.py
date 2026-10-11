@@ -161,7 +161,7 @@ def test_cli_builds_executable_and_llvm_ir(tmp_path):
             "run",
             "python",
             "-m",
-            "mule",
+            "mule.compiler",
             str(source),
             "-o",
             str(executable),

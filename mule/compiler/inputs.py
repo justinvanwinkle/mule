@@ -1,0 +1,62 @@
+"""Record the files a compilation depends on, so a cached build can be validated.
+
+Every source read and every module-search probe goes through this module. A
+probe that found nothing is an input too: creating that file later would change
+which module an import resolves to.
+"""
+
+import hashlib
+from contextlib import contextmanager
+from contextvars import ContextVar
+from pathlib import Path
+
+_recording: ContextVar[dict[str, str | None] | None] = ContextVar(
+    "mule_source_inputs", default=None
+)
+
+
+def file_state(path):
+    """The SHA-256 digest of a regular file's bytes, or None when it is absent."""
+    try:
+        data = Path(path).read_bytes()
+    except FileNotFoundError, NotADirectoryError, IsADirectoryError:
+        return None
+    return hashlib.sha256(data).hexdigest()
+
+
+def _record(path, state):
+    inputs = _recording.get()
+    if inputs is not None:
+        inputs.setdefault(str(Path(path).resolve()), state)
+
+
+def read_source(path):
+    """Read a UTF-8 source file, recording its contents as a build input."""
+    data = Path(path).read_bytes()
+    _record(path, hashlib.sha256(data).hexdigest())
+    return data.decode("utf-8")
+
+
+def source_exists(path):
+    """Probe for a source file, recording the result as a build input."""
+    path = Path(path)
+    if not path.is_file():
+        _record(path, None)
+        return False
+    _record(path, file_state(path))
+    return True
+
+
+@contextmanager
+def recording():
+    """Collect inputs as {resolved path: digest or None} for the enclosed work."""
+    inputs = {}
+    token = _recording.set(inputs)
+    try:
+        yield inputs
+    finally:
+        _recording.reset(token)
+
+
+def unchanged(inputs):
+    return all(file_state(path) == state for path, state in inputs.items())

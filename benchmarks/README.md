@@ -94,7 +94,7 @@ printf '12\n8\n80000\n' | ./build/benchmarks/workload-rust
 Manual builds:
 
 ```sh
-uv run python -m mule benchmarks/workload.py -o build/benchmarks/workload-mule
+uv run python -m mule.compiler benchmarks/workload.py -o build/benchmarks/workload-mule
 sbcl --noinform --no-sysinit --no-userinit --script benchmarks/build-lisp.lisp
 rustc --edition=2024 -C opt-level=3 -C target-cpu=native benchmarks/workload.rs -o build/benchmarks/workload-rust
 ```
@@ -114,7 +114,7 @@ a multiply and field update. Lower caller policies retain the loop. Build and
 run it with:
 
 ```sh
-uv run python -m mule examples/class_counter.py -o build/class_counter
+uv run python -m mule.compiler examples/class_counter.py -o build/class_counter
 time build/class_counter
 time uv run python examples/class_counter.py
 ```

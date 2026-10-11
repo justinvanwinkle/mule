@@ -562,7 +562,8 @@ class Lambda(Functional):
         self.signature = Signature()
         self.local_annotations: dict[str, object] = {}
         self.annotation_expressions: dict[str, ast.Expression] = {}
-        self.binding: str | None = None
+        # The constant signature tuple ``_arguments.bind`` binds calls with.
+        self.binding: ast.Tuple | None = None
 
     @property
     def parameters(self) -> tuple[str, ...]:

@@ -164,6 +164,7 @@ class Program:
     protocol_entry: Lambda | None = None
     sequence_functions: dict[str, Lambda] = field(default_factory=dict)
     argument_constructor: Lambda | None = None
+    argument_binder: Lambda | None = None
     layouts: dict[str, object] = field(default_factory=dict)
 
 
@@ -667,6 +668,28 @@ class _ArgumentGuard:
         return self.gen.operation(f"or i1 {boolean}, {none}")
 
 
+def _block_local_last_vop(tn, positions):
+    """The last vop using a temporary that is written once and read only by
+    later vops of the writer's block, or None when it needs a slot."""
+    if len(tn.writes) != 1:
+        return None
+    writer = tn.writes[0].vop
+    if writer not in positions:
+        return None
+    last = writer
+    for ref in tn.reads:
+        reader = ref.vop
+        if (
+            reader not in positions
+            or reader.block is not writer.block
+            or positions[reader] <= positions[writer]
+        ):
+            return None
+        if positions[reader] > positions[last]:
+            last = reader
+    return last
+
+
 class FunctionGenerator:
     """Emit one LLVM function for one IR2 component (one body)."""
 
@@ -693,21 +716,44 @@ class FunctionGenerator:
         self.value_tns = []
         self.local_tns = []
         self.range_tns = []
+        # Temporaries confined to one block are LLVM values rather than
+        # slots: ``values`` holds each one's definition, ``live`` the owned
+        # ones not yet consumed, which a failure edge must release, and
+        # ``expiring`` the vop after which an unconsumed one is released.
+        self.registers: set = set()
+        self.values: dict = {}
+        self.live: dict = {}
+        self.expiring: dict = {}
+        positions = {
+            vop: index
+            for block in component.blocks
+            for index, vop in enumerate(block.vops)
+        }
         for tn in component.tns:
             if tn.primitive_type is not None and tn.sc is RANGE:
                 self.range_tns.append(tn)
                 tn.slot = f"%range.{len(self.range_tns) - 1}"
-            elif isinstance(tn.leaf, LambdaVar) and tn.leaf.expression_temporary:
-                self.value_tns.append(tn)
-                tn.slot = f"%value.{len(self.value_tns) - 1}"
-            elif tn.leaf is not None or tn.name is not None and tn.name.startswith("$"):
+            elif (
+                tn.leaf is None
+                or isinstance(tn.leaf, LambdaVar)
+                and tn.leaf.expression_temporary
+            ) and not (tn.name is not None and tn.name.startswith("$")):
+                last = _block_local_last_vop(tn, positions)
+                if last is not None:
+                    tn.slot = None
+                    self.registers.add(tn)
+                    self.expiring.setdefault(last, []).append(tn)
+                else:
+                    self.value_tns.append(tn)
+                    tn.slot = f"%value.{len(self.value_tns) - 1}"
+            else:
                 self.local_tns.append(tn)
                 tn.slot = f"%local.{len(self.local_tns) - 1}"
                 if tn.leaf is not None:
                     self.local_slots[tn.leaf.name] = tn.slot
-            else:
-                self.value_tns.append(tn)
-                tn.slot = f"%value.{len(self.value_tns) - 1}"
+        self.landings: dict[tuple[str, tuple[str, ...]], str] = {}
+        self.entry_end = 0
+        self.uses_out = False
         self.owner_slots: dict[object, str] = {}
         if self.raw:
             self.owner_slots = {
@@ -737,29 +783,54 @@ class FunctionGenerator:
         self.line(f"{value} = {text}")
         return value
 
-    def guard(self, failed: str) -> None:
-        continuation = self.fresh("ok")[1:]
-        target = (
-            "error"
-            if self.exception_target is None
-            else "unwind." + self.exception_target
+    def failure_target(self, base: str | None = None, failed_value=None) -> str:
+        """The label a failure edge branches to: ``base`` (the handler's unwind
+        block or ``error`` by default) after releasing the owned temporaries
+        live here. ``failed_value`` is the NULL result being checked."""
+        if base is None:
+            base = (
+                "error"
+                if self.exception_target is None
+                else "unwind." + self.exception_target
+            )
+        # Native entries leave value ownership to their boundary adapter.
+        owned = (
+            ()
+            if self.raw
+            else tuple(value for value in self.live.values() if value != failed_value)
         )
+        if not owned:
+            return base
+        key = (base, owned)
+        label = self.landings.get(key)
+        if label is None:
+            label = self.landings[key] = self.fresh("release")[1:]
+        return label
+
+    def emit_landings(self) -> None:
+        for (base, owned), label in self.landings.items():
+            self.lines.append(label + ":")
+            for value in owned:
+                self.release(value)
+            self.line(f"br label %{base}")
+
+    def guard(self, failed: str, failed_value=None) -> str:
+        """Branch to the failure path when ``failed``; returns the label of
+        the continuation block."""
+        continuation = self.fresh("ok")[1:]
+        target = self.failure_target(failed_value=failed_value)
         self.line(f"br i1 {failed}, label %{target}, label %{continuation}")
         self.lines.append(continuation + ":")
+        return continuation
 
-    def check_pointer(self, value: str) -> None:
-        self.guard(self.operation(f"icmp eq ptr {value}, null"))
+    def check_pointer(self, value: str) -> str:
+        return self.guard(self.operation(f"icmp eq ptr {value}, null"), value)
 
-    def check_status(self, value: str) -> None:
-        self.guard(self.operation(f"icmp slt i32 {value}, 0"))
+    def check_status(self, value: str) -> str:
+        return self.guard(self.operation(f"icmp slt i32 {value}, 0"))
 
     def propagate(self) -> None:
-        target = (
-            "error"
-            if self.exception_target is None
-            else "unwind." + self.exception_target
-        )
-        self.line(f"br label %{target}")
+        self.line(f"br label %{self.failure_target()}")
 
     # TN access
 
@@ -769,14 +840,18 @@ class FunctionGenerator:
 
     def load(self, ref) -> str:
         tn = ref.tn
+        if tn in self.registers:
+            return self.values[tn]
         value = self.operation(f"load {tn.sc.llvm_type}, ptr {tn.slot}")
         self.mark_immortal(tn, value)
         return value
 
     def take(self, ref) -> str:
-        """Consume a temporary: load its value and clear the slot so the
-        error path no longer releases it."""
+        """Consume a temporary: the failure paths no longer release it."""
         tn = ref.tn
+        if tn in self.registers:
+            self.live.pop(tn, None)
+            return self.values[tn]
         value = self.load(ref)
         if tn.sc in OBJECT:
             self.line(f"store ptr null, ptr {tn.slot}")
@@ -784,13 +859,35 @@ class FunctionGenerator:
 
     def store(self, ref, value: str) -> None:
         tn = ref.tn
+        if tn in self.registers:
+            self.define(tn, value)
+            return
         if tn.sc in OBJECT:
             self.publish(ref, value)
             return
         self.line(f"store {tn.sc.llvm_type} {value}, ptr {tn.slot}")
 
+    def define(self, tn, value: str) -> None:
+        # A vop may reuse its result as scratch once it consumed the earlier
+        # value; an unconsumed one would need a phi, not a second definition.
+        if tn in self.live:
+            raise ValueError(f"{tn!r} redefined while it still owns a value")
+        self.values[tn] = value
+        self.mark_immortal(tn, value)
+        if tn.sc.owned and value not in self.immortal_values:
+            self.live[tn] = value
+
+    def out_pointer(self) -> str:
+        """An entry-block slot for the pointer a runtime call writes on every
+        return; read it back right after the call."""
+        self.uses_out = True
+        return "%out"
+
     def publish(self, ref, value: str) -> None:
         tn = ref.tn
+        if tn in self.registers:
+            self.define(tn, value)
+            return
         old = self.operation(f"load ptr, ptr {tn.slot}")
         self.line(f"store ptr {value}, ptr {tn.slot}")
         self.mark_immortal(tn, old)
@@ -921,7 +1018,7 @@ class FunctionGenerator:
             self.line(f"br i1 {zero}, label %{failed}, label %{continuation}")
             self.lines.append(failed + ":")
             self.line("call i32 @mule_native_zero_division()")
-            self.line("br label %error")
+            self.line(f"br label %{self.failure_target('error')}")
             self.lines.append(continuation + ":")
         return self.operation(f"{opcode} double {left}, {right}")
 
@@ -945,7 +1042,7 @@ class FunctionGenerator:
                 self.line(f"br i1 {overflow}, label %{failed}, label %{continuation}")
                 self.lines.append(failed + ":")
                 self.line("call i32 @mule_native_overflow()")
-                self.line("br label %error")
+                self.line(f"br label %{self.failure_target('error')}")
                 self.lines.append(continuation + ":")
                 return value
             return self.operation(f"{opcode} nsw i64 {left}, {right}")
@@ -1287,6 +1384,7 @@ class FunctionGenerator:
             self.line(f"{tn.slot} = alloca [3 x i64]")
             self.line(f"store [3 x i64] zeroinitializer, ptr {tn.slot}")
         self.line(f"%argv = alloca [{max(1, self.max_args)} x ptr]")
+        self.entry_end = len(self.lines)
         self.line(f"br label %{self.component.blocks[0].label}")
         self.emit_blocks()
         for target in dict.fromkeys(
@@ -1305,6 +1403,7 @@ class FunctionGenerator:
                 if tn.sc.owned:
                     self.release(value)
             self.line(f"br label %{label}")
+        self.emit_landings()
         self.lines.append("error:")
         self.line("br label %cleanup")
         self.lines.append("cleanup:")
@@ -1325,6 +1424,17 @@ class FunctionGenerator:
             )
             for vop in block.vops:
                 vop.info.generator(self, vop)
+                for tn in self.expiring.get(vop, ()):
+                    value = self.live.pop(tn, None)
+                    if value is None:
+                        continue
+                    if vop.info.name in vops.TERMINATORS:
+                        raise ValueError(f"{vop!r} ends its block owning {tn!r}")
+                    self.release(value)
+            if self.live:
+                raise ValueError(f"{block!r} ends owning {list(self.live)!r}")
+        if self.uses_out:
+            self.lines.insert(self.entry_end, "  %out = alloca ptr")
 
     def emit_raw(self) -> str:
         """Native entry: borrowed raw slots and scalars, ownership only at edges."""
@@ -1353,8 +1463,10 @@ class FunctionGenerator:
             self.line(f"{slot} = alloca ptr")
             self.line(f"store ptr null, ptr {slot}")
         self.line(f"%argv = alloca [{max(1, self.max_args)} x ptr]")
+        self.entry_end = len(self.lines)
         self.line(f"br label %{self.component.blocks[0].label}")
         self.emit_blocks()
+        self.emit_landings()
         self.lines.append("error:")
         self.line("store i1 true, ptr %error.flag")
         self.line("br label %cleanup")
@@ -1422,13 +1534,25 @@ class FunctionGenerator:
             lines.append("  br label %invoke")
         else:
             lines.append("  br label %binding")
+        binder = module.bodies[module.program.argument_binder]
         lines += [
             "binding:",
             "  %private = call ptr @mule_protocol_globals()",
             "  %owned.view = call ptr @mule.fast.retain(ptr %args)",
-            "  %owned.namespace = call ptr @mule.fast.retain(ptr %globals)",
-            f"  %bound.result = call ptr {module.bodies_by_name[lambda_.binding]}(ptr %private, ptr %owned.view, ptr %owned.namespace)",
-            "  ret ptr %bound.result",
+            f"  %signature = call ptr {module.constant_tuple(lambda_.binding)}()",
+            f"  %bound = call ptr {binder}(ptr %private, ptr %owned.view, ptr %signature)",
+            "  %unbound = icmp eq ptr %bound, null",
+            "  br i1 %unbound, label %failed, label %bound.ok",
+            "bound.ok:",
+        ]
+        for index in range(count):
+            lines += [
+                f"  %bound.{index} = call ptr @mule_arg(ptr %bound, i32 {index})",
+                f"  store ptr %bound.{index}, ptr %slot.{index}",
+            ]
+        lines += [
+            "  call void @mule.fast.release(ptr %bound)",
+            "  br label %invoke",
             "invoke:",
         ]
         for index in range(count):

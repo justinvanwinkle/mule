@@ -1,8 +1,11 @@
 """Statically link Python modules, preserving separate runtime namespaces."""
 
+import os
+import sysconfig
 from dataclasses import dataclass
 from pathlib import Path
 
+from .inputs import read_source, source_exists
 from .main import compile_source
 
 STDLIB = Path(__file__).resolve().parents[2] / "stdlib"
@@ -17,9 +20,50 @@ class CompiledModule:
     native: bool = False
 
 
+def search_path(first):
+    """Module roots in the order Python's sys.path gives them: the script's
+    directory (or the working directory), PYTHONPATH, the standard library, then
+    the host environment's site-packages. Mule's stdlib replaces CPython's, and
+    third-party packages are compiled from the same source CPython would import."""
+    extra = [
+        Path(entry)
+        for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+        if entry
+    ]
+    site = dict.fromkeys(
+        Path(sysconfig.get_path(name)) for name in ("purelib", "platlib")
+    )
+    return (Path(first).resolve(), *extra, STDLIB / "bootstrap", STDLIB, *site)
+
+
+def find_module(name, roots):
+    """The source file for a module or package named on the command line, and
+    the package a `-m` main module belongs to. A package runs its `__main__`."""
+    relative = Path(*name.split("."))
+    for root in roots:
+        package = root / relative / "__init__.py"
+        if source_exists(package):
+            main = root / relative / "__main__.py"
+            if not source_exists(main):
+                raise ImportError(
+                    f"No module named {name}.__main__; '{name}' is a package and cannot be directly executed"
+                )
+            return main, name
+        module = root / relative.with_suffix(".py")
+        if source_exists(module):
+            return module, name.rpartition(".")[0]
+    raise ImportError(f"No module named {name}")
+
+
 class ModuleCompiler:
-    def __init__(self, filename, *, prefix="", primitives=None):
-        self.roots = (Path(filename).resolve().parent, STDLIB / "bootstrap", STDLIB)
+    def __init__(
+        self, filename, *, prefix="", primitives=None, roots=None, package=None
+    ):
+        if roots is None:
+            roots = (Path(filename).resolve().parent, STDLIB / "bootstrap", STDLIB)
+        self.roots = tuple(roots)
+        # The package of a main module run with `-m`, for its relative imports.
+        self.main_package = package
         self.prefix = prefix
         # Modules imported by a compiled protocol share its physical primitives.
         self.primitives = primitives
@@ -34,7 +78,7 @@ class ModuleCompiler:
         # The system module and its private decoder precede source-local modules.
         if name in ("sys", "_mule_codecs"):
             path = STDLIB / f"{name}.py"
-            return path if path.is_file() else None
+            return path if source_exists(path) else None
         relative = Path(*name.split("."))
         parent, _, child = name.rpartition(".")
         if parent in self.modules:
@@ -53,24 +97,30 @@ class ModuleCompiler:
                     root / relative / "__init__.py",
                     root / relative.with_suffix(".py"),
                 )
-                if candidate.is_file()
+                if source_exists(candidate)
             ),
             None,
         )
 
+    def package_of(self, namespace):
+        """The package relative imports in a module resolve against, or None."""
+        if namespace == "__main__":
+            return self.main_package or None
+        descriptor = self.modules.get(namespace)
+        if descriptor is None or descriptor.path is None:
+            return None
+        if descriptor.path.name == "__init__.py":
+            return descriptor.name
+        return descriptor.name.rpartition(".")[0]
+
     def import_name(self, lowerer, node):
         if not node.level:
             return node.module
-        descriptor = self.modules.get(lowerer.namespace)
-        if descriptor is None or descriptor.path is None:
+        package = self.package_of(lowerer.namespace)
+        if package is None:
             return lowerer.error(
                 "relative import has no known parent package", node, unsupported=True
             )
-        package = (
-            descriptor.name
-            if descriptor.path.name == "__init__.py"
-            else descriptor.name.rpartition(".")[0]
-        )
         parts = package.split(".") if package else []
         if node.level > len(parts):
             lowerer.error(
@@ -96,7 +146,7 @@ class ModuleCompiler:
         # Reserve identity before conversion so circular imports share one cache.
         self.modules[name] = descriptor
         compilation = compile_source(
-            path.read_text(encoding="utf-8"),
+            read_source(path),
             str(path),
             imports=self,
             prefix=prefix,
@@ -113,8 +163,8 @@ class ModuleCompiler:
         return compile_source(source, filename, imports=self)
 
 
-def compile_modules(source, filename="<unknown>"):
+def compile_modules(source, filename="<unknown>", *, roots=None, package=None):
     """Compile a program's modules. Returns the main compilation and the
     module compiler holding the imported modules."""
-    compiler = ModuleCompiler(filename)
+    compiler = ModuleCompiler(filename, roots=roots, package=package)
     return compiler.compile(source, filename), compiler

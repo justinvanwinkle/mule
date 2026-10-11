@@ -519,25 +519,23 @@ def resolve_method(gen, vop):
     receiver = gen.take(vop.args[0])
     method, bound = vop.results
     info = vop.codegen_info
-    # Loop iterations reuse the receiver slot; the previous call normally
-    # cleared it.
-    old = gen.load(bound)
-    gen.line(f"store ptr null, ptr {bound.tn.slot}")
-    gen.release(old)
-    gen.pointer_result(
-        method,
+    out = gen.out_pointer()
+    value = gen.operation(
         f"call ptr @mule_resolve_method(ptr {receiver}, ptr {gen.module.text(info.name)}, "
-        f"ptr {gen.module.attribute_cache()}, ptr {bound.tn.slot})",
-        (receiver,),
+        f"ptr {gen.module.attribute_cache()}, ptr {out})"
     )
+    gen.publish(method, value)
+    gen.publish(bound, gen.operation(f"load ptr, ptr {out}"))
+    gen.release(receiver)
+    gen.check_pointer(value)
+    gen.refine(method.tn, value)
 
 
 @define_vop("call-resolved", translate=fndb.CALL_RESOLVED, results=(OBJECT,))
 def call_resolved(gen, vop):
     method, bound, *arguments = vop.args
     function = gen.take(method)
-    receiver = gen.load(bound)
-    gen.line(f"store ptr null, ptr {bound.tn.slot}")
+    receiver = gen.take(bound)
     values = [gen.take(argument) for argument in arguments]
     gen.argv(values)
     value = gen.call_method(vop.codegen_info, function, receiver, values)
@@ -749,15 +747,17 @@ def structural_unpack(gen, vop):
     done = gen.fresh("unpack.done")[1:]
     gen.line(f"br i1 {valid}, label %{fast}, label %{slow}")
     gen.lines.append(fast + ":")
-    gen.publish(vop.results[0], value)
     gen.release(count)
     gen.line(f"br label %{done}")
     gen.lines.append(slow + ":")
     result = gen.sequence_call("unpack", [value, count])
-    gen.publish(vop.results[0], result)
-    gen.check_pointer(result)
+    unpacked = gen.check_pointer(result)
     gen.line(f"br label %{done}")
     gen.lines.append(done + ":")
+    gen.publish(
+        vop.results[0],
+        gen.operation(f"phi ptr [{value}, %{fast}], [{result}, %{unpacked}]"),
+    )
 
 
 for _name, _info in fndb.PROTOCOLS.items():
@@ -895,22 +895,6 @@ def numeric_modulo(gen, vop, values):
     return gen.operation(
         f"call ptr @mule.fast.binary.5(ptr {values[0]}, ptr {values[1]}, i32 0, ptr null)"
     )
-
-
-def binding_body(gen, vop, values):
-    """The external entry's final local call shares the caller's logical frame."""
-    target = vop.codegen_info
-    globals_value, view, *parameters = values
-    owned = [
-        gen.operation(f"call ptr @mule.fast.retain(ptr {value})")
-        for value in parameters
-    ]
-    operands = [f"ptr {globals_value}"]
-    if gen.module.closure_of(target):
-        closure = gen.operation(f"call ptr @mule_closure(ptr {view})")
-        operands.append(f"ptr {closure}")
-    operands.extend(f"ptr {value}" for value in owned)
-    return gen.operation(f"call ptr {gen.module.bodies[target]}({', '.join(operands)})")
 
 
 def allocate(gen, vop, values):
@@ -1639,7 +1623,6 @@ __all__ = [
     "UNBIND_LOCAL",
     "LiteralEmitter",
     "allocate",
-    "binding_body",
     "compiled_call",
     "decimal",
     "helpers",

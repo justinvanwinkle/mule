@@ -9,6 +9,7 @@ functions. Only primitive operations have backend templates.
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .inputs import read_source
 from .node import CallKind, Combination
 from .protocols import add_lambdas, compile_protocol
 
@@ -75,7 +76,7 @@ def prepare(program):
     if not layouts:
         return layouts
     path = Path(__file__).parents[2] / "stdlib/_native_class.py"
-    template = path.read_text()
+    template = read_source(path)
     for layout in layouts.values():
         parameters = ", ".join(
             f"p{i}" for i in range(len(layout.methods["__init__"].vars) - 1)

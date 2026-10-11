@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from .inputs import read_source
 from .modules import ModuleCompiler
 from .node import CallKind, Combination
 from .protocols import PRIMITIVES, add_lambdas, compile_protocol
@@ -28,7 +29,7 @@ def prepare(program):
     path = Path(__file__).resolve().parents[2] / "stdlib/_sequences.py"
     imports = ModuleCompiler(str(path), prefix="mule_sequences_", primitives=PRIMITIVES)
     compilation = compile_protocol(
-        path.read_text(),
+        read_source(path),
         str(path),
         imports=imports,
         prefix="mule_sequences_",

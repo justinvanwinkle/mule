@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from .inputs import read_source
 from .protocols import add_lambdas, compile_protocol
 
 ROLES = (
@@ -19,7 +20,7 @@ def prepare(program):
     templates can call them directly (``mule_format_<role>``)."""
     path = Path(__file__).resolve().parents[2] / "stdlib/_format.py"
     compilation = compile_protocol(
-        path.read_text(), str(path), prefix="mule_format_", namespace="$mule.format"
+        read_source(path), str(path), prefix="mule_format_", namespace="$mule.format"
     )
     functions = compilation.lambdas[1:]
     for function, role in zip(functions, ROLES, strict=True):
