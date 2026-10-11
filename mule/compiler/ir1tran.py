@@ -143,6 +143,7 @@ class ClassScope:
     policy: OptimizationPolicy
     # The identity when the class has a typed native layout, else None.
     native_id: str | None
+    qualname: str
     # The ``__class__`` cell, created when a method needs it.
     cell: LambdaVar | None = None
 
@@ -338,6 +339,11 @@ class FunctionConverter:
         self.defining_class = defining_class
         # Class bodies being converted inline here, innermost last.
         self.class_scopes: list[ClassScope] = []
+        self.qualname = (
+            parent.qualified(origin.name)
+            if parent is not None and isinstance(origin, ast.FunctionDefinition)
+            else None
+        )
         self.nonlocals: set[str] = set()
         self.depth = 0
         self.annotations = {}
@@ -431,6 +437,14 @@ class FunctionConverter:
                 return scope.defining_class.class_cell()
             scope = scope.parent
         return None
+
+    def qualified(self, name) -> str:
+        """The ``__qualname__`` of a definition named ``name`` made here."""
+        if self.class_scopes:
+            return self.class_scopes[-1].qualname + "." + name
+        if self.is_module:
+            return name
+        return self.qualname + ".<locals>." + name
 
     def class_binding(self, name) -> ClassScope | None:
         """The class body whose namespace holds ``name``, if it is bound there."""
@@ -1042,6 +1056,10 @@ class _Expressions(ast.Visitor):
     visit_TextLiteral = literal
     visit_BytesLiteral = literal
 
+    def visit_EllipsisLiteral(self, node):
+        start, next_, result = self.frame
+        self.function.protocol(start, next_, result, "ellipsis_value", (), node)
+
     def visit_Name(self, node):
         function = self.function
         if node.identifier in function.converter.compiler_bindings:
@@ -1283,12 +1301,9 @@ class _Statements(ast.Visitor):
         if node.level == 0 and node.module in ("mule", "__future__"):
             function._import_directive(node)
             return
-        if any(item.name == "*" for item in node.items):
-            function.error(
-                "wildcard runtime imports are not supported yet",
-                node,
-                unsupported=True,
-            )
+        wildcard = any(item.name == "*" for item in node.items)
+        if wildcard and (not function.is_module or function.class_scopes):
+            function.error("import * only allowed at module level", node)
         if function.converter.imports is None:
             function.error(
                 "runtime module imports are not supported by standalone lowering",
@@ -1297,6 +1312,10 @@ class _Statements(ast.Visitor):
             )
         imports = function.converter.imports
         module_name = imports.import_name(function.converter, node)
+        if wildcard:
+            current, module = function.import_module(start, module_name, node)
+            function.known(current, next_, None, fndb.IMPORT_STAR, (module,), node)
+            return
         namespace = function.temporary()
         current, module = function.import_module(start, module_name, node)
         ctran = Ctran()
@@ -1951,11 +1970,12 @@ class _Statements(ast.Visitor):
             bindings.globals,
             policy,
             identity if native is not None else None,
+            function.qualified(node.name),
         )
         # The body sees __module__ and __qualname__ first, and __doc__.
         initial = (
             ("__module__", ast.Name("__name__", span=node.span)),
-            ("__qualname__", ast.TextLiteral(node.name, span=node.span)),
+            ("__qualname__", ast.TextLiteral(scope.qualname, span=node.span)),
             ("__doc__", docstring or ast.NoneLiteral(None, span=node.span)),
         )
         for name, expression in initial:
@@ -2495,7 +2515,9 @@ class _AnnotationReference(ast.Visitor):
         binding = self.converter.active_compiler_bindings.get(name)
         if binding is not None:
             return binding
-        if name in self.converter.module_annotation_shadows or (
+        shadows = self.converter.module_annotation_shadows
+        # A wildcard import can rebind any builtin name at runtime.
+        if name in shadows or "*" in shadows or (
             self.scope is not None and self.scope.local(name)
         ):
             return _OPAQUE_BINDING

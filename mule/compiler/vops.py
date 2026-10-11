@@ -657,6 +657,14 @@ def import_(gen, vop):
     gen.pointer_result(vop.results[0], f"call ptr @mule.import.{index}()")
 
 
+@define_vop("import-star", translate=fndb.IMPORT_STAR, args=(OBJECT,))
+def import_star(gen, vop):
+    module = gen.take(vop.args[0])
+    status = gen.operation(f"call i32 @mule_import_star(ptr {module}, ptr %globals)")
+    gen.release(module)
+    gen.check_status(status)
+
+
 @define_vop(
     "has-binding", translate=fndb.HAS_BINDING, args=(OBJECT,), results=(OBJECT,)
 )

@@ -353,19 +353,9 @@ def test_native_class_invalid_protocol_results(
 @pytest.mark.parametrize(
     "source",
     [
-        "class C:\n value = 1\n",
-        "class C:\n b'not a docstring'\n",
-        "class C:\n f'not a docstring'\n",
-        "class C:\n 'computed' + 'text'\n",
-        "class C:\n pass\n 'not a leading docstring'\n",
-        "class C:\n 'docstring'\n 'another expression'\n",
-        "class C:\n __slots__ = ('value',)\n",
         "class A:\n pass\nclass B:\n pass\nclass C(A, B):\n pass\n",
         "class C(metaclass=type):\n pass\n",
-        "@decorator\nclass C:\n pass\n",
         "class C[T]:\n pass\n",
-        "class C:\n @staticmethod\n def method():\n  pass\n",
-        "def function():\n class C:\n  pass\n",
     ],
 )
 def test_unimplemented_class_features_are_explicitly_rejected(source):

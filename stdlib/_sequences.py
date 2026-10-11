@@ -585,6 +585,23 @@ _install_builtin("UnicodeEncodeError", UnicodeEncodeError)
 _install_builtin("UnicodeDecodeError", UnicodeDecodeError)
 
 
+class ellipsis:
+    """The type of the ``...`` singleton."""
+
+    def __repr__(self):
+        return "Ellipsis"
+
+
+Ellipsis = ellipsis()
+
+
+def ellipsis_value():
+    return Ellipsis
+
+
+_install_builtin("Ellipsis", Ellipsis)
+
+
 def context_exit(exit_method, value):
     """Report a pending exception to a context manager's ``__exit__``.
 

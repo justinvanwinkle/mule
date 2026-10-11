@@ -47,6 +47,8 @@ CLASS_LOAD = defknown("%class_load", "call")
 CLASS_STORE = defknown("%class_store", "unsafe", result=False)
 CLASS_DELETE = defknown("%class_delete", "unsafe", result=False)
 IMPORT = defknown("%import", "call", "unsafe")
+# ``from module import *``: bind the module's public names in the globals.
+IMPORT_STAR = defknown("%import_star", "unsafe", result=False)
 HAS_BINDING = defknown("%has_binding")
 
 # Displays and formatting.
@@ -78,6 +80,7 @@ PROTOCOLS = {
         "cell_clear",
         "exception_instance",
         "set_exception_cause",
+        "ellipsis_value",
     )
 }
 
@@ -107,6 +110,7 @@ __all__ = [
     "GETATTR",
     "HAS_BINDING",
     "IMPORT",
+    "IMPORT_STAR",
     "INPLACE_BINARY",
     "LEAVE_HANDLER",
     "MAKE_CLASS",

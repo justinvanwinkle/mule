@@ -500,3 +500,80 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
         status
     }
 }
+
+/// `from module import *`: bind the names in the module's `__all__`, or else
+/// its names without a leading underscore, in the importing module's globals.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_import_star(module: Value, globals: Value) -> i32 {
+    unsafe {
+        if object::has_error() {
+            return -1;
+        }
+        if module.is_null() || object::is_fixnum(module) {
+            object::error("SystemError", "module namespace storage is required");
+            return -1;
+        }
+        let Data::Namespace(bindings) = &(*module).data else {
+            object::error("SystemError", "module namespace storage is required");
+            return -1;
+        };
+        let public = object::lookup(module, "__all__");
+        let selected: Vec<(String, Value)> = if public.is_null() {
+            bindings
+                .iter()
+                .filter(|(name, _)| !name.starts_with('_'))
+                .map(|(name, value)| (name.clone(), *value))
+                .collect()
+        } else {
+            let names = if object::is_fixnum(public) {
+                None
+            } else {
+                match &(*public).data {
+                    Data::List(values) | Data::Args(values) => Some(values),
+                    _ => None,
+                }
+            };
+            let Some(names) = names else {
+                object::error("TypeError", "__all__ must be a list or tuple of strings");
+                return -1;
+            };
+            let mut selected = Vec::with_capacity(names.len());
+            for name in names {
+                let text = if object::is_fixnum(*name) {
+                    None
+                } else if let Data::Text(text) = &(**name).data {
+                    text.to_rust_string()
+                } else {
+                    None
+                };
+                let Some(text) = text else {
+                    object::error("TypeError", "__all__ must be a list or tuple of strings");
+                    return -1;
+                };
+                let value = object::lookup(module, &text);
+                if value.is_null() {
+                    object::error(
+                        "AttributeError",
+                        &format!("module has no attribute '{text}'"),
+                    );
+                    return -1;
+                }
+                selected.push((text, value));
+            }
+            selected
+        };
+        // Retain the values before binding: rebinding a name in the importing
+        // module could release the last other reference to a selected value.
+        for (_, value) in &selected {
+            object::retain(*value);
+        }
+        let mut status = 0;
+        for (name, value) in &selected {
+            if status == 0 && !object::bind(globals, name, *value) {
+                status = -1;
+            }
+            object::release(*value);
+        }
+        status
+    }
+}
