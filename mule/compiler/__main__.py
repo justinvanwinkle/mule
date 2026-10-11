@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from mule.compiler import ToolchainError, build
+from mule.diagnostics import configure
 
 
 def main() -> int:
@@ -17,7 +18,9 @@ def main() -> int:
     parser.add_argument("--emit-llvm", type=Path, metavar="PATH")
     parser.add_argument("--clang", default="clang")
     parser.add_argument("--rustc", default="rustc")
+    parser.add_argument("-v", "--verbose", action="count", default=0)
     args = parser.parse_args()
+    configure(args.verbose)
     output = args.output or args.source.with_suffix("")
     try:
         build(

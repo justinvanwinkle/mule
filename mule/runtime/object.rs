@@ -76,7 +76,6 @@ pub enum Data {
         receiver: Value,
         method: Value,
     },
-    StaticMethod(Value),
 }
 thread_local! {
     static ERROR: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
@@ -172,7 +171,7 @@ pub unsafe fn release(value: Value) {
             Data::Type { attributes, .. } => release(*attributes),
             Data::Class(layout) => {
                 release(layout.base);
-                for (_, method) in &layout.methods {
+                for (_, method) in &layout.attributes {
                     release(*method);
                 }
             }
@@ -187,7 +186,6 @@ pub unsafe fn release(value: Value) {
                 release(*receiver);
                 release(*method);
             }
-            Data::StaticMethod(method) => release(*method),
             Data::Function {
                 defaults, closure, ..
             } => {
@@ -381,7 +379,6 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
             Data::BoundMethod { receiver, method } => {
                 return call_with_receiver(*method, *receiver, args);
             }
-            Data::StaticMethod(method) => return call(*method, args),
             Data::Instance { .. } | Data::NativeInstance { .. } => {
                 let result = special(callable, "__call__", args);
                 if result.is_null() && !has_error() {
@@ -500,10 +497,7 @@ pub unsafe fn special(value: Value, name: &str, args: &[Value]) -> Value {
         let result = if is_fixnum(method) {
             call(method, args)
         } else {
-            match &(*method).data {
-                Data::StaticMethod(method) => call(*method, args),
-                _ => call_with_receiver(method, value, args),
-            }
+            call_with_receiver(method, value, args)
         };
         release(method);
         result
@@ -1042,7 +1036,6 @@ pub unsafe fn formatted_value(
             Data::ForeignCString { .. } => b"<foreign C string pointer>".to_vec(),
             Data::Class(layout) => format!("<class '{}'>", layout.name).into_bytes(),
             Data::BoundMethod { .. } => b"<bound native method>".to_vec(),
-            Data::StaticMethod(_) => b"<staticmethod>".to_vec(),
             Data::Type { name, .. } => format!("<class '{name}'>").into_bytes(),
             Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => match &(**ty).data {
                 Data::Type { name, .. } => format!("<{name} object>").into_bytes(),
@@ -1284,7 +1277,14 @@ pub unsafe extern "C" fn mule_lookup_special(value: Value, name: *const c_char) 
         }
         let method = match &(*value).data {
             Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => match &(**ty).data {
-                Data::Class(_) => crate::classes::special_binding(value, name),
+                Data::Class(_) => {
+                    let bound = crate::classes::special_bound(value, name);
+                    return if bound.is_null() && !has_error() {
+                        none_value()
+                    } else {
+                        bound
+                    };
+                }
                 Data::Type { attributes, .. } => lookup(*attributes, name),
                 _ => unreachable!(),
             },
@@ -1292,11 +1292,6 @@ pub unsafe extern "C" fn mule_lookup_special(value: Value, name: *const c_char) 
         };
         if method.is_null() {
             return none_value();
-        }
-        if !is_fixnum(method) {
-            if let Data::StaticMethod(method) = &(*method).data {
-                return retain(*method);
-            }
         }
         new_value(Data::BoundMethod {
             receiver: retain(value),
@@ -1410,7 +1405,6 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
                 Data::Namespace(_) => "dict",
                 Data::Function { .. } => "function",
                 Data::BoundMethod { .. } => "method",
-                Data::StaticMethod(_) => "staticmethod",
                 Data::Class(_) | Data::Type { .. } => "type",
                 Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => {
                     match &(**ty).data {

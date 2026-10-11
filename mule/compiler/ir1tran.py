@@ -100,14 +100,56 @@ class FunctionInfo:
 @dataclass(frozen=True, slots=True)
 class ClassInfo:
     public_name: str
-    has_base: bool
+    base_count: int
     fields: tuple[str, ...]
-    method_names: tuple[str, ...]
     field_annotations: tuple
     policy: OptimizationPolicy
     location: tuple | None
+    # The definition's identity, shared with the stores into its namespace.
+    identity: str
+    # The identity again when the class has a typed native layout, else None.
     class_id: str | None
     annotation_expressions: tuple
+
+
+@dataclass(frozen=True, slots=True)
+class ClassBindingInfo:
+    """A name in a class body's namespace (``%class_load``/``%class_store``)."""
+
+    name: str
+    identity: str
+    location: tuple | None
+    # A handler-exit unbinding tolerates a body that already deleted the name.
+    missing_ok: bool = False
+
+
+@dataclass(slots=True, eq=False)
+class ClassScope:
+    """A class body being converted inline in its enclosing function.
+
+    Python executes the body with its own namespace: names it binds are read
+    from that namespace first and then from the module globals and builtins,
+    never from enclosing function scopes; other names resolve as they would
+    in the enclosing function. Functions defined in the body skip the class
+    scope entirely, and see the class itself only through ``__class__``.
+    """
+
+    owner: FunctionConverter
+    namespace: LambdaVar
+    identity: str
+    bound: set[str]
+    globals: set[str]
+    # Inherited by the methods; ``optimize`` on the class sets it.
+    policy: OptimizationPolicy
+    # The identity when the class has a typed native layout, else None.
+    native_id: str | None
+    # The ``__class__`` cell, created when a method needs it.
+    cell: LambdaVar | None = None
+
+    def class_cell(self) -> LambdaVar:
+        if self.cell is None:
+            self.cell = self.owner.temporary()
+        return self.cell
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,10 +272,20 @@ class Converter:
         )
 
     def policy(self, decorators, inherited):
+        """Apply the definition's ``mule.optimize`` directives. They are
+        compile-time declarations, not runtime decorators."""
         policy = inherited
         for decorator in decorators:
-            policy = decorator.accept(_PolicyDecorator(self, policy))
+            if decorator.accept(_PolicyDirective(self)):
+                policy = decorator.accept(_PolicyDecorator(self, policy))
         return policy
+
+    def runtime_decorators(self, decorators):
+        return [
+            decorator
+            for decorator in decorators
+            if not decorator.accept(_PolicyDirective(self))
+        ]
 
     def reserved(self, name, node):
         if name in self.compiler_bindings:
@@ -245,12 +297,19 @@ class Converter:
     def known(self, info) -> KnownFunction:
         return self.ir1_namespace.known_function(info)
 
-    def function(self, definition, policy, *, owner_class=None, parent=None) -> Lambda:
+    def function(
+        self, definition, policy, *, owner_class=None, parent=None, defining_class=None
+    ) -> Lambda:
         # ir1tran_lambda imports FunctionConverter from this module.
         from .ir1tran_lambda import convert_function
 
         return convert_function(
-            self, definition, policy, owner_class=owner_class, parent=parent
+            self,
+            definition,
+            policy,
+            owner_class=owner_class,
+            parent=parent,
+            defining_class=defining_class,
         )
 
 
@@ -266,6 +325,7 @@ class FunctionConverter:
         is_module: bool,
         origin=None,
         parent=None,
+        defining_class: ClassScope | None = None,
     ):
         self.converter = converter
         self.lambda_ = lambda_
@@ -274,6 +334,10 @@ class FunctionConverter:
         # The enclosing function's converter, through which free variables
         # resolve to their home lambda's variables (Python's nested scopes).
         self.parent = parent
+        # The class whose body defines this function, for ``__class__``.
+        self.defining_class = defining_class
+        # Class bodies being converted inline here, innermost last.
+        self.class_scopes: list[ClassScope] = []
         self.nonlocals: set[str] = set()
         self.depth = 0
         self.annotations = {}
@@ -327,6 +391,8 @@ class FunctionConverter:
         return var
 
     def variable(self, name: str):
+        if self.class_scopes and name in self.class_scopes[-1].globals:
+            return self.converter.global_var(name)
         var = self.locals.get(name)
         if var is not None:
             return var
@@ -334,6 +400,10 @@ class FunctionConverter:
             free = self.enclosing_local(name)
             if free is not None:
                 return free
+            if name == "__class__":
+                cell = self.class_cell()
+                if cell is not None:
+                    return cell
         primitive = self.converter.primitives.get(name)
         if primitive is not None:
             return self.converter.known(primitive)
@@ -350,6 +420,22 @@ class FunctionConverter:
             if var is not None:
                 return var
             scope = scope.parent
+        return None
+
+    def class_cell(self) -> LambdaVar | None:
+        """The ``__class__`` cell of the nearest class body enclosing this
+        function, as Python provides it to methods and their nested functions."""
+        scope = self
+        while scope is not None and not scope.is_module:
+            if scope.defining_class is not None:
+                return scope.defining_class.class_cell()
+            scope = scope.parent
+        return None
+
+    def class_binding(self, name) -> ClassScope | None:
+        """The class body whose namespace holds ``name``, if it is bound there."""
+        if self.class_scopes and name in self.class_scopes[-1].bound:
+            return self.class_scopes[-1]
         return None
 
     def annotation_for(self, name):
@@ -375,8 +461,33 @@ class FunctionConverter:
     def constant(self, start, next_, result, literal) -> Ref:
         return self.ref(start, next_, result, Constant(literal), literal)
 
-    def load(self, start, next_, result, name, source, *, final=False) -> Ref:
+    def load(self, start, next_, result, name, source, *, final=False):
+        scope = self.class_binding(name)
+        if scope is not None:
+            return self.class_namespace_operation(
+                start, next_, result, fndb.CLASS_LOAD, scope, name, (), source
+            )
         return self.ref(start, next_, result, self.variable(name), source, final=final)
+
+    def class_namespace_operation(
+        self, start, next_, result, info, scope, name, operands, source, **options
+    ):
+        ctran, namespace = Ctran(), Lvar()
+        self.ref(start, ctran, namespace, scope.namespace, source)
+        return self.known(
+            ctran,
+            next_,
+            result,
+            info,
+            (namespace, *operands),
+            source,
+            ClassBindingInfo(
+                name,
+                scope.identity,
+                self.converter.location(source) if source is not None else None,
+                **options,
+            ),
+        )
 
     def set_var(self, start, next_, var, value: Lvar | None, source) -> Set:
         node = Set(self.lexenv, source, var, value)
@@ -551,9 +662,13 @@ class FunctionConverter:
                 continue
             if cleanup.binding is not None:
                 following = Ctran()
-                self.set_var(
-                    start, following, self.variable(cleanup.binding), None, source
-                )
+                saved, self.class_scopes = self.class_scopes, list(cleanup.class_scopes)
+                try:
+                    self.unbind(
+                        start, following, cleanup.binding, source, missing_ok=True
+                    )
+                finally:
+                    self.class_scopes = saved
                 start = following
             following = Ctran()
             self.known(start, following, None, fndb.LEAVE_HANDLER, (), source)
@@ -600,6 +715,12 @@ class FunctionConverter:
     def store(self, start, next_, name: str, value: Lvar, node=None) -> None:
         if node is not None:
             self.converter.reserved(name, node)
+        scope = self.class_binding(name)
+        if scope is not None:
+            self.class_namespace_operation(
+                start, next_, None, fndb.CLASS_STORE, scope, name, (value,), node
+            )
+            return
         annotation = self.annotation_for(name)
         if annotation is not None:
             contract, declaration = annotation
@@ -607,6 +728,25 @@ class FunctionConverter:
             self.cast(start, ctran, checked, value, contract, node or declaration)
             start, value = ctran, checked
         self.set_var(start, next_, self.variable(name), value, node)
+
+    def unbind(self, start, next_, name, source, *, missing_ok=False):
+        """Remove a binding whose presence a preceding read established, or,
+        with ``missing_ok``, a handler binding the body may have deleted."""
+        scope = self.class_binding(name)
+        if scope is not None:
+            self.class_namespace_operation(
+                start,
+                next_,
+                None,
+                fndb.CLASS_DELETE,
+                scope,
+                name,
+                (),
+                source,
+                missing_ok=missing_ok,
+            )
+            return
+        self.set_var(start, next_, self.variable(name), None, source)
 
     def discard(self, start, next_, name, source):
         """Reference a temporary for the last time without using its value."""
@@ -832,6 +972,8 @@ class _CleanupScope:
     def __enter__(self):
         self.saved = self.function.lexenv
         self.function.lexenv = self.saved.derive(cleanup=self.cleanup)
+        if self.cleanup is not None:
+            self.cleanup.class_scopes = tuple(self.function.class_scopes)
         return self.cleanup
 
     def __exit__(self, *exc):
@@ -863,10 +1005,13 @@ class _CleanupBlockScope:
         self.function.lexenv = self.saved.derive(
             cleanup=self.cleanup.parent, loops=self.cleanup.loops
         )
+        self.saved_class_scopes = self.function.class_scopes
+        self.function.class_scopes = list(self.cleanup.class_scopes)
         return self.block.start
 
     def __exit__(self, *exc):
         self.function.lexenv = self.saved
+        self.function.class_scopes = self.saved_class_scopes
 
 
 class _Expressions(ast.Visitor):
@@ -1401,8 +1546,8 @@ class _Statements(ast.Visitor):
             current = unwind.start
             if handler.binding is not None:
                 ctran = Ctran()
-                function.set_var(
-                    current, ctran, function.variable(handler.binding), None, handler
+                function.unbind(
+                    current, ctran, handler.binding, handler, missing_ok=True
                 )
                 current = ctran
             ctran = Ctran()
@@ -1720,15 +1865,30 @@ class _Statements(ast.Visitor):
     def visit_FunctionDefinition(self, node):
         function = self.function
         start, next_, _ = self.frame
-        function.converter.reserved(node.name, node)
-        lambda_ = function.converter.function(
-            node, function.lambda_.policy, parent=function
+        converter = function.converter
+        converter.reserved(node.name, node)
+        scope = function.class_scopes[-1] if function.class_scopes else None
+        decorators = converter.runtime_decorators(node.decorators)
+        current, held = function.evaluate_decorators(start, decorators)
+        lambda_ = converter.function(
+            node,
+            scope.policy if scope is not None else function.lambda_.policy,
+            owner_class=scope.native_id if scope is not None else None,
+            parent=function,
+            defining_class=scope,
         )
         ctran, created = Ctran(), Lvar()
-        function.define_function(start, ctran, created, lambda_, node, node.name)
+        function.define_function(current, ctran, created, lambda_, node, node.name)
+        ctran, created = function.apply_decorators(ctran, held, created, decorators)
         function.store(ctran, next_, node.name, created, node)
 
     def visit_ClassDefinition(self, node):
+        """Python's class statement: decorators and bases are evaluated, the
+        body runs against a fresh namespace, and the class is built from that
+        namespace (CPython's ``__build_class__``). SBCL's ``defclass`` likewise
+        expands to a load-time ``%defclass`` call carrying the slot metadata;
+        Mule additionally runs arbitrary body statements, inline in the
+        enclosing function, with the class scope's name resolution."""
         function = self.function
         start, next_, _ = self.frame
         converter = function.converter
@@ -1737,101 +1897,224 @@ class _Statements(ast.Visitor):
             function.error(
                 "generic classes are not supported yet", node, unsupported=True
             )
-        policy = converter.policy(node.decorators, function.lambda_.policy)
-        if len(node.arguments) > 1 or any(
-            argument.kind != ast.ArgumentKind.POSITIONAL for argument in node.arguments
-        ):
-            function.error(
-                "classes support at most one positional base", node, unsupported=True
-            )
-        body = _ClassBody(function)
-        for index, statement in enumerate(node.body):
-            if index == 0 and statement.accept(_ClassDocstring()):
-                continue
-            statement.accept(body)
-        class_id = f"{converter.prefix}mule_cls_{converter.class_definitions}"
-        converter.class_definitions += 1
-        native = (
-            bool(body.fields)
-            and body.native_eligible
-            and policy.speed == 3
-            and any(
-                decorator.accept(_NativeClassOptIn()) for decorator in node.decorators
-            )
+        outer = function.class_scopes[-1] if function.class_scopes else None
+        policy = converter.policy(
+            node.decorators, outer.policy if outer is not None else function.lambda_.policy
         )
-        if native:
-            if node.arguments:
+        for argument in node.arguments:
+            if argument.kind == ast.ArgumentKind.KEYWORD and argument.keyword == "metaclass":
                 function.error(
-                    "typed native classes cannot have bases", node, unsupported=True
+                    "metaclasses are not supported yet", argument, unsupported=True
                 )
-            if not any(method.name == "__init__" for method in body.methods):
+            if argument.kind != ast.ArgumentKind.POSITIONAL:
                 function.error(
-                    "typed native classes require __init__", node, unsupported=True
+                    "class keywords and base expansion are not supported yet",
+                    argument,
+                    unsupported=True,
                 )
-            converter.class_fields[class_id] = body.fields
-        # Base expressions are evaluated before any method definitions, as in Python.
-        current = start
-        operands = []
-        if node.arguments:
-            current, base = function.value(current, node.arguments[0].value)
-            operands.append(base)
-        fields = dict.fromkeys(body.fields if native else ())
-        methods = {}
-        for method in body.methods:
-            if not method.parameters:
-                # Decorator rejection precedes the ordinary receiver-arity error.
-                converter.policy(method.decorators, policy)
-                function.error("instance methods require a receiver parameter", method)
-            if native:
-                body.validate_method(method)
-            lambda_ = converter.function(
-                method,
-                policy,
-                owner_class=class_id if native else None,
-                parent=function,
+        if len(node.arguments) > 1:
+            function.error(
+                "multiple inheritance is not supported yet", node, unsupported=True
             )
-            receiver = method.parameters[0].name
+        identity = f"{converter.prefix}mule_cls_{converter.class_definitions}"
+        converter.class_definitions += 1
+        native = _native_class_body(function, node, policy)
+        body = node.body
+        docstring = None
+        if body and body[0].accept(_ClassDocstring()):
+            docstring, body = body[0].expression, body[1:]
+
+        # Decorators, then bases, are evaluated before the body runs.
+        decorators = converter.runtime_decorators(node.decorators)
+        current, held = function.evaluate_decorators(start, decorators)
+        bases = []
+        for argument in node.arguments:
+            ctran, value = function.value(current, argument.value)
+            temporary = function.temporary()
+            current = Ctran()
+            function.set_var(ctran, current, temporary, value, argument)
+            bases.append(temporary)
+
+        namespace = function.temporary()
+        ctran, created = Ctran(), Lvar()
+        function.known(current, ctran, created, fndb.CLASS_NAMESPACE, (), node)
+        current = Ctran()
+        function.set_var(ctran, current, namespace, created, node)
+        bindings = _ClassBindings()
+        for statement in body:
+            statement.accept(bindings)
+        scope = ClassScope(
+            function,
+            namespace,
+            identity,
+            bindings.bound - bindings.globals - bindings.nonlocals,
+            bindings.globals,
+            policy,
+            identity if native is not None else None,
+        )
+        # The body sees __module__ and __qualname__ first, and __doc__.
+        initial = (
+            ("__module__", ast.Name("__name__", span=node.span)),
+            ("__qualname__", ast.TextLiteral(node.name, span=node.span)),
+            ("__doc__", docstring or ast.NoneLiteral(None, span=node.span)),
+        )
+        for name, expression in initial:
+            if name == "__module__":
+                ctran, value = Ctran(), Lvar()
+                function.ref(
+                    current, ctran, value, converter.global_var("__name__"), node
+                )
+            else:
+                ctran, value = function.value(current, expression)
+            current = Ctran()
+            function.class_namespace_operation(
+                ctran, current, None, fndb.CLASS_STORE, scope, name, (value,), node
+            )
+
+        fields = dict.fromkeys(native.fields if native is not None else ())
+        for method in _ClassMethods.of(body):
+            if not method.parameters:
+                continue
+            receiver = method.parameters[0]
+            if receiver.kind == ast.ParameterKind.VAR_POSITIONAL:
+                continue
             collector = _ReceiverFields(
-                receiver, fields, declaration=body if native else None
+                receiver.name, fields, declaration=native
             )
             for statement in method.body:
                 statement.accept(collector)
-            ctran, created = Ctran(), Lvar()
-            function.define_function(
-                current, ctran, created, lambda_, method, method.name
-            )
-            current = ctran
-            # Repeated definitions preserve Python's last-definition-wins behavior.
-            previous = methods.get(method.name)
-            if previous is not None:
-                for use in previous.uses:
-                    use.lvar = None
-                previous.uses = []
-            methods[method.name] = created
+        if native is not None:
+            converter.class_fields[identity] = native.fields
+
+        function.class_scopes.append(scope)
+        try:
+            frontier = function.convert_body(current, body)
+        finally:
+            function.class_scopes.pop()
+        if frontier is None:
+            return
+        operands = []
+        for temporary in bases:
+            ctran, value = Ctran(), Lvar()
+            function.ref(frontier, ctran, value, temporary, node, final=True)
+            frontier = ctran
+            operands.append(value)
+        ctran, value = Ctran(), Lvar()
+        function.ref(frontier, ctran, value, namespace, node, final=True)
+        operands.append(value)
         info = ClassInfo(
             node.name,
-            bool(node.arguments),
+            len(bases),
             tuple(fields),
-            tuple(methods),
-            tuple(contract for contract, declaration in body.fields.values())
-            if native
+            tuple(contract for contract, declaration in native.fields.values())
+            if native is not None
             else (),
             policy,
             converter.location(node),
-            class_id if native else None,
-            tuple(body.annotation_expressions.items()),
+            identity,
+            identity if native is not None else None,
+            tuple(native.annotation_expressions.items()) if native is not None else (),
         )
-        ctran, created = Ctran(), Lvar()
+        following, created = Ctran(), Lvar()
         function.known(
-            current,
-            ctran,
-            created,
-            fndb.MAKE_CLASS,
-            (*operands, *methods.values()),
-            node,
-            info,
+            ctran, following, created, fndb.MAKE_CLASS, operands, node, info
         )
+        if scope.cell is not None:
+            # Methods using super() or __class__ see the finished class.
+            klass = function.temporary()
+            ctran = Ctran()
+            function.set_var(following, ctran, klass, created, node)
+            following, value = Ctran(), Lvar()
+            function.ref(ctran, following, value, klass, node)
+            ctran = Ctran()
+            function.set_var(following, ctran, scope.cell, value, node)
+            following, created = Ctran(), Lvar()
+            function.ref(ctran, following, created, klass, node, final=True)
+        ctran, created = function.apply_decorators(following, held, created, decorators)
         function.store(ctran, next_, node.name, created, node)
+
+
+def _evaluate_decorators(self, start, decorators):
+    """Evaluate runtime decorator expressions top to bottom, before the
+    definition they decorate. Returns the temporaries holding their values."""
+    current = start
+    held = []
+    for decorator in decorators:
+        ctran, value = self.value(current, decorator)
+        temporary = self.temporary()
+        current = Ctran()
+        self.set_var(ctran, current, temporary, value, decorator)
+        held.append(temporary)
+    return current, held
+
+
+def _apply_decorators(self, start, held, value, decorators):
+    """Call the evaluated decorators on ``value``, innermost first."""
+    if not held:
+        return start, value
+    result = self.temporary()
+    current = Ctran()
+    self.set_var(start, current, result, value, decorators[-1])
+    for temporary, decorator in reversed(tuple(zip(held, decorators, strict=True))):
+        ctran, callee = Ctran(), Lvar()
+        self.ref(current, ctran, callee, temporary, decorator, final=True)
+        following, argument = Ctran(), Lvar()
+        self.ref(ctran, following, argument, result, decorator, final=True)
+        ctran, decorated = Ctran(), Lvar()
+        self.full_call(
+            following,
+            ctran,
+            decorated,
+            callee,
+            (argument,),
+            decorator,
+            CallInfo((), self.converter.location(decorator)),
+        )
+        current = Ctran()
+        self.set_var(ctran, current, result, decorated, decorator)
+    ctran, value = Ctran(), Lvar()
+    self.ref(current, ctran, value, result, decorators[0], final=True)
+    return ctran, value
+
+
+FunctionConverter.evaluate_decorators = _evaluate_decorators
+FunctionConverter.apply_decorators = _apply_decorators
+
+
+def _native_class_body(function, node, policy):
+    """The validated body of a typed native class, or None for an ordinary
+    class. A class requests the native layout with ``optimize(speed=3)`` and
+    annotated declarations; its body is then restricted to a docstring,
+    methods, bare ``mule.int64`` declarations and ``pass``."""
+    requested = (
+        policy.speed == 3
+        and any(decorator.accept(_NativeClassOptIn()) for decorator in node.decorators)
+        and any(isinstance(statement, ast.AnnotatedAssignment) for statement in node.body)
+    )
+    if not requested:
+        return None
+    body = _ClassBody(function)
+    for index, statement in enumerate(node.body):
+        if index == 0 and statement.accept(_ClassDocstring()):
+            continue
+        statement.accept(body)
+    if not body.fields or not body.native_eligible:
+        return None
+    if node.arguments:
+        function.error("typed native classes cannot have bases", node, unsupported=True)
+    if not any(method.name == "__init__" for method in body.methods):
+        function.error("typed native classes require __init__", node, unsupported=True)
+    for method in body.methods:
+        if not method.parameters:
+            function.error("instance methods require a receiver parameter", method)
+        if function.converter.runtime_decorators(method.decorators):
+            function.error(
+                "typed native class methods cannot have runtime decorators",
+                method,
+                unsupported=True,
+            )
+        body.validate_method(method)
+    return body
 
 
 def _define_function(self, start, next_, result, lambda_, definition, public_name):
@@ -2016,6 +2299,10 @@ class _DeleteTarget(ast.Visitor):
     def visit_Name(self, node):
         function = self.function
         function.converter.reserved(node.identifier, node)
+        if function.class_binding(node.identifier) is not None:
+            # Deleting from a class namespace checks only that namespace.
+            function.unbind(self.start, self.next, node.identifier, node)
+            return
         var = function.variable(node.identifier)
         ctran = Ctran()
         function.ref(self.start, ctran, None, var, node)
@@ -2052,6 +2339,12 @@ class _AnnotationTarget(ast.Visitor):
         function = self.function
         converter = function.converter
         converter.reserved(node.identifier, node)
+        if function.class_binding(node.identifier) is not None:
+            # Class variable annotations are deferred metadata, not contracts.
+            if self.assignment.value is not None:
+                ctran, value = function.value(self.start, self.assignment.value)
+                function.store(ctran, self.next, node.identifier, value, node)
+            return
         function.lambda_.annotation_expressions[node.identifier] = (
             self.assignment.annotation
         )
@@ -2248,6 +2541,20 @@ class _PolicyDecorator(ast.Visitor):
         return replace(self.policy, **changes)
 
 
+class _PolicyDirective(ast.Visitor):
+    """Whether a decorator calls the imported ``mule.optimize`` directive."""
+
+    def __init__(self, converter):
+        self.converter = converter
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Call(self, node):
+        binding = node.function.accept(_AnnotationReference(self.converter))
+        return isinstance(binding, _OptimizeBinding)
+
+
 class _PolicyLevel(ast.Visitor):
     def __init__(self, converter):
         self.converter = converter
@@ -2411,6 +2718,37 @@ class _CallTarget(ast.Visitor):
             self.arguments(),
             node,
             CallInfo(self.keywords(), function.converter.location(node)),
+        )
+
+    def visit_Name(self, node):
+        """Zero-argument ``super()`` receives the defining class's ``__class__``
+        cell and the calling function's first argument, as CPython's compiler
+        supplies them. The ``super`` name itself is still looked up normally."""
+        function = self.function
+        if node.identifier != "super" or self.call.arguments:
+            return self.visit_Node(node)
+        parameters = function.lambda_.vars
+        if (
+            function.defining_class is None
+            or not parameters
+            or function.lambda_.signature.kinds[0] == ast.ParameterKind.VAR_POSITIONAL
+            or function.local("super")
+        ):
+            return self.visit_Node(node)
+        cell = function.class_cell()
+        ctran, callee = function.value(self.start, node)
+        following, owner = Ctran(), Lvar()
+        function.ref(ctran, following, owner, cell, node)
+        ctran, receiver = Ctran(), Lvar()
+        function.ref(following, ctran, receiver, parameters[0], node)
+        function.full_call(
+            ctran,
+            self.next,
+            self.result,
+            callee,
+            (owner, receiver),
+            node,
+            CallInfo((), function.converter.location(node)),
         )
 
     def visit_Attribute(self, node):
@@ -2579,6 +2917,106 @@ class _ImportNames(ast.Visitor):
             self.imported_name(item.alias or item.name, item)
 
 
+class _ClassBindings(_ImportNames):
+    """Names a class body binds in its namespace, and its declarations.
+
+    Like a function scope, a binding anywhere in the body makes the name the
+    namespace's, but unlike one, reading it before assignment falls back to
+    the module globals instead of raising ``UnboundLocalError``."""
+
+    def __init__(self):
+        self.bound = set()
+        self.globals = set()
+        self.nonlocals = set()
+        self.targets = _BoundNames(self.bound)
+
+    def imported_name(self, name, node):
+        self.bound.add(name)
+
+    def visit_Node(self, node):
+        for target in node.assigned_targets():
+            target.accept(self.targets)
+        for child in node.children():
+            child.accept(self)
+
+    def visit_Lambda(self, node):
+        for parameter in node.parameters:
+            if parameter.default is not None:
+                parameter.default.accept(self)
+
+    def visit_Comprehension(self, node):
+        # Only the first iterable is evaluated in the enclosing scope.
+        node.clauses[0].iterable.accept(self)
+
+    def visit_FunctionDefinition(self, node):
+        self.bound.add(node.name)
+        for decorator in node.decorators:
+            decorator.accept(self)
+        for parameter in node.parameters:
+            if parameter.default is not None:
+                parameter.default.accept(self)
+
+    def visit_ClassDefinition(self, node):
+        self.bound.add(node.name)
+        for child in (*node.decorators, *node.arguments):
+            child.accept(self)
+
+    def visit_ExceptionHandler(self, node):
+        if node.binding is not None:
+            self.bound.add(node.binding)
+        self.visit_Node(node)
+
+    def visit_Global(self, node):
+        self.globals.update(node.identifiers)
+
+    def visit_Nonlocal(self, node):
+        self.nonlocals.update(node.identifiers)
+
+
+class _BoundNames(ast.Visitor):
+    def __init__(self, names):
+        self.names = names
+
+    def visit_Node(self, node):
+        for child in node.children():
+            child.accept(self)
+
+    def visit_Subscript(self, node):
+        pass
+
+    def visit_Attribute(self, node):
+        pass
+
+    def visit_Name(self, node):
+        self.names.add(node.identifier)
+
+
+class _ClassMethods(ast.Visitor):
+    """Function definitions a class body executes directly, including those
+    under its compound statements, but not inside nested scopes."""
+
+    def __init__(self):
+        self.methods = []
+
+    @classmethod
+    def of(cls, statements):
+        collector = cls()
+        for statement in statements:
+            statement.accept(collector)
+        return collector.methods
+
+    def visit_Node(self, node):
+        if isinstance(node, ast.Statement) or isinstance(node, ast.ExceptionHandler):
+            for child in node.children():
+                child.accept(self)
+
+    def visit_FunctionDefinition(self, node):
+        self.methods.append(node)
+
+    def visit_ClassDefinition(self, node):
+        pass
+
+
 class _AnnotationShadows(_ImportNames):
     """Runtime bindings prevent treating the same name as a builtin contract."""
 
@@ -2650,12 +3088,8 @@ class _ScopeVisitor(_ImportNames):
         self.seen.add(node.name)
 
     def visit_ClassDefinition(self, node):
-        if not self.function.is_module:
-            self.function.error(
-                "nested classes are not supported yet", node, unsupported=True
-            )
-        for argument in node.arguments:
-            argument.accept(self)
+        for child in (*node.decorators, *node.arguments):
+            child.accept(self)
         self.seen.add(node.name)
 
     def visit_Global(self, node):

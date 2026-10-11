@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .inputs import read_source
+from .ir1util import class_method_definitions
 from .node import CallKind, Combination
 from .protocols import add_lambdas, compile_protocol
 
@@ -45,26 +46,18 @@ def layouts_of(lambdas) -> dict[str, Layout]:
     """Native class definitions anywhere in the program, by class identity."""
     layouts = {}
     for lambda_ in lambdas:
-        definitions = {}
+        methods = class_method_definitions(lambda_)
         for block in lambda_.component.blocks():
             for node in block.nodes():
-                if not isinstance(node, Combination) or node.kind is not CallKind.KNOWN:
-                    continue
-                name = node.fun_info.name
-                if name == "%make_function":
-                    definitions[node] = node.args[0].use().leaf
-                elif name == "%make_class" and node.info.class_id is not None:
+                if (
+                    isinstance(node, Combination)
+                    and node.kind is CallKind.KNOWN
+                    and node.fun_info.name == "%make_class"
+                    and node.info.class_id is not None
+                ):
                     info = node.info
-                    methods = node.args[1:] if info.has_base else node.args
                     layouts[info.class_id] = Layout(
-                        info,
-                        {
-                            method_name: definitions[value.use()]
-                            for method_name, value in zip(
-                                info.method_names, methods, strict=True
-                            )
-                        },
-                        len(layouts),
+                        info, methods.get(info.identity, {}), len(layouts)
                     )
     return layouts
 

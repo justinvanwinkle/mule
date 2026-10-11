@@ -587,10 +587,9 @@ def make_function(gen, vop):
 def make_class(gen, vop):
     info = vop.codegen_info
     module = gen.module
-    operands = list(vop.args)
-    base = gen.take(operands.pop(0)) if info.has_base else "null"
-    methods = [gen.take(method) for method in operands]
-    gen.argv(methods)
+    operands = [gen.take(operand) for operand in vop.args]
+    *bases, namespace = operands
+    base = bases[0] if bases else "null"
     layout = module.layouts.get(info.class_id)
     name = module.text(info.public_name)
     if layout is not None:
@@ -598,18 +597,58 @@ def make_class(gen, vop):
             vop.results[0],
             f"call ptr @mule_native_class(ptr {name}, "
             f"ptr {layout.schema}, ptr %globals, i64 {len(info.fields)}, ptr {module.names(info.fields)}, "
-            f"i64 {len(methods)}, ptr {module.names(info.method_names)}, ptr %argv, "
-            f"ptr {layout.constructor}, ptr {layout.getter}, ptr {layout.setter})",
-            methods,
+            f"ptr {namespace}, ptr {layout.constructor}, ptr {layout.getter}, ptr {layout.setter})",
+            operands,
         )
         return
     gen.pointer_result(
         vop.results[0],
-        f"call ptr @mule_class(ptr {name}, "
-        f"ptr {base}, i64 {len(info.fields)}, ptr {module.names(info.fields)}, "
-        f"i64 {len(methods)}, ptr {module.names(info.method_names)}, ptr %argv)",
-        (base, *methods),
+        f"call ptr @mule_class(ptr {name}, ptr {base}, "
+        f"i64 {len(info.fields)}, ptr {module.names(info.fields)}, ptr {namespace})",
+        operands,
     )
+
+
+@define_vop("class-namespace", translate=fndb.CLASS_NAMESPACE, results=(OBJECT,))
+def class_namespace(gen, vop):
+    gen.pointer_result(vop.results[0], "call ptr @mule_namespace()")
+
+
+@define_vop(
+    "class-load", translate=fndb.CLASS_LOAD, args=(OBJECT,), results=(OBJECT,)
+)
+def class_load(gen, vop):
+    namespace = gen.take(vop.args[0])
+    gen.pointer_result(
+        vop.results[0],
+        f"call ptr @mule_class_load(ptr {namespace}, ptr %globals, "
+        f"ptr {gen.module.text(vop.codegen_info.name)})",
+        (namespace,),
+    )
+
+
+@define_vop("class-store", translate=fndb.CLASS_STORE, args=(OBJECT, OBJECT))
+def class_store(gen, vop):
+    namespace, value = gen.take(vop.args[0]), gen.take(vop.args[1])
+    status = gen.operation(
+        f"call i32 @mule_store_global(ptr {namespace}, "
+        f"ptr {gen.module.text(vop.codegen_info.name)}, ptr {value})"
+    )
+    gen.release(namespace)
+    gen.release(value)
+    gen.check_status(status)
+
+
+@define_vop("class-delete", translate=fndb.CLASS_DELETE, args=(OBJECT,))
+def class_delete(gen, vop):
+    namespace = gen.take(vop.args[0])
+    info = vop.codegen_info
+    status = gen.operation(
+        f"call i32 @mule_class_delete(ptr {namespace}, "
+        f"ptr {gen.module.text(info.name)}, i32 {int(info.missing_ok)})"
+    )
+    gen.release(namespace)
+    gen.check_status(status)
 
 
 @define_vop("import", translate=fndb.IMPORT, results=(OBJECT,))

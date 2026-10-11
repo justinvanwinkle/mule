@@ -91,9 +91,6 @@ unsafe fn call_buffers(
             } => {
                 return call_buffers(*method, *bound, values, names, keyword_values);
             }
-            Data::StaticMethod(method) => {
-                return call_buffers(*method, receiver, values, names, keyword_values);
-            }
             Data::Instance { .. } | Data::NativeInstance { .. } => {
                 let name = c"__call__";
                 let method = object::mule_lookup_special(callable, name.as_ptr());

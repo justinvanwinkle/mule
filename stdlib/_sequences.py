@@ -6,6 +6,7 @@ execute as native Python functions and classes, in a private module namespace.
 
 from _mule_native import text_from_codepoints as _text_from_codepoints
 from _str import TextStorage, ascii, decode, format, ord, repr, str
+from _descriptors import classmethod, property, staticmethod, super
 
 # ruff: noqa: F821
 
@@ -554,6 +555,10 @@ _install_builtin("ascii", ascii)
 _install_builtin("format", format)
 _install_builtin("min", min)
 _install_builtin("max", max)
+_install_builtin("staticmethod", staticmethod)
+_install_builtin("classmethod", classmethod)
+_install_builtin("property", property)
+_install_builtin("super", super)
 _install_builtin("BaseException", BaseException)
 _install_builtin("Exception", Exception)
 _install_builtin("ArithmeticError", ArithmeticError)

@@ -21,14 +21,16 @@ body (``@mule.body.N``); guarded entries (``.spec.V``) and native entries
 
 from __future__ import annotations
 
+import logging
 import struct
 from dataclasses import dataclass, field
 
 from mule import ast
+from mule.diagnostics import phase
 
 from . import vops
 from .ctype import UNKNOWN, ValueType
-from .ir1util import block_exception_target
+from .ir1util import block_exception_target, class_method_definitions
 from .ir2tran import ir2_convert
 from .ltn import EntryContext, ltn_analyze
 from .node import CallKind, Combination, FunctionalKind, Lambda, LambdaVar
@@ -36,6 +38,7 @@ from .represent import select_native_plans, select_representations
 from .vop import BOOLEAN, CLASS, DESCRIPTOR, DOUBLE, IMMEDIATE, NULL, RANGE, SIGNED
 
 OBJECT = vops.OBJECT
+logger = logging.getLogger(__name__)
 
 DECLARATIONS = """declare ptr @mule_literal_int(ptr)
 declare ptr @mule_literal_float(double)
@@ -86,8 +89,10 @@ declare ptr @mule_function(ptr, ptr, ptr)
 declare ptr @mule_function_closure(ptr, ptr, ptr, ptr, ptr)
 declare ptr @mule_closure(ptr)
 declare ptr @mule_function_closure_of(ptr)
-declare ptr @mule_class(ptr, ptr, i64, ptr, i64, ptr, ptr)
-declare ptr @mule_native_class(ptr, ptr, ptr, i64, ptr, i64, ptr, ptr, ptr, ptr, ptr)
+declare ptr @mule_class(ptr, ptr, i64, ptr, ptr)
+declare ptr @mule_native_class(ptr, ptr, ptr, i64, ptr, ptr, ptr, ptr, ptr)
+declare ptr @mule_class_load(ptr, ptr, ptr)
+declare i32 @mule_class_delete(ptr, ptr, i32)
 declare i32 @mule_native_class_matches(ptr, ptr, ptr)
 declare ptr @mule_native_instance_payload(ptr, ptr, ptr)
 declare ptr @mule_native_new(ptr)
@@ -170,15 +175,39 @@ class Program:
 
 def generate(program: Program) -> str:
     """Return a complete LLVM module with a native executable entry point."""
-    return ModuleGenerator(program).emit()
+    with phase("LLVM generation"):
+        module = ModuleGenerator(program)
+        llvm = module.emit()
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "LLVM module: %d lambdas, %d native entries, %d tuple constants, "
+            "%d text/data constants, %d characters, %d lines",
+            len(program.lambdas),
+            len(module.native_plans),
+            len(module.tuple_constants),
+            len(module.data),
+            len(llvm),
+            llvm.count("\n"),
+        )
+    return llvm
 
 
 def compile_component(lambda_: Lambda, context: EntryContext):
     """Run the IR2 phases for one body (``compile-component`` for a backend
     whose register allocation LLVM performs)."""
-    ltn_analyze(lambda_, context)
-    component = ir2_convert(lambda_, context)
-    select_representations(component)
+    with phase("LTN %s context %s", lambda_.name, context.id, level=logging.DEBUG):
+        ltn_analyze(lambda_, context)
+    with phase(
+        "IR2 conversion %s context %s", lambda_.name, context.id, level=logging.DEBUG
+    ):
+        component = ir2_convert(lambda_, context)
+    with phase(
+        "representation selection %s context %s",
+        lambda_.name,
+        context.id,
+        level=logging.DEBUG,
+    ):
+        select_representations(component)
     return component
 
 
@@ -239,7 +268,14 @@ class ModuleGenerator:
         }
         self.layouts = program.layouts
         self.sequence_functions = program.sequence_functions
-        self.native_plans = select_native_plans(lambdas, self.facts, self.layouts)
+        with phase("native entry selection", level=logging.DEBUG):
+            self.native_plans = select_native_plans(lambdas, self.facts, self.layouts)
+        logger.debug(
+            "Backend input: %d lambdas, %d native entries, %d class layouts",
+            len(lambdas),
+            len(self.native_plans),
+            len(self.layouts),
+        )
         self.data: dict[bytes, str] = {}
         self.tuple_constants: dict[tuple, TupleConstant] = {}
         self.auxiliary: list[str] = []
@@ -251,24 +287,16 @@ class ModuleGenerator:
     def _collect(self, lambda_: Lambda) -> None:
         """Native method predictions (calls still check callable identity) and
         the imported modules in first-use order."""
-        definitions = {}
+        for methods in class_method_definitions(lambda_).values():
+            for method_name, target in methods.items():
+                self.method_targets.setdefault(method_name, target)
         for block in lambda_.component.blocks():
             for node in block.nodes():
-                if not isinstance(node, Combination) or node.kind is not CallKind.KNOWN:
-                    continue
-                name = node.fun_info.name
-                if name == "%make_function":
-                    definitions[node] = node.args[0].use().leaf
-                elif name == "%make_class":
-                    info = node.info
-                    methods = node.args[1:] if info.has_base else node.args
-                    for method_name, value in zip(
-                        info.method_names, methods, strict=True
-                    ):
-                        target = definitions.get(value.uses[0]) if value.uses else None
-                        if target is not None:
-                            self.method_targets.setdefault(method_name, target)
-                elif name == "%import":
+                if (
+                    isinstance(node, Combination)
+                    and node.kind is CallKind.KNOWN
+                    and node.fun_info.name == "%import"
+                ):
                     self.imports.setdefault(node.info.module_name, node.info)
 
     def variants_of(self, lambda_: Lambda):
@@ -544,8 +572,20 @@ class ModuleGenerator:
         )
 
     def emit_body(self, lambda_: Lambda, context: EntryContext) -> str:
-        component = compile_component(lambda_, context)
-        return FunctionGenerator(self, component).emit()
+        with phase(
+            "LLVM body %s context %s", lambda_.name, context.id, level=logging.DEBUG
+        ):
+            component = compile_component(lambda_, context)
+            with phase("VOP generation %s", lambda_.name, level=logging.DEBUG):
+                body = FunctionGenerator(self, component).emit()
+        logger.debug(
+            "IR2 body %s context %s: %d blocks, %d TNs",
+            lambda_.name,
+            context.id,
+            len(component.blocks),
+            len(component.tns),
+        )
+        return body
 
     def import_initializer(self, info, index):
         cache = f"@mule.import.cache.{index}"

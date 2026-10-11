@@ -12,6 +12,7 @@ from __future__ import annotations
 from .node import (
     BasicVar,
     Block,
+    CallKind,
     Cleanup,
     CleanupKind,
     Combination,
@@ -592,3 +593,24 @@ def lambda_block(lambda_: Lambda) -> Block:
 
 def return_block(node: Return) -> Block:
     return node.block
+
+
+def class_method_definitions(lambda_: Lambda) -> dict[str, dict[str, Lambda]]:
+    """The functions a lambda's class bodies store directly into their
+    namespaces, by class identity and attribute name. Decorated definitions
+    store a decorator's result instead and are not included."""
+    definitions = {}
+    classes: dict[str, dict[str, Lambda]] = {}
+    for block in lambda_.component.blocks():
+        for node in block.nodes():
+            if not isinstance(node, Combination) or node.kind is not CallKind.KNOWN:
+                continue
+            name = node.fun_info.name
+            if name == "%make_function":
+                definitions[node] = node.args[0].use().leaf
+            elif name == "%class_store":
+                value = node.args[1]
+                target = definitions.get(value.uses[0]) if value.uses else None
+                if target is not None:
+                    classes.setdefault(node.info.identity, {})[node.info.name] = target
+    return classes

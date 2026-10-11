@@ -56,6 +56,10 @@ pub unsafe fn initialize(native: *mut std::ffi::c_void) -> bool {
         let globals = object::namespace();
         GLOBALS.with(|value| value.set(globals));
         object::bind(globals, "__builtins__", crate::builtins::namespace());
+        // The protocols define the builtins, so their classes report that module.
+        let name = object::new_value(Data::Text(crate::text::Text::from_rust_str("builtins")));
+        object::bind(globals, "__name__", name);
+        object::release(name);
         let function = object::function(
             globals,
             std::mem::transmute::<*mut std::ffi::c_void, object::Native>(native),

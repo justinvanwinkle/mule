@@ -8,8 +8,10 @@ environment analysis, IR2) attach here as they are implemented.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
+from mule.diagnostics import phase
 from mule.parser import parse
 
 from . import checkgen, ir1opt, locall
@@ -41,6 +43,7 @@ class Compilation:
 
 
 REOPTIMIZE_LIMIT = 10
+logger = logging.getLogger(__name__)
 
 
 def ir1_phases(compilation: Compilation) -> None:
@@ -51,33 +54,42 @@ def ir1_phases(compilation: Compilation) -> None:
     become checks. Check generation can introduce code, so the phases repeat
     until no cast changes state.
     """
-    while True:
-        _ir1_optimize_phase_1(compilation)
-        if not any(
-            checkgen.generate_type_checks(lambda_, compilation.facts[lambda_].types)
-            for lambda_ in compilation.lambdas
-        ):
-            break
-    for component in compilation.components:
-        join_blocks_if_possible(component)
-        if component.reanalyze:
-            find_dfo(component)
-    check_ir1_consistency(compilation.components)
+    with phase("IR1 phases %s", compilation.converter.filename, level=logging.DEBUG):
+        while True:
+            _ir1_optimize_phase_1(compilation)
+            with phase("IR1 check generation", level=logging.DEBUG):
+                changed = any(
+                    checkgen.generate_type_checks(
+                        lambda_, compilation.facts[lambda_].types
+                    )
+                    for lambda_ in compilation.lambdas
+                )
+            if not changed:
+                break
+        with phase("IR1 final graph cleanup", level=logging.DEBUG):
+            for component in compilation.components:
+                join_blocks_if_possible(component)
+                if component.reanalyze:
+                    find_dfo(component)
+            check_ir1_consistency(compilation.components)
 
 
 def _ir1_optimize_phase_1(compilation: Compilation) -> None:
-    for _ in range(REOPTIMIZE_LIMIT):
+    for iteration in range(REOPTIMIZE_LIMIT):
         reoptimized = False
-        for component in compilation.components:
-            reoptimized |= ir1opt.ir1_optimize_until_done(component)
-            if component.reanalyze:
-                find_dfo(component)
-        compilation.facts = locall.analyze(compilation.lambdas)
+        with phase("IR1 optimization round %d", iteration + 1, level=logging.DEBUG):
+            for component in compilation.components:
+                reoptimized |= ir1opt.ir1_optimize_until_done(component)
+                if component.reanalyze:
+                    find_dfo(component)
+        with phase("IR1 local-call and flow analysis", level=logging.DEBUG):
+            compilation.facts = locall.analyze(compilation.lambdas)
         if not reoptimized and not any(
             component.reoptimize for component in compilation.components
         ):
             return
     # The reoptimize limit was reached; the facts computed last remain valid.
+    logger.debug("IR1 reoptimization reached its %d-round limit", REOPTIMIZE_LIMIT)
 
 
 def compile_toplevel(
@@ -90,39 +102,48 @@ def compile_toplevel(
     primitives=None,
     primitive_data=None,
 ) -> Compilation:
-    tree = parse(source, filename)
-    initial = Component("initial")
-    converter = Converter(
-        source,
+    with phase("parse %s", filename, level=logging.DEBUG):
+        tree = parse(source, filename)
+    with phase("IR1 conversion %s", filename, level=logging.DEBUG):
+        initial = Component("initial")
+        converter = Converter(
+            source,
+            filename,
+            imports=imports,
+            prefix=prefix,
+            namespace=namespace,
+            component=initial,
+            primitives=primitives,
+            primitive_data=primitive_data,
+        )
+        bindings = _ImportBindings(converter)
+        for statement in tree.statements:
+            statement.accept(bindings)
+        shadows = _AnnotationShadows()
+        for statement in tree.statements:
+            statement.accept(shadows)
+        converter.module_annotation_shadows = shadows.names
+        entry = convert_module(converter, tree)
+        for lambda_ in converter.functions:
+            _GlobalAnnotationStores(converter, lambda_).apply(lambda_blocks(lambda_))
+        components = find_initial_dfo(initial, converter.functions)
+        check_ir1_consistency(components)
+        compilation = Compilation(converter.functions, entry, components, converter)
+    logger.debug(
+        "IR1 module %s: %d lambdas, %d components",
         filename,
-        imports=imports,
-        prefix=prefix,
-        namespace=namespace,
-        component=initial,
-        primitives=primitives,
-        primitive_data=primitive_data,
+        len(compilation.lambdas),
+        len(compilation.components),
     )
-    bindings = _ImportBindings(converter)
-    for statement in tree.statements:
-        statement.accept(bindings)
-    shadows = _AnnotationShadows()
-    for statement in tree.statements:
-        statement.accept(shadows)
-    converter.module_annotation_shadows = shadows.names
-    entry = convert_module(converter, tree)
-    for lambda_ in converter.functions:
-        _GlobalAnnotationStores(converter, lambda_).apply(lambda_blocks(lambda_))
-    components = find_initial_dfo(initial, converter.functions)
-    check_ir1_consistency(components)
-    compilation = Compilation(converter.functions, entry, components, converter)
     # SBCL runs environment analysis after the IR1 phases, once LET conversion
     # has settled the cleanup structure. Python's cleanup regions are fixed at
     # conversion, and the phases must see the cleanup code, so it runs first.
-    environment_analyze(compilation)
-    for component in components:
-        if component.reanalyze:
-            find_dfo(component)
-    check_ir1_consistency(components)
+    with phase("environment analysis %s", filename, level=logging.DEBUG):
+        environment_analyze(compilation)
+        for component in components:
+            if component.reanalyze:
+                find_dfo(component)
+        check_ir1_consistency(components)
     return compilation
 
 
@@ -136,13 +157,14 @@ def compile_source(
     primitives=None,
 ) -> Compilation:
     """Convert one module and run the IR1 phases over it."""
-    compilation = compile_toplevel(
-        source,
-        filename,
-        imports=imports,
-        prefix=prefix,
-        namespace=namespace,
-        primitives=primitives,
-    )
-    ir1_phases(compilation)
+    with phase("compile source %s", filename):
+        compilation = compile_toplevel(
+            source,
+            filename,
+            imports=imports,
+            prefix=prefix,
+            namespace=namespace,
+            primitives=primitives,
+        )
+        ir1_phases(compilation)
     return compilation

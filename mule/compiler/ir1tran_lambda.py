@@ -41,6 +41,7 @@ def convert_function(
     *,
     owner_class=None,
     parent=None,
+    defining_class=None,
 ) -> Lambda:
     if definition.is_async or definition.type_parameters:
         converter.error(
@@ -113,6 +114,7 @@ def convert_function(
         is_module=False,
         origin=definition,
         parent=parent,
+        defining_class=defining_class,
     )
 
     def prologue(start: Ctran) -> Ctran:

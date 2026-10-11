@@ -612,6 +612,9 @@ class Cleanup:
     # which a ``finally`` suite converted at an exit edge must see.
     info: object = None
     loops: tuple = ()
+    # Class bodies being converted where the region was entered; cleanup code
+    # converted at exit edges resolves names in their namespaces.
+    class_scopes: tuple = ()
     nlx_info: list = field(default_factory=list)
 
 

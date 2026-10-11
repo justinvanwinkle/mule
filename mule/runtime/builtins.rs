@@ -348,15 +348,6 @@ unsafe extern "C" fn list(_: Value, args: Value) -> Value {
         }
     }
 }
-unsafe extern "C" fn staticmethod(_: Value, args: Value) -> Value {
-    unsafe {
-        if arity(args, 1, 1).is_none() {
-            std::ptr::null_mut()
-        } else {
-            object::new_value(Data::StaticMethod(object::retain(arg(args, 0))))
-        }
-    }
-}
 unsafe extern "C" fn type_(_: Value, args: Value) -> Value {
     unsafe {
         if arity(args, 3, 3).is_none() {
@@ -445,7 +436,6 @@ pub unsafe fn namespace() -> Value {
                 ("list", list),
                 ("type", type_),
                 ("setattr", setattr),
-                ("staticmethod", staticmethod),
             ];
             for (name, entry) in entries {
                 let function = object::function(std::ptr::null_mut(), *entry, name);

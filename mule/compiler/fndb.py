@@ -40,6 +40,12 @@ CALL_RESOLVED = defknown("%call_resolved", "call", "unsafe")
 # Definitions executed when a module runs.
 MAKE_FUNCTION = defknown("%make_function", "flushable")
 MAKE_CLASS = defknown("%make_class", "call", "unsafe")
+# A class body's namespace: creation, and reads, stores and deletions of the
+# names the body binds. Reads fall back to the module globals and builtins.
+CLASS_NAMESPACE = defknown("%class_namespace", "flushable")
+CLASS_LOAD = defknown("%class_load", "call")
+CLASS_STORE = defknown("%class_store", "unsafe", result=False)
+CLASS_DELETE = defknown("%class_delete", "unsafe", result=False)
 IMPORT = defknown("%import", "call", "unsafe")
 HAS_BINDING = defknown("%has_binding")
 
@@ -91,6 +97,10 @@ __all__ = [
     "BUILD_TUPLE",
     "CALL_RESOLVED",
     "CATCH_EXCEPTION",
+    "CLASS_DELETE",
+    "CLASS_LOAD",
+    "CLASS_NAMESPACE",
+    "CLASS_STORE",
     "COMPARE",
     "ENTER_HANDLER",
     "FORMAT",

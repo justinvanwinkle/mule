@@ -10,8 +10,10 @@ are the program's own. `python -m mule.compiler` builds an executable instead.
 
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
+from mule.diagnostics import configure, logger, phase
 from mule.compiler import ToolchainError
 from mule.compiler.cache import cached_executable
 from mule.compiler.inputs import read_source
@@ -24,6 +26,8 @@ Options:
 -c cmd : program passed in as string (terminates option list)
 -h     : print this help message and exit (also -? or --help)
 -m mod : run library module as a script (terminates option list)
+-v     : compiler progress and phase timings on stderr
+-vv    : detailed compiler, input, and toolchain diagnostics on stderr
 file   : program read from script file
 -      : program read from stdin
 arg ...: arguments passed to program in sys.argv[1:]
@@ -34,15 +38,24 @@ class UsageError(Exception):
     pass
 
 
-def parse(argv):
+@dataclass
+class Options:
+    verbosity: int = 0
+
+
+def parse(argv, *, options=None):
     """Split `python`-style arguments into (kind, value, program arguments).
 
     kind is "help", "command", "module" or "script". Options end at the
     program; everything after it is passed to the program unchanged."""
     index = 0
+    options = options if options is not None else Options()
     while index < len(argv):
         argument = argv[index]
         index += 1
+        if argument.startswith("-v") and set(argument[1:]) == {"v"}:
+            options.verbosity += len(argument) - 1
+            continue
         if argument in ("-h", "-?", "--help"):
             return "help", None, []
         if argument[:2] in ("-c", "-m"):
@@ -88,15 +101,21 @@ def run(kind, value, arguments):
             return 2
         filename, argv0 = value, value
         roots = search_path(path.resolve().parent)
-    os.execv(cached_executable(source, filename, roots, package), [argv0, *arguments])
+    with phase("prepare executable for %s", filename):
+        executable = cached_executable(source, filename, roots, package)
+    logger.info("starting native program %s", executable)
+    logger.debug("native argv: %r", [argv0, *arguments])
+    os.execv(executable, [argv0, *arguments])
 
 
 def main() -> int:
+    options = Options()
     try:
-        kind, value, arguments = parse(sys.argv[1:])
+        kind, value, arguments = parse(sys.argv[1:], options=options)
     except UsageError as error:
         print(f"{error}\n{USAGE}\nTry `mule -h' for more information.", file=sys.stderr)
         return 2
+    configure(options.verbosity)
     if kind == "help":
         print(HELP, end="")
         return 0
