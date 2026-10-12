@@ -184,8 +184,7 @@ def load_global(gen, vop):
         # A native body's class dependency was loaded and guarded at entry.
         gen.store(result, gen.dependency(vop.codegen_info))
         return
-    name = gen.module.text(vop.codegen_info)
-    gen.pointer_result(result, f"call ptr @mule_load_global(ptr %globals, ptr {name})")
+    gen.pointer_result(result, gen.module.load_global(vop.codegen_info))
 
 
 @define_vop("move", args=(None,), results=(None,))
@@ -218,18 +217,15 @@ def unbind_local(gen, vop):
 @define_vop("store-global", args=(None,))
 def store_global(gen, vop):
     value = gen.take(vop.args[0])
-    name = gen.module.text(vop.codegen_info)
-    status = gen.operation(
-        f"call i32 @mule_store_global(ptr %globals, ptr {name}, ptr {value})"
-    )
+    var = vop.codegen_info
+    status = gen.operation(gen.module.store_global(var.namespace, var.name, value))
     gen.release(value)
     gen.check_status(status)
 
 
 @define_vop("unbind-global")
 def unbind_global(gen, vop):
-    name = gen.module.text(vop.codegen_info)
-    gen.line(f"call i32 @mule_clear_binding(ptr %globals, ptr {name})")
+    gen.line(gen.module.delete_global(vop.codegen_info))
 
 
 @define_vop("discard", args=(None,))
@@ -1327,19 +1323,16 @@ def _ownership() -> str:
             if name == "retain"
             else "call void @mule_release(ptr %value)\n  ret void"
         )
+        # Fixnums and NULL are not objects. Immortal objects, including
+        # True, False and None, carry the reference count the runtime
+        # leaves unchanged; that check inlines with the runtime under LTO.
         functions.append(f"""define internal {result} @mule.fast.{name}(ptr %value) alwaysinline {{
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
   %integer = icmp ne i64 %tag, 0
   %null = icmp eq ptr %value, null
-  %true = icmp eq ptr %value, @mule.true
-  %false = icmp eq ptr %value, @mule.false
-  %none = icmp eq ptr %value, @mule.none
-  %a = or i1 %integer, %null
-  %b = or i1 %true, %false
-  %c = or i1 %a, %b
-  %skip = or i1 %c, %none
+  %skip = or i1 %integer, %null
   br i1 %skip, label %done, label %heap
 heap:
   {call}
@@ -1375,6 +1368,27 @@ no:
 slow:
   %result = call i32 @mule_truth(ptr %value)
   ret i32 %result
+}
+
+define internal ptr @mule.fast.global(ptr %cells, ptr %name) alwaysinline {
+entry:
+  %module.cell = load ptr, ptr %cells
+  %module.value = load ptr, ptr %module.cell
+  %module.bound = icmp ne ptr %module.value, null
+  br i1 %module.bound, label %bound, label %builtin
+builtin:
+  %builtin.slot = getelementptr inbounds [3 x ptr], ptr %cells, i64 0, i64 1
+  %builtin.cell = load ptr, ptr %builtin.slot
+  %builtin.value = load ptr, ptr %builtin.cell
+  %builtin.bound = icmp ne ptr %builtin.value, null
+  br i1 %builtin.bound, label %bound, label %slow
+bound:
+  %value = phi ptr [%module.value, %entry], [%builtin.value, %builtin]
+  %owned = call ptr @mule.fast.retain(ptr %value)
+  ret ptr %owned
+slow:
+  %result = call ptr @mule_load_global(ptr %cells, ptr %name)
+  ret ptr %result
 }
 
 define internal ptr @mule.fast.local(ptr %value, ptr %name) alwaysinline {

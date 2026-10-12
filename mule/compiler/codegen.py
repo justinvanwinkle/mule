@@ -59,6 +59,8 @@ declare ptr @mule_none()
 declare ptr @mule_bool(i32)
 declare ptr @mule_load_global(ptr, ptr)
 declare i32 @mule_store_global(ptr, ptr, ptr)
+declare i32 @mule_link_globals(ptr, i64, ptr, ptr)
+@mule_unresolved_cell = external constant ptr
 declare ptr @mule_namespace()
 declare i32 @mule_namespace_bound(ptr, ptr)
 declare i32 @mule_assertion_failure(ptr)
@@ -140,7 +142,7 @@ declare ptr @mule_protocol_globals()
 declare ptr @mule_catch_exception()
 declare i32 @mule_enter_handler(ptr)
 declare void @mule_leave_handler()
-declare i32 @mule_clear_binding(ptr, ptr)
+declare i32 @mule_delete_global(ptr, ptr)
 declare i32 @mule_reraise()
 declare i32 @mule_check_rest_args(ptr, i32)
 declare ptr @mule_rest_args(ptr, i32)
@@ -230,6 +232,12 @@ class Program:
     # A module unit's own import: its initializer belongs to this unit and
     # initializes the unit before running the module body.
     module_import: ImportInfo | None = None
+
+
+def is_protocol_namespace(namespace: str) -> bool:
+    """Whether code compiled under ``namespace`` is protocol code, which runs
+    under the protocol globals: its namespaces are named ``$mule.*``."""
+    return namespace.startswith("$")
 
 
 def _symbol(name: str) -> str:
@@ -389,6 +397,13 @@ class ModuleGenerator:
         self.data: dict[bytes, str] = {}
         self.tuple_constants: dict[tuple, TupleConstant] = {}
         self.auxiliary: list[str] = []
+        # Each namespace's global references, by name: the runtime's
+        # ``GlobalCells`` for that name, linked once per namespace.
+        self.global_cells: dict[str, dict[str, str]] = {}
+        self.linked_namespaces: set[str] = set()
+        # Namespaces whose cells a linkonce_odr initializer uses, which must
+        # then be shared definitions too.
+        self.shared_namespaces: set[str] = set()
         self.method_targets: dict[str, Function] = {}
         self.imports: dict[str, object] = {}
         if program.module_import is not None:
@@ -458,6 +473,80 @@ class ModuleGenerator:
             or info.missing
             or info.initializer in {lambda_.name for lambda_ in self.owned}
         )
+
+    def cells(self, namespace: str, name: str) -> str:
+        """The cells of global ``name`` that code running under ``namespace``
+        reads and writes."""
+        cells = self.global_cells.setdefault(namespace, {})
+        symbol = cells.get(name)
+        if symbol is None:
+            symbol = cells[name] = _symbol(f"mule.cell:{namespace}:{name}")
+        return symbol
+
+    def load_global(self, var) -> str:
+        """The call reading global ``var``, owned."""
+        cells = self.cells(var.namespace, var.name)
+        return f"call ptr @mule.fast.global(ptr {cells}, ptr {self.text(var.name)})"
+
+    def store_global(self, namespace: str, name: str, value: str) -> str:
+        """The call binding global ``name`` to ``value``, borrowed; its status
+        is negative on failure."""
+        cells = self.cells(namespace, name)
+        return f"call i32 @mule_store_global(ptr {cells}, ptr {self.text(name)}, ptr {value})"
+
+    def delete_global(self, var) -> str:
+        cells = self.cells(var.namespace, var.name)
+        return f"call i32 @mule_delete_global(ptr {cells}, ptr {self.text(var.name)})"
+
+    def link(self, namespace: str, value: str, failed: str, index: int) -> list[str]:
+        """Lines linking ``namespace``'s references to the namespace object
+        ``value``, branching to ``failed`` when linking fails."""
+        self.linked_namespaces.add(namespace)
+        self.global_cells.setdefault(namespace, {})
+        return [
+            f"  %linked.{index} = call i32 {_symbol(f'mule.link:{namespace}')}(ptr {value})",
+            f"  %link.failed.{index} = icmp slt i32 %linked.{index}, 0",
+            f"  br i1 %link.failed.{index}, label %{failed}, label %linked.ok.{index}",
+            f"linked.ok.{index}:",
+        ]
+
+    def global_linkage(self) -> list[str]:
+        """Each namespace's cells and the function linking them."""
+        unlinked = self.global_cells.keys() - self.linked_namespaces
+        if unlinked:
+            raise AssertionError(f"global references never linked: {sorted(unlinked)}")
+        definitions = []
+        for namespace, cells in self.global_cells.items():
+            shared = namespace in self.shared_namespaces
+            linkage = "linkonce_odr" if shared else "internal"
+            constant = "linkonce_odr constant" if shared else "private constant"
+            for symbol in cells.values():
+                definitions.append(
+                    f"{symbol} = {linkage} global [3 x ptr] "
+                    "[ptr @mule_unresolved_cell, ptr @mule_unresolved_cell, ptr null]"
+                )
+            link = _symbol(f"mule.link:{namespace}")
+            if not cells:
+                definitions.append(
+                    f"define {linkage} i32 {link}(ptr %namespace) {{\nentry:\n  ret i32 0\n}}"
+                )
+                continue
+            names = _symbol(f"mule.names:{namespace}")
+            table = _symbol(f"mule.cells:{namespace}")
+            count = len(cells)
+            name_values = ", ".join(f"ptr {self.text(name)}" for name in cells)
+            cell_values = ", ".join(f"ptr {symbol}" for symbol in cells.values())
+            definitions += [
+                f"{names} = {constant} [{count} x ptr] [{name_values}]",
+                f"{table} = {constant} [{count} x ptr] [{cell_values}]",
+                (
+                    f"define {linkage} i32 {link}(ptr %namespace) {{\n"
+                    "entry:\n"
+                    f"  %status = call i32 @mule_link_globals(ptr %namespace, i64 {count}, ptr {names}, ptr {table})\n"
+                    "  ret i32 %status\n}"
+                ),
+            ]
+        return definitions
 
     def attribute_cache(self) -> str:
         name = f"@mule.cache.{len(self.auxiliary)}"
@@ -634,6 +723,7 @@ class ModuleGenerator:
         self.auxiliary.append(self.unit_lifecycle(owned_imports))
         if program.entry is not None:
             self.auxiliary.extend(self.executable_entry())
+        self.auxiliary.extend(self.global_linkage())
         # Data first: the bodies emitted above registered their constants.
         globals_ = []
         for value, name in self.data.items():
@@ -677,11 +767,22 @@ class ModuleGenerator:
         """The unit's initializer, which builds its tuple constants, and its
         finalizer, which releases them and the modules it owns."""
         linkage = "" if self.program.exports else "internal "
+        # Protocol code runs under the protocol globals whoever calls it,
+        # and the unit initializer runs after they exist.
+        links = []
+        protocols = [name for name in self.global_cells if is_protocol_namespace(name)]
+        if protocols:
+            links.append("  %protocol.globals = call ptr @mule_protocol_globals()")
+        for index, namespace in enumerate(protocols):
+            links += self.link(namespace, "%protocol.globals", "link.failed", index)
         initialize = (
             f"define {linkage}ptr {unit_initializer(self.program.unit)}() {{\n"
             "entry:\n"
+            + "".join(line + "\n" for line in links)
             + self.initialize_tuple_constants()
-            + "  ret ptr inttoptr (i64 1 to ptr)\n}"
+            + "  ret ptr inttoptr (i64 1 to ptr)\n"
+            + ("link.failed:\n  ret ptr null\n" if links else "")
+            + "}"
         )
         releases = [
             (f"%import.{index}", self.import_cache(info))
@@ -845,6 +946,10 @@ class ModuleGenerator:
             else "  %globals = call ptr @mule_namespace()",
             f"  store ptr %globals, ptr {cache}",
         ]
+        if info.native:
+            self.shared_namespaces.add(info.module_name)
+        # Before the module body or any of its functions run.
+        lines += self.link(info.module_name, "%globals", "failed", 0)
         fields = [("__name__", info.module_name)]
         if info.filename is not None:
             fields.append(("__file__", info.filename))
@@ -854,12 +959,12 @@ class ModuleGenerator:
         )
         for field_name, value in fields:
             literal = self.literal_data(value.encode())
-            key = self.text(field_name)
             label = field_name.strip("_")
+            store = self.store_global(info.module_name, field_name, f"%{label}")
             lines.extend(
                 [
                     f"  %{label} = call ptr @mule_literal_text(ptr {literal}, i64 {len(value.encode())})",
-                    f"  %status.{label} = call i32 @mule_store_global(ptr %globals, ptr {key}, ptr %{label})",
+                    f"  %status.{label} = {store}",
                     f"  call void @mule_release(ptr %{label})",
                     f"  %bad.{label} = icmp slt i32 %status.{label}, 0",
                     f"  br i1 %bad.{label}, label %failed, label %after.{label}",
@@ -1092,8 +1197,8 @@ class FunctionGenerator:
                 for index, node in enumerate(self.plan.allocations)
             }
             self.dependencies = {
-                name: f"%class.{index}"
-                for index, name in enumerate(self.plan.dependencies)
+                var: f"%class.{index}"
+                for index, var in enumerate(self.plan.dependencies)
             }
         self.max_args = max(
             (len(vop.args) for block in component.blocks for vop in block.vops),
@@ -1277,8 +1382,8 @@ class FunctionGenerator:
     def local_slot(self, name: str) -> str:
         return self.local_slots[name]
 
-    def dependency(self, name: str) -> str:
-        return self.dependencies[name]
+    def dependency(self, var) -> str:
+        return self.dependencies[var]
 
     def owner_slot(self, node) -> str:
         return self.owner_slots[node]
@@ -1728,6 +1833,10 @@ class FunctionGenerator:
             self.line(f"store [3 x i64] zeroinitializer, ptr {tn.slot}")
         self.line(f"%argv = alloca [{max(1, self.max_args)} x ptr]")
         self.entry_end = len(self.lines)
+        if lambda_ is self.module.program.entry and self.context.id is None:
+            # The runtime creates the main program's globals and enters its
+            # top-level body once, before any function it defines can exist.
+            self.lines += self.module.link(lambda_.namespace, "%globals", "error", 0)
         self.line(f"br label %{self.component.blocks[0].label}")
         self.emit_blocks()
         handler_live = None
@@ -2018,10 +2127,8 @@ def native_adapter(gen: FunctionGenerator, plan, linkage: str) -> str:
         slots.append(slot)
         gen.line(f"{slot} = alloca ptr")
         gen.line(f"store ptr null, ptr {slot}")
-    for index, (name, prediction) in enumerate(plan.dependencies.items()):
-        value = gen.operation(
-            f"call ptr @mule_load_global(ptr %globals, ptr {gen.module.text(name)})"
-        )
+    for index, (var, prediction) in enumerate(plan.dependencies.items()):
+        value = gen.operation(gen.module.load_global(var))
         gen.line(f"store ptr {value}, ptr {slots[index]}")
         gen.check_pointer(value)
         matched = gen.operation(

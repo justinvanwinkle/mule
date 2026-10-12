@@ -40,8 +40,21 @@ Adaptations, each a concrete departure from `node.lisp`/`ir1tran.lisp`:
   temporary's extent is marked so ownership lowering can move the value.
 - `Set` with no value represents Python's unbinding (`del`, the implicit
   deletion of an `except ... as` name).
-- Module globals are `GlobalVar` leaves per namespace, looked up at execution
-  time. Calls through them are full calls; local-call analysis may convert
+- Module globals are `GlobalVar` leaves per namespace, read and written at
+  execution time through value cells, as SBCL code reaches a symbol's value
+  cell or an fdefn from its constant vector. A namespace keeps each binding
+  in a boxed cell that never moves; unbinding stores NULL and keeps the cell.
+  A unit has one cell pair per namespace and name it references, holding
+  that name's cell in the namespace and in the builtins. Each namespace's
+  pairs are linked once, after the namespace exists and before any of its
+  code runs, as SBCL fixes up constants when it loads code: a module's in its
+  import initializer, the main program's when its top-level body starts, and
+  protocol code's (`$mule.*`, which runs under the protocol globals whoever
+  calls it) in the unit initializer. Linking creates unbound cells for names
+  not yet bound. A read loads the module cell's value, then the builtin
+  cell's when that is NULL; an unlinked pair points at an always-NULL cell, so
+  a read before linking reaches the slow path, which reports it.
+  Calls through globals are full calls; local-call analysis may convert
   them only under an identity guard, because the binding is mutable until the
   module has executed. The module body is the top-level lambda, as in
   `compile-file`; `def`, `class`, decorators, defaults, and imports are

@@ -222,7 +222,7 @@ class _LoadLeaf(LeafVisitor):
         self.load(vops.CONSTANT, info=leaf.value)
 
     def visit_GlobalVar(self, leaf: GlobalVar):
-        self.load(vops.LOAD_GLOBAL, info=leaf.name)
+        self.load(vops.LOAD_GLOBAL, info=leaf)
 
     def visit_LambdaVar(self, leaf: LambdaVar):
         converter, node = self.converter, self.node
@@ -307,13 +307,13 @@ class _StoreVar(LeafVisitor):
     def visit_GlobalVar(self, leaf: GlobalVar):
         converter, node = self.converter, self.node
         if node.value is None:
-            converter.emit(vops.UNBIND_GLOBAL, node, info=leaf.name)
+            converter.emit(vops.UNBIND_GLOBAL, node, info=leaf)
         else:
             converter.emit(
                 vops.STORE_GLOBAL,
                 node,
                 args=(converter.lvar_tn(node.value),),
-                info=leaf.name,
+                info=leaf,
             )
 
 

@@ -226,6 +226,38 @@ and constraint transformations. Speculative global call returns remain unknown
 when the general fallback could return another type. LLVM handles SSA
 promotion, instruction optimization, and register allocation.
 
+### Generated code volume
+
+Unoptimized LLVM for the Benchmarks Game programs runs 100–200 instructions
+per source line; nbody's `advance` (about 20 lines) is 4,804 instructions, of
+which arithmetic is about 1%. `-O2` grows it to 9,012, with 612 retain/release
+calls left. These items reduce it, each following an SBCL mechanism:
+
+1. **Error checks (35% of `advance`).** Every fallible operation is followed by
+   a null or status check and a branch. SBCL calls never return an error
+   status: a check is a compare and branch to out-of-line code that
+   `generate-error-code` (`x86-64/macros.lisp`) emits in the `:elsewhere`
+   section, and the error unwinds non-locally, so callers pay nothing on the
+   success path.
+2. **Reference counting (19%).** Every local read retains (`mule.fast.local`)
+   and every use releases. SBCL has no reference counts, but its lifetime
+   analysis (`life.lisp`) supplies last uses, which lets reads of a definitely
+   assigned local borrow, and constraint propagation (`constraint.lisp`)
+   proves assignment, which removes the unbound check.
+3. **Boxed floats and tag tests (14%).** `represent.lisp`
+   (`select-tn-representation`, `emit-moves-and-coercions`) gives each TN a
+   storage class by VOP costs, keeps derived `double-float` values unboxed and
+   boxes only at coercions. Mule selects machine representations only for
+   annotated `int64`/`bool`/native-class bodies, all or nothing.
+4. **Frame enter/leave around compiled-builtin calls (15%).** SBCL allocates
+   the frame in the prologue and detects stack exhaustion with a guard page;
+   local call conversion (`locall.lisp`) skips the external entry. Mule wraps
+   each call in `mule_enter_frame`/`mule_leave_frame` and refetches
+   `mule_protocol_globals()` at each site.
+5. **Per-type function clones.** SBCL compiles one body per function. Mule
+   emits `.body`, `.spec.N`, and `.boxed` copies; nbody's `advance` `spec.0` is
+   6% smaller than its `body`, so the clone doubles code for little gain.
+
 Source-level IR1 tests cover type/range joins, widening, unbound locals, and
 guarded target predictions. Native executable tests cover overflow, boolean identity,
 function rebinding, argument side effects, errors, recursion, and ownership.

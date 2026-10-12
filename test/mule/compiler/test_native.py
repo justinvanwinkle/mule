@@ -26,6 +26,35 @@ def run_native(tmp_path, source):
     )
 
 
+def test_global_reads_follow_rebinding_shadowing_and_deletion(tmp_path):
+    # Each read site caches its name's cells after first use; every later
+    # binding change must still be visible through that site.
+    source = """def show():
+    return len("abc"), counter
+counter = 1
+print(show())
+counter = 2
+print(show())
+def len(value):
+    return -1
+print(show())
+del len
+print(show())
+del counter
+try:
+    show()
+except NameError as error:
+    print(error)
+counter = 3
+print(show())
+"""
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "(3, 1)\n(3, 2)\n(-1, 2)\n(3, 2)\nname 'counter' is not defined\n(3, 3)\n"
+    )
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [

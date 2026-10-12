@@ -382,7 +382,7 @@ class NativePlan:
     locals: dict[LambdaVar, Representation]
     values: dict[object, Representation] = field(default_factory=dict)
     returned: Representation | None = None
-    dependencies: dict[str, Class] = field(default_factory=dict)
+    dependencies: dict[GlobalVar, Class] = field(default_factory=dict)
     calls: set[Lambda] = field(default_factory=set)
     allocations: dict[object, Class] = field(default_factory=dict)
     method_targets: dict[object, Lambda] = field(default_factory=dict)
@@ -503,7 +503,7 @@ class _Select(NodeVisitor, LeafVisitor):
         if identity is None:
             raise NotNative
         result = Class(leaf.name, identity, self.layouts[identity])
-        self.plan.dependencies[leaf.name] = result
+        self.plan.dependencies[leaf] = result
         return result
 
     def visit_KnownFunction(self, leaf: KnownFunction):

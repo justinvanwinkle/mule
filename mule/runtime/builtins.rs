@@ -447,7 +447,7 @@ pub unsafe extern "C" fn mule_import_star(module: Value, globals: Value) -> i32 
             bindings
                 .iter()
                 .filter(|(name, _)| !name.starts_with('_'))
-                .map(|(name, value)| (name.clone(), *value))
+                .map(|(name, value)| (name.into(), value))
                 .collect()
         } else {
             let names = if object::is_fixnum(public) {

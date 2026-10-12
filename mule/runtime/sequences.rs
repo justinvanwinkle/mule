@@ -2,7 +2,6 @@
 use crate::numeric;
 use crate::object::{self, Data, Value};
 use std::cell::{Cell, RefCell};
-use std::ffi::c_char;
 use std::ptr::null_mut;
 
 thread_local! {
@@ -556,25 +555,6 @@ pub unsafe extern "C" fn mule_reraise() -> i32 {
                 object::error("RuntimeError", "no active exception to reraise");
             }
         });
-        -1
-    }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mule_clear_binding(namespace: Value, name: *const c_char) -> i32 {
-    unsafe {
-        if namespace.is_null() || object::is_fixnum(namespace) || name.is_null() {
-            return -1;
-        }
-        let Ok(name) = std::ffi::CStr::from_ptr(name).to_str() else {
-            return -1;
-        };
-        if let Data::Namespace(bindings) = &mut (*namespace).data {
-            if let Some(index) = bindings.iter().position(|binding| binding.0 == name) {
-                let (_, value) = bindings.remove(index);
-                object::release(value);
-            }
-            return 0;
-        }
         -1
     }
 }

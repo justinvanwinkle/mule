@@ -22,6 +22,23 @@ unsafe extern "C" {
     static IMMORTAL_NONE: u8;
 }
 
+/// Link a global reference in `namespace` as a unit would, then read it.
+unsafe fn load_global(namespace: Value, name: *const std::ffi::c_char) -> Value {
+    unsafe { mule_load_global(&mut linked(namespace, name), name) }
+}
+
+/// Link a global reference in `namespace` as a unit would, then bind it.
+unsafe fn store_global(namespace: Value, name: *const std::ffi::c_char, value: Value) -> i32 {
+    unsafe { mule_store_global(&mut linked(namespace, name), name, value) }
+}
+
+unsafe fn linked(namespace: Value, name: *const std::ffi::c_char) -> GlobalCells {
+    let mut cells = GlobalCells::default();
+    let status = unsafe { mule_link_globals(namespace, 1, &name, &(&raw mut cells)) };
+    assert_eq!(status, 0, "linking a global reference failed");
+    cells
+}
+
 unsafe extern "C" fn record_frame(_globals: Value, args: Value) -> Value {
     unsafe {
         assert_eq!(mule_check_args(args, 0), 0);
@@ -255,7 +272,7 @@ unsafe extern "C" fn add_bias(globals: Value, args: Value) -> Value {
             return ptr::null_mut();
         }
         let value = mule_arg(args, 0);
-        let bias = mule_load_global(globals, c"bias".as_ptr());
+        let bias = load_global(globals, c"bias".as_ptr());
         if value.is_null() || bias.is_null() {
             release(value);
             release(bias);
@@ -292,7 +309,7 @@ unsafe extern "C" fn recurse(globals: Value, args: Value) -> Value {
             error("RuntimeError", "recursion guard missing");
             return ptr::null_mut();
         }
-        let function = mule_load_global(globals, c"recurse".as_ptr());
+        let function = load_global(globals, c"recurse".as_ptr());
         if function.is_null() {
             return ptr::null_mut();
         }
@@ -376,8 +393,8 @@ unsafe fn class_ownership(globals: Value) {
         let add = function(globals, add_slot, c"add_slot");
         let fields = [c"value".as_ptr(), c"callback".as_ptr()];
         let namespace = mule_namespace();
-        assert_eq!(mule_store_global(namespace, c"__init__".as_ptr(), init), 0);
-        assert_eq!(mule_store_global(namespace, c"add".as_ptr(), add), 0);
+        assert_eq!(store_global(namespace, c"__init__".as_ptr(), init), 0);
+        assert_eq!(store_global(namespace, c"add".as_ptr(), add), 0);
         let base = class_statement(c"Base", &[], &fields, namespace);
         assert!(!base.is_null());
         release(namespace);
@@ -643,7 +660,7 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 if callable.is_null() {
                     return ptr::null_mut();
                 }
-                if mule_store_global(globals, c"recurse".as_ptr(), callable) < 0 {
+                if store_global(globals, c"recurse".as_ptr(), callable) < 0 {
                     release(callable);
                     return ptr::null_mut();
                 }
@@ -726,12 +743,12 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
             }
             "globals" => {
                 let value = integer("42");
-                let status = mule_store_global(globals, c"answer".as_ptr(), value);
+                let status = store_global(globals, c"answer".as_ptr(), value);
                 release(value);
-                if status < 0 || !show(mule_load_global(globals, c"answer".as_ptr())) {
+                if status < 0 || !show(load_global(globals, c"answer".as_ptr())) {
                     return ptr::null_mut();
                 }
-                let builtin = mule_load_global(globals, c"len".as_ptr());
+                let builtin = load_global(globals, c"len".as_ptr());
                 if builtin.is_null() {
                     return ptr::null_mut();
                 }
@@ -740,18 +757,18 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 println!("callable={}", i32::from(callable));
                 release(builtin);
                 let none = mule_none();
-                let status = mule_store_global(globals, c"len".as_ptr(), none);
+                let status = store_global(globals, c"len".as_ptr(), none);
                 release(none);
                 if status < 0
-                    || !show(mule_load_global(globals, c"len".as_ptr()))
-                    || !show(mule_load_global(globals, c"__name__".as_ptr()))
+                    || !show(load_global(globals, c"len".as_ptr()))
+                    || !show(load_global(globals, c"__name__".as_ptr()))
                 {
                     return ptr::null_mut();
                 }
             }
             "function_metadata" => {
                 let bias = integer("40");
-                let status = mule_store_global(globals, c"bias".as_ptr(), bias);
+                let status = store_global(globals, c"bias".as_ptr(), bias);
                 release(bias);
                 if status < 0 {
                     return ptr::null_mut();
@@ -810,7 +827,7 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
             }
             "function" | "arity" => {
                 let bias = integer("40");
-                let status = mule_store_global(globals, c"bias".as_ptr(), bias);
+                let status = store_global(globals, c"bias".as_ptr(), bias);
                 release(bias);
                 if status < 0 {
                     return ptr::null_mut();
@@ -834,7 +851,7 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 }
             }
             "builtin_call" => {
-                let callable = mule_load_global(globals, c"len".as_ptr());
+                let callable = load_global(globals, c"len".as_ptr());
                 let value = text("native callback");
                 if callable.is_null() || value.is_null() {
                     release(callable);
@@ -864,7 +881,7 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 release(right);
                 return result;
             }
-            "name_error" => return mule_load_global(globals, c"absent_name".as_ptr()),
+            "name_error" => return load_global(globals, c"absent_name".as_ptr()),
             "local_error" => return mule_load_local(ptr::null_mut(), c"absent_local".as_ptr()),
             "not_callable" => {
                 let value = integer("1");

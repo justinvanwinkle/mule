@@ -397,7 +397,7 @@ unsafe fn direct_class(bases: &[Value], namespace: Value, keywords: Value) -> bo
         !bindings.iter().any(|(name, value)| {
             name == "__init_subclass__"
                 || name == "__class_getitem__"
-                || layout_of_class(class_of_value(*value))
+                || layout_of_class(class_of_value(value))
                     .is_some_and(|layout| layout.find("__set_name__").is_some())
         })
     }
@@ -1100,19 +1100,19 @@ unsafe fn create_class_with(
         }
         let mut attributes: Vec<(String, Value)> = Vec::with_capacity(bindings.len());
         let mut attribute_lookup: HashMap<String, usize> = HashMap::new();
-        for (attribute, value) in bindings {
+        for (attribute, value) in bindings.iter() {
             if let Some(index) = attribute_lookup.get(attribute) {
                 let old = attributes[*index].1;
-                attributes[*index].1 = object::retain(*value);
+                attributes[*index].1 = object::retain(value);
                 object::release(old);
             } else {
-                attribute_lookup.insert(attribute.clone(), attributes.len());
-                attributes.push((attribute.clone(), object::retain(*value)));
+                attribute_lookup.insert(attribute.into(), attributes.len());
+                attributes.push((attribute.into(), object::retain(value)));
             }
         }
         // Defining equality without a hash makes instances unhashable, as
         // CPython's type creation sets `__hash__` to None.
-        let defines = |wanted: &str| bindings.iter().any(|(key, _)| key == wanted);
+        let defines = |wanted: &str| !bindings.get(wanted).is_null();
         if defines("__eq__") && !defines("__hash__") {
             let none = object::none_value();
             if let Some(index) = attribute_lookup.get("__hash__") {
@@ -1124,7 +1124,7 @@ unsafe fn create_class_with(
                 attributes.push(("__hash__".into(), object::retain(none)));
             }
         }
-        let slots = bindings.iter().find(|(key, _)| key == "__slots__").map(|(_, value)| *value);
+        let slots = Some(bindings.get("__slots__")).filter(|value| !value.is_null());
         let own_dict = match slots {
             None => !base.is_null(),
             Some(slots) => slot_names_include_dict(slots),
@@ -1188,7 +1188,7 @@ pub unsafe extern "C" fn mule_class_load(
                 return std::ptr::null_mut();
             }
             object::clear_error();
-            return object::mule_load_global(globals, name);
+            return object::load_global(globals, attribute);
         }
         let value = object::lookup(namespace, attribute);
         if !value.is_null() {
@@ -1197,7 +1197,7 @@ pub unsafe extern "C" fn mule_class_load(
         if object::has_error() {
             return std::ptr::null_mut();
         }
-        object::mule_load_global(globals, name)
+        object::load_global(globals, attribute)
     }
 }
 
@@ -1284,14 +1284,13 @@ pub unsafe extern "C" fn mule_class_delete(
             object::release(result);
             return 0;
         };
-        match bindings.iter().position(|(key, _)| key == attribute) {
-            Some(index) => {
-                let (_, value) = bindings.remove(index);
+        match bindings.take(attribute) {
+            value if !value.is_null() => {
                 object::release(value);
                 0
             }
-            None if missing_ok != 0 => 0,
-            None => {
+            _ if missing_ok != 0 => 0,
+            _ => {
                 object::error("NameError", &format!("name '{attribute}' is not defined"));
                 -1
             }
@@ -1828,8 +1827,8 @@ unsafe extern "C" fn delete_attribute(_: Value, args: Value) -> Value {
                 .then(|| &mut (**attributes).data)
                 .unwrap_or(&mut Data::None)
             {
-                if let Some(position) = bindings.iter().position(|(key, _)| *key == attribute) {
-                    let (_, old) = bindings.remove(position);
+                let old = bindings.take(&attribute);
+                if !old.is_null() {
                     object::release(old);
                     return object::none_value();
                 }
@@ -2014,9 +2013,9 @@ unsafe extern "C" fn instance_items(_: Value, args: Value) -> Value {
         }
         if !attributes.is_null() {
             if let Data::Namespace(bindings) = &(**attributes).data {
-                for (name, value) in bindings {
+                for (name, value) in bindings.iter() {
                     let key = text(name);
-                    pairs.push(object::mule_sequence_tuple(2, [key, *value].as_ptr()));
+                    pairs.push(object::mule_sequence_tuple(2, [key, value].as_ptr()));
                     object::release(key);
                 }
             }
@@ -2049,9 +2048,9 @@ unsafe extern "C" fn namespace_items(_: Value, args: Value) -> Value {
             return object::none_value();
         };
         let mut pairs = Vec::with_capacity(bindings.len());
-        for (name, value) in bindings {
+        for (name, value) in bindings.iter() {
             let key = text(name);
-            let pair = object::mule_sequence_tuple(2, [key, *value].as_ptr());
+            let pair = object::mule_sequence_tuple(2, [key, value].as_ptr());
             object::release(key);
             pairs.push(pair);
         }
