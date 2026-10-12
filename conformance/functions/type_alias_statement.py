@@ -23,7 +23,7 @@ Lazy.__value__
 print("cached", events)
 print("simple value", Simple.__value__.__name__)
 
-type Forward = list[NotYetDefined]  # noqa: F821
+type Forward = list[NotYetDefined]
 
 
 class NotYetDefined:

@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from .annotation_types import AnnotationLedger
 from .constraint import Body, Fact, join_fact, propagate, widen_fact
 from .ctype import BOTTOM, FIXNUM_MAX, FIXNUM_MIN, UNKNOWN, IntegerType, ValueType
-from .node import CallKind, Combination, GlobalVar, Lambda, Set
+from .node import CallKind, Combination, GlobalVar, Lambda, Set, linked
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +104,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             )
         ):
             parameters[lambda_, "fixnum"] = (full,) * len(lambda_.vars)
-    summaries = dict.fromkeys(parameters, BOTTOM)
+    summaries: dict[tuple[Lambda, str], ValueType] = dict.fromkeys(parameters, BOTTOM)
     return_changes = defaultdict(int)
     argument_changes = defaultdict(int)
     bodies: dict[tuple[Lambda, str], Body] = {}
@@ -321,7 +321,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
 def _mark_guarded_calls(lambda_: Lambda, body: Body) -> None:
     """Record predicted targets on full calls so later phases and code
     generation can guard them; the general path always remains."""
-    for block in lambda_.component.blocks():
+    for block in linked(lambda_.component, lambda_, "component").blocks():
         for node in block.nodes():
             if not isinstance(node, Combination) or node.kind not in (
                 CallKind.FULL,

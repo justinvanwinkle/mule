@@ -91,7 +91,7 @@ def modulo(left, right):
 
 def ascii_representation(value):
     """``ascii(value)``: the representation with non-ASCII escaped."""
-    text = representation(value)
+    text = _representation_protocol(value)
     pieces = []
     index = 0
     while index < _text_length(text):
@@ -99,11 +99,11 @@ def ascii_representation(value):
         if code < 0x80:
             pieces.append(_text_character(text, index))
         elif code < 0x100:
-            pieces.append("\\x" + _hex(code, 2))
+            pieces.append("\\x" + _hex_protocol(code, 2))
         elif code < 0x10000:
-            pieces.append("\\u" + _hex(code, 4))
+            pieces.append("\\u" + _hex_protocol(code, 4))
         else:
-            pieces.append("\\U" + _hex(code, 8))
+            pieces.append("\\U" + _hex_protocol(code, 8))
         index += 1
     return "".join(pieces)
 

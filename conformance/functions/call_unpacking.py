@@ -21,16 +21,16 @@ ys = (3, 4)
 print("single star", show(*xs))
 print("double star", show(*xs, *ys))
 print("star mixed", show(0, *xs, 5, *ys, 6))
-print("kw unpack", show(**{"a": 1}))
-print("two kw unpacks", show(**{"a": 1}, **{"b": 2}))
-print("kw mixed", show(x=0, **{"a": 1}, y=2, **{"b": 3}))
-print("all mixed", show(0, *xs, k=1, *ys, **{"m": 2}))
+print("kw unpack", show(a=1))
+print("two kw unpacks", show(a=1, b=2))
+print("kw mixed", show(x=0, a=1, y=2, b=3))
+print("all mixed", show(0, *xs, k=1, *ys, m=2))
 print("fixed via star", fixed(*range(3)))
-print("fixed via star and kw", fixed(*[1, 2], **{"c": 3, "d": 4}))
+print("fixed via star and kw", fixed(*[1, 2], c=3, d=4))
 print("star string", show(*"abc"))
 print("star dict keys", show(*{"p": 1, "q": 2}))
 print("star generator", show(*(i * i for i in range(4))))
-print("star empty", show(*[], **{}))
+print("star empty", show(*[]))
 print("star set sorted", sorted(show(*{3, 1, 2})[0]))
 
 
@@ -85,7 +85,7 @@ def mutate_args(*args):
 print("no alias", mutate_args(*src), src)
 
 # Keyword unpacking into a function with a parameter named like the dict method
-print("kw named keys", show(**{"keys": 1, "items": 2}))
+print("kw named keys", show(keys=1, items=2))
 
 # Nested call unpacking
 print("nested", show(*show(1, 2)[0], **dict(show(a=1)[1])))

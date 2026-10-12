@@ -106,8 +106,8 @@ print("instance dict", sorted(vars(p).items()))
 print("class dict has x", "x" in P.__dict__, "y" in P.__dict__)
 p.__dict__["w"] = 4
 print("via __dict__", p.w)
-setattr(p, "dyn", 5)
-print("getattr default", getattr(p, "dyn"), getattr(p, "nope", "default"))
+p.dyn = 5
+print("getattr default", p.dyn, getattr(p, "nope", "default"))
 print("hasattr", hasattr(p, "x"), hasattr(p, "nope"))
 delattr(p, "dyn")
 print("after delattr", hasattr(p, "dyn"))

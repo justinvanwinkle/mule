@@ -57,7 +57,7 @@ attempt("set remove", lambda: set().remove(1))
 def unbound():
     if False:
         local = 1
-    return local  # noqa: F821
+    return local
 
 
 attempt("unbound local", unbound)

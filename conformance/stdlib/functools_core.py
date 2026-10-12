@@ -1,7 +1,6 @@
 """functools: reduce, partial (nested, keyword overrides), wraps, total_ordering, cmp_to_key."""
-import functools
-from functools import reduce, partial, wraps, total_ordering, cmp_to_key
 import operator
+from functools import cmp_to_key, partial, reduce, total_ordering, wraps
 
 print("reduce add", reduce(operator.add, [1, 2, 3, 4]))
 print("reduce initial", reduce(operator.add, [1, 2, 3], 100))

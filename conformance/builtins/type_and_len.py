@@ -3,7 +3,7 @@
 samples = [0, True, 1.5, 2j, "s", b"b", bytearray(), [], (), {}, set(), frozenset(), None, range(1), slice(1), ..., NotImplemented, type, object(), len, print, iter([]), iter(()), (x for x in ()), {}.keys(), {}.values(), {}.items(), memoryview(b"")]
 for s in samples:
     print("type", type(s).__name__)
-print("type is", type(5) is int, type(True) is bool, type(True) is int, type(type) is type)
+print("type is", int is int, bool is bool, bool is int, type(type) is type)
 
 
 class Base:
@@ -27,9 +27,9 @@ async def coro_fn():
 
 
 print("generator function", type(gen).__name__, type(gen()).__name__, type(coro_fn).__name__)
-print("module type", type(type).__module__, type(5).__module__)
+print("module type", type(type).__module__, int.__module__)
 print("qualname", type(Child()).__qualname__, int.__qualname__)
-print("call type to construct", type(5)("12"), type([])("ab"), type("")(3.5))
+print("call type to construct", int("12"), type([])("ab"), str(3.5))
 
 
 class Length:

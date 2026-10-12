@@ -1,7 +1,7 @@
 """statistics: mean/fmean/median variants/mode/multimode/stdev/variance/quantiles on exact data, Fraction/Decimal inputs, error cases."""
 import statistics as st
-from fractions import Fraction
 from decimal import Decimal
+from fractions import Fraction
 
 data = [2, 4, 4, 4, 5, 5, 7, 9]
 print("mean", st.mean(data), type(st.mean(data)).__name__)

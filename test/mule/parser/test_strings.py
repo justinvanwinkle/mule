@@ -4,7 +4,7 @@ import pytest
 
 from mule import ast
 from test.mule.parser import ast_query as q
-from test.mule.parser.ast_query import assert_ast_equal, one
+from test.mule.parser.ast_query import assert_ast_equal, expect, one
 
 
 @pytest.mark.parametrize(
@@ -117,7 +117,8 @@ def test_comparison_operators_are_not_debug_or_conversion_delimiters(parse):
 def test_template_expression_text_retains_whitespace_before_format_specification(parse):
     field = one(parse('t"{ value :#x}"', mode="eval"), q.Interpolation)
     assert field.expression_text == " value "
-    assert field.format_spec.parts[0].value == "#x"
+    format_spec = expect(field.format_spec, ast.FormattedString)
+    assert expect(format_spec.parts[0], ast.TextLiteral).value == "#x"
 
 
 @pytest.mark.parametrize(

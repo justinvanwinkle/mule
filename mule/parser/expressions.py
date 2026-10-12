@@ -1,8 +1,12 @@
 """Pratt expression parsing, including Python's asymmetric power binding."""
 
 import re
+from typing import TYPE_CHECKING
 
 from mule import ast
+
+if TYPE_CHECKING:
+    from .core import Parser
 
 BINARY_POWER = {
     "|": 40,
@@ -30,7 +34,7 @@ BASE_INTEGER = r"(?:0[bB](?:_?[01])+|0[oO](?:_?[0-7])+|0[xX](?:_?[0-9a-fA-F])+)"
 
 
 class ExpressionParserMixin:
-    def expression(self, min_bp=0, *, allow_named=False, allow_yield=False):
+    def expression(self: Parser, min_bp=0, *, allow_named=False, allow_yield=False):
         start = self.current
         if start.text == "yield" and not allow_yield:
             self.error("Yield requires parentheses in this expression")
@@ -46,7 +50,7 @@ class ExpressionParserMixin:
         while True:
             text = self.current.text
             if text in ("(", "[", ".") and 110 >= min_bp:
-                begin = left.span.start
+                begin = left.source_start()
                 if self.match("("):
                     left = self.finish(ast.Call(left, self.call_arguments()), begin)
                 elif self.match("["):
@@ -61,10 +65,12 @@ class ExpressionParserMixin:
             if text == ":=" and min_bp <= 1:
                 if not allow_named or self.is_parenthesized(left):
                     self.error("Invalid assignment expression target or context")
-                left.validate_named_target(self)
+                target = left.validate_named_target(self)
                 self.advance()
                 right = self.expression(2)
-                left = self.finish(ast.NamedExpression(left, right), left.span.start)
+                left = self.finish(
+                    ast.NamedExpression(target, right), target.source_start()
+                )
                 continue
             if text == "if" and min_bp <= 5:
                 self.advance()
@@ -72,7 +78,7 @@ class ExpressionParserMixin:
                 self.expect("else")
                 otherwise = self.expression(5)
                 left = self.finish(
-                    ast.Conditional(condition, left, otherwise), left.span.start
+                    ast.Conditional(condition, left, otherwise), left.source_start()
                 )
                 continue
             if text in ("or", "and"):
@@ -108,11 +114,11 @@ class ExpressionParserMixin:
             self.advance()
             right = self.expression(80 if text == "**" else power + 1)
             left = self.finish(
-                ast.Binary(ast.BinaryOperator(text), left, right), left.span.start
+                ast.Binary(ast.BinaryOperator(text), left, right), left.source_start()
             )
         return left
 
-    def atom(self):
+    def atom(self: Parser):
         start = self.current
         if start.kind == "NUMBER":
             self.advance()
@@ -204,7 +210,7 @@ class ExpressionParserMixin:
             return self.finish(ast.Name(token.text), start)
         self.error("Expected an expression")
 
-    def at_expression_end(self, stops=()):
+    def at_expression_end(self: Parser, stops=()):
         return (
             self.current.kind in ("NEWLINE", "EOF", "DEDENT", "TYPE_COMMENT")
             or self.current.text in END_EXPRESSIONS
@@ -212,7 +218,7 @@ class ExpressionParserMixin:
         )
 
     def star_expression(
-        self, min_bp=0, *, allow_named=False, allow_star=True, allow_yield=False
+        self: Parser, min_bp=0, *, allow_named=False, allow_star=True, allow_yield=False
     ):
         start = self.current
         if allow_star and self.match("*"):
@@ -220,7 +226,7 @@ class ExpressionParserMixin:
         return self.expression(min_bp, allow_named=allow_named, allow_yield=allow_yield)
 
     def expression_list(
-        self,
+        self: Parser,
         *,
         allow_star=True,
         min_bp=0,
@@ -248,7 +254,7 @@ class ExpressionParserMixin:
                 break
         return self.finish(ast.Tuple(elements), start)
 
-    def subscript_index(self):
+    def subscript_index(self: Parser):
         start = self.current
         elements = [self.slice_item()]
         if not self.match(","):
@@ -259,7 +265,7 @@ class ExpressionParserMixin:
                 break
         return self.finish(ast.Tuple(elements), start)
 
-    def slice_item(self):
+    def slice_item(self: Parser):
         start = self.current
         lower = (
             None if self.current.text == ":" else self.star_expression(allow_named=True)
@@ -272,7 +278,7 @@ class ExpressionParserMixin:
             step = self.expression()
         return self.finish(ast.Slice(lower, upper, step), start)
 
-    def call_arguments(self, end=")"):
+    def call_arguments(self: Parser, end=")"):
         arguments = []
         keyword_seen = False
         double_star_seen = False
@@ -315,7 +321,7 @@ class ExpressionParserMixin:
         self.expect(end)
         return arguments
 
-    def brace_display(self, start):
+    def brace_display(self: Parser, start):
         if self.match("}"):
             return self.finish(ast.Dict(), start)
         if self.match("**"):
@@ -335,7 +341,7 @@ class ExpressionParserMixin:
                     )
                     self.expect("}")
                     return self.finish(result, start)
-                entries = [self.finish(ast.DictEntry(first, value), first.span.start)]
+                entries = [self.finish(ast.DictEntry(first, value), first.source_start())]
             else:
                 if self.current.text in ("for", "async"):
                     result = self.comprehension(ast.ComprehensionKind.SET, first)
@@ -359,7 +365,7 @@ class ExpressionParserMixin:
             ast.Dict(entries) if dictionary else ast.Set(elements), start
         )
 
-    def comprehension(self, kind, element, *, key=None):
+    def comprehension(self: Parser, kind, element, *, key=None):
         element.require_collection(self, "Comprehensions cannot unpack their element")
         clauses = []
         while self.current.text in ("for", "async"):
@@ -380,8 +386,8 @@ class ExpressionParserMixin:
                 )
             )
         return self.finish(
-            ast.Comprehension(kind, element, clauses, key), element.span.start
+            ast.Comprehension(kind, element, clauses, key), element.source_start()
         )
 
-    def validate_target(self, node, *, delete=False):
+    def validate_target(self: Parser, node, *, delete=False):
         node.validate_target(self, delete=delete)

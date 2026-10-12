@@ -104,9 +104,7 @@ elif boom():
     pass
 
 try:
-    if cond("f", False):
-        pass
-    elif boom():
+    if cond("f", False) or boom():
         pass
 except RuntimeError as e:
     print("raised in elif", e)

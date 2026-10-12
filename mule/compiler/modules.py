@@ -76,7 +76,7 @@ class ModuleCompiler:
         self.prefix = prefix
         # Modules imported by a compiled protocol share its physical primitives.
         self.primitives = primitives
-        self.modules = {}
+        self.modules: dict[str, CompiledModule] = {}
         # Lambdas and facts of every imported module, in compilation order.
         self.lambdas = []
         self.facts = {}
@@ -177,6 +177,8 @@ class ModuleCompiler:
                 namespace=descriptor.name,
                 primitives=self.primitives,
             )
+            if compilation.facts is None:
+                raise RuntimeError(f"{descriptor.path} was not analyzed")
             self.lambdas.extend(compilation.lambdas)
             self.facts.update(compilation.facts)
 
@@ -190,11 +192,17 @@ class ModuleCompiler:
 
 
 def compile_modules(
-    source, filename="<unknown>", *, roots=None, package=None, compiled=None
+    source,
+    filename="<unknown>",
+    *,
+    roots=None,
+    package=None,
+    compiled: dict[str, CompiledModule] | None = None,
 ):
     """Compile a program's modules. ``compiled`` are modules another unit
     already compiled, by name; an import of one reuses it. Returns the main
     compilation and the module compiler holding the imported modules."""
     compiler = ModuleCompiler(filename, roots=roots, package=package)
-    compiler.modules.update(compiled or {})
+    if compiled is not None:
+        compiler.modules.update(compiled)
     return compiler.compile(source, filename), compiler

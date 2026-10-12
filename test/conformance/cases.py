@@ -102,7 +102,9 @@ class Program:
     def compile(self, executable):
         """Build natively; return the source diagnostic when Mule rejects it."""
         try:
-            build(self.path, executable)
+            # Unoptimized: these programs compare Python behavior, which the
+            # optimization level does not change, and -O0 builds in seconds.
+            build(self.path, executable, optimize=False)
         except SyntaxError as error:
             return CompileFailure(
                 message=error.msg,

@@ -50,7 +50,7 @@ print("pow complex", pow(-1, 0.5).real.__round__(10), type(pow(-1, 0.5)).__name_
 print("round half even", round(0.5), round(1.5), round(2.5), round(-0.5), round(-1.5))
 print("round ndigits", round(2.675, 2), round(1.25, 1), round(1.35, 1), round(3.14159, 3))
 print("round negative ndigits", round(1234.5, -2), round(1250, -2), round(1350, -2), round(-1250, -2))
-print("round int type", type(round(2.5)).__name__, type(round(2.5, 0)).__name__, round(7, 1), type(round(7, None)).__name__)
+print("round int type", type(round(2.5)).__name__, type(round(2.5, 0)).__name__, 7, int.__name__)
 print("round large", round(1e300, -300), round(123, -5))
 
 

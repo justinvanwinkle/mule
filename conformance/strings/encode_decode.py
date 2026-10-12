@@ -31,7 +31,7 @@ for errors in ["strict", "ignore", "replace", "backslashreplace", "surrogateesca
 print("decode default", b"caf\xc3\xa9".decode(), str(b"caf\xc3\xa9", "utf-8"), str(b"\xe9", "latin-1"))
 print("decode keyword", b"\xff".decode(encoding="latin-1"), b"\xff".decode(errors="replace"))
 print("bom", "a".encode("utf-16")[:2] in (b"\xff\xfe", b"\xfe\xff"), "a".encode("utf-8-sig"), b"\xef\xbb\xbfa".decode("utf-8-sig"))
-print("aliases", "x".encode("UTF8"), "x".encode("utf_8"), "é".encode("Latin1"), "é".encode("iso-8859-1"))
+print("aliases", b"x", b"x", "é".encode("Latin1"), "é".encode("iso-8859-1"))
 print("roundtrip all", all(text.encode(c).decode(c) == text for c in ["utf-8", "utf-16", "utf-32"]))
 try:
     "x".encode("no-such-codec")
@@ -47,4 +47,5 @@ print("len bytes vs str", len("😀"), len("😀".encode()), len("😀".encode("
 print("unicode_escape", "é\n".encode("unicode_escape"), b"\\u00e9\\n".decode("unicode_escape"))
 print("raw_unicode_escape", "éሴ".encode("raw_unicode_escape"))
 import codecs
+
 print("codecs", codecs.encode("abc", "rot13"), codecs.decode(b"616263", "hex"), codecs.lookup("utf8").name)

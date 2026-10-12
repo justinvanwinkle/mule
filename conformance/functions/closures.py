@@ -98,7 +98,7 @@ print("later assignment", later_assignment())
 # Closure cell updated after closure creation
 def updates():
     x = 1
-    f = lambda: x  # noqa: E731
+    f = lambda: x
     x = 2
     r1 = f()
     x = 3
@@ -163,7 +163,7 @@ class Scope:
 
     def method(self):
         try:
-            return hidden  # noqa: F821
+            return hidden
         except NameError as e:
             return type(e).__name__
 

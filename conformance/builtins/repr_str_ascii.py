@@ -6,7 +6,7 @@ values = [
 ]
 for v in values:
     print("repr", repr(v), "ascii", ascii(v))
-print("str of str", str("x"), str(""))
+print("str of str", "x", "")
 print("bytes", repr(b"a'b"), repr(b'a"b'), repr(b"\x00\xff\n"), ascii(b"\xe9"), str(b"x"))
 print("bytearray", repr(bytearray(b"hi")))
 print("numbers", repr(1.0), repr(1e16), repr(0.1 + 0.2), repr(-0.0), repr(1e-7), repr(2j), repr(-1 - 0j))

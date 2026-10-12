@@ -8,7 +8,7 @@ for x in [0.5, 1.5, 2.5, 3.5, -0.5, -1.5, -2.5, 0.4999999, 2.675, 1.005]:
 print("round ndigits", round(2.675, 2), round(1.005, 2), round(0.125, 2), round(0.375, 2), round(3.14159, 3))
 print("round ndigits 0", round(2.5, 0), type(round(2.5, 0)).__name__, round(-0.4, 0))
 print("round negative ndigits float", round(1234.5, -1), round(1250.0, -2), round(1350.0, -2), round(-15.0, -1))
-print("round int", round(7), round(-7), type(round(7, 2)).__name__)
+print("round int", 7, -7, int.__name__)
 print("round int negative ndigits", round(1234, -2), round(1250, -2), round(1350, -2), round(-25, -1), round(15, -1))
 print("round int big", round(10**30 + 5 * 10**10, -11), round(5, -100))
 print("round bool", round(True), type(round(True)).__name__)

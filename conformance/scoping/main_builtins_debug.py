@@ -56,7 +56,7 @@ print("fully restored", len("x"))
 
 # builtins namespace dict
 print("vars(builtins) has print", "print" in vars(builtins))
-print("getattr builtins", getattr(builtins, "max")(1, 5))
+print("getattr builtins", builtins.max(1, 5))
 
 # __debug__
 print("__debug__", __debug__)

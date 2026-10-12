@@ -13,7 +13,7 @@ class Outer:
     def make_inner(self):
         # Inner is not in scope unqualified inside methods
         try:
-            return Inner  # noqa: F821
+            return Inner
         except NameError as e:
             return type(e).__name__
 

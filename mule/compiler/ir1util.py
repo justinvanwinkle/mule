@@ -29,6 +29,7 @@ from .node import (
     Return,
     Set,
     ValuedNode,
+    linked,
 )
 
 
@@ -54,7 +55,7 @@ def use_ctran(node: Node, ctran: Ctran) -> None:
     """Make ``ctran`` what ``node`` evaluates next. An unused ctran joins the
     node's block; a block-start ctran ends the node's block and links it."""
     if ctran.kind is CtranKind.UNUSED:
-        block = node.prev.block
+        block = node.block
         ctran.block = block
         ctran.kind = CtranKind.INSIDE_BLOCK
         ctran.use = node
@@ -65,8 +66,8 @@ def use_ctran(node: Node, ctran: Ctran) -> None:
 
 def _use_block_start(node: Node, ctran: Ctran) -> None:
     aver(ctran.kind is CtranKind.BLOCK_START)
-    block = ctran.block
-    node_block = node.prev.block
+    block = linked(ctran.block, ctran, "block")
+    node_block = node.block
     aver(node_block.last is None, f"{node_block!r} has already ended")
     node_block.last = node
     aver(not node_block.succ, f"{node_block!r} already has successors")
@@ -90,7 +91,7 @@ def use_continuation(node: ValuedNode, ctran: Ctran, lvar: Lvar | None) -> None:
 
 
 def insert_node_before(old: Node, new: Node) -> None:
-    prev = old.prev
+    prev = linked(old.prev, old, "preceding control position")
     temp = Ctran()
     prev.next = None
     link_node_to_previous_ctran(new, prev)
@@ -101,7 +102,7 @@ def insert_node_before(old: Node, new: Node) -> None:
 def insert_node_after(old: Node, new: Node) -> None:
     following = old.next
     if following is not None:
-        insert_node_before(following.next, new)
+        insert_node_before(linked(following.next, following, "next node"), new)
     else:
         ctran = Ctran()
         link_node_to_previous_ctran(new, ctran)
@@ -123,11 +124,11 @@ def reoptimize_lvar(lvar: Lvar | None) -> None:
     prev = dest.prev
     if prev is None:
         return
-    block = prev.block
     if isinstance(dest, ValuedNode) and dest.lvar is not None:
         test = dest.lvar.dest
         if isinstance(test, If) and test.prev is not None:
             test.reoptimize = True
+    block = linked(prev.block, prev, "block")
     block.reoptimize = True
     component = block.component
     if component is not None and component.reoptimize is not True:
@@ -141,10 +142,10 @@ def ctran_starts_block(ctran: Ctran, component: Component) -> Block:
     """Make ``ctran`` head a new block inserted before the component's
     ``last_block`` in the DFO chain, or return the block it already heads."""
     if ctran.kind is CtranKind.BLOCK_START:
-        return ctran.block
+        return linked(ctran.block, ctran, "block")
     aver(ctran.kind is CtranKind.UNUSED and ctran.block is None)
     following = component.last_block
-    previous = following.prev
+    previous = linked(following.prev, following, "previous block")
     block = Block(ctran, component=component)
     block.next = following
     block.prev = previous
@@ -162,7 +163,7 @@ def ensure_block_start(ctran: Ctran, component: Component) -> None:
     if ctran.kind is CtranKind.UNUSED:
         ctran_starts_block(ctran, component)
     else:
-        node_ends_block(ctran.use)
+        node_ends_block(linked(ctran.use, ctran, "use"))
 
 
 def link_blocks(block1: Block, block2: Block) -> None:
@@ -193,7 +194,7 @@ def change_block_successor(block: Block, old: Block, new: Block) -> None:
 
 
 def add_to_dfo(block: Block, after: Block) -> None:
-    following = after.next
+    following = linked(after.next, after, "next block")
     block.prev = after
     block.next = following
     after.next = block
@@ -202,8 +203,10 @@ def add_to_dfo(block: Block, after: Block) -> None:
 
 
 def remove_from_dfo(block: Block) -> None:
-    block.prev.next = block.next
-    block.next.prev = block.prev
+    previous = linked(block.prev, block, "previous block")
+    following = linked(block.next, block, "next block")
+    previous.next = following
+    following.prev = previous
     block.next = block.prev = None
 
 
@@ -211,10 +214,10 @@ def node_ends_block(node: Node) -> Block | None:
     """Split ``node``'s block after ``node``; the remainder becomes a new block
     immediately following it in the DFO. Returns the new block if one is made."""
     block = node.block
-    start = node.next
     last = block.last
     if last is node:
         return None
+    start = linked(node.next, node, "next control position")
     aver(start.kind is CtranKind.INSIDE_BLOCK and not block.delete_p)
     successors = list(block.succ)
     new_block = Block(start, component=block.component)
@@ -230,7 +233,7 @@ def node_ends_block(node: Node) -> Block | None:
     block.succ = []
     link_blocks(block, new_block)
     add_to_dfo(new_block, block)
-    block.component.reanalyze = True
+    linked(block.component, block, "component").reanalyze = True
     ctran = start
     while ctran is not None:
         ctran.block = new_block
@@ -262,10 +265,10 @@ def join_successor_if_possible(block: Block) -> bool:
 
 
 def join_blocks(block1: Block, block2: Block) -> None:
-    last1 = block1.last
+    last1 = linked(block1.last, block1, "last node")
     last2 = block2.last
     successors = list(block2.succ)
-    start2 = block2.start
+    start2 = linked(block2.start, block2, "start")
     ctran = start2
     while ctran is not None:
         ctran.block = block1
@@ -290,15 +293,16 @@ def join_blocks(block1: Block, block2: Block) -> None:
 
 
 def block_start_cleanup(block: Block) -> Cleanup | None:
-    return block.start.next.lexenv.cleanup
+    start = linked(block.start, block, "start")
+    return linked(start.next, start, "next node").lexenv.cleanup
 
 
 def block_end_cleanup(block: Block) -> Cleanup | None:
-    return block.last.lexenv.cleanup
+    return linked(block.last, block, "last node").lexenv.cleanup
 
 
 def block_home_lambda(block: Block) -> Lambda:
-    return block.last.lexenv.lambda_
+    return linked(block.last, block, "last node").lexenv.lambda_
 
 
 def node_enclosing_cleanup(node: Node) -> Cleanup | None:
@@ -343,7 +347,8 @@ def add_lvar_use(node: ValuedNode, lvar: Lvar) -> None:
 def substitute_lvar(new: Lvar, old: Lvar) -> None:
     """Replace ``old`` with ``new`` as the operand of ``old``'s destination."""
     dest = old.dest
-    aver(dest is not None, f"{old!r} has no destination to substitute in")
+    if dest is None:
+        raise IR1Error(f"{old!r} has no destination to substitute in")
     dest.accept(_SubstituteOperand(new, old))
     new.dest = dest
     reoptimize_lvar(new)
@@ -382,7 +387,7 @@ class _SubstituteOperand:
 def flush_node(node: ValuedNode) -> None:
     """Record that ``node``'s value is no longer used; the node itself stays
     until dead-code flushing decides whether it may be deleted."""
-    block = node.prev.block
+    block = node.block
     component = block.component
     if component is not None:
         component.reoptimize = True
@@ -407,7 +412,7 @@ def delete_ref(ref: Ref) -> None:
         and not leaf.refs
         and leaf.kind.name not in ("OPTIONAL", "DELETED", "TOPLEVEL")
     ):
-        leaf.component.reanalyze = True
+        linked(leaf.component, leaf, "component").reanalyze = True
 
 
 def delete_set(node: Set) -> None:
@@ -421,17 +426,19 @@ def unlink_node(node: Node) -> bool:
         delete_lvar_use(node)
     ctran = node.next
     following = ctran.next if ctran is not None else None
-    prev = node.prev
-    block = prev.block
+    prev = linked(node.prev, node, "preceding control position")
+    block = linked(prev.block, prev, "block")
     prev_kind = prev.kind
     last = block.last
     if prev_kind is CtranKind.INSIDE_BLOCK or (
         prev_kind is CtranKind.BLOCK_START and node is not last
     ):
         if node is last:
-            block.last = prev.use
-            prev.use.next = None
+            previous_node = linked(prev.use, prev, "use")
+            block.last = previous_node
+            previous_node.next = None
         else:
+            following = linked(following, node, "following node")
             prev.next = following
             following.prev = prev
             if isinstance(following, If):
@@ -454,7 +461,7 @@ def unlink_node(node: Node) -> bool:
     for pred in list(block.pred):
         change_block_successor(pred, block, following_block)
     if block.delete_p:
-        block.component.delete_blocks.remove(block)
+        linked(block.component, block, "component").delete_blocks.remove(block)
     remove_from_dfo(block)
     block.delete_p = True
     node.prev = None
@@ -464,11 +471,11 @@ def unlink_node(node: Node) -> bool:
 def delete_block_lazily(block: Block) -> None:
     if not block.delete_p:
         block.delete_p = True
-        block.component.delete_blocks.append(block)
+        linked(block.component, block, "component").delete_blocks.append(block)
 
 
 def mark_for_deletion(block: Block) -> None:
-    component = block.component
+    component = linked(block.component, block, "component")
     head = component.head
 
     def helper(current):
@@ -588,7 +595,7 @@ def var_sets_in_lambda(var: BasicVar, lambda_: Lambda) -> list[Set]:
 
 
 def lambda_block(lambda_: Lambda) -> Block:
-    return lambda_.bind.block
+    return linked(lambda_.bind, lambda_, "bind").block
 
 
 def return_block(node: Return) -> Block:
@@ -601,7 +608,7 @@ def class_method_definitions(lambda_: Lambda) -> dict[str, dict[str, Lambda]]:
     store a decorator's result instead and are not included."""
     definitions = {}
     classes: dict[str, dict[str, Lambda]] = {}
-    for block in lambda_.component.blocks():
+    for block in linked(lambda_.component, lambda_, "component").blocks():
         for node in block.nodes():
             if not isinstance(node, Combination) or node.kind is not CallKind.KNOWN:
                 continue

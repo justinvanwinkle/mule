@@ -14,7 +14,7 @@ try:
     "a" in b
 except TypeError as e:
     print("str in bytes", type(e).__name__)
-print("ctor", bytes(3), bytes([65, 66, 67]), bytes(range(5)), bytes(b"x"), bytes(), bytes("é", "utf-8"))
+print("ctor", bytes(3), bytes([65, 66, 67]), bytes(range(5)), b"x", b"", bytes("é", "utf-8"))
 try:
     bytes([256])
 except ValueError as e:

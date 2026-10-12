@@ -1,0 +1,18 @@
+extend = "../pyproject.toml"
+
+# These upstream fixtures deliberately contain invalid syntax or non-UTF-8 bytes.
+extend-exclude = [
+    "test/tokenizedata/*.py",
+    "test/encoded_modules/module_iso_8859_1.py",
+    "test/encoded_modules/module_koi8_r.py",
+]
+
+[lint]
+# Preserve upstream idioms and compiler-bound globals; check only syntax and
+# structural errors, not style, modernization, or ordinary name resolution.
+select = ["E9", "F63", "F7"]
+extend-select = []
+
+[lint.per-file-ignores]
+# Upstream tests deliberately exercise invalid annotations and literal identity.
+"test/**" = ["F722", "F632"]

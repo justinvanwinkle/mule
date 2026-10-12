@@ -35,12 +35,12 @@ class B:
     factor = 10
     try:
         scaled = [v * factor for v in values]
-    except NameError as e:
+    except NameError:
         scaled = "NameError (factor invisible in comprehension body)"
     doubled = [v * 2 for v in values]
     try:
         nested = [[v for v in values] for _ in range(1)]
-    except NameError as e:
+    except NameError:
         nested = "NameError (values invisible in nested comprehension)"
     lam = lambda: factor
 

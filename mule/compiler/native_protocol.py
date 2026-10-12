@@ -8,11 +8,15 @@ functions. Only primitive operations have backend templates.
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .inputs import read_source
 from .ir1util import class_method_definitions
-from .node import CallKind, Combination
+from .node import CallKind, Combination, Lambda
 from .protocols import add_lambdas, compile_protocol
+
+if TYPE_CHECKING:
+    from .ir1tran import ClassInfo
 
 
 @dataclass(slots=True)
@@ -20,8 +24,8 @@ class Layout:
     """A native class: its definition data, methods, and the compiled
     constructor and field adapters."""
 
-    info: object
-    methods: dict[str, object]
+    info: ClassInfo
+    methods: dict[str, Lambda]
     index: int
     protocols: dict[str, object] = field(default_factory=dict)
 

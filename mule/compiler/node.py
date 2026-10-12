@@ -27,8 +27,10 @@ Python adaptations, recorded in ``spec/python-changes.md``:
 from __future__ import annotations
 
 import itertools
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from typing import Literal
 
 from mule import ast
 
@@ -39,6 +41,14 @@ _numbers = itertools.count(1)
 
 def _number() -> int:
     return next(_numbers)
+
+
+def linked[T](value: T | None, owner: object, link: str) -> T:
+    """``owner``'s ``link``. IR being analyzed or emitted is linked, so a
+    missing link there means the IR is malformed, not an expected state."""
+    if value is None:
+        raise ValueError(f"{owner!r} has no {link}")
+    return value
 
 
 class CtranKind(Enum):
@@ -70,13 +80,13 @@ class Lvar:
 
     def __init__(self, dest: Node | None = None):
         self.dest = dest
-        self.uses: list[Node] = []
+        self.uses: list[ValuedNode] = []
         self.derived_type = None
         self.reoptimize = True
         self.info = None
         self.number = _number()
 
-    def use(self) -> Node:
+    def use(self) -> ValuedNode:
         """The unique producing node; callers must know there is exactly one."""
         if len(self.uses) != 1:
             raise ValueError(f"{self!r} does not have a single use")
@@ -101,7 +111,8 @@ class Node:
 
     @property
     def block(self) -> Block:
-        return self.prev.block
+        prev = linked(self.prev, self, "preceding control position")
+        return linked(prev.block, prev, "block")
 
     @property
     def home_lambda(self) -> Lambda:
@@ -254,7 +265,8 @@ class Cast(ValuedNode):
         self, lexenv, source, value: Lvar, contract, location, safety: int, declaration=None
     ):
         super().__init__(lexenv, source)
-        self.value = value
+        # None once the assertion is removed from the IR.
+        self.value: Lvar | None = value
         self.contract = contract
         self.location = location
         self.safety = safety
@@ -385,7 +397,9 @@ class KnownFunction(Leaf):
 class BasicVar(Leaf):
     __slots__ = ("sets",)
 
-    def __init__(self, source_name):
+    source_name: str
+
+    def __init__(self, source_name: str):
         super().__init__(source_name)
         self.sets: list[Set] = []
 
@@ -641,8 +655,8 @@ class Lexenv:
     """Conversion-time context: visible bindings, the enclosing lambda, the
     innermost cleanup, loop targets, and the optimization policy."""
 
-    vars: dict[str, Leaf]
-    lambda_: Lambda | None
+    vars: Mapping[str, Leaf]
+    lambda_: Lambda
     cleanup: Cleanup | None = None
     policy: OptimizationPolicy = field(default_factory=OptimizationPolicy)
     loops: tuple[LoopTarget, ...] = ()
@@ -771,9 +785,9 @@ class Component:
         self.last_block = self.tail
         self.kind = ComponentKind.INITIAL
         self.lambdas: list[Lambda] = []
-        self.new_functionals: list[Functional] = []
+        self.new_functionals: list[Lambda] = []
         self.reanalyze_functionals: list[Functional] = []
-        self.reoptimize = True
+        self.reoptimize: bool | Literal["maybe"] = True
         self.reanalyze = False
         self.name = name
         self.info = None
@@ -782,11 +796,11 @@ class Component:
 
     def blocks(self):
         """Blocks in depth-first order, excluding the dummy head and tail."""
-        block = self.head.next
+        block = linked(self.head.next, self.head, "next block")
         while block is not self.tail:
             following = block.next
             yield block
-            block = following
+            block = linked(following, block, "next block")
 
     def __repr__(self):
         return f"<Component {self.name}>"

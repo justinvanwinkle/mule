@@ -38,6 +38,20 @@ unchanged, so editing an imported module or adding a file that would shadow one
 rebuilds the program. A first run costs a full native build; later runs start the
 cached executable directly.
 
+The build-step thread pool defaults to one worker per physical core available
+in the calling thread's Linux CPU affinity mask. Linux sysfs
+`thread_siblings_list` groups logical CPUs belonging to the same core, so SMT
+siblings count once, including when only some siblings are allowed. An explicit
+`Graph(workers=...)` overrides automatic sizing. Missing or empty topology is
+reported as a toolchain error rather than guessed from the logical CPU count.
+This sizes Mule's existing build scheduler; it does not change compiler stages
+or the linker's separate thread setting. SBCL's `make-host-2.sh` and
+`make-host-2.lisp` invoke the cold compiler through
+`src/cold/compile-cold-sbcl.lisp`, rather than this Python worker pool. The
+affinity/sysfs query is a Linux host-build adaptation to bound independent Mule
+build steps by available physical cores; it changes resource use, not generated
+program semantics.
+
 SBCL `src/code/toplevel.lisp`, `toplevel-init`, also stops option processing
 at `--script` and leaves the remaining arguments in `*posix-argv*` for user code;
 `process-script` then `load`s the script, compiling each toplevel form in process. Mule has no

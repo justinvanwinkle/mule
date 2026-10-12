@@ -10,6 +10,10 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import EllipsisType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mule.parser.core import Parser
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +34,18 @@ class Span:
 @dataclass(slots=True, kw_only=True)
 class Node:
     span: Span | None = None
+
+    def source_start(self) -> Position:
+        """Where the node starts in its source; a parsed node always has one."""
+        return self._source_span().start
+
+    def source_end(self) -> Position:
+        return self._source_span().end
+
+    def _source_span(self) -> Span:
+        if self.span is None:
+            raise ValueError(f"{type(self).__name__} node has no source span")
+        return self.span
 
     def children(self) -> Iterator[Node]:
         return iter(())
@@ -64,7 +80,8 @@ class Expression(Node):
     def validate_single_target(self, parser, message, start):
         parser.error(message, start)
 
-    def validate_named_target(self, parser):
+    def validate_named_target(self, parser: Parser) -> Name:
+        """The target of ``target := value``, which must be a name."""
         parser.error("Invalid assignment expression target or context")
 
     def require_collection(self, parser, message, start=None):
@@ -84,12 +101,15 @@ class Expression(Node):
 
     def append_boolean(self, operator, right, *, grouped):
         return Boolean(
-            operator, [self, right], span=Span(self.span.start, right.span.end)
+            operator, [self, right], span=Span(self.source_start(), right.source_end())
         )
 
     def append_comparison(self, operator, right, *, grouped):
         return Comparison(
-            self, [operator], [right], span=Span(self.span.start, right.span.end)
+            self,
+            [operator],
+            [right],
+            span=Span(self.source_start(), right.source_end()),
         )
 
     def pattern_reference(self):
@@ -257,8 +277,8 @@ class Name(Expression):
     def validate_single_target(self, parser, message, start):
         pass
 
-    def validate_named_target(self, parser):
-        pass
+    def validate_named_target(self, parser) -> Name:
+        return self
 
     def pattern_reference(self):
         return CapturePattern(
@@ -461,10 +481,12 @@ class Boolean(Expression):
     def append_boolean(self, operator, right, *, grouped):
         if operator != self.operator or grouped:
             return Boolean(
-                operator, [self, right], span=Span(self.span.start, right.span.end)
+                operator,
+                [self, right],
+                span=Span(self.source_start(), right.source_end()),
             )
         self.operands.append(right)
-        self.span = Span(self.span.start, right.span.end)
+        self.span = Span(self.source_start(), right.source_end())
         return self
 
 
@@ -484,11 +506,14 @@ class Comparison(Expression):
     def append_comparison(self, operator, right, *, grouped):
         if grouped:
             return Comparison(
-                self, [operator], [right], span=Span(self.span.start, right.span.end)
+                self,
+                [operator],
+                [right],
+                span=Span(self.source_start(), right.source_end()),
             )
         self.operators.append(operator)
         self.comparators.append(right)
-        self.span = Span(self.span.start, right.span.end)
+        self.span = Span(self.source_start(), right.source_end())
         return self
 
 

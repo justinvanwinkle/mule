@@ -119,11 +119,11 @@ print("globals() restored", max(1, 2))
 
 # comprehension iteration variable named like a builtin does not leak
 vals = [type for type in (1, 2)]
-print("comprehension var did not leak", vals, type(1).__name__)
+print("comprehension var did not leak", vals, int.__name__)
 
 # exception handler variable named like a builtin is deleted afterwards
 try:
     raise ValueError
-except ValueError as input:
+except ValueError:
     pass
 print("except-as builtin name unbound, builtin visible again", callable(input))

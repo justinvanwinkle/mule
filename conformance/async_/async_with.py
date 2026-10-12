@@ -90,9 +90,8 @@ print("propagated", run(propagated()), log)
 
 
 async def inner_suppresses_outer_sees_none():
-    async with Manager("outer"):
-        async with Manager("inner", suppress=True):
-            raise ZeroDivisionError
+    async with Manager("outer"), Manager("inner", suppress=True):
+        raise ZeroDivisionError
 
 
 log.clear()

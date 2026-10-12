@@ -1,6 +1,5 @@
 """collections.abc: isinstance/issubclass of builtins, custom Mapping/Sequence/Set subclasses with mixin methods, structural __subclasshook__ checks."""
-from collections import abc
-from collections import OrderedDict, deque
+from collections import OrderedDict, abc, deque
 
 
 def gen():

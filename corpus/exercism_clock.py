@@ -33,7 +33,7 @@ class Clock:
         return f'Clock({self.hour}, {self.minute})'
 
     def __str__(self):
-        return '{:02d}:{:02d}'.format(self.hour, self.minute)
+        return f'{self.hour:02d}:{self.minute:02d}'
 
     def __eq__(self, other):
         return repr(self) == repr(other)

@@ -28,7 +28,7 @@ print(catch_with(RuntimeError, RecursionError("r")))
 print(catch_with(RuntimeError, NotImplementedError("n")))
 print(catch_with(ValueError, UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")))
 print(catch_with(OSError, FileNotFoundError("f")))
-print(catch_with(OSError, IOError("io")))
+print(catch_with(OSError, OSError("io")))
 print(catch_with(Exception, AssertionError("a")))
 print(catch_with(ImportError, ModuleNotFoundError("m")))
 

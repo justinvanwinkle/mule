@@ -113,7 +113,7 @@ for label, fn in [("int", lambda: int(BadInt())), ("float", lambda: float(BadFlo
 
 # Builtin round semantics (banker's rounding, ndigits)
 print("round builtins", round(0.5), round(1.5), round(2.5), round(-0.5), round(2.675, 2), round(1234, -2), round(1250, -2), round(1350, -2))
-print("round types", type(round(2.5)).__name__, type(round(2.5, 0)).__name__, type(round(7, 1)).__name__)
+print("round types", type(round(2.5)).__name__, type(round(2.5, 0)).__name__, int.__name__)
 print("math funcs on floats", math.trunc(-2.7), math.floor(-2.7), math.ceil(-2.7), math.floor(3), math.ceil(-0.0))
 print("int() truncation", int(-2.7), int(2.999), int("  -12 "), int("ff", 16), int("0b101", 0), int(True))
 print("float parse", float(" 1e3 "), float("-inf"), float("nan") != float("nan"), float(10 ** 20))

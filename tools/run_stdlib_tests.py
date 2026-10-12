@@ -10,6 +10,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TypedDict
 
 from mule import ast
 from mule.parser import parse
@@ -131,6 +132,27 @@ class Outcome:
     stats: dict | None = None
 
 
+class SessionTimeout(subprocess.TimeoutExpired):
+    """A run_bounded timeout carrying the text output read after the kill.
+
+    TimeoutExpired types its output as bytes; run_bounded always runs in text
+    mode, so this keeps the decoded output typed as text."""
+
+    def __init__(self, error: subprocess.TimeoutExpired, stdout: str, stderr: str):
+        super().__init__(error.cmd, error.timeout, output=stdout, stderr=stderr)
+        self.text_stdout = stdout
+
+
+class CaseResult(TypedDict):
+    name: str
+    executed: bool
+    passed: bool
+    failure: bool
+    stdout: str
+    stderr: str
+    exit_code: int | None
+
+
 def run_bounded(command, *, timeout, cwd, input=None, encoding="utf-8"):
     """Run a command in its own session and kill the whole session on timeout.
 
@@ -152,8 +174,8 @@ def run_bounded(command, *, timeout, cwd, input=None, encoding="utf-8"):
         stdout, stderr = process.communicate(input, timeout=timeout)
     except subprocess.TimeoutExpired as error:
         os.killpg(process.pid, signal.SIGKILL)
-        error.stdout, error.stderr = process.communicate()
-        raise
+        stdout, stderr = process.communicate()
+        raise SessionTimeout(error, stdout, stderr) from None
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
@@ -223,6 +245,7 @@ def run_entry(entry, directory, timeout=120.0):
         tests_run = stats.get("tests_run", 0) if stats is not None else 0
         passed = (
             result.returncode == 0
+            and stats is not None
             and tests_run > 0
             and stats["failures"] == 0
             and stats["errors"] == 0
@@ -283,7 +306,7 @@ def run_bootstrap(entry, cases, directory, timeout):
     with executable.open("rb") as binary:
         if binary.read(4) != b"\x7fELF":
             raise ValueError("compiler output is not a native ELF executable")
-    results = []
+    results: list[CaseResult] = []
     for case in cases:
         try:
             result = run_bounded(
@@ -311,8 +334,8 @@ def run_bootstrap(entry, cases, directory, timeout):
                     "exit_code": result.returncode,
                 }
             )
-        except subprocess.TimeoutExpired as error:
-            stdout = error.stdout or ""
+        except SessionTimeout as error:
+            stdout = error.text_stdout
             results.append(
                 {
                     "name": case.name,

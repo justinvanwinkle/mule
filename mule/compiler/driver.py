@@ -14,7 +14,7 @@ import struct
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
-from functools import cache
+from functools import cache, cached_property
 from pathlib import Path
 
 from mule import ast
@@ -39,6 +39,7 @@ __all__ = [
     "ToolchainError",
     "build",
     "build_runtime",
+    "builtins_object",
     "compile_program",
     "emit_llvm",
     "link_llvm",
@@ -105,10 +106,12 @@ class BuiltinsInterface:
         }
         modules = {
             name: CompiledModule(
-                **{
-                    **entry,
-                    "path": None if entry["path"] is None else Path(entry["path"]),
-                }
+                entry["name"],
+                None if entry["path"] is None else Path(entry["path"]),
+                entry["entry"],
+                native=entry["native"],
+                missing=entry["missing"],
+                prefix=entry["prefix"],
             )
             for name, entry in data["modules"].items()
         }
@@ -208,6 +211,8 @@ def compile_unit(
         name = interface.entries[role]
         return None if name is None else functions[name]
 
+    if compilation.facts is None:
+        raise RuntimeError(f"{filename} was not analyzed")
     program = Program(
         compilation.lambdas,
         compilation.entry if module is None else None,
@@ -358,6 +363,7 @@ class Build:
 
         return self.graph.node(
             f"runtime lto={lto}",
+            Step,
             lambda: Step(
                 self.graph,
                 f"runtime lto={lto}",
@@ -381,6 +387,7 @@ class Build:
 
         return self.graph.node(
             "builtins",
+            Step,
             lambda: Step(
                 self.graph,
                 "builtins",
@@ -411,6 +418,7 @@ class Build:
 
         return self.graph.node(
             name,
+            Step,
             lambda: Step(
                 self.graph,
                 name,
@@ -426,6 +434,8 @@ class Build:
         the link."""
         builtins = self.builtins()
         path = descriptor.path
+        if path is None:
+            raise ValueError(f"module {descriptor.name} has no source file")
         name = f"module {descriptor.name} {path}"
 
         def action(inputs, directory):
@@ -443,6 +453,7 @@ class Build:
 
         step = self.graph.node(
             name,
+            Step,
             lambda: Step(
                 self.graph,
                 name,
@@ -462,6 +473,8 @@ class Build:
 
     def discover(self, step: Step, roots, package) -> None:
         """Add the units of the modules ``step`` imports to the link."""
+        if self.link is None:
+            raise RuntimeError("module discovery requires the link step")
         for descriptor in read_imports(step.path("imports.json")):
             self.link.add_input(self.object(self.module(descriptor, roots, package)))
 
@@ -480,6 +493,7 @@ class Build:
 
         return self.graph.node(
             "__main__",
+            Step,
             lambda: Step(
                 self.graph,
                 "__main__",
@@ -526,6 +540,7 @@ class Build:
         objects = [self.object(unit) for unit in units]
         self.link = self.graph.node(
             "link",
+            Step,
             lambda: Step(
                 self.graph,
                 "link",
@@ -545,7 +560,7 @@ class Text(Node):
         super().__init__(graph, name)
         self.text = text
 
-    @property
+    @cached_property
     def output_hash(self) -> str:
         return digest(self.text.encode())
 
@@ -569,6 +584,16 @@ def read_imports(path: Path) -> list[CompiledModule]:
         module_descriptor(name, Path(module_path))
         for name, module_path in json.loads(path.read_text())
     ]
+
+
+def builtins_object(toolchain: Toolchain) -> Path:
+    """The compiled builtins unit every main unit links with, from the cache
+    when unchanged: native code without optimization, bitcode with it."""
+    with Graph() as graph:
+        build = Build(graph, toolchain)
+        unit_object = build.object(build.builtins())
+        graph.run(unit_object)
+    return unit_object.path("unit.o")
 
 
 def cached_builtins_interface() -> BuiltinsInterface:
@@ -626,7 +651,7 @@ def link_llvm(
     with Graph() as graph:
         build = Build(graph, toolchain)
         source = graph.node(
-            "main unit LLVM", lambda: Text(graph, "main unit LLVM", llvm)
+            "main unit LLVM", Text, lambda: Text(graph, "main unit LLVM", llvm)
         )
 
         def action(inputs, directory):
@@ -634,6 +659,7 @@ def link_llvm(
 
         main = graph.node(
             "main unit",
+            Step,
             lambda: Step(
                 graph,
                 "main unit",
@@ -675,7 +701,9 @@ def build_executable(
         source_node = (
             graph.file(source_path)
             if source_path is not None
-            else graph.node("main source", lambda: Text(graph, "main source", source))
+            else graph.node(
+                "main source", Text, lambda: Text(graph, "main source", source)
+            )
         )
         main = build.main(source_node, source, filename, roots, package)
         link = build.executable([build.builtins(), main])

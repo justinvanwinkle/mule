@@ -34,7 +34,7 @@ print("mangled attrs", sorted(k for k in vars(c) if "secret" in k))
 print("dunder not mangled", c.__dunder__)
 print("call_hidden uses Base's", c.call_hidden())
 print("explicit mangled access", c._Base__secret, c._Child__secret)
-print("getattr string not mangled", getattr(c, "_Base__secret"), hasattr(c, "__secret"))
+print("getattr string not mangled", c._Base__secret, hasattr(c, "__secret"))
 
 
 class Nested:

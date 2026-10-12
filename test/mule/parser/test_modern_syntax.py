@@ -9,7 +9,7 @@ import pytest
 
 from mule import ast as a
 from test.mule.parser import ast_query as q
-from test.mule.parser.ast_query import assert_ast_equal, at, nodes, one
+from test.mule.parser.ast_query import assert_ast_equal, at, expect, nodes, one
 
 
 def name(identifier):
@@ -771,8 +771,8 @@ def test_alias_name_is_a_declaration_not_an_expression(parse):
 def test_generic_bound_and_default_have_distinct_fields(parse):
     parameter = one(parse("type Box[T: int = bool] = list[T]"), q.TypeParameter)
     assert parameter.name == "T"
-    assert parameter.bound.identifier == "int"
-    assert parameter.default.identifier == "bool"
+    assert expect(parameter.bound, a.Name).identifier == "int"
+    assert expect(parameter.default, a.Name).identifier == "bool"
 
 
 def test_variadic_type_parameters_keep_their_kinds(parse):
@@ -791,21 +791,24 @@ def test_generic_function_type_parameters_are_separate_from_arguments(parse):
     )
     assert [parameter.name for parameter in function.type_parameters] == ["T"]
     assert [parameter.name for parameter in function.parameters] == ["value"]
-    assert function.parameters[0].annotation.identifier == "T"
-    assert function.return_annotation.identifier == "T"
+    assert expect(function.parameters[0].annotation, a.Name).identifier == "T"
+    assert expect(function.return_annotation, a.Name).identifier == "T"
 
 
 def test_fstring_debug_conversion_defaults_to_repr(parse):
     tree = parse('f"{ value = }"')
     interpolation = one(tree, q.Interpolation)
     assert interpolation.conversion == "r"
-    assert interpolation.expression.identifier == "value"
+    assert expect(interpolation.expression, a.Name).identifier == "value"
     assert one(tree, q.Literal).value == " value = "
 
 
 def test_fstring_dynamic_format_spec_contains_nested_fields(parse):
     tree = parse('f"{value:{width}.{precision}f}"')
-    assert [part.expression.identifier for part in nodes(tree, q.Interpolation)] == [
+    assert [
+        expect(part.expression, a.Name).identifier
+        for part in nodes(tree, q.Interpolation)
+    ] == [
         "value",
         "width",
         "precision",
@@ -846,10 +849,9 @@ def test_unparenthesized_exception_types_become_tuple(parse):
         parse("try:\n    run()\nexcept ValueError, TypeError:\n    pass"),
         q.ExceptionHandler,
     )
-    assert_ast_equal(
-        handler.exception, a.Tuple([name("ValueError"), name("TypeError")])
-    )
-    assert [value.identifier for value in handler.exception.elements] == [
+    exception = expect(handler.exception, a.Tuple)
+    assert_ast_equal(exception, a.Tuple([name("ValueError"), name("TypeError")]))
+    assert [expect(value, a.Name).identifier for value in exception.elements] == [
         "ValueError",
         "TypeError",
     ]
@@ -861,8 +863,12 @@ def test_mapping_pattern_keeps_rest_capture_outside_entries(parse):
         parse('match value:\n    case {"key": item, **rest}:\n        pass'),
         q.MappingPattern,
     )
-    assert [entry.key.value for entry in pattern.entries] == ["key"]
-    assert [entry.pattern.name for entry in pattern.entries] == ["item"]
+    assert [expect(entry.key, a.TextLiteral).value for entry in pattern.entries] == [
+        "key"
+    ]
+    assert [
+        expect(entry.pattern, a.CapturePattern).name for entry in pattern.entries
+    ] == ["item"]
     assert pattern.rest == "rest"
 
 

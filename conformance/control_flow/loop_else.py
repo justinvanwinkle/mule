@@ -19,20 +19,17 @@ print("find empty", find([], 1))
 # else runs for empty iterable
 for x in []:
     print("never")
-else:
-    print("for else on empty list")
+print("for else on empty list")
 
 for x in range(0):
     pass
-else:
-    print("for else on range(0), x unbound:", "x" not in dir())
+print("for else on range(0), x unbound:", "x" not in dir())
 
 # while/else: else runs when condition becomes false, not on break
 n = 0
 while n < 3:
     n += 1
-else:
-    print("while else ran, n =", n)
+print("while else ran, n =", n)
 
 n = 0
 while n < 10:
@@ -45,16 +42,14 @@ print("while broke at", n)
 
 while False:
     pass
-else:
-    print("while False else ran")
+print("while False else ran")
 
 # continue does not prevent else
 for i in range(4):
     if i % 2:
         continue
     print("even", i)
-else:
-    print("else after continue loop, i =", i)
+print("else after continue loop, i =", i)
 
 # break in inner loop doesn't affect outer loop's else
 for outer in range(3):
@@ -64,8 +59,7 @@ for outer in range(3):
     else:
         print("inner else never")
     print("outer", outer, "inner stopped at", inner)
-else:
-    print("outer else ran")
+print("outer else ran")
 
 # inner else runs; outer break triggered by inner else
 for outer in "abc":
@@ -96,8 +90,7 @@ def first_negative(xs):
     for x in xs:
         if x < 0:
             return x
-    else:
-        return None
+    return None
 
 
 print("first negative", first_negative([3, -1, -2]), first_negative([1, 2]))
@@ -130,5 +123,4 @@ def gen():
 
 for item in gen():
     print("never")
-else:
-    print("empty generator else")
+print("empty generator else")

@@ -18,6 +18,7 @@ e1 = "e\u0301"
 e2 = "\u00e9"
 print("combining", len(e1), len(e2), e1 == e2, ascii(e1), ascii(e2))
 import unicodedata
+
 print("normalize", unicodedata.normalize("NFC", e1) == e2, len(unicodedata.normalize("NFD", e2)))
 print("unicodedata", unicodedata.name("é"), unicodedata.category("A"), unicodedata.category("\u0301"), unicodedata.lookup("SNOWMAN"))
 print("decimal/digit", unicodedata.decimal("٣"), unicodedata.digit("²"), unicodedata.numeric("½"))

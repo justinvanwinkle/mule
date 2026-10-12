@@ -1,6 +1,15 @@
 """contextlib: contextmanager (incl. exception handling in the generator), suppress, ExitStack LIFO callbacks, closing, nullcontext, redirect_stdout, ContextDecorator, AbstractContextManager."""
-from contextlib import contextmanager, suppress, ExitStack, closing, nullcontext, redirect_stdout, ContextDecorator, AbstractContextManager
 import io
+from contextlib import (
+    AbstractContextManager,
+    ContextDecorator,
+    ExitStack,
+    closing,
+    contextmanager,
+    nullcontext,
+    redirect_stdout,
+    suppress,
+)
 
 log = []
 
@@ -27,7 +36,7 @@ log.clear()
 try:
     with tag("c"):
         raise KeyError("k")
-except KeyError as e:
+except KeyError:
     log.append("outer caught KeyError")
 print("propagated", log)
 

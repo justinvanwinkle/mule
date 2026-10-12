@@ -19,6 +19,7 @@ only knows it is an integer).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from .ctype import (
     UNKNOWN,
@@ -42,6 +43,7 @@ from .node import (
     Ref,
     Return,
     Set,
+    linked,
 )
 from .vmdef import operand_restriction_ok, primitive_type_ok, templates_for
 from .vop import (
@@ -54,6 +56,9 @@ from .vop import (
     PrimitiveType,
     T,
 )
+
+if TYPE_CHECKING:
+    from .represent import NativePlan
 
 
 class NoTemplate(Exception):
@@ -71,7 +76,7 @@ class EntryContext:
     targets: dict = field(default_factory=dict)
     parameters: tuple = ()
     return_type: ValueType = UNKNOWN
-    plan: object = None
+    plan: NativePlan | None = None
 
     def type_of(self, node) -> ValueType:
         return self.types.get(node, UNKNOWN)
@@ -95,7 +100,7 @@ def ltn_analyze(lambda_: Lambda, context: EntryContext) -> None:
     """Annotate every lvar of ``lambda_`` and select templates for its known
     calls under ``context``."""
     visitor = _Annotate(context)
-    for block in lambda_.component.blocks():
+    for block in linked(lambda_.component, lambda_, "component").blocks():
         for node in block.nodes():
             node.accept(visitor)
 
@@ -158,7 +163,7 @@ class _Annotate(NodeVisitor):
 def find_template_for_ltn_policy(call: Combination, context, annotate) -> object:
     """Choose the cheapest template whose restrictions the call satisfies
     (``find-template-for-ltn-policy``)."""
-    fun_info = call.fun_info
+    fun_info = linked(call.fun_info, call, "fun_info")
     candidates = templates_for(fun_info)
     operands = [
         annotate.lvar_ptype(arg)

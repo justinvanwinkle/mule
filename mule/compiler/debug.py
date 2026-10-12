@@ -7,6 +7,8 @@ whenever a graph rewrite is suspected of leaving the representation malformed.
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 from .node import (
     Bind,
     Cast,
@@ -30,7 +32,7 @@ class InconsistentIR1(Exception):
     pass
 
 
-def barf(message: str) -> None:
+def barf(message: str) -> NoReturn:
     raise InconsistentIR1(message)
 
 
@@ -97,7 +99,7 @@ class _Checker:
         if kind is FunctionalKind.EXTERNAL:
             entry = functional.entry_fun
             self.check_fun_reached(entry, functional)
-            if entry.entry_fun is not functional:
+            if entry is None or entry.entry_fun is not functional:
                 barf(f"bad back-pointer in function for XEP {functional!r}")
         elif kind in (FunctionalKind.LET, FunctionalKind.ASSIGNMENT):
             self.check_fun_reached(functional.home, functional)

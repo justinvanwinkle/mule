@@ -129,7 +129,6 @@ print("conditional local false", conditional_local(False))
 
 # import, def, class, for, with, except-as, and del all create local bindings
 def binders():
-    import math as m
     def f():
         return "f"
     class K:

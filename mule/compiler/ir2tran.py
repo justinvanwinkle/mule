@@ -47,6 +47,7 @@ from .node import (
     Ref,
     Return,
     Set,
+    linked,
 )
 from .vmdef import templates_for
 from .vop import (
@@ -126,7 +127,7 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
     component = IR2Component(lambda_, context, environment)
     converter = _Converter(component)
     converter.prepare_environment()
-    blocks = list(lambda_.component.blocks())
+    blocks = list(linked(lambda_.component, lambda_, "component").blocks())
     for index, block in enumerate(blocks):
         ir2_block = IR2Block(block, index)
         component.ir2_blocks[block] = ir2_block
@@ -140,7 +141,7 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
 def _clear_lvar_info(lambda_: Lambda) -> None:
     """LTN annotations belong to one conversion; the next context annotates
     afresh with its own primitive types."""
-    for block in lambda_.component.blocks():
+    for block in linked(lambda_.component, lambda_, "component").blocks():
         for node in block.nodes():
             lvar = getattr(node, "lvar", None)
             if lvar is not None:
@@ -244,7 +245,7 @@ class _Converter(NodeVisitor):
             [self.write(tn) for tn in results],
         )
         vop.codegen_info = info
-        return self.current.append(vop)
+        return linked(self.current, self, "current block").append(vop)
 
     def emit_discard(self, node, tn) -> None:
         self.emit(vops.DISCARD, node, args=(tn,))
@@ -258,7 +259,8 @@ class _Converter(NodeVisitor):
     def convert_transfer(self, block) -> None:
         """A block that does not end in a branch, return, or raise jumps to
         its single successor."""
-        last = self.current.vops[-1] if self.current.vops else None
+        current = linked(self.current, self, "current block")
+        last = current.vops[-1] if current.vops else None
         if last is not None and last.info.name in vops.TERMINATORS:
             return
         successors = [succ for succ in block.succ if succ.start is not None]
@@ -435,6 +437,8 @@ class _Converter(NodeVisitor):
                     vops.MOVE, node, args=(self.lvar_tn(node.value),), results=(target,)
                 )
             return
+        if not isinstance(var, GlobalVar):
+            raise TypeError(f"no IR2 conversion for an assignment to {var!r}")
         if node.value is None:
             self.emit(vops.UNBIND_GLOBAL, node, info=var.name)
         else:
@@ -472,7 +476,7 @@ class _Converter(NodeVisitor):
         if node.kind is not CallKind.KNOWN:
             self.convert_full_call(node)
             return
-        name = node.fun_info.name
+        name = linked(node.fun_info, node, "known function").name
         if name == "%make_function":
             self.convert_make_function(node)
         elif name == "%resolve_method":
@@ -519,7 +523,7 @@ class _Converter(NodeVisitor):
         template = node.template
         if template is None:
             raise ValueError(f"{node!r} has no template")
-        if node.fun_info.result:
+        if linked(node.fun_info, node, "known function").result:
             result, discard = self.result_tn(node)
             self.emit(
                 template,
@@ -561,7 +565,10 @@ class _Converter(NodeVisitor):
             self.emit_discard(node, result)
 
     def convert_make_function(self, node: Combination):
-        lambda_ = node.args[0].use().leaf
+        producer = node.args[0].use()
+        if not isinstance(producer, Ref) or not isinstance(producer.leaf, Lambda):
+            raise TypeError(f"{node!r} does not make a function from a lambda")
+        lambda_ = producer.leaf
         closure = lambda_.environment.closure if lambda_.environment else ()
         captured = [self.captured_value(node, var) for var in closure]
         defaults = [self.lvar_tn(arg) for arg in node.args[1:]]
@@ -584,7 +591,7 @@ class _Converter(NodeVisitor):
         method = self.lvar_tn(lvar)
         bound = self.component.tn(T, name="receiver")
         bound.type = UNKNOWN
-        lvar.info.locs.append(bound)
+        linked(lvar.info, lvar, "LTN annotation").locs.append(bound)
         self.emit(
             node.template,
             node,
@@ -595,16 +602,20 @@ class _Converter(NodeVisitor):
 
     def convert_call_resolved(self, node: Combination):
         resolved = node.args[0]
-        method_info = resolved.info
-        method, bound = method_info.locs
+        method, bound = linked(resolved.info, resolved, "LTN annotation").locs
         resolve = resolved.use()
+        if not isinstance(resolve, Combination):
+            raise TypeError(f"{resolved!r} is not delivered by a method resolution")
+        info = linked(node.info, node, "call info")
         result, discard = self.result_tn(node)
         self.emit(
             node.template,
             node,
             args=(method, bound, *(self.lvar_tn(arg) for arg in node.args[1:])),
             results=(result,),
-            info=MethodCall(node.info.keywords, resolve.info.name),
+            info=MethodCall(
+                info.keywords, linked(resolve.info, resolve, "method info").name
+            ),
         )
         if discard:
             self.emit_discard(node, result)

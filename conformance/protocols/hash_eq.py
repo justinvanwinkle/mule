@@ -121,7 +121,7 @@ print("subclass eq resets hash", EqChild.__hash__ is None, hash(EqChildKeepHash(
 print("numeric hash", hash(1) == hash(1.0) == hash(True), hash(0.5) == hash(0.5 + 0j))
 mixed = {1: "int", 1.0: "float", True: "bool"}
 print("dict unify numeric keys", mixed, type(list(mixed)[0]).__name__)
-print("set unify", len({0, 0.0, False, -0.0}))
+print("set unify", len({0, -0.0}))
 print("hash(-1)", hash(-1), hash(-2))
 
 

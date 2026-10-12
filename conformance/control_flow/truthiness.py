@@ -39,7 +39,7 @@ values = [
     ("NotImplemented-free object", object()),
     ("type", int),
     ("function", len),
-    ("decimal 0", decimal.Decimal("0")),
+    ("decimal 0", decimal.Decimal(0)),
     ("decimal -0", decimal.Decimal("-0")),
     ("fraction 0", fractions.Fraction(0, 5)),
     ("deque empty", collections.deque()),

@@ -100,7 +100,7 @@ print("walrus in genexp", list((y := v * 2) for v in range(3)), y)
 g = (i for i in range(5))
 print("partially consumed", next(g), next(g), list(g))
 
-print("sorted genexp", sorted((-v for v in [3, 1, 2])))
+print("sorted genexp", sorted(-v for v in [3, 1, 2]))
 print("tuple from genexp", tuple(c.upper() for c in "abc"))
 print("dict from genexp pairs", dict((c, ord(c)) for c in "ab"))
 print("str join genexp", "-".join(str(i) for i in range(4)))

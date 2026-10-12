@@ -4,7 +4,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from mule.compiler.driver import build_runtime, emit_llvm
+from mule.compiler.driver import Toolchain, build_runtime, builtins_object, emit_llvm
 from test.mule.compiler.test_modules import execute
 
 
@@ -108,6 +108,7 @@ def test_tuple_pool_allocation_failure_releases_partial_initialization(tmp_path)
         text=True,
     )
     runtime = build_runtime(tmp_path, crate_type="rlib")
+    builtins = builtins_object(Toolchain(optimize=False))
     rustc = shutil.which("rustc")
     assert rustc is not None, "native runtime tests require rustc"
     probe = tmp_path / "probe"
@@ -121,6 +122,8 @@ def test_tuple_pool_allocation_failure_releases_partial_initialization(tmp_path)
             f"mule_runtime={runtime}",
             "-C",
             f"link-arg={object_file}",
+            "-C",
+            f"link-arg={builtins}",
             Path(__file__).with_name("pool_failure_probe.rs"),
             "-o",
             probe,

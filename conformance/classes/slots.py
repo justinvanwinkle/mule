@@ -76,7 +76,7 @@ except AttributeError as e:
 
 # Slots with __dict__ explicitly included.
 class Hybrid:
-    __slots__ = ("a", "__dict__")
+    __slots__ = ("__dict__", "a")
 
 
 h = Hybrid()
@@ -165,4 +165,4 @@ print("dict slots doc", Documented.a.__doc__, Documented.b.__doc__)
 
 # Slotted objects in a list with getattr
 items = [Pt(i, i * i) for i in range(3)]
-print("getattr loop", [getattr(it, "y") for it in items])
+print("getattr loop", [it.y for it in items])

@@ -1,6 +1,6 @@
 """dataclasses: fields, defaults, default_factory, repr/eq, order=True, frozen, __post_init__, InitVar."""
 
-from dataclasses import dataclass, field, InitVar, FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError, InitVar, dataclass, field, fields
 
 
 @dataclass

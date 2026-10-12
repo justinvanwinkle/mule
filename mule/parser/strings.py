@@ -1,10 +1,14 @@
 """Manual literal decoding and formatted/template string construction."""
 
 import unicodedata
+from typing import TYPE_CHECKING
 
 from mule import ast
 
 from .lexer import Token, position_at, scan_string, string_header
+
+if TYPE_CHECKING:
+    from .core import Parser
 
 _ESCAPES = {
     "a": "\a",
@@ -22,14 +26,20 @@ _HEX = frozenset("0123456789abcdefABCDEF")
 
 
 class StringParserMixin:
-    def parse_strings(self) -> ast.Expression:
+    def parse_strings(self: Parser) -> ast.Expression:
         """Consume one adjacent literal group, merging its text segments."""
         first = self.current
         parts: list[ast.Literal | ast.Interpolation] = []
+        # The decoded segments of a group without replacement fields.
+        texts: list[str] = []
+        byte_strings: list[bytes] = []
         family = None
         while self.current.kind == "STRING":
             token = self.advance()
-            prefix, delimiter, body_index = string_header(token.text, 0)
+            header = string_header(token.text, 0)
+            if header is None:
+                self.error("invalid string prefix", token)
+            prefix, delimiter, body_index = header
             prefix = prefix.lower()
             body = token.text[body_index : -len(delimiter)]
             is_bytes = "b" in prefix
@@ -79,30 +89,28 @@ class StringParserMixin:
                 value = self._decode_string(
                     body, token, raw="r" in prefix, is_bytes=is_bytes
                 )
-                self._append_string_part(
-                    parts,
-                    ast.BytesLiteral(value, span=ast.Span(token.start, token.end))
-                    if is_bytes
-                    else ast.TextLiteral(value, span=ast.Span(token.start, token.end)),
-                )
+                span = ast.Span(token.start, token.end)
+                if isinstance(value, bytes):
+                    byte_strings.append(value)
+                    self._append_string_part(parts, ast.BytesLiteral(value, span=span))
+                else:
+                    texts.append(value)
+                    self._append_string_part(parts, ast.TextLiteral(value, span=span))
         if family == "template":
             result = ast.TemplateString(parts)
         elif family == "formatted":
             result = ast.FormattedString(parts)
+        elif family == "bytes":
+            result = ast.BytesLiteral(b"".join(byte_strings))
         else:
-            value = b"" if family == "bytes" else ""
-            for part in parts:
-                value += part.value
-            result = (
-                ast.BytesLiteral(value) if family == "bytes" else ast.TextLiteral(value)
-            )
+            result = ast.TextLiteral("".join(texts))
         return self.finish(result, first)
 
     @staticmethod
     def _append_string_part(parts, part):
         part.append_string_part(parts)
 
-    def _decode_string(self, body, token, *, raw=False, is_bytes=False):
+    def _decode_string(self: Parser, body, token, *, raw=False, is_bytes=False):
         if is_bytes and any(ord(character) > 127 for character in body):
             self.error("bytes literals may contain only ASCII source characters", token)
         if raw:
@@ -156,7 +164,7 @@ class StringParserMixin:
         return bytes(ord(character) for character in value) if is_bytes else value
 
     def _formatted_parts(
-        self,
+        self: Parser,
         body,
         origin,
         token,
@@ -257,7 +265,7 @@ class StringParserMixin:
                 break
         return index
 
-    def _replacement(self, body, opening, origin, token, *, raw, template):
+    def _replacement(self: Parser, body, opening, origin, token, *, raw, template):
         expression_start = opening + 1
         index = expression_start
         brackets = []

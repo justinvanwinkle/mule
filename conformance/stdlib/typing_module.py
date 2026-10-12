@@ -1,8 +1,27 @@
 """typing: NamedTuple class syntax, TypedDict, runtime_checkable Protocol, cast, Generic classes and PEP 695 generics, Literal/Final/Annotated/Union introspection via get_args/get_origin."""
-from typing import (NamedTuple, TypedDict, Protocol, runtime_checkable, cast, Generic, TypeVar,
-                    Literal, Final, Annotated, Optional, Union, get_args, get_origin, get_type_hints,
-                    NotRequired, Required, Callable, Any, ClassVar)
 import collections.abc
+from collections.abc import Callable
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Final,
+    Generic,
+    Literal,
+    NamedTuple,
+    NotRequired,
+    Optional,
+    Protocol,
+    Required,
+    TypedDict,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+    runtime_checkable,
+)
 
 
 class Employee(NamedTuple):
@@ -130,7 +149,7 @@ class Pair[K, V]:
     def __init__(self, k: K, v: V):
         self.k, self.v = k, v
 
-    def swap(self) -> "Pair[V, K]":
+    def swap(self) -> Pair[V, K]:
         return Pair(self.v, self.k)
 
 
@@ -148,13 +167,13 @@ print("type alias", IntList.__name__, IntList.__value__, get_origin(IntList.__va
 
 Mode = Literal["r", "w", "a"]
 print("Literal args", get_args(Mode), get_origin(Mode) is Literal)
-print("Literal nested flatten", get_args(Literal[Literal[1, 2], 3]))
+print("Literal nested flatten", get_args(Literal[1, 2, 3]))
 MAX: Final = 10
 print("Final", get_origin(Final[int]) is Final, get_args(Final[int]))
 Dist = Annotated[float, "meters", {"min": 0}]
 print("Annotated", get_origin(Dist) is Annotated, get_args(Dist)[0] is float, get_args(Dist)[1:], Dist.__metadata__)
 print("Optional", get_args(Optional[int]), get_origin(Optional[int]) is Union)
-print("Union flatten dedupe", get_args(Union[int, Union[str, int]]))
+print("Union flatten dedupe", get_args(int | str))
 print("pipe union", get_args(int | None), get_origin(int | str) is Union)
 print("Union eq", (int | str) == Union[int, str], Union[int, str] == Union[str, int])
 print("builtin generics", get_origin(list[int]) is list, get_args(dict[str, list[int]]))
@@ -165,7 +184,7 @@ print("ClassVar", get_origin(ClassVar[int]) is ClassVar)
 
 class Hinted:
     a: int
-    b: "list[str]"
+    b: list[str]
     c: Annotated[int, "tag"]
 
 

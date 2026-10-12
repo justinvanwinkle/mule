@@ -67,7 +67,7 @@ print("close triggers __exit__ with GeneratorExit", log)
 log.clear()
 print("exhaust with manager", list(with_manager()), log)
 
-import contextlib  # noqa: E402
+import contextlib
 
 
 @contextlib.contextmanager

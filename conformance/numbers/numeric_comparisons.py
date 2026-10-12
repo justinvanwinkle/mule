@@ -40,7 +40,8 @@ print("sort mixed numeric", sorted([3, 1.5, True, -2, 2**64, 0.0, -0.5]))
 print("tuple compare", (1, 2.0) == (1.0, 2), (1, 2) < (1, 2.5), (1, float("nan")) == (1, float("nan")))
 print("list compare", [1, 2] < [1, 2, 0], [2] > [1, 100], [1.0] == [True])
 
-import fractions
 import decimal
+import fractions
+
 print("fraction compare", fractions.Fraction(1, 2) == 0.5, fractions.Fraction(1, 3) < 0.34, fractions.Fraction(3, 1) == 3)
 print("decimal compare", decimal.Decimal("0.5") == 0.5, decimal.Decimal(1) == 1, decimal.Decimal("0.1") == 0.1)

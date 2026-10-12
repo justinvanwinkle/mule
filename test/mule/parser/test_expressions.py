@@ -39,7 +39,7 @@ from mule.ast import (
     Yield,
 )
 from test.mule.parser import ast_query as q
-from test.mule.parser.ast_query import assert_ast_equal, at, nodes, one
+from test.mule.parser.ast_query import assert_ast_equal, at, expect, nodes, one
 
 
 def case(name, source, expected):
@@ -1215,13 +1215,17 @@ def test_bitwise_operator_binding_order(parse):
 
 def test_comparison_chain_is_one_node(parse):
     comparison = one(parse("a < b is not c not in d", mode="eval"), q.Comparison)
-    assert comparison.left.identifier == "a"
+    assert expect(comparison.left, Name).identifier == "a"
     assert comparison.operators == [
         ComparisonOperator.LESS,
         ComparisonOperator.IS_NOT,
         ComparisonOperator.NOT_IN,
     ]
-    assert [operand.identifier for operand in comparison.comparators] == ["b", "c", "d"]
+    assert [expect(operand, Name).identifier for operand in comparison.comparators] == [
+        "b",
+        "c",
+        "d",
+    ]
 
 
 def test_not_binds_below_comparisons(parse):
@@ -1284,9 +1288,9 @@ def test_lambda_parameters_keep_source_order_and_categories(parse):
         ParameterKind.VAR_KEYWORD,
     ]
     assert parameters[0].default is None
-    assert parameters[1].default.value == 2
+    assert expect(parameters[1].default, ast.IntegerLiteral).value == 2
     assert parameters[3].default is None
-    assert parameters[4].default.value == 3
+    assert expect(parameters[4].default, ast.IntegerLiteral).value == 3
 
 
 def test_named_expression_separates_target_from_complete_rhs(parse):
@@ -1295,7 +1299,7 @@ def test_named_expression_separates_target_from_complete_rhs(parse):
     assert_ast_equal(
         expression.value, Boolean(BooleanOperator.OR, [Name("a"), Name("b")])
     )
-    assert expression.value.operator is BooleanOperator.OR
+    assert expect(expression.value, Boolean).operator is BooleanOperator.OR
 
 
 def test_call_preserves_source_order_across_argument_kinds(parse):
@@ -1306,7 +1310,7 @@ def test_call_preserves_source_order_across_argument_kinds(parse):
         ArgumentKind.DOUBLE_STARRED,
     ]
     assert [argument.keyword for argument in call.arguments] == ["key", None, None]
-    assert [argument.value.identifier for argument in call.arguments] == [
+    assert [expect(argument.value, Name).identifier for argument in call.arguments] == [
         "b",
         "items",
         "options",
@@ -1325,15 +1329,16 @@ def test_multidimensional_subscript_mixes_slice_and_index(parse):
             ]
         ),
     )
-    first, second, third = subscript.index.elements
+    first, second, third = expect(subscript.index, Tuple).elements
     assert_ast_equal(
         first, Slice(ast.IntegerLiteral(1), Name("limit"), ast.IntegerLiteral(2))
     )
-    assert first.lower.value == 1
-    assert first.upper.identifier == "limit"
-    assert first.step.value == 2
-    assert second.identifier == "index"
-    assert third.value is Ellipsis
+    first_slice = expect(first, Slice)
+    assert expect(first_slice.lower, ast.IntegerLiteral).value == 1
+    assert expect(first_slice.upper, Name).identifier == "limit"
+    assert expect(first_slice.step, ast.IntegerLiteral).value == 2
+    assert expect(second, Name).identifier == "index"
+    assert expect(third, ast.EllipsisLiteral).value is Ellipsis
 
 
 def test_comprehension_destructuring_belongs_to_clause_target(parse):
@@ -1342,12 +1347,13 @@ def test_comprehension_destructuring_belongs_to_clause_target(parse):
     )
     clause = comprehension.clauses[0]
     assert_ast_equal(clause.target, Tuple([Name("a"), Unpack(Name("rest"))]))
-    assert clause.target.elements[0].identifier == "a"
-    assert_ast_equal(clause.target.elements[1], Unpack(Name("rest")))
-    assert clause.target.elements[1].value.identifier == "rest"
-    assert comprehension.element.identifier == "a"
-    assert clause.iterable.identifier == "rows"
-    assert clause.conditions[0].identifier == "a"
+    target = expect(clause.target, Tuple)
+    assert expect(target.elements[0], Name).identifier == "a"
+    assert_ast_equal(target.elements[1], Unpack(Name("rest")))
+    assert expect(expect(target.elements[1], Unpack).value, Name).identifier == "rest"
+    assert expect(comprehension.element, Name).identifier == "a"
+    assert expect(clause.iterable, Name).identifier == "rows"
+    assert expect(clause.conditions[0], Name).identifier == "a"
 
 
 def test_comprehension_async_flags_and_filters_belong_to_each_clause(parse):
@@ -1357,7 +1363,7 @@ def test_comprehension_async_flags_and_filters_belong_to_each_clause(parse):
     )
     assert [clause.is_async for clause in comprehension.clauses] == [True, False]
     assert [
-        [condition.identifier for condition in clause.conditions]
+        [expect(condition, Name).identifier for condition in clause.conditions]
         for clause in comprehension.clauses
     ] == [["x"], ["y"]]
 
@@ -1366,9 +1372,13 @@ def test_yield_delegation_is_explicit(parse):
     tree = parse("def f():\n    yield a, b\n    yield from items\n")
     yielded = one(tree, q.Yield, from_iterable=False)
     delegated = one(tree, q.Yield, from_iterable=True)
-    assert_ast_equal(yielded.value, Tuple([Name("a"), Name("b")]))
-    assert [element.identifier for element in yielded.value.elements] == ["a", "b"]
-    assert delegated.value.identifier == "items"
+    yielded_tuple = expect(yielded.value, Tuple)
+    assert_ast_equal(yielded_tuple, Tuple([Name("a"), Name("b")]))
+    assert [expect(element, Name).identifier for element in yielded_tuple.elements] == [
+        "a",
+        "b",
+    ]
+    assert expect(delegated.value, Name).identifier == "items"
 
 
 def test_await_wraps_primary_before_power(parse):

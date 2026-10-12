@@ -26,7 +26,7 @@ class Größe:
 
 g = Größe(3)
 print("non-ASCII class", g, type(g).__name__, g.ñ)
-print("attribute via getattr", getattr(g, "ñ"))
+print("attribute via getattr", g.ñ)
 
 
 def σύνολο(*αριθμοί, πολλαπλασιαστής=1):
@@ -34,7 +34,7 @@ def σύνολο(*αριθμοί, πολλαπλασιαστής=1):
 
 
 print("greek function and kwarg", σύνολο(1, 2, 3, πολλαπλασιαστής=2))
-print("kwarg via dict", σύνολο(4, **{"πολλαπλασιαστής": 3}))
+print("kwarg via dict", σύνολο(4, πολλαπλασιαστής=3))
 print("function name", σύνολο.__name__)
 
 
@@ -51,7 +51,7 @@ def takes_fi(fi):
 
 
 print("kwarg normalized", takes_fi(ﬁ=7))
-print("but kwarg from dict is not", (lambda **k: sorted(k))(**{"ﬁ": 1}))
+print("but kwarg from dict is not", (lambda **k: sorted(k))(ﬁ=1))
 
 # Attribute names normalize in source but not in getattr strings
 class Box:

@@ -74,7 +74,7 @@ for src in ("[i := 0 for i in range(2)]", "[[(j := 1) for i in range(2)] for j i
     try:
         compile(src, "<t>", "eval")
         print("compiled", src)
-    except SyntaxError as e:
+    except SyntaxError:
         print("syntax error for", src)
 
 

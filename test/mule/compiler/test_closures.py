@@ -185,5 +185,7 @@ def test_environment_analysis_marks_assigned_captures_indirect():
     assert not variables["a"].indirect, "read-only capture is copied"
     assert not variables["b"].indirect
     assert not variables["inner"].indirect, "never captured"
+    assert inner.environment is not None
+    assert outer.environment is not None
     assert {var.name for var in inner.environment.closure} == {"a", "b", "c"}
     assert outer.environment.closure == []

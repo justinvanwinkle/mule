@@ -31,7 +31,7 @@ for c in cases:
 print("repr of repr", repr(repr("a'b")))
 print("eval roundtrip", all(eval(repr(c)) == c for c in cases))
 print("containers use repr", ["a\nb", ("'",), {"k\t": '"'}])
-print("str vs repr", str("a\nb") == "a\nb", repr("a\nb"))
+print("str vs repr", "a\nb" == "a\nb", repr("a\nb"))
 print("%r", "%r" % ("x'y",), "%a" % ("é",))
 print("f-string !r", f"{'q\"q'!r}", f"{'é'!a}")
 print("format !r", "{!r}".format("z\0"))

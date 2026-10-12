@@ -8,7 +8,7 @@ Statically contradictory casts were already rejected during propagation.
 
 from __future__ import annotations
 
-from .node import Cast, Lambda
+from .node import Cast, Lambda, linked
 
 
 def generate_type_checks(lambda_: Lambda, types) -> bool:
@@ -16,7 +16,7 @@ def generate_type_checks(lambda_: Lambda, types) -> bool:
     any cast changed state, which would require another optimization pass."""
     changed = False
     checks = lambda_.policy.checks_contracts
-    for block in lambda_.component.blocks():
+    for block in linked(lambda_.component, lambda_, "component").blocks():
         for node in block.nodes():
             if not isinstance(node, Cast):
                 continue

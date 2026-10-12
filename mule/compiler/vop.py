@@ -22,8 +22,15 @@ Python and LLVM adaptations, recorded in ``spec/python-changes.md``:
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .ltn import EntryContext
+    from .node import Combination, Lambda
+    from .policy import OptimizationPolicy
 
 _numbers = itertools.count(1)
 
@@ -206,8 +213,8 @@ class Template:
     arg_types: tuple = ()
     result_types: tuple = ()
     cost: int = 0
-    policy: object = None
-    guard: object = None
+    policy: Callable[[OptimizationPolicy], bool] | None = None
+    guard: Callable[[Combination], bool] | None = None
     translate: object = None
     # Which entry contexts may select the template (SBCL's ``ltn-policy``):
     # ``None`` for bodies over object representations, ``"raw"`` for native
@@ -255,8 +262,8 @@ class IR2Environment:
     the TN of every local, the hidden locals holding captured cells and
     copies, and the loop states."""
 
-    lambda_: object
-    context: object
+    lambda_: Lambda
+    context: EntryContext
     vars: dict[object, TN] = field(default_factory=dict)
     cells: dict[object, TN] = field(default_factory=dict)
     copies: dict[object, TN] = field(default_factory=dict)
@@ -271,8 +278,8 @@ class IR2Component:
     """The IR2 of one lambda in one entry context: its blocks in emission
     order, every TN, and the environment."""
 
-    lambda_: object
-    context: object
+    lambda_: Lambda
+    context: EntryContext
     environment: IR2Environment
     blocks: list[IR2Block] = field(default_factory=list)
     tns: list[TN] = field(default_factory=list)

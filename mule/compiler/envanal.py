@@ -31,7 +31,16 @@ from mule import ast
 from . import fndb
 from .dfo import find_initial_dfo
 from .ir1util import block_end_cleanup, block_home_lambda, block_start_cleanup
-from .node import Cleanup, CleanupKind, Component, Ctran, Environment, Lambda, Lvar
+from .node import (
+    Cleanup,
+    CleanupKind,
+    Component,
+    Ctran,
+    Environment,
+    Lambda,
+    Lvar,
+    linked,
+)
 
 
 def environment_analyze(compilation) -> None:
@@ -69,7 +78,7 @@ def compute_closure(lambda_: Lambda) -> bool:
     closed = False
     for var in lambda_.declared_free:
         closed = True
-        _close_over(var, environment, var.home.environment)
+        _close_over(var, environment, linked(var.home, var, "home").environment)
     for var in lambda_.locals:
         for ref in var.refs:
             ref_lambda = ref.home_lambda

@@ -25,7 +25,8 @@ compile_error_file = "stdlib/abc.py"
 compile_error_line = 41
 '''
 
-import argparse, sys
+import argparse
+import sys
 
 parser = argparse.ArgumentParser()
 parser.add_argument('file', nargs='?',

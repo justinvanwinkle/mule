@@ -79,7 +79,7 @@ w = io.TextIOWrapper(raw, encoding="utf-8", newline="\n")
 w.write("café\n")
 w.flush()
 print("TextIOWrapper encode", raw.getvalue())
-r = io.TextIOWrapper(io.BytesIO("ünï\nline2\n".encode("utf-8")), encoding="utf-8")
+r = io.TextIOWrapper(io.BytesIO("ünï\nline2\n".encode()), encoding="utf-8")
 print("TextIOWrapper decode", r.readline(), r.read().strip())
 try:
     io.StringIO().seek(-1)

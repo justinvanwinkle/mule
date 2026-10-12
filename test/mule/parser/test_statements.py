@@ -4,7 +4,7 @@ import pytest
 
 from mule import ast as A
 from test.mule.parser import ast_query as q
-from test.mule.parser.ast_query import assert_ast_equal, at, nodes, one
+from test.mule.parser.ast_query import assert_ast_equal, at, expect, nodes, one
 
 STATEMENTS = [
     # Assignment and deletion (20).
@@ -380,7 +380,7 @@ def try_(handlers=None, orelse=None, finalbody=None, star_=False):
     )
 
 
-EXPECTED_STATEMENTS = {
+EXPECTED_STATEMENTS: dict[str, list[A.Statement]] = {
     "assign_name": [assign(n("answer"), A.IntegerLiteral(42))],
     "assign_chain": [A.Assignment(targets=[n("left"), n("right")], value=n("value"))],
     "assign_tuple": [assign(tup(n("left"), n("right")), n("pair"))],
@@ -959,11 +959,24 @@ def test_statement_has_expected_mule_ast(parse, case, source):
     assert_ast_equal(actual, expected)
 
 
+def identifier(expression: A.Expression | None) -> str:
+    return expect(expression, A.Name).identifier
+
+
+def called_name(expression: A.Expression) -> str:
+    """Return the function name in a call such as `finish()`."""
+    return identifier(expect(expression, A.Call).function)
+
+
+def statement_call_name(statement: A.Statement) -> str:
+    return called_name(expect(statement, A.ExpressionStatement).expression)
+
+
 def test_chained_assignment_preserves_target_order(parse):
     tree = parse("left = right = source")
     assignment = one(tree, q.Assignment)
-    assert [target.identifier for target in assignment.targets] == ["left", "right"]
-    assert assignment.value.identifier == "source"
+    assert [identifier(target) for target in assignment.targets] == ["left", "right"]
+    assert identifier(assignment.value) == "source"
 
 
 def test_nested_assignment_keeps_unpack_in_target_tree(parse):
@@ -973,23 +986,23 @@ def test_nested_assignment_keeps_unpack_in_target_tree(parse):
     assert target.elements[0].identifier == "first"
     assert_ast_equal(target.elements[1], lst(n("second"), star(n("rest"))))
     assert target.elements[1].elements[0].identifier == "second"
-    assert one(tree, q.Unpack).value.identifier == "rest"
+    assert identifier(one(tree, q.Unpack).value) == "rest"
     assert at(tree, "statements.0.value").identifier == "values"
 
 
 def test_attribute_assignment_retains_receiver_expression(parse):
     tree = parse("obj.value = result")
     target = one(tree, q.Attribute, attribute="value")
-    assert target.value.identifier == "obj"
+    assert identifier(target.value) == "obj"
     assert one(tree, q.Assignment).targets == [target]
-    assert one(tree, q.Assignment).value.identifier == "result"
+    assert identifier(one(tree, q.Assignment).value) == "result"
 
 
 def test_annotation_records_parenthesized_target(parse):
     tree = parse("plain: int\n(parenthesized): int")
     annotations = nodes(tree, q.AnnotatedAssignment)
     assert [node.parenthesized for node in annotations] == [False, True]
-    assert [node.target.identifier for node in annotations] == [
+    assert [identifier(node.target) for node in annotations] == [
         "plain",
         "parenthesized",
     ]
@@ -1000,9 +1013,10 @@ def test_augmented_assignment_keeps_target_and_power_operator(parse):
     tree = parse("values[index] **= amount")
     statement = one(tree, q.AugmentedAssignment)
     assert statement.operator is A.BinaryOperator.POWER
-    assert statement.target.value.identifier == "values"
-    assert statement.target.index.identifier == "index"
-    assert statement.value.identifier == "amount"
+    target = expect(statement.target, A.Subscript)
+    assert identifier(target.value) == "values"
+    assert identifier(target.index) == "index"
+    assert identifier(statement.value) == "amount"
 
 
 def test_delete_preserves_multiple_target_shapes(parse):
@@ -1012,9 +1026,9 @@ def test_delete_preserves_multiple_target_shapes(parse):
         statement,
         A.Delete([n("first"), attr("obj", "value"), sub("values", n("index"))]),
     )
-    assert statement.targets[0].identifier == "first"
-    assert statement.targets[1].value.identifier == "obj"
-    assert statement.targets[2].index.identifier == "index"
+    assert identifier(statement.targets[0]) == "first"
+    assert identifier(expect(statement.targets[1], A.Attribute).value) == "obj"
+    assert identifier(expect(statement.targets[2], A.Subscript).index) == "index"
 
 
 def test_relative_import_level_and_aliases(parse):
@@ -1047,28 +1061,27 @@ def test_for_else_and_unpack_target(parse):
     tree = parse("for head, *tail in rows:\n    consume(head)\nelse:\n    finish()")
     statement = one(tree, q.For)
     assert_ast_equal(statement.target, tup(n("head"), star(n("tail"))))
-    assert statement.target.elements[0].identifier == "head"
-    assert_ast_equal(statement.target.elements[1], star(n("tail")))
-    assert statement.target.elements[1].value.identifier == "tail"
-    assert statement.iterable.identifier == "rows"
-    assert statement.else_body[0].expression.function.identifier == "finish"
+    target = expect(statement.target, A.Tuple)
+    assert identifier(target.elements[0]) == "head"
+    assert_ast_equal(target.elements[1], star(n("tail")))
+    assert identifier(expect(target.elements[1], A.Unpack).value) == "tail"
+    assert identifier(statement.iterable) == "rows"
+    assert statement_call_name(statement.else_body[0]) == "finish"
 
 
 def test_with_items_preserve_order_and_optional_targets(parse):
     tree = parse("with first() as value, second(), third() as (a, b): pass")
     statement = one(tree, q.With)
-    assert [item.context.function.identifier for item in statement.items] == [
+    assert [called_name(item.context) for item in statement.items] == [
         "first",
         "second",
         "third",
     ]
-    assert statement.items[0].target.identifier == "value"
+    assert identifier(statement.items[0].target) == "value"
     assert statement.items[1].target is None
-    assert_ast_equal(statement.items[2].target, tup(n("a"), n("b")))
-    assert [element.identifier for element in statement.items[2].target.elements] == [
-        "a",
-        "b",
-    ]
+    third_target = expect(statement.items[2].target, A.Tuple)
+    assert_ast_equal(third_target, tup(n("a"), n("b")))
+    assert [identifier(element) for element in third_target.elements] == ["a", "b"]
 
 
 def test_except_star_records_exception_group_handling(parse):
@@ -1077,10 +1090,10 @@ def test_except_star_records_exception_group_handling(parse):
     )
     statement = one(tree, q.Try)
     assert statement.exception_groups is True
-    assert statement.handlers[0].exception.identifier == "Error"
+    assert identifier(statement.handlers[0].exception) == "Error"
     assert statement.handlers[0].binding == "errors"
-    assert statement.else_body[0].expression.function.identifier == "success"
-    assert statement.finally_body[0].expression.function.identifier == "cleanup"
+    assert statement_call_name(statement.else_body[0]) == "success"
+    assert statement_call_name(statement.finally_body[0]) == "cleanup"
 
 
 def test_function_parameters_keep_source_order_and_individual_defaults(parse):
@@ -1105,7 +1118,9 @@ def test_function_parameters_keep_source_order_and_individual_defaults(parse):
         VK,
     ]
     assert [
-        parameter.default.value if parameter.default is not None else None
+        expect(parameter.default, A.IntegerLiteral).value
+        if parameter.default is not None
+        else None
         for parameter in parameters
     ] == [None, 2, 3, None, None, 5, None]
 
@@ -1115,8 +1130,8 @@ def test_class_decorators_and_arguments_preserve_source_order(parse):
         "@outer\n@inner(1)\nclass Thing(Base, metaclass=Meta, **options): pass"
     )
     statement = one(tree, q.ClassDefinition)
-    assert statement.decorators[0].identifier == "outer"
-    assert statement.decorators[1].function.identifier == "inner"
+    assert identifier(statement.decorators[0]) == "outer"
+    assert called_name(statement.decorators[1]) == "inner"
     assert [argument.kind for argument in statement.arguments] == [
         A.ArgumentKind.POSITIONAL,
         A.ArgumentKind.KEYWORD,
@@ -1127,7 +1142,7 @@ def test_class_decorators_and_arguments_preserve_source_order(parse):
         "metaclass",
         None,
     ]
-    assert [argument.value.identifier for argument in statement.arguments] == [
+    assert [identifier(argument.value) for argument in statement.arguments] == [
         "Base",
         "Meta",
         "options",
@@ -1143,7 +1158,7 @@ def test_async_compound_statements_keep_async_flags(parse):
     assert function.is_async is True
     assert one(tree, q.With).is_async is True
     assert one(tree, q.For).is_async is True
-    assert one(tree, q.Await).value.function.identifier == "consume"
+    assert called_name(one(tree, q.Await).value) == "consume"
 
 
 def test_type_comments_attach_to_assignment_loop_and_function(parse):

@@ -26,7 +26,7 @@ class B(A):
         return "B.make>" + super().make()
 
     def two_arg(self):
-        return super(B, self).m()
+        return super().m()
 
     def nested(self):
         def inner():

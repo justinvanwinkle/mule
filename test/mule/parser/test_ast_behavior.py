@@ -3,7 +3,7 @@
 import pytest
 
 from mule import ast
-from test.mule.parser.ast_query import assert_ast_equal
+from test.mule.parser.ast_query import assert_ast_equal, expect
 
 
 @pytest.mark.parametrize(
@@ -89,7 +89,9 @@ def test_custom_node_controls_traversal_without_dataclass_field_inspection():
             yield ast.Name("owned")
 
     tree = Children()
-    assert [child.identifier for child in ast.children(tree)] == ["owned"]
+    assert [expect(child, ast.Name).identifier for child in ast.children(tree)] == [
+        "owned"
+    ]
     assert [node.binding_name() for node in ast.walk(tree)] == [None, "owned"]
 
 
@@ -97,12 +99,15 @@ def test_custom_expression_can_own_target_validation():
     from mule.parser.core import Parser
 
     class Target(ast.Expression):
+        received: tuple[Parser, bool] | None = None
+
         def validate_target(self, parser, *, delete=False):
-            parser.validated = delete
+            self.received = (parser, delete)
 
     parser = Parser("")
-    parser.validate_target(Target(), delete=True)
-    assert parser.validated is True
+    target = Target()
+    parser.validate_target(target, delete=True)
+    assert target.received == (parser, True)
 
 
 def test_literal_singleton_constructors_do_not_need_raw_value_arguments():

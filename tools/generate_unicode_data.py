@@ -187,6 +187,8 @@ def build_index(record_indices):
             size = len(top) + 2 * len(middles) + 2 * len(leaves)
             if best is None or size < best[0]:
                 best = (size, leaf_bits, middle_bits, top, middles, leaves)
+    if best is None:
+        raise ValueError("no split keeps the top level within 1-byte entries")
     _, leaf_bits, middle_bits, top, middles, leaves = best
     if max(middles) >= 1 << 16 or max(leaves) >= 1 << 16:
         raise ValueError("index entries do not fit 16 bits")

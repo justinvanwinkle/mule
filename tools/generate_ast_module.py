@@ -59,7 +59,7 @@ def type_expression(annotation):
         members = [arg for arg in annotation.__args__ if arg is not type(None)]
         return type_expression(members[0]) if len(members) == 1 else "object"
     if isinstance(annotation, type):
-        return annotation.__name__ if annotation.__module__ == "ast" else annotation.__name__
+        return annotation.__name__
     return "object"
 
 

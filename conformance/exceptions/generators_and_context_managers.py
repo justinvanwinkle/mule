@@ -55,9 +55,8 @@ with Tracker("outer"), Tracker("inner", suppress_types=(ValueError,)):
     raise ValueError("inner only")
 
 print("nested managers, outer suppresses:")
-with Tracker("outer2", suppress_types=(ValueError,)):
-    with Tracker("inner2"):
-        raise ValueError("to outer")
+with Tracker("outer2", suppress_types=(ValueError,)), Tracker("inner2"):
+    raise ValueError("to outer")
 
 
 class TruthyExit:

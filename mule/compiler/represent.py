@@ -22,6 +22,7 @@ Two decisions live here:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from mule import ast
 
@@ -44,6 +45,7 @@ from .node import (
     Ref,
     Return,
     Set,
+    linked,
 )
 from .vop import (
     BOOLEAN_T,
@@ -60,6 +62,9 @@ from .vop import (
     T,
     instance_type,
 )
+
+if TYPE_CHECKING:
+    from .native_protocol import Layout
 
 IMMORTAL_TYPES = (FIXNUM, BOOLEAN_T, NONE_T, IMMORTAL_T)
 
@@ -112,7 +117,7 @@ def select_tn_representation(tn, *, raw=False):
             restriction = _restriction(ref)
             if restriction is not None and sc not in restriction:
                 cost += 1
-        if best is None or cost < best_cost:
+        if best_cost is None or cost < best_cost:
             best, best_cost = sc, cost
     return best
 
@@ -245,7 +250,7 @@ class Nothing(Representation):
 @dataclass(frozen=True)
 class Instance(Representation):
     layout_id: str
-    layout: object = field(compare=False)
+    layout: Layout = field(compare=False)
     llvm_type = "ptr"
     zero = "null"
 
@@ -277,7 +282,7 @@ class Instance(Representation):
 class Class(Representation):
     binding: str
     layout_id: str
-    layout: object = field(compare=False)
+    layout: Layout = field(compare=False)
     llvm_type = "ptr"
     zero = "null"
     primitive_type = CLASS_T
@@ -532,7 +537,7 @@ class _Select(NodeVisitor):
     def visit_Combination(self, node: Combination):
         if node.kind is not CallKind.KNOWN:
             return self.construct(node)
-        name = node.fun_info.name
+        name = linked(node.fun_info, node, "known function").name
         args = node.args
         if name in _BINARY_NAMES:
             return self.binary(_BINARY_NAMES[name], args)
@@ -552,13 +557,14 @@ class _Select(NodeVisitor):
             self.numeric_operands(args)
             return BOOL
         if name == "%getattr":
-            return self.value(args[0]).field(node.info.name)
+            return self.value(args[0]).field(linked(node.info, node, "attribute").name)
         if name == "%setattr":
-            if self.value(args[0]).field(node.info.name) != self.value(args[1]):
+            attribute = linked(node.info, node, "attribute").name
+            if self.value(args[0]).field(attribute) != self.value(args[1]):
                 raise NotNative
             return None
         if name == "%resolve_method":
-            method = self.value(args[0]).method(node.info.name)
+            method = self.value(args[0]).method(linked(node.info, node, "method").name)
             self.plan.method_targets[node] = method.target
             return method
         if name == "%call_resolved":
@@ -620,7 +626,7 @@ class _Select(NodeVisitor):
                 raise NotNative
         # A reused allocation site in a loop needs an escape/lifetime analysis
         # before borrowed instance references can safely replace owned values.
-        pending, visited = list(self.block.succ), set()
+        pending, visited = list(linked(self.block, self, "current block").succ), set()
         while pending:
             block = pending.pop()
             if block is self.block:
@@ -636,7 +642,7 @@ class _Select(NodeVisitor):
 def class_bindings(lambdas, layouts) -> dict[str, str]:
     """Global names bound to a native class definition anywhere in the
     program, keyed to the class identity."""
-    bindings = {}
+    bindings: dict[str, str] = {}
     for lambda_ in lambdas:
         for block in lambda_.component.blocks():
             for node in block.nodes():

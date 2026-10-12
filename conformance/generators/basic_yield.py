@@ -87,7 +87,7 @@ def fib():
 
 f = fib()
 print("infinite partial", [next(f) for _ in range(12)])
-import itertools  # noqa: E402
+import itertools
 
 print("islice infinite", list(itertools.islice(fib(), 20, 25)))
 print("takewhile infinite", list(itertools.takewhile(lambda v: v < 100, fib())))

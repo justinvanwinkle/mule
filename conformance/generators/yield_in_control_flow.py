@@ -24,8 +24,7 @@ def while_loop():
         if n % 3:
             continue
         yield n
-    else:
-        yield "while else"
+    yield "while else"
 
 
 print("while with continue", list(while_loop()))

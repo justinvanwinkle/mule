@@ -137,9 +137,9 @@ print("class body locals", NS.snapshot, getattr(NS, "injected", "missing"))
 import sys
 
 this = sys.modules[__name__]
-setattr(this, "via_module", "set via module object")
+this.via_module = "set via module object"
 print("module setattr", via_module)
-print("module getattr", getattr(this, "existing"))
+print("module getattr", this.existing)
 
 # globals() from an imported module function refers to that module
 import json

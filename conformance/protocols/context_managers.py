@@ -152,7 +152,7 @@ except TypeError as e:
     print("missing __exit__", type(e).__name__, log)
 
 # contextlib-based generator managers
-from contextlib import contextmanager, suppress, nullcontext, ExitStack
+from contextlib import ExitStack, contextmanager, nullcontext, suppress
 
 
 @contextmanager

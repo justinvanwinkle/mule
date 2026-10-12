@@ -11,7 +11,7 @@ def s(label, v):
 a, b = 1, 1
 print("not a == b", not a == b)
 print("a == (not b)", a == (not b))
-print("not not", not not 0, not not [0])
+print("not not", bool(0), bool([0]))
 print("-x ** y", -2 ** 2, (-2) ** 2, 2 ** -1, -2 ** -2)
 print("power right assoc", 2 ** 3 ** 2, (2 ** 3) ** 2)
 print("unary chain", - - 3, -+-+3, ~-1, -~1, ~~5)
@@ -30,7 +30,7 @@ xs = [1, 2, 3]
 print("in chain", 2 in xs != None, (2 in xs) != None)
 zero = 0
 print("is not chain", None is not zero < 1)
-print("mixed chain", 1 < 2 in [2] is not None)
+print("mixed chain", 1 < 2 in [2] != None)
 r = s("x", 0) < s("y", 1) in s("z", [1]) is not s("w", None)
 print("side effect chain", r, log)
 log.clear()

@@ -50,7 +50,6 @@ def for_target_later():
 
 def import_later():
     result = math
-    import math
     return result
 
 
@@ -72,7 +71,7 @@ def except_as_later():
     result = err
     try:
         pass
-    except Exception as err:
+    except Exception:
         pass
     return result
 

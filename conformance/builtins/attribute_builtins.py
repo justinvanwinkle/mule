@@ -17,10 +17,10 @@ class Thing:
 
 
 t = Thing()
-print("getattr", getattr(t, "a"), getattr(t, "kind"), getattr(t, "prop"), getattr(t, "method")())
+print("getattr", t.a, t.kind, t.prop, t.method())
 print("getattr default", getattr(t, "missing", "dflt"), getattr(t, "missing", None))
 try:
-    getattr(t, "missing")
+    t.missing
 except AttributeError as e:
     print("getattr missing", type(e).__name__)
 try:
@@ -29,10 +29,10 @@ except TypeError as e:
     print("getattr non str", type(e).__name__)
 print("hasattr", hasattr(t, "a"), hasattr(t, "zzz"), hasattr(t, "method"), hasattr(Thing, "a"))
 
-setattr(t, "c", 3)
+t.c = 3
 setattr(t, "with space", "odd but legal")
 print("setattr", t.c, getattr(t, "with space"))
-setattr(Thing, "shared", "on class")
+Thing.shared = "on class"
 print("setattr class", t.shared, Thing().shared)
 delattr(t, "c")
 print("delattr", hasattr(t, "c"))
@@ -45,11 +45,11 @@ try:
 except AttributeError as e:
     print("delattr class attr via instance", type(e).__name__)
 try:
-    setattr(t, "prop", 1)
+    t.prop = 1
 except AttributeError as e:
     print("setattr readonly property", type(e).__name__)
 try:
-    setattr(5, "x", 1)
+    (5).x = 1
 except AttributeError as e:
     print("setattr on int", type(e).__name__)
 
@@ -80,7 +80,7 @@ class Dynamic:
 
 
 dy = Dynamic()
-print("__getattr__", dy.dyn_hello, getattr(dy, "dyn_x"), hasattr(dy, "other"), getattr(dy, "other", "default"))
+print("__getattr__", dy.dyn_hello, dy.dyn_x, hasattr(dy, "other"), getattr(dy, "other", "default"))
 
 print("callable", callable(len), callable(Thing), callable(t), callable(t.method), callable(lambda: 0), callable(5))
 

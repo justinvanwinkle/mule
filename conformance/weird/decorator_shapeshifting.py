@@ -98,7 +98,7 @@ class Thing:
         return t
 
     @staticmethod
-    @functools.lru_cache(maxsize=None)
+    @functools.cache
     def square(n):
         print("computing", n)
         return n * n

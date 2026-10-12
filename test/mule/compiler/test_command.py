@@ -64,9 +64,11 @@ def test_recorded_inputs_change_when_a_new_file_would_shadow_an_import(tmp_path)
 
 
 def mule(arguments, directory, **options):
+    # A private cache, so reuse is observed only for this test's builds; -O0
+    # because these tests concern running programs, not optimization.
     environment = {**os.environ, "XDG_CACHE_HOME": str(directory / "cache")}
     return subprocess.run(
-        [sys.executable, "-m", "mule", *arguments],
+        [sys.executable, "-m", "mule", "-O0", *arguments],
         cwd=directory,
         env=environment,
         capture_output=True,
@@ -78,7 +80,7 @@ def mule(arguments, directory, **options):
 
 
 def executables(directory):
-    return sorted((directory / "cache").glob("mule/*/program-*"))
+    return sorted((directory / "cache").glob("mule/steps/*/program"))
 
 
 def test_script_runs_with_its_arguments_and_rebuilds_after_an_import_changes(tmp_path):
@@ -90,6 +92,7 @@ def test_script_runs_with_its_arguments_and_rebuilds_after_an_import_changes(tmp
     assert (first.returncode, first.stderr) == (0, "")
     assert first.stdout == "['main.py', '-o', 'x'] first\n"
     built = executables(tmp_path)
+    assert built, "the build is cached"
     again = mule(["main.py"], tmp_path)
     assert again.stdout == "['main.py'] first\n"
     assert executables(tmp_path) == built, "unchanged inputs reuse the executable"

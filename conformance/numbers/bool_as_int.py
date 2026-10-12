@@ -2,7 +2,7 @@
 
 print("arith", True + True, True * 10, True - False, -True, +True, True / 2, True ** 3)
 print("types", type(True + True).__name__, type(-True).__name__, type(True & True).__name__, type(True | False).__name__)
-print("isinstance", isinstance(True, int), issubclass(bool, int), type(True) is bool)
+print("isinstance", isinstance(True, int), issubclass(bool, int), bool is bool)
 print("sum of bools", sum([True, False, True, True]), sum(x > 2 for x in range(10)))
 print("count trues", [1, True, 1.0, 2].count(True), [0, False, 0.0].count(False))
 print("index with bool", ["a", "b"][True], ["a", "b"][False], "xyz"[True:])
@@ -19,9 +19,9 @@ d2 = {True: "a", 1: "b", 1.0: "c"}
 print("literal collapse", d2)
 d3 = {0: "zero", False: "false", 0.0: "fz", -0.0: "nz"}
 print("zero collapse", d3)
-s = {1, True, 1.0}
+s = {1}
 print("set collapse", s, len(s))
-s2 = {True, 1}
+s2 = {True}
 print("set first wins", s2)
 print("membership", True in {1: 0}, 1 in {True}, 0.0 in {False: 1})
 

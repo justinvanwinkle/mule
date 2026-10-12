@@ -3,6 +3,7 @@
 import re
 from bisect import bisect_right
 from dataclasses import dataclass
+from typing import NoReturn
 
 from mule.ast import Position
 
@@ -99,7 +100,7 @@ def lexical_error(
     filename: str,
     start: Position = _ORIGIN,
     error_type: type[SyntaxError] = SyntaxError,
-):
+) -> NoReturn:
     position = position_at(source, index, start)
     line = source.split("\n")[position.line - start.line]
     if position.line == start.line:
@@ -292,7 +293,9 @@ def lex(
             )
         )
 
-    def error(message, index, error_type=SyntaxError):
+    def error(
+        message: str, index: int, error_type: type[SyntaxError] = SyntaxError
+    ) -> NoReturn:
         lexical_error(message, source, index, filename, start, error_type)
 
     while cursor < len(source):

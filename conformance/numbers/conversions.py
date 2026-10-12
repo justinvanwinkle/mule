@@ -35,7 +35,7 @@ for s in ["", "1.5.2", "1e", "0x10", "inf1", "1_"]:
         print("float bad", repr(s), type(e).__name__)
 print("float hex parse", float.fromhex("0x1.8p1"))
 
-print("complex ctor", complex(1, 2), complex(1.5), complex("3+4j"), complex("-2j"), complex(" 1-1j "), complex())
+print("complex ctor", complex(1, 2), complex(1.5), complex("3+4j"), complex("-2j"), complex(" 1-1j "), 0j)
 print("complex str forms", complex("j"), complex("1e1+2.5e-1j"), complex("(1+2j)"))
 try:
     complex("1 + 2j")

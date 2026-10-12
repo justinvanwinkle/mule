@@ -32,6 +32,7 @@ Python adaptations beyond those listed in ``node.py``:
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import NoReturn
 
 from mule import ast
 
@@ -71,6 +72,7 @@ from .node import (
     Lvar,
     Ref,
     Set,
+    linked,
 )
 from .policy import OptimizationPolicy
 
@@ -272,7 +274,7 @@ class Converter:
             end.column + 1,
         )
 
-    def error(self, message: str, node: ast.Node, *, unsupported=False):
+    def error(self, message: str, node: ast.Node, *, unsupported=False) -> NoReturn:
         error_type = UnsupportedSyntax if unsupported else SyntaxError
         raise error_type(message, self.location(node))
 
@@ -427,7 +429,9 @@ class FunctionConverter:
     def component(self):
         return self.converter.component
 
-    def error(self, message: str, node: ast.Node, *, unsupported=False):
+    def error(
+        self, message: str, node: ast.Node, *, unsupported=False
+    ) -> NoReturn:
         self.converter.error(message, node, unsupported=unsupported)
 
     def _bindings(self, statements):
@@ -519,12 +523,12 @@ class FunctionConverter:
     def qualified(self, name) -> str:
         """The ``__qualname__`` of a definition named ``name`` made here."""
         if self.annotation_scope and not self.class_scopes:
-            return self.parent.qualified(name)
+            return linked(self.parent, self, "parent").qualified(name)
         if self.class_scopes:
             return self.class_scopes[-1].qualname + "." + name
         if self.is_module:
             return name
-        return self.qualname + ".<locals>." + name
+        return linked(self.qualname, self, "qualname") + ".<locals>." + name
 
     def class_binding(self, name) -> ClassScope | None:
         """The class body whose namespace holds ``name``, if it is bound there."""
@@ -723,7 +727,7 @@ class FunctionConverter:
             return
         aver(frontier.next is None, "the frontier already continues")
         if frontier.kind is CtranKind.INSIDE_BLOCK:
-            previous = frontier.use
+            previous = linked(frontier.use, frontier, "use")
             previous.next = None
             frontier.use = None
             frontier.kind = CtranKind.UNUSED
@@ -736,7 +740,7 @@ class FunctionConverter:
             use_ctran(filler, next_)
 
     def jump(self, frontier: Ctran, target: Block) -> None:
-        self.flow(frontier, target.start)
+        self.flow(frontier, linked(target.start, target, "start"))
 
     # Conversion drivers
 
@@ -771,7 +775,8 @@ class FunctionConverter:
             terminated = False
             for statement in statements:
                 if terminated:
-                    current = self.block(current).start
+                    block = self.block(current)
+                    current = linked(block.start, block, "start")
                 following = Ctran()
                 self.convert_statement(current, following, statement)
                 if current.kind is not CtranKind.UNUSED and current.next is None:
@@ -789,6 +794,8 @@ class FunctionConverter:
         leaving = []
         cleanup = self.lexenv.cleanup
         while cleanup is not stop:
+            if cleanup is None:
+                raise ValueError(f"{stop!r} does not enclose the current cleanup")
             leaving.append(cleanup)
             cleanup = cleanup.parent
         return self.leave_handler_bodies(start, leaving, source)
@@ -828,7 +835,7 @@ class FunctionConverter:
         leaves ``cleanup`` (``insert-cleanup-code``)."""
         # After conversion the lambda owns its component; the conversion-time
         # initial component has been split away.
-        component = self.lambda_.component
+        component = linked(self.lambda_.component, self.lambda_, "component")
         block = ctran_starts_block(Ctran(), component)
         change_block_successor(pred, succ, block)
         self._cleanup_edges[block] = succ
@@ -1088,7 +1095,8 @@ class FunctionConverter:
                 target = keywords
                 if argument.kind == ast.ArgumentKind.KEYWORD:
                     name = "add_keyword"
-                    operands = [ast.TextLiteral(argument.keyword, span=argument.span)]
+                    keyword = linked(argument.keyword, argument, "keyword")
+                    operands = [ast.TextLiteral(keyword, span=argument.span)]
                 else:
                     name = "merge_keywords"
                     operands = []
@@ -1108,7 +1116,8 @@ class FunctionConverter:
         self.protocol(current, next_, result, "call_expanded", tuple(operands), node)
 
     def import_module(self, start, name, node) -> tuple[Ctran, Lvar]:
-        if self.converter.imports is None:
+        imports = self.converter.imports
+        if imports is None:
             self.error(
                 "runtime module imports are not supported by standalone lowering",
                 node,
@@ -1119,7 +1128,7 @@ class FunctionConverter:
         current = start
         for index, part in enumerate(parts):
             qualified = ".".join(parts[: index + 1])
-            descriptor = self.converter.imports.resolve(qualified, self.converter, node)
+            descriptor = imports.resolve(qualified, self.converter, node)
             ctran, imported = Ctran(), Lvar()
             self.known(
                 current,
@@ -1156,6 +1165,8 @@ class FunctionConverter:
                 current, imported = Ctran(), Lvar()
                 self.ref(ctran, current, imported, temporary, node, final=True)
             parent = imported
+        if parent is None:
+            raise ValueError(f"cannot import an empty module name {name!r}")
         return current, parent
 
     def import_attribute(self, start, namespace: LambdaVar, item) -> Ctran:
@@ -1183,6 +1194,78 @@ class FunctionConverter:
                 unsupported=True,
             )
         node.accept(_ImportBindings(self.converter, activate=True))
+
+    def evaluate_decorators(self, start, decorators):
+        """Evaluate runtime decorator expressions top to bottom, before the
+        definition they decorate. Returns the temporaries holding their values."""
+        current = start
+        held = []
+        for decorator in decorators:
+            ctran, value = self.value(current, decorator)
+            temporary = self.temporary()
+            current = Ctran()
+            self.set_var(ctran, current, temporary, value, decorator)
+            held.append(temporary)
+        return current, held
+
+    def apply_decorators(self, start, held, value, decorators):
+        """Call the evaluated decorators on ``value``, innermost first."""
+        if not held:
+            return start, value
+        result = self.temporary()
+        current = Ctran()
+        self.set_var(start, current, result, value, decorators[-1])
+        for temporary, decorator in reversed(tuple(zip(held, decorators, strict=True))):
+            ctran, callee = Ctran(), Lvar()
+            self.ref(current, ctran, callee, temporary, decorator, final=True)
+            following, argument = Ctran(), Lvar()
+            self.ref(ctran, following, argument, result, decorator, final=True)
+            ctran, decorated = Ctran(), Lvar()
+            self.full_call(
+                following,
+                ctran,
+                decorated,
+                callee,
+                (argument,),
+                decorator,
+                CallInfo((), self.converter.location(decorator)),
+            )
+            current = Ctran()
+            self.set_var(ctran, current, result, decorated, decorator)
+        ctran, value = Ctran(), Lvar()
+        self.ref(current, ctran, value, result, decorators[0], final=True)
+        return ctran, value
+
+    def define_function(self, start, next_, result, lambda_, definition, public_name):
+        """Evaluate the definition's defaults in this scope, left to right, then
+        reference the converted lambda and create its runtime function object."""
+        current = start
+        defaults = []
+        for parameter in definition.parameters:
+            if parameter.default is not None:
+                current, value = self.value(current, parameter.default)
+                defaults.append(value)
+        enclose = Enclose(self.lexenv, definition, [lambda_])
+        link_node_to_previous_ctran(enclose, current)
+        ctran = Ctran()
+        use_ctran(enclose, ctran)
+        following, fun = Ctran(), Lvar()
+        self.ref(ctran, following, fun, lambda_, definition)
+        default_contracts = tuple(
+            lambda_.signature.annotations[index]
+            for index in lambda_.signature.default_parameters
+        )
+        self.known(
+            following,
+            next_,
+            result,
+            fndb.MAKE_FUNCTION,
+            (fun, *defaults),
+            definition,
+            FunctionInfo(
+                public_name, default_contracts, self.converter.location(definition)
+            ),
+        )
 
 
 class _CleanupScope:
@@ -1354,7 +1437,7 @@ class _Expressions(ast.Visitor):
         function = self.function
         start, next_, result = self.frame
         span = node.span
-        body = [
+        body: list[ast.Statement] = [
             ast.ExpressionStatement(ast.Yield(node.element, span=span), span=span)
         ]
         for index in range(len(node.clauses) - 1, -1, -1):
@@ -1450,7 +1533,7 @@ class _Expressions(ast.Visitor):
                 ),
                 span=span,
             )
-        body = [add]
+        body: list[ast.Statement] = [add]
         for index in range(len(node.clauses) - 1, -1, -1):
             clause = node.clauses[index]
             for condition in reversed(clause.conditions):
@@ -1941,10 +2024,12 @@ class _Statements(ast.Visitor):
         start, next_, _ = self.frame
         then, other, join = function.block(), function.block(), function.block(next_)
         function.condition(start, node.condition, then, other)
-        frontier = function.convert_body(then.start, node.body)
+        frontier = function.convert_body(linked(then.start, then, "start"), node.body)
         if frontier is not None:
             function.jump(frontier, join)
-        frontier = function.convert_body(other.start, node.else_body)
+        frontier = function.convert_body(
+            linked(other.start, other, "start"), node.else_body
+        )
         if frontier is not None:
             function.jump(frontier, join)
 
@@ -2019,9 +2104,10 @@ class _Statements(ast.Visitor):
             body = function.block()
             function.jump(start, body)
             following = Ctran()
-            function.convert_statement(body.start, following, protected)
-            if body.start.next is None:
-                function.flow(body.start, following)
+            body_start = linked(body.start, body, "start")
+            function.convert_statement(body_start, following, protected)
+            if body_start.next is None:
+                function.flow(body_start, following)
             if following.kind is not CtranKind.UNUSED:
                 function.jump(following, done)
         ctran, caught = Ctran(), Lvar()
@@ -2034,7 +2120,7 @@ class _Statements(ast.Visitor):
             ctran, value = Ctran(), Lvar()
             function.ref(frontier, ctran, value, exception, node, final=True)
             self.terminal(ctran, fndb.RAISE, (value,), node)
-        function.flow(done.start, next_)
+        function.flow(linked(done.start, done, "start"), next_)
 
     def try_handlers(self, start, next_, node):
         function = self.function
@@ -2045,10 +2131,12 @@ class _Statements(ast.Visitor):
             # A handler covers only the body: its blocks start here.
             body = function.block()
             function.jump(start, body)
-            frontier = function.convert_body(body.start, node.body)
+            frontier = function.convert_body(linked(body.start, body, "start"), node.body)
             if frontier is not None:
                 function.jump(frontier, success)
-        frontier = function.convert_body(success.start, node.else_body)
+        frontier = function.convert_body(
+            linked(success.start, success, "start"), node.else_body
+        )
         if frontier is not None:
             function.jump(frontier, done)
         ctran, caught = Ctran(), Lvar()
@@ -2089,8 +2177,8 @@ class _Statements(ast.Visitor):
                 # The handler body's own error destination starts a new block.
                 inner = function.block()
                 function.jump(entered, inner)
-                active.mess_up = inner.start.next
-                current = inner.start
+                current = linked(inner.start, inner, "start")
+                active.mess_up = current.next
                 if handler.binding is not None:
                     function.converter.reserved(handler.binding, handler)
                     ctran, raised = Ctran(), Lvar()
@@ -2101,7 +2189,7 @@ class _Statements(ast.Visitor):
             if frontier is not None:
                 # Environment analysis emits the handler-leaving code on this edge.
                 function.jump(frontier, done)
-            current = unwind.start
+            current = linked(unwind.start, unwind, "start")
             if handler.binding is not None:
                 ctran = Ctran()
                 function.unbind(
@@ -2111,7 +2199,7 @@ class _Statements(ast.Visitor):
             ctran = Ctran()
             function.known(current, ctran, None, fndb.LEAVE_HANDLER, (), handler)
             self.terminal(ctran, fndb.UNWIND, (), handler)
-            current = unmatched.start
+            current = linked(unmatched.start, unmatched, "start")
         # No handler matched: reinstall the original caught exception.
         ctran, value = Ctran(), Lvar()
         function.ref(current, ctran, value, exception, node, final=True)
@@ -2206,10 +2294,11 @@ class _Statements(ast.Visitor):
             body = function.block()
             function.jump(current, body)
             following = Ctran()
-            self.with_items(body.start, following, node, index + 1)
-            region.mess_up = body.start.next
-            if body.start.next is None:
-                function.flow(body.start, following)
+            body_start = linked(body.start, body, "start")
+            self.with_items(body_start, following, node, index + 1)
+            region.mess_up = body_start.next
+            if body_start.next is None:
+                function.flow(body_start, following)
             if following.kind is not CtranKind.UNUSED:
                 function.jump(following, done)
         # An exception inside the body goes to __exit__; a true result suppresses it.
@@ -2231,7 +2320,7 @@ class _Statements(ast.Visitor):
         ctran, value = Ctran(), Lvar()
         function.ref(reraise.start, ctran, value, exception, item, final=True)
         self.terminal(ctran, fndb.RAISE, (value,), item)
-        function.flow(done.start, next_)
+        function.flow(linked(done.start, done, "start"), next_)
 
     def visit_For(self, node):
         function = self.function
@@ -2316,7 +2405,9 @@ class _Statements(ast.Visitor):
                 frontier = function.convert_body(following, node.body)
             if frontier is not None:
                 function.jump(frontier, range_test)
-            frontier = function.convert_body(range_else.start, node.else_body)
+            frontier = function.convert_body(
+                linked(range_else.start, range_else, "start"), node.else_body
+            )
             if frontier is not None:
                 function.jump(frontier, range_done)
         else:
@@ -2328,7 +2419,7 @@ class _Statements(ast.Visitor):
             function.block(),
         )
         failed, finished = function.block(), function.block()
-        function.jump(generic.start, test)
+        function.jump(linked(generic.start, generic, "start"), test)
         outer = function.lexenv.cleanup
         region = Cleanup(CleanupKind.HANDLER_REGION, target=exhausted, parent=outer)
         with function.with_cleanup(region):
@@ -2370,7 +2461,7 @@ class _Statements(ast.Visitor):
         frontier = function.convert_body(ctran, node.else_body)
         if frontier is not None:
             function.jump(frontier, done)
-        function.jump(done.start, range_done)
+        function.jump(linked(done.start, done, "start"), range_done)
         function.discard(range_done.start, next_, iterator.name, node)
 
     def visit_While(self, node):
@@ -2385,10 +2476,12 @@ class _Statements(ast.Visitor):
         function.jump(start, test)
         function.condition(test.start, node.condition, loop, other)
         with function.with_loop(LoopTarget(test, done, function.lexenv.cleanup)):
-            frontier = function.convert_body(loop.start, node.body)
+            frontier = function.convert_body(linked(loop.start, loop, "start"), node.body)
         if frontier is not None:
             function.jump(frontier, test)
-        frontier = function.convert_body(other.start, node.else_body)
+        frontier = function.convert_body(
+            linked(other.start, other, "start"), node.else_body
+        )
         if frontier is not None:
             function.jump(frontier, done)
 
@@ -2414,7 +2507,8 @@ class _Statements(ast.Visitor):
         if function.is_module:
             function.error("'return' outside function", node)
         lambda_ = function.lambda_
-        result = lambda_.return_.result
+        return_ = linked(lambda_.return_, lambda_, "return")
+        result = return_.result
         annotation = lambda_.signature.return_annotation
         ctran = Ctran()
         delivered = Lvar() if annotation is not None else result
@@ -2434,7 +2528,7 @@ class _Statements(ast.Visitor):
                 declaration=("return", lambda_),
             )
             ctran = following
-        function.jump(ctran, lambda_.return_.block)
+        function.jump(ctran, return_.block)
 
     def visit_FunctionDefinition(self, node):
         function = self.function
@@ -2640,6 +2734,80 @@ class _Statements(ast.Visitor):
             function.ref(ctran, following, created, klass, node, final=True)
         ctran, created = function.apply_decorators(following, held, created, decorators)
         function.store(ctran, next_, node.name, created, node)
+
+    def generic_definition(self, node):
+        """A PEP 695 generic function or class. As in CPython, a hidden
+        annotation scope creates the type parameters, defines the function or
+        class (a class additionally derives from ``Generic[...]``), records them
+        as ``__type_params__``, and returns it; decorators apply outside."""
+        function = self.function
+        start, next_, _ = self.frame
+        converter = function.converter
+        span = node.span
+        statements = _annotation_scope_body(node, span)
+        if isinstance(node, ast.ClassDefinition):
+            positional = [
+                argument
+                for argument in node.arguments
+                if argument.kind in (ast.ArgumentKind.POSITIONAL, ast.ArgumentKind.STARRED)
+            ]
+            keywords = [argument for argument in node.arguments if argument not in positional]
+            generic = ast.CallArgument(
+                ast.Subscript(
+                    ast.Attribute(ast.Name("$typing", span=span), "Generic", span=span),
+                    _type_parameter_tuple(node, span, unpack=True),
+                    span=span,
+                ),
+                span=span,
+            )
+            body = list(node.body)
+            offset = 1 if body and body[0].accept(_ClassDocstring()) else 0
+            body.insert(
+                offset,
+                ast.Assignment(
+                    [ast.Name("__type_params__", span=span)],
+                    _type_parameter_tuple(node, span),
+                    span=span,
+                ),
+            )
+            inner = replace(
+                node,
+                type_parameters=[],
+                decorators=[],
+                arguments=[*positional, generic, *keywords],
+                body=body,
+            )
+            statements.append(inner)
+        else:
+            inner = replace(node, type_parameters=[], decorators=[])
+            statements.append(inner)
+            statements.append(
+                ast.Assignment(
+                    [ast.Attribute(ast.Name(node.name, span=span), "__type_params__", span=span)],
+                    _type_parameter_tuple(node, span),
+                    span=span,
+                )
+            )
+        statements.append(ast.Return(ast.Name(node.name, span=span), span=span))
+        scope = ast.FunctionDefinition(f"<generic parameters of {node.name}>", [], statements, span=span)
+        decorators = converter.runtime_decorators(node.decorators)
+        current, held = function.evaluate_decorators(start, decorators)
+        outer = function.class_scopes[-1] if function.class_scopes else function.defining_class
+        lambda_ = converter.function(
+            scope,
+            function.lambda_.policy,
+            parent=function,
+            defining_class=outer,
+            annotation_scope=True,
+        )
+        ctran, created = Ctran(), Lvar()
+        function.define_function(current, ctran, created, lambda_, scope, scope.name)
+        following, result = Ctran(), Lvar()
+        function.full_call(
+            ctran, following, result, created, (), node, CallInfo((), converter.location(node))
+        )
+        ctran, result = function.apply_decorators(following, held, result, decorators)
+        function.store(ctran, next_, node.name, result, node)
 
 
 class _MatchLowering:
@@ -3061,131 +3229,6 @@ def _type_parameter_tuple(node, span, *, unpack=False):
     )
 
 
-def _generic_definition(self, node):
-    """A PEP 695 generic function or class. As in CPython, a hidden
-    annotation scope creates the type parameters, defines the function or
-    class (a class additionally derives from ``Generic[...]``), records them
-    as ``__type_params__``, and returns it; decorators apply outside."""
-    function = self.function
-    start, next_, _ = self.frame
-    converter = function.converter
-    span = node.span
-    statements = _annotation_scope_body(node, span)
-    if isinstance(node, ast.ClassDefinition):
-        positional = [
-            argument
-            for argument in node.arguments
-            if argument.kind in (ast.ArgumentKind.POSITIONAL, ast.ArgumentKind.STARRED)
-        ]
-        keywords = [argument for argument in node.arguments if argument not in positional]
-        generic = ast.CallArgument(
-            ast.Subscript(
-                ast.Attribute(ast.Name("$typing", span=span), "Generic", span=span),
-                _type_parameter_tuple(node, span, unpack=True),
-                span=span,
-            ),
-            span=span,
-        )
-        body = list(node.body)
-        offset = 1 if body and body[0].accept(_ClassDocstring()) else 0
-        body.insert(
-            offset,
-            ast.Assignment(
-                [ast.Name("__type_params__", span=span)],
-                _type_parameter_tuple(node, span),
-                span=span,
-            ),
-        )
-        inner = replace(
-            node,
-            type_parameters=[],
-            decorators=[],
-            arguments=[*positional, generic, *keywords],
-            body=body,
-        )
-        statements.append(inner)
-    else:
-        inner = replace(node, type_parameters=[], decorators=[])
-        statements.append(inner)
-        statements.append(
-            ast.Assignment(
-                [ast.Attribute(ast.Name(node.name, span=span), "__type_params__", span=span)],
-                _type_parameter_tuple(node, span),
-                span=span,
-            )
-        )
-    statements.append(ast.Return(ast.Name(node.name, span=span), span=span))
-    scope = ast.FunctionDefinition(f"<generic parameters of {node.name}>", [], statements, span=span)
-    decorators = converter.runtime_decorators(node.decorators)
-    current, held = function.evaluate_decorators(start, decorators)
-    outer = function.class_scopes[-1] if function.class_scopes else function.defining_class
-    lambda_ = converter.function(
-        scope,
-        function.lambda_.policy,
-        parent=function,
-        defining_class=outer,
-        annotation_scope=True,
-    )
-    ctran, created = Ctran(), Lvar()
-    function.define_function(current, ctran, created, lambda_, scope, scope.name)
-    following, result = Ctran(), Lvar()
-    function.full_call(
-        ctran, following, result, created, (), node, CallInfo((), converter.location(node))
-    )
-    ctran, result = function.apply_decorators(following, held, result, decorators)
-    function.store(ctran, next_, node.name, result, node)
-
-
-_Statements.generic_definition = _generic_definition
-
-
-def _evaluate_decorators(self, start, decorators):
-    """Evaluate runtime decorator expressions top to bottom, before the
-    definition they decorate. Returns the temporaries holding their values."""
-    current = start
-    held = []
-    for decorator in decorators:
-        ctran, value = self.value(current, decorator)
-        temporary = self.temporary()
-        current = Ctran()
-        self.set_var(ctran, current, temporary, value, decorator)
-        held.append(temporary)
-    return current, held
-
-
-def _apply_decorators(self, start, held, value, decorators):
-    """Call the evaluated decorators on ``value``, innermost first."""
-    if not held:
-        return start, value
-    result = self.temporary()
-    current = Ctran()
-    self.set_var(start, current, result, value, decorators[-1])
-    for temporary, decorator in reversed(tuple(zip(held, decorators, strict=True))):
-        ctran, callee = Ctran(), Lvar()
-        self.ref(current, ctran, callee, temporary, decorator, final=True)
-        following, argument = Ctran(), Lvar()
-        self.ref(ctran, following, argument, result, decorator, final=True)
-        ctran, decorated = Ctran(), Lvar()
-        self.full_call(
-            following,
-            ctran,
-            decorated,
-            callee,
-            (argument,),
-            decorator,
-            CallInfo((), self.converter.location(decorator)),
-        )
-        current = Ctran()
-        self.set_var(ctran, current, result, decorated, decorator)
-    ctran, value = Ctran(), Lvar()
-    self.ref(current, ctran, value, result, decorators[0], final=True)
-    return ctran, value
-
-
-FunctionConverter.evaluate_decorators = _evaluate_decorators
-FunctionConverter.apply_decorators = _apply_decorators
-
-
 def _native_class_body(function, node, policy):
     """The validated body of a typed native class, or None for an ordinary
     class. A class requests the native layout with ``optimize(speed=3)`` and
@@ -3220,41 +3263,6 @@ def _native_class_body(function, node, policy):
             )
         body.validate_method(method)
     return body
-
-
-def _define_function(self, start, next_, result, lambda_, definition, public_name):
-    """Evaluate the definition's defaults in this scope, left to right, then
-    reference the converted lambda and create its runtime function object."""
-    current = start
-    defaults = []
-    for parameter in definition.parameters:
-        if parameter.default is not None:
-            current, value = self.value(current, parameter.default)
-            defaults.append(value)
-    enclose = Enclose(self.lexenv, definition, [lambda_])
-    link_node_to_previous_ctran(enclose, current)
-    ctran = Ctran()
-    use_ctran(enclose, ctran)
-    following, fun = Ctran(), Lvar()
-    self.ref(ctran, following, fun, lambda_, definition)
-    default_contracts = tuple(
-        lambda_.signature.annotations[index]
-        for index in lambda_.signature.default_parameters
-    )
-    self.known(
-        following,
-        next_,
-        result,
-        fndb.MAKE_FUNCTION,
-        (fun, *defaults),
-        definition,
-        FunctionInfo(
-            public_name, default_contracts, self.converter.location(definition)
-        ),
-    )
-
-
-FunctionConverter.define_function = _define_function
 
 
 class _RangeName(ast.Visitor):
@@ -3586,7 +3594,7 @@ class _ModuleBinding(_CompilerBinding):
         return binding
 
 
-_EXPORT_BINDINGS = {
+_EXPORT_BINDINGS: dict[str, _CompilerBinding] = {
     name: _NumericBinding(contract) for name, contract in EXPORTS.items()
 }
 _EXPORT_BINDINGS["optimize"] = _OptimizeBinding()
@@ -4079,6 +4087,9 @@ class _ReceiverName(ast.Visitor):
 
 
 class _ImportNames(ast.Visitor):
+    def imported_name(self, name, node):
+        raise NotImplementedError
+
     def visit_Import(self, node):
         for item in node.items:
             self.imported_name(item.alias or item.name.split(".")[0], item)

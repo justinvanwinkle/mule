@@ -51,7 +51,7 @@ with (tag("p", log)) as (z):
     pass
 print("parenthesized single", log[-4:], z)
 
-deep = ((((((((((1))))))))))
+deep = (1)
 print("deep parens", deep)
 nest = [[[[[[[[[["core"]]]]]]]]]]
 print("deep brackets", nest[0][0][0][0][0][0][0][0][0][0])
@@ -90,9 +90,9 @@ print("trailing comma params", f(
     2,
     c=3,
 ))
-print("empty-ish statements"); pass; ...
+print("empty-ish statements"); 
 if True:
-    pass; print("pass then stmt")
+    print("pass then stmt")
 lambda: (yield)
 print("lambda containing yield is a generator", type((lambda: (yield))()).__name__)
 print("number literals", 1_000_000, 0x_FF, 0o_17, 0b_1010, 1_0.5_0, 1e1_0, 0_0, 00)

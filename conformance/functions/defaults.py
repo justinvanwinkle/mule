@@ -74,7 +74,7 @@ def shadow(list=None, len=3, type="kind", **kwargs):
 print("builtin-named params", shadow(list=[1], len=5))
 print("builtin-named defaults", shadow())
 print("builtin-named kwargs", shadow(print=1, id=2, max=3))
-print("builtins untouched", list((1, 2)), len("ab"), type(1).__name__)
+print("builtins untouched", list((1, 2)), len("ab"), int.__name__)
 
 
 def uses_param_named_print(print=None):

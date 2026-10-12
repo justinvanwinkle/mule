@@ -57,7 +57,7 @@ b = a
 c = [1, 2]
 print("is alias", a is b, a == b)
 print("is copy", a is c, a == c, a is not c)
-print("None is", None is None, [] is not None)
+print("None is", None is None, [] != None)
 e1 = ()
 e2 = ()
 print("tuple eq", e1 == e2)

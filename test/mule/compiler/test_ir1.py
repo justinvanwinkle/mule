@@ -11,10 +11,12 @@ from mule.compiler.node import (
     Bind,
     CallKind,
     Combination,
+    Component,
     Constant,
     Exit,
     FunctionalKind,
     If,
+    Lambda,
     Ref,
     Return,
     Set,
@@ -54,6 +56,12 @@ def test_conversion_produces_consistent_ir1(source):
             assert len(targets) == 1
 
 
+def component_of(lambda_: Lambda) -> Component:
+    component = lambda_.component
+    assert component is not None, f"{lambda_.name} has no component"
+    return component
+
+
 @pytest.mark.parametrize("source", SOURCES)
 def test_code_generation_accepts_every_converted_construct(source):
     assert "define i32 @main" in emit_llvm(source)
@@ -68,7 +76,7 @@ def test_each_lambda_has_its_own_component_with_bind_first():
     ]
     assert compilation.entry.kind is FunctionalKind.TOPLEVEL
     for lambda_ in compilation.lambdas:
-        component = lambda_.component
+        component = component_of(lambda_)
         assert component.lambdas == [lambda_]
         first = next(iter(component.blocks()))
         assert isinstance(first.start.next, Bind)
@@ -82,14 +90,14 @@ def test_every_return_delivers_to_the_single_return_node():
     assert isinstance(returned, Return)
     assert len(returned.result.uses) == 2
     assert all(isinstance(use, Ref) for use in returned.result.uses)
-    assert returned.block.succ == [function.component.tail]
+    assert returned.block.succ == [component_of(function).tail]
 
 
 def test_return_node_is_deleted_when_no_path_returns():
     compilation = compile_toplevel("def f():\n raise ValueError('x')\n")
     function = compilation.lambdas[1]
     assert function.return_ is None
-    last = next(iter(function.component.blocks())).last
+    last = next(iter(component_of(function).blocks())).last
     assert isinstance(last, Combination)
     assert last.fun_info.name == "%raise"
     assert last.block.succ == []
@@ -100,7 +108,7 @@ def test_handler_covers_only_the_try_body():
         "def f():\n x = 1 // 0\n try:\n  y = 2\n except ZeroDivisionError:\n  pass\n"
     )
     function = compilation.lambdas[1]
-    blocks = list(function.component.blocks())
+    blocks = list(component_of(function).blocks())
     bind_block = blocks[0]
     division = next(
         node
@@ -125,7 +133,7 @@ def test_known_calls_reference_the_function_database():
     compilation = compile_toplevel("x = 1 + 2\n")
     calls = [
         node
-        for block in compilation.entry.component.blocks()
+        for block in component_of(compilation.entry).blocks()
         for node in block.nodes()
         if isinstance(node, Combination)
     ]
@@ -137,7 +145,7 @@ def test_known_calls_reference_the_function_database():
 
 def test_branches_end_blocks_and_fillers_only_fill_empty_bodies():
     compilation = compile_toplevel("if x:\n pass\nelse:\n y = 1\n")
-    blocks = list(compilation.entry.component.blocks())
+    blocks = list(component_of(compilation.entry).blocks())
     branch = next(block for block in blocks if isinstance(block.last, If))
     assert branch.last.consequent in branch.succ
     assert branch.last.alternative in branch.succ
@@ -153,7 +161,7 @@ def test_branches_end_blocks_and_fillers_only_fill_empty_bodies():
 
 def test_consistency_check_rejects_broken_links():
     compilation = compile_toplevel("if x:\n y = 1\nelse:\n y = 2\n")
-    blocks = list(compilation.entry.component.blocks())
+    blocks = list(component_of(compilation.entry).blocks())
     branch = next(block for block in blocks if isinstance(block.last, If))
     unlink_blocks(branch, branch.last.consequent)
     with pytest.raises(InconsistentIR1):

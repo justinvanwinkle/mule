@@ -23,7 +23,7 @@ def local_shadow():
     e = "local before"
     try:
         1 / 0
-    except ZeroDivisionError as e:
+    except ZeroDivisionError:
         pass
     try:
         return e
@@ -51,7 +51,7 @@ print("saved reference", keep_reference())
 untouched = "still here"
 try:
     pass
-except Exception as untouched:
+except Exception:
     pass
 print("handler not taken", untouched)
 
@@ -68,7 +68,7 @@ print(return_from_handler())
 for attempt in range(2):
     try:
         raise IndexError
-    except IndexError as loop_err:
+    except IndexError:
         break
 print("after break", "loop_err" in globals())
 
@@ -82,7 +82,7 @@ print("deleted inside handler", "gone" in globals())
 # rebinding inside the handler is still unbound afterwards
 try:
     raise ValueError
-except ValueError as rebound:
+except ValueError:
     rebound = "rebound string"
 print("rebound in handler then deleted", "rebound" in globals())
 
@@ -91,7 +91,7 @@ print("rebound in handler then deleted", "rebound" in globals())
 def closure_capture():
     try:
         raise LookupError("captured")
-    except LookupError as e:
+    except LookupError:
         f = lambda: e
     try:
         return f()

@@ -139,16 +139,16 @@ class _RawLiteral(ast.Visitor):
     def visit_Node(self, node):
         raise TypeError(f"no raw representation for {node!r}")
 
-    def visit_IntegerLiteral(self, literal):
-        return str(literal.value)
+    def visit_IntegerLiteral(self, node):
+        return str(node.value)
 
-    def visit_FloatLiteral(self, literal):
-        return double_constant(literal.value)
+    def visit_FloatLiteral(self, node):
+        return double_constant(node.value)
 
-    def visit_BooleanLiteral(self, literal):
-        return "true" if literal.value else "false"
+    def visit_BooleanLiteral(self, node):
+        return "true" if node.value else "false"
 
-    def visit_NoneLiteral(self, literal):
+    def visit_NoneLiteral(self, node):
         return "0"
 
 
@@ -1623,45 +1623,45 @@ class LiteralEmitter(ast.Visitor):
     def visit_Node(self, node: ast.Node) -> str:
         raise TypeError("Unsupported LLVM constant")
 
-    def visit_Literal(self, literal: ast.Literal) -> str:
+    def visit_Literal(self, node: ast.Literal) -> str:
         raise TypeError("Unsupported LLVM constant")
 
-    def visit_NoneLiteral(self, literal: ast.NoneLiteral) -> str:
+    def visit_NoneLiteral(self, node: ast.NoneLiteral) -> str:
         return "getelementptr i8, ptr @mule.none, i64 0"
 
-    def visit_BooleanLiteral(self, literal: ast.BooleanLiteral) -> str:
-        name = "true" if literal.value else "false"
+    def visit_BooleanLiteral(self, node: ast.BooleanLiteral) -> str:
+        name = "true" if node.value else "false"
         return f"getelementptr i8, ptr @mule.{name}, i64 0"
 
-    def visit_IntegerLiteral(self, literal: ast.IntegerLiteral) -> str:
-        value = literal.value
+    def visit_IntegerLiteral(self, node: ast.IntegerLiteral) -> str:
+        value = node.value
         if -(1 << 62) <= value < (1 << 62):
             tagged = ((value << 1) | 1) & ((1 << 64) - 1)
             return f"inttoptr i64 {tagged} to ptr"
         return f"call ptr @mule_literal_int(ptr {self.module.text(decimal(value))})"
 
-    def visit_FloatLiteral(self, literal: ast.FloatLiteral) -> str:
-        return f"call ptr @mule_literal_float(double {double_constant(literal.value)})"
+    def visit_FloatLiteral(self, node: ast.FloatLiteral) -> str:
+        return f"call ptr @mule_literal_float(double {double_constant(node.value)})"
 
-    def visit_TextLiteral(self, literal: ast.TextLiteral) -> str:
-        encoded = literal.value.encode("utf-8", "surrogatepass")
+    def visit_TextLiteral(self, node: ast.TextLiteral) -> str:
+        encoded = node.value.encode("utf-8", "surrogatepass")
         return (
             f"call ptr @mule_literal_text(ptr {self.module.literal_data(encoded)}, "
             f"i64 {len(encoded)})"
         )
 
-    def visit_BytesLiteral(self, literal: ast.BytesLiteral) -> str:
-        value = literal.value
+    def visit_BytesLiteral(self, node: ast.BytesLiteral) -> str:
+        value = node.value
         return (
             f"call ptr @mule_literal_bytes(ptr {self.module.literal_data(value)}, "
             f"i64 {len(value)})"
         )
 
-    def visit_ComplexLiteral(self, literal: ast.ComplexLiteral) -> str:
-        return self.visit_Literal(literal)
+    def visit_ComplexLiteral(self, node: ast.ComplexLiteral) -> str:
+        return self.visit_Literal(node)
 
-    def visit_EllipsisLiteral(self, literal: ast.EllipsisLiteral) -> str:
-        return self.visit_Literal(literal)
+    def visit_EllipsisLiteral(self, node: ast.EllipsisLiteral) -> str:
+        return self.visit_Literal(node)
 
     def visit_Tuple(self, node: ast.Tuple) -> str:
         return f"call ptr {self.module.constant_tuple(node)}()"

@@ -30,9 +30,17 @@ pythonpath = ["."]
 
 [tool.ruff]
 target-version = "py314"
+# Conformance and corpus programs exercise unusual Python on purpose.
+extend-exclude = ["old", "examples", "conformance", "corpus"]
+force-exclude = true
+
+[tool.ruff.lint]
+# dict(a=1) and list() read as clearly as their literals.
+ignore = ["C408"]
 
 [tool.ty.src]
 # Not ordinary Python to type-check: the vendored CPython standard library and
 # Mule's compiler-bound protocol modules, programs that exercise runtime errors
-# on purpose, third-party benchmark programs, and the retired bootstrap.
-exclude = ["stdlib", "conformance", "examples", "old"]
+# on purpose, third-party and corpus benchmark programs, and the retired
+# bootstrap.
+exclude = ["stdlib", "conformance", "examples", "corpus", "old"]

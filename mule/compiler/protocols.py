@@ -91,6 +91,7 @@ _COMPILED_CALLS = {
     "_percent_decimal_protocol": "mule_format_percent_decimal",
     "_format_value_protocol": "mule_format_format_value",
     "_representation_protocol": "mule_format_representation",
+    "_hex_protocol": "mule_format__hex",
 }
 _EMITTERS = {
     **{name: lookup_method(method) for name, method in _LOOKUPS.items()},

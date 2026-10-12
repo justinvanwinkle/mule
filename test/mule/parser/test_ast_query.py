@@ -110,7 +110,7 @@ def test_different_root_types_fail_comparison():
 
 
 def test_literal_selector_visits_all_concrete_literal_methods():
-    literals = [
+    literals: list[ast.Expression] = [
         ast.IntegerLiteral(1),
         ast.FloatLiteral(1.5),
         ast.ComplexLiteral(2j),

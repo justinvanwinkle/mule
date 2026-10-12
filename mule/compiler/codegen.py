@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import struct
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from mule import ast
 from mule.diagnostics import phase
@@ -39,9 +40,21 @@ from .ctype import UNKNOWN, ValueType
 from .ir1util import block_exception_target, class_method_definitions
 from .ir2tran import ir2_convert
 from .ltn import EntryContext, ltn_analyze
-from .node import CallKind, Combination, FunctionalKind, Lambda, LambdaVar, Signature
+from .node import (
+    CallKind,
+    Combination,
+    FunctionalKind,
+    Lambda,
+    LambdaVar,
+    Signature,
+    linked,
+)
 from .represent import select_native_plans, select_representations
 from .vop import BOOLEAN, CLASS, DESCRIPTOR, DOUBLE, IMMEDIATE, NULL, RANGE, SIGNED
+
+if TYPE_CHECKING:
+    from .ir1tran import ImportInfo
+    from .native_protocol import Layout
 
 OBJECT = vops.OBJECT
 logger = logging.getLogger(__name__)
@@ -192,6 +205,10 @@ class ForeignFunction:
         )
 
 
+# A function a unit defines or calls in another unit.
+type Function = Lambda | ForeignFunction
+
+
 @dataclass(slots=True)
 class Program:
     """Everything code generation needs for one unit: the lambdas it defines
@@ -204,23 +221,23 @@ class Program:
     lambdas: list[Lambda]
     entry: Lambda | None
     facts: dict
-    print_entry: Lambda | None = None
-    protocol_entry: Lambda | None = None
-    sequence_functions: dict[str, Lambda] = field(default_factory=dict)
-    argument_constructor: Lambda | None = None
-    argument_binder: Lambda | None = None
-    layouts: dict[str, object] = field(default_factory=dict)
-    external: list[Lambda] = field(default_factory=list)
+    print_entry: Function | None = None
+    protocol_entry: Function | None = None
+    sequence_functions: dict[str, Function] = field(default_factory=dict)
+    argument_constructor: Function | None = None
+    argument_binder: Function | None = None
+    layouts: dict[str, Layout] = field(default_factory=dict)
+    external: list[ForeignFunction] = field(default_factory=list)
     external_facts: dict = field(default_factory=dict)
     unit: str = "program"
     exports: bool = False
     # Units the main unit initializes before its own, in order.
     dependencies: list[str] = field(default_factory=list)
     # Other units' method definitions, predictions after this unit's own.
-    external_methods: dict[str, object] = field(default_factory=dict)
+    external_methods: dict[str, ForeignFunction] = field(default_factory=dict)
     # A module unit's own import: its initializer belongs to this unit and
     # initializes the unit before running the module body.
-    module_import: object = None
+    module_import: ImportInfo | None = None
 
 
 def _symbol(name: str) -> str:
@@ -363,7 +380,7 @@ class ModuleGenerator:
         self.data: dict[bytes, str] = {}
         self.tuple_constants: dict[tuple, TupleConstant] = {}
         self.auxiliary: list[str] = []
-        self.method_targets: dict[str, Lambda] = {}
+        self.method_targets: dict[str, Function] = {}
         self.imports: dict[str, object] = {}
         if program.module_import is not None:
             self.imports[program.module_import.module_name] = program.module_import
@@ -391,7 +408,7 @@ class ModuleGenerator:
     def _collect(self, lambda_: Lambda) -> None:
         """Method predictions and the imported modules in first-use order."""
         self._collect_methods(lambda_)
-        for block in lambda_.component.blocks():
+        for block in linked(lambda_.component, lambda_, "component").blocks():
             for node in block.nodes():
                 if (
                     isinstance(node, Combination)
@@ -411,7 +428,7 @@ class ModuleGenerator:
         environment = lambda_.environment
         return environment is not None and bool(environment.closure)
 
-    def closure_operand(self, gen, lambda_: Lambda, callable_value: str) -> list[str]:
+    def closure_operand(self, gen, lambda_: Function, callable_value: str) -> list[str]:
         """The closure operand for a direct call to ``lambda_`` through an
         already-guarded callable object, or nothing when it captures nothing."""
         if not self.closure_of(lambda_):
@@ -1612,13 +1629,19 @@ class FunctionGenerator:
                 for fact in context.parameters
             ),
         )
-        if any(index < 0 for index in order):
+        # Guarded entries take every argument; a defaulted one rules them out.
+        supplied_arguments = [
+            (source, value)
+            for source, value in zip(argument_types, arguments, strict=True)
+            if source is not None and value is not None
+        ]
+        if len(supplied_arguments) != len(order):
             contexts = []
         for context in contexts:
             guards = [
                 self.argument_guard(value, expected)
-                for source, value, expected in zip(
-                    argument_types, arguments, context.parameters, strict=True
+                for (source, value), expected in zip(
+                    supplied_arguments, context.parameters, strict=True
                 )
                 if not source.dispatch_fits(expected)
             ]

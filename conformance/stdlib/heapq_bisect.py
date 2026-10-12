@@ -1,6 +1,6 @@
 """heapq (heappush/heappop, heapify, heappushpop/heapreplace, nlargest/nsmallest with key, merge) and bisect (bisect_left/right, insort, key=)."""
-import heapq
 import bisect
+import heapq
 
 h = []
 for x in [5, 1, 8, 3, 9, 2]:

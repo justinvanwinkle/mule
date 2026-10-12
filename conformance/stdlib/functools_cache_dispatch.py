@@ -1,5 +1,11 @@
 """functools: lru_cache with cache_info, cache, cached_property, singledispatch with annotation registration."""
-from functools import lru_cache, cache, cached_property, singledispatch, singledispatchmethod
+from functools import (
+    cache,
+    cached_property,
+    lru_cache,
+    singledispatch,
+    singledispatchmethod,
+)
 
 calls = []
 
@@ -20,7 +26,7 @@ slow_square.cache_clear()
 print("lru after clear", slow_square.cache_info())
 
 
-@lru_cache(maxsize=None)
+@cache
 def fib(n):
     return n if n < 2 else fib(n - 1) + fib(n - 2)
 

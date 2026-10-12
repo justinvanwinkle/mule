@@ -86,7 +86,7 @@ def raise_inside():
         raise ExceptionGroup("src", [ValueError("v"), TypeError("t"), KeyError("k")])
     except* ValueError:
         raise RuntimeError("from handler")
-    except* TypeError as g:
+    except* TypeError:
         raise
 
 

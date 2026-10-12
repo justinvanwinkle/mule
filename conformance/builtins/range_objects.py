@@ -30,7 +30,7 @@ try:
 except TypeError as e:
     print("float arg", type(e).__name__)
 
-print("eq same sequence", range(0) == range(5, 5), range(0, 3) == range(0, 4, 2) or "no", range(0, 3, 2) == range(0, 4, 2))
+print("eq same sequence", range(0) == range(5, 5), range(3) == range(0, 4, 2) or "no", range(0, 3, 2) == range(0, 4, 2))
 print("eq single element", range(5, 6, 3) == range(5, 7, 10))
 print("eq not list", range(3) == [0, 1, 2])
 print("hash eq", hash(range(0)) == hash(range(9, 2)), hash(range(1, 4, 2)) == hash(range(1, 5, 2)))

@@ -1,6 +1,6 @@
 """itertools combinatoric iterators: product with repeat, permutations, combinations, combinations_with_replacement."""
 import itertools as it
-from math import comb, perm, factorial
+from math import comb, factorial, perm
 
 print("product", list(it.product("ab", [1, 2])))
 print("product repeat", ["".join(p) for p in it.product("01", repeat=3)])

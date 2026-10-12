@@ -1,5 +1,5 @@
 """collections.OrderedDict (move_to_end, popitem last=False, equality semantics) and ChainMap (lookups, writes, new_child, parents)."""
-from collections import OrderedDict, ChainMap
+from collections import ChainMap, OrderedDict
 
 od = OrderedDict.fromkeys("abcde")
 od.move_to_end("b")

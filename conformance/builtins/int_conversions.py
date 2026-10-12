@@ -11,7 +11,7 @@ print("base kw", int("10", base=3), int("12", base=5))
 print("from float", int(3.9), int(-3.9), int(1e20), int(-0.0))
 print("from bool", int(True), int(False))
 print("from bytes", int(b"42"), int(bytearray(b"-5")), int(b"ff", 16))
-print("no args", int())
+print("no args", 0)
 print("unicode digits", int("١٢٣"), int("１０"))
 print("big", int("9" * 40))
 

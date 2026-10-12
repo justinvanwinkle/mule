@@ -25,7 +25,6 @@ compile_error_line = 21
 
 from string import ascii_lowercase, ascii_uppercase
 
-
 ALPHA_LEN = len(ascii_lowercase)
 
 

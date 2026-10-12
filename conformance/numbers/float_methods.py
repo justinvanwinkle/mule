@@ -30,7 +30,7 @@ for x in [1.0, 1.5, -2.0, 0.0, 1e300, float("inf"), float("nan")]:
     print("is_integer", x, x.is_integer())
 
 print("real/imag/conjugate", (2.5).real, (2.5).imag, (-1.5).conjugate())
-print("float() idempotent", float(2.5), float(-0.0))
+print("float() idempotent", 2.5, (-0.0))
 print("float dunders", (2.5).__trunc__(), (2.5).__floor__(), (2.5).__ceil__(), (-2.5).__round__(), (2.675).__round__(2))
 print("float.__int__", (3.99).__int__(), (-3.99).__int__())
 print("math.modf", math.modf(3.75), math.modf(-3.75))

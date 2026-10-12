@@ -46,7 +46,7 @@ def twice():
 
 
 print("double wraps", twice.__name__, twice.__wrapped__.__wrapped__())
-import inspect  # noqa: E402
+import inspect
 
 print("inspect.unwrap", inspect.unwrap(twice)())
 

@@ -10,7 +10,7 @@ def note(name):
     return name
 
 
-def uses_later(a: LaterClass, b: int = 3) -> LaterClass:  # noqa: F821
+def uses_later(a: LaterClass, b: int = 3) -> LaterClass:
     return a
 
 
@@ -37,7 +37,7 @@ second = lazy.__annotations__
 print("cached after first access", evaluations, first is second)
 
 
-def missing(a: Undefined, b: int):  # noqa: F821
+def missing(a: Undefined, b: int):
     pass
 
 
@@ -59,7 +59,7 @@ class Undefined:
 print("resolves once defined", missing.__annotations__["a"].__name__)
 
 
-def complex_string(a: list[dict[str, int | None]], *args: tuple[int, ...], **kw: "quoted") -> None:
+def complex_string(a: list[dict[str, int | None]], *args: tuple[int, ...], **kw: quoted) -> None:
     pass
 
 
@@ -76,8 +76,8 @@ print("empty annotations", no_annotations.__annotations__)
 
 class Annotated:
     x: int
-    y: "Annotated"
-    z: Later2 = 5  # noqa: F821
+    y: Annotated
+    z: Later2 = 5
 
     def method(self, other: Annotated) -> Annotated:
         return other

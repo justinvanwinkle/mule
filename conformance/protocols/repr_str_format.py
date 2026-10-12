@@ -30,7 +30,7 @@ print("repr()", repr(b), repr(r), repr(s))
 print("containers use repr", [b, r, s], (b,), {"k": b})
 print("f-string conversions", f"{b}", f"{b!r}", f"{b!s}", f"{r}", f"{b!a}")
 print("percent", "%s %r" % (b, b))
-print("str.format", "{0} {0!r} {0!s}".format(b))
+print("str.format", f"{b} {b!r} {b!s}")
 print("ascii", ascii(r), ascii("café"))
 
 
@@ -56,12 +56,12 @@ class Money:
 
 
 m = Money(12345)
-print("format default", f"{m}", format(m), "{}".format(m))
+print("format default", f"{m}", format(m), f"{m}")
 print("format specs", f"{m:c}", f"{m:w12}", f"{m:,.1f}", format(m, ">10.0f"))
 print("str vs format", str(m), f"{m!s}", f"{m!r}")
 width = 12
 print("nested spec", f"{m:w{width}}", f"{m:{'c'}}")
-print("format method spec", "{:c} {:w9}".format(m, m), "{0:c}".format(m))
+print("format method spec", f"{m:c} {m:w9}", f"{m:c}")
 
 
 # __format__ inherited from object: empty spec -> str(), non-empty spec -> TypeError

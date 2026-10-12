@@ -27,4 +27,5 @@ for _ in range(10):
 print("accumulated", total, total == 1.0)
 print("sum vs fsum", sum([0.1] * 10))
 import math
+
 print("fsum", math.fsum([0.1] * 10))

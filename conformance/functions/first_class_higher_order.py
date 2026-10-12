@@ -101,7 +101,7 @@ print("max with key", max(["aa", "b", "cccc"], key=len))
 print("unbound method as fn", list(map(list.__len__, [[1], [1, 2]])))
 print("bound method as value", list(map("-".join, [["a", "b"], ["c"]])))
 
-import functools  # noqa: E402
+import functools
 
 print("reduce", functools.reduce(lambda acc, x: acc * x, range(1, 6), 1))
 print("reduce no initial", functools.reduce(lambda a, b: a + b, ["x", "y", "z"]))
@@ -148,7 +148,7 @@ def redefined():
 old = redefined
 
 
-def redefined():  # noqa: F811
+def redefined():
     return 2
 
 

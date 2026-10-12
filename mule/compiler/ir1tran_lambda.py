@@ -31,6 +31,7 @@ from .node import (
     NodeVisitor,
     Return,
     Signature,
+    linked,
 )
 from .policy import OptimizationPolicy
 
@@ -313,7 +314,7 @@ def lambda_blocks(lambda_: Lambda) -> list:
     """Blocks reachable from the lambda's bind block, following normal and
     error edges, in discovery order."""
     seen = []
-    pending = [lambda_.bind.block]
+    pending = [linked(lambda_.bind, lambda_, "bind").block]
     while pending:
         block = pending.pop()
         if block in seen or block.start is None:
@@ -442,7 +443,7 @@ def validate_initialization(converter, lambda_: Lambda, declarations, location):
     receiver = lambda_.vars[0]
     receivers = _Receivers(receiver).values
     blocks = lambda_blocks(lambda_)
-    entry = lambda_.bind.block
+    entry = linked(lambda_.bind, lambda_, "bind").block
     predecessors = {block: [] for block in blocks}
     error_predecessors = {block: [] for block in blocks}
     for block in blocks:

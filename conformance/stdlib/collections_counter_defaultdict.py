@@ -24,7 +24,7 @@ c3.update({"b": 5})
 print("update", c3["a"], c3["b"])
 print("counter eq ignores zero", Counter(a=1, b=0) == Counter(a=1))
 print("counter compare", Counter(a=1) <= Counter(a=2, b=1), Counter(a=3) < Counter(a=2))
-words = "the cat and the hat and the bat".split()
+words = ["the", "cat", "and", "the", "hat", "and", "the", "bat"]
 wc = Counter(words)
 print("word counts", wc.most_common(3))
 del wc["the"]

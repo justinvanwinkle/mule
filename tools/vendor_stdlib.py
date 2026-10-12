@@ -71,6 +71,13 @@ def fallback(source, marker):
     return "".join(lines[:start] + selected + lines[end:])
 
 
+def read_member(release, member):
+    file = release.extractfile(member)
+    if file is None:
+        raise ValueError(f"archive member is not a regular file: {member}")
+    return file.read()
+
+
 def adapt(sources):
     imports = {
         "abc.py": ["from _abc import"],
@@ -232,7 +239,7 @@ def vendor(archive, destination):
     directories = []
     prefix = f"Python-{VERSION}/Lib/"
     with tarfile.open(archive, "r:xz") as release:
-        license_text = release.extractfile(f"Python-{VERSION}/LICENSE").read()
+        license_text = read_member(release, f"Python-{VERSION}/LICENSE")
         for member in release.getmembers():
             if not member.name.startswith(prefix):
                 continue
@@ -244,7 +251,7 @@ def vendor(archive, destination):
                 continue
             if not member.isfile():
                 raise ValueError(f"unsupported archive member: {member.name}")
-            content = release.extractfile(member).read()
+            content = read_member(release, member)
             if TEST_DIRECTORIES.intersection(relative.parts[:-1]):
                 # Tests contain intentionally invalid source/encoding fixtures;
                 # preserve their bytes and native-extension references exactly.

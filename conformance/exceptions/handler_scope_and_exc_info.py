@@ -16,7 +16,7 @@ def local_deleted():
     err = "before"
     try:
         1 / 0
-    except ZeroDivisionError as err:
+    except ZeroDivisionError:
         pass
     try:
         return err

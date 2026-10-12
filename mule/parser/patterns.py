@@ -1,10 +1,15 @@
 """Structural pattern grammar and match statements."""
 
+from typing import TYPE_CHECKING
+
 from mule import ast
+
+if TYPE_CHECKING:
+    from .core import Parser
 
 
 class PatternParserMixin:
-    def match_statement(self) -> ast.Match:
+    def match_statement(self: Parser) -> ast.Match:
         start = self.expect("match")
         subject = self.expression_list(allow_named=True, stops=(":",))
         subject.require_collection(self, "starred match subject requires a comma")
@@ -23,15 +28,15 @@ class PatternParserMixin:
                 self.finish(
                     ast.MatchCase(pattern, body, guard),
                     case_start,
-                    end=body[-1].span.end,
+                    end=body[-1].source_end(),
                 )
             )
         if not cases:
             self.error("match statement requires at least one case")
         self.advance()
-        return self.finish(ast.Match(subject, cases), start, end=cases[-1].span.end)
+        return self.finish(ast.Match(subject, cases), start, end=cases[-1].source_end())
 
-    def pattern(self) -> ast.Pattern:
+    def pattern(self: Parser) -> ast.Pattern:
         """Parse a case pattern, including an unparenthesized sequence."""
         start = self.current
         first = self._pattern_item(allow_star=True)
@@ -45,7 +50,7 @@ class PatternParserMixin:
                 break
         return self.finish(ast.SequencePattern(elements), start)
 
-    def _pattern_item(self, *, allow_star: bool = False) -> ast.Pattern:
+    def _pattern_item(self: Parser, *, allow_star: bool = False) -> ast.Pattern:
         if allow_star and self.current.text == "*":
             start = self.advance()
             name = self.name_token().text
@@ -64,7 +69,7 @@ class PatternParserMixin:
             result = self.finish(ast.AsPattern(result, capture.text), start)
         return result
 
-    def _closed_pattern(self) -> ast.Pattern:
+    def _closed_pattern(self: Parser) -> ast.Pattern:
         start = self.current
         if start.text == "_":
             self.advance()
@@ -89,7 +94,7 @@ class PatternParserMixin:
             return self._class_pattern(value, start)
         return self.finish(value.pattern_reference(), start)
 
-    def _pattern_name(self) -> ast.Expression:
+    def _pattern_name(self: Parser) -> ast.Expression:
         start = self.name_token()
         value = self.finish(ast.Name(start.text), start)
         while self.match("."):
@@ -97,7 +102,7 @@ class PatternParserMixin:
             value = self.finish(ast.Attribute(value, attribute.text), start)
         return value
 
-    def _sequence_pattern(self, opener: str) -> ast.Pattern:
+    def _sequence_pattern(self: Parser, opener: str) -> ast.Pattern:
         start = self.expect(opener)
         closer = "]" if opener == "[" else ")"
         if self.match(closer):
@@ -115,7 +120,7 @@ class PatternParserMixin:
             return self.finish(elements[0], start)
         return self.finish(ast.SequencePattern(elements), start)
 
-    def _mapping_pattern(self) -> ast.MappingPattern:
+    def _mapping_pattern(self: Parser) -> ast.MappingPattern:
         start = self.expect("{")
         entries = []
         rest = None
@@ -139,7 +144,7 @@ class PatternParserMixin:
         self.expect("}")
         return self.finish(ast.MappingPattern(entries, rest), start)
 
-    def _mapping_pattern_key(self) -> ast.Expression:
+    def _mapping_pattern_key(self: Parser) -> ast.Expression:
         if self.current.kind in ("NUMBER", "STRING") or self.current.text in (
             "-",
             "None",
@@ -150,7 +155,9 @@ class PatternParserMixin:
         value = self._pattern_name()
         return value.mapping_pattern_key(self)
 
-    def _class_pattern(self, class_name: ast.Expression, start) -> ast.ClassPattern:
+    def _class_pattern(
+        self: Parser, class_name: ast.Expression, start
+    ) -> ast.ClassPattern:
         self.expect("(")
         positional = []
         keywords = []
@@ -175,7 +182,7 @@ class PatternParserMixin:
         self.expect(")")
         return self.finish(ast.ClassPattern(class_name, positional, keywords), start)
 
-    def _pattern_literal(self) -> ast.Expression:
+    def _pattern_literal(self: Parser) -> ast.Expression:
         start = self.current
         if start.kind == "STRING":
             value = self.parse_strings()

@@ -1,7 +1,17 @@
 """fractions.Fraction (arithmetic, normalization, limit_denominator, from float/str) and decimal.Decimal (local context precision, quantize rounding modes)."""
-from fractions import Fraction
-from decimal import Decimal, localcontext, getcontext, ROUND_HALF_EVEN, ROUND_HALF_UP, ROUND_DOWN, ROUND_CEILING, InvalidOperation, DivisionByZero
 import decimal
+from decimal import (
+    ROUND_CEILING,
+    ROUND_DOWN,
+    ROUND_HALF_EVEN,
+    ROUND_HALF_UP,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    getcontext,
+    localcontext,
+)
+from fractions import Fraction
 
 a = Fraction(1, 3)
 b = Fraction(2, 4)
@@ -51,9 +61,9 @@ for s in ["0.125", "0.135", "2.5", "3.5", "-2.5", "1.005"]:
     print("quantize", s,
           d.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN),
           d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-          d.quantize(Decimal("1"), rounding=ROUND_HALF_EVEN),
-          d.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-print("other rounding", Decimal("-1.7").quantize(Decimal("1"), rounding=ROUND_DOWN), Decimal("1.1").quantize(Decimal("1"), rounding=ROUND_CEILING))
+          d.quantize(Decimal(1), rounding=ROUND_HALF_EVEN),
+          d.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+print("other rounding", Decimal("-1.7").quantize(Decimal(1), rounding=ROUND_DOWN), Decimal("1.1").quantize(Decimal(1), rounding=ROUND_CEILING))
 print("round()", round(Decimal("2.675"), 2), round(Decimal("2.5")))
 print("trailing zeros", Decimal("1.50"), Decimal("1.50") == Decimal("1.5"), Decimal("1.50").normalize())
 print("tuple", Decimal("-3.14").as_tuple())

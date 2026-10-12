@@ -18,13 +18,14 @@ from mule.compiler.ctype import (
     NoneType,
     TextType,
 )
-from mule.compiler.main import compile_source
+from mule.compiler.main import Compilation, compile_source
 from mule.compiler.node import (
     CallKind,
     Combination,
     Constant,
     GlobalVar,
     If,
+    Lambda,
     LambdaVar,
     Ref,
     Set,
@@ -224,7 +225,7 @@ def test_unary_range_follows_integer_bounds(operator):
     assert result.is_fixnum is (operator == "~")
 
 
-def joined(left, right=None):
+def joined(left, right=None) -> tuple[Compilation, Lambda]:
     else_body = "" if right is None else f"\n else:\n  x = {right}"
     compilation = lower(f"def f(c):\n if c:\n  x = {left}{else_body}\n return x\n")
     return compilation, function(compilation, 1)
@@ -257,7 +258,7 @@ def test_missing_immortal_assignment_keeps_unbound_load_check():
     assert not result.is_immortal
 
 
-def loop(*, bounded):
+def loop(*, bounded) -> tuple[Compilation, Lambda]:
     test = "x < 10" if bounded else "x"
     compilation = lower(f"def f():\n x = 0\n while {test}:\n  x = x + 1\n return x\n")
     return compilation, function(compilation, 1)

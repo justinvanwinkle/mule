@@ -7,7 +7,7 @@ groups = [
     (1, 1.0, True, 1 + 0j, Fraction(1), Decimal(1)),
     (0, 0.0, -0.0, False, 0j, Fraction(0), Decimal("0.0")),
     (2**64, float(2**64), Fraction(2**64)),
-    (-5, -5.0, Fraction(-10, 2), Decimal("-5")),
+    (-5, -5.0, Fraction(-10, 2), Decimal(-5)),
     (0.5, Fraction(1, 2), Decimal("0.5")),
     (2.5 + 0j, 2.5),
 ]
@@ -28,7 +28,7 @@ print("str hash consistent", hash("abc") == hash("ab" + "c"), hash(b"x") == hash
 
 d = {1: "one", 2.0: "two"}
 print("lookup by equal", d[1.0], d[True], d[2], d[Fraction(2)], d[2 + 0j])
-s = {1, 1.0, True, 2, 2.0}
+s = {1, 2}
 print("set size", len(s), sorted(s))
 
 

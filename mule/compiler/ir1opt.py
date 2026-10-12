@@ -37,6 +37,7 @@ from .node import (
     KnownFunction,
     Lambda,
     Ref,
+    linked,
 )
 
 MAX_OPTIMIZE_ITERATIONS = 3
@@ -166,7 +167,7 @@ def _constant_fold(node: Combination) -> bool:
     ):
         return False
     values = [literal.value for literal in literals]
-    name = node.fun_info.name
+    name = linked(node.fun_info, node, "function info").name
     booleans = all(isinstance(literal, ast.BooleanLiteral) for literal in literals)
     if name in _BINARY_NAMES:
         operator = _BINARY_NAMES[name]
@@ -218,7 +219,7 @@ def _constant_fold(node: Combination) -> bool:
 def replace_combination_with_constant(node: Combination, literal) -> None:
     """Substitute a constant reference for a combination and flush its
     operands (``replace-combination-with-constant``)."""
-    lvar = node.lvar
+    lvar = linked(node.lvar, node, "lvar")
     leaf = Constant(literal)
     ref = Ref(node.lexenv, node.source, leaf)
     leaf.refs.append(ref)
@@ -227,8 +228,8 @@ def replace_combination_with_constant(node: Combination, literal) -> None:
     flush_dest(node.fun)
     for arg in node.args:
         flush_dest(arg)
-    prev = node.prev
-    block = prev.block
+    prev = linked(node.prev, node, "preceding control position")
+    block = linked(prev.block, prev, "block")
     following = node.next
     # Splice the reference in where the combination was.
     prev.next = ref
@@ -297,9 +298,9 @@ def _optimize_if(node: If) -> bool:
     if dead is not live:
         unlink_blocks(block, dead)
     flush_dest(node.test)
-    prev = node.prev
+    prev = linked(node.prev, node, "preceding control position")
     if prev.kind is CtranKind.INSIDE_BLOCK:
-        previous = prev.use
+        previous = linked(prev.use, prev, "use")
         previous.next = None
         block.last = previous
         node.prev = None
@@ -310,7 +311,7 @@ def _optimize_if(node: If) -> bool:
         block.last = filler
         node.prev = None
     aver(block.succ == [live])
-    block.component.reanalyze = True
+    linked(block.component, block, "component").reanalyze = True
     _flush_dead_operands(block)
     return True
 

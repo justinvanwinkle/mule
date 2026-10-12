@@ -28,8 +28,7 @@ def max_nested_braces(expr):
     for char in expr:
         if char == '{':
             count += 1
-            if count > max_count:
-                max_count = count
+            max_count = max(max_count, count)
         elif char == '}':
             if count == 0:
                 return -1

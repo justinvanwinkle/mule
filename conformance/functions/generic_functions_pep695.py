@@ -1,6 +1,7 @@
 """PEP 695 generic functions: __type_params__, bounds, constraints, TypeVarTuple, ParamSpec, and runtime behavior."""
 
-from typing import TypeVar, TypeVarTuple, ParamSpec, Callable
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar, TypeVarTuple
 
 
 def first[T](xs: list[T]) -> T:
@@ -80,7 +81,7 @@ print("bound not yet evaluated", order)
 print("bound on access", lx.__bound__.__name__, order)
 
 
-def uses_forward[T: LaterType](x: T) -> T:  # noqa: F821
+def uses_forward[T: LaterType](x: T) -> T:
     return x
 
 
@@ -95,7 +96,7 @@ class Box[T]:
     def __init__(self, item: T):
         self.item = item
 
-    def map[U](self, fn: Callable[[T], U]) -> "Box[U]":
+    def map[U](self, fn: Callable[[T], U]) -> Box[U]:
         return Box(fn(self.item))
 
     def __repr__(self):
@@ -123,6 +124,6 @@ def scope_check[T]():
 
 print("T visible in body", scope_check().__name__)
 try:
-    T  # noqa: F821
+    T
 except NameError as e:
     print("T not visible at module", type(e).__name__)

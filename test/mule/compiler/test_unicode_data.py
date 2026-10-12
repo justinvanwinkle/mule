@@ -64,6 +64,7 @@ REFERENCES = {
 @pytest.fixture(scope="module")
 def unicode_data():
     specification = importlib.util.spec_from_file_location("_unicode_data", MODULE)
+    assert specification is not None and specification.loader is not None, MODULE
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)
     return module

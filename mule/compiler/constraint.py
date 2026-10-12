@@ -51,6 +51,7 @@ from .node import (
     NodeVisitor,
     Ref,
     Set,
+    linked,
 )
 
 
@@ -172,7 +173,7 @@ class _Propagation(NodeVisitor):
         self.walk = walk
         self.state = state
         self.origins = origins
-        self.handler_state = None
+        self.handler_state: dict[object, Fact] | None = None
         # Keys assigned since the handler state last absorbed the state.
         self.changed = set()
 
@@ -254,7 +255,7 @@ class _Propagation(NodeVisitor):
 
     def visit_Combination(self, node: Combination):
         if node.kind in (CallKind.FULL, CallKind.GUARDED):
-            info = node.info
+            info = linked(node.info, node, "info")
             fact = Fact(
                 self.walk.resolve_call(
                     self.fact_of(node.fun),
@@ -307,16 +308,20 @@ class _Propagation(NodeVisitor):
                 self.invalidate()
             return fact
         if name == "%make_function":
-            lambda_ = args[0].use().leaf
+            function = args[0].use()
+            if not isinstance(function, Ref) or not isinstance(function.leaf, Lambda):
+                raise ValueError(f"{node!r} does not make a function from a lambda")
+            lambda_ = function.leaf
+            definition = linked(node.info, node, "info")
             parameters = lambda_.signature.default_parameters
             for value, contract, index in zip(
-                args[1:], node.info.default_contracts, parameters, strict=True
+                args[1:], definition.default_contracts, parameters, strict=True
             ):
                 if contract is not None:
                     self.walk.annotations.check(
                         contract,
                         self.type_of(value),
-                        node.info.location,
+                        definition.location,
                         ("local", lambda_, lambda_.vars[index].name),
                     )
             return Fact(FunctionType(), lambda_, True)
@@ -326,14 +331,15 @@ class _Propagation(NodeVisitor):
         if name == "%format":
             self.invalidate()
             return Fact(TextType())
-        if node.fun_info.protocol is not None:
+        if info.protocol is not None:
             self.invalidate()
             return Fact()
         if name in ("%range_prepare", "%range_available", "%has_binding"):
             return Fact(BooleanType())
         if name == "%range_advance":
-            return Fact(IntegerType(node.info.minimum, node.info.maximum))
-        if node.fun_info.result:
+            state = linked(node.info, node, "info")
+            return Fact(IntegerType(state.minimum, state.maximum))
+        if info.result:
             return Fact()
         return None
 
@@ -390,8 +396,8 @@ class _Walk:
         self.resolve_call = resolve_call
         self.annotations = annotations
         self.facts: dict[object, Fact] = {}
-        self.blocks = list(lambda_.component.blocks())
-        self.entry = lambda_.bind.block
+        self.blocks = list(linked(lambda_.component, lambda_, "component").blocks())
+        self.entry = linked(lambda_.bind, lambda_, "bind").block
         self.successors = {block: tuple(_successors(block)) for block in self.blocks}
         self.predecessors = defaultdict(set)
         self.consumers = defaultdict(set)
@@ -415,13 +421,13 @@ class _Walk:
             *self.indirect,
         ]
         parameter_facts = dict(zip(lambda_.vars, parameters, strict=True))
-        self.initial = {
+        self.initial: dict[object, Fact] = {
             var: Fact(parameter_facts[var]) if var in parameter_facts else UNBOUND_FACT
             for var in lambda_.locals
         }
         # What user code may leave behind in module globals and variables
         # captured by nested functions.
-        self.invalidated = {
+        self.invalidated: dict[object, Fact] = {
             (_GLOBAL, name): Fact(UNKNOWN, global_targets.get(name))
             for name in self.global_names
         }
@@ -494,7 +500,7 @@ class _Walk:
                     visitor.note_handler_state()
             for target in self.successors[block]:
                 if target is handler:
-                    edge = dict(visitor.handler_state)
+                    edge = dict(linked(visitor.handler_state, visitor, "handler state"))
                     self.invalidate_globals(edge)
                 else:
                     edge = dict(state)

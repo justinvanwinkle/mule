@@ -111,7 +111,7 @@ print("mapping pattern", mapping({Color.RED: 1, Color.BLUE: 2}), mapping({Color.
 
 
 # Flag with boundary behavior
-from enum import STRICT, CONFORM, KEEP
+from enum import CONFORM, KEEP, STRICT
 
 
 class Strict(Flag, boundary=STRICT):

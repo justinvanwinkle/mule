@@ -1,7 +1,7 @@
 """abc.ABC and abstractmethod, ABC registration, __subclasshook__, and metaclass __instancecheck__/__subclasscheck__."""
 
 import abc
-from collections.abc import Iterable, Sized, Hashable, Container, Sequence, Mapping
+from collections.abc import Container, Hashable, Iterable, Mapping, Sequence, Sized
 
 
 class Shape(abc.ABC):

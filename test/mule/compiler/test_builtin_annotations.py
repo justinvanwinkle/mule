@@ -2,11 +2,13 @@
 
 import pytest
 
+from mule import ast
 from mule.compiler import emit_llvm
 from mule.compiler.main import compile_source
 from mule.compiler.node import CallKind, Combination
 from test.mule.compiler.test_annotations import contradiction_warnings
 from test.mule.compiler.test_native import run_native
+from test.mule.parser.ast_query import expect
 
 
 @pytest.mark.parametrize("value", (0, -(2**63) - 1, 2**128, -(2**256)))
@@ -296,12 +298,19 @@ def test_ir_retains_annotation_expressions_separately_from_contracts():
     function = compilation.lambdas[1]
     signature = function.signature
     assert signature.annotation_expressions[0].value == "Later"
-    assert signature.return_annotation_expression.value.identifier == "list"
-    assert function.annotation_expressions["local"].identifier == "bool"
+    return_annotation = expect(signature.return_annotation_expression, ast.Subscript)
+    assert expect(return_annotation.value, ast.Name).identifier == "list"
+    assert (
+        expect(function.annotation_expressions["local"], ast.Name).identifier == "bool"
+    )
     assert signature.annotations == (None,)
     assert signature.return_annotation is None
     entry = compilation.lambdas[0]
-    assert entry.annotation_expressions["module_value"].value.identifier == "Unknown"
+    module_annotation = expect(
+        entry.annotation_expressions["module_value"], ast.Subscript
+    )
+    assert expect(module_annotation.value, ast.Name).identifier == "Unknown"
+    assert entry.component is not None
     definitions = [
         node.info
         for block in entry.component.blocks()

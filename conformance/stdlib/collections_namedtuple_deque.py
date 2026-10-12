@@ -1,5 +1,5 @@
 """collections.namedtuple (defaults, _replace, _asdict, _fields, _make, subclassing) and deque (maxlen, rotate, appendleft, extendleft)."""
-from collections import namedtuple, deque
+from collections import deque, namedtuple
 
 Point = namedtuple("Point", "x y")
 p = Point(1, y=2)

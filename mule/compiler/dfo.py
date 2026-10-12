@@ -22,7 +22,7 @@ from .ir1util import (
     remove_from_dfo,
     unlink_blocks,
 )
-from .node import Block, Component, ComponentKind, FunctionalKind
+from .node import Block, Component, ComponentKind, FunctionalKind, linked
 
 
 def walk_successors(block: Block):
@@ -53,7 +53,7 @@ def find_dfo(component: Component) -> None:
             break
         _find_dfo_aux(unvisited, head)
     number = 0
-    block = component.tail.prev
+    block = linked(component.tail.prev, component.tail, "previous block")
     while block is not head:
         previous = block.prev
         if block.flag:
@@ -61,7 +61,7 @@ def find_dfo(component: Component) -> None:
             block.number = number
         else:
             delete_block(block)
-        block = previous
+        block = linked(previous, block, "previous block")
     for block in list(component.delete_blocks):
         if block.component is not None:
             delete_block(block)
@@ -108,7 +108,8 @@ def find_initial_dfo(initial: Component, lambdas) -> list[Component]:
                 unlink_blocks(block, initial.tail)
                 link_blocks(block, component.tail)
             remove_from_dfo(block)
-            add_to_dfo(block, component.tail.prev)
+            last = linked(component.tail.prev, component.tail, "previous block")
+            add_to_dfo(block, last)
             block.component = component
         find_dfo(component)
         components.append(component)

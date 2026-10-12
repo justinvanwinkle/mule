@@ -17,5 +17,6 @@ for c in cases:
 print("pred order", " ".join(preds))
 
 import keyword
+
 print("identifier vs keyword", "class".isidentifier(), keyword.iskeyword("class"), "match".isidentifier(), keyword.issoftkeyword("match"))
 print("upper/lower of mixed digits", "abc123DEF".upper(), "abc123DEF".lower(), "123".isupper(), "A1".isupper())

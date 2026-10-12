@@ -110,7 +110,7 @@ def countdown(n):
 original = countdown
 
 
-def countdown(n):  # noqa: F811
+def countdown(n):
     return ["replaced", n]
 
 

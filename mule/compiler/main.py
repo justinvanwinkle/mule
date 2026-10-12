@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from mule import ast
 from mule.diagnostics import phase
 from mule.parser import parse
 
@@ -27,7 +28,7 @@ from .ir1tran import (
 )
 from .ir1tran_lambda import convert_module, lambda_blocks
 from .ir1util import join_blocks_if_possible, substitute_lvar, unlink_node
-from .node import Cast, Component, Lambda
+from .node import Cast, Component, Lambda, linked
 
 
 @dataclass(slots=True)
@@ -61,11 +62,10 @@ def ir1_phases(compilation: Compilation) -> None:
             _ir1_optimize_phase_1(compilation)
             if ignore_contradicted_annotations(compilation):
                 continue
+            facts = linked(compilation.facts, compilation, "facts")
             with phase("IR1 check generation", level=logging.DEBUG):
                 changed = any(
-                    checkgen.generate_type_checks(
-                        lambda_, compilation.facts[lambda_].types
-                    )
+                    checkgen.generate_type_checks(lambda_, facts[lambda_].types)
                     for lambda_ in compilation.lambdas
                 )
             if not changed:
@@ -128,7 +128,7 @@ def ignore_contradicted_annotations(compilation: Compilation) -> bool:
 
 def _remove_cast(node: Cast) -> None:
     """Splice an assertion out: its consumer reads the asserted value."""
-    value, result = node.value, node.lvar
+    value, result = linked(node.value, node, "asserted value"), node.lvar
     node.value = None
     value.dest = None
     if result is not None and result.dest is not None:
@@ -168,6 +168,8 @@ def compile_toplevel(
 ) -> Compilation:
     with phase("parse %s", filename, level=logging.DEBUG):
         tree = parse(source, filename)
+    if not isinstance(tree, ast.Module):
+        raise TypeError(f"parsing {filename} produced {tree!r}, not a module")
     with phase("IR1 conversion %s", filename, level=logging.DEBUG):
         initial = Component("initial")
         converter = Converter(

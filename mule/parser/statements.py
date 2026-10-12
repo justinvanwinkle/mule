@@ -1,13 +1,18 @@
 """Python statement grammar over Mule's lexer and expression parser."""
 
+from typing import TYPE_CHECKING
+
 from mule import ast
+
+if TYPE_CHECKING:
+    from .core import Parser
 
 _AUGMENTED = {operator.value + "=": operator for operator in ast.BinaryOperator}
 _SIMPLE_END = {"NEWLINE", "EOF", "DEDENT"}
 
 
 class StatementParserMixin:
-    def statements(self, stop_kinds=("EOF",)):
+    def statements(self: Parser, stop_kinds=("EOF",)):
         result = []
         while self.current.kind not in stop_kinds:
             if self.current.kind == "NEWLINE":
@@ -18,7 +23,7 @@ class StatementParserMixin:
             result.extend(self.statement())
         return result
 
-    def statement(self):
+    def statement(self: Parser):
         text = self.current.text
         if text == "@":
             return [self.decorated_definition()]
@@ -44,7 +49,7 @@ class StatementParserMixin:
             return [self.match_statement()]
         return self.simple_statements()
 
-    def _starts_match_statement(self):
+    def _starts_match_statement(self: Parser):
         # A match header requires a colon followed by a physical suite. Scanning
         # only this logical line keeps uses of the soft keyword as a name intact.
         if self.peek().text == "=":
@@ -67,7 +72,7 @@ class StatementParserMixin:
                 return True
             distance += 1
 
-    def simple_statements(self):
+    def simple_statements(self: Parser):
         result = [self.simple_statement()]
         while self.match(";"):
             if self.current.kind in _SIMPLE_END:
@@ -79,7 +84,7 @@ class StatementParserMixin:
             self.error("expected end of statement")
         return result
 
-    def simple_statement(self):
+    def simple_statement(self: Parser):
         start = self.current
         text = start.text
         if text in {"pass", "break", "continue"}:
@@ -131,21 +136,21 @@ class StatementParserMixin:
             return self.type_alias_statement()
         return self.assignment_or_expression()
 
-    def _at_simple_end(self):
+    def _at_simple_end(self: Parser):
         return self.current.kind in _SIMPLE_END or self.current.text == ";"
 
-    def _type_comment(self):
+    def _type_comment(self: Parser):
         if self.current.kind != "TYPE_COMMENT":
             return None
         token = self.advance()
         return token.text.removeprefix("#").lstrip().removeprefix("type:").strip()
 
-    def _statement_value(self, *, allow_yield=False):
+    def _statement_value(self: Parser, *, allow_yield=False):
         value = self.expression_list(allow_yield=allow_yield)
         value.require_collection(self, "starred value requires a comma")
         return value
 
-    def assignment_or_expression(self):
+    def assignment_or_expression(self: Parser):
         start = self.current
         target = self.expression_list(allow_yield=True)
         if self.match(":"):
@@ -182,26 +187,26 @@ class StatementParserMixin:
             node = ast.ExpressionStatement(target)
         return self.finish(node, start)
 
-    def _dotted_name(self):
+    def _dotted_name(self: Parser):
         parts = [self.name_token().text]
         while self.match("."):
             parts.append(self.name_token().text)
         return ".".join(parts)
 
-    def _import_item(self, *, dotted):
+    def _import_item(self: Parser, *, dotted):
         start = self.current
         name = self._dotted_name() if dotted else self.name_token().text
         alias = self.name_token().text if self.match("as") else None
         return self.finish(ast.ImportItem(name, alias), start)
 
-    def import_statement(self):
+    def import_statement(self: Parser):
         start = self.expect("import")
         items = [self._import_item(dotted=True)]
         while self.match(","):
             items.append(self._import_item(dotted=True))
         return self.finish(ast.Import(items), start)
 
-    def from_import_statement(self):
+    def from_import_statement(self: Parser):
         start = self.expect("from")
         level = 0
         while self.current.text in {".", "..."}:
@@ -223,7 +228,7 @@ class StatementParserMixin:
                 self.expect(")")
         return self.finish(ast.ImportFrom(module, items, level), start)
 
-    def suite(self, *, type_comment_target=None):
+    def suite(self: Parser, *, type_comment_target=None):
         self.expect(":")
         if self.current.kind == "TYPE_COMMENT":
             if type_comment_target is None:
@@ -243,7 +248,7 @@ class StatementParserMixin:
         self.expect_kind("DEDENT")
         return body
 
-    def if_statement(self):
+    def if_statement(self: Parser):
         start = self.expect("if")
         node = ast.If(self.expression(allow_named=True), self.suite())
         branches = [(node, start)]
@@ -257,12 +262,12 @@ class StatementParserMixin:
             tail = nested
         if self.match("else"):
             tail.else_body = self.suite()
-        end = (tail.else_body or tail.body)[-1].span.end
+        end = (tail.else_body or tail.body)[-1].source_end()
         for branch, branch_start in branches:
             self.finish(branch, branch_start, end=end)
         return node
 
-    def while_statement(self):
+    def while_statement(self: Parser):
         start = self.expect("while")
         condition = self.expression(allow_named=True)
         body = self.suite()
@@ -270,10 +275,10 @@ class StatementParserMixin:
         return self.finish(
             ast.While(condition, body, else_body),
             start,
-            end=(else_body or body)[-1].span.end,
+            end=(else_body or body)[-1].source_end(),
         )
 
-    def for_statement(self, *, start=None, is_async=False):
+    def for_statement(self: Parser, *, start=None, is_async=False):
         for_token = self.expect("for")
         start = start or for_token
         target = self.expression_list(min_bp=31)
@@ -284,9 +289,9 @@ class StatementParserMixin:
         node.body = self.suite(type_comment_target=node)
         if self.match("else"):
             node.else_body = self.suite()
-        return self.finish(node, start, end=(node.else_body or node.body)[-1].span.end)
+        return self.finish(node, start, end=(node.else_body or node.body)[-1].source_end())
 
-    def with_statement(self, *, start=None, is_async=False):
+    def with_statement(self: Parser, *, start=None, is_async=False):
         with_token = self.expect("with")
         start = start or with_token
         grouped = self._with_item_parentheses()
@@ -309,9 +314,9 @@ class StatementParserMixin:
             self.expect(")")
         node = ast.With(items, [], is_async=is_async)
         node.body = self.suite(type_comment_target=node)
-        return self.finish(node, start, end=node.body[-1].span.end)
+        return self.finish(node, start, end=node.body[-1].source_end())
 
-    def _with_item_parentheses(self):
+    def _with_item_parentheses(self: Parser):
         """Distinguish a manager list from an ordinary grouped expression."""
         if self.current.text != "(":
             return False
@@ -333,7 +338,7 @@ class StatementParserMixin:
                 expression_group = True
             distance += 1
 
-    def try_statement(self):
+    def try_statement(self: Parser):
         start = self.expect("try")
         node = ast.Try(self.suite())
         seen_bare = False
@@ -361,7 +366,7 @@ class StatementParserMixin:
                 self.finish(
                     ast.ExceptionHandler(exception, binding, body),
                     handler_start,
-                    end=body[-1].span.end,
+                    end=body[-1].source_end(),
                 )
             )
         if self.match("else"):
@@ -373,9 +378,9 @@ class StatementParserMixin:
         if not node.handlers and not node.finally_body:
             self.error("try requires except or finally")
         final_suite = node.finally_body or node.else_body or node.handlers[-1].body
-        return self.finish(node, start, end=final_suite[-1].span.end)
+        return self.finish(node, start, end=final_suite[-1].source_end())
 
-    def decorated_definition(self):
+    def decorated_definition(self: Parser):
         start = self.current
         decorators = []
         while self.match("@"):
@@ -390,7 +395,9 @@ class StatementParserMixin:
             start=start, decorators=decorators, is_async=is_async
         )
 
-    def function_definition(self, *, start=None, decorators=None, is_async=False):
+    def function_definition(
+        self: Parser, *, start=None, decorators=None, is_async=False
+    ):
         def_token = self.expect("def")
         start = start or def_token
         name = self.name_token().text
@@ -408,9 +415,9 @@ class StatementParserMixin:
             is_async=is_async,
         )
         node.body = self.suite(type_comment_target=node)
-        return self.finish(node, start, end=node.body[-1].span.end)
+        return self.finish(node, start, end=node.body[-1].source_end())
 
-    def class_definition(self, *, start=None, decorators=None):
+    def class_definition(self: Parser, *, start=None, decorators=None):
         class_token = self.expect("class")
         start = start or class_token
         name = self.name_token().text
@@ -426,10 +433,10 @@ class StatementParserMixin:
                 type_parameters=type_parameters,
             ),
             start,
-            end=body[-1].span.end,
+            end=body[-1].source_end(),
         )
 
-    def parameters(self, end=")", *, lambda_mode=False):
+    def parameters(self: Parser, end=")", *, lambda_mode=False):
         result = []
         slash_seen = False
         star_seen = False
@@ -528,7 +535,7 @@ class StatementParserMixin:
             if self.match(end):
                 return result
 
-    def type_parameters(self):
+    def type_parameters(self: Parser):
         if not self.match("["):
             return []
         result = []
@@ -565,7 +572,7 @@ class StatementParserMixin:
         self.expect("]")
         return result
 
-    def type_alias_statement(self):
+    def type_alias_statement(self: Parser):
         start = self.expect("type")
         name = self.name_token().text
         parameters = self.type_parameters()

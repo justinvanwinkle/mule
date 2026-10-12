@@ -7,7 +7,7 @@ through visitors.
 
 from dataclasses import dataclass
 
-from .ctype import FLOAT, PYTHON_INTEGER, IntegerType
+from .ctype import FLOAT, PYTHON_INTEGER, IntegerType, ValueType
 
 
 class AnnotationLedger:
@@ -33,7 +33,14 @@ class AnnotationLedger:
         return True
 
 
+@dataclass(frozen=True, slots=True)
 class Contract:
+    name: str
+
+    @property
+    def fact(self) -> ValueType:
+        raise NotImplementedError
+
     @property
     def display_name(self):
         return f"mule.{self.name}"

@@ -43,6 +43,35 @@ class ToolchainError(RuntimeError):
     """The native toolchain or target runtime could not produce an artifact."""
 
 
+def physical_core_count(
+    cpus: Iterable[int] | None = None,
+    *,
+    topology_root: Path = Path("/sys/devices/system/cpu"),
+) -> int:
+    """Count Linux physical cores with at least one CPU in the affinity mask.
+
+    Sysfs gives every SMT sibling the same canonical CPU list, including
+    siblings outside the mask. This also distinguishes cores across sockets.
+    """
+    if cpus is None:
+        cpus = os.sched_getaffinity(0)
+    cores = set()
+    for cpu in cpus:
+        path = topology_root / f"cpu{cpu}" / "topology/thread_siblings_list"
+        try:
+            siblings = path.read_text().strip()
+        except OSError as error:
+            raise ToolchainError(
+                f"Could not read physical-core topology for CPU {cpu}: {path}"
+            ) from error
+        if not siblings:
+            raise ToolchainError(f"Empty physical-core topology for CPU {cpu}: {path}")
+        cores.add(siblings)
+    if not cores:
+        raise ToolchainError("No CPUs are available for compilation")
+    return len(cores)
+
+
 @cache
 def mule_hash() -> str:
     """The digest of every file of the Mule package, by relative path."""
@@ -166,6 +195,8 @@ class Step(Node):
         """Make ``node`` an input. A step adds inputs to a consumer before it
         notifies that consumer, so the consumer cannot start early."""
         with self.graph.lock:
+            if node in self.inputs:
+                return
             if self._started:
                 raise RuntimeError(f"{self.name} already started")
             self.inputs.append(node)
@@ -173,7 +204,9 @@ class Step(Node):
             if not node.done:
                 self._waiting.add(node)
 
-    def notify(self, node: Node) -> None:
+    def notify(self, node: Node | None) -> None:
+        """``node`` resolved; None only starts a step whose inputs resolved
+        before it was created."""
         with self.graph.lock:
             self._waiting.discard(node)
             ready = not self._waiting and not self._started
@@ -183,6 +216,8 @@ class Step(Node):
             self.graph.submit(self)
 
     def path(self, output: str) -> Path:
+        if self.directory is None:
+            raise RuntimeError(f"{self.name} has not produced its outputs")
         return self.directory / output
 
     @cached_property
@@ -248,13 +283,14 @@ class Graph:
         # Steps that became ready before ``run``: nothing executes until the
         # initial graph is complete.
         self._backlog: list[Step] | None = []
+        workers = workers or physical_core_count()
         previous = threading.stack_size(STEP_STACK_SIZE)
         try:
             self._workers = [
                 threading.Thread(
                     target=self._work, name=f"mule-step-{index}", daemon=True
                 )
-                for index in range(workers or os.cpu_count() or 1)
+                for index in range(workers)
             ]
             for worker in self._workers:
                 worker.start()
@@ -262,13 +298,15 @@ class Graph:
             threading.stack_size(previous)
 
     def file(self, path: Path) -> File:
-        return self.node(str(path), lambda: File(self, path))
+        return self.node(str(path), File, lambda: File(self, path))
 
-    def node[T: Node](self, name: str, create: Callable[[], T]) -> T:
+    def node[T: Node](self, name: str, kind: type[T], create: Callable[[], T]) -> T:
         """The node named ``name``, created by ``create`` the first time."""
         with self.lock:
             existing = self.nodes.get(name)
             if existing is not None:
+                if not isinstance(existing, kind):
+                    raise TypeError(f"{name} is a {type(existing).__name__}")
                 return existing
             node = create()
             self.nodes[name] = node

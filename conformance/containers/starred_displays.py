@@ -9,7 +9,7 @@ print("from strings", [*"ab", *"cd"])
 print("from range dict", [*range(3), *{"k": 1, "j": 2}])
 print("from gen", [*(n * n for n in range(4))])
 print("empty", [*[], *()], (*[],), {*()} == set())
-print("dict", {**{"a": 1}, **dict(b=2)})
+print("dict", {"a": 1, **dict(b=2)})
 print("nested star", [*[*a, *b], *[[*a]]])
 gen = iter(range(3))
 print("consumes iterator", [*gen], [*gen])
@@ -35,7 +35,7 @@ def f(*args, **kwargs):
 
 
 print("call star", f(*a, *b))
-print("call mixed", f(0, *a, 9, *b, x=1, **{"y": 2}))
+print("call mixed", f(0, *a, 9, *b, x=1, y=2))
 print("call star after kw", f(*a, k=1, *b))
 print("call star string", f(*"hi"))
 

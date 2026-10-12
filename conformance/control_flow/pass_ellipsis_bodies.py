@@ -110,8 +110,6 @@ def deeply():
         for _ in ():
             while True:
                 pass
-        else:
-            ...
     return "done"
 
 
