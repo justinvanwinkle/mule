@@ -2,7 +2,13 @@ import os
 
 import pytest
 
-from mule.compiler.artifacts import Graph, ToolchainError, physical_core_count
+from mule.compiler.artifacts import (
+    Graph,
+    Step,
+    ToolchainError,
+    cache_directory,
+    physical_core_count,
+)
 
 
 @pytest.mark.parametrize(
@@ -51,3 +57,85 @@ def test_graph_default_workers_match_available_physical_cores():
 def test_graph_explicit_workers_override_default():
     with Graph(workers=2) as graph:
         assert len(graph._workers) == 2
+
+
+@pytest.fixture
+def private_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+
+def run_copy_step(action):
+    """Build ``copy.txt`` from a text input; the step for ``action``."""
+    with Graph(1) as graph:
+        source = graph.text("source", "contents")
+        step = graph.step(
+            "copy",
+            lambda: Step(
+                graph,
+                "copy",
+                inputs=[source],
+                settings={"step": "copy"},
+                outputs=("copy.txt",),
+                action=action,
+            ),
+        )
+        graph.run(step)
+    return step
+
+
+def copy_action(runs):
+    def action(inputs, directory):
+        runs.append(directory)
+        (directory / "copy.txt").write_text(inputs[0].text)
+
+    return action
+
+
+def truncate_output(entry):
+    (entry / "copy.txt").write_text("cont")
+
+
+def remove_output(entry):
+    (entry / "copy.txt").unlink()
+
+
+def truncate_manifest(entry):
+    manifest = entry / "manifest.json"
+    manifest.write_bytes(manifest.read_bytes()[:10])
+
+
+def remove_manifest(entry):
+    (entry / "manifest.json").unlink()
+
+
+def test_intact_cache_entry_is_reused(private_cache):
+    runs = []
+    run_copy_step(copy_action(runs))
+    run_copy_step(copy_action(runs))
+    assert len(runs) == 1
+
+
+@pytest.mark.parametrize(
+    "damage", [truncate_output, remove_output, truncate_manifest, remove_manifest]
+)
+def test_damaged_cache_entry_is_rebuilt(private_cache, damage):
+    runs = []
+    damage(run_copy_step(copy_action(runs)).directory)
+    rebuilt = run_copy_step(copy_action(runs))
+    assert len(runs) == 2
+    assert rebuilt.path("copy.txt").read_text() == "contents"
+
+
+def test_failed_action_leaves_no_cache_entry(private_cache):
+    def partial(inputs, directory):
+        (directory / "copy.txt").write_text("cont")
+        raise RuntimeError("interrupted")
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        run_copy_step(partial)
+    steps = cache_directory() / "steps"
+    assert [path for path in steps.iterdir() if path.is_dir()] == []
+    runs = []
+    built = run_copy_step(copy_action(runs))
+    assert len(runs) == 1
+    assert built.path("copy.txt").read_text() == "contents"

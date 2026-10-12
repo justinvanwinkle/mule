@@ -217,27 +217,33 @@ def test_known_fixnum_kernel_executes_machine_arithmetic(tmp_path):
         assert result.stdout == expected
         assert result.stderr == ""
     assembly = subprocess.run(
-        ["objdump", "-d", "--no-show-raw-insn", "--disassemble=mule.fn.1", executable],
+        [
+            "objdump",
+            "-d",
+            "--no-show-raw-insn",
+            "--disassemble=mule_fn_1.fn",
+            executable,
+        ],
         text=True,
         capture_output=True,
         check=True,
     ).stdout
-    assert "<mule.fn.1>:" in assembly
+    assert "<mule_fn_1.fn>:" in assembly
     # LLVM may keep the shared owned-argument body behind a thin ABI wrapper.
-    if "<mule.body.1>" in assembly:
+    if "<mule_fn_1.body>" in assembly:
         body = subprocess.run(
             [
                 "objdump",
                 "-d",
                 "--no-show-raw-insn",
-                "--disassemble=mule.body.1",
+                "--disassemble=mule_fn_1.body",
                 executable,
             ],
             text=True,
             capture_output=True,
             check=True,
         ).stdout
-        assert "<mule.body.1>:" in body
+        assert "<mule_fn_1.body>:" in body
         assembly += body
     assert re.search(r"\b(?:add|lea)[a-z]*\s", assembly), assembly
     for dispatcher in ("mule_binary", "mule_unary", "mule_compare"):
@@ -450,7 +456,7 @@ def test_bounded_parameter_body_uses_primitive_arithmetic(tmp_path):
         assert result.stdout == expected
         assert result.stderr == ""
     bodies = re.findall(
-        r"define[^\n]*@(mule\.body\.1\.spec\.\d+)\([^\n]*\)[^\n]*\{\n(.*?)\n\}",
+        r'define[^\n]*@"(mule_fn_1\.spec\.\d+)"\([^\n]*\)[^\n]*\{\n(.*?)\n\}',
         llvm.read_text(),
         re.DOTALL,
     )

@@ -57,7 +57,7 @@ def test_observed_scalar_call_context_keeps_native_class_entry():
     )
     llvm = emit_llvm(source)
     variants = re.findall(
-        r"^define internal ptr @mule\.body\.\d+\.spec\.\d+\([^\n]+\) \{\n(.*?)^\}",
+        r'^define internal ptr @"mule_fn_\d+\.spec\.\d+"\([^\n]+\) \{\n(.*?)^\}',
         llvm,
         re.MULTILINE | re.DOTALL,
     )

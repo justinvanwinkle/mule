@@ -13,6 +13,11 @@ A step can also read files it discovers while running, such as the module
 search probes of an import. Those are recorded in the cache entry's manifest,
 and the entry is valid only while each still has the recorded state.
 
+A cache entry is written whole or not at all: a step builds into a private
+directory, records the digest of each output in its manifest, flushes it to
+disk and renames it into place. Reusing an entry rehashes every output against
+its manifest, so a corrupt, truncated or incomplete entry is rebuilt.
+
 Steps run on threads (the interpreter is free-threaded). Each input notifies
 the steps that consume it when it resolves; a step starts once all of its
 inputs have resolved, so independent steps run in parallel.
@@ -24,6 +29,7 @@ import fcntl
 import json
 import os
 import queue
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -37,6 +43,7 @@ from .inputs import digest, recording, unchanged
 MULE_PACKAGE = Path(__file__).resolve().parents[1]
 # Conversion recurses over the syntax tree; compile threads need room.
 STEP_STACK_SIZE = 256 << 20
+MANIFEST = "manifest.json"
 
 
 class ToolchainError(RuntimeError):
@@ -115,13 +122,23 @@ def cache_directory() -> Path:
 
 @contextmanager
 def _locked(entry: Path):
-    entry.mkdir(parents=True, exist_ok=True)
-    with open(entry / ".lock", "w") as lock:
+    """Serialize building ``entry`` across threads and processes. The lock
+    lives beside the entry, which a rebuild replaces."""
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    with open(entry.with_name(entry.name + ".lock"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
             yield
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _sync(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 class Node:
@@ -212,6 +229,7 @@ class Step(Node):
         self.discover = discover
         self.validate = validate
         self.directory: Path | None = None
+        self.output_digests: dict[str, str] | None = None
         self._waiting: set[Node] = set()
         self._started = False
         for node in inputs:
@@ -259,10 +277,10 @@ class Step(Node):
 
     @cached_property
     def output_hash(self) -> str:
+        if self.output_digests is None:
+            raise RuntimeError(f"{self.name} has not produced its outputs")
         return digest(
-            "".join(
-                digest(self.path(output).read_bytes()) for output in self.outputs
-            ).encode()
+            "".join(self.output_digests[output] for output in self.outputs).encode()
         )
 
     def execute(self) -> None:
@@ -272,34 +290,77 @@ class Step(Node):
             self.error = failed.error
             return
         entry = cache_directory() / "steps" / self.key
-        if not self._reusable(entry):
+        outputs = self._verified(entry)
+        if outputs is None:
             with _locked(entry):
-                if not self._reusable(entry):
-                    self._build(entry)
+                outputs = self._verified(entry)
+                if outputs is None:
+                    outputs = self._build(entry)
         self.directory = entry
+        self.output_digests = outputs
         if self.discover is not None:
             self.discover(self)
 
-    def _reusable(self, entry: Path) -> bool:
+    def _verified(self, entry: Path) -> dict[str, str] | None:
+        """The digest of each output when ``entry`` holds this step's outputs
+        intact, as its manifest recorded them, and they still hold; None
+        when the entry must be rebuilt."""
         try:
-            manifest = json.loads((entry / "manifest.json").read_text())
-        except FileNotFoundError:
-            return False
-        if not all((entry / output).is_file() for output in self.outputs):
-            return False
+            manifest = json.loads((entry / MANIFEST).read_bytes())
+            recorded = manifest["outputs"]
+            discovered = manifest["discovered"]
+        except FileNotFoundError, ValueError, KeyError, TypeError:
+            return None
+        outputs = {}
+        for output in self.outputs:
+            try:
+                outputs[output] = digest((entry / output).read_bytes())
+            except FileNotFoundError:
+                return None
+        if outputs != recorded:
+            return None
         if self.validate is not None:
-            return self.validate(entry)
-        return unchanged(manifest["discovered"])
+            valid = self.validate(entry)
+        else:
+            valid = unchanged(discovered)
+        return outputs if valid else None
 
-    def _build(self, entry: Path) -> None:
-        with tempfile.TemporaryDirectory(prefix=".build-", dir=entry) as directory:
-            built = Path(directory)
+    def _build(self, entry: Path) -> dict[str, str]:
+        """Run the action into a private directory and rename it into place
+        as ``entry``, replacing an entry that failed verification."""
+        built = Path(tempfile.mkdtemp(prefix=".build-", dir=entry.parent))
+        try:
             with recording() as discovered:
                 self.action(self.inputs, built)
-            for output in self.outputs:
-                os.replace(built / output, entry / output)
-            (built / "manifest.json").write_text(json.dumps({"discovered": discovered}))
-            os.replace(built / "manifest.json", entry / "manifest.json")
+            outputs = {
+                output: digest((built / output).read_bytes())
+                for output in self.outputs
+            }
+            manifest = {"outputs": outputs, "discovered": discovered}
+            (built / MANIFEST).write_text(json.dumps(manifest))
+            for path in built.iterdir():
+                _sync(path)
+            _sync(built)
+            self._install(built, entry)
+        finally:
+            shutil.rmtree(built, ignore_errors=True)
+        return outputs
+
+    @staticmethod
+    def _install(built: Path, entry: Path) -> None:
+        # A directory cannot be renamed over a nonempty one, so a rejected
+        # entry moves aside first. Readers open outputs by path: they see the
+        # old entry, no entry (a miss, which waits on the lock), or the new one.
+        discarded = Path(tempfile.mkdtemp(prefix=".discard-", dir=entry.parent))
+        try:
+            try:
+                os.rename(entry, discarded / entry.name)
+            except FileNotFoundError:
+                pass
+            os.rename(built, entry)
+            _sync(entry.parent)
+        finally:
+            shutil.rmtree(discarded, ignore_errors=True)
 
 
 class Graph:
