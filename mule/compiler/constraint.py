@@ -62,6 +62,8 @@ class Fact:
 
 
 NO_FACT = Fact(BOTTOM)
+UNBOUND_FACT = Fact(UNBOUND)
+UNKNOWN_FACT = Fact(UNKNOWN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,13 +94,32 @@ class Body:
 
 
 def join_fact(left: Fact, right: Fact) -> Fact:
-    def combine(a, b):
-        target = a.target if a.target is b.target else None
-        return Fact(
-            a.type.join(b.type), target, target is not None and a.proven and b.proven
-        )
+    # Joins mostly meet the same fact on both sides. Returning the existing
+    # object keeps later joins and state comparisons on the identity path.
+    if left is right or left == right:
+        return left
+    joined = left.type.merge_information(right.type, left, right, _combine)
+    return left if joined == left else joined
 
-    return left.type.merge_information(right.type, left, right, combine)
+
+def _combine(a: Fact, b: Fact) -> Fact:
+    target = a.target if a.target is b.target else None
+    return Fact(a.type.join(b.type), target, target is not None and a.proven and b.proven)
+
+
+def join_states(left: dict, right: dict) -> tuple[dict, bool]:
+    """Join two variable states over the same keys. The flag reports whether
+    the result differs from ``left``."""
+    joined, changed = {}, False
+    for key, fact in left.items():
+        other = right[key]
+        if other is not fact:
+            other = join_fact(fact, other)
+            if other is not fact:
+                changed = True
+                fact = other
+        joined[key] = fact
+    return joined, changed
 
 
 def widen_fact(old: Fact, new: Fact) -> Fact:
@@ -150,6 +171,12 @@ class _Propagation(NodeVisitor):
         self.state = state
         self.origins = origins
         self.handler_state = None
+        # Keys assigned since the handler state last absorbed the state.
+        self.changed = set()
+
+    def assign(self, key, fact):
+        self.state[key] = fact
+        self.changed.add(key)
 
     def fact_of(self, lvar) -> Fact:
         return self.walk.facts.get(lvar.use(), NO_FACT)
@@ -159,6 +186,7 @@ class _Propagation(NodeVisitor):
 
     def invalidate(self):
         self.walk.invalidate_globals(self.state)
+        self.changed.update(self.walk.volatile_keys)
 
     def forget_origin(self, var):
         self.origins = {
@@ -166,11 +194,13 @@ class _Propagation(NodeVisitor):
         }
 
     def note_handler_state(self):
+        """Join the state after a node into what an error edge carries.
+        Only keys assigned since the previous node can differ."""
         if self.handler_state is not None:
-            self.handler_state = {
-                key: join_fact(self.handler_state[key], self.state[key])
-                for key in self.state
-            }
+            handler = self.handler_state
+            for key in self.changed:
+                handler[key] = join_fact(handler[key], self.state[key])
+        self.changed.clear()
 
     # Nodes
 
@@ -189,11 +219,11 @@ class _Propagation(NodeVisitor):
         if isinstance(leaf, LambdaVar):
             if leaf not in self.state:
                 # A free variable of an enclosing function: any value.
-                return Fact(UNKNOWN)
+                return UNKNOWN_FACT
             fact = self.state[leaf]
             if node.final:
                 self.forget_origin(leaf)
-                self.state[leaf] = Fact(UNBOUND)
+                self.assign(leaf, UNBOUND_FACT)
             elif node.lvar is not None:
                 self.origins[node.lvar] = leaf
             return fact
@@ -206,9 +236,9 @@ class _Propagation(NodeVisitor):
         if key not in self.state:
             return
         if node.value is None:
-            self.state[key] = Fact(UNBOUND)
+            self.assign(key, UNBOUND_FACT)
         else:
-            self.state[key] = self.fact_of(node.value)
+            self.assign(key, self.fact_of(node.value))
         if isinstance(node.var, LambdaVar):
             self.forget_origin(node.var)
 
@@ -372,24 +402,29 @@ class _Walk:
             for leaf in _global_leaves(node)
         }
         self.indirect = [var for var in lambda_.locals if var.indirect]
+        self.volatile_keys = [
+            *((_GLOBAL, name) for name in self.global_names),
+            *self.indirect,
+        ]
         parameter_facts = dict(zip(lambda_.vars, parameters, strict=True))
         self.initial = {
-            var: Fact(parameter_facts.get(var, UNBOUND)) for var in lambda_.locals
+            var: Fact(parameter_facts[var]) if var in parameter_facts else UNBOUND_FACT
+            for var in lambda_.locals
         }
+        # What user code may leave behind in module globals and variables
+        # captured by nested functions.
+        self.invalidated = {
+            (_GLOBAL, name): Fact(UNKNOWN, global_targets.get(name))
+            for name in self.global_names
+        }
+        self.invalidated.update((var, UNKNOWN_FACT) for var in self.indirect)
         self.initial.update(
-            {
-                (_GLOBAL, name): Fact(UNKNOWN, global_targets.get(name))
-                for name in self.global_names
-            }
+            (key, fact) for key, fact in self.invalidated.items() if isinstance(key, tuple)
         )
 
     def invalidate_globals(self, state):
-        """Forget facts that user code may change: module globals and
-        variables captured by nested functions."""
-        for name in self.global_names:
-            state[_GLOBAL, name] = Fact(UNKNOWN, self.global_targets.get(name))
-        for var in self.indirect:
-            state[var] = Fact(UNKNOWN)
+        """Forget facts that user code may change."""
+        state.update(self.invalidated)
 
     def run(self) -> Body:
         incoming, edge_states = {}, {}
@@ -413,21 +448,24 @@ class _Walk:
                 parents.append(self.initial)
             if not parents:
                 continue
-            state = dict(parents[0])
+            state = parents[0]
             for parent in parents[1:]:
-                state = {key: join_fact(state[key], parent[key]) for key in state}
-            if block in incoming:
-                state = {
-                    key: join_fact(incoming[block][key], state[key]) for key in state
-                }
-            if incoming.get(block) != state:
+                state, _ = join_states(state, parent)
+            previous = incoming.get(block)
+            if previous is None:
+                changed = True
+            else:
+                state, changed = join_states(previous, state)
+            if changed:
                 visits[block] += 1
                 if block in self.headers and block in incoming and visits[block] > 3:
                     state = {
                         key: widen_fact(incoming[block][key], state[key])
                         for key in state
                     }
-                incoming[block] = dict(state)
+                incoming[block] = state
+            # The visitor updates its state in place.
+            state = dict(state)
             handler = block_exception_target(block)
             visitor = _Propagation(self, state, {})
             if handler is not None:
@@ -435,12 +473,15 @@ class _Walk:
             for node in block.nodes():
                 fact = node.accept(visitor)
                 if fact is not None:
-                    joined = join_fact(self.facts.get(node, NO_FACT), fact)
-                    if self.facts.get(node, NO_FACT) != joined:
+                    previous = self.facts.get(node, NO_FACT)
+                    # join_fact returns ``previous`` itself when nothing changed.
+                    joined = join_fact(previous, fact)
+                    if joined is not previous:
                         self.facts[node] = joined
                         for consumer in self.consumers[node]:
                             schedule(consumer)
-                visitor.note_handler_state()
+                if handler is not None:
+                    visitor.note_handler_state()
             for target in self.successors[block]:
                 if target is handler:
                     edge = dict(visitor.handler_state)

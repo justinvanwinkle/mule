@@ -107,6 +107,16 @@ def analyze(lambdas) -> dict[Lambda, LambdaFacts]:
     return_changes = defaultdict(int)
     argument_changes = defaultdict(int)
     bodies: dict[tuple[Lambda, str], Body] = {}
+    # What each body's last propagation read: its parameters and, for every
+    # callee whose summary it consulted, that callee's contexts and summaries.
+    # A body whose inputs are unchanged would propagate identically.
+    inputs: dict[tuple[Lambda, str], tuple] = {}
+
+    def callee_inputs(target, context_parameters, context_summaries):
+        return tuple(
+            (context_parameters.get((target, context)), context_summaries.get((target, context)))
+            for context in ("observed", "fixnum", "general")
+        )
 
     while True:
         changed = False
@@ -135,6 +145,8 @@ def analyze(lambdas) -> dict[Lambda, LambdaFacts]:
                 )
             )
 
+        consulted: set[Lambda] = set()
+
         def resolve_defined(
             callee, arguments, context_parameters, context_summaries, location, keywords
         ):
@@ -143,6 +155,7 @@ def analyze(lambdas) -> dict[Lambda, LambdaFacts]:
             if not callee.proven or callee.target is None:
                 return UNKNOWN
             target = callee.target
+            consulted.add(target)
             order = target.call_order(keywords, len(arguments))
             if order is None:
                 return UNKNOWN
@@ -166,10 +179,25 @@ def analyze(lambdas) -> dict[Lambda, LambdaFacts]:
 
         for key, expected in previous_parameters.items():
             lambda_ = key[0]
-            body = propagate(
-                lambda_, global_targets[lambda_.namespace], expected, resolve
-            )
-            bodies[key] = body
+            recorded = inputs.get(key)
+            if recorded is not None and recorded[0] == expected and all(
+                callee_inputs(target, previous_parameters, previous_summaries) == state
+                for target, state in recorded[1].items()
+            ):
+                body = bodies[key]
+            else:
+                consulted.clear()
+                body = propagate(
+                    lambda_, global_targets[lambda_.namespace], expected, resolve
+                )
+                bodies[key] = body
+                inputs[key] = (
+                    expected,
+                    {
+                        target: callee_inputs(target, previous_parameters, previous_summaries)
+                        for target in consulted
+                    },
+                )
             returned = summaries[key].join(body.return_type)
             if returned != summaries[key]:
                 return_changes[key] += 1

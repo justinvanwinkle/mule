@@ -43,6 +43,8 @@ class ValueType:
         return visitor.visit_ValueType(self)
 
     def with_unbound(self):
+        if self.may_be_unbound:
+            return self
         return replace(self, may_be_unbound=True)
 
     def normalized_bottom(self):
@@ -67,6 +69,9 @@ class ValueType:
         return self.join_unknown(left)
 
     def join_boolean(self, left):
+        return self.join_unknown(left)
+
+    def join_python_integer(self, left):
         return self.join_unknown(left)
 
     def join_float(self, left):
@@ -380,6 +385,12 @@ class PythonIntegerType(PrimitiveType):
     def annotation_conflict(self, contract):
         return contract.integer_conflict(self)
 
+    def join(self, other):
+        return other.join_python_integer(self)
+
+    def join_python_integer(self, left):
+        return PythonIntegerType(may_be_unbound=self.may_be_unbound or left.may_be_unbound)
+
 
 @dataclass(frozen=True, slots=True)
 class BooleanType(IntegerType):
@@ -676,6 +687,7 @@ class BottomType(ValueType):
 
     join_integer = join_unknown
     join_boolean = join_unknown
+    join_python_integer = join_unknown
     join_float = join_unknown
     join_none = join_unknown
     join_immortal = join_unknown
@@ -732,6 +744,7 @@ class UnboundType(ValueType):
 
     join_integer = join_unknown
     join_boolean = join_unknown
+    join_python_integer = join_unknown
     join_float = join_unknown
     join_none = join_unknown
     join_immortal = join_unknown

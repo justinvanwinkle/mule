@@ -230,6 +230,7 @@ class Converter:
         primitive_data=None,
     ):
         self.source = source.replace("\r\n", "\n").replace("\r", "\n")
+        self.source_lines = self.source.splitlines(keepends=True)
         self.filename = filename
         self.imports = imports
         self.prefix = prefix
@@ -260,7 +261,7 @@ class Converter:
         span = node.span
         start = span.start if span else ast.Position(1, 0)
         end = span.end if span else ast.Position(1, 1)
-        lines = self.source.splitlines(keepends=True)
+        lines = self.source_lines
         line = lines[start.line - 1] if start.line <= len(lines) else None
         return (
             self.filename,
