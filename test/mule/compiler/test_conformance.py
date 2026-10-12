@@ -4,6 +4,8 @@ import pytest
 
 from test.conformance.cases import discover_programs, load_gaps
 
+pytestmark = pytest.mark.integration
+
 PROGRAMS = discover_programs()
 GAPS = load_gaps()
 

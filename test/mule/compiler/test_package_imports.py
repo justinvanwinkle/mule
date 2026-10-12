@@ -2,7 +2,7 @@
 
 import pytest
 
-from mule.compiler import UnsupportedSyntax, emit_llvm
+from mule.compiler import UnsupportedSyntax, build, emit_llvm
 from test.mule.compiler.test_modules import execute
 
 
@@ -44,5 +44,7 @@ def test_relative_import_without_package_is_rejected():
 def test_relative_import_cannot_escape_package(tmp_path):
     (tmp_path / "package").mkdir()
     (tmp_path / "package/__init__.py").write_text("from .. import outside\n")
+    (tmp_path / "main.py").write_text("import package\n")
+    # The package is its own unit, compiled while the program builds.
     with pytest.raises(UnsupportedSyntax, match="beyond top-level package"):
-        emit_llvm("import package\n", str(tmp_path / "main.py"))
+        build(tmp_path / "main.py", tmp_path / "program", optimize=False, workers=1)

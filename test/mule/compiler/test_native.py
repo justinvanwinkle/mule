@@ -12,7 +12,7 @@ def run_native(tmp_path, source):
     source_path = tmp_path / "program.py"
     source_path.write_text(source)
     executable = tmp_path / "program"
-    build(source_path, executable, optimize=False)
+    build(source_path, executable, optimize=False, workers=1)
     assert executable.read_bytes().startswith(b"\x7fELF")
     source_path.unlink()
     return subprocess.run(
@@ -188,7 +188,7 @@ def test_executable_runs_without_python_runtime_dependencies(tmp_path):
     source = tmp_path / "independent.py"
     source.write_text("print(2 ** 100, 40 + 2)\n")
     executable = tmp_path / "independent"
-    build(source, executable, optimize=False)
+    build(source, executable, optimize=False, workers=1)
     source.unlink()
     dynamic = subprocess.run(
         ["readelf", "-d", executable],

@@ -16,6 +16,8 @@ a reference to a possibly unbound name is never deleted because reading it raise
 
 from __future__ import annotations
 
+import functools
+
 from mule import ast
 
 from .ir1util import (
@@ -34,8 +36,8 @@ from .node import (
     CtranKind,
     Exit,
     If,
-    KnownFunction,
-    Lambda,
+    LeafVisitor,
+    NodeVisitor,
     Ref,
     linked,
 )
@@ -97,48 +99,86 @@ def ir1_optimize(component: Component) -> bool:
 
 def _optimize_block(block) -> bool:
     changed = False
+    optimizer = _OptimizeNode()
     for node in list(block.nodes()):
         if node.prev is None:
             continue
-        if isinstance(node, Combination) and node.kind is CallKind.KNOWN:
-            if node.lvar is None and node.fun_info.flushable:
-                flush_combination(node)
-                changed = True
-                continue
-            if node.fun_info.name == "%build_tuple" and node.fun_info.foldable:
-                changed |= _constant_fold_tuple(node)
-                continue
-            if (
-                node.fun_info.name in _BINARY_NAMES
-                or node.fun_info.name in _COMPARE_NAMES
-            ):
-                changed |= _constant_fold(node)
-        elif isinstance(node, If):
-            changed |= _optimize_if(node)
+        changed |= node.accept(optimizer)
     return changed
 
 
+class _OptimizeNode(NodeVisitor):
+    """Applies one node's rewrite; returns whether the graph changed."""
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node):
+        if node.kind is not CallKind.KNOWN:
+            return False
+        if node.lvar is None and node.fun_info.flushable:
+            flush_combination(node)
+            return True
+        if node.fun_info.name == "%build_tuple" and node.fun_info.foldable:
+            return _constant_fold_tuple(node)
+        if node.fun_info.name in _BINARY_NAMES or node.fun_info.name in _COMPARE_NAMES:
+            return _constant_fold(node)
+        return False
+
+    def visit_If(self, node):
+        return _optimize_if(node)
+
+
 def _literal(lvar):
-    use = lvar.uses[0] if len(lvar.uses) == 1 else None
-    if isinstance(use, Ref) and isinstance(use.leaf, Constant):
-        return use.leaf.value
-    return None
+    if len(lvar.uses) != 1:
+        return None
+    return lvar.uses[0].accept(_ConstantValue())
+
+
+class _ConstantValue(NodeVisitor, LeafVisitor):
+    """The literal a node evaluates to, or None when it is not a constant."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Constant(self, leaf):
+        return leaf.value
 
 
 def _immutable_literal(literal):
-    if isinstance(literal, ast.Tuple):
-        return all(_immutable_literal(element) for element in literal.elements)
-    return isinstance(
-        literal,
-        (
-            ast.NoneLiteral,
-            ast.BooleanLiteral,
-            ast.IntegerLiteral,
-            ast.FloatLiteral,
-            ast.TextLiteral,
-            ast.BytesLiteral,
-        ),
-    )
+    return literal is not None and literal.accept(_ImmutableLiteral())
+
+
+class _ImmutableLiteral(ast.Visitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_Tuple(self, node):
+        return all(element.accept(self) for element in node.elements)
+
+    def visit_NoneLiteral(self, node):
+        return True
+
+    def visit_BooleanLiteral(self, node):
+        return True
+
+    def visit_IntegerLiteral(self, node):
+        return True
+
+    def visit_FloatLiteral(self, node):
+        return True
+
+    def visit_TextLiteral(self, node):
+        return True
+
+    def visit_BytesLiteral(self, node):
+        return True
 
 
 def _constant_fold_tuple(node: Combination) -> bool:
@@ -161,14 +201,12 @@ def _constant_fold(node: Combination) -> bool:
     literals = [_literal(arg) for arg in node.args]
     if any(literal is None for literal in literals):
         return False
-    if not all(
-        isinstance(literal, (ast.IntegerLiteral, ast.BooleanLiteral))
-        for literal in literals
-    ):
+    domains = [literal.accept(_FoldDomainOf()) for literal in literals]
+    if any(domain is None for domain in domains):
         return False
+    domain = functools.reduce(lambda left, right: left.join(right), domains)
     values = [literal.value for literal in literals]
     name = linked(node.fun_info, node, "function info").name
-    booleans = all(isinstance(literal, ast.BooleanLiteral) for literal in literals)
     if name in _BINARY_NAMES:
         operator = _BINARY_NAMES[name]
         left, right = values
@@ -184,18 +222,9 @@ def _constant_fold(node: Combination) -> bool:
             result = left | right
         else:
             result = left ^ right
-        if isinstance(result, bool):
-            folded = ast.BooleanLiteral(result)
-        elif booleans and operator in (
-            ast.BinaryOperator.BIT_AND,
-            ast.BinaryOperator.BIT_OR,
-            ast.BinaryOperator.BIT_XOR,
-        ):
-            folded = ast.BooleanLiteral(bool(result))
-        else:
-            if result.bit_length() > _FOLD_LIMIT_BITS:
-                return False
-            folded = ast.IntegerLiteral(result)
+        folded = domain.literal(operator, result)
+        if folded is None:
+            return False
     elif name in _COMPARE_NAMES:
         operator = _COMPARE_NAMES[name]
         left, right = values
@@ -214,6 +243,52 @@ def _constant_fold(node: Combination) -> bool:
     folded.span = node.source.span if node.source is not None else None
     replace_combination_with_constant(node, folded)
     return True
+
+
+class _IntegerDomain:
+    """Folding over integers: results stay within the folding bit limit."""
+
+    def join(self, other: _IntegerDomain) -> _IntegerDomain:
+        return self
+
+    def literal(self, operator: ast.BinaryOperator, result: int) -> ast.Literal | None:
+        if result.bit_length() > _FOLD_LIMIT_BITS:
+            return None
+        return ast.IntegerLiteral(result)
+
+
+class _BooleanDomain(_IntegerDomain):
+    """Booleans are integers closed under the bitwise operators."""
+
+    def join(self, other: _IntegerDomain) -> _IntegerDomain:
+        return other
+
+    def literal(self, operator: ast.BinaryOperator, result: int) -> ast.Literal | None:
+        if operator in _BITWISE:
+            return ast.BooleanLiteral(bool(result))
+        return super().literal(operator, result)
+
+
+_INTEGER_DOMAIN = _IntegerDomain()
+_BOOLEAN_DOMAIN = _BooleanDomain()
+_BITWISE = {
+    ast.BinaryOperator.BIT_AND,
+    ast.BinaryOperator.BIT_OR,
+    ast.BinaryOperator.BIT_XOR,
+}
+
+
+class _FoldDomainOf(ast.Visitor):
+    """Only integer and boolean literals fold."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_IntegerLiteral(self, node):
+        return _INTEGER_DOMAIN
+
+    def visit_BooleanLiteral(self, node):
+        return _BOOLEAN_DOMAIN
 
 
 def replace_combination_with_constant(node: Combination, literal) -> None:
@@ -259,29 +334,61 @@ def flush_combination(node: Combination) -> None:
 def _flush_dead_operands(block) -> None:
     """Delete references whose value is unused and whose evaluation has no
     effect: constants, known-function references, and lambda references."""
+    flusher = _FlushDeadReference()
     for node in list(block.nodes()):
         if node.prev is None:
             continue
-        if (
-            isinstance(node, Ref)
-            and node.lvar is None
-            and not node.final
-            and isinstance(node.leaf, (Constant, KnownFunction, Lambda))
-        ):
+        node.accept(flusher)
+
+
+class _FlushDeadReference(NodeVisitor, LeafVisitor):
+    """Deletes an unused reference whose evaluation has no effect."""
+
+    def visit_Ref(self, node):
+        if node.lvar is None and not node.final and node.leaf.accept(self):
             delete_ref(node)
             unlink_node(node)
 
+    def visit_Leaf(self, leaf):
+        return False
+
+    def visit_Constant(self, leaf):
+        return True
+
+    def visit_KnownFunction(self, leaf):
+        return True
+
+    def visit_Lambda(self, leaf):
+        return True
+
 
 def _literal_truth(literal):
-    if isinstance(literal, (ast.BooleanLiteral, ast.IntegerLiteral)):
-        return bool(literal.value)
-    if isinstance(literal, ast.NoneLiteral):
+    return literal.accept(_LiteralTruth())
+
+
+class _LiteralTruth(ast.Visitor):
+    """A literal's truth value, or None when folding must not decide it."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_BooleanLiteral(self, node):
+        return bool(node.value)
+
+    def visit_IntegerLiteral(self, node):
+        return bool(node.value)
+
+    def visit_NoneLiteral(self, node):
         return False
-    if isinstance(literal, (ast.TextLiteral, ast.BytesLiteral)):
-        return bool(literal.value)
-    if isinstance(literal, ast.FloatLiteral):
-        return literal.value != 0.0
-    return None
+
+    def visit_TextLiteral(self, node):
+        return bool(node.value)
+
+    def visit_BytesLiteral(self, node):
+        return bool(node.value)
+
+    def visit_FloatLiteral(self, node):
+        return node.value != 0.0
 
 
 def _optimize_if(node: If) -> bool:

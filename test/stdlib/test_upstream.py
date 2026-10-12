@@ -4,6 +4,8 @@ import pytest
 
 from tools.run_stdlib_tests import discover_entries, run_entry
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.mark.parametrize(
     "entry",

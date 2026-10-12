@@ -28,7 +28,8 @@ from dataclasses import dataclass
 from .annotation_types import AnnotationLedger
 from .constraint import Body, Fact, join_fact, propagate, widen_fact
 from .ctype import BOTTOM, FIXNUM_MAX, FIXNUM_MIN, UNKNOWN, IntegerType, ValueType
-from .node import CallKind, Combination, GlobalVar, Lambda, Set, linked
+from .ir1util import made_function
+from .node import CallKind, Lambda, LeafVisitor, NodeVisitor, Set, linked
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,21 +56,35 @@ def global_bindings(lambdas) -> dict[str, dict[str, Lambda]]:
     freshly created function object anywhere in the module."""
     targets = defaultdict(dict)
     for lambda_ in lambdas:
-        namespace = targets[lambda_.namespace]
+        visitor = _GlobalFunctionStores(targets[lambda_.namespace])
         for block in lambda_.component.blocks():
             for node in block.nodes():
-                if not isinstance(node, Set) or not isinstance(node.var, GlobalVar):
-                    continue
-                if node.value is None:
-                    continue
-                producer = node.value.use()
-                if (
-                    isinstance(producer, Combination)
-                    and producer.kind is CallKind.KNOWN
-                    and producer.fun_info.name == "%make_function"
-                ):
-                    namespace[node.var.name] = producer.args[0].use().leaf
+                node.accept(visitor)
     return targets
+
+
+class _GlobalFunctionStores(NodeVisitor):
+    def __init__(self, namespace: dict[str, Lambda]):
+        self.namespace = namespace
+
+    def visit_Set(self, node):
+        node.var.accept(_GlobalFunctionStore(self.namespace, node))
+
+
+class _GlobalFunctionStore(LeafVisitor):
+    """Records a store of a fresh function object into a module global; a
+    store into a local binds no module name."""
+
+    def __init__(self, namespace: dict[str, Lambda], store: Set):
+        self.namespace = namespace
+        self.store = store
+
+    def visit_GlobalVar(self, leaf):
+        if self.store.value is None:
+            return
+        lambda_ = made_function(self.store.value.use())
+        if lambda_ is not None:
+            self.namespace[leaf.name] = lambda_
 
 
 def _with_defined_arguments(arguments, continuation):
@@ -321,22 +336,28 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
 def _mark_guarded_calls(lambda_: Lambda, body: Body) -> None:
     """Record predicted targets on full calls so later phases and code
     generation can guard them; the general path always remains."""
+    visitor = _MarkGuardedCall(body)
     for block in linked(lambda_.component, lambda_, "component").blocks():
         for node in block.nodes():
-            if not isinstance(node, Combination) or node.kind not in (
-                CallKind.FULL,
-                CallKind.GUARDED,
-            ):
-                continue
-            fact = body.facts.get(node.fun.use())
-            if fact is None or fact.target is None:
-                node.kind = CallKind.FULL
-                node.predicted = None
-                node.proven = False
-                continue
-            node.kind = CallKind.GUARDED
-            node.predicted = fact.target
-            node.proven = fact.proven
+            node.accept(visitor)
+
+
+class _MarkGuardedCall(NodeVisitor):
+    def __init__(self, body: Body):
+        self.body = body
+
+    def visit_Combination(self, node):
+        if node.kind not in (CallKind.FULL, CallKind.GUARDED):
+            return
+        fact = self.body.facts.get(node.fun.use())
+        if fact is None or fact.target is None:
+            node.kind = CallKind.FULL
+            node.predicted = None
+            node.proven = False
+            return
+        node.kind = CallKind.GUARDED
+        node.predicted = fact.target
+        node.proven = fact.proven
 
 
 __all__ = ["EntryContext", "LambdaFacts", "analyze", "global_bindings", "join_fact"]

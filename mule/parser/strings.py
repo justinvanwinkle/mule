@@ -86,16 +86,15 @@ class StringParserMixin:
                 for part in literal_parts:
                     self._append_string_part(parts, part)
             else:
-                value = self._decode_string(
-                    body, token, raw="r" in prefix, is_bytes=is_bytes
-                )
                 span = ast.Span(token.start, token.end)
-                if isinstance(value, bytes):
-                    byte_strings.append(value)
-                    self._append_string_part(parts, ast.BytesLiteral(value, span=span))
+                if is_bytes:
+                    data = self._decode_bytes(body, token, raw="r" in prefix)
+                    byte_strings.append(data)
+                    self._append_string_part(parts, ast.BytesLiteral(data, span=span))
                 else:
-                    texts.append(value)
-                    self._append_string_part(parts, ast.TextLiteral(value, span=span))
+                    text = self._decode_text(body, token, raw="r" in prefix)
+                    texts.append(text)
+                    self._append_string_part(parts, ast.TextLiteral(text, span=span))
         if family == "template":
             result = ast.TemplateString(parts)
         elif family == "formatted":
@@ -110,11 +109,20 @@ class StringParserMixin:
     def _append_string_part(parts, part):
         part.append_string_part(parts)
 
-    def _decode_string(self: Parser, body, token, *, raw=False, is_bytes=False):
-        if is_bytes and any(ord(character) > 127 for character in body):
+    def _decode_text(self: Parser, body, token, *, raw=False) -> str:
+        return body if raw else self._decode_escapes(body, token, is_bytes=False)
+
+    def _decode_bytes(self: Parser, body, token, *, raw=False) -> bytes:
+        if any(ord(character) > 127 for character in body):
             self.error("bytes literals may contain only ASCII source characters", token)
         if raw:
-            return body.encode("ascii") if is_bytes else body
+            return body.encode("ascii")
+        # Each decoded character holds one byte value.
+        decoded = self._decode_escapes(body, token, is_bytes=True)
+        return bytes(ord(character) for character in decoded)
+
+    def _decode_escapes(self: Parser, body, token, *, is_bytes) -> str:
+        """``body`` with its backslash escapes decoded."""
         decoded = []
         index = 0
         while index < len(body):
@@ -160,8 +168,7 @@ class StringParserMixin:
             else:
                 decoded.extend(("\\", escaped))
                 index += 2
-        value = "".join(decoded)
-        return bytes(ord(character) for character in value) if is_bytes else value
+        return "".join(decoded)
 
     def _formatted_parts(
         self: Parser,
@@ -181,7 +188,7 @@ class StringParserMixin:
         def flush(end):
             if not literal:
                 return
-            text = self._decode_string("".join(literal), token, raw=raw)
+            text = self._decode_text("".join(literal), token, raw=raw)
             self._append_string_part(
                 parts,
                 ast.TextLiteral(

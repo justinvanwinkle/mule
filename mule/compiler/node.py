@@ -92,6 +92,11 @@ class Lvar:
             raise ValueError(f"{self!r} does not have a single use")
         return self.uses[0]
 
+    def accept(self, visitor):
+        """IR1 conversion takes operands that are either syntax or already
+        computed values; both accept its operand visitor (``visit_Lvar``)."""
+        return visitor.visit_Lvar(self)
+
     def __repr__(self):
         return f"<Lvar {self.number}>"
 
@@ -121,6 +126,16 @@ class Node:
     def accept(self, visitor):
         return visitor.visit_Node(self)
 
+    @property
+    def value_lvar(self) -> Lvar | None:
+        """The lvar receiving this node's value; a node that yields no value
+        has none."""
+        return None
+
+    def detach_value(self) -> Lvar | None:
+        """Stop delivering this node's value and return the lvar it went to."""
+        return None
+
     def __repr__(self):
         return f"<{type(self).__name__} {self.number}>"
 
@@ -136,6 +151,17 @@ class ValuedNode(Node):
     @property
     def dest(self) -> Node | None:
         return self.lvar.dest if self.lvar is not None else None
+
+    @property
+    def value_lvar(self) -> Lvar | None:
+        return self.lvar
+
+    def detach_value(self) -> Lvar | None:
+        lvar = self.lvar
+        if lvar is not None:
+            lvar.uses.remove(self)
+            self.lvar = None
+        return lvar
 
 
 class Ref(ValuedNode):
@@ -324,22 +350,26 @@ class Enclose(Node):
 
 
 class NodeVisitor:
-    """A node selects its visitor method directly."""
+    """A node selects its visitor method directly; unhandled kinds fall back
+    to their parent class's method, ending at ``visit_Node``."""
 
     def visit_Node(self, node):
         return None
 
-    def visit_Ref(self, node):
+    def visit_ValuedNode(self, node):
         return self.visit_Node(node)
+
+    def visit_Ref(self, node):
+        return self.visit_ValuedNode(node)
 
     def visit_If(self, node):
         return self.visit_Node(node)
 
     def visit_Set(self, node):
-        return self.visit_Node(node)
+        return self.visit_ValuedNode(node)
 
     def visit_Combination(self, node):
-        return self.visit_Node(node)
+        return self.visit_ValuedNode(node)
 
     def visit_Bind(self, node):
         return self.visit_Node(node)
@@ -348,22 +378,57 @@ class NodeVisitor:
         return self.visit_Node(node)
 
     def visit_Cast(self, node):
-        return self.visit_Node(node)
+        return self.visit_ValuedNode(node)
 
     def visit_Entry(self, node):
         return self.visit_Node(node)
 
     def visit_Exit(self, node):
-        return self.visit_Node(node)
+        return self.visit_ValuedNode(node)
 
     def visit_Enclose(self, node):
         return self.visit_Node(node)
+
+
+class LeafVisitor:
+    """A leaf selects its visitor method directly; unhandled kinds fall back
+    to their parent class's method, ending at ``visit_Leaf``."""
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Constant(self, leaf):
+        return self.visit_Leaf(leaf)
+
+    def visit_KnownFunction(self, leaf):
+        return self.visit_Leaf(leaf)
+
+    def visit_BasicVar(self, leaf):
+        return self.visit_Leaf(leaf)
+
+    def visit_GlobalVar(self, leaf):
+        return self.visit_BasicVar(leaf)
+
+    def visit_LambdaVar(self, leaf):
+        return self.visit_BasicVar(leaf)
+
+    def visit_Functional(self, leaf):
+        return self.visit_Leaf(leaf)
+
+    def visit_Lambda(self, leaf):
+        return self.visit_Functional(leaf)
+
+    def visit_OptionalDispatch(self, leaf):
+        return self.visit_Functional(leaf)
 
 
 class Leaf:
     """Something a ``Ref`` can reference: a constant, variable, or function."""
 
     __slots__ = ("info", "number", "refs", "source_name", "type")
+
+    # Only a local can be a capture belonging to expression evaluation.
+    expression_temporary = False
 
     def __init__(self, source_name: str | None = None):
         self.source_name = source_name
@@ -375,6 +440,9 @@ class Leaf:
     def __repr__(self):
         return f"<{type(self).__name__} {self.source_name or self.number}>"
 
+    def accept(self, visitor: LeafVisitor):
+        return visitor.visit_Leaf(self)
+
 
 class Constant(Leaf):
     __slots__ = ("value",)
@@ -382,6 +450,9 @@ class Constant(Leaf):
     def __init__(self, value: ast.Literal | ast.Tuple):
         super().__init__()
         self.value = value
+
+    def accept(self, visitor: LeafVisitor):
+        return visitor.visit_Constant(self)
 
 
 class KnownFunction(Leaf):
@@ -393,6 +464,9 @@ class KnownFunction(Leaf):
         super().__init__(fun_info.name)
         self.fun_info = fun_info
 
+    def accept(self, visitor: LeafVisitor):
+        return visitor.visit_KnownFunction(self)
+
 
 class BasicVar(Leaf):
     __slots__ = ("sets",)
@@ -402,6 +476,9 @@ class BasicVar(Leaf):
     def __init__(self, source_name: str):
         super().__init__(source_name)
         self.sets: list[Set] = []
+
+    def accept(self, visitor: LeafVisitor):
+        return visitor.visit_BasicVar(self)
 
 
 class GlobalVar(BasicVar):
@@ -416,6 +493,9 @@ class GlobalVar(BasicVar):
     @property
     def name(self) -> str:
         return self.source_name
+
+    def accept(self, visitor: LeafVisitor):
+        return visitor.visit_GlobalVar(self)
 
 
 class LambdaVar(BasicVar):
@@ -445,6 +525,9 @@ class LambdaVar(BasicVar):
     def name(self) -> str:
         return self.source_name
 
+    def accept(self, visitor: LeafVisitor):
+        return visitor.visit_LambdaVar(self)
+
 
 class FunctionalKind(Enum):
     NORMAL = auto()
@@ -465,6 +548,9 @@ class Functional(Leaf):
         self.entry_fun: Functional | None = None
         self.debug_name = debug_name
         self.lexenv = lexenv
+
+    def accept(self, visitor: LeafVisitor):
+        return visitor.visit_Functional(self)
 
 
 @dataclass(slots=True)
@@ -592,6 +678,15 @@ class Lambda(Functional):
     def parameters(self) -> tuple[str, ...]:
         return tuple(var.name for var in self.vars)
 
+    def accept(self, visitor: LeafVisitor):
+        return visitor.visit_Lambda(self)
+
+    @property
+    def takes_closure(self) -> bool:
+        """Whether the body receives captured variables."""
+        environment = self.environment
+        return environment is not None and bool(environment.closure)
+
     def call_order(self, keywords, count, *, receiver=False):
         return self.signature.call_order(
             self.parameters, keywords, count, receiver=receiver
@@ -610,6 +705,9 @@ class OptionalDispatch(Functional):
         self.entry_points: list[Lambda] = []
         self.more_entry: Lambda | None = None
         self.main_entry: Lambda | None = None
+
+    def accept(self, visitor: LeafVisitor):
+        return visitor.visit_OptionalDispatch(self)
 
 
 class CleanupKind(Enum):

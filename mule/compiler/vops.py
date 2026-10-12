@@ -353,7 +353,7 @@ def _binary_generic(gen, vop, opcode, *, inplace):
     lhs, rhs = gen.take(left), gen.take(right)
     left_type = left.tn.type or UNKNOWN
     if opcode == 5 and not (left_type.fits(PYTHON_INTEGER) or left_type.fits(FLOAT)):
-        value = gen.compiled_call("mule_format_modulo", (lhs, rhs))
+        value = gen.compiled_call_named("mule_format_modulo", (lhs, rhs))
         gen.publish(result, value)
         gen.check_pointer(value)
         gen.refine(result.tn, value)
@@ -748,12 +748,14 @@ def format_(gen, vop):
         protocol = {"s": "string", "r": "representation", "a": "ascii_representation"}[
             conversion
         ]
-        converted = gen.compiled_call("mule_format_" + protocol, [value])
+        converted = gen.compiled_call_named("mule_format_" + protocol, [value])
         gen.publish(result, converted)
         gen.check_pointer(converted)
         value = gen.take(result)
     specification = gen.take(vop.args[1])
-    formatted = gen.compiled_call("mule_format_format_value", [value, specification])
+    formatted = gen.compiled_call_named(
+        "mule_format_format_value", [value, specification]
+    )
     gen.publish(result, formatted)
     gen.check_pointer(formatted)
 
@@ -970,9 +972,9 @@ def text_result(gen, vop, values):
     return gen.operation(f"call ptr @mule_text_result(ptr {values[0]})")
 
 
-def compiled_call(function):
+def compiled_call(name):
     def emit(gen, vop, values):
-        return gen.compiled_call(function, values)
+        return gen.compiled_call_named(name, values)
 
     return emit
 
@@ -1027,7 +1029,8 @@ RAW_SCALAR = (SIGNED, BOOLEAN, NULL, DOUBLE)
 def _raw_binary(operator, opcode):
     @define_vop(
         f"raw-binary-{operator.name.lower()}",
-        translate=(fndb.BINARY[operator], fndb.INPLACE_BINARY[operator]),
+        translate=fndb.BINARY[operator],
+        also_translate=(fndb.INPLACE_BINARY[operator],),
         args=((SIGNED,), (SIGNED,)),
         results=((SIGNED,),),
         ltn_policy=RAW,
@@ -1048,7 +1051,8 @@ def _raw_float_binary(operator, opcode, restriction):
 
     @define_vop(
         f"raw-float-{operator.name.lower()}-{suffix}",
-        translate=(fndb.BINARY[operator], fndb.INPLACE_BINARY[operator]),
+        translate=fndb.BINARY[operator],
+        also_translate=(fndb.INPLACE_BINARY[operator],),
         args=tuple((sc,) for sc in restriction),
         results=((DOUBLE,),),
         cost=1 if restriction == (DOUBLE, DOUBLE) else 2,

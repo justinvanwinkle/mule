@@ -21,24 +21,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .ctype import (
-    UNKNOWN,
-    BooleanType,
-    ImmortalType,
-    IntegerType,
-    NoneType,
-    ValueType,
-)
+from .ctype import UNKNOWN, ValueType
 from .node import (
     CallKind,
     Cast,
     Combination,
-    Constant,
-    GlobalVar,
     If,
-    KnownFunction,
     Lambda,
-    LambdaVar,
+    LeafVisitor,
     NodeVisitor,
     Ref,
     Return,
@@ -85,15 +75,26 @@ class EntryContext:
 def primitive_type_of(value_type: ValueType) -> PrimitiveType:
     """The primitive type of values described by a derived value type
     (``primitive-type`` of a ctype)."""
-    if isinstance(value_type, BooleanType):
+    return value_type.accept(_PrimitiveTypeOf())
+
+
+class _PrimitiveTypeOf:
+    def visit_ValueType(self, value_type: ValueType) -> PrimitiveType:
+        return IMMORTAL_T if value_type.is_immortal else T
+
+    def visit_IntegerType(self, value_type: ValueType) -> PrimitiveType:
+        if value_type.is_fixnum:
+            return FIXNUM
+        return self.visit_ValueType(value_type)
+
+    def visit_BooleanType(self, value_type: ValueType) -> PrimitiveType:
         return BOOLEAN_T
-    if isinstance(value_type, NoneType):
+
+    def visit_NoneType(self, value_type: ValueType) -> PrimitiveType:
         return NONE_T
-    if isinstance(value_type, IntegerType) and value_type.is_fixnum:
-        return FIXNUM
-    if isinstance(value_type, ImmortalType) or value_type.is_immortal:
+
+    def visit_ImmortalType(self, value_type: ValueType) -> PrimitiveType:
         return IMMORTAL_T
-    return T
 
 
 def ltn_analyze(lambda_: Lambda, context: EntryContext) -> None:
@@ -103,6 +104,32 @@ def ltn_analyze(lambda_: Lambda, context: EntryContext) -> None:
     for block in linked(lambda_.component, lambda_, "component").blocks():
         for node in block.nodes():
             node.accept(visitor)
+
+
+class _AnnotateReference(LeafVisitor):
+    def __init__(self, annotate: _Annotate, ref: Ref):
+        self.annotate = annotate
+        self.ref = ref
+
+    def visit_Leaf(self, leaf):
+        raise TypeError(f"no IR2 delivery for a reference to {leaf!r}")
+
+    # The callee of a known call and the lambda of ``%make_function`` are
+    # compile-time operands, never materialized values.
+    def visit_KnownFunction(self, leaf):
+        self.annotate.annotate_delayed(self.ref.lvar)
+
+    def visit_Lambda(self, leaf):
+        self.annotate.annotate_delayed(self.ref.lvar)
+
+    def visit_Constant(self, leaf):
+        self.annotate.annotate_1_value_lvar(self.ref.lvar)
+
+    def visit_LambdaVar(self, leaf):
+        self.annotate.annotate_1_value_lvar(self.ref.lvar)
+
+    def visit_GlobalVar(self, leaf):
+        self.annotate.annotate_1_value_lvar(self.ref.lvar)
 
 
 class _Annotate(NodeVisitor):
@@ -130,16 +157,7 @@ class _Annotate(NodeVisitor):
             lvar.info = IR2Lvar(IR2LvarKind.DELAYED, T)
 
     def visit_Ref(self, node: Ref):
-        leaf = node.leaf
-        if isinstance(leaf, (KnownFunction, Lambda)):
-            # The callee of a known call and the lambda of ``%make_function``
-            # are compile-time operands, never materialized values.
-            self.annotate_delayed(node.lvar)
-            return
-        if isinstance(leaf, (Constant, LambdaVar, GlobalVar)):
-            self.annotate_1_value_lvar(node.lvar)
-            return
-        raise TypeError(f"no IR2 delivery for a reference to {leaf!r}")
+        node.leaf.accept(_AnnotateReference(self, node))
 
     def visit_Set(self, node: Set):
         self.annotate_1_value_lvar(node.lvar)

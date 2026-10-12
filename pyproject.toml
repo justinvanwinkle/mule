@@ -24,7 +24,12 @@ module-name = "mule"
 module-root = ""
 
 [tool.pytest.ini_options]
-addopts = "-n 6"
+# Integration suites build hundreds of programs or run whole external test
+# suites; run them explicitly with `uv run pytest -m integration`.
+addopts = "-n 6 -m 'not integration'"
+markers = [
+    "integration: builds many programs or runs whole external suites",
+]
 testpaths = ["test"]
 pythonpath = ["."]
 

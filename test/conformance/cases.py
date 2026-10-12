@@ -104,7 +104,7 @@ class Program:
         try:
             # Unoptimized: these programs compare Python behavior, which the
             # optimization level does not change, and -O0 builds in seconds.
-            build(self.path, executable, optimize=False)
+            build(self.path, executable, optimize=False, workers=1)
         except SyntaxError as error:
             return CompileFailure(
                 message=error.msg,

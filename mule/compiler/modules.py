@@ -85,6 +85,8 @@ class ModuleCompiler:
         # inside their importer, and stack depth does not grow with import
         # chains.
         self.pending: deque[CompiledModule] = deque()
+        # Every module name resolved, in first-request order.
+        self.requested: dict[str, None] = {}
 
     def path_for(self, name):
         if name in NATIVE_MODULES:
@@ -144,6 +146,8 @@ class ModuleCompiler:
         return base + "." + node.module if node.module else base
 
     def resolve(self, name, lowerer, node):
+        # What a unit's output depends on from its imports: how each resolved.
+        self.requested.setdefault(name, None)
         if name in self.modules:
             return self.modules[name]
         if name in NATIVE_MODULES:

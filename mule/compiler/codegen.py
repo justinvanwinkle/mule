@@ -37,18 +37,10 @@ from mule.diagnostics import phase
 
 from . import vops
 from .ctype import UNKNOWN, ValueType
-from .ir1util import block_exception_target, class_method_definitions
+from .ir1util import block_exception_target, class_method_definitions, known_calls
 from .ir2tran import ir2_convert
 from .ltn import EntryContext, ltn_analyze
-from .node import (
-    CallKind,
-    Combination,
-    FunctionalKind,
-    Lambda,
-    LambdaVar,
-    Signature,
-    linked,
-)
+from .node import FunctionalKind, Lambda, Signature, linked
 from .represent import select_native_plans, select_representations
 from .vop import BOOLEAN, CLASS, DESCRIPTOR, DOUBLE, IMMEDIATE, NULL, RANGE, SIGNED
 
@@ -197,7 +189,7 @@ class ForeignFunction:
     name: str
     parameters: tuple[str, ...]
     signature: Signature
-    closure: bool
+    takes_closure: bool
 
     def call_order(self, keywords, count, *, receiver=False):
         return self.signature.call_order(
@@ -269,15 +261,22 @@ class _Symbols:
         self.module = module
         self.suffix = suffix
 
-    def __getitem__(self, key):
-        lambda_, variant = key if isinstance(key, tuple) else (key, None)
-        if variant is None:
-            name = f"{lambda_.name}.{self.suffix}"
-        else:
-            name = f"{lambda_.name}.spec.{self.module.variant_index(lambda_, variant)}"
-        if lambda_ not in self.module.owned:
-            self.module.foreign[name] = (self.suffix, lambda_)
-        return _symbol(name)
+    def __getitem__(self, lambda_: Function) -> str:
+        return self.module.reference(
+            lambda_, f"{lambda_.name}.{self.suffix}", self.suffix
+        )
+
+
+class _SpecializedSymbols:
+    """The guarded entry of a lambda for one of its entry contexts."""
+
+    def __init__(self, module):
+        self.module = module
+
+    def __getitem__(self, key: tuple[Function, object]) -> str:
+        lambda_, context_id = key
+        variant = self.module.variant_index(lambda_, context_id)
+        return self.module.reference(lambda_, f"{lambda_.name}.spec.{variant}", "body")
 
 
 def generate(program: Program) -> str:
@@ -346,6 +345,16 @@ class _ConstantKey(ast.Visitor):
         return "tuple", tuple(element.accept(self) for element in node.elements)
 
 
+class _NestedTuples(ast.Visitor):
+    """Registers the tuple constants nested in a tuple constant first."""
+
+    def __init__(self, module):
+        self.module = module
+
+    def visit_Tuple(self, node):
+        self.module.constant_tuple(node)
+
+
 @dataclass(frozen=True, slots=True)
 class TupleConstant:
     literal: ast.Tuple
@@ -360,10 +369,10 @@ class ModuleGenerator:
         self.owned = set(lambdas)
         self.facts = {**program.external_facts, **program.facts}
         # Other units' functions this unit refers to, by symbol name.
-        self.foreign: dict[str, tuple[str, Lambda]] = {}
+        self.foreign: dict[str, tuple[str, Function]] = {}
         self.functions = _Symbols(self, "fn")
         self.bodies = _Symbols(self, "body")
-        self.specialized = _Symbols(self, "body")
+        self.specialized = _SpecializedSymbols(self)
         self.by_name = {
             lambda_.name: lambda_ for lambda_ in [*program.external, *lambdas]
         }
@@ -393,6 +402,12 @@ class ModuleGenerator:
     def bodies_by_name(self, name: str) -> str:
         return self.bodies[self.by_name[name]]
 
+    def reference(self, lambda_: Function, name: str, kind: str) -> str:
+        """The symbol ``name`` of ``lambda_``; another unit's is declared."""
+        if lambda_ not in self.owned:
+            self.foreign[name] = (kind, lambda_)
+        return _symbol(name)
+
     def variant_index(self, lambda_: Lambda, context_id) -> int:
         for index, context in enumerate(self.variants_of(lambda_)):
             if context.id == context_id:
@@ -408,25 +423,17 @@ class ModuleGenerator:
     def _collect(self, lambda_: Lambda) -> None:
         """Method predictions and the imported modules in first-use order."""
         self._collect_methods(lambda_)
-        for block in linked(lambda_.component, lambda_, "component").blocks():
-            for node in block.nodes():
-                if (
-                    isinstance(node, Combination)
-                    and node.kind is CallKind.KNOWN
-                    and node.fun_info.name == "%import"
-                ):
-                    self.imports.setdefault(node.info.module_name, node.info)
+        for call in known_calls(lambda_, "%import"):
+            info = linked(call.info, call, "import")
+            self.imports.setdefault(info.module_name, info)
 
     def variants_of(self, lambda_: Lambda):
         facts = self.facts.get(lambda_)
         return facts.variants if facts is not None else ()
 
-    def closure_of(self, lambda_) -> bool:
+    def closure_of(self, lambda_: Function) -> bool:
         """Whether the function body takes a closure parameter."""
-        if isinstance(lambda_, ForeignFunction):
-            return lambda_.closure
-        environment = lambda_.environment
-        return environment is not None and bool(environment.closure)
+        return lambda_.takes_closure
 
     def closure_operand(self, gen, lambda_: Function, callable_value: str) -> list[str]:
         """The closure operand for a direct call to ``lambda_`` through an
@@ -485,9 +492,9 @@ class ModuleGenerator:
         existing = self.tuple_constants.get(key)
         if existing is not None:
             return existing.entry
+        nested = _NestedTuples(self)
         for element in literal.elements:
-            if isinstance(element, ast.Tuple):
-                self.constant_tuple(element)
+            element.accept(nested)
         index = len(self.tuple_constants)
         constant = TupleConstant(
             literal, f"@mule.literal.slot.{index}", f"@mule.literal.tuple.{index}"
@@ -721,12 +728,12 @@ class ModuleGenerator:
             "entry:\n"
             + "\n".join(startup)
             + "\n"
-            + f"  %sequence = call ptr {self.functions[program.protocol_entry]}(ptr %globals, ptr %args)\n"
+            + f"  %sequence = call ptr {self.functions[linked(program.protocol_entry, program, 'protocol entry')]}(ptr %globals, ptr %args)\n"
             "  %failed = icmp eq ptr %sequence, null\n"
             "  call void @mule_release(ptr %sequence)\n"
             "  br i1 %failed, label %failure, label %print\n"
             "print:\n"
-            f"  %result = call ptr {self.functions[program.print_entry]}(ptr %globals, ptr %args)\n"
+            f"  %result = call ptr {self.functions[linked(program.print_entry, program, 'print entry')]}(ptr %globals, ptr %args)\n"
             "  ret ptr %result\n"
             "failure:\n"
             "  ret ptr null\n"
@@ -743,7 +750,7 @@ class ModuleGenerator:
                 "  ret ptr %result\n}"
             )
         run = (
-            f"call i32 @mule_run_protocols(ptr {self.functions[program.entry]}, "
+            f"call i32 @mule_run_protocols(ptr {self.functions[linked(program.entry, program, 'entry')]}, "
             "ptr @mule.initialize.protocols)"
         )
         definitions.append(
@@ -1051,7 +1058,7 @@ class FunctionGenerator:
             if tn.primitive_type is not None and tn.sc is RANGE:
                 self.range_tns.append(tn)
                 tn.slot = f"%range.{len(self.range_tns) - 1}"
-            elif isinstance(tn.leaf, LambdaVar) and tn.leaf.expression_temporary:
+            elif tn.leaf is not None and tn.leaf.expression_temporary:
                 # A variable's slot is loaded and stored by name, so an
                 # expression temporary stays in a slot, released when an
                 # exception transfers out of the expression.
@@ -1374,17 +1381,19 @@ class FunctionGenerator:
 
     # Calls
 
-    def compiled_call(self, function, values, globals_value="%globals") -> str:
+    def compiled_call_named(self, name: str, values) -> str:
+        """A compiled call of the protocol function named ``name``."""
+        return self.compiled_call(self.module.by_name[name], values)
+
+    def compiled_call(
+        self, function: Function, values, globals_value="%globals"
+    ) -> str:
         """Transfer owned arguments to a compiled body inside a runtime frame.
 
         The body owns its parameters on every return. Failed frame entry leaves
         them here, so that arm consumes them before returning the error result.
         """
-        body = (
-            self.module.bodies_by_name(function)
-            if isinstance(function, str)
-            else self.module.bodies[function]
-        )
+        body = self.module.bodies[function]
         status = self.operation("call i32 @mule_enter_frame()")
         failed, entered, join = (
             self.fresh(label)[1:]
@@ -1878,7 +1887,9 @@ class FunctionGenerator:
             lines.append("  br label %invoke")
         else:
             lines.append("  br label %binding")
-        binder = module.bodies[module.program.argument_binder]
+        binder = module.bodies[
+            linked(module.program.argument_binder, module.program, "argument binder")
+        ]
         lines += [
             "binding:",
             "  %private = call ptr @mule_protocol_globals()",

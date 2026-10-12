@@ -2,6 +2,7 @@
 
 import pytest
 
+from test.mule.compiler.test_annotations import contradiction_warnings
 from test.mule.compiler.test_modules import execute
 
 
@@ -349,11 +350,8 @@ print(combine(), combine(right=8, left=7))
         "import mule\ndef f(x: mule.int64):\n    return x\nf(x='bad')\n",
     ],
 )
-def test_proven_annotation_contradictions_in_defaults_and_keywords(source):
-    from mule.compiler import emit_llvm
-
-    with pytest.raises(SyntaxError):
-        emit_llvm(source, "contracts.py")
+def test_proven_annotation_contradictions_in_defaults_and_keywords_warn(caplog, source):
+    assert contradiction_warnings(caplog, source, "contracts.py")
 
 
 def test_complete_keyword_calls_and_captured_defaults_have_direct_entries():
@@ -363,11 +361,10 @@ def test_complete_keyword_calls_and_captured_defaults_have_direct_entries():
         "def combine(a=1, *, b=2):\n    return a + b\nprint(combine(b=4, a=3), combine())\n"
     )
     # These are calls in the user module body, before generated binding entries.
-    module_body = llvm.split("define internal ptr @mule.body.0(")[1].split("\n}\n", 1)[
-        0
-    ]
+    module_body = llvm.split('define internal ptr @"mule_module.body"(')[1]
+    module_body = module_body.split("\n}\n", 1)[0]
     assert "call ptr @mule_function_default(" in module_body
-    assert "call ptr @mule.body.1(" in module_body
+    assert 'call ptr @"mule_fn_1.body"(' in module_body
     assert "call ptr @mule_call_keywords(" in module_body  # Identity-guard fallback.
 
 
@@ -408,9 +405,11 @@ def test_generated_external_binder_calls_body_without_argument_tuple():
     from mule.compiler import emit_llvm
 
     llvm = emit_llvm("def f(a, b=2):\n    return a + b\nf(a=1)\n")
-    bodies = llvm.split("define internal ptr @mule.body.")[1:]
-    binder = next(body for body in bodies if "@mule_binding_count(" in body)
-    assert "call ptr @mule.body.1(" in binder
+    entries = llvm.split("\ndefine ")[1:]
+    binder = next(
+        entry for entry in entries if entry.startswith('ptr @"mule_fn_1.fn"(')
+    )
+    assert 'call ptr @"mule_fn_1.body"(' in binder
     assert "call ptr @mule_sequence_tuple(" not in binder
 
 

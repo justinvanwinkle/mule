@@ -187,6 +187,7 @@ def test_specialized_runtime_abi(runtime_probe):
     assert result.stderr == ""
 
 
+@pytest.mark.integration
 def test_known_fixnum_kernel_executes_machine_arithmetic(tmp_path):
     source = tmp_path / "kernel.py"
     source.write_text(
@@ -414,6 +415,7 @@ def test_specialized_parameter_errors(tmp_path, source, expected_stdout, error):
     assert error in result.stderr
 
 
+@pytest.mark.integration
 def test_bounded_parameter_body_uses_primitive_arithmetic(tmp_path):
     source = tmp_path / "parameter_kernel.py"
     source.write_text(

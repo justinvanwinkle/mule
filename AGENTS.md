@@ -244,6 +244,43 @@ per-operation Rust language dispatch. Verify optimization claims with optimized
 IR or machine code and representative benchmarks. Keep LLVM at `-O3` and Rust
 at optimization level 3; those flags alone do not establish efficient code.
 
+## Object-oriented design
+
+We want GOOD OO in the compiler and its tools (`mule/`). Behavior that varies by
+type belongs to the type: each class answers for itself through its own methods,
+through a visitor (`NodeVisitor`, `ast.Visitor`), or through double dispatch, as
+the value types in `mule/compiler/ctype.py` do. Do not use `isinstance` or
+`issubclass` in `mule/`, and do not substitute other type tests for them:
+`type(x) is C`, comparing type names, probing with `hasattr` or `getattr`
+defaults, or tag fields that a caller switches on.
+
+This departs from SBCL, whose compiler switches on IR structure types with
+`typecase`, `etypecase`, and `typep` (for example `ir1-optimize-block` in
+`src/compiler/ir1opt.lisp`). SBCL keeps its IR in `defstruct`s, where a type
+test compiles to a type-code check and generic functions would be slower. In
+Python a method call costs no more than a type test, and dispatch keeps each
+type's behavior beside its definition: a new IR class implements its methods
+instead of being added to every type switch that should have named it, and a
+switch cannot silently miss a case. Keep SBCL's phases, names, and data flow;
+express its type switches as methods or visitors.
+
+Good OO here means:
+
+- A class owns the behavior that differs by its type; callers ask, they do not
+  inspect. A method that only one family of types implements belongs on a base
+  class whose default states the general answer or raises with context when no
+  general answer exists. Never return a silent default that hides a missing case.
+- Choose the dispatch mechanism by what varies: a method when the receiver's
+  type decides; a visitor when an operation spans a class hierarchy and lives
+  apart from it (a compiler phase over IR nodes); double dispatch when two
+  operands' types decide together.
+- Keep classes cohesive and their state private to their methods. Prefer
+  composition for behavior that varies independently of the class hierarchy.
+- Tests may check types; they observe behavior from outside.
+
+Before finishing a change to `mule/`, `grep -rn "isinstance(\|issubclass(" mule/`
+must print nothing.
+
 ## Contracts to preserve
 
 - Approved implementation languages are Python and Rust. The compiler is written
@@ -300,7 +337,16 @@ Run focused tests while developing, then the full suite for parser or AST change
 uv run pytest test/mule/parser/test_entry_points.py
 uv run pytest test/mule/compiler
 uv run pytest
+uv run pytest -m integration
 ```
+
+The default run excludes tests marked `integration`: suites that build
+hundreds of programs (conformance, corpus), run CPython's own stdlib suites,
+build at `-O3`, or compile large stdlib modules such as `typing`. Run them
+explicitly when a change affects what they cover. Keep default tests targeted:
+check compiler output directly where it shows the behavior, build small native
+programs that use only the builtins unit, pass `workers=1` to builds (pytest
+already runs tests in parallel), and mark anything heavier `integration`.
 
 Check changed Python files with Ruff; format only intended files. Documentation
 changes do not require rerunning parser tests unless behavior also changes.

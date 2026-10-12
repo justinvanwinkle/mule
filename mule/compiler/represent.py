@@ -41,6 +41,7 @@ from .node import (
     KnownFunction,
     Lambda,
     LambdaVar,
+    LeafVisitor,
     NodeVisitor,
     Ref,
     Return,
@@ -447,8 +448,9 @@ _COMPARE_NAMES = {
 }
 
 
-class _Select(NodeVisitor):
-    """Assign representations to one lambda's values (``_Select``)."""
+class _Select(NodeVisitor, LeafVisitor):
+    """Assign representations to one lambda's values (``_Select``). A
+    reference's representation is its leaf's."""
 
     def __init__(self, plan, layouts, bindings, known_plans):
         self.plan, self.layouts, self.bindings = plan, layouts, bindings
@@ -480,36 +482,38 @@ class _Select(NodeVisitor):
         return None
 
     def visit_Ref(self, node: Ref):
-        leaf = node.leaf
-        if isinstance(leaf, Constant):
-            return leaf.value.accept(_Literal())
-        if isinstance(leaf, LambdaVar):
-            if leaf.indirect or leaf.home is not self.plan.function:
-                raise NotNative
-            result = self.plan.locals.get(leaf)
-            if result is None:
-                raise Deferred
-            return result
-        if isinstance(leaf, GlobalVar):
-            identity = self.bindings.get(leaf.name)
-            if identity is None:
-                raise NotNative
-            result = Class(leaf.name, identity, self.layouts[identity])
-            self.plan.dependencies[leaf.name] = result
-            return result
-        if isinstance(leaf, (KnownFunction, Lambda)):
-            return None
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
         raise NotNative
 
+    def visit_Constant(self, leaf: Constant):
+        return leaf.value.accept(_Literal())
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if leaf.indirect or leaf.home is not self.plan.function:
+            raise NotNative
+        result = self.plan.locals.get(leaf)
+        if result is None:
+            raise Deferred
+        return result
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        identity = self.bindings.get(leaf.name)
+        if identity is None:
+            raise NotNative
+        result = Class(leaf.name, identity, self.layouts[identity])
+        self.plan.dependencies[leaf.name] = result
+        return result
+
+    def visit_KnownFunction(self, leaf: KnownFunction):
+        return None
+
+    def visit_Lambda(self, leaf: Lambda):
+        return None
+
     def visit_Set(self, node: Set):
-        var = node.var
-        if not isinstance(var, LambdaVar) or node.value is None or var.indirect:
-            raise NotNative
-        value = self.value(node.value)
-        old = self.plan.locals.get(var)
-        if old is not None and old != value:
-            raise NotNative
-        self.plan.locals[var] = value
+        node.var.accept(_AssignLocal(self, node))
 
     def visit_Cast(self, node: Cast):
         value = self.value(node.value)
@@ -639,26 +643,79 @@ class _Select(NodeVisitor):
         return instance
 
 
+class _AssignLocal(LeafVisitor):
+    """A native body assigns only its own direct locals."""
+
+    def __init__(self, selector: _Select, node: Set):
+        self.selector = selector
+        self.node = node
+
+    def visit_Leaf(self, leaf):
+        raise NotNative
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if self.node.value is None or leaf.indirect:
+            raise NotNative
+        plan = self.selector.plan
+        value = self.selector.value(self.node.value)
+        old = plan.locals.get(leaf)
+        if old is not None and old != value:
+            raise NotNative
+        plan.locals[leaf] = value
+
+
 def class_bindings(lambdas, layouts) -> dict[str, str]:
     """Global names bound to a native class definition anywhere in the
     program, keyed to the class identity."""
-    bindings: dict[str, str] = {}
+    collector = _ClassBindings(layouts)
     for lambda_ in lambdas:
         for block in lambda_.component.blocks():
             for node in block.nodes():
-                if not isinstance(node, Set) or not isinstance(node.var, GlobalVar):
-                    continue
-                if node.value is None or len(node.value.uses) != 1:
-                    continue
-                producer = node.value.uses[0]
-                if (
-                    isinstance(producer, Combination)
-                    and producer.kind is CallKind.KNOWN
-                    and producer.fun_info.name == "%make_class"
-                    and producer.info.class_id in layouts
-                ):
-                    bindings.setdefault(node.var.name, producer.info.class_id)
-    return bindings
+                node.accept(collector)
+    return collector.bindings
+
+
+class _ClassBindings(NodeVisitor):
+    def __init__(self, layouts):
+        self.layouts = layouts
+        self.bindings: dict[str, str] = {}
+
+    def visit_Set(self, node: Set):
+        node.var.accept(_GlobalClassBinding(self, node))
+
+
+class _GlobalClassBinding(LeafVisitor):
+    """Record a global assignment whose single producer makes a native
+    class; other variables bind nothing."""
+
+    def __init__(self, collector: _ClassBindings, node: Set):
+        self.collector = collector
+        self.node = node
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        value = self.node.value
+        if value is None or len(value.uses) != 1:
+            return
+        class_id = value.uses[0].accept(_NativeClassDefinition(self.collector.layouts))
+        if class_id is not None:
+            self.collector.bindings.setdefault(leaf.name, class_id)
+
+
+class _NativeClassDefinition(NodeVisitor):
+    """The identity of the native class a producer makes, or None when it
+    makes none."""
+
+    def __init__(self, layouts):
+        self.layouts = layouts
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is not CallKind.KNOWN
+            or linked(node.fun_info, node, "known function").name != "%make_class"
+        ):
+            return None
+        class_id = linked(node.info, node, "class definition").class_id
+        return class_id if class_id in self.layouts else None
 
 
 def select_native_plans(lambdas, facts, layouts) -> dict[Lambda, NativePlan]:
@@ -755,11 +812,7 @@ def _select_function(lambda_, index, facts, layouts, bindings, plans) -> NativeP
             for node in block.nodes():
                 try:
                     result = node.accept(selector)
-                    if (
-                        result is not None
-                        and getattr(node, "lvar", None) is not None
-                        or result is not None
-                    ):
+                    if result is not None:
                         plan.values[node] = result
                 except Deferred:
                     deferred = True
@@ -771,46 +824,64 @@ def _select_function(lambda_, index, facts, layouts, bindings, plans) -> NativeP
         previous = state
     if deferred or plan.returned is None:
         raise NotNative
-    types = facts.types
-    constrained = _result_contracts(lambda_, blocks)
-    int64 = EXPORTS["int64"].fact
+    proof = _MachineProof(plan, facts.types, _result_contracts(lambda_, blocks))
     for block in blocks:
         for node in block.nodes():
-            if (
-                isinstance(node, Ref)
-                and isinstance(node.leaf, LambdaVar)
-                and types.get(node, UNKNOWN).may_be_unbound
-            ):
-                raise NotNative
-            if not isinstance(node, Combination) or node.kind is not CallKind.KNOWN:
-                continue
-            name = node.fun_info.name
-            arithmetic = name in _BINARY_NAMES and _BINARY_NAMES[name] not in {
-                ast.BinaryOperator.BIT_AND,
-                ast.BinaryOperator.BIT_OR,
-                ast.BinaryOperator.BIT_XOR,
-            }
-            negation = (
-                name in _UNARY_NAMES and _UNARY_NAMES[name] != ast.UnaryOperator.NOT
-            )
-            if (
-                (arithmetic or negation)
-                and plan.values.get(node) is not FLOAT
-                and node not in constrained
-                and not types.get(node, UNKNOWN).fits(int64)
-            ):
-                raise NotNative
+            node.accept(proof)
     return plan
+
+
+class _MachineProof(NodeVisitor, LeafVisitor):
+    """Reject a plan whose locals may be read unbound or whose integer
+    arithmetic is not proven to stay within ``int64``."""
+
+    def __init__(self, plan, types, constrained):
+        self.plan, self.types, self.constrained = plan, types, constrained
+        self.int64 = EXPORTS["int64"].fact
+
+    def visit_Ref(self, node: Ref):
+        if self.types.get(node, UNKNOWN).may_be_unbound:
+            node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        raise NotNative
+
+    def visit_Combination(self, node: Combination):
+        if node.kind is not CallKind.KNOWN:
+            return
+        name = linked(node.fun_info, node, "known function").name
+        arithmetic = name in _BINARY_NAMES and _BINARY_NAMES[name] not in {
+            ast.BinaryOperator.BIT_AND,
+            ast.BinaryOperator.BIT_OR,
+            ast.BinaryOperator.BIT_XOR,
+        }
+        negation = name in _UNARY_NAMES and _UNARY_NAMES[name] != ast.UnaryOperator.NOT
+        if (
+            (arithmetic or negation)
+            and self.plan.values.get(node) is not FLOAT
+            and node not in self.constrained
+            and not self.types.get(node, UNKNOWN).fits(self.int64)
+        ):
+            raise NotNative
+
+
+class _Int64Operands(NodeVisitor):
+    def __init__(self, constrained: set):
+        self.constrained = constrained
+
+    def visit_Cast(self, node: Cast):
+        if node.contract is EXPORTS["int64"]:
+            self.constrained.update(linked(node.value, node, "value").uses)
 
 
 def _result_contracts(lambda_, blocks) -> set:
     """Producers whose value an ``int64`` contract constrains: cast operands
     and, under an ``int64`` return annotation, returned values."""
     constrained = set()
+    operands = _Int64Operands(constrained)
     for block in blocks:
         for node in block.nodes():
-            if isinstance(node, Cast) and node.contract is EXPORTS["int64"]:
-                constrained.update(node.value.uses)
+            node.accept(operands)
     if (
         lambda_.signature.return_annotation is EXPORTS["int64"]
         and lambda_.return_ is not None

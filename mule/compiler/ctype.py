@@ -198,6 +198,11 @@ class ValueType:
     def fits_tuple(self, expected):
         return False
 
+    def proves_tuple_index(self, index):
+        """Whether every value of this type is a bound tuple with an element
+        at ``index``."""
+        return False
+
 
 @dataclass(frozen=True, slots=True)
 class UnknownType(ValueType):
@@ -671,6 +676,9 @@ class TupleType(ValueType):
         return not self.may_be_unbound and (
             expected.arity is None or self.arity == expected.arity
         )
+
+    def proves_tuple_index(self, index):
+        return not self.may_be_unbound and self.arity is not None and index < self.arity
 
 
 @dataclass(frozen=True, slots=True)

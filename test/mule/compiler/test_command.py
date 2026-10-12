@@ -83,6 +83,7 @@ def executables(directory):
     return sorted((directory / "cache").glob("mule/steps/*/program"))
 
 
+@pytest.mark.integration
 def test_script_runs_with_its_arguments_and_rebuilds_after_an_import_changes(tmp_path):
     (tmp_path / "main.py").write_text(
         "import sys\nimport helper\nprint(sys.argv, helper.value)\n"
@@ -101,6 +102,7 @@ def test_script_runs_with_its_arguments_and_rebuilds_after_an_import_changes(tmp
     assert edited.stdout == "['main.py'] second\n"
 
 
+@pytest.mark.integration
 def test_module_runs_as_main_with_package_relative_imports(tmp_path):
     package = tmp_path / "tool"
     package.mkdir()

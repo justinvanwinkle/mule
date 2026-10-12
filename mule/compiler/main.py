@@ -28,7 +28,7 @@ from .ir1tran import (
 )
 from .ir1tran_lambda import convert_module, lambda_blocks
 from .ir1util import join_blocks_if_possible, substitute_lvar, unlink_node
-from .node import Cast, Component, Lambda, linked
+from .node import Cast, Component, Lambda, NodeVisitor, linked
 
 
 @dataclass(slots=True)
@@ -117,13 +117,22 @@ def ignore_contradicted_annotations(compilation: Compilation) -> bool:
                 owner.signature.annotations = tuple(annotations)
     if not changed:
         return False
+    remover = _RemoveIgnoredCast(ledger)
     for component in compilation.components:
         for block in list(component.blocks()):
             for node in list(block.nodes()):
-                if isinstance(node, Cast) and node.declaration in ledger.ignored:
-                    _remove_cast(node)
+                node.accept(remover)
         component.reoptimize = True
     return True
+
+
+class _RemoveIgnoredCast(NodeVisitor):
+    def __init__(self, ledger: AnnotationLedger):
+        self.ledger = ledger
+
+    def visit_Cast(self, node):
+        if node.declaration in self.ledger.ignored:
+            _remove_cast(node)
 
 
 def _remove_cast(node: Cast) -> None:
@@ -156,6 +165,19 @@ def _ir1_optimize_phase_1(compilation: Compilation) -> None:
     logger.debug("IR1 reoptimization reached its %d-round limit", REOPTIMIZE_LIMIT)
 
 
+class _ParsedModule(ast.Visitor):
+    """Whole-file parsing must produce a module."""
+
+    def __init__(self, filename: str):
+        self.filename = filename
+
+    def visit_Node(self, node: ast.Node):
+        raise TypeError(f"parsing {self.filename} produced {node!r}, not a module")
+
+    def visit_Module(self, node: ast.Module) -> ast.Module:
+        return node
+
+
 def compile_toplevel(
     source: str,
     filename: str = "<unknown>",
@@ -167,9 +189,7 @@ def compile_toplevel(
     primitive_data=None,
 ) -> Compilation:
     with phase("parse %s", filename, level=logging.DEBUG):
-        tree = parse(source, filename)
-    if not isinstance(tree, ast.Module):
-        raise TypeError(f"parsing {filename} produced {tree!r}, not a module")
+        tree = parse(source, filename).accept(_ParsedModule(filename))
     with phase("IR1 conversion %s", filename, level=logging.DEBUG):
         initial = Component("initial")
         converter = Converter(

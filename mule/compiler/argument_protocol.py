@@ -5,7 +5,8 @@ from pathlib import Path
 from mule import ast
 
 from .inputs import read_source
-from .node import CallKind, Combination
+from .ir1util import combinations
+from .node import CallKind, linked
 from .protocols import add_lambdas, compile_protocol
 
 # ``_arguments`` functions in definition order.
@@ -59,21 +60,20 @@ def signature_literal(lambda_) -> ast.Tuple:
 
 
 def _keyword_calls(lambda_) -> bool:
-    for block in lambda_.component.blocks():
-        for node in block.nodes():
-            if (
-                isinstance(node, Combination)
-                and (
-                    node.kind in (CallKind.FULL, CallKind.GUARDED)
-                    or (
-                        node.kind is CallKind.KNOWN
-                        and node.fun_info.name == "%call_resolved"
-                    )
+    for call in combinations(lambda_):
+        if (
+            (
+                call.kind in (CallKind.FULL, CallKind.GUARDED)
+                or (
+                    call.kind is CallKind.KNOWN
+                    and linked(call.fun_info, call, "known function").name
+                    == "%call_resolved"
                 )
-                and node.info is not None
-                and node.info.keywords
-            ):
-                return True
+            )
+            and call.info is not None
+            and call.info.keywords
+        ):
+            return True
     return False
 
 

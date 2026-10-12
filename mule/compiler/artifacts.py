@@ -84,15 +84,20 @@ def mule_hash() -> str:
 
 
 @cache
-def tool_identity(*command: str) -> str:
+def tool_identity(command: tuple[str, ...], *, tool: str, failure: str) -> str:
     """A toolchain program's version report, part of the settings of every
-    step that runs it, so an upgrade rebuilds what it produced."""
+    step that runs it, so an upgrade rebuilds what it produced. ``tool``
+    names the program and ``failure`` the work that cannot proceed without
+    it, for the error when it is missing or broken."""
     try:
         result = subprocess.run(command, check=False, capture_output=True, text=True)
     except FileNotFoundError as error:
-        raise ToolchainError(f"'{command[0]}' was not found") from error
+        raise ToolchainError(f"{tool} '{command[0]}' was not found") from error
     if result.returncode:
-        raise ToolchainError(f"'{' '.join(command)}' failed:\n{result.stderr.strip()}")
+        raise ToolchainError(
+            f"{failure}: '{' '.join(command)}' exited with status "
+            f"{result.returncode}:\n{result.stderr.strip()}"
+        )
     return result.stdout
 
 
@@ -133,6 +138,10 @@ class Node:
     def output_hash(self) -> str | None:
         raise NotImplementedError
 
+    def start(self) -> None:
+        """Begin producing this node's outputs; a source has them already."""
+        self.resolved()
+
     def resolved(self) -> None:
         """Notify every consumer that this node's outputs exist, or that it
         failed."""
@@ -159,13 +168,28 @@ class File(Node):
             return None
 
 
+class Text(Node):
+    """Source text that is not a file, such as ``-c`` or standard input."""
+
+    def __init__(self, graph: Graph, name: str, text: str):
+        super().__init__(graph, name)
+        self.text = text
+
+    @cached_property
+    def output_hash(self) -> str:
+        return digest(self.text.encode())
+
+
 class Step(Node):
     """Produces ``outputs`` from its inputs by running ``action``.
 
     ``action(inputs, directory)`` receives the resolved inputs and writes
     each output, by name, into ``directory``. ``discover(step)`` runs after
     the outputs exist, before any consumer is notified, so it can create
-    further steps and add them to consumers' inputs.
+    further steps and add them to consumers' inputs. ``validate(entry)``
+    replaces the check of the files the action read: it decides whether a
+    cache entry's outputs still hold, for a step whose reads depend on more
+    than its key, such as module search probes.
     """
 
     def __init__(
@@ -178,6 +202,7 @@ class Step(Node):
         outputs: tuple[str, ...],
         action: Callable[[list[Node], Path], None],
         discover: Callable[[Step], None] | None = None,
+        validate: Callable[[Path], bool] | None = None,
     ):
         super().__init__(graph, name)
         self.inputs: list[Node] = []
@@ -185,11 +210,16 @@ class Step(Node):
         self.outputs = outputs
         self.action = action
         self.discover = discover
+        self.validate = validate
         self.directory: Path | None = None
         self._waiting: set[Node] = set()
         self._started = False
         for node in inputs:
             self.add_input(node)
+
+    def start(self) -> None:
+        """Run once every input has resolved, which may already be so."""
+        self.notify(None)
 
     def add_input(self, node: Node) -> None:
         """Make ``node`` an input. A step adds inputs to a consumer before it
@@ -255,9 +285,11 @@ class Step(Node):
             manifest = json.loads((entry / "manifest.json").read_text())
         except FileNotFoundError:
             return False
-        return all((entry / output).is_file() for output in self.outputs) and unchanged(
-            manifest["discovered"]
-        )
+        if not all((entry / output).is_file() for output in self.outputs):
+            return False
+        if self.validate is not None:
+            return self.validate(entry)
+        return unchanged(manifest["discovered"])
 
     def _build(self, entry: Path) -> None:
         with tempfile.TemporaryDirectory(prefix=".build-", dir=entry) as directory:
@@ -276,7 +308,9 @@ class Graph:
 
     def __init__(self, workers: int | None = None):
         self.lock = threading.RLock()
-        self.nodes: dict[str, Node] = {}
+        self._files: dict[str, File] = {}
+        self._texts: dict[str, Text] = {}
+        self._steps: dict[str, Step] = {}
         self._pending = 0
         self._idle = threading.Condition(self.lock)
         self._ready: queue.SimpleQueue[Step | None] = queue.SimpleQueue()
@@ -298,23 +332,26 @@ class Graph:
             threading.stack_size(previous)
 
     def file(self, path: Path) -> File:
-        return self.node(str(path), File, lambda: File(self, path))
+        return self._intern(self._files, str(path), lambda: File(self, path))
 
-    def node[T: Node](self, name: str, kind: type[T], create: Callable[[], T]) -> T:
-        """The node named ``name``, created by ``create`` the first time."""
+    def text(self, name: str, text: str) -> Text:
+        return self._intern(self._texts, name, lambda: Text(self, name, text))
+
+    def step(self, name: str, create: Callable[[], Step]) -> Step:
+        """The step named ``name``, created by ``create`` the first time."""
+        return self._intern(self._steps, name, create)
+
+    def _intern[T: Node](
+        self, nodes: dict[str, T], name: str, create: Callable[[], T]
+    ) -> T:
         with self.lock:
-            existing = self.nodes.get(name)
+            existing = nodes.get(name)
             if existing is not None:
-                if not isinstance(existing, kind):
-                    raise TypeError(f"{name} is a {type(existing).__name__}")
                 return existing
             node = create()
-            self.nodes[name] = node
+            nodes[name] = node
             self._pending += 1
-        if isinstance(node, Step):
-            node.notify(None)
-        else:
-            node.resolved()
+        node.start()
         return node
 
     def submit(self, step: Step) -> None:

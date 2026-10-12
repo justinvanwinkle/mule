@@ -2,8 +2,6 @@
 
 import pytest
 
-from mule.compiler import UnsupportedSyntax
-from mule.compiler.main import compile_source as lower
 from test.mule.compiler.test_modules import execute
 
 
@@ -54,10 +52,12 @@ def test_invalid_formatting_protocol_result_is_an_error(tmp_path, method):
     assert "TypeError" in result.stderr
 
 
-@pytest.mark.parametrize("source", ["f'{42!a}'"])
-def test_unsupported_format_features_remain_explicit_errors(source):
-    with pytest.raises(UnsupportedSyntax):
-        lower(source)
+def test_ascii_conversion_formats_like_ascii(tmp_path):
+    result = execute(
+        tmp_path, {}, "print(f'{\"caf\u00e9 \u2603\"!a}', f'{[1, \"\u00fc\"]!a}')\n"
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "'caf\\xe9 \\u2603' [1, '\\xfc']\n"
 
 
 @pytest.mark.parametrize(

@@ -200,20 +200,26 @@ def test_annotated_attribute_assignment_executes_value_but_not_annotation(
         pytest.param(
             "import typing as t\n",
             "t.Optional[int]",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=SyntaxError,
-                reason="Compiling typing requires general class bodies (abc)",
-            ),
+            marks=[
+                pytest.mark.integration,
+                pytest.mark.xfail(
+                    strict=True,
+                    raises=SyntaxError,
+                    reason="Compiling typing requires general class bodies (abc)",
+                ),
+            ],
         ),
         pytest.param(
             "from typing import Any as Value\n",
             "Value",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=SyntaxError,
-                reason="Compiling typing requires general class bodies (abc)",
-            ),
+            marks=[
+                pytest.mark.integration,
+                pytest.mark.xfail(
+                    strict=True,
+                    raises=SyntaxError,
+                    reason="Compiling typing requires general class bodies (abc)",
+                ),
+            ],
         ),
         pytest.param(
             "from typing_extensions import Annotated\n",

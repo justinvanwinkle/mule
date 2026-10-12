@@ -130,6 +130,10 @@ class Expression(Node):
     def validate_imaginary_pattern(self, parser):
         parser.error("complex pattern literal requires an imaginary operand")
 
+    def literal_pattern_operator(self) -> ComparisonOperator:
+        """How a literal pattern compares its subject with this value."""
+        return ComparisonOperator.EQUAL
+
 
 class Statement(Node):
     __slots__ = ()
@@ -358,6 +362,10 @@ class BooleanLiteral(Literal):
     def accept(self, visitor):
         return visitor.visit_BooleanLiteral(self)
 
+    def literal_pattern_operator(self) -> ComparisonOperator:
+        # The singletons match by identity (PEP 634).
+        return ComparisonOperator.IS
+
 
 @dataclass(slots=True)
 class NoneLiteral(Literal):
@@ -368,6 +376,10 @@ class NoneLiteral(Literal):
 
     def accept(self, visitor):
         return visitor.visit_NoneLiteral(self)
+
+    def literal_pattern_operator(self) -> ComparisonOperator:
+        # The singletons match by identity (PEP 634).
+        return ComparisonOperator.IS
 
 
 @dataclass(slots=True)
@@ -1442,6 +1454,10 @@ class Visitor:
     def visit_Node(self, node: Node):
         return None
 
+    def visit_Statement(self, node: Statement):
+        """Every statement kind falls back here, then to ``visit_Node``."""
+        return self.visit_Node(node)
+
     def visit_TypeIgnore(self, node: TypeIgnore):
         return self.visit_Node(node)
 
@@ -1563,85 +1579,85 @@ class Visitor:
         return self.visit_Node(node)
 
     def visit_ExpressionStatement(self, node: ExpressionStatement):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_Assignment(self, node: Assignment):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_AnnotatedAssignment(self, node: AnnotatedAssignment):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_AugmentedAssignment(self, node: AugmentedAssignment):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_Delete(self, node: Delete):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_ImportItem(self, node: ImportItem):
         return self.visit_Node(node)
 
     def visit_Import(self, node: Import):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_ImportFrom(self, node: ImportFrom):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_If(self, node: If):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_While(self, node: While):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_For(self, node: For):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_WithItem(self, node: WithItem):
         return self.visit_Node(node)
 
     def visit_With(self, node: With):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_ExceptionHandler(self, node: ExceptionHandler):
         return self.visit_Node(node)
 
     def visit_Try(self, node: Try):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_TypeParameter(self, node: TypeParameter):
         return self.visit_Node(node)
 
     def visit_FunctionDefinition(self, node: FunctionDefinition):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_ClassDefinition(self, node: ClassDefinition):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_TypeAlias(self, node: TypeAlias):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_Pass(self, node: Pass):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_Break(self, node: Break):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_Continue(self, node: Continue):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_Return(self, node: Return):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_Raise(self, node: Raise):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_Assert(self, node: Assert):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_Global(self, node: Global):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_Nonlocal(self, node: Nonlocal):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)
 
     def visit_CapturePattern(self, node: CapturePattern):
         return self.visit_Node(node)
@@ -1680,4 +1696,4 @@ class Visitor:
         return self.visit_Node(node)
 
     def visit_Match(self, node: Match):
-        return self.visit_Node(node)
+        return self.visit_Statement(node)

@@ -38,16 +38,14 @@ from .ctype import (
     TupleType,
     ValueType,
 )
-from .ir1util import block_exception_target
+from .ir1util import block_exception_target, made_lambda
 from .node import (
     CallKind,
     Cast,
     Combination,
-    Constant,
-    GlobalVar,
     If,
     Lambda,
-    LambdaVar,
+    LeafVisitor,
     NodeVisitor,
     Ref,
     Set,
@@ -163,7 +161,21 @@ _GLOBAL = object()
 
 
 def _key(var):
-    return var if isinstance(var, LambdaVar) else (_GLOBAL, var.name)
+    return var.accept(_StateKey())
+
+
+class _StateKey(LeafVisitor):
+    """A local is its own state key; a global is keyed by name, since
+    every reference converts to its own ``GlobalVar``."""
+
+    def visit_Leaf(self, leaf):
+        raise TypeError(f"{leaf!r} is not a variable with propagated facts")
+
+    def visit_LambdaVar(self, leaf):
+        return leaf
+
+    def visit_GlobalVar(self, leaf):
+        return (_GLOBAL, leaf.name)
 
 
 class _Propagation(NodeVisitor):
@@ -211,28 +223,7 @@ class _Propagation(NodeVisitor):
         return None
 
     def visit_Ref(self, node: Ref):
-        leaf = node.leaf
-        if isinstance(leaf, Constant):
-            return Fact(constant_type(leaf.value))
-        if isinstance(leaf, GlobalVar):
-            fact = self.state[_key(leaf)]
-            if fact.target is None:
-                fact = Fact(fact.type, self.walk.global_targets.get(leaf.name))
-            return fact
-        if isinstance(leaf, LambdaVar):
-            if leaf not in self.state:
-                # A free variable of an enclosing function: any value.
-                return UNKNOWN_FACT
-            fact = self.state[leaf]
-            if node.final:
-                self.forget_origin(leaf)
-                self.assign(leaf, UNBOUND_FACT)
-            elif node.lvar is not None:
-                self.origins[node.lvar] = leaf
-            return fact
-        if isinstance(leaf, Lambda):
-            return Fact(FunctionType(), leaf, True)
-        return None
+        return node.leaf.accept(_ReferenceFact(self, node))
 
     def visit_Set(self, node: Set):
         key = _key(node.var)
@@ -242,8 +233,8 @@ class _Propagation(NodeVisitor):
             self.assign(key, UNBOUND_FACT)
         else:
             self.assign(key, self.fact_of(node.value))
-        if isinstance(node.var, LambdaVar):
-            self.forget_origin(node.var)
+        # Origins are locals, so this changes nothing for a global.
+        self.forget_origin(node.var)
 
     def visit_Cast(self, node: Cast):
         value = self.type_of(node.value)
@@ -308,10 +299,7 @@ class _Propagation(NodeVisitor):
                 self.invalidate()
             return fact
         if name == "%make_function":
-            function = args[0].use()
-            if not isinstance(function, Ref) or not isinstance(function.leaf, Lambda):
-                raise ValueError(f"{node!r} does not make a function from a lambda")
-            lambda_ = function.leaf
+            lambda_ = made_lambda(node)
             definition = linked(node.info, node, "info")
             parameters = lambda_.signature.default_parameters
             for value, contract, index in zip(
@@ -346,6 +334,44 @@ class _Propagation(NodeVisitor):
     def visit_If(self, node: If):
         if self.type_of(node.test).may_run_user_code:
             self.invalidate()
+
+
+class _ReferenceFact(LeafVisitor):
+    """The fact a reference yields, updating the propagation state."""
+
+    def __init__(self, propagation: _Propagation, ref: Ref):
+        self.propagation = propagation
+        self.ref = ref
+
+    def visit_Leaf(self, leaf):
+        # A known function's reference is a compile-time operand with no fact.
+        return None
+
+    def visit_Constant(self, leaf):
+        return Fact(constant_type(leaf.value))
+
+    def visit_GlobalVar(self, leaf):
+        propagation = self.propagation
+        fact = propagation.state[_key(leaf)]
+        if fact.target is None:
+            fact = Fact(fact.type, propagation.walk.global_targets.get(leaf.name))
+        return fact
+
+    def visit_LambdaVar(self, leaf):
+        propagation = self.propagation
+        if leaf not in propagation.state:
+            # A free variable of an enclosing function: any value.
+            return UNKNOWN_FACT
+        fact = propagation.state[leaf]
+        if self.ref.final:
+            propagation.forget_origin(leaf)
+            propagation.assign(leaf, UNBOUND_FACT)
+        elif self.ref.lvar is not None:
+            propagation.origins[self.ref.lvar] = leaf
+        return fact
+
+    def visit_Lambda(self, leaf):
+        return Fact(FunctionType(), leaf, True)
 
 
 _BINARY_OPERATORS = {
@@ -427,16 +453,15 @@ class _Walk:
         }
         # What user code may leave behind in module globals and variables
         # captured by nested functions.
-        self.invalidated: dict[object, Fact] = {
+        invalidated_globals: dict[object, Fact] = {
             (_GLOBAL, name): Fact(UNKNOWN, global_targets.get(name))
             for name in self.global_names
         }
-        self.invalidated.update((var, UNKNOWN_FACT) for var in self.indirect)
-        self.initial.update(
-            (key, fact)
-            for key, fact in self.invalidated.items()
-            if isinstance(key, tuple)
-        )
+        self.invalidated = {
+            **invalidated_globals,
+            **{var: UNKNOWN_FACT for var in self.indirect},
+        }
+        self.initial.update(invalidated_globals)
 
     def invalidate_globals(self, state):
         """Forget facts that user code may change."""
@@ -510,41 +535,73 @@ class _Walk:
                     edge_states[key] = edge
                     schedule(target)
         returned = BOTTOM
-        calls = []
+        call_sites = _CallSites(self.facts)
         for block in incoming:
             for node in block.nodes():
-                if (
-                    isinstance(node, Combination)
-                    and node.kind in (CallKind.FULL, CallKind.GUARDED)
-                    and not node.info.keywords
-                ):
-                    calls.append(
-                        CallSite(
-                            self.facts.get(node.fun.use(), NO_FACT).target,
-                            tuple(
-                                self.facts.get(arg.use(), NO_FACT).type
-                                for arg in node.args
-                            ),
-                        )
-                    )
+                node.accept(call_sites)
         if self.lambda_.return_ is not None:
             for use in self.lambda_.return_.result.uses:
                 if use.block in incoming:
                     returned = returned.join(self.facts.get(use, NO_FACT).type)
-        return Body(self.facts, returned, tuple(calls))
+        return Body(self.facts, returned, tuple(call_sites.calls))
 
     def constrain_edge(self, block, target, visitor, edge):
         """Narrow an integer local on a branch edge tested against a constant."""
         last = block.last
-        if not isinstance(last, If) or last.consequent is last.alternative:
+        if last is not None:
+            last.accept(_ConstrainEdge(target, visitor, edge))
+
+
+class _CallSites(NodeVisitor):
+    """Full calls without keywords, as the callee and argument facts that
+    local-call analysis summarizes."""
+
+    def __init__(self, facts: dict[object, Fact]):
+        self.facts = facts
+        self.calls: list[CallSite] = []
+
+    def visit_Combination(self, node):
+        if node.kind not in (CallKind.FULL, CallKind.GUARDED) or node.info.keywords:
             return
-        producer = last.test.use()
-        if not isinstance(producer, Combination) or producer.kind is not CallKind.KNOWN:
+        self.calls.append(
+            CallSite(
+                self.facts.get(node.fun.use(), NO_FACT).target,
+                tuple(self.facts.get(arg.use(), NO_FACT).type for arg in node.args),
+            )
+        )
+
+
+class _ConstrainEdge(NodeVisitor):
+    """Only a two-way branch narrows its edges."""
+
+    def __init__(self, target, visitor: _Propagation, edge):
+        self.target = target
+        self.visitor = visitor
+        self.edge = edge
+
+    def visit_If(self, node):
+        if node.consequent is node.alternative:
             return
-        operator = _COMPARISON_OPERATORS.get(producer.fun_info.name)
+        truth = self.target is node.consequent
+        node.test.use().accept(_ConstrainComparison(self.visitor, self.edge, truth))
+
+
+class _ConstrainComparison(NodeVisitor):
+    """A known comparison of a local against a constant narrows the local."""
+
+    def __init__(self, visitor: _Propagation, edge, truth: bool):
+        self.visitor = visitor
+        self.edge = edge
+        self.truth = truth
+
+    def visit_Combination(self, node):
+        if node.kind is not CallKind.KNOWN:
+            return
+        operator = _COMPARISON_OPERATORS.get(node.fun_info.name)
         if operator is None:
             return
-        left, right = producer.args
+        visitor = self.visitor
+        left, right = node.args
         local = visitor.origins.get(left)
         bound = visitor.type_of(right).exact_integer()
         if local is None:
@@ -554,8 +611,8 @@ class _Walk:
         if local is None or bound is None or local not in visitor.state:
             return
         current = visitor.state[local]
-        edge[local] = Fact(
-            current.type.narrow(operator, bound, target is last.consequent),
+        self.edge[local] = Fact(
+            current.type.narrow(operator, bound, self.truth),
             current.target,
             current.proven,
         )
@@ -599,10 +656,26 @@ def _successors(block):
 
 
 def _global_leaves(node):
-    if isinstance(node, Ref) and isinstance(node.leaf, GlobalVar):
-        yield node.leaf
-    if isinstance(node, Set) and isinstance(node.var, GlobalVar):
-        yield node.var
+    return node.accept(_GlobalLeaves())
+
+
+class _GlobalLeaves(NodeVisitor, LeafVisitor):
+    """The module globals a node reads or writes."""
+
+    def visit_Node(self, node):
+        return ()
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(self)
+
+    def visit_Set(self, node):
+        return node.var.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return ()
+
+    def visit_GlobalVar(self, leaf):
+        return (leaf,)
 
 
 def propagate(

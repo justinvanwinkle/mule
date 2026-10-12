@@ -31,6 +31,7 @@ from mule import ast
 
 from . import fndb, vops
 from .ctype import UNKNOWN, TupleType
+from .ir1util import made_lambda
 from .ltn import EntryContext, primitive_type_of
 from .node import (
     Bind,
@@ -43,6 +44,7 @@ from .node import (
     KnownFunction,
     Lambda,
     LambdaVar,
+    LeafVisitor,
     NodeVisitor,
     Ref,
     Return,
@@ -141,13 +143,191 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
 def _clear_lvar_info(lambda_: Lambda) -> None:
     """LTN annotations belong to one conversion; the next context annotates
     afresh with its own primitive types."""
+    clear = _ClearLvarInfo()
     for block in linked(lambda_.component, lambda_, "component").blocks():
         for node in block.nodes():
-            lvar = getattr(node, "lvar", None)
-            if lvar is not None:
-                lvar.info = None
-            if isinstance(node, Return):
-                node.result.info = None
+            node.accept(clear)
+
+
+class _ClearLvarInfo(NodeVisitor):
+    def visit_ValuedNode(self, node):
+        if node.lvar is not None:
+            node.lvar.info = None
+
+    def visit_Return(self, node: Return):
+        node.result.info = None
+
+
+class _ConstantIndex(NodeVisitor, LeafVisitor):
+    """The fixed nonnegative index an operand delivers: a reference to an
+    integer literal constant."""
+
+    def visit_Node(self, node):
+        raise ValueError("structural unpack requires a fixed nonnegative index")
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return self.visit_Node(leaf)
+
+    def visit_Constant(self, leaf: Constant):
+        return leaf.value.accept(_IntegerIndex())
+
+
+class _IntegerIndex(ast.Visitor):
+    def visit_Node(self, node):
+        raise ValueError("structural unpack requires a fixed nonnegative index")
+
+    def visit_IntegerLiteral(self, node: ast.IntegerLiteral):
+        if node.value < 0:
+            return self.visit_Node(node)
+        return node.value
+
+
+class _ProvedSlotRead(NodeVisitor):
+    """Whether the consumer of a tuple of type ``shape`` reads a slot the
+    shape proves present: a known ``%unpack_ref`` call."""
+
+    def __init__(self, shape):
+        self.shape = shape
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        if node.kind is not CallKind.KNOWN or node.fun_info is not fndb.UNPACK_REF:
+            return False
+        index = _Converter.constant_index(node.args[1])
+        return self.shape.proves_tuple_index(index)
+
+
+class _LoadLeaf(LeafVisitor):
+    """Convert a ``Ref`` by the kind of leaf it references."""
+
+    def __init__(self, converter: _Converter, node: Ref):
+        self.converter = converter
+        self.node = node
+
+    def visit_Leaf(self, leaf):
+        raise TypeError(f"no IR2 conversion for a reference to {leaf!r}")
+
+    def visit_KnownFunction(self, leaf: KnownFunction):
+        return None
+
+    def visit_Lambda(self, leaf: Lambda):
+        return None
+
+    def visit_Constant(self, leaf: Constant):
+        self.load(vops.CONSTANT, info=leaf.value)
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        self.load(vops.LOAD_GLOBAL, info=leaf.name)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        converter, node = self.converter, self.node
+        if converter.borrows_unpack_capture(node, leaf):
+            # The capture dominates this infallible slot read and remains owned
+            # until the assignment's explicit discard or exception transfer.
+            assert node.lvar is not None and node.lvar.info is not None
+            node.lvar.info.locs.append(converter.var_tn(leaf))
+            return
+        result, discard = converter.result_tn(node)
+        environment = converter.environment
+        if leaf in environment.cells:
+            cell = converter.cell(node, leaf)
+            converter.emit(
+                templates_for(fndb.PROTOCOLS["cell_get"])[0],
+                node,
+                args=(cell,),
+                results=(result,),
+            )
+        else:
+            source = environment.copies.get(leaf) or converter.var_tn(leaf)
+            converter.emit(
+                vops.LOAD_LOCAL,
+                node,
+                args=(source,),
+                results=(result,),
+                info=LocalAccess(leaf.name, node.final),
+            )
+        if discard:
+            converter.emit_discard(node, result)
+
+    def load(self, template, info):
+        converter, node = self.converter, self.node
+        result, discard = converter.result_tn(node)
+        converter.emit(template, node, results=(result,), info=info)
+        if discard:
+            converter.emit_discard(node, result)
+
+
+class _StoreVar(LeafVisitor):
+    """Convert a ``Set`` by the kind of variable it assigns."""
+
+    def __init__(self, converter: _Converter, node: Set):
+        self.converter = converter
+        self.node = node
+
+    def visit_Leaf(self, leaf):
+        raise TypeError(f"no IR2 conversion for an assignment to {leaf!r}")
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        converter, node = self.converter, self.node
+        if leaf in converter.environment.cells:
+            cell = converter.cell(node, leaf)
+            result = converter.temporary()
+            if node.value is None:
+                converter.emit(
+                    templates_for(fndb.PROTOCOLS["cell_clear"])[0],
+                    node,
+                    args=(cell,),
+                    results=(result,),
+                )
+            else:
+                converter.emit(
+                    templates_for(fndb.PROTOCOLS["cell_set"])[0],
+                    node,
+                    args=(cell, converter.lvar_tn(node.value)),
+                    results=(result,),
+                )
+            converter.emit_discard(node, result)
+            return
+        target = converter.var_tn(leaf)
+        if node.value is None:
+            converter.emit(vops.UNBIND_LOCAL, node, results=(target,))
+        else:
+            converter.emit(
+                vops.MOVE,
+                node,
+                args=(converter.lvar_tn(node.value),),
+                results=(target,),
+            )
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        converter, node = self.converter, self.node
+        if node.value is None:
+            converter.emit(vops.UNBIND_GLOBAL, node, info=leaf.name)
+        else:
+            converter.emit(
+                vops.STORE_GLOBAL,
+                node,
+                args=(converter.lvar_tn(node.value),),
+                info=leaf.name,
+            )
+
+
+class _MethodResolution(NodeVisitor):
+    """The ``%resolve_method`` combination delivering a resolved method."""
+
+    def __init__(self, resolved):
+        self.resolved = resolved
+
+    def visit_Node(self, node):
+        raise TypeError(f"{self.resolved!r} is not delivered by a method resolution")
+
+    def visit_Combination(self, node: Combination) -> Combination:
+        return node
 
 
 class _Converter(NodeVisitor):
@@ -331,120 +511,26 @@ class _Converter(NodeVisitor):
         return loaded
 
     def visit_Ref(self, node: Ref):
-        leaf = node.leaf
-        if isinstance(leaf, (KnownFunction, Lambda)):
-            return
-        if self.borrows_unpack_capture(node):
-            # The capture dominates this infallible slot read and remains owned
-            # until the assignment's explicit discard or exception transfer.
-            assert isinstance(leaf, LambdaVar)
-            assert node.lvar is not None and node.lvar.info is not None
-            node.lvar.info.locs.append(self.var_tn(leaf))
-            return
-        result, discard = self.result_tn(node)
-        if isinstance(leaf, Constant):
-            self.emit(vops.CONSTANT, node, results=(result,), info=leaf.value)
-        elif isinstance(leaf, LambdaVar):
-            environment = self.environment
-            if leaf in environment.cells:
-                cell = self.cell(node, leaf)
-                self.emit(
-                    templates_for(fndb.PROTOCOLS["cell_get"])[0],
-                    node,
-                    args=(cell,),
-                    results=(result,),
-                )
-            else:
-                source = environment.copies.get(leaf) or self.var_tn(leaf)
-                self.emit(
-                    vops.LOAD_LOCAL,
-                    node,
-                    args=(source,),
-                    results=(result,),
-                    info=LocalAccess(leaf.name, node.final),
-                )
-        elif isinstance(leaf, GlobalVar):
-            self.emit(vops.LOAD_GLOBAL, node, results=(result,), info=leaf.name)
-        else:
-            raise TypeError(f"no IR2 conversion for a reference to {leaf!r}")
-        if discard:
-            self.emit_discard(node, result)
+        node.leaf.accept(_LoadLeaf(self, node))
 
-    def borrows_unpack_capture(self, node):
-        leaf = node.leaf
+    def borrows_unpack_capture(self, node: Ref, leaf: LambdaVar):
         if not (
-            isinstance(leaf, LambdaVar)
-            and leaf.expression_temporary
+            leaf.expression_temporary
             and node.lvar is not None
             and len(node.lvar.uses) == 1
         ):
             return False
         consumer = node.lvar.dest
-        if not (
-            isinstance(consumer, Combination)
-            and consumer.kind is CallKind.KNOWN
-            and consumer.fun_info is fndb.UNPACK_REF
-        ):
+        if consumer is None:
             return False
-        shape = self.context.type_of(node)
-        index = self.constant_index(consumer.args[1])
-        return (
-            isinstance(shape, TupleType)
-            and not shape.may_be_unbound
-            and shape.arity is not None
-            and index < shape.arity
-        )
+        return consumer.accept(_ProvedSlotRead(self.context.type_of(node)))
 
     @staticmethod
     def constant_index(lvar):
-        producer = lvar.use()
-        if not (
-            isinstance(producer, Ref)
-            and isinstance(producer.leaf, Constant)
-            and isinstance(producer.leaf.value, ast.IntegerLiteral)
-            and producer.leaf.value.value >= 0
-        ):
-            raise ValueError("structural unpack requires a fixed nonnegative index")
-        return producer.leaf.value.value
+        return lvar.use().accept(_ConstantIndex())
 
     def visit_Set(self, node: Set):
-        var = node.var
-        if isinstance(var, LambdaVar) and var in self.environment.cells:
-            cell = self.cell(node, var)
-            result = self.temporary()
-            if node.value is None:
-                self.emit(
-                    templates_for(fndb.PROTOCOLS["cell_clear"])[0],
-                    node,
-                    args=(cell,),
-                    results=(result,),
-                )
-            else:
-                self.emit(
-                    templates_for(fndb.PROTOCOLS["cell_set"])[0],
-                    node,
-                    args=(cell, self.lvar_tn(node.value)),
-                    results=(result,),
-                )
-            self.emit_discard(node, result)
-            return
-        if isinstance(var, LambdaVar):
-            target = self.var_tn(var)
-            if node.value is None:
-                self.emit(vops.UNBIND_LOCAL, node, results=(target,))
-            else:
-                self.emit(
-                    vops.MOVE, node, args=(self.lvar_tn(node.value),), results=(target,)
-                )
-            return
-        if not isinstance(var, GlobalVar):
-            raise TypeError(f"no IR2 conversion for an assignment to {var!r}")
-        if node.value is None:
-            self.emit(vops.UNBIND_GLOBAL, node, info=var.name)
-        else:
-            self.emit(
-                vops.STORE_GLOBAL, node, args=(self.lvar_tn(node.value),), info=var.name
-            )
+        node.var.accept(_StoreVar(self, node))
 
     def visit_Cast(self, node: Cast):
         result, discard = self.result_tn(node)
@@ -491,12 +577,7 @@ class _Converter(NodeVisitor):
             self.convert_template(
                 node,
                 [self.lvar_tn(arg) for arg in node.args],
-                UnpackCheck(
-                    arity,
-                    isinstance(shape, TupleType)
-                    and not shape.may_be_unbound
-                    and shape.arity == arity,
-                ),
+                UnpackCheck(arity, shape.fits(TupleType(arity))),
             )
         elif name == "%unpack_ref":
             index = self.constant_index(node.args[1])
@@ -507,12 +588,8 @@ class _Converter(NodeVisitor):
                 args,
                 UnpackSlot(
                     index,
-                    isinstance(shape, TupleType)
-                    and not shape.may_be_unbound
-                    and shape.arity is not None
-                    and index < shape.arity,
-                    isinstance(args[0].leaf, LambdaVar)
-                    and args[0].leaf.expression_temporary,
+                    shape.proves_tuple_index(index),
+                    args[0].leaf is not None and args[0].leaf.expression_temporary,
                 ),
             )
         else:
@@ -565,10 +642,7 @@ class _Converter(NodeVisitor):
             self.emit_discard(node, result)
 
     def convert_make_function(self, node: Combination):
-        producer = node.args[0].use()
-        if not isinstance(producer, Ref) or not isinstance(producer.leaf, Lambda):
-            raise TypeError(f"{node!r} does not make a function from a lambda")
-        lambda_ = producer.leaf
+        lambda_ = made_lambda(node)
         closure = lambda_.environment.closure if lambda_.environment else ()
         captured = [self.captured_value(node, var) for var in closure]
         defaults = [self.lvar_tn(arg) for arg in node.args[1:]]
@@ -603,9 +677,7 @@ class _Converter(NodeVisitor):
     def convert_call_resolved(self, node: Combination):
         resolved = node.args[0]
         method, bound = linked(resolved.info, resolved, "LTN annotation").locs
-        resolve = resolved.use()
-        if not isinstance(resolve, Combination):
-            raise TypeError(f"{resolved!r} is not delivered by a method resolution")
+        resolve = resolved.use().accept(_MethodResolution(resolved))
         info = linked(node.info, node, "call info")
         result, discard = self.result_tn(node)
         self.emit(

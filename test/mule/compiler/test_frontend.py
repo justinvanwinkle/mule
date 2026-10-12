@@ -64,12 +64,9 @@ def test_invalid_context_is_rejected_before_emission(source):
     "source",
     [
         "import os\n",
-        "class C(A, B):\n pass\n",
-        "x = [1, *items]\n",
-        "async for i in values:\n pass\n",
-        "print(**values)\n",
-        "def f(**kwargs):\n pass\n",
-        "def f():\n return\n yield 1\n",
+        "x = 1j\n",
+        "try:\n pass\nexcept* ValueError:\n pass\n",
+        "async def f(y):\n return [x async for x in y]\n",
     ],
 )
 def test_unsupported_syntax_fails_explicitly_even_when_unreachable(source):
@@ -79,10 +76,10 @@ def test_unsupported_syntax_fails_explicitly_even_when_unreachable(source):
 
 def test_error_preserves_original_filename_and_unicode_columns():
     with pytest.raises(UnsupportedSyntax) as caught:
-        lower("名 = 1\n名 = (x for x in 2)\n", "unicode.py")
+        lower("名 = 1\n名 = 2j\n", "unicode.py")
     error = caught.value
     assert (error.filename, error.lineno, error.offset) == ("unicode.py", 2, 5)
-    assert error.text == "名 = (x for x in 2)\n"
+    assert error.text == "名 = 2j\n"
 
 
 def test_late_assignment_classifies_all_function_reads_as_local():
@@ -180,17 +177,9 @@ def test_method_call_resolves_attribute_before_argument_side_effects():
     ]
 
 
-@pytest.mark.parametrize(
-    "source",
-    [
-        "class C[T]:\n pass\n",
-        "class C(A, B):\n pass\n",
-        "class C(metaclass=Meta):\n pass\n",
-    ],
-)
-def test_classes_reject_unimplemented_features_explicitly(source):
+def test_classes_reject_unimplemented_features_explicitly():
     with pytest.raises(UnsupportedSyntax):
-        lower(source)
+        lower("class C[T]:\n pass\n")
 
 
 class InstructionTrace(NodeVisitor):

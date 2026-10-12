@@ -5,6 +5,8 @@ import pytest
 from mule.compiler import build
 from test.corpus.cases import discover_cases
 
+pytestmark = pytest.mark.integration
+
 CASES = discover_cases()
 
 

@@ -14,7 +14,7 @@ import struct
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
-from functools import cache, cached_property
+from functools import cache
 from pathlib import Path
 
 from mule import ast
@@ -69,7 +69,7 @@ class BuiltinsInterface:
                         "kinds": [kind.name for kind in function.signature.kinds],
                         "defaults": list(function.signature.default_parameters),
                         "variadic": function.signature.variadic,
-                        "closure": function.closure,
+                        "closure": function.takes_closure,
                     }
                     for name, function in self.functions.items()
                 },
@@ -139,13 +139,9 @@ def compile_builtins() -> tuple[Program, dict[str, CompiledModule]]:
 
 
 def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
-    def closure(lambda_):
-        environment = lambda_.environment
-        return environment is not None and bool(environment.closure)
-
     functions = {
         lambda_.name: ForeignFunction(
-            lambda_.name, lambda_.parameters, lambda_.signature, closure(lambda_)
+            lambda_.name, lambda_.parameters, lambda_.signature, lambda_.takes_closure
         )
         for lambda_ in unit.lambdas
     }
@@ -172,12 +168,6 @@ def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
     )
 
 
-def module_descriptor(name: str, path: Path) -> CompiledModule:
-    """A compiled source module's descriptor, as every importer derives it."""
-    prefix = f"mule_import_{name}:"
-    return CompiledModule(name, path, prefix + "mule_module", prefix=prefix)
-
-
 def compile_unit(
     source: str,
     filename: str,
@@ -188,15 +178,13 @@ def compile_unit(
     package: str | None = None,
 ) -> tuple[Program, list[CompiledModule]]:
     """Compile one module as its own unit against the builtins interface:
-    the main module when ``module`` is None. Returns the unit and the source
-    modules it imports, which other units compile."""
-    compiler = ModuleCompiler(filename, roots=roots, package=package)
-    compiler.modules.update(interface.modules)
+    the main module when ``module`` is None. Returns the unit and how each
+    module it imports resolved, in request order."""
+    compiler = import_resolver(filename, interface, module, roots, package)
     if module is None:
         compilation = compile_source(source, filename, imports=compiler)
         unit_name = "__main__"
     else:
-        compiler.modules[module.name] = module
         compilation = compile_source(
             source,
             filename,
@@ -237,7 +225,23 @@ def compile_unit(
         )
     argument_protocol.bind_signatures(program.lambdas)
     program.layouts = native_protocol.prepare(program)
-    return program, list(compiler.pending)
+    return program, [compiler.modules[name] for name in compiler.requested]
+
+
+def import_resolver(
+    filename: str,
+    interface: BuiltinsInterface,
+    module: CompiledModule | None,
+    roots: tuple[Path, ...] | None,
+    package: str | None,
+) -> ModuleCompiler:
+    """Resolves a unit's imports as its compilation does: the builtins unit's
+    modules are already compiled, and a module unit knows its own package."""
+    compiler = ModuleCompiler(filename, roots=roots, package=package)
+    compiler.modules.update(interface.modules)
+    if module is not None:
+        compiler.modules[module.name] = module
+    return compiler
 
 
 def build_runtime(
@@ -319,7 +323,11 @@ class Toolchain:
 
     def clang_settings(self) -> dict:
         return {
-            "clang": tool_identity(self.clang, "--version"),
+            "clang": tool_identity(
+                (self.clang, "--version"),
+                tool="LLVM Clang compiler",
+                failure="LLVM compilation/linking failed",
+            ),
             "optimize": self.optimize,
         }
 
@@ -351,6 +359,8 @@ class Build:
         self.graph = graph
         self.toolchain = toolchain
         self.link: Step | None = None
+        # The object steps the link combines, by step name.
+        self.objects: dict[str, Step] = {}
 
     def runtime(self) -> Step:
         rustc, lto = self.toolchain.rustc, self.toolchain.optimize
@@ -361,9 +371,8 @@ class Build:
             if built != directory / "libmule_runtime.a":
                 os.replace(built, directory / "libmule_runtime.a")
 
-        return self.graph.node(
+        return self.graph.step(
             f"runtime lto={lto}",
-            Step,
             lambda: Step(
                 self.graph,
                 f"runtime lto={lto}",
@@ -371,7 +380,11 @@ class Build:
                 settings={
                     "step": "runtime",
                     "lto": lto,
-                    "rustc": tool_identity(rustc, "--version", "--verbose"),
+                    "rustc": tool_identity(
+                        (rustc, "--version", "--verbose"),
+                        tool="Rust compiler",
+                        failure="Rust runtime compilation failed",
+                    ),
                 },
                 outputs=("libmule_runtime.a",),
                 action=action,
@@ -385,9 +398,8 @@ class Build:
             (directory / "unit.ll").write_text(generate(unit))
             (directory / "interface.json").write_text(interface.to_json())
 
-        return self.graph.node(
+        return self.graph.step(
             "builtins",
-            Step,
             lambda: Step(
                 self.graph,
                 "builtins",
@@ -416,9 +428,8 @@ class Build:
                 "LLVM compilation/linking failed",
             )
 
-        return self.graph.node(
+        step = self.graph.step(
             name,
-            Step,
             lambda: Step(
                 self.graph,
                 name,
@@ -428,6 +439,8 @@ class Build:
                 action=action,
             ),
         )
+        self.objects[step.name] = step
+        return step
 
     def module(self, descriptor: CompiledModule, roots, package) -> Step:
         """The unit of an imported source module, and its object, added to
@@ -437,6 +450,10 @@ class Build:
         if path is None:
             raise ValueError(f"module {descriptor.name} has no source file")
         name = f"module {descriptor.name} {path}"
+
+        def resolver():
+            interface = load_interface(builtins.path("interface.json"))
+            return import_resolver(str(path), interface, descriptor, roots, package)
 
         def action(inputs, directory):
             interface = load_interface(builtins.path("interface.json"))
@@ -451,37 +468,43 @@ class Build:
             (directory / "unit.ll").write_text(generate(program))
             write_imports(directory / "imports.json", imported)
 
-        step = self.graph.node(
+        # The unit depends on its search path only through how its imports
+        # resolve, so the key omits the path and a cached unit is reused
+        # wherever each import resolves the same way.
+        step = self.graph.step(
             name,
-            Step,
             lambda: Step(
                 self.graph,
                 name,
                 inputs=[self.graph.file(path), builtins],
-                settings={
-                    "step": "module",
-                    "name": descriptor.name,
-                    "roots": [str(root) for root in roots],
-                    "package": package,
-                },
+                settings={"step": "module", "name": descriptor.name},
                 outputs=("unit.ll", "imports.json"),
                 action=action,
-                discover=lambda step: self.discover(step, roots, package),
+                discover=lambda step: self.discover(step, resolver(), roots, package),
+                validate=lambda entry: resolves_as_recorded(
+                    resolver(), entry / "imports.json"
+                ),
             ),
         )
         return step
 
-    def discover(self, step: Step, roots, package) -> None:
-        """Add the units of the modules ``step`` imports to the link."""
+    def discover(self, step: Step, resolver: ModuleCompiler, roots, package) -> None:
+        """Add the units of the source modules ``step`` imports to the link,
+        as they resolve on this build's search path."""
         if self.link is None:
             raise RuntimeError("module discovery requires the link step")
-        for descriptor in read_imports(step.path("imports.json")):
+        resolve_recorded(resolver, step.path("imports.json"))
+        for descriptor in resolver.pending:
             self.link.add_input(self.object(self.module(descriptor, roots, package)))
 
     def main(
         self, source_node: Node, source: str, filename: str, roots, package
     ) -> Step:
         builtins = self.builtins()
+
+        def resolver():
+            interface = load_interface(builtins.path("interface.json"))
+            return import_resolver(filename, interface, None, roots, package)
 
         def action(inputs, directory):
             interface = load_interface(builtins.path("interface.json"))
@@ -491,9 +514,8 @@ class Build:
             (directory / "unit.ll").write_text(generate(program))
             write_imports(directory / "imports.json", imported)
 
-        return self.graph.node(
+        return self.graph.step(
             "__main__",
-            Step,
             lambda: Step(
                 self.graph,
                 "__main__",
@@ -506,7 +528,7 @@ class Build:
                 },
                 outputs=("unit.ll", "imports.json"),
                 action=action,
-                discover=lambda step: self.discover(step, roots, package),
+                discover=lambda step: self.discover(step, resolver(), roots, package),
             ),
         )
 
@@ -515,11 +537,7 @@ class Build:
         runtime = self.runtime()
 
         def action(inputs, directory):
-            objects = [
-                str(node.path("unit.o"))
-                for node in inputs
-                if isinstance(node, Step) and "unit.o" in node.outputs
-            ]
+            objects = [str(step.path("unit.o")) for step in self.objects.values()]
             _run(
                 [
                     toolchain.clang,
@@ -538,9 +556,8 @@ class Build:
             )
 
         objects = [self.object(unit) for unit in units]
-        self.link = self.graph.node(
+        self.link = self.graph.step(
             "link",
-            Step,
             lambda: Step(
                 self.graph,
                 "link",
@@ -551,18 +568,6 @@ class Build:
             ),
         )
         return self.link
-
-
-class Text(Node):
-    """Source text that is not a file, such as ``-c`` or standard input."""
-
-    def __init__(self, graph: Graph, name: str, text: str):
-        super().__init__(graph, name)
-        self.text = text
-
-    @cached_property
-    def output_hash(self) -> str:
-        return digest(self.text.encode())
 
 
 @cache
@@ -576,20 +581,35 @@ def load_interface(path: Path) -> BuiltinsInterface:
 
 
 def write_imports(path: Path, modules: list[CompiledModule]) -> None:
-    path.write_text(json.dumps([[module.name, str(module.path)] for module in modules]))
+    """Record how each import resolved: the unit's output depends on whether a
+    module is native, missing, or compiled, not on where it was found."""
+    path.write_text(
+        json.dumps([[module.name, module.native, module.missing] for module in modules])
+    )
 
 
-def read_imports(path: Path) -> list[CompiledModule]:
+def resolve_recorded(
+    resolver: ModuleCompiler, path: Path
+) -> list[tuple[CompiledModule, bool, bool]]:
+    """Resolve the recorded imports again, in their recorded order; return
+    each current resolution with its recorded native and missing flags."""
     return [
-        module_descriptor(name, Path(module_path))
-        for name, module_path in json.loads(path.read_text())
+        (resolver.resolve(name, None, None), native, missing)
+        for name, native, missing in json.loads(path.read_text())
     ]
+
+
+def resolves_as_recorded(resolver: ModuleCompiler, path: Path) -> bool:
+    return all(
+        module.native == native and module.missing == missing
+        for module, native, missing in resolve_recorded(resolver, path)
+    )
 
 
 def builtins_object(toolchain: Toolchain) -> Path:
     """The compiled builtins unit every main unit links with, from the cache
     when unchanged: native code without optimization, bitcode with it."""
-    with Graph() as graph:
+    with Graph(1) as graph:
         build = Build(graph, toolchain)
         unit_object = build.object(build.builtins())
         graph.run(unit_object)
@@ -598,7 +618,7 @@ def builtins_object(toolchain: Toolchain) -> Path:
 
 def cached_builtins_interface() -> BuiltinsInterface:
     """The builtins interface, from the cache when unchanged."""
-    with Graph() as graph:
+    with Graph(1) as graph:
         builtins = Build(graph, Toolchain()).builtins()
         graph.run(builtins)
     return load_interface(builtins.path("interface.json"))
@@ -650,16 +670,13 @@ def link_llvm(
     toolchain.require_target()
     with Graph() as graph:
         build = Build(graph, toolchain)
-        source = graph.node(
-            "main unit LLVM", Text, lambda: Text(graph, "main unit LLVM", llvm)
-        )
+        source = graph.text("main unit LLVM", llvm)
 
         def action(inputs, directory):
             (directory / "unit.ll").write_text(llvm)
 
-        main = graph.node(
+        main = graph.step(
             "main unit",
-            Step,
             lambda: Step(
                 graph,
                 "main unit",
@@ -691,19 +708,19 @@ def build_executable(
     package: str | None = None,
     toolchain: Toolchain | None = None,
     source_path: Path | None = None,
+    workers: int | None = None,
 ) -> Path:
     """The cached executable of a program: every unit built or reused, then
-    linked. Returns the path inside the cache."""
+    linked. Returns the path inside the cache. ``workers`` bounds how many
+    steps run at once."""
     toolchain = toolchain or Toolchain()
     toolchain.require_target()
-    with Graph() as graph:
+    with Graph(workers) as graph:
         build = Build(graph, toolchain)
         source_node = (
             graph.file(source_path)
             if source_path is not None
-            else graph.node(
-                "main source", Text, lambda: Text(graph, "main source", source)
-            )
+            else graph.text("main source", source)
         )
         main = build.main(source_node, source, filename, roots, package)
         link = build.executable([build.builtins(), main])
@@ -719,6 +736,7 @@ def build(
     clang: str = "clang",
     rustc: str = "rustc",
     optimize: bool = True,
+    workers: int | None = None,
 ) -> Path:
     """Compile a source file into a native executable, replacing output on success.
 
@@ -740,6 +758,7 @@ def build(
         roots=roots,
         toolchain=Toolchain(clang, rustc, optimize),
         source_path=source_path.resolve(),
+        workers=workers,
     )
     if llvm_output is not None:
         llvm_path.parent.mkdir(parents=True, exist_ok=True)

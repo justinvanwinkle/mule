@@ -21,6 +21,7 @@ def define_vop(
     name: str,
     *,
     translate=None,
+    also_translate=(),
     args=(),
     results=(),
     arg_types=(),
@@ -32,11 +33,13 @@ def define_vop(
 ):
     """Decorate a generator function into a registered ``Template``.
 
-    ``translate`` names the known function(s) the template implements, as
-    ``FunInfo`` objects or names. ``args``/``results`` are operand
-    restrictions (a tuple of storage classes, or ``None`` for any);
-    ``arg_types``/``result_types`` are primitive-type requirements that the
-    IR1 derived types must satisfy for the template to apply. ``ltn_policy``
+    ``translate`` is the ``FunInfo`` of the known function the template
+    implements; ``also_translate`` lists further known functions it
+    implements as well. ``args``/``results`` are operand restrictions (a
+    tuple of storage classes, or ``None`` for any); ``arg_types``/
+    ``result_types`` are primitive-type requirements (a collection of
+    primitive types, or ``None`` for any) that the IR1 derived types must
+    satisfy for the template to apply. ``ltn_policy``
     restricts the template to native (``"raw"``) or object bodies.
     """
 
@@ -54,25 +57,14 @@ def define_vop(
             translate=translate,
             ltn_policy=ltn_policy,
         )
-        for known in _translated(translate):
-            candidates = TEMPLATES[known]
+        translated = () if translate is None else (translate, *also_translate)
+        for known in translated:
+            candidates = TEMPLATES[known.name]
             candidates.append(template)
             candidates.sort(key=lambda candidate: candidate.cost)
         return template
 
     return register
-
-
-def _translated(translate) -> tuple[str, ...]:
-    if translate is None:
-        return ()
-    if isinstance(translate, (list, tuple)):
-        return tuple(_name(known) for known in translate)
-    return (_name(translate),)
-
-
-def _name(known) -> str:
-    return known if isinstance(known, str) else known.name
 
 
 def templates_for(fun_info) -> list[Template]:
@@ -94,9 +86,7 @@ def primitive_type_ok(required, primitive_type) -> bool:
     ``None`` accepts anything; otherwise one of the listed types."""
     if required is None:
         return True
-    if isinstance(required, (list, tuple, frozenset, set)):
-        return primitive_type in required
-    return primitive_type is required
+    return primitive_type in required
 
 
 __all__ = [

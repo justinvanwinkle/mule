@@ -9,6 +9,8 @@ depth-first block chain hanging off each component's head and tail.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from .node import (
     BasicVar,
     Block,
@@ -20,11 +22,12 @@ from .node import (
     Ctran,
     CtranKind,
     Exit,
-    If,
     Lambda,
     Leaf,
+    LeafVisitor,
     Lvar,
     Node,
+    NodeVisitor,
     Ref,
     Return,
     Set,
@@ -124,15 +127,22 @@ def reoptimize_lvar(lvar: Lvar | None) -> None:
     prev = dest.prev
     if prev is None:
         return
-    if isinstance(dest, ValuedNode) and dest.lvar is not None:
-        test = dest.lvar.dest
-        if isinstance(test, If) and test.prev is not None:
-            test.reoptimize = True
+    result = dest.value_lvar
+    if result is not None and result.dest is not None:
+        result.dest.accept(_ReoptimizeLinkedBranch())
     block = linked(prev.block, prev, "block")
     block.reoptimize = True
     component = block.component
     if component is not None and component.reoptimize is not True:
         component.reoptimize = "maybe"
+
+
+class _ReoptimizeLinkedBranch(NodeVisitor):
+    """A branch consuming a reoptimized node's value is reoptimized too."""
+
+    def visit_If(self, node):
+        if node.prev is not None:
+            node.reoptimize = True
 
 
 # Blocks
@@ -182,15 +192,30 @@ def change_block_successor(block: Block, old: Block, new: Block) -> None:
     """Swing the edge ``block -> old`` to ``block -> new``, fixing an IF."""
     unlink_blocks(block, old)
     last = block.last
-    if isinstance(last, If):
-        if last.consequent is old:
-            last.consequent = new
-        if last.alternative is old:
-            last.alternative = new
-        if last.consequent is last.alternative and new in block.succ:
-            return
+    if last is not None and last.accept(_RetargetBranch(block, old, new)):
+        return
     if new not in block.succ:
         link_blocks(block, new)
+
+
+class _RetargetBranch(NodeVisitor):
+    """Point a block's final branch at ``new`` instead of ``old``. Returns
+    whether the branch already reaches ``new`` along an existing edge."""
+
+    def __init__(self, block: Block, old: Block, new: Block):
+        self.block = block
+        self.old = old
+        self.new = new
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_If(self, node):
+        if node.consequent is self.old:
+            node.consequent = self.new
+        if node.alternative is self.old:
+            node.alternative = self.new
+        return node.consequent is node.alternative and self.new in self.block.succ
 
 
 def add_to_dfo(block: Block, after: Block) -> None:
@@ -328,13 +353,10 @@ def block_exception_target(block: Block) -> Block | None:
 # Lvars and leaves
 
 
-def delete_lvar_use(node: ValuedNode) -> None:
-    lvar = node.lvar
-    if lvar is None:
-        return
-    lvar.uses.remove(node)
-    node.lvar = None
-    reoptimize_lvar(lvar)
+def delete_lvar_use(node: Node) -> None:
+    lvar = node.detach_value()
+    if lvar is not None:
+        reoptimize_lvar(lvar)
 
 
 def add_lvar_use(node: ValuedNode, lvar: Lvar) -> None:
@@ -407,12 +429,15 @@ def flush_dest(lvar: Lvar | None) -> None:
 def delete_ref(ref: Ref) -> None:
     leaf = ref.leaf
     leaf.refs.remove(ref)
-    if (
-        isinstance(leaf, Lambda)
-        and not leaf.refs
-        and leaf.kind.name not in ("OPTIONAL", "DELETED", "TOPLEVEL")
-    ):
-        linked(leaf.component, leaf, "component").reanalyze = True
+    leaf.accept(_ReleasedReference())
+
+
+class _ReleasedReference(LeafVisitor):
+    """A lambda that loses its last reference may now be deleted."""
+
+    def visit_Lambda(self, leaf):
+        if not leaf.refs and leaf.kind.name not in ("OPTIONAL", "DELETED", "TOPLEVEL"):
+            linked(leaf.component, leaf, "component").reanalyze = True
 
 
 def delete_set(node: Set) -> None:
@@ -422,8 +447,7 @@ def delete_set(node: Set) -> None:
 def unlink_node(node: Node) -> bool:
     """Remove ``node`` from its block. Returns True when the block was deleted
     because it held only this node."""
-    if isinstance(node, ValuedNode):
-        delete_lvar_use(node)
+    delete_lvar_use(node)
     ctran = node.next
     following = ctran.next if ctran is not None else None
     prev = linked(node.prev, node, "preceding control position")
@@ -441,8 +465,7 @@ def unlink_node(node: Node) -> bool:
             following = linked(following, node, "following node")
             prev.next = following
             following.prev = prev
-            if isinstance(following, If):
-                reoptimize_lvar(following.test)
+            following.accept(_ReoptimizeExposedBranch())
         node.prev = None
         return False
     aver(prev_kind is CtranKind.BLOCK_START and node is last)
@@ -466,6 +489,13 @@ def unlink_node(node: Node) -> bool:
     block.delete_p = True
     node.prev = None
     return True
+
+
+class _ReoptimizeExposedBranch(NodeVisitor):
+    """A branch whose predecessor was unlinked may now test a simpler value."""
+
+    def visit_If(self, node):
+        reoptimize_lvar(node.test)
 
 
 def delete_block_lazily(block: Block) -> None:
@@ -500,8 +530,7 @@ def delete_block(block: Block) -> None:
         unlink_blocks(block, succ)
     for node in list(block.nodes()):
         node.accept(_DeleteNode())
-        if isinstance(node, ValuedNode):
-            delete_lvar_use(node)
+        delete_lvar_use(node)
         node.prev = None
     remove_from_dfo(block)
     block.component = None
@@ -606,18 +635,92 @@ def class_method_definitions(lambda_: Lambda) -> dict[str, dict[str, Lambda]]:
     """The functions a lambda's class bodies store directly into their
     namespaces, by class identity and attribute name. Decorated definitions
     store a decorator's result instead and are not included."""
-    definitions = {}
-    classes: dict[str, dict[str, Lambda]] = {}
+    visitor = _ClassMethodDefinitions()
     for block in linked(lambda_.component, lambda_, "component").blocks():
         for node in block.nodes():
-            if not isinstance(node, Combination) or node.kind is not CallKind.KNOWN:
-                continue
-            name = node.fun_info.name
-            if name == "%make_function":
-                definitions[node] = node.args[0].use().leaf
-            elif name == "%class_store":
-                value = node.args[1]
-                target = definitions.get(value.uses[0]) if value.uses else None
-                if target is not None:
-                    classes.setdefault(node.info.identity, {})[node.info.name] = target
-    return classes
+            node.accept(visitor)
+    return visitor.classes
+
+
+class _ClassMethodDefinitions(NodeVisitor):
+    def __init__(self):
+        self.definitions: dict[Node, Lambda] = {}
+        self.classes: dict[str, dict[str, Lambda]] = {}
+
+    def visit_Combination(self, node):
+        if node.kind is not CallKind.KNOWN:
+            return
+        name = node.fun_info.name
+        if name == "%make_function":
+            self.definitions[node] = made_lambda(node)
+        elif name == "%class_store":
+            value = node.args[1]
+            target = self.definitions.get(value.uses[0]) if value.uses else None
+            if target is not None:
+                self.classes.setdefault(node.info.identity, {})[node.info.name] = target
+
+
+def made_lambda(node: Combination) -> Lambda:
+    """The lambda a ``%make_function`` call makes a function object from."""
+    return node.args[0].use().accept(_MadeLambda(node))
+
+
+def made_function(node: Node) -> Lambda | None:
+    """The lambda ``node`` makes a function object from, when it is a
+    ``%make_function`` call."""
+    return node.accept(_MadeFunction())
+
+
+class _MadeFunction(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node):
+        if node.kind is CallKind.KNOWN and node.fun_info.name == "%make_function":
+            return made_lambda(node)
+        return None
+
+
+class _MadeLambda(NodeVisitor, LeafVisitor):
+    """A function-making call's first operand must reference a lambda."""
+
+    def __init__(self, call: Combination):
+        self.call = call
+
+    def visit_Node(self, node):
+        raise ValueError(f"{self.call!r} does not make a function from a lambda")
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        raise ValueError(f"{self.call!r} does not make a function from a lambda")
+
+    def visit_Lambda(self, leaf):
+        return leaf
+
+
+class _Combinations(NodeVisitor):
+    def visit_Combination(self, node):
+        return node
+
+
+def combinations(lambda_: Lambda) -> Iterator[Combination]:
+    """The calls in ``lambda_``'s component, in block order."""
+    visitor = _Combinations()
+    for block in linked(lambda_.component, lambda_, "component").blocks():
+        for node in block.nodes():
+            call = node.accept(visitor)
+            if call is not None:
+                yield call
+
+
+def known_calls(lambda_: Lambda, name: str) -> Iterator[Combination]:
+    """The calls of the compiler-known operation ``name`` in ``lambda_``'s
+    component, in block order."""
+    for call in combinations(lambda_):
+        if (
+            call.kind is CallKind.KNOWN
+            and linked(call.fun_info, call, "known function").name == name
+        ):
+            yield call

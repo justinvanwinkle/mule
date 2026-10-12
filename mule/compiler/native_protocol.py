@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .inputs import read_source
-from .ir1util import class_method_definitions
-from .node import CallKind, Combination, Lambda
+from .ir1util import class_method_definitions, known_calls
+from .node import Lambda, linked
 from .protocols import add_lambdas, compile_protocol
 
 if TYPE_CHECKING:
@@ -51,18 +51,12 @@ def layouts_of(lambdas) -> dict[str, Layout]:
     layouts = {}
     for lambda_ in lambdas:
         methods = class_method_definitions(lambda_)
-        for block in lambda_.component.blocks():
-            for node in block.nodes():
-                if (
-                    isinstance(node, Combination)
-                    and node.kind is CallKind.KNOWN
-                    and node.fun_info.name == "%make_class"
-                    and node.info.class_id is not None
-                ):
-                    info = node.info
-                    layouts[info.class_id] = Layout(
-                        info, methods.get(info.identity, {}), len(layouts)
-                    )
+        for call in known_calls(lambda_, "%make_class"):
+            info = linked(call.info, call, "class definition")
+            if info.class_id is not None:
+                layouts[info.class_id] = Layout(
+                    info, methods.get(info.identity, {}), len(layouts)
+                )
     return layouts
 
 

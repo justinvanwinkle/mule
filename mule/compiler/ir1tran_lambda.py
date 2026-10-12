@@ -127,7 +127,8 @@ def convert_function(
         origin=definition,
         parent=parent,
         defining_class=defining_class,
-        qualname=qualname,
+        qualname=qualname
+        or (parent.qualified(definition.name) if parent is not None else None),
         body_kind=body_kind,
         annotation_scope=annotation_scope,
     )

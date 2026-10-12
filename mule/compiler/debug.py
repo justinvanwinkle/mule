@@ -10,21 +10,14 @@ from __future__ import annotations
 from typing import NoReturn
 
 from .node import (
-    Bind,
-    Cast,
     Combination,
     Component,
     CtranKind,
-    Entry,
-    Exit,
     FunctionalKind,
-    If,
     Lambda,
+    LeafVisitor,
     Node,
-    Ref,
-    Return,
-    Set,
-    ValuedNode,
+    NodeVisitor,
 )
 
 
@@ -164,8 +157,8 @@ class _Checker:
                 barf(f"{ctran!r} has no NEXT node")
             if node.prev is not ctran:
                 barf(f"PREV in {node!r} should be {ctran!r}")
-            if isinstance(node, ValuedNode) and node.lvar is not None:
-                lvar = node.lvar
+            lvar = node.value_lvar
+            if lvar is not None:
                 if node not in lvar.uses:
                     barf(f"{node!r} is not used by its LVAR {lvar!r}")
                 if lvar.dest is None:
@@ -200,22 +193,9 @@ class _Checker:
                 barf(
                     f"the successor {successor!r} in {block!r} is in another component"
                 )
-        if isinstance(last, If):
-            if len(block.succ) not in (1, 2):
-                barf(f"{block!r} ends in an IF without one or two successors")
-            if last.consequent not in block.succ or last.alternative not in block.succ:
-                barf(f"the branches of {last!r} are not the successors of {block!r}")
-        elif isinstance(last, Return):
-            if block.succ != [component.tail]:
-                barf(f"strange successors for RETURN in {block!r}")
-        elif isinstance(last, Exit):
-            if len(block.succ) > 1:
-                barf(f"EXIT node with strange number of successors: {last!r}")
-        elif isinstance(last, Combination) and _never_returns(last):
-            if block.succ:
-                barf(f"{block!r} ends in a non-returning call but has successors")
-        elif len(block.succ) != 1:
-            barf(f"{block!r} ends in a normal node without exactly one successor")
+        if last is None:
+            barf(f"{block!r} has no LAST")
+        last.accept(_SuccessorChecker(block))
 
     def check_dest(self, lvar, node) -> None:
         for use in lvar.uses:
@@ -225,42 +205,101 @@ class _Checker:
             barf(f"DEST for {lvar!r} should be {node!r}")
 
     def check_node(self, node: Node) -> None:
-        if isinstance(node, Ref):
-            leaf = node.leaf
-            if node not in leaf.refs:
-                barf(f"{node!r} is not in the refs of {leaf!r}")
-            if isinstance(leaf, Lambda):
-                self.check_fun_reached(leaf, node)
-        elif isinstance(node, Combination):
-            self.check_dest(node.fun, node)
-            for arg in node.args:
-                self.check_dest(arg, node)
-        elif isinstance(node, If):
-            self.check_dest(node.test, node)
-            if node.block.last is not node:
-                barf(f"IF not at block end: {node!r}")
-        elif isinstance(node, Set):
-            if node.value is not None:
-                self.check_dest(node.value, node)
-            if node not in node.var.sets:
-                barf(f"{node!r} is not in the sets of {node.var!r}")
-        elif isinstance(node, Cast):
-            self.check_dest(node.value, node)
-        elif isinstance(node, Bind):
-            self.check_fun_reached(node.lambda_, node)
-        elif isinstance(node, Return):
-            self.check_fun_reached(node.lambda_, node)
-            self.check_dest(node.result, node)
-            if node.block.last is not node:
-                barf(f"RETURN not at block end: {node!r}")
-        elif isinstance(node, Entry):
-            if node not in node.home_lambda.entries:
-                barf(f"{node!r} is not in ENTRIES for its home lambda")
-        elif isinstance(node, Exit):
-            if node.value is not None:
-                self.check_dest(node.value, node)
-            if node.entry is not None and node not in node.entry.exits:
-                barf(f"{node!r} is not in the exits of its entry")
+        node.accept(_NodeChecker(self))
+
+
+class _NodeChecker(NodeVisitor):
+    """Checks one node's links to its operands, leaves, and lambda."""
+
+    def __init__(self, checker: _Checker):
+        self.checker = checker
+
+    def visit_Ref(self, node):
+        leaf = node.leaf
+        if node not in leaf.refs:
+            barf(f"{node!r} is not in the refs of {leaf!r}")
+        leaf.accept(_ReferencedLeafChecker(self.checker, node))
+
+    def visit_Combination(self, node):
+        self.checker.check_dest(node.fun, node)
+        for arg in node.args:
+            self.checker.check_dest(arg, node)
+
+    def visit_If(self, node):
+        self.checker.check_dest(node.test, node)
+        if node.block.last is not node:
+            barf(f"IF not at block end: {node!r}")
+
+    def visit_Set(self, node):
+        if node.value is not None:
+            self.checker.check_dest(node.value, node)
+        if node not in node.var.sets:
+            barf(f"{node!r} is not in the sets of {node.var!r}")
+
+    def visit_Cast(self, node):
+        self.checker.check_dest(node.value, node)
+
+    def visit_Bind(self, node):
+        self.checker.check_fun_reached(node.lambda_, node)
+
+    def visit_Return(self, node):
+        self.checker.check_fun_reached(node.lambda_, node)
+        self.checker.check_dest(node.result, node)
+        if node.block.last is not node:
+            barf(f"RETURN not at block end: {node!r}")
+
+    def visit_Entry(self, node):
+        if node not in node.home_lambda.entries:
+            barf(f"{node!r} is not in ENTRIES for its home lambda")
+
+    def visit_Exit(self, node):
+        if node.value is not None:
+            self.checker.check_dest(node.value, node)
+        if node.entry is not None and node not in node.entry.exits:
+            barf(f"{node!r} is not in the exits of its entry")
+
+
+class _ReferencedLeafChecker(LeafVisitor):
+    """A referenced lambda must be reachable; other leaves have no home."""
+
+    def __init__(self, checker: _Checker, ref: Node):
+        self.checker = checker
+        self.ref = ref
+
+    def visit_Lambda(self, leaf):
+        self.checker.check_fun_reached(leaf, self.ref)
+
+
+class _SuccessorChecker(NodeVisitor):
+    """Checks a block's successors against the node that ends it."""
+
+    def __init__(self, block):
+        self.block = block
+
+    def visit_Node(self, node):
+        if len(self.block.succ) != 1:
+            barf(f"{self.block!r} ends in a normal node without exactly one successor")
+
+    def visit_If(self, node):
+        block = self.block
+        if len(block.succ) not in (1, 2):
+            barf(f"{block!r} ends in an IF without one or two successors")
+        if node.consequent not in block.succ or node.alternative not in block.succ:
+            barf(f"the branches of {node!r} are not the successors of {block!r}")
+
+    def visit_Return(self, node):
+        if self.block.succ != [self.block.component.tail]:
+            barf(f"strange successors for RETURN in {self.block!r}")
+
+    def visit_Exit(self, node):
+        if len(self.block.succ) > 1:
+            barf(f"EXIT node with strange number of successors: {node!r}")
+
+    def visit_Combination(self, node):
+        if not _never_returns(node):
+            self.visit_Node(node)
+        elif self.block.succ:
+            barf(f"{self.block!r} ends in a non-returning call but has successors")
 
 
 def _never_returns(node: Combination) -> bool:
