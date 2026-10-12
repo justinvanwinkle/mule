@@ -87,3 +87,32 @@ def modulo(left, right):
     if _text_storage(left):
         return _percent_decimal_protocol(left, right)
     return _numeric_modulo(left, right)
+
+
+def ascii_representation(value):
+    """``ascii(value)``: the representation with non-ASCII escaped."""
+    text = representation(value)
+    pieces = []
+    index = 0
+    while index < _text_length(text):
+        code = _text_codepoint(text, index)
+        if code < 0x80:
+            pieces.append(_text_character(text, index))
+        elif code < 0x100:
+            pieces.append("\\x" + _hex(code, 2))
+        elif code < 0x10000:
+            pieces.append("\\u" + _hex(code, 4))
+        else:
+            pieces.append("\\U" + _hex(code, 8))
+        index += 1
+    return "".join(pieces)
+
+
+def _hex(code, width):
+    digits = []
+    while width > 0:
+        digits.append("0123456789abcdef"[code & 15])
+        code >>= 4
+        width -= 1
+    digits.reverse()
+    return "".join(digits)

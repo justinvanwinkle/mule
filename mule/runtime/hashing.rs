@@ -130,13 +130,26 @@ unsafe extern "C" fn identity_hash(_: Value, args: Value) -> Value {
     }
 }
 
+/// `id(value)`: the value's address, which is unique while it is alive.
+unsafe extern "C" fn identity_export(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some(value) = operand(args) else {
+            return null_mut();
+        };
+        crate::numeric::integer_from_usize(value as usize)
+    }
+}
+
 pub unsafe fn populate(globals: Value) -> bool {
     unsafe {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 2] =
-            [("storage_hash", storage_hash), ("identity_hash", identity_hash)];
+        let exports: [(&str, object::Native); 3] = [
+            ("storage_hash", storage_hash),
+            ("identity_hash", identity_hash),
+            ("identity", identity_export),
+        ];
         for (name, entry) in exports {
             let function = object::function(null_mut(), entry, name);
             let bound = object::bind(globals, name, function);

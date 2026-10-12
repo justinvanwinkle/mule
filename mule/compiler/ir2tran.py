@@ -281,6 +281,24 @@ class _Converter(NodeVisitor):
                 templates_for(fndb.PROTOCOLS["cell_new"])[0], node, results=(cell,)
             )
             self.emit(vops.MOVE, node, args=(cell,), results=(environment.cells[var],))
+            if var in self.lambda_.vars:
+                # A captured parameter's cell starts out holding its argument.
+                value = self.temporary()
+                self.emit(
+                    vops.LOAD_LOCAL,
+                    node,
+                    args=(self.var_tn(var),),
+                    results=(value,),
+                    info=LocalAccess(var.name, True),
+                )
+                result = self.temporary()
+                self.emit(
+                    templates_for(fndb.PROTOCOLS["cell_set"])[0],
+                    node,
+                    args=(self.cell(node, var), value),
+                    results=(result,),
+                )
+                self.emit_discard(node, result)
 
     def cell(self, node, var):
         """Load the cell object of a captured-and-assigned variable."""

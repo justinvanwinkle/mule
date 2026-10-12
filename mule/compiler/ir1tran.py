@@ -55,6 +55,7 @@ from .node import (
     Cleanup,
     CleanupKind,
     Combination,
+    Component,
     Constant,
     Ctran,
     CtranKind,
@@ -169,6 +170,7 @@ class ImportInfo:
     initializer: str
     filename: str | None
     native: bool = False
+    missing: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +249,12 @@ class Converter:
         self.class_definitions = 0
         self.class_fields = {}
         self.module_annotation_shadows = set()
+        # Set once the module's lambdas have their own components. Functions
+        # defined later, by cleanup code converted during environment
+        # analysis, collect in fresh initial components to split then.
+        self.split = False
+        self.converting_late = False
+        self.late: list[tuple[Component, list[Lambda]]] = []
 
     def location(self, node):
         span = node.span
@@ -309,11 +317,42 @@ class Converter:
         return self.ir1_namespace.known_function(info)
 
     def function(
-        self, definition, policy, *, owner_class=None, parent=None, defining_class=None
+        self,
+        definition,
+        policy,
+        *,
+        owner_class=None,
+        parent=None,
+        defining_class=None,
+        qualname=None,
+        body_kind=None,
+        annotation_scope=False,
     ) -> Lambda:
         # ir1tran_lambda imports FunctionConverter from this module.
         from .ir1tran_lambda import convert_function
 
+        if self.split and not self.converting_late:
+            # Functions nested inside share the fresh component.
+            self.converting_late = True
+            saved, self.component = self.component, Component("late")
+            created = len(self.functions)
+            try:
+                lambda_ = convert_function(
+                    self,
+                    definition,
+                    policy,
+                    owner_class=owner_class,
+                    parent=parent,
+                    defining_class=defining_class,
+                    qualname=qualname,
+                    body_kind=body_kind,
+                    annotation_scope=annotation_scope,
+                )
+            finally:
+                late, self.component = self.component, saved
+                self.converting_late = False
+            self.late.append((late, self.functions[created:]))
+            return lambda_
         return convert_function(
             self,
             definition,
@@ -321,6 +360,9 @@ class Converter:
             owner_class=owner_class,
             parent=parent,
             defining_class=defining_class,
+            qualname=qualname,
+            body_kind=body_kind,
+            annotation_scope=annotation_scope,
         )
 
 
@@ -337,8 +379,16 @@ class FunctionConverter:
         origin=None,
         parent=None,
         defining_class: ClassScope | None = None,
+        qualname: str | None = None,
+        body_kind: str | None = None,
+        annotation_scope: bool = False,
     ):
         self.converter = converter
+        # A hidden PEP 695 scope, invisible in qualified names.
+        self.annotation_scope = annotation_scope
+        # "generator", "coroutine" or "async_generator" for the body such a
+        # function runs on its own stack, else None.
+        self.body_kind = body_kind
         self.lambda_ = lambda_
         self.is_module = is_module
         self.origin = origin
@@ -351,7 +401,7 @@ class FunctionConverter:
         self.class_scopes: list[ClassScope] = []
         # Comprehensions being converted inline here, innermost last.
         self.comprehension_scopes: list[ComprehensionScope] = []
-        self.qualname = (
+        self.qualname = qualname or (
             parent.qualified(origin.name)
             if parent is not None and isinstance(origin, ast.FunctionDefinition)
             else None
@@ -467,6 +517,8 @@ class FunctionConverter:
 
     def qualified(self, name) -> str:
         """The ``__qualname__`` of a definition named ``name`` made here."""
+        if self.annotation_scope and not self.class_scopes:
+            return self.parent.qualified(name)
         if self.class_scopes:
             return self.class_scopes[-1].qualname + "." + name
         if self.is_module:
@@ -512,12 +564,43 @@ class FunctionConverter:
         return self.ref(start, next_, result, Constant(literal), literal)
 
     def load(self, start, next_, result, name, source, *, final=False):
-        scope = self.class_binding(name)
+        scope = self.class_binding(name) or self.class_reader(name)
         if scope is not None:
+            free = None if name in scope.bound else self.variable(name)
+            if isinstance(free, LambdaVar):
+                # A free variable of an enclosing function: the namespace
+                # first, then the closure (LOAD_FROM_DICT_OR_DEREF).
+                ctran, fallback = Ctran(), Lvar()
+                self.ref(start, ctran, fallback, free, source)
+                return self.class_namespace_operation(
+                    ctran,
+                    next_,
+                    result,
+                    fndb.CLASS_LOAD_OR,
+                    scope,
+                    name,
+                    (fallback,),
+                    source,
+                )
             return self.class_namespace_operation(
                 start, next_, result, fndb.CLASS_LOAD, scope, name, (), source
             )
         return self.ref(start, next_, result, self.variable(name), source, final=final)
+
+    def class_reader(self, name) -> ClassScope | None:
+        """The class body that reads ``name`` from its namespace first, as
+        every name a class body does not declare global (LOAD_NAME)."""
+        if not self.class_scopes or self.comprehension_variable(name) is not None:
+            return None
+        if (
+            self.comprehension_scopes
+            and self.comprehension_scopes[-1].class_depth == len(self.class_scopes)
+        ):
+            return None
+        scope = self.class_scopes[-1]
+        if name in scope.globals or name.startswith("$"):
+            return None
+        return scope
 
     def class_namespace_operation(
         self, start, next_, result, info, scope, name, operands, source, **options
@@ -548,7 +631,9 @@ class FunctionConverter:
         use_ctran(node, next_)
         return node
 
-    def cast(self, start, next_, result, value: Lvar, contract, node, safety=None):
+    def cast(
+        self, start, next_, result, value: Lvar, contract, node, safety=None, declaration=None
+    ):
         cast = Cast(
             self.lexenv,
             node,
@@ -556,6 +641,7 @@ class FunctionConverter:
             contract,
             self.converter.location(node),
             self.lambda_.policy.safety if safety is None else safety,
+            declaration,
         )
         value.dest = cast
         link_node_to_previous_ctran(cast, start)
@@ -776,8 +862,21 @@ class FunctionConverter:
         annotation = self.annotation_for(name)
         if annotation is not None:
             contract, declaration = annotation
+            source = (
+                ("local", self.lambda_, name)
+                if self.local(name)
+                else ("global", self.converter.namespace, name)
+            )
             ctran, checked = Ctran(), Lvar()
-            self.cast(start, ctran, checked, value, contract, node or declaration)
+            self.cast(
+                start,
+                ctran,
+                checked,
+                value,
+                contract,
+                node or declaration,
+                declaration=source,
+            )
             start, value = ctran, checked
         self.set_var(start, next_, self.variable(name), value, node)
 
@@ -922,16 +1021,13 @@ class FunctionConverter:
 
     def call(self, start, next_, result, node: ast.Call):
         keywords = set()
+        if any(
+            argument.kind in (ast.ArgumentKind.STARRED, ast.ArgumentKind.DOUBLE_STARRED)
+            for argument in node.arguments
+        ):
+            self.expanded_call(start, next_, result, node)
+            return
         for argument in node.arguments:
-            if argument.kind not in (
-                ast.ArgumentKind.POSITIONAL,
-                ast.ArgumentKind.KEYWORD,
-            ):
-                self.error(
-                    "call argument expansion is not supported yet",
-                    argument,
-                    unsupported=True,
-                )
             if argument.kind == ast.ArgumentKind.KEYWORD:
                 if argument.keyword in keywords:
                     self.error(
@@ -939,6 +1035,76 @@ class FunctionConverter:
                     )
                 keywords.add(argument.keyword)
         node.function.accept(_CallTarget(self, start, next_, result, node))
+
+    def keyword_dict(self, start, target, arguments, node) -> Ctran:
+        """Collect ``name=value`` and ``**mapping`` arguments, in source order,
+        into a new dict held by ``target``; duplicate names raise TypeError."""
+        ctran, value = self.value(start, ast.Dict([], span=node.span))
+        current = Ctran()
+        self.set_var(ctran, current, target, value, node)
+        for argument in arguments:
+            ctran, held = Ctran(), Lvar()
+            self.ref(current, ctran, held, target, argument)
+            following = Ctran()
+            if argument.kind == ast.ArgumentKind.KEYWORD:
+                operands = (
+                    held,
+                    ast.TextLiteral(argument.keyword, span=argument.span),
+                    argument.value,
+                )
+                self.protocol(ctran, following, None, "add_keyword", operands, argument)
+            else:
+                self.protocol(
+                    ctran, following, None, "merge_keywords", (held, argument.value), argument
+                )
+            current = following
+        return current
+
+    def expanded_call(self, start, next_, result, node: ast.Call):
+        """``f(a, *b, k=c, **d)``: the callee, then every argument in source
+        order, collected into a positional list and a keyword dict that the
+        compiled ``call_expanded`` protocol passes to the callee. Duplicate
+        keywords from ``**`` mappings raise TypeError there, as in CPython."""
+        callee, positional, keywords = (self.temporary() for _ in range(3))
+        current = start
+        for var, expression in (
+            (callee, node.function),
+            (positional, ast.List([], span=node.span)),
+            (keywords, ast.Dict([], span=node.span)),
+        ):
+            ctran, value = self.value(current, expression)
+            current = Ctran()
+            self.set_var(ctran, current, var, value, node)
+        for argument in node.arguments:
+            if argument.kind in (ast.ArgumentKind.POSITIONAL, ast.ArgumentKind.STARRED):
+                target, name = positional, (
+                    "append_argument"
+                    if argument.kind == ast.ArgumentKind.POSITIONAL
+                    else "extend_arguments"
+                )
+                operands = []
+            else:
+                target = keywords
+                if argument.kind == ast.ArgumentKind.KEYWORD:
+                    name = "add_keyword"
+                    operands = [ast.TextLiteral(argument.keyword, span=argument.span)]
+                else:
+                    name = "merge_keywords"
+                    operands = []
+            ctran, held = Ctran(), Lvar()
+            self.ref(current, ctran, held, target, argument)
+            following = Ctran()
+            self.protocol(
+                ctran, following, None, name, (held, *operands, argument.value), argument
+            )
+            current = following
+        operands = []
+        for var in (callee, positional, keywords):
+            ctran, value = Ctran(), Lvar()
+            self.ref(current, ctran, value, var, node, final=True)
+            current = ctran
+            operands.append(value)
+        self.protocol(current, next_, result, "call_expanded", tuple(operands), node)
 
     def import_module(self, start, name, node) -> tuple[Ctran, Lvar]:
         if self.converter.imports is None:
@@ -966,6 +1132,7 @@ class FunctionConverter:
                     descriptor.entry,
                     str(descriptor.path) if descriptor.path is not None else None,
                     descriptor.native,
+                    descriptor.missing,
                 ),
             )
             current = ctran
@@ -1135,14 +1302,11 @@ class _Expressions(ast.Visitor):
         """Keys and values are evaluated left to right, then inserted in order."""
         function = self.function
         start, next_, result = self.frame
+        if any(entry.key is None for entry in node.entries):
+            self.unpacking_dict(node)
+            return
         flat = []
         for entry in node.entries:
-            if entry.key is None:
-                function.error(
-                    "dictionary unpacking in displays is not supported yet",
-                    entry,
-                    unsupported=True,
-                )
             flat.extend((entry.key, entry.value))
         ctran, items = Ctran(), Lvar()
         function.known(start, ctran, items, fndb.BUILD_TUPLE, tuple(flat), node)
@@ -1151,16 +1315,81 @@ class _Expressions(ast.Visitor):
     def visit_Set(self, node):
         function = self.function
         start, next_, result = self.frame
-        for element in node.elements:
-            if isinstance(element, ast.Unpack):
-                function.error(
-                    "starred set display elements are not supported yet",
-                    element,
-                    unsupported=True,
-                )
+        if any(isinstance(element, ast.Unpack) for element in node.elements):
+            self.unpacking_display(node, "build_set")
+            return
         ctran, items = Ctran(), Lvar()
         function.known(start, ctran, items, fndb.BUILD_TUPLE, tuple(node.elements), node)
         function.protocol(ctran, next_, result, "build_set", (items,), node)
+
+    def visit_Yield(self, node):
+        function = self.function
+        start, next_, result = self.frame
+        if function.is_module or function.class_scopes or function.comprehension_scopes:
+            function.error("'yield' outside function", node)
+        value = node.value if node.value is not None else ast.NoneLiteral(None)
+        if function.body_kind == "async_generator":
+            if node.from_iterable:
+                function.error("'yield from' inside async function", node)
+            function.protocol(
+                start, next_, result, "async_generator_yield", (value,), node
+            )
+        elif node.from_iterable:
+            function.protocol(start, next_, result, "yield_from", (value,), node)
+        else:
+            function.known(start, next_, result, fndb.YIELD, (value,), node)
+
+    def visit_Await(self, node):
+        function = self.function
+        start, next_, result = self.frame
+        if function.body_kind not in ("coroutine", "async_generator"):
+            function.error("'await' outside async function", node)
+        function.protocol(start, next_, result, "await_value", (node.value,), node)
+
+    def generator_expression(self, node):
+        """A generator expression is a generator function called with the
+        iterator of its first iterable, which is obtained in the enclosing
+        scope when the expression runs; CPython 3.14 still compiles it so."""
+        function = self.function
+        start, next_, result = self.frame
+        span = node.span
+        body = [
+            ast.ExpressionStatement(ast.Yield(node.element, span=span), span=span)
+        ]
+        for index in range(len(node.clauses) - 1, -1, -1):
+            clause = node.clauses[index]
+            for condition in reversed(clause.conditions):
+                body = [ast.If(condition, body, span=span)]
+            source = ast.Name("$iterable", span=span) if index == 0 else clause.iterable
+            body = [ast.For(clause.target, source, body, span=span)]
+        # Assignment expressions bind in the enclosing scope (PEP 572).
+        assigned = _comprehension_assignments(node)
+        if assigned:
+            declaration = ast.Global if function.is_module else ast.Nonlocal
+            body = [declaration(assigned, span=span), *body]
+        definition = ast.FunctionDefinition(
+            "<genexpr>",
+            [ast.Parameter("$iterable", ast.ParameterKind.POSITIONAL_ONLY, span=span)],
+            body,
+            span=span,
+        )
+        lambda_ = function.converter.function(
+            definition, function.lambda_.policy, parent=function
+        )
+        ctran, created = Ctran(), Lvar()
+        function.define_function(start, ctran, created, lambda_, definition, definition.name)
+        ctran, iterable = function.value(ctran, node.clauses[0].iterable)
+        following, iterator = Ctran(), Lvar()
+        function.protocol(ctran, following, iterator, "iterate", (iterable,), node)
+        function.full_call(
+            following,
+            next_,
+            result,
+            created,
+            (iterator,),
+            node,
+            CallInfo((), function.converter.location(node)),
+        )
 
     def visit_Comprehension(self, node):
         """A list, set or dict comprehension, inlined in the enclosing function
@@ -1173,22 +1402,20 @@ class _Expressions(ast.Visitor):
         variable and loop constructs rather than adding a special form."""
         function = self.function
         start, next_, result = self.frame
-        if node.kind == ast.ComprehensionKind.GENERATOR:
-            function.error(
-                "generator expressions are not supported yet", node, unsupported=True
-            )
         if any(clause.is_async for clause in node.clauses):
             function.error(
                 "asynchronous comprehensions are not supported yet",
                 node,
                 unsupported=True,
             )
-        if node.accept(_ComprehensionAssignment()):
+        if node.accept(_ComprehensionAssignment()) and function.class_scopes:
             function.error(
-                "assignment expressions in comprehensions are not supported yet",
+                "assignment expression within a comprehension cannot be used in a class body",
                 node,
-                unsupported=True,
             )
+        if node.kind == ast.ComprehensionKind.GENERATOR:
+            self.generator_expression(node)
+            return
         span = node.span
         ctran, iterable = function.value(start, node.clauses[0].iterable)
         held = function.temporary()
@@ -1243,10 +1470,71 @@ class _Expressions(ast.Visitor):
         function.ref(ctran, next_, result, accumulator, node, final=True)
 
     def visit_List(self, node):
+        if any(isinstance(element, ast.Unpack) for element in node.elements):
+            self.unpacking_display(node, None)
+            return
         self.sequence(node, fndb.BUILD_LIST)
 
     def visit_Tuple(self, node):
+        if any(isinstance(element, ast.Unpack) for element in node.elements):
+            self.unpacking_display(node, "tuple_from_list")
+            return
         self.sequence(node, fndb.BUILD_TUPLE)
+
+    def unpacking_display(self, node, conversion):
+        """A display with ``*iterable`` elements: the elements, in order, are
+        collected into a new list, then converted to the display's type."""
+        function = self.function
+        start, next_, result = self.frame
+        items = function.temporary()
+        ctran, value = function.value(start, ast.List([], span=node.span))
+        current = Ctran()
+        function.set_var(ctran, current, items, value, node)
+        for element in node.elements:
+            ctran, held = Ctran(), Lvar()
+            function.ref(current, ctran, held, items, element)
+            following = Ctran()
+            if isinstance(element, ast.Unpack):
+                operands, name = (held, element.value), "extend_arguments"
+            else:
+                operands, name = (held, element), "append_argument"
+            function.protocol(ctran, following, None, name, operands, element)
+            current = following
+        if conversion is None:
+            function.ref(current, next_, result, items, node, final=True)
+            return
+        ctran, held = Ctran(), Lvar()
+        function.ref(current, ctran, held, items, node, final=True)
+        function.protocol(ctran, next_, result, conversion, (held,), node)
+
+    def unpacking_dict(self, node):
+        """A dict display with ``**mapping`` entries, merged in order, later
+        keys replacing earlier ones."""
+        function = self.function
+        start, next_, result = self.frame
+        mapping = function.temporary()
+        ctran, value = function.value(start, ast.Dict([], span=node.span))
+        current = Ctran()
+        function.set_var(ctran, current, mapping, value, node)
+        for entry in node.entries:
+            ctran, held = Ctran(), Lvar()
+            function.ref(current, ctran, held, mapping, entry)
+            following = Ctran()
+            if entry.key is None:
+                function.protocol(
+                    ctran, following, None, "dict_merge", (held, entry.value), entry
+                )
+            else:
+                function.protocol(
+                    ctran,
+                    following,
+                    None,
+                    "setitem",
+                    (held, entry.key, entry.value),
+                    entry,
+                )
+            current = following
+        function.ref(current, next_, result, mapping, node, final=True)
 
     def sequence(self, node, info):
         function = self.function
@@ -1284,10 +1572,45 @@ class _Expressions(ast.Visitor):
             )
             current, joined = ctran, value
 
+    def visit_TemplateString(self, node):
+        """``t"..."``: the literal parts and an Interpolation per field,
+        evaluated left to right, then combined into a Template."""
+        function = self.function
+        start, next_, result = self.frame
+        current = start
+        parts = []
+        for part in node.parts:
+            if not isinstance(part, ast.Interpolation):
+                current, value = function.value(current, part)
+                parts.append(value)
+                continue
+            current, value = function.value(current, part.expression)
+            operands = [value]
+            for operand in (
+                ast.TextLiteral(part.expression_text or "", span=part.span),
+                ast.TextLiteral(part.conversion, span=part.span)
+                if part.conversion is not None
+                else ast.NoneLiteral(None, span=part.span),
+                part.format_spec
+                if part.format_spec is not None
+                else ast.TextLiteral("", span=part.span),
+            ):
+                current, value = function.value(current, operand)
+                operands.append(value)
+            ctran, interpolation = Ctran(), Lvar()
+            function.protocol(
+                current, ctran, interpolation, "make_interpolation", tuple(operands), part
+            )
+            current = ctran
+            parts.append(interpolation)
+        ctran, items = Ctran(), Lvar()
+        function.known(current, ctran, items, fndb.BUILD_TUPLE, tuple(parts), node)
+        function.protocol(ctran, next_, result, "build_template", (items,), node)
+
     def visit_Interpolation(self, node):
         function = self.function
         start, next_, result = self.frame
-        if node.conversion not in (None, "s", "r"):
+        if node.conversion not in (None, "s", "r", "a"):
             function.error("unsupported f-string conversion", node, unsupported=True)
         ctran, value = function.value(start, node.expression)
         if node.format_spec is not None:
@@ -1418,6 +1741,57 @@ class _Statements(ast.Visitor):
 
     def visit_Pass(self, node):
         return None
+
+    def visit_Match(self, node):
+        start, next_, _ = self.frame
+        self.expanded(start, next_, _MatchLowering(self.function, node.span).statements(node))
+
+    def visit_TypeAlias(self, node):
+        """``type Name[...] = value``: a TypeAliasType evaluating its value
+        lazily, inside an annotation scope holding its type parameters."""
+        function = self.function
+        start, next_, _ = self.frame
+        span = node.span
+        statements = _annotation_scope_body(node, span)
+        create = ast.Call(
+            ast.Attribute(
+                ast.Attribute(ast.Name("$typing", span=span), "TypeAliasType", span=span),
+                "_lazy",
+                span=span,
+            ),
+            [
+                ast.CallArgument(argument, span=span)
+                for argument in (
+                    ast.TextLiteral(node.name, span=span),
+                    ast.Lambda([], node.value, span=span),
+                    _type_parameter_tuple(node, span),
+                    ast.Name("__name__", span=span),
+                )
+            ],
+            span=span,
+        )
+        statements.append(ast.Return(create, span=span))
+        scope = ast.FunctionDefinition(f"<generic parameters of {node.name}>", [], statements, span=span)
+        lambda_ = function.converter.function(
+            scope,
+            function.lambda_.policy,
+            parent=function,
+            defining_class=function.class_scopes[-1] if function.class_scopes else None,
+            annotation_scope=True,
+        )
+        ctran, created = Ctran(), Lvar()
+        function.define_function(start, ctran, created, lambda_, scope, scope.name)
+        following, result = Ctran(), Lvar()
+        function.full_call(
+            ctran,
+            following,
+            result,
+            created,
+            (),
+            node,
+            CallInfo((), function.converter.location(node)),
+        )
+        function.store(following, next_, node.name, result, node)
 
     def visit_Global(self, node):
         return None
@@ -1749,10 +2123,17 @@ class _Statements(ast.Visitor):
         function = self.function
         start, next_, _ = self.frame
         if node.is_async:
-            function.error(
-                "async context managers are not supported yet", node, unsupported=True
-            )
+            if function.body_kind not in ("coroutine", "async_generator"):
+                function.error("'async with' outside async function", node)
+            self.expanded(start, next_, _async_with(function, node))
+            return
         self.with_items(start, next_, node, 0)
+
+    def expanded(self, start, next_, statements):
+        """Convert statements a construct expands into, in its place."""
+        frontier = self.function.convert_body(start, statements)
+        if frontier is not None:
+            self.function.flow(frontier, next_)
 
     def with_items(self, start, next_, node, index):
         """Enter one ``with`` item; nested items wrap the body in turn."""
@@ -1855,9 +2236,10 @@ class _Statements(ast.Visitor):
         function = self.function
         start, next_, _ = self.frame
         if node.is_async:
-            function.error(
-                "async iteration is not supported yet", node, unsupported=True
-            )
+            if function.body_kind not in ("coroutine", "async_generator"):
+                function.error("'async for' outside async function", node)
+            self.expanded(start, next_, _async_for(function, node))
+            return
         candidate = node.iterable.accept(_RangeCandidate())
         callee = None
         current = start
@@ -2041,7 +2423,15 @@ class _Statements(ast.Visitor):
             function.convert(start, ctran, delivered, node.value)
         if annotation is not None:
             following = Ctran()
-            function.cast(ctran, following, result, delivered, annotation, node)
+            function.cast(
+                ctran,
+                following,
+                result,
+                delivered,
+                annotation,
+                node,
+                declaration=("return", lambda_),
+            )
             ctran = following
         function.jump(ctran, lambda_.return_.block)
 
@@ -2050,7 +2440,12 @@ class _Statements(ast.Visitor):
         start, next_, _ = self.frame
         converter = function.converter
         converter.reserved(node.name, node)
+        if node.type_parameters:
+            self.generic_definition(node)
+            return
         scope = function.class_scopes[-1] if function.class_scopes else None
+        if scope is None and function.annotation_scope:
+            scope = function.defining_class
         decorators = converter.runtime_decorators(node.decorators)
         current, held = function.evaluate_decorators(start, decorators)
         lambda_ = converter.function(
@@ -2077,28 +2472,22 @@ class _Statements(ast.Visitor):
         converter = function.converter
         converter.reserved(node.name, node)
         if node.type_parameters:
-            function.error(
-                "generic classes are not supported yet", node, unsupported=True
-            )
+            self.generic_definition(node)
+            return
         outer = function.class_scopes[-1] if function.class_scopes else None
         policy = converter.policy(
             node.decorators, outer.policy if outer is not None else function.lambda_.policy
         )
-        for argument in node.arguments:
-            if argument.kind == ast.ArgumentKind.KEYWORD and argument.keyword == "metaclass":
-                function.error(
-                    "metaclasses are not supported yet", argument, unsupported=True
-                )
-            if argument.kind != ast.ArgumentKind.POSITIONAL:
-                function.error(
-                    "class keywords and base expansion are not supported yet",
-                    argument,
-                    unsupported=True,
-                )
-        if len(node.arguments) > 1:
-            function.error(
-                "multiple inheritance is not supported yet", node, unsupported=True
-            )
+        positional = [
+            argument
+            for argument in node.arguments
+            if argument.kind in (ast.ArgumentKind.POSITIONAL, ast.ArgumentKind.STARRED)
+        ]
+        keywords = [
+            argument
+            for argument in node.arguments
+            if argument.kind in (ast.ArgumentKind.KEYWORD, ast.ArgumentKind.DOUBLE_STARRED)
+        ]
         identity = f"{converter.prefix}mule_cls_{converter.class_definitions}"
         converter.class_definitions += 1
         native = _native_class_body(function, node, policy)
@@ -2107,20 +2496,48 @@ class _Statements(ast.Visitor):
         if body and body[0].accept(_ClassDocstring()):
             docstring, body = body[0].expression, body[1:]
 
-        # Decorators, then bases, are evaluated before the body runs.
+        # Decorators, then the bases and keywords in source order, are
+        # evaluated before the namespace is prepared and the body runs.
         decorators = converter.runtime_decorators(node.decorators)
         current, held = function.evaluate_decorators(start, decorators)
-        bases = []
-        for argument in node.arguments:
-            ctran, value = function.value(current, argument.value)
-            temporary = function.temporary()
+        span = node.span
+        for argument in positional:
+            if argument.kind == ast.ArgumentKind.STARRED:
+                function.error(
+                    "starred class bases are not supported yet",
+                    argument,
+                    unsupported=True,
+                )
+        bases, class_keywords = function.temporary(), function.temporary()
+        ctran, value = function.value(
+            current, ast.Tuple([argument.value for argument in positional], span=span)
+        )
+        current = Ctran()
+        function.set_var(ctran, current, bases, value, node)
+        if keywords:
+            current = function.keyword_dict(current, class_keywords, keywords, node)
+        else:
+            ctran, value = Ctran(), Lvar()
+            function.constant(current, ctran, value, ast.NoneLiteral(None, span=span))
             current = Ctran()
-            function.set_var(ctran, current, temporary, value, argument)
-            bases.append(temporary)
+            function.set_var(ctran, current, class_keywords, value, node)
 
         namespace = function.temporary()
+        operands = []
+        for var in (bases, class_keywords):
+            ctran, value = Ctran(), Lvar()
+            function.ref(current, ctran, value, var, node)
+            current = ctran
+            operands.append(value)
         ctran, created = Ctran(), Lvar()
-        function.known(current, ctran, created, fndb.CLASS_NAMESPACE, (), node)
+        function.known(
+            current,
+            ctran,
+            created,
+            fndb.CLASS_NAMESPACE,
+            (*operands, ast.TextLiteral(node.name, span=span)),
+            node,
+        )
         current = Ctran()
         function.set_var(ctran, current, namespace, created, node)
         bindings = _ClassBindings()
@@ -2156,6 +2573,10 @@ class _Statements(ast.Visitor):
             )
 
         fields = dict.fromkeys(native.fields if native is not None else ())
+        # Names a literal __slots__ declares are instance fields, even when
+        # only __new__ or code outside the class assigns them.
+        for statement in body:
+            fields.update(dict.fromkeys(statement.accept(_SlotNames())))
         for method in _ClassMethods.of(body):
             if not method.parameters:
                 continue
@@ -2178,17 +2599,14 @@ class _Statements(ast.Visitor):
         if frontier is None:
             return
         operands = []
-        for temporary in bases:
+        for var in (bases, namespace, class_keywords):
             ctran, value = Ctran(), Lvar()
-            function.ref(frontier, ctran, value, temporary, node, final=True)
+            function.ref(frontier, ctran, value, var, node, final=True)
             frontier = ctran
             operands.append(value)
-        ctran, value = Ctran(), Lvar()
-        function.ref(frontier, ctran, value, namespace, node, final=True)
-        operands.append(value)
         info = ClassInfo(
             node.name,
-            len(bases),
+            len(positional),
             tuple(fields),
             tuple(contract for contract, declaration in native.fields.values())
             if native is not None
@@ -2221,6 +2639,503 @@ class _Statements(ast.Visitor):
             function.ref(ctran, following, created, klass, node, final=True)
         ctran, created = function.apply_decorators(following, held, created, decorators)
         function.store(ctran, next_, node.name, created, node)
+
+
+class _MatchLowering:
+    """A ``match`` statement as tests and assignments over hidden variables,
+    the decision sequence CPython's compiler emits. Each pattern sets a flag
+    and binds its names as it matches; later cases run only when earlier
+    ones fail. The ``_match`` module supplies the sequence, mapping and class
+    checks CPython performs natively."""
+
+    def __init__(self, function, span):
+        self.function = function
+        self.span = span
+        self.helpers = None
+
+    def temporary(self):
+        return self.function.temporary().name
+
+    def name(self, identifier):
+        return ast.Name(identifier, span=self.span)
+
+    def assign(self, target, value):
+        if isinstance(target, str):
+            target = self.name(target)
+        return ast.Assignment([target], value, span=self.span)
+
+    def constant(self, value):
+        return ast.BooleanLiteral(value, span=self.span)
+
+    def call(self, helper, *arguments):
+        return ast.Call(
+            ast.Attribute(self.name(self.helpers), helper, span=self.span),
+            [ast.CallArgument(argument, span=self.span) for argument in arguments],
+            span=self.span,
+        )
+
+    def compare(self, left, operator, right):
+        return ast.Comparison(left, [operator], [right], span=self.span)
+
+    def when(self, flag, body):
+        return ast.If(self.name(flag), body, span=self.span)
+
+    def index(self, sequence, position):
+        return ast.Subscript(
+            self.name(sequence), ast.IntegerLiteral(position, span=self.span), span=self.span
+        )
+
+    def statements(self, node):
+        self.helpers = self.temporary()
+        subject = self.temporary()
+        result = [
+            ast.Import([ast.ImportItem("_match", self.helpers, span=self.span)], span=self.span),
+            self.assign(subject, node.subject),
+        ]
+        return result + self.cases(node.cases, 0, subject)
+
+    def cases(self, cases, position, subject):
+        if position == len(cases):
+            return []
+        case = cases[position]
+        flag = self.temporary()
+        test = self.name(flag)
+        if case.guard is not None:
+            test = ast.Boolean(ast.BooleanOperator.AND, [test, case.guard], span=self.span)
+        return [
+            *self.pattern(case.pattern, subject, flag),
+            ast.If(
+                test,
+                list(case.body) or [ast.Pass(span=self.span)],
+                self.cases(cases, position + 1, subject),
+                span=self.span,
+            ),
+        ]
+
+    def pattern(self, pattern, subject, flag):
+        """Statements leaving ``flag`` true when ``pattern`` matches the
+        value in the variable ``subject``."""
+        if isinstance(pattern, ast.CapturePattern):
+            bind = [] if pattern.name is None else [self.assign(pattern.name, self.name(subject))]
+            return [*bind, self.assign(flag, self.constant(True))]
+        if isinstance(pattern, ast.LiteralPattern):
+            identity = isinstance(pattern.value, (ast.NoneLiteral, ast.BooleanLiteral))
+            operator = ast.ComparisonOperator.IS if identity else ast.ComparisonOperator.EQUAL
+            return [self.assign(flag, self.compare(self.name(subject), operator, pattern.value))]
+        if isinstance(pattern, ast.ValuePattern):
+            return [
+                self.assign(
+                    flag,
+                    self.compare(self.name(subject), ast.ComparisonOperator.EQUAL, pattern.value),
+                )
+            ]
+        if isinstance(pattern, ast.AsPattern):
+            return [
+                *self.pattern(pattern.pattern, subject, flag),
+                self.when(flag, [self.assign(pattern.name, self.name(subject))]),
+            ]
+        if isinstance(pattern, ast.OrPattern):
+            result = [self.assign(flag, self.constant(False))]
+            for alternative in pattern.alternatives:
+                result.append(
+                    ast.If(
+                        ast.Unary(ast.UnaryOperator.NOT, self.name(flag), span=self.span),
+                        self.pattern(alternative, subject, flag),
+                        span=self.span,
+                    )
+                )
+            return result
+        if isinstance(pattern, ast.SequencePattern):
+            return self.sequence(pattern, subject, flag)
+        if isinstance(pattern, ast.MappingPattern):
+            return self.mapping(pattern, subject, flag)
+        if isinstance(pattern, ast.ClassPattern):
+            return self.class_pattern(pattern, subject, flag)
+        self.function.error("unsupported pattern", pattern, unsupported=True)
+
+    def items(self, values, patterns, flag, positions):
+        """Match each pattern against the item at its position, in order,
+        stopping at the first failure."""
+        result = []
+        for pattern, position in reversed(list(zip(patterns, positions, strict=True))):
+            item = self.temporary()
+            result = [
+                self.assign(item, self.index(values, position)),
+                *self.pattern(pattern, item, flag),
+                *([self.when(flag, result)] if result else []),
+            ]
+        return result
+
+    def sequence(self, pattern, subject, flag):
+        values = self.temporary()
+        elements = pattern.elements
+        stars = [index for index, element in enumerate(elements) if isinstance(element, ast.StarPattern)]
+        length = ast.Call(
+            ast.Attribute(self.name(values), "__len__", span=self.span), span=self.span
+        )
+        count = ast.IntegerLiteral(len(elements) - len(stars), span=self.span)
+        size_check = self.compare(
+            length,
+            ast.ComparisonOperator.GREATER_EQUAL if stars else ast.ComparisonOperator.EQUAL,
+            count,
+        )
+        patterns, positions, captures = [], [], []
+        for index, element in enumerate(elements):
+            if isinstance(element, ast.StarPattern):
+                if element.name is not None:
+                    after = len(elements) - index - 1
+                    upper = (
+                        ast.Unary(
+                            ast.UnaryOperator.NEGATIVE,
+                            ast.IntegerLiteral(after, span=self.span),
+                            span=self.span,
+                        )
+                        if after
+                        else None
+                    )
+                    captures.append(
+                        self.assign(
+                            element.name,
+                            ast.Subscript(
+                                self.name(values),
+                                ast.Slice(ast.IntegerLiteral(index, span=self.span), upper, span=self.span),
+                                span=self.span,
+                            ),
+                        )
+                    )
+                continue
+            patterns.append(element)
+            positions.append(index if not stars or index < stars[0] else index - len(elements))
+        matched = [*captures, self.assign(flag, self.constant(True)), *self.items(values, patterns, flag, positions)]
+        return [
+            self.assign(values, self.call("sequence", self.name(subject))),
+            self.assign(
+                flag,
+                self.compare(
+                    self.name(values), ast.ComparisonOperator.IS_NOT, ast.NoneLiteral(None, span=self.span)
+                ),
+            ),
+            self.when(flag, [self.assign(flag, size_check), self.when(flag, matched)]),
+        ]
+
+    def mapping(self, pattern, subject, flag):
+        values = self.temporary()
+        keys = ast.Tuple([entry.key for entry in pattern.entries], span=self.span)
+        rest = []
+        if pattern.rest is not None:
+            rest = [self.assign(pattern.rest, self.call("mapping_rest", self.name(subject), keys))]
+        inner = [
+            self.assign(values, self.call("mapping_values", self.name(subject), keys)),
+            self.assign(
+                flag,
+                self.compare(
+                    self.name(values), ast.ComparisonOperator.IS_NOT, ast.NoneLiteral(None, span=self.span)
+                ),
+            ),
+            self.when(
+                flag,
+                [
+                    *self.items(
+                        values,
+                        [entry.pattern for entry in pattern.entries],
+                        flag,
+                        list(range(len(pattern.entries))),
+                    ),
+                    *([self.when(flag, rest)] if rest else []),
+                ]
+                if pattern.entries
+                else rest or [ast.Pass(span=self.span)],
+            ),
+        ]
+        return [self.assign(flag, self.call("mapping", self.name(subject))), self.when(flag, inner)]
+
+    def class_pattern(self, pattern, subject, flag):
+        values = self.temporary()
+        names = ast.Tuple(
+            [ast.TextLiteral(keyword.name, span=self.span) for keyword in pattern.keywords],
+            span=self.span,
+        )
+        patterns = [*pattern.positional, *(keyword.pattern for keyword in pattern.keywords)]
+        return [
+            self.assign(
+                values,
+                self.call(
+                    "class_attributes",
+                    self.name(subject),
+                    pattern.class_name,
+                    ast.IntegerLiteral(len(pattern.positional), span=self.span),
+                    names,
+                ),
+            ),
+            self.assign(
+                flag,
+                self.compare(
+                    self.name(values), ast.ComparisonOperator.IS_NOT, ast.NoneLiteral(None, span=self.span)
+                ),
+            ),
+            *(
+                [self.when(flag, self.items(values, patterns, flag, list(range(len(patterns)))))]
+                if patterns
+                else []
+            ),
+        ]
+
+
+def _async_with(function, node):
+    """``async with``, expanded as CPython executes it: await ``__aenter__``,
+    run the body, and await ``__aexit__`` with the exception that ends the
+    body (suppressing it when the result is true) or with Nones otherwise."""
+    span = node.span
+    item, rest = node.items[0], node.items[1:]
+    body = list(node.body) if not rest else [replace(node, items=rest)]
+    manager, exit_, value, error, handled = (
+        function.temporary().name for _ in range(5)
+    )
+
+    def name(identifier):
+        return ast.Name(identifier, span=span)
+
+    def call(callee, *arguments):
+        return ast.Call(
+            callee, [ast.CallArgument(argument, span=span) for argument in arguments], span=span
+        )
+
+    def assign(target, value):
+        return ast.Assignment([target], value, span=span)
+
+    none = ast.NoneLiteral(None, span=span)
+    if item.target is not None:
+        body.insert(0, assign(item.target, name(value)))
+    exit_with_error = ast.Await(
+        call(name(exit_), ast.Attribute(name(error), "__class__", span=span), name(error), none),
+        span=span,
+    )
+    return [
+        assign(name(manager), item.context),
+        assign(name(exit_), ast.Attribute(name(manager), "__aexit__", span=span)),
+        assign(
+            name(value),
+            ast.Await(call(ast.Attribute(name(manager), "__aenter__", span=span)), span=span),
+        ),
+        assign(name(handled), ast.BooleanLiteral(False, span=span)),
+        ast.Try(
+            body,
+            [
+                ast.ExceptionHandler(
+                    name("BaseException"),
+                    error,
+                    [
+                        assign(name(handled), ast.BooleanLiteral(True, span=span)),
+                        ast.If(
+                            ast.Unary(ast.UnaryOperator.NOT, exit_with_error, span=span),
+                            [ast.Raise(span=span)],
+                            span=span,
+                        ),
+                    ],
+                    span=span,
+                )
+            ],
+            finally_body=[
+                ast.If(
+                    ast.Unary(ast.UnaryOperator.NOT, name(handled), span=span),
+                    [
+                        ast.ExpressionStatement(
+                            ast.Await(call(name(exit_), none, none, none), span=span),
+                            span=span,
+                        )
+                    ],
+                    span=span,
+                )
+            ],
+            span=span,
+        ),
+    ]
+
+
+def _async_for(function, node):
+    """``async for``, expanded: await ``__anext__`` until it raises
+    StopAsyncIteration, then run the ``else`` clause unless the body broke out."""
+    span = node.span
+    iterator, value, exhausted = (function.temporary().name for _ in range(3))
+
+    def name(identifier):
+        return ast.Name(identifier, span=span)
+
+    def assign(target, value):
+        return ast.Assignment([target], value, span=span)
+
+    loop = ast.While(
+        ast.BooleanLiteral(True, span=span),
+        [
+            ast.Try(
+                [
+                    assign(
+                        name(value),
+                        ast.Await(
+                            ast.Call(ast.Attribute(name(iterator), "__anext__", span=span), span=span),
+                            span=span,
+                        ),
+                    )
+                ],
+                [
+                    ast.ExceptionHandler(
+                        name("StopAsyncIteration"),
+                        None,
+                        [assign(name(exhausted), ast.BooleanLiteral(True, span=span)), ast.Break(span=span)],
+                        span=span,
+                    )
+                ],
+                span=span,
+            ),
+            assign(node.target, name(value)),
+            *node.body,
+        ],
+        span=span,
+    )
+    statements = [
+        assign(
+            name(iterator),
+            ast.Call(ast.Attribute(node.iterable, "__aiter__", span=span), span=span),
+        ),
+        assign(name(exhausted), ast.BooleanLiteral(False, span=span)),
+        loop,
+    ]
+    if node.else_body:
+        statements.append(ast.If(name(exhausted), list(node.else_body), span=span))
+    return statements
+
+
+_TYPE_PARAMETER_KINDS = {
+    ast.TypeParameterKind.TYPE_VAR: "TypeVar",
+    ast.TypeParameterKind.PARAM_SPEC: "ParamSpec",
+    ast.TypeParameterKind.TYPE_VAR_TUPLE: "TypeVarTuple",
+}
+
+
+def _annotation_scope_body(node, span):
+    """Statements creating ``node``'s type parameters, each lazily evaluating
+    its bound, constraints and default, and the names they bind."""
+    statements = [ast.Import([ast.ImportItem("_typing", "$typing", span=span)], span=span)]
+
+    def lazy(expression):
+        if expression is None:
+            return ast.NoneLiteral(None, span=span)
+        return ast.Lambda([], expression, span=span)
+
+    for parameter in node.type_parameters:
+        constraints = (
+            ast.Tuple(list(parameter.constraints), span=span)
+            if parameter.constraints
+            else None
+        )
+        create = ast.Call(
+            ast.Attribute(ast.Name("$typing", span=span), "_type_parameter", span=span),
+            [
+                ast.CallArgument(argument, span=span)
+                for argument in (
+                    ast.TextLiteral(_TYPE_PARAMETER_KINDS[parameter.kind], span=span),
+                    ast.TextLiteral(parameter.name, span=span),
+                    lazy(parameter.bound),
+                    lazy(constraints),
+                    lazy(parameter.default),
+                )
+            ],
+            span=span,
+        )
+        statements.append(
+            ast.Assignment([ast.Name(parameter.name, span=span)], create, span=span)
+        )
+    return statements
+
+
+def _type_parameter_tuple(node, span, *, unpack=False):
+    return ast.Tuple(
+        [
+            ast.Unpack(ast.Name(parameter.name, span=span), span=span)
+            if unpack and parameter.kind == ast.TypeParameterKind.TYPE_VAR_TUPLE
+            else ast.Name(parameter.name, span=span)
+            for parameter in node.type_parameters
+        ],
+        span=span,
+    )
+
+
+def _generic_definition(self, node):
+    """A PEP 695 generic function or class. As in CPython, a hidden
+    annotation scope creates the type parameters, defines the function or
+    class (a class additionally derives from ``Generic[...]``), records them
+    as ``__type_params__``, and returns it; decorators apply outside."""
+    function = self.function
+    start, next_, _ = self.frame
+    converter = function.converter
+    span = node.span
+    statements = _annotation_scope_body(node, span)
+    if isinstance(node, ast.ClassDefinition):
+        positional = [
+            argument
+            for argument in node.arguments
+            if argument.kind in (ast.ArgumentKind.POSITIONAL, ast.ArgumentKind.STARRED)
+        ]
+        keywords = [argument for argument in node.arguments if argument not in positional]
+        generic = ast.CallArgument(
+            ast.Subscript(
+                ast.Attribute(ast.Name("$typing", span=span), "Generic", span=span),
+                _type_parameter_tuple(node, span, unpack=True),
+                span=span,
+            ),
+            span=span,
+        )
+        body = list(node.body)
+        offset = 1 if body and body[0].accept(_ClassDocstring()) else 0
+        body.insert(
+            offset,
+            ast.Assignment(
+                [ast.Name("__type_params__", span=span)],
+                _type_parameter_tuple(node, span),
+                span=span,
+            ),
+        )
+        inner = replace(
+            node,
+            type_parameters=[],
+            decorators=[],
+            arguments=[*positional, generic, *keywords],
+            body=body,
+        )
+        statements.append(inner)
+    else:
+        inner = replace(node, type_parameters=[], decorators=[])
+        statements.append(inner)
+        statements.append(
+            ast.Assignment(
+                [ast.Attribute(ast.Name(node.name, span=span), "__type_params__", span=span)],
+                _type_parameter_tuple(node, span),
+                span=span,
+            )
+        )
+    statements.append(ast.Return(ast.Name(node.name, span=span), span=span))
+    scope = ast.FunctionDefinition(f"<generic parameters of {node.name}>", [], statements, span=span)
+    decorators = converter.runtime_decorators(node.decorators)
+    current, held = function.evaluate_decorators(start, decorators)
+    outer = function.class_scopes[-1] if function.class_scopes else function.defining_class
+    lambda_ = converter.function(
+        scope,
+        function.lambda_.policy,
+        parent=function,
+        defining_class=outer,
+        annotation_scope=True,
+    )
+    ctran, created = Ctran(), Lvar()
+    function.define_function(current, ctran, created, lambda_, scope, scope.name)
+    following, result = Ctran(), Lvar()
+    function.full_call(
+        ctran, following, result, created, (), node, CallInfo((), converter.location(node))
+    )
+    ctran, result = function.apply_decorators(following, held, result, decorators)
+    function.store(ctran, next_, node.name, result, node)
+
+
+_Statements.generic_definition = _generic_definition
 
 
 def _evaluate_decorators(self, start, decorators):
@@ -2423,12 +3338,36 @@ class _AssignmentTarget(ast.Visitor):
 
     def unpack(self, node):
         function = self.function
-        ctran, count = Ctran(), Lvar()
-        function.constant(
-            self.start, ctran, count, ast.IntegerLiteral(len(node.elements))
-        )
-        following, values = Ctran(), Lvar()
-        function.protocol(ctran, following, values, "unpack", (self.value, count), node)
+        starred = [
+            index
+            for index, element in enumerate(node.elements)
+            if isinstance(element, ast.Unpack)
+        ]
+        if len(starred) > 1:
+            function.error("multiple starred expressions in assignment", node)
+        if starred:
+            # ``a, *b, c = value``: the protocol returns the leading items,
+            # a list of the middle ones and the trailing items.
+            before = starred[0]
+            after = len(node.elements) - before - 1
+            ctran, low = Ctran(), Lvar()
+            function.constant(self.start, ctran, low, ast.IntegerLiteral(before))
+            following, high = Ctran(), Lvar()
+            function.constant(ctran, following, high, ast.IntegerLiteral(after))
+            ctran, values = Ctran(), Lvar()
+            function.protocol(
+                following, ctran, values, "unpack_starred", (self.value, low, high), node
+            )
+            following = ctran
+        else:
+            ctran, count = Ctran(), Lvar()
+            function.constant(
+                self.start, ctran, count, ast.IntegerLiteral(len(node.elements))
+            )
+            following, values = Ctran(), Lvar()
+            function.protocol(
+                ctran, following, values, "unpack", (self.value, count), node
+            )
         temporary = function.temporary(expression=True)
         current = Ctran()
         function.set_var(following, current, temporary, values, node)
@@ -2442,6 +3381,8 @@ class _AssignmentTarget(ast.Visitor):
                 following, ctran, element, fndb.UNPACK_REF, (loaded, position), node
             )
             current = Ctran()
+            if isinstance(target, ast.Unpack):
+                target = target.value
             target.accept(_AssignmentTarget(function, element, ctran, current))
         function.discard(current, self.next, temporary.name, node)
 
@@ -3168,6 +4109,10 @@ class _ClassBindings(_ImportNames):
         for child in node.children():
             child.accept(self)
 
+    def visit_MatchCase(self, node):
+        self.bound.update(_pattern_names(node.pattern))
+        self.visit_Node(node)
+
     def visit_Lambda(self, node):
         for parameter in node.parameters:
             if parameter.default is not None:
@@ -3220,6 +4165,71 @@ class _BoundNames(ast.Visitor):
         self.names.add(node.identifier)
 
 
+class _SlotNames(ast.Visitor):
+    """The instance fields a ``__slots__ = ...`` statement declares with
+    string literals; other statements and computed values declare none."""
+
+    def visit_Node(self, node):
+        return ()
+
+    def visit_Assignment(self, node):
+        if not (
+            len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].identifier == "__slots__"
+        ):
+            return ()
+        value = node.value
+        elements = value.elements if isinstance(value, (ast.Tuple, ast.List)) else [value]
+        return tuple(
+            element.value
+            for element in elements
+            if isinstance(element, ast.TextLiteral)
+            and element.value not in ("__dict__", "__weakref__")
+        )
+
+
+class _ContainsYield(ast.Visitor):
+    """Whether a function body yields, making the function a generator.
+    Nested functions, lambdas and classes are separate scopes."""
+
+    def visit_Node(self, node):
+        return any(child.accept(self) for child in node.children())
+
+    def visit_Yield(self, node):
+        return True
+
+    def visit_FunctionDefinition(self, node):
+        return False
+
+    def visit_Lambda(self, node):
+        return False
+
+    def visit_ClassDefinition(self, node):
+        return False
+
+    def visit_Comprehension(self, node):
+        # Only the first iterable is evaluated in the enclosing function.
+        return node.clauses[0].iterable.accept(self)
+
+
+def _comprehension_assignments(node):
+    """Names assignment expressions in a comprehension bind."""
+    names = []
+
+    def visit(child):
+        if isinstance(child, ast.NamedExpression):
+            names.append(child.target.identifier)
+        if isinstance(child, (ast.Lambda, ast.FunctionDefinition, ast.ClassDefinition)):
+            return
+        for grandchild in child.children():
+            visit(grandchild)
+
+    for child in node.children():
+        visit(child)
+    return names
+
+
 class _ComprehensionAssignment(ast.Visitor):
     """Whether a comprehension contains an assignment expression, which binds
     in the enclosing scope rather than the comprehension's."""
@@ -3232,6 +4242,24 @@ class _ComprehensionAssignment(ast.Visitor):
 
     def visit_Lambda(self, node):
         return False
+
+
+def _pattern_names(pattern):
+    """The names a pattern binds when it matches."""
+    names = []
+
+    def visit(node):
+        name = getattr(node, "name", None)
+        if isinstance(node, (ast.CapturePattern, ast.StarPattern, ast.AsPattern)) and name:
+            names.append(name)
+        if isinstance(node, ast.MappingPattern) and node.rest:
+            names.append(node.rest)
+        for child in node.children():
+            if isinstance(child, (ast.Pattern, ast.PatternEntry, ast.KeywordPattern)):
+                visit(child)
+
+    visit(pattern)
+    return names
 
 
 class _ClassMethods(ast.Visitor):
@@ -3383,8 +4411,16 @@ class _LocalBindings(_ImportNames):
             child.accept(self)
 
     def visit_Comprehension(self, node):
-        # Only the first iterable is evaluated in this scope.
+        # Only the first iterable is evaluated in this scope, but an
+        # assignment expression inside binds here (PEP 572).
         node.clauses[0].iterable.accept(self)
+        for name in _comprehension_assignments(node):
+            ast.Name(name, span=node.span).accept(self.target_visitor)
+
+    def visit_MatchCase(self, node):
+        for name in _pattern_names(node.pattern):
+            ast.Name(name, span=node.span).accept(self.target_visitor)
+        self.visit_Node(node)
 
     def visit_Lambda(self, node):
         # Only defaults run in this scope; the body is another scope.

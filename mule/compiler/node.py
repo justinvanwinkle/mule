@@ -248,15 +248,20 @@ class Cast(ValuedNode):
     """Assert a contract on ``value``. Check generation decides whether the
     assertion becomes a runtime check (``type_check``) according to policy."""
 
-    __slots__ = ("contract", "location", "safety", "type_check", "value")
+    __slots__ = ("contract", "declaration", "location", "safety", "type_check", "value")
 
-    def __init__(self, lexenv, source, value: Lvar, contract, location, safety: int):
+    def __init__(
+        self, lexenv, source, value: Lvar, contract, location, safety: int, declaration=None
+    ):
         super().__init__(lexenv, source)
         self.value = value
         self.contract = contract
         self.location = location
         self.safety = safety
         self.type_check = True
+        # The annotation this assertion enforces: ("return", lambda),
+        # ("local", lambda, name) or ("global", namespace, name).
+        self.declaration = declaration
 
     def accept(self, visitor):
         return visitor.visit_Cast(self)

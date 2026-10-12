@@ -4,14 +4,30 @@ Underscored storage operations are bound by the compiler. These definitions
 execute as native Python functions and classes, in a private module namespace.
 """
 
+from _object import bool, float, int, isinstance, issubclass, object, type, vars
 from _mule_native import text_from_codepoints as _text_from_codepoints
-from _str import TextStorage, ascii, decode, format, ord, repr, str
-from _attributes import delattr, getattr, hasattr, setattr, type
+from _str import TextStorage, ascii, decode, format, ord, repr
+from _str import str as _make_str
+from _attributes import delattr, getattr, hasattr, setattr
 from _descriptors import classmethod, property, staticmethod, super
+from _generators import generator as _generator
+from _generators import yield_from as _yield_from
+from _generators import async_generator as _async_generator
+from _generators import async_generator_yield as _async_generator_yield
+from _generators import await_value as _await_value
+from _generators import coroutine as _coroutine
 from _dict import build_dict as _build_dict
 from _dict import build_set as _build_set
 from _dict import dict, frozenset, hash, set
 from _mule_native import bytes_from_values as _bytes_from_values
+from _mule_native import call_with as _call_with
+from _mule_native import identity as _identity
+from _mule_native import is_class as _is_class
+from _mule_native import register_not_implemented as _register_not_implemented
+from _mule_native import namespace_items as _namespace_items
+from _mule_native import new_namespace as _new_namespace
+from _mule_native import is_instance as _is_instance
+from _mule_native import overriding_new as _overriding_new
 from _slice import is_slice, positions, slice
 
 # ruff: noqa: F821
@@ -85,7 +101,20 @@ class AssertionError(Exception):
 
 
 class StopIteration(Exception):
+    # Iteration itself raises StopIteration, so construction must not iterate.
+    @property
+    def value(self):
+        return self.args[0] if self.args else None
+
+
+class GeneratorExit(BaseException):
     pass
+
+
+class StopAsyncIteration(Exception):
+    @property
+    def value(self):
+        return self.args[0] if self.args else None
 
 
 class MemoryError(Exception):
@@ -121,6 +150,191 @@ class UnicodeEncodeError(UnicodeError):
 
 
 class UnicodeDecodeError(UnicodeError):
+    pass
+
+
+class SystemExit(BaseException):
+    @property
+    def code(self):
+        if not self.args:
+            return None
+        return self.args[0] if len(self.args) == 1 else self.args
+
+
+class KeyboardInterrupt(BaseException):
+    pass
+
+
+class FloatingPointError(ArithmeticError):
+    pass
+
+
+class BufferError(Exception):
+    pass
+
+
+class ImportError(Exception):
+    def __init__(self, *args, name=None, path=None):
+        BaseException.__init__(self, *args)
+        self.name = name
+        self.path = path
+        self.msg = args[0] if len(args) == 1 else None
+
+
+class ModuleNotFoundError(ImportError):
+    pass
+
+
+class ReferenceError(Exception):
+    pass
+
+
+class NotImplementedError(RuntimeError):
+    pass
+
+
+class PythonFinalizationError(RuntimeError):
+    pass
+
+
+class SyntaxError(Exception):
+    def __init__(self, *args):
+        BaseException.__init__(self, *args)
+        self.msg = args[0] if args else None
+        self.filename = None
+        self.lineno = None
+        self.offset = None
+        self.text = None
+        self.end_lineno = None
+        self.end_offset = None
+        self.print_file_and_line = None
+        if len(args) == 2:
+            details = args[1]
+            self.filename = details[0]
+            self.lineno = details[1]
+            self.offset = details[2]
+            self.text = details[3]
+            if len(details) > 4:
+                self.end_lineno = details[4]
+                self.end_offset = details[5]
+
+    def __str__(self):
+        return str(self.msg)
+
+
+class IndentationError(SyntaxError):
+    pass
+
+
+class TabError(IndentationError):
+    pass
+
+
+class BlockingIOError(OSError):
+    pass
+
+
+class ChildProcessError(OSError):
+    pass
+
+
+class ConnectionError(OSError):
+    pass
+
+
+class BrokenPipeError(ConnectionError):
+    pass
+
+
+class ConnectionAbortedError(ConnectionError):
+    pass
+
+
+class ConnectionRefusedError(ConnectionError):
+    pass
+
+
+class ConnectionResetError(ConnectionError):
+    pass
+
+
+class FileExistsError(OSError):
+    pass
+
+
+class FileNotFoundError(OSError):
+    pass
+
+
+class InterruptedError(OSError):
+    pass
+
+
+class IsADirectoryError(OSError):
+    pass
+
+
+class NotADirectoryError(OSError):
+    pass
+
+
+class PermissionError(OSError):
+    pass
+
+
+class ProcessLookupError(OSError):
+    pass
+
+
+class TimeoutError(OSError):
+    pass
+
+
+class Warning(Exception):
+    pass
+
+
+class BytesWarning(Warning):
+    pass
+
+
+class DeprecationWarning(Warning):
+    pass
+
+
+class EncodingWarning(Warning):
+    pass
+
+
+class FutureWarning(Warning):
+    pass
+
+
+class ImportWarning(Warning):
+    pass
+
+
+class PendingDeprecationWarning(Warning):
+    pass
+
+
+class ResourceWarning(Warning):
+    pass
+
+
+class RuntimeWarning(Warning):
+    pass
+
+
+class SyntaxWarning(Warning):
+    pass
+
+
+class UnicodeWarning(Warning):
+    pass
+
+
+class UserWarning(Warning):
     pass
 
 
@@ -210,7 +424,13 @@ def chr(value, /):
 def getitem(value, index):
     method = _getitem_method(value)
     if method is None:
-        raise TypeError("object is not subscriptable")
+        # Subscripting a class without a metaclass __getitem__ (PEP 560).
+        if _is_class(value):
+            hook = getattr(value, "__class_getitem__", None)
+            if hook is not None:
+                return hook(index)
+            raise TypeError(f"type '{value.__name__}' is not subscriptable")
+        raise TypeError(f"'{_type_name(value)}' object is not subscriptable")
     return method(index)
 
 
@@ -221,14 +441,343 @@ def delitem(value, index):
     method(index)
 
 
+def any(iterable, /):
+    for item in iterable:
+        if item:
+            return True
+    return False
+
+
+def all(iterable, /):
+    for item in iterable:
+        if not item:
+            return False
+    return True
+
+
+def sum(iterable, /, start=0):
+    if _text_storage(start):
+        raise TypeError("sum() can't sum strings [use ''.join(seq) instead]")
+    total = start
+    for item in iterable:
+        total = total + item
+    return total
+
+
+class zip:
+    def __init__(self, *iterables, strict=False):
+        iterators = []
+        for iterable in iterables:
+            _storage_append(iterators, iterate(iterable))
+        self.iterators = iterators
+        self.strict = strict
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        iterators = self.iterators
+        if not iterators:
+            raise StopIteration
+        items = []
+        index = 0
+        while index < _storage_length(iterators):
+            try:
+                _storage_append(items, next_item(_storage_read(iterators, index)))
+            except StopIteration:
+                if self.strict:
+                    self._check_exhausted(index)
+                raise
+            index += 1
+        return _storage_tuple(items)
+
+    def _check_exhausted(self, stopped):
+        if stopped > 0:
+            raise ValueError(f"zip() argument {stopped + 1} is shorter than argument 1")
+        index = 1
+        while index < _storage_length(self.iterators):
+            try:
+                next_item(_storage_read(self.iterators, index))
+            except StopIteration:
+                index += 1
+                continue
+            raise ValueError(f"zip() argument {index + 1} is longer than argument 1")
+
+
+class map:
+    def __init__(self, function, *iterables):
+        if not iterables:
+            raise TypeError("map() must have at least two arguments.")
+        self.function = function
+        self.items = zip(*iterables)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.function(*next_item(self.items))
+
+
+class filter:
+    def __init__(self, function, iterable, /):
+        self.function = function
+        self.iterator = iterate(iterable)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        while True:
+            item = next_item(self.iterator)
+            if (item if self.function is None else self.function(item)):
+                return item
+
+
+def reversed(sequence, /):
+    method = _reversed_method(sequence)
+    if method is not None:
+        return method()
+    items = list(sequence)
+    _reverse_in_place(items)
+    return SequenceIterator(items)
+
+
+def pow(base, exp, mod=None):
+    if mod is None:
+        return base ** exp
+    method = getattr(type(base), "__pow__", None)
+    if method is not None:
+        result = method(base, exp, mod)
+        if result is not NotImplemented:
+            return result
+    if not (_integer_kind(base) and _integer_kind(exp) and _integer_kind(mod)):
+        raise TypeError("pow() 3rd argument not allowed unless all arguments are integers")
+    if mod == 0:
+        raise ValueError("pow() 3rd argument cannot be 0")
+    if exp < 0:
+        raise ValueError("base is not invertible for the given modulus")
+    result = 1 % mod
+    base %= mod
+    while exp:
+        if exp & 1:
+            result = (result * base) % mod
+        base = (base * base) % mod
+        exp >>= 1
+    return result
+
+
+def _integer_kind(value):
+    return isinstance(value, int)
+
+
+def divmod(left, right, /):
+    method = getattr(type(left), "__divmod__", None)
+    if method is not None:
+        result = method(left, right)
+        if result is not NotImplemented:
+            return result
+    method = getattr(type(right), "__rdivmod__", None)
+    if method is not None:
+        result = method(right, left)
+        if result is not NotImplemented:
+            return result
+    return (left // right, left % right)
+
+
+def round(number, ndigits=None):
+    method = getattr(type(number), "__round__", None)
+    if method is None:
+        raise TypeError(f"type {type(number).__name__} doesn't define __round__ method")
+    if ndigits is None:
+        return method(number)
+    return method(number, ndigits)
+
+
+def _digits(value, base, prefix):
+    value = integer_index(value)
+    if value == 0:
+        return prefix + "0"
+    sign = "-" if value < 0 else ""
+    value = -value if value < 0 else value
+    digits = []
+    while value:
+        _storage_append(digits, "0123456789abcdef"[value % base])
+        value //= base
+    _reverse_in_place(digits)
+    return sign + prefix + "".join(digits)
+
+
+def hex(number, /):
+    return _digits(number, 16, "0x")
+
+
+def oct(number, /):
+    return _digits(number, 8, "0o")
+
+
+def bin(number, /):
+    return _digits(number, 2, "0b")
+
+
+def callable(obj, /):
+    if _is_class(obj):
+        return True
+    kind = _type_name(obj)
+    if kind in ("function", "builtin_function_or_method", "method"):
+        return True
+    return getattr(type(obj), "__call__", None) is not None
+
+
+def id(obj, /):
+    return _identity(obj)
+
+
 def sorted(iterable, /, *, key=None, reverse=False):
     result = list(iterable)
     result.sort(key=key, reverse=reverse)
     return result
 
 
+def append_argument(positional, value):
+    _storage_append(positional, value)
+
+
+def extend_arguments(positional, iterable):
+    for value in iterable:
+        _storage_append(positional, value)
+
+
+def add_keyword(keywords, name, value):
+    if name in keywords:
+        raise TypeError(f"got multiple values for keyword argument '{name}'")
+    keywords[name] = value
+
+
+def merge_keywords(keywords, mapping):
+    for name in mapping.keys():
+        if not _text_storage(name):
+            raise TypeError("keywords must be strings")
+        add_keyword(keywords, name, mapping[name])
+
+
+def tuple_from_list(items):
+    return _storage_tuple(items)
+
+
+def dict_merge(mapping, other):
+    if _is_instance(other, dict):
+        mapping.update(other)
+        return
+    keys = getattr(other, "keys", None)
+    if keys is None:
+        raise TypeError(f"'{_type_name(other)}' object is not a mapping")
+    for key in keys():
+        mapping[key] = other[key]
+
+
+def call_expanded(function, positional, keywords):
+    names, values = [], []
+    for name in keywords:
+        _storage_append(names, name)
+        _storage_append(values, keywords[name])
+    return _call_with(
+        function,
+        _storage_tuple(positional),
+        _storage_tuple(names),
+        _storage_tuple(values),
+    )
+
+
 def delete_attribute(value, name):
     delattr(value, name)
+
+
+def make_generator(function, arguments, name, qualname):
+    return _generator(function, arguments, name, qualname)
+
+
+def yield_from(iterable):
+    return _yield_from(iterable)
+
+
+def make_coroutine(function, arguments, name, qualname):
+    return _coroutine(function, arguments, name, qualname)
+
+
+def make_async_generator(function, arguments, name, qualname):
+    return _async_generator(function, arguments, name, qualname)
+
+
+def await_value(awaitable):
+    return _await_value(awaitable)
+
+
+def async_generator_yield(value):
+    return _async_generator_yield(value)
+
+
+def _metaclass(bases, explicit):
+    """The most derived metaclass among ``explicit`` and the bases' classes."""
+    winner = type if explicit is None else explicit
+    for base in bases:
+        candidate = type(base)
+        if issubclass(candidate, winner):
+            winner = candidate
+        elif not issubclass(winner, candidate):
+            raise TypeError(
+                "metaclass conflict: the metaclass of a derived class must be a "
+                "(non-strict) subclass of the metaclasses of all its bases"
+            )
+    return winner
+
+
+def _direct_bases(bases):
+    for base in bases:
+        if type(base) is not type:
+            return False
+    return True
+
+
+def prepare_class(name, bases, keywords):
+    """The namespace a class body runs against (``__build_class__``)."""
+    if keywords is None and len(bases) <= 1 and _direct_bases(bases):
+        return _new_namespace()
+    keywords = {} if keywords is None else keywords
+    explicit = keywords.get("metaclass")
+    metaclass = _metaclass(bases, explicit)
+    if metaclass is type:
+        return _new_namespace()
+    others = {}
+    for key in keywords:
+        if key != "metaclass":
+            others[key] = keywords[key]
+    return metaclass.__prepare__(name, bases, **others)
+
+
+def build_class(name, bases, namespace, keywords, fields):
+    """Create a class through its metaclass after its body has run."""
+    keywords = {} if keywords is None else keywords
+    explicit = keywords.get("metaclass")
+    metaclass = _metaclass(bases, explicit)
+    others = {}
+    for key in keywords:
+        if key != "metaclass":
+            others[key] = keywords[key]
+    items = _namespace_items(namespace)
+    if items is not None:
+        namespace = {}
+        for key, value in items:
+            namespace[key] = value
+    namespace["__mule_fields__"] = fields
+    return metaclass(name, bases, namespace, **others)
+
+
+def build_template(parts):
+    return _build_template(parts)
+
+
+def make_interpolation(value, expression, conversion, format_spec):
+    return _Interpolation(value, expression, conversion, format_spec)
 
 
 def make_slice(start, stop, step):
@@ -676,6 +1225,30 @@ def unpack(value, count):
     raise ValueError("too many values to unpack")
 
 
+def unpack_starred(value, before, after):
+    """``a, *b, c = value``: leading items, a list of the rest, trailing items."""
+    items = _make_list(value)
+    count = _storage_length(items)
+    if count < before + after:
+        raise ValueError(
+            f"not enough values to unpack (expected at least {before + after}, got {count})"
+        )
+    result = []
+    index = 0
+    while index < before:
+        _storage_append(result, _storage_read(items, index))
+        index += 1
+    middle = []
+    while index < count - after:
+        _storage_append(middle, _storage_read(items, index))
+        index += 1
+    _storage_append(result, middle)
+    while index < count:
+        _storage_append(result, _storage_read(items, index))
+        index += 1
+    return _storage_tuple(result)
+
+
 class RangeIterator:
     def __init__(self, start, stop, step):
         self.current = start
@@ -789,7 +1362,7 @@ def next(*args):
         raise
 
 
-def list(*args):
+def _make_list(*args):
     count = _storage_length(args)
     if count > 1:
         raise TypeError("list expects at most one argument")
@@ -800,7 +1373,7 @@ def list(*args):
     return result
 
 
-def tuple(*args):
+def _make_tuple(*args):
     return _storage_tuple(list_from_arguments(args))
 
 
@@ -862,7 +1435,53 @@ def max(*args, key=None, default=_missing_default):
     return _extreme(args, key, default, True)
 
 
-_install_storage(ListStorage, TupleStorage, TextStorage, BytesStorage)
+class list(ListStorage):
+    def __new__(cls, *args):
+        if cls is not list:
+            raise TypeError("list subclasses are not supported yet")
+        return _make_list(*args)
+
+
+class tuple(TupleStorage):
+    def __new__(cls, *args):
+        if cls is not tuple:
+            raise TypeError("tuple subclasses are not supported yet")
+        return _make_tuple(*args)
+
+
+class str(TextStorage):
+    def __new__(cls, *args):
+        if cls is not str:
+            raise TypeError("str subclasses are not supported yet")
+        return _make_str(*args)
+
+
+class bytes(BytesStorage):
+    def __new__(cls, source=b"", encoding=None, errors="strict"):
+        if cls is not bytes:
+            raise TypeError("bytes subclasses are not supported yet")
+        if _text_storage(source):
+            if encoding is None:
+                raise TypeError("string argument without an encoding")
+            return source.encode(encoding, errors)
+        if _integer_storage_kind(source):
+            values = []
+            index = 0
+            while index < source:
+                _storage_append(values, 0)
+                index += 1
+            return _bytes_from_values(values)
+        if _type_name(source) == "bytes":
+            return source
+        return _bytes_from_values(_make_list(source))
+
+
+def _integer_storage_kind(value):
+    return _type_name(value) == "int" or _type_name(value) == "bool"
+
+
+_install_storage(list, tuple, str, bytes)
+
 _install_builtin("range", range)
 _install_builtin("enumerate", enumerate)
 _install_builtin("iter", iter)
@@ -872,6 +1491,7 @@ _install_builtin("tuple", tuple)
 _install_builtin("chr", chr)
 _install_builtin("ord", ord)
 _install_builtin("str", str)
+_install_builtin("bytes", bytes)
 _install_builtin("repr", repr)
 _install_builtin("ascii", ascii)
 _install_builtin("format", format)
@@ -883,7 +1503,29 @@ _install_builtin("hasattr", hasattr)
 _install_builtin("setattr", setattr)
 _install_builtin("delattr", delattr)
 _install_builtin("type", type)
+_install_builtin("object", object)
+_install_builtin("int", int)
+_install_builtin("bool", bool)
+_install_builtin("float", float)
+_install_builtin("isinstance", isinstance)
+_install_builtin("issubclass", issubclass)
+_install_builtin("vars", vars)
 _install_builtin("sorted", sorted)
+_install_builtin("callable", callable)
+_install_builtin("pow", pow)
+_install_builtin("divmod", divmod)
+_install_builtin("round", round)
+_install_builtin("hex", hex)
+_install_builtin("oct", oct)
+_install_builtin("bin", bin)
+_install_builtin("id", id)
+_install_builtin("any", any)
+_install_builtin("all", all)
+_install_builtin("sum", sum)
+_install_builtin("zip", zip)
+_install_builtin("map", map)
+_install_builtin("filter", filter)
+_install_builtin("reversed", reversed)
 _install_builtin("set", set)
 _install_builtin("frozenset", frozenset)
 _install_builtin("hash", hash)
@@ -907,6 +1549,8 @@ _install_builtin("ZeroDivisionError", ZeroDivisionError)
 _install_builtin("OverflowError", OverflowError)
 _install_builtin("AssertionError", AssertionError)
 _install_builtin("StopIteration", StopIteration)
+_install_builtin("GeneratorExit", GeneratorExit)
+_install_builtin("StopAsyncIteration", StopAsyncIteration)
 _install_builtin("MemoryError", MemoryError)
 _install_builtin("SystemError", SystemError)
 _install_builtin("AttributeError", AttributeError)
@@ -916,6 +1560,59 @@ _install_builtin("RecursionError", RecursionError)
 _install_builtin("UnicodeError", UnicodeError)
 _install_builtin("UnicodeEncodeError", UnicodeEncodeError)
 _install_builtin("UnicodeDecodeError", UnicodeDecodeError)
+_install_builtin("SystemExit", SystemExit)
+_install_builtin("KeyboardInterrupt", KeyboardInterrupt)
+_install_builtin("FloatingPointError", FloatingPointError)
+_install_builtin("BufferError", BufferError)
+_install_builtin("ImportError", ImportError)
+_install_builtin("ModuleNotFoundError", ModuleNotFoundError)
+_install_builtin("ReferenceError", ReferenceError)
+_install_builtin("NotImplementedError", NotImplementedError)
+_install_builtin("PythonFinalizationError", PythonFinalizationError)
+_install_builtin("SyntaxError", SyntaxError)
+_install_builtin("IndentationError", IndentationError)
+_install_builtin("TabError", TabError)
+_install_builtin("BlockingIOError", BlockingIOError)
+_install_builtin("ChildProcessError", ChildProcessError)
+_install_builtin("ConnectionError", ConnectionError)
+_install_builtin("BrokenPipeError", BrokenPipeError)
+_install_builtin("ConnectionAbortedError", ConnectionAbortedError)
+_install_builtin("ConnectionRefusedError", ConnectionRefusedError)
+_install_builtin("ConnectionResetError", ConnectionResetError)
+_install_builtin("FileExistsError", FileExistsError)
+_install_builtin("FileNotFoundError", FileNotFoundError)
+_install_builtin("InterruptedError", InterruptedError)
+_install_builtin("IsADirectoryError", IsADirectoryError)
+_install_builtin("NotADirectoryError", NotADirectoryError)
+_install_builtin("PermissionError", PermissionError)
+_install_builtin("ProcessLookupError", ProcessLookupError)
+_install_builtin("TimeoutError", TimeoutError)
+_install_builtin("Warning", Warning)
+_install_builtin("BytesWarning", BytesWarning)
+_install_builtin("DeprecationWarning", DeprecationWarning)
+_install_builtin("EncodingWarning", EncodingWarning)
+_install_builtin("FutureWarning", FutureWarning)
+_install_builtin("ImportWarning", ImportWarning)
+_install_builtin("PendingDeprecationWarning", PendingDeprecationWarning)
+_install_builtin("ResourceWarning", ResourceWarning)
+_install_builtin("RuntimeWarning", RuntimeWarning)
+_install_builtin("SyntaxWarning", SyntaxWarning)
+_install_builtin("UnicodeWarning", UnicodeWarning)
+_install_builtin("UserWarning", UserWarning)
+_install_builtin("EnvironmentError", OSError)
+_install_builtin("IOError", OSError)
+
+
+class NotImplementedType:
+    """The type of the ``NotImplemented`` singleton."""
+
+    def __repr__(self):
+        return "NotImplemented"
+
+
+NotImplemented = NotImplementedType()
+_register_not_implemented(NotImplemented)
+_install_builtin("NotImplemented", NotImplemented)
 
 
 class ellipsis:
@@ -970,3 +1667,21 @@ def cell_set(cell, value):
 def cell_clear(cell):
     cell.value = None
     cell.bound = False
+
+
+# Generic aliases are created once the builtins they use are installed.
+from _template import Interpolation as _Interpolation  # noqa: E402
+from _template import build_template as _build_template  # noqa: E402
+from _generic_alias import class_getitem as _class_getitem  # noqa: E402
+from _generic_alias import type_or as _type_or  # noqa: E402
+from _generic_alias import type_ror as _type_ror  # noqa: E402
+
+# Builtin classes that accept type arguments, such as ``list[int]``.
+list.__class_getitem__ = classmethod(_class_getitem)
+tuple.__class_getitem__ = classmethod(_class_getitem)
+dict.__class_getitem__ = classmethod(_class_getitem)
+set.__class_getitem__ = classmethod(_class_getitem)
+frozenset.__class_getitem__ = classmethod(_class_getitem)
+type.__class_getitem__ = classmethod(_class_getitem)
+type.__or__ = _type_or
+type.__ror__ = _type_ror

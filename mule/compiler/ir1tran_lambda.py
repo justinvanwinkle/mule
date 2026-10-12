@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from mule import ast
 
-from .ir1tran import Converter, FunctionConverter, UnsupportedSyntax
+from . import fndb
+from .ir1tran import Converter, FunctionConverter, UnsupportedSyntax, _ContainsYield
 from .ir1util import (
     block_exception_target,
     ctran_starts_block,
@@ -42,14 +43,21 @@ def convert_function(
     owner_class=None,
     parent=None,
     defining_class=None,
+    qualname=None,
+    body_kind=None,
+    annotation_scope=False,
 ) -> Lambda:
-    if definition.is_async or definition.type_parameters:
-        converter.error(
-            "async and generic functions are not supported yet",
-            definition,
-            unsupported=True,
-        )
     policy = converter.policy(definition.decorators, policy)
+    # Generator, coroutine and async generator functions return an object
+    # that runs their body on its own stack; that body is not wrapped again.
+    yields = any(statement.accept(_ContainsYield()) for statement in definition.body)
+    if body_kind is not None:
+        kind = None
+    elif definition.is_async:
+        kind = "async_generator" if yields else "coroutine"
+    else:
+        kind = "generator" if yields else None
+    generator = kind is not None
     names = []
     annotations = []
     variadic = False
@@ -57,13 +65,11 @@ def convert_function(
         converter.reserved(parameter.name, parameter)
         if parameter.name in names:
             converter.error(f"duplicate parameter '{parameter.name}'", parameter)
-        if parameter.kind == ast.ParameterKind.VAR_KEYWORD:
-            converter.error(
-                "**kwargs parameters are not supported yet",
-                parameter,
-                unsupported=True,
-            )
-        variadic |= parameter.kind == ast.ParameterKind.VAR_POSITIONAL
+        # Either collecting parameter needs the general binder.
+        variadic |= parameter.kind in (
+            ast.ParameterKind.VAR_POSITIONAL,
+            ast.ParameterKind.VAR_KEYWORD,
+        )
         names.append(parameter.name)
         annotations.append(
             converter.annotation(parameter.annotation)
@@ -85,14 +91,19 @@ def convert_function(
         ),
         variadic=variadic,
         annotations=tuple(
-            None if parameter.kind == ast.ParameterKind.VAR_POSITIONAL else contract
+            None
+            if parameter.kind
+            in (ast.ParameterKind.VAR_POSITIONAL, ast.ParameterKind.VAR_KEYWORD)
+            else contract
             for parameter, contract in zip(
                 definition.parameters, annotations, strict=True
             )
         ),
+        # A generator function returns a generator; its annotation describes
+        # what the generator produces, not a value to check on return.
         return_annotation=(
             converter.annotation(definition.return_annotation)
-            if definition.return_annotation is not None
+            if definition.return_annotation is not None and not generator
             else None
         ),
         annotation_expressions=tuple(
@@ -110,11 +121,14 @@ def convert_function(
     function = FunctionConverter(
         converter,
         lambda_,
-        definition.body,
+        [] if generator else definition.body,
         is_module=False,
         origin=definition,
         parent=parent,
         defining_class=defining_class,
+        qualname=qualname,
+        body_kind=body_kind,
+        annotation_scope=annotation_scope,
     )
 
     def prologue(start: Ctran) -> Ctran:
@@ -145,6 +159,14 @@ def convert_function(
             function.store(ctran, current, parameter.name, loaded, parameter)
         return current
 
+    if generator:
+        convert_lambda_body(
+            function,
+            [],
+            lambda start: _start_generator(function, definition, kind, prologue(start)),
+            definition,
+        )
+        return lambda_
     convert_lambda_body(function, definition.body, prologue, definition)
     if owner_class is not None and definition.name == "__init__":
         validate_initialization(
@@ -154,6 +176,69 @@ def convert_function(
             converter.location(definition),
         )
     return lambda_
+
+
+_FACTORIES = {
+    "generator": "make_generator",
+    "coroutine": "make_coroutine",
+    "async_generator": "make_async_generator",
+}
+
+
+def _start_generator(function, definition, kind, start):
+    """A generator function's body: after binding and checking its arguments,
+    return a generator that will run the original body on its own stack.
+
+    The body becomes an inner function taking the bound parameters, so its
+    parameters and locals behave exactly as they would in the outer frame.
+    It shares the outer function's ``__class__`` cell and qualified name."""
+    span = definition.span
+    body = ast.FunctionDefinition(
+        definition.name,
+        [
+            ast.Parameter(parameter.name, ast.ParameterKind.POSITIONAL_ONLY, span=span)
+            for parameter in definition.parameters
+        ],
+        definition.body,
+        span=span,
+    )
+    lambda_ = function.lambda_
+    inner = function.converter.function(
+        body,
+        lambda_.policy,
+        parent=function,
+        defining_class=function.defining_class,
+        qualname=function.qualname,
+        body_kind=kind,
+    )
+    ctran, created = Ctran(), Lvar()
+    function.define_function(start, ctran, created, inner, body, definition.name)
+    following, arguments = Ctran(), Lvar()
+    function.known(
+        ctran,
+        following,
+        arguments,
+        fndb.BUILD_TUPLE,
+        tuple(ast.Name(parameter.name, span=span) for parameter in definition.parameters),
+        definition,
+    )
+    ctran = Ctran()
+    function.protocol(
+        following,
+        ctran,
+        lambda_.return_.result,
+        _FACTORIES[kind],
+        (
+            created,
+            arguments,
+            ast.TextLiteral(definition.name, span=span),
+            ast.TextLiteral(function.qualname or definition.name, span=span),
+        ),
+        definition,
+    )
+    function.jump(ctran, lambda_.return_.block)
+    # Nothing follows the return; the caller's implicit None is unreachable.
+    return function.block().start
 
 
 def convert_module(converter: Converter, tree: ast.Module) -> Lambda:
@@ -209,7 +294,15 @@ def convert_lambda_body(function: FunctionConverter, statements, prologue, origi
             function.constant(frontier, ctran, delivered, ast.NoneLiteral(None))
             if annotation is not None:
                 following = Ctran()
-                function.cast(ctran, following, result, delivered, annotation, origin)
+                function.cast(
+                    ctran,
+                    following,
+                    result,
+                    delivered,
+                    annotation,
+                    origin,
+                    declaration=("return", lambda_),
+                )
                 ctran = following
             function.jump(ctran, return_block)
     finally:

@@ -137,6 +137,10 @@ unsafe fn call_buffers(
                 }
                 invoke(keyword_entry.unwrap_or(*entry), *globals, &mut view)
             }
+            Data::Class(_) if !crate::classes::metaclass_call(callable).is_null() => {
+                let call = crate::classes::metaclass_call(callable);
+                call_buffers(call, callable, values, names, keyword_values)
+            }
             Data::Class(_) => CONSTRUCTOR.with(|current| match current.get() {
                 Some(entry) => entry(callable, &mut view),
                 None => {
@@ -252,6 +256,13 @@ pub unsafe extern "C" fn mule_allocate_instance(class: Value) -> Value {
         if layout.native.is_some() {
             return crate::native_storage::mule_native_new(class);
         }
+        if !crate::classes::overriding_new(class).is_null() {
+            object::error(
+                "TypeError",
+                "keyword arguments to a class defining __new__ are not supported yet",
+            );
+            return std::ptr::null_mut();
+        }
         let mut fields = Vec::new();
         if fields.try_reserve_exact(layout.fields.len()).is_err() {
             object::error("MemoryError", "instance slot allocation failed");
@@ -261,6 +272,7 @@ pub unsafe extern "C" fn mule_allocate_instance(class: Value) -> Value {
         object::new_value(Data::Instance {
             ty: object::retain(class),
             fields: fields.into_boxed_slice(),
+            attributes: std::ptr::null_mut(),
         })
     }
 }
@@ -397,5 +409,62 @@ pub unsafe extern "C" fn mule_binding_keyword_value(view: Value, offset: Value) 
             return std::ptr::null_mut();
         }
         object::retain(*keyword_values.add(offset))
+    }
+}
+
+/// `call_with(callable, positional, names, values)`: call with a tuple of
+/// positional arguments and keyword names and values, as compiled call
+/// expansion (`f(*args, **kwargs)`) assembles them.
+pub(crate) unsafe extern "C" fn call_with(_: Value, args: Value) -> Value {
+    unsafe {
+        if object::has_error() {
+            return std::ptr::null_mut();
+        }
+        if object::argument_count(args) != Some(4) || keyword_count(args) != 0 {
+            object::error("TypeError", "call_with expects 4 positional arguments");
+            return std::ptr::null_mut();
+        }
+        let operand = |index| object::argument(args, index).unwrap_or(std::ptr::null_mut());
+        let (callable, positional, names, values) = (operand(0), operand(1), operand(2), operand(3));
+        let tuple = |value: Value| -> Option<&Vec<Value>> {
+            if value.is_null() || object::is_fixnum(value) {
+                return None;
+            }
+            match &(*value).data {
+                Data::Args(values) => Some(values),
+                _ => None,
+            }
+        };
+        let (Some(positional), Some(names), Some(values)) =
+            (tuple(positional), tuple(names), tuple(values))
+        else {
+            object::error("TypeError", "call_with requires tuples");
+            return std::ptr::null_mut();
+        };
+        let mut owned_names = Vec::with_capacity(names.len());
+        for name in names {
+            let text = if object::is_fixnum(*name) {
+                None
+            } else if let Data::Text(text) = &(**name).data {
+                text.to_rust_string()
+            } else {
+                None
+            };
+            let Some(text) = text.and_then(|text| std::ffi::CString::new(text).ok()) else {
+                object::error("TypeError", "keywords must be strings");
+                return std::ptr::null_mut();
+            };
+            owned_names.push(text);
+        }
+        let pointers: Vec<*const c_char> = owned_names.iter().map(|name| name.as_ptr()).collect();
+        mule_call_keywords(
+            callable,
+            std::ptr::null_mut(),
+            positional.len() as isize,
+            positional.as_ptr(),
+            values.len() as isize,
+            pointers.as_ptr(),
+            values.as_ptr(),
+        )
     }
 }

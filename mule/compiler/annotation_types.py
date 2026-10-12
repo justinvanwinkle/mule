@@ -10,6 +10,12 @@ from dataclasses import dataclass
 from .ctype import FLOAT, PYTHON_INTEGER, IntegerType
 
 
+# Annotation declarations proven wrong since the IR1 phases last applied them,
+# as (source, location, annotation name), and every declaration ignored so far.
+CONTRADICTIONS: list = []
+IGNORED_SOURCES: set = set()
+
+
 class Contract:
     @property
     def display_name(self):
@@ -30,11 +36,14 @@ class Contract:
     def boolean_conflict(self, actual):
         return True
 
-    def validate(self, actual, location):
-        if self.contradicts(actual):
-            raise SyntaxError(
-                f"value contradicts annotation {self.display_name}", location
-            )
+    def validate(self, actual, location, source=None):
+        """Whether ``actual`` provably contradicts this contract. A
+        contradicted annotation is reported and then ignored, so it is
+        recorded for ``ignore_contradicted_annotations`` instead of failing."""
+        if source in IGNORED_SOURCES or not self.contradicts(actual):
+            return False
+        CONTRADICTIONS.append((source, location, self.display_name))
+        return True
 
 
 @dataclass(frozen=True, slots=True)

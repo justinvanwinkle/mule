@@ -42,14 +42,18 @@ MAKE_FUNCTION = defknown("%make_function", "flushable")
 MAKE_CLASS = defknown("%make_class", "call", "unsafe")
 # A class body's namespace: creation, and reads, stores and deletions of the
 # names the body binds. Reads fall back to the module globals and builtins.
-CLASS_NAMESPACE = defknown("%class_namespace", "flushable")
+CLASS_NAMESPACE = defknown("%class_namespace", "call", "unsafe")
 CLASS_LOAD = defknown("%class_load", "call")
+CLASS_LOAD_OR = defknown("%class_load_or", "call")
 CLASS_STORE = defknown("%class_store", "unsafe", result=False)
 CLASS_DELETE = defknown("%class_delete", "unsafe", result=False)
 IMPORT = defknown("%import", "call", "unsafe")
 # ``from module import *``: bind the module's public names in the globals.
 IMPORT_STAR = defknown("%import_star", "unsafe", result=False)
 HAS_BINDING = defknown("%has_binding")
+
+# Suspend the running generator, returning the value it is resumed with.
+YIELD = defknown("%yield", "call", "unsafe")
 
 # Displays and formatting.
 BUILD_LIST = defknown("%build_list", "flushable")
@@ -71,6 +75,7 @@ PROTOCOLS = {
         "getitem",
         "setitem",
         "unpack",
+        "unpack_starred",
         "exception_matches",
         "iteration_exhausted",
         "context_exit",
@@ -84,6 +89,21 @@ PROTOCOLS = {
         "make_slice",
         "delitem",
         "delete_attribute",
+        "append_argument",
+        "extend_arguments",
+        "add_keyword",
+        "merge_keywords",
+        "call_expanded",
+        "tuple_from_list",
+        "dict_merge",
+        "build_template",
+        "make_interpolation",
+        "make_generator",
+        "yield_from",
+        "make_coroutine",
+        "make_async_generator",
+        "await_value",
+        "async_generator_yield",
         "build_dict",
         "build_set",
     )
@@ -107,6 +127,7 @@ __all__ = [
     "CATCH_EXCEPTION",
     "CLASS_DELETE",
     "CLASS_LOAD",
+    "CLASS_LOAD_OR",
     "CLASS_NAMESPACE",
     "CLASS_STORE",
     "COMPARE",
@@ -131,5 +152,6 @@ __all__ = [
     "UNARY",
     "UNPACK_REF",
     "UNWIND",
+    "YIELD",
     "fun_info",
 ]

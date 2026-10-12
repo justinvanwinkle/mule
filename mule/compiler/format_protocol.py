@@ -12,6 +12,8 @@ ROLES = (
     "decimal_integer",
     "percent_decimal",
     "modulo",
+    "ascii_representation",
+    "_hex",
 )
 
 

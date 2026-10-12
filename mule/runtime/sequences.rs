@@ -7,12 +7,19 @@ use std::ptr::null_mut;
 
 thread_local! {
     static GLOBALS: Cell<Value> = const { Cell::new(null_mut()) };
-    static STORAGE_CLASSES: RefCell<[Value; 4]> = const { RefCell::new([null_mut(); 4]) };
     static PENDING: Cell<Value> = const { Cell::new(null_mut()) };
     static ACTIVE: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
 }
 pub fn has_pending() -> bool {
     PENDING.with(|value| !value.get().is_null())
+}
+/// Remove and return the pending exception, if any, for later restoration.
+pub fn take_pending() -> Value {
+    PENDING.with(|value| value.replace(null_mut()))
+}
+/// Reinstate an exception taken with `take_pending`, replacing any current one.
+pub fn restore_pending(saved: Value) {
+    PENDING.with(|value| unsafe { object::release(value.replace(saved)) });
 }
 pub fn clear_pending() {
     PENDING.with(|value| unsafe { object::release(value.replace(null_mut())) });
@@ -80,12 +87,6 @@ pub unsafe fn finish() {
                 object::release(value);
             }
         });
-        STORAGE_CLASSES.with_borrow_mut(|classes| {
-            for class in classes.iter_mut() {
-                object::release(*class);
-                *class = null_mut();
-            }
-        });
         GLOBALS.with(|value| object::release(value.replace(null_mut())));
     }
 }
@@ -101,43 +102,52 @@ pub unsafe extern "C" fn mule_install_storage(
     bytes: Value,
 ) -> Value {
     unsafe {
-        STORAGE_CLASSES.with_borrow_mut(|classes| {
-            for (slot, value) in classes.iter_mut().zip([list, tuple, text, bytes]) {
-                object::release(*slot);
-                *slot = object::retain(value);
-            }
-        });
+        use crate::classes::Builtin;
+        for (kind, class) in [
+            (Builtin::List, list),
+            (Builtin::Tuple, tuple),
+            (Builtin::Str, text),
+            (Builtin::Bytes, bytes),
+        ] {
+            crate::classes::register_builtin(kind, class);
+        }
         object::none_value()
     }
 }
-/// Borrow the ordinary compiled method table associated with physical storage.
+/// Borrow the method of a builtin value's class, found through its bases.
 pub unsafe fn binding(value: Value, name: &str) -> Value {
     unsafe {
         if value.is_null() || object::is_fixnum(value) {
             return null_mut();
         }
-        let index = match &(*value).data {
-            Data::List(_) => 0,
-            Data::Args(_) => 1,
-            Data::Text(_) => 2,
-            Data::Bytes(_) => 3,
-            _ => return null_mut(),
+        if !matches!(
+            &(*value).data,
+            Data::List(_) | Data::Args(_) | Data::Text(_) | Data::Bytes(_)
+        ) {
+            return null_mut();
+        }
+        let class = crate::classes::class_of_value(value);
+        if class.is_null() {
+            return null_mut();
+        }
+        let Data::Class(layout) = &(*class).data else {
+            unreachable!()
         };
-        STORAGE_CLASSES.with_borrow(|classes| {
-            let class = classes[index];
-            if class.is_null() {
-                return null_mut();
-            }
-            let Data::Class(layout) = &(*class).data else {
-                unreachable!()
-            };
-            layout.method(name)
-        })
+        layout.method(name)
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_install_builtin(name: Value, value: Value) -> Value {
     unsafe {
+        // Builtin classes report the builtins module, wherever they are defined.
+        if !value.is_null() && !object::is_fixnum(value) && matches!(&(*value).data, Data::Class(_)) {
+            let module = object::new_value(Data::Text(crate::text::Text::from_rust_str("builtins")));
+            let status = crate::classes::mule_set_attr(value, c"__module__".as_ptr(), module);
+            object::release(module);
+            if status < 0 {
+                return null_mut();
+            }
+        }
         if !name.is_null() && !object::is_fixnum(name) {
             if let Data::Text(name) = &(*name).data {
                 if let Some(name) = name.to_rust_string() {
@@ -625,7 +635,7 @@ pub unsafe extern "C" fn mule_range_storage(iterator: Value, state: *mut i64) ->
         if iterator.is_null() || object::is_fixnum(iterator) || state.is_null() {
             return 0;
         }
-        let Data::Instance { ty, fields } = &(*iterator).data else {
+        let Data::Instance { ty, fields, .. } = &(*iterator).data else {
             return 0;
         };
         if *ty != object::lookup(mule_protocol_globals(), "RangeIterator") {

@@ -32,6 +32,8 @@ pub enum Data {
         keyword_entry: Option<Native>,
         /// Captured cells and values for a nested function, or NULL.
         closure: Value,
+        /// The function's `__dict__` namespace, created on first assignment.
+        attributes: Value,
     },
     Args(Vec<Value>),
     ArgumentView {
@@ -63,6 +65,9 @@ pub enum Data {
     Instance {
         ty: Value,
         fields: Box<[Value]>,
+        /// Attributes outside the fixed fields (the instance `__dict__`), as
+        /// a namespace created on first assignment, or NULL.
+        attributes: Value,
     },
     NativeInstance {
         ty: Value,
@@ -72,6 +77,17 @@ pub enum Data {
         receiver: Value,
         method: Value,
     },
+    /// A weak reference's link to its referent: `referent` is borrowed and
+    /// becomes NULL when the referent is freed; `owner` is the borrowed
+    /// compiled `ref` object that owns this handle and is passed to the
+    /// owned `callback`.
+    WeakHandle {
+        referent: Value,
+        callback: Value,
+        owner: Value,
+    },
+    /// A generator's suspended execution on its own native stack.
+    Coroutine(Box<crate::coroutine::Coroutine>),
 }
 thread_local! {
     static ERROR: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
@@ -93,6 +109,21 @@ pub fn has_error() -> bool {
 pub fn clear_error() {
     ERROR.with_borrow_mut(|current| *current = None);
     crate::sequences::clear_pending();
+}
+/// The current error, removed so code can run and later restore it.
+pub struct SavedError {
+    native: Option<(String, String)>,
+    pending: Value,
+}
+pub fn save_error() -> SavedError {
+    SavedError {
+        native: ERROR.with_borrow_mut(Option::take),
+        pending: crate::sequences::take_pending(),
+    }
+}
+pub fn restore_error(saved: SavedError) {
+    ERROR.with_borrow_mut(|current| *current = saved.native);
+    crate::sequences::restore_pending(saved.pending);
 }
 pub fn take_native_error() -> Option<(String, String)> {
     ERROR.with_borrow_mut(Option::take)
@@ -150,6 +181,16 @@ pub unsafe fn release(value: Value) {
         if (*value).references != 0 {
             return;
         }
+        if crate::weakref::has_references(value) {
+            // Callbacks see the referent already cleared; they may resurrect
+            // nothing, because no reference to it remains reachable.
+            (*value).references = 1;
+            crate::weakref::clear(value);
+            (*value).references -= 1;
+            if (*value).references != 0 {
+                return;
+            }
+        }
         // Box owns strings/vectors/GMP values. Their contained raw value references
         // are released before the Rust fields are dropped.
         let object = Box::from_raw(value);
@@ -166,12 +207,18 @@ pub unsafe fn release(value: Value) {
             }
             Data::Class(layout) => {
                 release(layout.base);
+                release(layout.metaclass);
                 for (_, method) in &layout.attributes {
                     release(*method);
                 }
             }
-            Data::Instance { ty, fields } => {
+            Data::Instance {
+                ty,
+                fields,
+                attributes,
+            } => {
                 release(*ty);
+                release(*attributes);
                 for field in fields {
                     release(*field);
                 }
@@ -181,11 +228,21 @@ pub unsafe fn release(value: Value) {
                 release(*receiver);
                 release(*method);
             }
+            Data::WeakHandle {
+                referent, callback, ..
+            } => {
+                crate::weakref::unregister(*referent, value);
+                release(*callback);
+            }
             Data::Function {
-                defaults, closure, ..
+                defaults,
+                closure,
+                attributes,
+                ..
             } => {
                 release(*defaults);
                 release(*closure);
+                release(*attributes);
             }
             _ => (), // Function globals are borrowed from the executing module.
         }
@@ -293,7 +350,83 @@ pub unsafe fn function(globals: Value, entry: Native, name: &str) -> Value {
             defaults: std::ptr::null_mut(),
             keyword_entry: None,
             closure: std::ptr::null_mut(),
+            attributes: std::ptr::null_mut(),
         })
+    }
+}
+
+/// A function's own attribute: an assigned one, or one of the attributes
+/// every function has. NULL without an error when it has neither.
+pub unsafe fn function_attribute(function: Value, attribute: &str) -> Value {
+    unsafe {
+        let Data::Function {
+            globals,
+            name,
+            attributes,
+            closure,
+            ..
+        } = &(*function).data
+        else {
+            return std::ptr::null_mut();
+        };
+        if !attributes.is_null() {
+            let value = lookup(*attributes, attribute);
+            if !value.is_null() {
+                return retain(value);
+            }
+        }
+        match attribute {
+            "__name__" | "__qualname__" => new_value(Data::Text(crate::text::Text::from_rust_str(name))),
+            "__module__" => {
+                if globals.is_null() {
+                    return retain(none_value());
+                }
+                let module = lookup(*globals, "__name__");
+                retain(if module.is_null() { none_value() } else { module })
+            }
+            "__doc__" => none_value(),
+            "__globals__" if !globals.is_null() => retain(*globals),
+            "__closure__" => {
+                if closure.is_null() {
+                    none_value()
+                } else {
+                    retain(*closure)
+                }
+            }
+            "__dict__" => {
+                let Data::Function { attributes, .. } = &mut (*function).data else {
+                    unreachable!();
+                };
+                if attributes.is_null() {
+                    *attributes = namespace();
+                }
+                retain(*attributes)
+            }
+            _ => std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Assign a function attribute in its `__dict__`.
+pub unsafe fn set_function_attribute(function: Value, attribute: &str, value: Value) -> bool {
+    unsafe {
+        let Data::Function { attributes, name, .. } = &mut (*function).data else {
+            return false;
+        };
+        if attribute == "__name__" || attribute == "__qualname__" {
+            if let Data::Text(text) = &(*value).data {
+                if attribute == "__name__" {
+                    if let Some(text) = text.to_rust_string() {
+                        *name = text;
+                    }
+                    return true;
+                }
+            }
+        }
+        if attributes.is_null() {
+            *attributes = namespace();
+        }
+        bind(*attributes, attribute, value)
     }
 }
 pub unsafe fn argument(args: Value, index: usize) -> Option<Value> {
@@ -467,12 +600,35 @@ pub unsafe fn special(value: Value, name: &str, args: &[Value]) -> Value {
         }
         let ty = match &(*value).data {
             Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => *ty,
+            Data::Class(_) => {
+                // A class's special methods come from its metaclass.
+                let bound = crate::classes::special_bound_on_class(value, name);
+                if bound.is_null() {
+                    return bound;
+                }
+                let result = call(bound, args);
+                release(bound);
+                return result;
+            }
             _ => return std::ptr::null_mut(),
         };
         match &(*ty).data {
             Data::Class(_) => crate::classes::special_method(value, name, args),
             _ => unreachable!(),
         }
+    }
+}
+
+/// A binary or comparison special method's result, or NULL without an error
+/// when the method is absent or returns NotImplemented.
+unsafe fn implemented(value: Value, name: &str, args: &[Value]) -> Value {
+    unsafe {
+        let result = special(value, name, args);
+        if !result.is_null() && result == crate::classes::not_implemented() {
+            release(result);
+            return std::ptr::null_mut();
+        }
+        result
     }
 }
 pub unsafe fn truth(value: Value) -> Option<bool> {
@@ -685,16 +841,16 @@ unsafe fn dispatch_binary(op: i32, left: Value, right: Value, inplace: bool) -> 
             return std::ptr::null_mut();
         };
         if inplace {
-            let result = special(left, inplace_method, &[right]);
+            let result = implemented(left, inplace_method, &[right]);
             if !result.is_null() || has_error() {
                 return result;
             }
         }
-        let result = special(left, method, &[right]);
+        let result = implemented(left, method, &[right]);
         if !result.is_null() || has_error() {
             return result;
         }
-        let result = special(right, reflected, &[left]);
+        let result = implemented(right, reflected, &[left]);
         if !result.is_null() || has_error() {
             return result;
         }
@@ -798,7 +954,13 @@ pub unsafe fn compare(op: i32, left: Value, right: Value) -> Value {
             error("SystemError", "unknown comparison operation");
             return std::ptr::null_mut();
         };
-        let result = special(left, method, &[right]);
+        let result = implemented(left, method, &[right]);
+        if !result.is_null() || has_error() {
+            return result;
+        }
+        // The reflected comparison: == and != swap, < and > exchange.
+        let reflected = ["__eq__", "__ne__", "__gt__", "__ge__", "__lt__", "__le__"][op as usize];
+        let result = implemented(right, reflected, &[left]);
         if !result.is_null() || has_error() {
             return result;
         }
@@ -982,7 +1144,7 @@ pub unsafe fn formatted_value(
                     if index > 0 {
                         result.extend_from_slice(b", ");
                     }
-                    result.extend(formatted_value(*value, true, ascii_only)?);
+                    result.extend(user_text(*value, true, ascii_only)?);
                 }
                 if !list && values.len() == 1 {
                     result.push(b',');
@@ -998,7 +1160,7 @@ pub unsafe fn formatted_value(
                     }
                     result.extend(quoted(name.chars().map(u32::from), false, ascii_only)?);
                     result.extend_from_slice(b": ");
-                    result.extend(formatted_value(*value, true, ascii_only)?);
+                    result.extend(user_text(*value, true, ascii_only)?);
                 }
                 result.push(b'}');
                 result
@@ -1006,17 +1168,111 @@ pub unsafe fn formatted_value(
             Data::Function { name, .. } => format!("<native function {name}>").into_bytes(),
             Data::ForeignPointerVector { .. } => b"<foreign pointer vector>".to_vec(),
             Data::ForeignCString { .. } => b"<foreign C string pointer>".to_vec(),
-            Data::Class(layout) => format!("<class '{}'>", layout.name).into_bytes(),
+            Data::Class(_) => {
+                if !crate::classes::special_bound_on_class(value, "__repr__").is_null() {
+                    return user_text(value, true, ascii_only);
+                }
+                format!("<class '{}'>", qualified_name(value)).into_bytes()
+            }
             Data::BoundMethod { .. } => b"<bound native method>".to_vec(),
-            Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => match &(**ty).data {
-                Data::Class(layout) => format!("<{} object>", layout.name).into_bytes(),
-                _ => unreachable!(),
-            },
+            Data::WeakHandle { .. } => b"<weak handle>".to_vec(),
+            Data::Coroutine(_) => b"<coroutine>".to_vec(),
+            Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => {
+                let user = special_binding_present(value, representation);
+                if user {
+                    return user_text(value, representation, ascii_only);
+                }
+                format!("<{} object at {:#x}>", qualified_name(*ty), value as usize).into_bytes()
+            }
             Data::ArgumentView { .. } | Data::ReceiverArgs { .. } | Data::KeywordArgs { .. } => {
                 error("SystemError", "argument view cannot escape a native call");
                 return None;
             }
         })
+    }
+}
+
+/// Whether an instance's class defines `__repr__` (or, for `str()`, `__str__`
+/// or `__repr__`).
+unsafe fn special_binding_present(value: Value, representation: bool) -> bool {
+    unsafe {
+        (!representation && !crate::classes::special_binding(value, "__str__").is_null())
+            || !crate::classes::special_binding(value, "__repr__").is_null()
+    }
+}
+
+/// A class's `module.qualname`, without the module for builtins.
+unsafe fn qualified_name(class: Value) -> String {
+    unsafe {
+        let text = |name: &std::ffi::CStr| {
+            let value = crate::classes::mule_get_attr(class, name.as_ptr());
+            if value.is_null() {
+                clear_error();
+                return None;
+            }
+            let result = match &(*value).data {
+                Data::Text(text) => text.to_rust_string(),
+                _ => None,
+            };
+            release(value);
+            result
+        };
+        let name = text(c"__qualname__").or_else(|| text(c"__name__")).unwrap_or_default();
+        match text(c"__module__") {
+            Some(module) if module != "builtins" => format!("{module}.{name}"),
+            _ => name,
+        }
+    }
+}
+
+/// The text of `repr(value)` (or `str(value)`) through the value's own
+/// special methods when it has them, else the runtime's formatting.
+unsafe fn user_text(value: Value, representation: bool, ascii_only: bool) -> Option<Vec<u8>> {
+    unsafe {
+        let custom = !value.is_null()
+            && !is_fixnum(value)
+            && match &(*value).data {
+                Data::Instance { .. } | Data::NativeInstance { .. } => {
+                    special_binding_present(value, representation)
+                }
+                Data::Class(_) => {
+                    !crate::classes::special_bound_on_class(value, "__repr__").is_null()
+                }
+                _ => false,
+            };
+        if !custom {
+            return formatted_value(value, representation, ascii_only);
+        }
+        let mut result = if representation {
+            std::ptr::null_mut()
+        } else {
+            special(value, "__str__", &[])
+        };
+        if result.is_null() && !has_error() {
+            result = special(value, "__repr__", &[]);
+        }
+        if result.is_null() {
+            return None;
+        }
+        let bytes = match &(*result).data {
+            Data::Text(text) => {
+                let mut bytes = Vec::new();
+                for code in text.codepoints() {
+                    if ascii_only && code >= 0x80 {
+                        bytes.extend_from_slice(ascii_escape(code).as_bytes());
+                    } else {
+                        crate::text::append_wtf8(&mut bytes, code);
+                    }
+                }
+                Some(bytes)
+            }
+            _ => {
+                error("TypeError", "__repr__ returned non-string");
+                None
+            }
+        };
+        release(result);
+        bytes
     }
 }
 
@@ -1103,6 +1359,13 @@ pub extern "C" fn mule_enter_frame() -> i32 {
         error("RecursionError", "maximum native recursion depth exceeded");
         -1
     }
+}
+/// The current native frame depth, which a coroutine switch saves and restores.
+pub fn frame_depth() -> usize {
+    DEPTH.with(Cell::get)
+}
+pub fn set_frame_depth(value: usize) {
+    DEPTH.with(|depth| depth.set(value));
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn mule_leave_frame() {
@@ -1257,6 +1520,15 @@ pub unsafe extern "C" fn mule_lookup_special(value: Value, name: *const c_char) 
                 }
                 _ => unreachable!(),
             },
+            Data::Class(_) => {
+                // A class's special methods come from its metaclass.
+                let bound = crate::classes::special_bound_on_class(value, name);
+                return if bound.is_null() && !has_error() {
+                    none_value()
+                } else {
+                    bound
+                };
+            }
             _ => crate::sequences::binding(value, name),
         };
         if method.is_null() {
@@ -1371,9 +1643,11 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
                 Data::Bytes(_) => "bytes",
                 Data::List(_) => "list",
                 Data::Args(_) => "tuple",
-                Data::Namespace(_) => "dict",
+                Data::Namespace(_) => "module",
                 Data::Function { .. } => "function",
                 Data::BoundMethod { .. } => "method",
+                Data::WeakHandle { .. } => "weak handle",
+                Data::Coroutine(_) => "coroutine",
                 Data::Class(_) => "type",
                 Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => {
                     match &(**ty).data {

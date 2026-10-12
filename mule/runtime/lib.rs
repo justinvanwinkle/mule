@@ -13,6 +13,7 @@ pub use arguments::*;
 pub mod annotations;
 pub mod builtins;
 pub mod classes;
+pub mod coroutine;
 pub mod gmp;
 pub mod hashing;
 pub mod math;
@@ -22,6 +23,7 @@ pub mod object;
 pub mod process;
 pub mod sequences;
 pub mod text;
+pub mod weakref;
 pub use sequences::*;
 
 pub use annotations::*;

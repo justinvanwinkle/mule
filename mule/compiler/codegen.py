@@ -89,10 +89,14 @@ declare ptr @mule_function(ptr, ptr, ptr)
 declare ptr @mule_function_closure(ptr, ptr, ptr, ptr, ptr)
 declare ptr @mule_closure(ptr)
 declare ptr @mule_function_closure_of(ptr)
-declare ptr @mule_class(ptr, ptr, i64, ptr, ptr)
+declare ptr @mule_class(ptr, ptr, i64, ptr, ptr, ptr)
+declare i32 @mule_class_store(ptr, ptr, ptr)
+declare ptr @mule_class_prepare(ptr, ptr, ptr)
 declare ptr @mule_native_class(ptr, ptr, ptr, i64, ptr, ptr, ptr, ptr, ptr)
 declare ptr @mule_class_load(ptr, ptr, ptr)
+declare ptr @mule_class_load_or(ptr, ptr, ptr)
 declare i32 @mule_import_star(ptr, ptr)
+declare ptr @mule_coroutine_yield(ptr)
 declare i32 @mule_class_delete(ptr, ptr, i32)
 declare i32 @mule_native_class_matches(ptr, ptr, ptr)
 declare ptr @mule_native_instance_payload(ptr, ptr, ptr)
@@ -155,6 +159,10 @@ declare ptr @mule_stdout_write(ptr)
 declare ptr @mule_install_storage(ptr, ptr, ptr, ptr)
 declare void @mule_set_process_arguments(i32, ptr)
 declare ptr @mule_native_module_init(ptr)
+declare ptr @mule_builtins_module()
+declare ptr @mule_import_missing(ptr)
+declare void @mule_module_loaded(ptr, ptr)
+declare ptr @mule_builtins_module_init(ptr)
 declare i32 @mule_run(ptr)
 declare void @llvm.assume(i1)
 """
@@ -547,7 +555,8 @@ class ModuleGenerator:
                 f"  %import.{index} = load ptr, ptr @mule.import.cache.{index}\n"
                 f"  call void @mule_release(ptr %import.{index})\n"
                 f"  store ptr null, ptr @mule.import.cache.{index}\n"
-                for index in range(len(self.imports))
+                for index, info in enumerate(self.imports.values())
+                if not info.missing
             )
             + "".join(
                 f"  %literal.root.{index} = load ptr, ptr {constant.slot}\n"
@@ -591,6 +600,18 @@ class ModuleGenerator:
         return body
 
     def import_initializer(self, info, index):
+        if info.missing:
+            # Without compiled source, a module can still be one the program
+            # installed in sys.modules; otherwise this raises ModuleNotFoundError.
+            return "\n".join(
+                [
+                    f"define internal ptr @mule.import.{index}() {{",
+                    "entry:",
+                    f"  %module = call ptr @mule_import_missing(ptr {self.text(info.module_name)})",
+                    "  ret ptr %module",
+                    "}",
+                ]
+            )
         cache = f"@mule.import.cache.{index}"
         self.auxiliary.append(f"{cache} = internal global ptr null")
         lines = [
@@ -603,12 +624,19 @@ class ModuleGenerator:
             "  %owned = call ptr @mule_retain(ptr %cached)",
             "  ret ptr %owned",
             "initialize:",
-            "  %globals = call ptr @mule_namespace()",
+            # The builtins module is the namespace builtin lookups consult.
+            "  %globals = call ptr @mule_builtins_module()"
+            if info.module_name == "builtins"
+            else "  %globals = call ptr @mule_namespace()",
             f"  store ptr %globals, ptr {cache}",
         ]
         fields = [("__name__", info.module_name)]
         if info.filename is not None:
             fields.append(("__file__", info.filename))
+        # The module is in sys.modules while its body runs, as in CPython.
+        lines.append(
+            f"  call void @mule_module_loaded(ptr {self.text(info.module_name)}, ptr %globals)"
+        )
         for field_name, value in fields:
             literal = self.literal_data(value.encode())
             key = self.text(field_name)
@@ -1590,7 +1618,10 @@ class FunctionGenerator:
             )
             for kind in kinds
         )
-        fast = ast.ParameterKind.KEYWORD_ONLY not in kinds
+        fast = (
+            ast.ParameterKind.KEYWORD_ONLY not in kinds
+            and ast.ParameterKind.VAR_KEYWORD not in kinds
+        )
         lines = [
             f"define ptr {module.functions[lambda_]}(ptr %globals, ptr %args) {{",
             "entry:",

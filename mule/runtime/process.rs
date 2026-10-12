@@ -258,6 +258,91 @@ unsafe extern "C" fn bytes_from_values(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" {
+    fn isatty(fd: i32) -> i32;
+    fn write(fd: i32, buffer: *const u8, count: usize) -> isize;
+}
+
+/// `write_fd(fd, data)`: write bytes to a descriptor, returning the count
+/// written. Standard output and error share the buffers `print` uses.
+unsafe extern "C" fn write_fd(_: Value, args: Value) -> Value {
+    unsafe {
+        use std::io::Write;
+        let Some([fd, data]) = operands(args) else {
+            return null_mut();
+        };
+        if !object::is_fixnum(fd) {
+            object::error("TypeError", "a file descriptor must be an integer");
+            return null_mut();
+        }
+        let Data::Bytes(bytes) = &(*data).data else {
+            object::error("TypeError", "a bytes-like object is required");
+            return null_mut();
+        };
+        let written = match object::fixnum(fd) {
+            1 => std::io::stdout().lock().write_all(bytes).map(|_| bytes.len()),
+            2 => std::io::stderr().lock().write_all(bytes).map(|_| bytes.len()),
+            descriptor => {
+                let count = write(descriptor as i32, bytes.as_ptr(), bytes.len());
+                if count < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(count as usize)
+                }
+            }
+        };
+        match written {
+            Ok(count) => numeric::integer_from_usize(count),
+            Err(failure) => {
+                object::error("OSError", &failure.to_string());
+                null_mut()
+            }
+        }
+    }
+}
+
+unsafe extern "C" fn flush_fd(_: Value, args: Value) -> Value {
+    unsafe {
+        use std::io::Write;
+        let Some([fd]) = operands(args) else {
+            return null_mut();
+        };
+        let flushed = match object::is_fixnum(fd).then(|| object::fixnum(fd)) {
+            Some(1) => std::io::stdout().lock().flush(),
+            Some(2) => std::io::stderr().lock().flush(),
+            _ => Ok(()),
+        };
+        if let Err(failure) = flushed {
+            object::error("OSError", &failure.to_string());
+            return null_mut();
+        }
+        object::none_value()
+    }
+}
+
+/// The exception being handled, or None (`sys.exception()`).
+unsafe extern "C" fn active_exception(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([]) = operands::<0>(args) else {
+            return null_mut();
+        };
+        crate::sequences::mule_active_exception()
+    }
+}
+
+unsafe extern "C" fn isatty_fd(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([fd]) = operands(args) else {
+            return null_mut();
+        };
+        if !object::is_fixnum(fd) {
+            object::error("TypeError", "a file descriptor must be an integer");
+            return null_mut();
+        }
+        object::bool_value(isatty(object::fixnum(fd) as i32) == 1)
+    }
+}
+
 /// Populate an ordinary compiler-owned module namespace; no separate cache.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
@@ -286,13 +371,19 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
         if !bound {
             return null_mut();
         }
-        let exports: [(&str, Native); 6] = [
+        let exports: [(&str, Native); 12] = [
             ("read_pointer", read_pointer),
             ("read_c_string", read_c_string),
             ("byte_length", byte_length),
             ("read_byte", read_byte),
             ("text_from_codepoints", text_from_codepoints),
             ("bytes_from_values", bytes_from_values),
+            ("call_with", crate::arguments::call_with),
+            ("write_fd", write_fd),
+            ("flush_fd", flush_fd),
+            ("isatty", isatty_fd),
+            ("register_modules", crate::builtins::register_modules),
+            ("active_exception", active_exception),
         ];
         for (name, entry) in exports {
             let function = object::function(null_mut(), entry, name);
@@ -305,6 +396,8 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
         if !crate::math::populate(globals)
             || !crate::classes::populate(globals)
             || !crate::hashing::populate(globals)
+            || !crate::weakref::populate(globals)
+            || !crate::coroutine::populate(globals)
         {
             return null_mut();
         }

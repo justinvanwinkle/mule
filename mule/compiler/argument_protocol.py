@@ -30,6 +30,14 @@ def signature_literal(lambda_) -> ast.Tuple:
         ),
         -1,
     )
+    keywords = next(
+        (
+            index
+            for index, kind in enumerate(kinds)
+            if kind == ast.ParameterKind.VAR_KEYWORD
+        ),
+        -1,
+    )
     offsets = {
         index: offset for offset, index in enumerate(signature.default_parameters)
     }
@@ -45,6 +53,7 @@ def signature_literal(lambda_) -> ast.Tuple:
                     for index in range(len(lambda_.parameters))
                 ]
             ),
+            ast.IntegerLiteral(keywords),
         ]
     )
 

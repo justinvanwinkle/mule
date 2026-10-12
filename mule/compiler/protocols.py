@@ -33,6 +33,7 @@ _LOOKUPS = {
     "_getitem_method": "__getitem__",
     "_setitem_method": "__setitem__",
     "_delitem_method": "__delitem__",
+    "_reversed_method": "__reversed__",
     "_iter_method": "__iter__",
     "_next_method": "__next__",
     "_index_method": "__index__",

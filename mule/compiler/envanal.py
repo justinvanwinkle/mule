@@ -29,6 +29,7 @@ from __future__ import annotations
 from mule import ast
 
 from . import fndb
+from .dfo import find_initial_dfo
 from .ir1util import block_end_cleanup, block_home_lambda, block_start_cleanup
 from .node import Cleanup, CleanupKind, Component, Ctran, Environment, Lambda, Lvar
 
@@ -38,8 +39,26 @@ def environment_analyze(compilation) -> None:
         lambda_.environment = Environment(lambda_)
     for lambda_ in compilation.lambdas:
         compute_closure(lambda_)
-    for component in compilation.components:
-        find_cleanup_points(component, compilation.converters)
+    pending = list(compilation.components)
+    converter = compilation.converter
+    while pending:
+        for component in pending:
+            find_cleanup_points(component, compilation.converters)
+        # Cleanup code can define functions (a lambda or comprehension in a
+        # ``finally`` suite, converted once per exit edge); give them their
+        # own components, then recompute closures, which they can extend.
+        pending = []
+        while converter.late:
+            initial, lambdas = converter.late.pop(0)
+            components = find_initial_dfo(initial, lambdas)
+            compilation.lambdas.extend(lambdas)
+            compilation.components.extend(components)
+            pending.extend(components)
+            for lambda_ in lambdas:
+                lambda_.environment = Environment(lambda_)
+        if pending:
+            for lambda_ in compilation.lambdas:
+                compute_closure(lambda_)
 
 
 def compute_closure(lambda_: Lambda) -> bool:

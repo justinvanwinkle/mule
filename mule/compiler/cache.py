@@ -49,8 +49,9 @@ def compiler_fingerprint(clang, rustc):
     return digest.hexdigest()
 
 
-def cache_key(source, filename, roots, package, clang, rustc):
+def cache_key(source, filename, roots, package, clang, rustc, optimize=True):
     identity = {
+        "optimize": optimize,
         "format": CACHE_FORMAT,
         "compiler": compiler_fingerprint(clang, rustc),
         "filename": filename,
@@ -69,12 +70,19 @@ def read_manifest(entry):
 
 
 def cached_executable(
-    source, filename, roots, package=None, *, clang="clang", rustc="rustc"
+    source,
+    filename,
+    roots,
+    package=None,
+    *,
+    clang="clang",
+    rustc="rustc",
+    optimize=True,
 ):
     """Return a native executable for the program, building it only when no
     cache entry with unchanged inputs exists."""
     entry = cache_directory() / cache_key(
-        source, filename, roots, package, clang, rustc
+        source, filename, roots, package, clang, rustc, optimize
     )
     manifest = read_manifest(entry)
     if manifest is not None:
@@ -87,7 +95,7 @@ def cached_executable(
     # A fresh name per build: a manifest only ever names the executable built
     # from its own inputs, even when processes rebuild the same entry at once.
     program = entry / f"program-{os.urandom(8).hex()}"
-    link_llvm(llvm, program, clang=clang, rustc=rustc)
+    link_llvm(llvm, program, clang=clang, rustc=rustc, optimize=optimize)
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=entry, prefix=".manifest-", delete=False
     ) as file:

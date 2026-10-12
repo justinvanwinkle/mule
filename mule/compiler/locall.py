@@ -149,11 +149,11 @@ def analyze(lambdas) -> dict[Lambda, LambdaFacts]:
             arguments = tuple(
                 arguments[index] if index >= 0 else UNKNOWN for index in order
             )
-            for actual, contract in zip(
-                arguments, target.signature.annotations, strict=True
+            for actual, contract, var in zip(
+                arguments, target.signature.annotations, target.vars, strict=True
             ):
                 if contract is not None:
-                    contract.validate(actual, location)
+                    contract.validate(actual, location, ("local", target, var.name))
             for context in ("observed", "fixnum", "general"):
                 key = target, context
                 expected = context_parameters.get(key)

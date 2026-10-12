@@ -5,11 +5,36 @@ by that function's constant signature tuple.
 """
 
 # Physical allocation, method lookup and borrowed-view invocation are primitives.
+# The binder runs in the shared protocol namespace, which also supplies
+# ``dict``, ``_call_with``, ``_is_instance`` and ``_overriding_new``.
 # ruff: noqa: F821
 
 
 def construct(cls, view):
-    instance = _allocate_instance(cls)
+    creator = _overriding_new(cls)
+    if creator is None:
+        instance = _allocate_instance(cls)
+    else:
+        positional = [cls]
+        index = 0
+        while index < _binding_count(view):
+            _storage_append(positional, _binding_pos(view, index))
+            index += 1
+        names, values = [], []
+        index = 0
+        while index < _binding_keyword_count(view):
+            _storage_append(names, _binding_keyword_name(view, index))
+            _storage_append(values, _binding_keyword_value(view, index))
+            index += 1
+        instance = _call_with(
+            creator,
+            _storage_tuple(positional),
+            _storage_tuple(names),
+            _storage_tuple(values),
+        )
+        # Python initializes only instances of the class being called.
+        if not _is_instance(instance, cls):
+            return instance
     initializer = _init_method(instance)
     if initializer is None:
         if _binding_count(view) != 0 or _binding_keyword_count(view) != 0:
@@ -24,36 +49,49 @@ def construct(cls, view):
 def bind(view, signature):
     """Bind an argument view to parameter order, CPython's binding rules.
 
-    ``signature`` is ``(names, positional_only, positional, rest, defaults)``:
-    parameter names in order, the counts of positional-only and of all
-    positional parameters, the ``*args`` index or -1, and each parameter's
-    offset into the function's defaults or -1.
+    ``signature`` is ``(names, positional_only, positional, rest, defaults,
+    keywords)``: parameter names in order, the counts of positional-only and
+    of all positional parameters, the ``*args`` index or -1, each parameter's
+    offset into the function's defaults or -1, and the ``**kwargs`` index or
+    -1. Keywords no named parameter accepts are collected into a new dict.
     """
-    names, positional_only, positional, rest, defaults = signature
+    names, positional_only, positional, rest, defaults, keywords = signature
     missing = _binding_missing()
     size = _storage_length(names)
     count = _binding_count(view)
     if rest < 0 and count > positional:
         raise TypeError("too many positional arguments")
     values = []
+    extra = None
     slot = 0
     while slot < size:
         if slot == rest:
             _storage_append(values, _binding_rest(view, positional))
+        elif slot == keywords:
+            extra = dict()
+            _storage_append(values, extra)
         elif slot < positional and slot < count:
             _storage_append(values, _binding_pos(view, slot))
         else:
             _storage_append(values, missing)
         slot += 1
-    keywords = _binding_keyword_count(view)
+    supplied = _binding_keyword_count(view)
     index = 0
-    while index < keywords:
+    while index < supplied:
         name = _binding_keyword_name(view, index)
         slot = positional_only
-        while slot < size and (slot == rest or _storage_read(names, slot) != name):
+        while slot < size and (
+            slot == rest or slot == keywords or _storage_read(names, slot) != name
+        ):
             slot += 1
         if slot == size:
-            raise TypeError("unexpected keyword argument")
+            if extra is None:
+                raise TypeError(f"got an unexpected keyword argument '{name}'")
+            if name in extra:
+                raise TypeError(f"got multiple values for argument '{name}'")
+            extra[name] = _binding_keyword_value(view, index)
+            index += 1
+            continue
         if _storage_read(values, slot) is not missing:
             raise TypeError("multiple values for argument " + name)
         _storage_write(values, slot, _binding_keyword_value(view, index))

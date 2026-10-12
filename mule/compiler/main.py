@@ -25,8 +25,9 @@ from .ir1tran import (
     _ImportBindings,
 )
 from .ir1tran_lambda import convert_module, lambda_blocks
-from .ir1util import join_blocks_if_possible
-from .node import Component, Lambda
+from .annotation_types import CONTRADICTIONS, IGNORED_SOURCES
+from .ir1util import join_blocks_if_possible, substitute_lvar, unlink_node
+from .node import Cast, Component, Lambda
 
 
 @dataclass(slots=True)
@@ -57,6 +58,8 @@ def ir1_phases(compilation: Compilation) -> None:
     with phase("IR1 phases %s", compilation.converter.filename, level=logging.DEBUG):
         while True:
             _ir1_optimize_phase_1(compilation)
+            if ignore_contradicted_annotations(compilation):
+                continue
             with phase("IR1 check generation", level=logging.DEBUG):
                 changed = any(
                     checkgen.generate_type_checks(
@@ -72,6 +75,63 @@ def ir1_phases(compilation: Compilation) -> None:
                 if component.reanalyze:
                     find_dfo(component)
             check_ir1_consistency(compilation.components)
+
+
+def ignore_contradicted_annotations(compilation: Compilation) -> bool:
+    """Warn about annotations analysis proved wrong and stop enforcing or
+    trusting them: their declarations are cleared and every assertion of
+    them is removed. Returns whether anything changed, so analysis reruns.
+
+    Python never enforces annotations, so a provably wrong one is reported
+    rather than rejected. A typed native field's ``mule.int64`` declaration
+    defines its raw storage, so a contradiction there remains an error."""
+    pending = list(CONTRADICTIONS)
+    CONTRADICTIONS.clear()
+    changed = False
+    for source, location, name in pending:
+        if source is None:
+            raise SyntaxError(f"value contradicts annotation {name}", location)
+        if source in IGNORED_SOURCES:
+            continue
+        IGNORED_SOURCES.add(source)
+        changed = True
+        filename, line, column = location[:3]
+        logger.warning(
+            "%s:%s:%s: warning: value contradicts annotation %s; the annotation is ignored",
+            filename,
+            line,
+            column,
+            name,
+        )
+        kind, owner, *key = source
+        if kind == "return":
+            owner.signature.return_annotation = None
+        elif kind == "local":
+            owner.local_annotations.pop(key[0], None)
+            names = [var.name for var in owner.vars]
+            if key[0] in names:
+                annotations = list(owner.signature.annotations)
+                annotations[names.index(key[0])] = None
+                owner.signature.annotations = tuple(annotations)
+    if not changed:
+        return False
+    for component in compilation.components:
+        for block in list(component.blocks()):
+            for node in list(block.nodes()):
+                if isinstance(node, Cast) and node.declaration in IGNORED_SOURCES:
+                    _remove_cast(node)
+        component.reoptimize = True
+    return True
+
+
+def _remove_cast(node: Cast) -> None:
+    """Splice an assertion out: its consumer reads the asserted value."""
+    value, result = node.value, node.lvar
+    node.value = None
+    value.dest = None
+    if result is not None and result.dest is not None:
+        substitute_lvar(value, result)
+    unlink_node(node)
 
 
 def _ir1_optimize_phase_1(compilation: Compilation) -> None:
@@ -127,8 +187,9 @@ def compile_toplevel(
         for lambda_ in converter.functions:
             _GlobalAnnotationStores(converter, lambda_).apply(lambda_blocks(lambda_))
         components = find_initial_dfo(initial, converter.functions)
+        converter.split = True
         check_ir1_consistency(components)
-        compilation = Compilation(converter.functions, entry, components, converter)
+        compilation = Compilation(list(converter.functions), entry, components, converter)
     logger.debug(
         "IR1 module %s: %d lambdas, %d components",
         filename,

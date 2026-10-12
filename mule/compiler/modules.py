@@ -9,7 +9,10 @@ from .inputs import read_source, source_exists
 from .main import compile_source
 
 STDLIB = Path(__file__).resolve().parents[2] / "stdlib"
-NATIVE_MODULES = {"_mule_native": "mule_native_module_init"}
+NATIVE_MODULES = {
+    "_mule_native": "mule_native_module_init",
+    "builtins": "mule_builtins_module_init",
+}
 
 
 @dataclass(frozen=True)
@@ -18,6 +21,9 @@ class CompiledModule:
     path: Path | None
     entry: str
     native: bool = False
+    # No source exists: importing it raises ModuleNotFoundError at run time,
+    # where code such as ``try: import nt`` expects to handle it.
+    missing: bool = False
 
 
 def search_path(first):
@@ -138,9 +144,9 @@ class ModuleCompiler:
             return descriptor
         path = self.path_for(name)
         if path is None:
-            lowerer.error(
-                f"no compilable Python module named '{name}'", node, unsupported=True
-            )
+            descriptor = CompiledModule(name, None, "", missing=True)
+            self.modules[name] = descriptor
+            return descriptor
         prefix = f"{self.prefix}mule_import_{len(self.modules)}_"
         descriptor = CompiledModule(name, path, prefix + "mule_module")
         # Reserve identity before conversion so circular imports share one cache.

@@ -408,14 +408,20 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
             object::error("OSError", "output failed");
         }
         let status = if object::has_error() {
-            let message = format!("{}: {}\n", object::error_kind(), object::error_message());
-            let _ = io::stderr().lock().write_all(message.as_bytes());
-            1
+            if object::error_kind() == "SystemExit" {
+                exit_status()
+            } else {
+                let message = format!("{}: {}\n", object::error_kind(), object::error_message());
+                let _ = io::stderr().lock().write_all(message.as_bytes());
+                1
+            }
         } else {
             0
         };
         BUILTINS.with(|storage| object::release(storage.replace(std::ptr::null_mut())));
+        object::release(MODULES.with(|slot| slot.replace(std::ptr::null_mut())));
         crate::sequences::finish();
+        crate::classes::finish_builtin_types();
         status
     }
 }
@@ -493,6 +499,131 @@ pub unsafe extern "C" fn mule_import_star(module: Value, globals: Value) -> i32 
             }
             object::release(*value);
         }
+        status
+    }
+}
+
+/// The `builtins` module: the namespace builtin name lookups consult.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_builtins_module() -> Value {
+    unsafe { object::retain(namespace()) }
+}
+
+/// The builtins are installed by the compiled protocols; nothing to add.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_builtins_module_init(_: Value) -> Value {
+    unsafe { object::none_value() }
+}
+
+thread_local! {
+    // sys.modules once the sys module registers it, and the modules
+    // initialized before that, which it receives on registration.
+    static MODULES: Cell<Value> = const { Cell::new(std::ptr::null_mut()) };
+    static EARLY_MODULES: std::cell::RefCell<Vec<(String, Value)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+unsafe fn record_module(modules: Value, name: &str, module: Value) -> bool {
+    unsafe {
+        let key = object::new_value(Data::Text(Text::from_rust_str(name)));
+        let result = object::special(modules, "__setitem__", &[key, module]);
+        object::release(key);
+        object::release(result);
+        !result.is_null()
+    }
+}
+
+/// Record a module in sys.modules before its body runs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_module_loaded(name: *const std::ffi::c_char, module: Value) {
+    unsafe {
+        let Some(name) = object::name_from_c(name) else {
+            return;
+        };
+        let modules = MODULES.with(Cell::get);
+        if modules.is_null() {
+            EARLY_MODULES.with_borrow_mut(|early| early.push((name.into(), object::retain(module))));
+            return;
+        }
+        let saved = object::save_error();
+        if !record_module(modules, name, module) {
+            object::clear_error();
+        }
+        object::restore_error(saved);
+    }
+}
+
+/// `register_modules(modules)`: the sys module's sys.modules dict.
+pub(crate) unsafe extern "C" fn register_modules(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some(modules) = object::argument(args, 0) else {
+            return std::ptr::null_mut();
+        };
+        object::release(MODULES.with(|slot| slot.replace(object::retain(modules))));
+        let early = EARLY_MODULES.with_borrow_mut(std::mem::take);
+        for (name, module) in early {
+            let recorded = record_module(modules, &name, module);
+            object::release(module);
+            if !recorded {
+                return std::ptr::null_mut();
+            }
+        }
+        object::none_value()
+    }
+}
+
+/// Importing a module with no compiled source returns the module the program
+/// installed under that name in sys.modules, or raises ModuleNotFoundError.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_import_missing(name: *const std::ffi::c_char) -> Value {
+    unsafe {
+        let Some(name) = object::name_from_c(name) else {
+            return std::ptr::null_mut();
+        };
+        let modules = MODULES.with(Cell::get);
+        if !modules.is_null() {
+            let key = object::new_value(Data::Text(Text::from_rust_str(name)));
+            let found = object::special(modules, "get", &[key, object::none_value()]);
+            object::release(key);
+            if found.is_null() {
+                return found;
+            }
+            if found != object::none_value() {
+                return found;
+            }
+            object::release(found);
+        }
+        object::error("ModuleNotFoundError", &format!("No module named '{name}'"));
+        std::ptr::null_mut()
+    }
+}
+
+/// The process status for an uncaught SystemExit, as CPython's
+/// `handle_system_exit`: None is success, an integer is the status, and any
+/// other code is printed to stderr with status 1.
+unsafe fn exit_status() -> i32 {
+    unsafe {
+        let exception = crate::sequences::take_pending();
+        object::clear_error();
+        let code = crate::classes::mule_get_attr(exception, c"code".as_ptr());
+        object::release(exception);
+        if code.is_null() {
+            object::clear_error();
+            return 1;
+        }
+        let status = if code == object::none_value() {
+            0
+        } else if object::is_fixnum(code) {
+            object::fixnum(code) as i32
+        } else {
+            if let Some(text) = object::formatted_value(code, false, false) {
+                let mut text = text;
+                text.push(b'\n');
+                let _ = io::stderr().lock().write_all(&text);
+            }
+            1
+        };
+        object::release(code);
         status
     }
 }

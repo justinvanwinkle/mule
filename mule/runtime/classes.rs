@@ -25,11 +25,17 @@ pub struct ClassLayout {
     pub id: usize,
     pub name: String,
     pub base: Value,
+    /// The class's own class: `type` or a metaclass derived from it.
+    pub metaclass: Value,
     pub fields: Vec<String>,
     /// The class's own attributes, in definition order.
     pub attributes: Vec<(String, Value)>,
     field_lookup: HashMap<String, usize>,
     attribute_lookup: HashMap<String, usize>,
+    /// Whether instances may hold attributes beyond their fields (a
+    /// `__dict__`): false for `object` itself, native layouts, and classes
+    /// whose `__slots__` omit `__dict__` all the way up their bases.
+    dict_allowed: bool,
     pub(crate) native: Option<NativeLayout>,
 }
 
@@ -62,6 +68,151 @@ impl ClassLayout {
         }
         layout
     }
+}
+
+/// The classes of values that are not compiled-class instances, registered
+/// by the compiled builtins. `object` and `type` are the defaults for every
+/// class's base and metaclass.
+#[derive(Clone, Copy)]
+pub enum Builtin {
+    Object = 0,
+    Type,
+    NoneType,
+    Bool,
+    Int,
+    Float,
+    Str,
+    Bytes,
+    List,
+    Tuple,
+    Function,
+    BuiltinFunction,
+    Method,
+    Module,
+}
+const BUILTIN_NAMES: [&str; 14] = [
+    "object",
+    "type",
+    "NoneType",
+    "bool",
+    "int",
+    "float",
+    "str",
+    "bytes",
+    "list",
+    "tuple",
+    "function",
+    "builtin_function_or_method",
+    "method",
+    "module",
+];
+
+thread_local! {
+    static BUILTIN_TYPES: std::cell::RefCell<[Value; 14]> =
+        const { std::cell::RefCell::new([std::ptr::null_mut(); 14]) };
+}
+
+pub unsafe fn register_builtin(kind: Builtin, class: Value) {
+    unsafe {
+        BUILTIN_TYPES.with_borrow_mut(|types| {
+            object::release(std::mem::replace(&mut types[kind as usize], object::retain(class)));
+        });
+    }
+}
+
+thread_local! {
+    static NOT_IMPLEMENTED: std::cell::Cell<Value> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// The `NotImplemented` singleton, borrowed; NULL before the builtins exist.
+pub fn not_implemented() -> Value {
+    NOT_IMPLEMENTED.with(std::cell::Cell::get)
+}
+
+unsafe extern "C" fn register_not_implemented(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        object::release(NOT_IMPLEMENTED.with(|slot| slot.replace(object::retain(value))));
+        object::none_value()
+    }
+}
+
+pub fn builtin_type(kind: Builtin) -> Value {
+    BUILTIN_TYPES.with_borrow(|types| types[kind as usize])
+}
+
+/// Release the registered builtin classes at executable shutdown.
+pub unsafe fn finish_builtin_types() {
+    unsafe {
+        object::release(NOT_IMPLEMENTED.with(|slot| slot.replace(std::ptr::null_mut())));
+        let types = BUILTIN_TYPES.with_borrow_mut(|types| std::mem::replace(types, [std::ptr::null_mut(); 14]));
+        for class in types {
+            object::release(class);
+        }
+    }
+}
+
+/// The class of any value, borrowed; NULL only before the builtins exist.
+pub unsafe fn class_of_value(value: Value) -> Value {
+    unsafe {
+        if object::is_fixnum(value) {
+            return builtin_type(Builtin::Int);
+        }
+        if value.is_null() {
+            return std::ptr::null_mut();
+        }
+        let kind = match &(*value).data {
+            Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => return *ty,
+            Data::Class(layout) => {
+                return if layout.metaclass.is_null() {
+                    builtin_type(Builtin::Type)
+                } else {
+                    layout.metaclass
+                };
+            }
+            Data::None => Builtin::NoneType,
+            Data::Bool(_) => Builtin::Bool,
+            Data::BigInt(_) => Builtin::Int,
+            Data::Float(_) => Builtin::Float,
+            Data::Text(_) => Builtin::Str,
+            Data::Bytes(_) => Builtin::Bytes,
+            Data::List(_) => Builtin::List,
+            Data::Args(_) => Builtin::Tuple,
+            Data::Function { globals, .. } if globals.is_null() => Builtin::BuiltinFunction,
+            Data::Function { .. } => Builtin::Function,
+            Data::BoundMethod { .. } => Builtin::Method,
+            Data::Namespace(_) => Builtin::Module,
+            _ => Builtin::Object,
+        };
+        builtin_type(kind)
+    }
+}
+
+unsafe fn layout_of_class<'a>(class: Value) -> Option<&'a ClassLayout> {
+    unsafe {
+        if class.is_null() || object::is_fixnum(class) {
+            return None;
+        }
+        match &(*class).data {
+            Data::Class(layout) => Some(layout),
+            _ => None,
+        }
+    }
+}
+
+/// A hook such as `__getattribute__` or `__setattr__`, unless the class only
+/// inherits `object`'s default, which is the built-in behavior itself.
+fn hook(layout: &ClassLayout, name: &str) -> Value {
+    let Some((owner, _, index)) = layout.find(name) else {
+        return std::ptr::null_mut();
+    };
+    let object = builtin_type(Builtin::Object);
+    if !object.is_null() && std::ptr::eq(owner, unsafe { layout_of_class(object) }.unwrap()) {
+        return std::ptr::null_mut();
+    }
+    owner.attributes[index].1
 }
 
 unsafe fn base_layout<'a>(layout: &ClassLayout) -> Option<&'a ClassLayout> {
@@ -125,15 +276,123 @@ pub unsafe extern "C" fn mule_native_class(
     }
 }
 
+/// Finish a class statement. Without keywords, with at most one base whose
+/// metaclass is `type`, and with nothing that needs Python-level class
+/// creation (`__init_subclass__`, `__set_name__`, a prepared mapping), the
+/// class is built directly; otherwise the compiled `build_class` calls the
+/// metaclass, as CPython's `__build_class__` does.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_class(
     class_name: *const c_char,
-    base: Value,
+    bases: Value,
     field_count: isize,
     field_names: *const *const c_char,
     namespace: Value,
+    keywords: Value,
 ) -> Value {
-    unsafe { create_class(class_name, base, field_count, field_names, namespace, None) }
+    unsafe {
+        if object::has_error() {
+            return std::ptr::null_mut();
+        }
+        let Data::Args(base_values) = &(*bases).data else {
+            object::error("SystemError", "class bases must be a tuple");
+            return std::ptr::null_mut();
+        };
+        let base = base_values.first().copied().unwrap_or(std::ptr::null_mut());
+        if direct_class(base_values, namespace, keywords) {
+            return create_class(class_name, base, field_count, field_names, namespace, None);
+        }
+        let Some(name) = name(class_name) else {
+            return std::ptr::null_mut();
+        };
+        let mut fields = Vec::with_capacity(field_count.max(0) as usize);
+        for index in 0..field_count.max(0) as usize {
+            let Some(field) = self::name(*field_names.add(index)) else {
+                for value in fields {
+                    object::release(value);
+                }
+                return std::ptr::null_mut();
+            };
+            fields.push(text(field));
+        }
+        let fields_tuple = object::mule_sequence_tuple(fields.len() as isize, fields.as_ptr());
+        for value in fields {
+            object::release(value);
+        }
+        let builder = object::lookup(crate::sequences::mule_protocol_globals(), "build_class");
+        if builder.is_null() {
+            object::release(fields_tuple);
+            object::error("SystemError", &format!("compiled class construction is unavailable for {name}"));
+            return std::ptr::null_mut();
+        }
+        let name = text(name);
+        let result = object::call(builder, &[name, bases, namespace, keywords, fields_tuple]);
+        object::release(name);
+        object::release(fields_tuple);
+        result
+    }
+}
+
+/// The namespace a class body runs against: the runtime's own for plain
+/// classes, else whatever the metaclass's `__prepare__` returns through the
+/// compiled `prepare_class`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_class_prepare(name: Value, bases: Value, keywords: Value) -> Value {
+    unsafe {
+        if object::has_error() {
+            return std::ptr::null_mut();
+        }
+        let Data::Args(base_values) = &(*bases).data else {
+            object::error("SystemError", "class bases must be a tuple");
+            return std::ptr::null_mut();
+        };
+        let plain = keywords == object::none_value()
+            && base_values.len() <= 1
+            && base_values
+                .iter()
+                .all(|base| class_of_value(*base) == builtin_type(Builtin::Type));
+        if plain {
+            return object::namespace();
+        }
+        let prepare = object::lookup(crate::sequences::mule_protocol_globals(), "prepare_class");
+        if prepare.is_null() {
+            object::error("SystemError", "compiled class preparation is unavailable");
+            return std::ptr::null_mut();
+        }
+        object::call(prepare, &[name, bases, keywords])
+    }
+}
+
+unsafe fn direct_class(bases: &[Value], namespace: Value, keywords: Value) -> bool {
+    unsafe {
+        if keywords != object::none_value() || bases.len() > 1 {
+            return false;
+        }
+        let Data::Namespace(bindings) = &(*namespace).data else {
+            return false;
+        };
+        if let Some(base) = bases.first() {
+            let Some(layout) = layout_of_class(*base) else {
+                return false;
+            };
+            if class_of_value(*base) != builtin_type(Builtin::Type)
+                || !hook(layout, "__init_subclass__").is_null()
+            {
+                return false;
+            }
+        }
+        // `object` itself is created before the compiled class protocol exists.
+        if builtin_type(Builtin::Object).is_null() {
+            return true;
+        }
+        // Implicit class methods and __set_name__ are applied by type.__new__.
+        !bindings.iter().any(|(name, value)| {
+            name == "__init_subclass__"
+                || name == "__class_getitem__"
+                || layout_of_class(class_of_value(*value))
+                    .is_some_and(|layout| layout.find("__set_name__").is_some())
+        })
+    }
 }
 
 pub type NativeConstructor = unsafe extern "C" fn(Value, Value, isize, *const Value) -> Value;
@@ -315,6 +574,20 @@ unsafe fn class_attribute(
 
 /// The value for a resolved encoding, or None when an instance field is
 /// unset and the class has no attribute of that name either.
+/// An attribute in the instance's `__dict__`, owned, if it has one.
+unsafe fn dict_attribute(receiver: Value, attribute: *const c_char) -> Option<Value> {
+    unsafe {
+        let Data::Instance { attributes, .. } = &(*receiver).data else {
+            return None;
+        };
+        if attributes.is_null() {
+            return None;
+        }
+        let value = object::lookup(*attributes, name(attribute)?);
+        (!value.is_null()).then(|| object::retain(value))
+    }
+}
+
 unsafe fn resolved(
     receiver: Value,
     layout: &ClassLayout,
@@ -328,6 +601,12 @@ unsafe fn resolved(
         let index = encoded >> SHIFT;
         let kind = encoded & KIND;
         if kind != FIELD {
+            // The instance __dict__ precedes everything but data descriptors.
+            if instance && kind != DATA_DESCRIPTOR {
+                if let Some(value) = dict_attribute(receiver, attribute) {
+                    return Some(value);
+                }
+            }
             let value = class_attribute(layout, index, kind, receiver, instance, owner, bound);
             return (!value.is_null()).then_some(value);
         }
@@ -411,17 +690,33 @@ unsafe fn resolve(
     cache: *mut AttrCache,
     bound: *mut Value,
 ) -> Value {
+    unsafe { resolve_with(receiver, attribute, cache, bound, true) }
+}
+
+/// Attribute lookup; without `hooks` it is `object.__getattribute__`, which
+/// ignores the class's `__getattribute__` and `__getattr__`.
+unsafe fn resolve_with(
+    receiver: Value,
+    attribute: *const c_char,
+    cache: *mut AttrCache,
+    bound: *mut Value,
+    hooks: bool,
+) -> Value {
     unsafe {
         *bound = std::ptr::null_mut();
         if object::has_error() {
             return std::ptr::null_mut();
         }
         if let Some((layout, instance, owner)) = layout(receiver) {
-            if instance {
-                let hook = layout.method("__getattribute__");
-                if !hook.is_null() {
-                    return call_hook(hook, receiver, owner, attribute);
-                }
+            if !instance {
+                let Some(attribute) = name(attribute) else {
+                    return std::ptr::null_mut();
+                };
+                return resolve_on_class(receiver, layout, attribute);
+            }
+            let getter = if hooks { hook(layout, "__getattribute__") } else { std::ptr::null_mut() };
+            if !getter.is_null() {
+                return call_hook(getter, receiver, owner, attribute);
             }
             let encoded = match cached(layout, cache) {
                 Some(encoded) => Some(encoded),
@@ -441,12 +736,12 @@ unsafe fn resolve(
                 if object::has_error() {
                     return std::ptr::null_mut();
                 }
+            } else if let Some(value) = dict_attribute(receiver, attribute) {
+                return value;
             }
-            if instance {
-                let hook = layout.method("__getattr__");
-                if !hook.is_null() {
-                    return call_hook(hook, receiver, owner, attribute);
-                }
+            let fallback = if hooks { hook(layout, "__getattr__") } else { std::ptr::null_mut() };
+            if !fallback.is_null() {
+                return call_hook(fallback, receiver, owner, attribute);
             }
             let Some(attribute) = name(attribute) else {
                 return std::ptr::null_mut();
@@ -456,45 +751,132 @@ unsafe fn resolve(
         let Some(attribute) = name(attribute) else {
             return std::ptr::null_mut();
         };
+        resolve_on_value(receiver, attribute, bound)
+    }
+}
+
+/// Attribute lookup on a value that is neither a class nor an instance of a
+/// compiled class: module bindings and function attributes first, then the
+/// value's builtin class with the descriptor protocol.
+unsafe fn resolve_on_value(receiver: Value, attribute: &str, bound: *mut Value) -> Value {
+    unsafe {
         if !receiver.is_null() && !object::is_fixnum(receiver) {
-            if matches!(&(*receiver).data, Data::Namespace(_)) {
-                // Module attributes are their namespace's bindings.
-                let value = object::lookup(receiver, attribute);
-                if !value.is_null() {
-                    return object::retain(value);
+            match &(*receiver).data {
+                Data::Namespace(_) => {
+                    let value = object::lookup(receiver, attribute);
+                    if !value.is_null() {
+                        return object::retain(value);
+                    }
                 }
-                return missing(None, false, attribute);
+                Data::Function { .. } => {
+                    let value = object::function_attribute(receiver, attribute);
+                    if !value.is_null() || object::has_error() {
+                        return value;
+                    }
+                }
+                _ => (),
             }
-            let method = crate::sequences::binding(receiver, attribute);
-            if !method.is_null() {
-                *bound = object::retain(receiver);
-                return object::retain(method);
-            }
-            return missing(None, false, attribute);
         }
-        missing(None, false, attribute)
+        let class = class_of_value(receiver);
+        let Some(layout) = layout_of_class(class) else {
+            return missing(None, false, attribute);
+        };
+        let Some((owner, _, index)) = layout.find(attribute) else {
+            let name = object::type_name(receiver).unwrap_or_else(|| "object".into());
+            object::error(
+                "AttributeError",
+                &format!("'{name}' object has no attribute '{attribute}'"),
+            );
+            return std::ptr::null_mut();
+        };
+        let value = owner.attributes[index].1;
+        if attribute_kind(value) == METHOD {
+            *bound = object::retain(receiver);
+            return object::retain(value);
+        }
+        bind_class_attribute(value, receiver, class)
+    }
+}
+
+/// `C.attribute` for a class C, as `type.__getattribute__` does: a data
+/// descriptor on the metaclass, then the class's own hierarchy (functions
+/// unbound, descriptors given no instance), then any other metaclass
+/// attribute bound to the class.
+unsafe fn resolve_on_class(class: Value, layout: &ClassLayout, attribute: &str) -> Value {
+    unsafe {
+        let metaclass = class_of_value(class);
+        let meta = layout_of_class(metaclass).and_then(|meta| meta.find(attribute));
+        let meta_value = meta.map(|(owner, _, index)| owner.attributes[index].1);
+        if let Some(value) = meta_value {
+            if attribute_kind(value) == DATA_DESCRIPTOR {
+                return bind_class_attribute(value, class, metaclass);
+            }
+        }
+        if let Some((owner, _, index)) = layout.find(attribute) {
+            return bind_class_attribute(owner.attributes[index].1, std::ptr::null_mut(), class);
+        }
+        if let Some(value) = meta_value {
+            return bind_class_attribute(value, class, metaclass);
+        }
+        missing(Some(layout), false, attribute)
+    }
+}
+
+/// A metaclass's own `__call__`, which replaces construction when calling
+/// one of its classes; NULL for classes whose metaclass is `type`.
+pub unsafe fn metaclass_call(class: Value) -> Value {
+    unsafe {
+        let metaclass = class_of_value(class);
+        if metaclass == builtin_type(Builtin::Type) {
+            return std::ptr::null_mut();
+        }
+        match layout_of_class(metaclass) {
+            Some(meta) => hook(meta, "__call__"),
+            None => std::ptr::null_mut(),
+        }
     }
 }
 
 pub unsafe fn construct(class: Value, args: &[Value]) -> Value {
     unsafe {
+        let call = metaclass_call(class);
+        if !call.is_null() {
+            return call_attribute(call, class, class_of_value(class), args);
+        }
         let Data::Class(layout) = &(*class).data else {
             unreachable!();
         };
         if let Some(native) = &layout.native {
             return (native.constructor)(native.globals, class, args.len() as isize, args.as_ptr());
         }
-        let mut fields = Vec::new();
-        if fields.try_reserve_exact(layout.fields.len()).is_err() {
-            object::error("MemoryError", "instance slot allocation failed");
-            return std::ptr::null_mut();
-        }
-        fields.resize(layout.fields.len(), std::ptr::null_mut());
-        let instance = object::new_value(Data::Instance {
-            ty: object::retain(class),
-            fields: fields.into_boxed_slice(),
-        });
-        let initializer = layout.method("__init__");
+        let creator = hook(layout, "__new__");
+        let instance = if creator.is_null() {
+            let Some(instance) = allocate(class, layout) else {
+                return std::ptr::null_mut();
+            };
+            instance
+        } else {
+            // `__new__` is an implicit static method receiving the class.
+            let mut arguments = Vec::with_capacity(args.len() + 1);
+            arguments.push(class);
+            arguments.extend_from_slice(args);
+            let callable = if attribute_kind(creator) == METHOD {
+                object::retain(creator)
+            } else {
+                bind_class_attribute(creator, std::ptr::null_mut(), class)
+            };
+            if callable.is_null() {
+                return callable;
+            }
+            let instance = object::call(callable, &arguments);
+            object::release(callable);
+            // Python initializes only instances of the class being called.
+            if instance.is_null() || !is_instance(instance, class) {
+                return instance;
+            }
+            instance
+        };
+        let initializer = hook(layout, "__init__");
         if !initializer.is_null() {
             let result = call_attribute(initializer, instance, class, args);
             if result.is_null() {
@@ -508,7 +890,7 @@ pub unsafe fn construct(class: Value, args: &[Value]) -> Value {
                 object::release(instance);
                 return std::ptr::null_mut();
             }
-        } else if !args.is_empty() {
+        } else if !args.is_empty() && creator.is_null() {
             object::error(
                 "TypeError",
                 &format!("{}() takes no arguments", layout.name),
@@ -517,6 +899,50 @@ pub unsafe fn construct(class: Value, args: &[Value]) -> Value {
             return std::ptr::null_mut();
         }
         instance
+    }
+}
+
+/// A new instance of `class` with every field unset.
+unsafe fn allocate(class: Value, layout: &ClassLayout) -> Option<Value> {
+    unsafe {
+        let mut fields = Vec::new();
+        if fields.try_reserve_exact(layout.fields.len()).is_err() {
+            object::error("MemoryError", "instance slot allocation failed");
+            return None;
+        }
+        fields.resize(layout.fields.len(), std::ptr::null_mut());
+        Some(object::new_value(Data::Instance {
+            ty: object::retain(class),
+            fields: fields.into_boxed_slice(),
+            attributes: std::ptr::null_mut(),
+        }))
+    }
+}
+
+/// Whether `value` is an instance of `class` or of a class derived from it.
+pub unsafe fn is_instance(value: Value, class: Value) -> bool {
+    unsafe { is_subclass(class_of_value(value), class) }
+}
+
+/// Whether `derived` is `class` or has it among its bases.
+pub unsafe fn is_subclass(derived: Value, class: Value) -> bool {
+    unsafe {
+        let mut owner = derived;
+        if owner.is_null() {
+            return false;
+        }
+        loop {
+            if owner == class {
+                return true;
+            }
+            let Data::Class(layout) = &(*owner).data else {
+                return false;
+            };
+            if layout.base.is_null() {
+                return false;
+            }
+            owner = layout.base;
+        }
     }
 }
 
@@ -545,6 +971,21 @@ pub unsafe fn special_bound(receiver: Value, attribute: &str) -> Value {
     }
 }
 
+/// A special method of a class, found on its metaclass and bound to the class.
+pub unsafe fn special_bound_on_class(class: Value, attribute: &str) -> Value {
+    unsafe {
+        let metaclass = class_of_value(class);
+        let Some(meta) = layout_of_class(metaclass) else {
+            return std::ptr::null_mut();
+        };
+        let value = meta.method(attribute);
+        if value.is_null() {
+            return value;
+        }
+        bind_class_attribute(value, class, metaclass)
+    }
+}
+
 pub unsafe fn special_method(receiver: Value, attribute: &str, args: &[Value]) -> Value {
     unsafe {
         let Some((layout, _, owner)) = layout(receiver) else {
@@ -566,7 +1007,37 @@ unsafe fn create_class(
     namespace: Value,
     native: Option<NativeLayout>,
 ) -> Value {
+    unsafe { create_class_with(class_name, base, std::ptr::null_mut(), field_count, field_names, namespace, native) }
+}
+
+/// Create a class. A NULL base means `object` (once it exists), and a NULL
+/// metaclass means the base's metaclass, or `type`.
+unsafe fn create_class_with(
+    class_name: *const c_char,
+    base: Value,
+    metaclass: Value,
+    field_count: isize,
+    field_names: *const *const c_char,
+    namespace: Value,
+    native: Option<NativeLayout>,
+) -> Value {
     unsafe {
+        let base = if base.is_null() && native.is_none() {
+            builtin_type(Builtin::Object)
+        } else {
+            base
+        };
+        let metaclass = if !metaclass.is_null() {
+            metaclass
+        } else if let Some(layout) = layout_of_class(base) {
+            if layout.metaclass.is_null() {
+                builtin_type(Builtin::Type)
+            } else {
+                layout.metaclass
+            }
+        } else {
+            builtin_type(Builtin::Type)
+        };
         if object::has_error() {
             return std::ptr::null_mut();
         }
@@ -645,18 +1116,43 @@ unsafe fn create_class(
                 attributes.push(("__hash__".into(), object::retain(none)));
             }
         }
+        let slots = bindings.iter().find(|(key, _)| key == "__slots__").map(|(_, value)| *value);
+        let own_dict = match slots {
+            None => !base.is_null(),
+            Some(slots) => slot_names_include_dict(slots),
+        };
+        let dict_allowed = native.is_none() && (inherited.is_some_and(|layout| layout.dict_allowed) || own_dict);
         let id = NEXT_CLASS_ID.fetch_add(1, Ordering::Relaxed);
         assert_ne!(id, 0, "class identity space exhausted");
         object::new_value(Data::Class(Box::new(ClassLayout {
             id,
             name: class_name.into(),
             base: object::retain(base),
+            metaclass: object::retain(metaclass),
             fields,
             attributes,
             field_lookup,
             attribute_lookup,
+            dict_allowed,
             native,
         })))
+    }
+}
+
+/// Whether a `__slots__` value (a string or a sequence of strings) names `__dict__`.
+unsafe fn slot_names_include_dict(slots: Value) -> bool {
+    unsafe {
+        let is_dict = |value: Value| {
+            !object::is_fixnum(value)
+                && matches!(&(*value).data, Data::Text(text) if text.to_rust_string().as_deref() == Some("__dict__"))
+        };
+        if object::is_fixnum(slots) {
+            return false;
+        }
+        match &(*slots).data {
+            Data::Args(values) | Data::List(values) => values.iter().any(|value| is_dict(*value)),
+            _ => is_dict(slots),
+        }
     }
 }
 
@@ -672,6 +1168,20 @@ pub unsafe extern "C" fn mule_class_load(
         let Some(attribute) = object::name_from_c(name) else {
             return std::ptr::null_mut();
         };
+        if !matches!(&(*namespace).data, Data::Namespace(_)) {
+            // A metaclass's __prepare__ mapping: a missing key falls back.
+            let key = text(attribute);
+            let value = object::special(namespace, "__getitem__", &[key]);
+            object::release(key);
+            if !value.is_null() {
+                return value;
+            }
+            if object::error_kind() != "KeyError" {
+                return std::ptr::null_mut();
+            }
+            object::clear_error();
+            return object::mule_load_global(globals, name);
+        }
         let value = object::lookup(namespace, attribute);
         if !value.is_null() {
             return object::retain(value);
@@ -680,6 +1190,60 @@ pub unsafe extern "C" fn mule_class_load(
             return std::ptr::null_mut();
         }
         object::mule_load_global(globals, name)
+    }
+}
+
+/// Read a class body's name from its namespace, else use `fallback`, the
+/// value of the enclosing function's variable of that name.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_class_load_or(
+    namespace: Value,
+    fallback: Value,
+    name: *const c_char,
+) -> Value {
+    unsafe {
+        let Some(attribute) = object::name_from_c(name) else {
+            return std::ptr::null_mut();
+        };
+        if !matches!(&(*namespace).data, Data::Namespace(_)) {
+            let key = text(attribute);
+            let value = object::special(namespace, "__getitem__", &[key]);
+            object::release(key);
+            if !value.is_null() {
+                return value;
+            }
+            if object::error_kind() != "KeyError" {
+                return std::ptr::null_mut();
+            }
+            object::clear_error();
+            return object::retain(fallback);
+        }
+        let value = object::lookup(namespace, attribute);
+        object::retain(if value.is_null() { fallback } else { value })
+    }
+}
+
+/// Bind a class body's name in its namespace or prepared mapping.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_class_store(namespace: Value, name: *const c_char, value: Value) -> i32 {
+    unsafe {
+        let Some(attribute) = object::name_from_c(name) else {
+            return -1;
+        };
+        if matches!(&(*namespace).data, Data::Namespace(_)) {
+            return if object::bind(namespace, attribute, value) { 0 } else { -1 };
+        }
+        let key = text(attribute);
+        let result = object::special(namespace, "__setitem__", &[key, value]);
+        object::release(key);
+        if result.is_null() {
+            if !object::has_error() {
+                object::error("TypeError", "class namespace does not support assignment");
+            }
+            return -1;
+        }
+        object::release(result);
+        0
     }
 }
 
@@ -699,8 +1263,18 @@ pub unsafe extern "C" fn mule_class_delete(
             return -1;
         }
         let Data::Namespace(bindings) = &mut (*namespace).data else {
-            object::error("SystemError", "class namespace storage is required");
-            return -1;
+            let key = text(attribute);
+            let result = object::special(namespace, "__delitem__", &[key]);
+            object::release(key);
+            if result.is_null() {
+                if missing_ok != 0 && object::error_kind() == "KeyError" {
+                    object::clear_error();
+                    return 0;
+                }
+                return -1;
+            }
+            object::release(result);
+            return 0;
         };
         match bindings.iter().position(|(key, _)| key == attribute) {
             Some(index) => {
@@ -791,6 +1365,17 @@ pub unsafe extern "C" fn mule_set_attr_cached(
     value: Value,
     cache: *mut AttrCache,
 ) -> i32 {
+    unsafe { set_attribute_with(receiver, attribute, value, cache, true) }
+}
+
+/// Attribute assignment; without `hooks` it is `object.__setattr__`.
+unsafe fn set_attribute_with(
+    receiver: Value,
+    attribute: *const c_char,
+    value: Value,
+    cache: *mut AttrCache,
+    hooks: bool,
+) -> i32 {
     unsafe {
         if object::has_error() {
             return -1;
@@ -799,12 +1384,26 @@ pub unsafe extern "C" fn mule_set_attr_cached(
             object::error("SystemError", "NULL slot value");
             return -1;
         }
-        if let Some((layout, instance, _)) = layout(receiver) {
+        if let Some((layout, instance, owner)) = layout(receiver) {
             if !instance {
                 let Some(attribute) = name(attribute) else {
                     return -1;
                 };
                 return set_class_attribute(receiver, attribute, value);
+            }
+            let setter = if hooks { hook(layout, "__setattr__") } else { std::ptr::null_mut() };
+            if !setter.is_null() {
+                let Some(attribute) = name(attribute) else {
+                    return -1;
+                };
+                let attribute = text(attribute);
+                let result = call_attribute(setter, receiver, owner, &[attribute, value]);
+                object::release(attribute);
+                if result.is_null() {
+                    return -1;
+                }
+                object::release(result);
+                return 0;
             }
             let encoded = match cached(layout, cache) {
                 Some(encoded) => Some(encoded),
@@ -848,11 +1447,17 @@ pub unsafe extern "C" fn mule_set_attr_cached(
                     return 0;
                 }
                 _ => {
-                    // Without per-instance dictionaries, only fixed fields
-                    // and data descriptors accept instance assignment.
                     let Some(attribute) = name(attribute) else {
                         return -1;
                     };
+                    if layout.dict_allowed {
+                        if let Data::Instance { attributes, .. } = &mut (*receiver).data {
+                            if attributes.is_null() {
+                                *attributes = object::namespace();
+                            }
+                            return if object::bind(*attributes, attribute, value) { 0 } else { -1 };
+                        }
+                    }
                     missing(Some(layout), true, attribute);
                     return -1;
                 }
@@ -865,6 +1470,16 @@ pub unsafe extern "C" fn mule_set_attr_cached(
             if let Data::Namespace(_) = &(*receiver).data {
                 return if object::bind(receiver, attribute, value) { 0 } else { -1 };
             }
+        }
+        if !receiver.is_null()
+            && !object::is_fixnum(receiver)
+            && matches!(&(*receiver).data, Data::Function { .. })
+        {
+            return if object::set_function_attribute(receiver, attribute, value) {
+                0
+            } else {
+                -1
+            };
         }
         missing(None, false, attribute);
         -1
@@ -1185,6 +1800,18 @@ unsafe extern "C" fn delete_attribute(_: Value, args: Value) -> Value {
                 return object::none_value();
             }
         }
+        if let Data::Instance { attributes, .. } = &mut (*receiver).data {
+            if let Data::Namespace(bindings) = (!attributes.is_null())
+                .then(|| &mut (**attributes).data)
+                .unwrap_or(&mut Data::None)
+            {
+                if let Some(position) = bindings.iter().position(|(key, _)| *key == attribute) {
+                    let (_, old) = bindings.remove(position);
+                    object::release(old);
+                    return object::none_value();
+                }
+            }
+        }
         missing(Some(layout), true, &attribute)
     }
 }
@@ -1193,9 +1820,20 @@ unsafe extern "C" fn delete_attribute(_: Value, args: Value) -> Value {
 /// arguments: the base (or None) and the namespace's names and values in order.
 unsafe extern "C" fn new_class(_: Value, args: Value) -> Value {
     unsafe {
-        let Some([class_name, base, names, values]) = operands(args) else {
+        let Some([metaclass, class_name, base, names, values, fields]) = operands(args) else {
             return std::ptr::null_mut();
         };
+        let Data::Args(fields) = &(*fields).data else {
+            return fail("TypeError", "class fields must be a tuple");
+        };
+        let mut owned_fields = Vec::with_capacity(fields.len());
+        for field in fields {
+            let Some(field) = text_argument(*field).and_then(|field| std::ffi::CString::new(field).ok()) else {
+                return fail("TypeError", "class fields must be strings");
+            };
+            owned_fields.push(field);
+        }
+        let field_pointers: Vec<*const c_char> = owned_fields.iter().map(|field| field.as_ptr()).collect();
         let (Some(class_name), Data::Args(names), Data::Args(values)) =
             (text_argument(class_name), &(*names).data, &(*values).data)
         else {
@@ -1220,9 +1858,292 @@ unsafe extern "C" fn new_class(_: Value, args: Value) -> Value {
         } else {
             base
         };
-        let class = create_class(class_name.as_ptr(), base, 0, std::ptr::null(), namespace, None);
+        let class = create_class_with(
+            class_name.as_ptr(),
+            base,
+            metaclass,
+            field_pointers.len() as isize,
+            field_pointers.as_ptr(),
+            namespace,
+            None,
+        );
         object::release(namespace);
         class
+    }
+}
+
+/// `register_type(name, class)`: install one of the builtin classes.
+unsafe extern "C" fn register_type(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([name, class]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(name) = text_argument(name) else {
+            return std::ptr::null_mut();
+        };
+        let Some(index) = BUILTIN_NAMES.iter().position(|candidate| *candidate == name) else {
+            return fail("ValueError", "unknown builtin type");
+        };
+        if class_layout(class).is_none() {
+            return std::ptr::null_mut();
+        }
+        BUILTIN_TYPES.with_borrow_mut(|types| {
+            object::release(std::mem::replace(&mut types[index], object::retain(class)));
+        });
+        // Classes created before `type` existed adopt it as their metaclass.
+        object::none_value()
+    }
+}
+
+/// `type(value)`: the class of any value.
+unsafe extern "C" fn type_of(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let class = class_of_value(value);
+        if class.is_null() {
+            return fail("SystemError", "builtin types are not initialized");
+        }
+        object::retain(class)
+    }
+}
+
+/// `is_subclass(derived, base)` over compiled classes.
+unsafe extern "C" fn is_subclass_export(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([derived, base]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        object::bool_value(is_subclass(derived, base))
+    }
+}
+
+/// The class's name, bases (its base, or none) and own attributes in order.
+unsafe extern "C" fn class_name(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(layout) = class_layout(class) else {
+            return std::ptr::null_mut();
+        };
+        text(&layout.name)
+    }
+}
+
+unsafe extern "C" fn set_class_name(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class, name]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(name) = text_argument(name) else {
+            return std::ptr::null_mut();
+        };
+        if class_layout(class).is_none() {
+            return std::ptr::null_mut();
+        }
+        let Data::Class(layout) = &mut (*class).data else {
+            unreachable!();
+        };
+        layout.name = name;
+        object::none_value()
+    }
+}
+
+unsafe extern "C" fn class_own_names(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(layout) = class_layout(class) else {
+            return std::ptr::null_mut();
+        };
+        let names: Vec<Value> = layout.attributes.iter().map(|(name, _)| text(name)).collect();
+        let result = object::mule_sequence_tuple(names.len() as isize, names.as_ptr());
+        for name in names {
+            object::release(name);
+        }
+        result
+    }
+}
+
+/// An instance's attributes outside the class: set fields, then its
+/// `__dict__` entries, as (name, value) pairs; None when it has neither kind.
+unsafe extern "C" fn instance_items(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([instance]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some((layout, true, _)) = layout(instance) else {
+            return fail("TypeError", "an instance of a compiled class is required");
+        };
+        let Data::Instance { fields, attributes, .. } = &(*instance).data else {
+            return fail("TypeError", "an instance with reference fields is required");
+        };
+        let mut pairs = Vec::new();
+        for (index, field) in layout.fields.iter().enumerate() {
+            if !fields[index].is_null() && layout.field_lookup.contains_key(field) {
+                let key = text(field);
+                pairs.push(object::mule_sequence_tuple(2, [key, fields[index]].as_ptr()));
+                object::release(key);
+            }
+        }
+        if !attributes.is_null() {
+            if let Data::Namespace(bindings) = &(**attributes).data {
+                for (name, value) in bindings {
+                    let key = text(name);
+                    pairs.push(object::mule_sequence_tuple(2, [key, *value].as_ptr()));
+                    object::release(key);
+                }
+            }
+        }
+        let result = object::mule_sequence_tuple(pairs.len() as isize, pairs.as_ptr());
+        for pair in pairs {
+            object::release(pair);
+        }
+        result
+    }
+}
+
+/// A fresh class-body namespace in the runtime's direct representation.
+unsafe extern "C" fn new_namespace(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([]) = operands::<0>(args) else {
+            return std::ptr::null_mut();
+        };
+        object::namespace()
+    }
+}
+
+/// The bindings of a runtime namespace, or None for any other mapping.
+unsafe extern "C" fn namespace_items(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([namespace]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Data::Namespace(bindings) = &(*namespace).data else {
+            return object::none_value();
+        };
+        let mut pairs = Vec::with_capacity(bindings.len());
+        for (name, value) in bindings {
+            let key = text(name);
+            let pair = object::mule_sequence_tuple(2, [key, *value].as_ptr());
+            object::release(key);
+            pairs.push(pair);
+        }
+        let result = object::mule_sequence_tuple(pairs.len() as isize, pairs.as_ptr());
+        for pair in pairs {
+            object::release(pair);
+        }
+        result
+    }
+}
+
+/// A class's own or inherited `__new__`, or None when only `object`'s applies.
+pub unsafe fn overriding_new(class: Value) -> Value {
+    unsafe {
+        match layout_of_class(class) {
+            Some(layout) => hook(layout, "__new__"),
+            None => std::ptr::null_mut(),
+        }
+    }
+}
+
+unsafe extern "C" fn overriding_new_export(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let creator = overriding_new(class);
+        if creator.is_null() {
+            object::none_value()
+        } else {
+            object::retain(creator)
+        }
+    }
+}
+
+/// `object.__new__`: a new instance of a compiled class with unset fields.
+unsafe extern "C" fn allocate_instance(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(layout) = class_layout(class) else {
+            return std::ptr::null_mut();
+        };
+        if layout.native.is_some() {
+            return fail("TypeError", "typed native classes allocate through their constructor");
+        }
+        allocate(class, layout).unwrap_or(std::ptr::null_mut())
+    }
+}
+
+/// `object.__setattr__` for a reference field: bypasses `__setattr__` hooks.
+unsafe extern "C" fn set_instance_field(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([instance, attribute, value]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(attribute) = text_argument(attribute) else {
+            return std::ptr::null_mut();
+        };
+        if let Some((layout, true, _)) = layout(instance) {
+            if let (Some(index), Data::Instance { fields, .. }) =
+                (layout.field_lookup.get(&attribute), &mut (*instance).data)
+            {
+                let old = fields[*index];
+                fields[*index] = object::retain(value);
+                object::release(old);
+                return object::none_value();
+            }
+            return missing(Some(layout), true, &attribute);
+        }
+        fail("TypeError", "an instance with reference fields is required")
+    }
+}
+
+/// `object.__getattribute__(obj, name)`.
+unsafe extern "C" fn generic_get_attribute(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver, attribute]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(attribute) = c_name(attribute) else {
+            return std::ptr::null_mut();
+        };
+        let mut bound = std::ptr::null_mut();
+        let method = resolve_with(receiver, attribute.as_ptr(), std::ptr::null_mut(), &mut bound, false);
+        if bound.is_null() || method.is_null() {
+            return method;
+        }
+        object::new_value(Data::BoundMethod { receiver: bound, method })
+    }
+}
+
+/// `object.__setattr__(obj, name, value)`.
+unsafe extern "C" fn generic_set_attribute(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver, attribute, value]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(attribute) = c_name(attribute) else {
+            return std::ptr::null_mut();
+        };
+        if set_attribute_with(receiver, attribute.as_ptr(), value, std::ptr::null_mut(), false) < 0 {
+            return std::ptr::null_mut();
+        }
+        object::none_value()
+    }
+}
+
+unsafe extern "C" fn is_instance_export(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value, class]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        object::bool_value(is_instance(value, class))
     }
 }
 
@@ -1233,7 +2154,23 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 11] = [
+        let exports: [(&str, object::Native); 27] = [
+            ("register_not_implemented", register_not_implemented),
+            ("instance_items", instance_items),
+            ("new_namespace", new_namespace),
+            ("namespace_items", namespace_items),
+            ("overriding_new", overriding_new_export),
+            ("generic_get_attribute", generic_get_attribute),
+            ("generic_set_attribute", generic_set_attribute),
+            ("register_type", register_type),
+            ("type_of", type_of),
+            ("is_subclass", is_subclass_export),
+            ("class_name", class_name),
+            ("set_class_name", set_class_name),
+            ("class_own_names", class_own_names),
+            ("allocate_instance", allocate_instance),
+            ("set_instance_field", set_instance_field),
+            ("is_instance", is_instance_export),
             ("get_attribute", get_attribute),
             ("set_attribute", set_attribute),
             ("delete_attribute", delete_attribute),

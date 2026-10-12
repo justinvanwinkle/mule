@@ -588,8 +588,7 @@ def make_class(gen, vop):
     info = vop.codegen_info
     module = gen.module
     operands = [gen.take(operand) for operand in vop.args]
-    *bases, namespace = operands
-    base = bases[0] if bases else "null"
+    bases, namespace, keywords = operands
     layout = module.layouts.get(info.class_id)
     name = module.text(info.public_name)
     if layout is not None:
@@ -603,15 +602,26 @@ def make_class(gen, vop):
         return
     gen.pointer_result(
         vop.results[0],
-        f"call ptr @mule_class(ptr {name}, ptr {base}, "
-        f"i64 {len(info.fields)}, ptr {module.names(info.fields)}, ptr {namespace})",
+        f"call ptr @mule_class(ptr {name}, ptr {bases}, "
+        f"i64 {len(info.fields)}, ptr {module.names(info.fields)}, ptr {namespace}, "
+        f"ptr {keywords})",
         operands,
     )
 
 
-@define_vop("class-namespace", translate=fndb.CLASS_NAMESPACE, results=(OBJECT,))
+@define_vop(
+    "class-namespace",
+    translate=fndb.CLASS_NAMESPACE,
+    args=(OBJECT, OBJECT, OBJECT),
+    results=(OBJECT,),
+)
 def class_namespace(gen, vop):
-    gen.pointer_result(vop.results[0], "call ptr @mule_namespace()")
+    bases, keywords, name = (gen.take(operand) for operand in vop.args)
+    gen.pointer_result(
+        vop.results[0],
+        f"call ptr @mule_class_prepare(ptr {name}, ptr {bases}, ptr {keywords})",
+        (bases, keywords, name),
+    )
 
 
 @define_vop(
@@ -627,11 +637,27 @@ def class_load(gen, vop):
     )
 
 
+@define_vop(
+    "class-load-or",
+    translate=fndb.CLASS_LOAD_OR,
+    args=(OBJECT, OBJECT),
+    results=(OBJECT,),
+)
+def class_load_or(gen, vop):
+    namespace, fallback = gen.take(vop.args[0]), gen.take(vop.args[1])
+    gen.pointer_result(
+        vop.results[0],
+        f"call ptr @mule_class_load_or(ptr {namespace}, ptr {fallback}, "
+        f"ptr {gen.module.text(vop.codegen_info.name)})",
+        (namespace, fallback),
+    )
+
+
 @define_vop("class-store", translate=fndb.CLASS_STORE, args=(OBJECT, OBJECT))
 def class_store(gen, vop):
     namespace, value = gen.take(vop.args[0]), gen.take(vop.args[1])
     status = gen.operation(
-        f"call i32 @mule_store_global(ptr {namespace}, "
+        f"call i32 @mule_class_store(ptr {namespace}, "
         f"ptr {gen.module.text(vop.codegen_info.name)}, ptr {value})"
     )
     gen.release(namespace)
@@ -655,6 +681,14 @@ def class_delete(gen, vop):
 def import_(gen, vop):
     index = gen.module.import_index(vop.codegen_info)
     gen.pointer_result(vop.results[0], f"call ptr @mule.import.{index}()")
+
+
+@define_vop("yield", translate=fndb.YIELD, args=(OBJECT,), results=(OBJECT,))
+def yield_(gen, vop):
+    value = gen.take(vop.args[0])
+    gen.pointer_result(
+        vop.results[0], f"call ptr @mule_coroutine_yield(ptr {value})", (value,)
+    )
 
 
 @define_vop("import-star", translate=fndb.IMPORT_STAR, args=(OBJECT,))
@@ -708,7 +742,9 @@ def format_(gen, vop):
     value = gen.take(vop.args[0])
     conversion = vop.codegen_info.conversion
     if conversion is not None:
-        protocol = {"s": "string", "r": "representation"}[conversion]
+        protocol = {"s": "string", "r": "representation", "a": "ascii_representation"}[
+            conversion
+        ]
         converted = gen.compiled_call("mule_format_" + protocol, [value])
         gen.publish(result, converted)
         gen.check_pointer(converted)

@@ -214,7 +214,8 @@ class _Propagation(NodeVisitor):
 
     def visit_Cast(self, node: Cast):
         value = self.type_of(node.value)
-        node.contract.validate(value, node.location)
+        if node.contract.validate(value, node.location, node.declaration):
+            return Fact(value)
         return Fact(node.contract.refine(value))
 
     def visit_Combination(self, node: Combination):
@@ -273,11 +274,16 @@ class _Propagation(NodeVisitor):
             return fact
         if name == "%make_function":
             lambda_ = args[0].use().leaf
-            for value, contract in zip(
-                args[1:], node.info.default_contracts, strict=True
+            parameters = lambda_.signature.default_parameters
+            for value, contract, index in zip(
+                args[1:], node.info.default_contracts, parameters, strict=True
             ):
                 if contract is not None:
-                    contract.validate(self.type_of(value), node.info.location)
+                    contract.validate(
+                        self.type_of(value),
+                        node.info.location,
+                        ("local", lambda_, lambda_.vars[index].name),
+                    )
             return Fact(FunctionType(), lambda_, True)
         if name in ("%import", "%call_resolved", "%catch_exception"):
             self.invalidate()

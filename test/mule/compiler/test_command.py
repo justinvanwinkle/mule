@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from mule.__main__ import UsageError, parse
+from mule.__main__ import Options, UsageError, parse
 from mule.compiler.inputs import recording, unchanged
 from mule.compiler.modules import compile_modules
 
@@ -28,7 +28,23 @@ def test_parse_stops_options_at_the_program_like_python(argv, expected):
     assert parse(argv) == expected
 
 
-@pytest.mark.parametrize("argv", [[], ["-c"], ["-z", "s.py"], ["--"]])
+@pytest.mark.parametrize(
+    ("argv", "optimize", "arguments"),
+    [
+        (["-m", "pytest", "-O0"], True, ["-O0"]),
+        (["-O0", "-m", "pytest", "-q"], False, ["-q"]),
+        (["-O0", "-O3", "s.py"], True, []),
+    ],
+)
+def test_parse_optimization_level_applies_only_before_the_program(
+    argv, optimize, arguments
+):
+    options = Options()
+    assert parse(argv, options=options)[2] == arguments
+    assert options.optimize is optimize
+
+
+@pytest.mark.parametrize("argv", [[], ["-c"], ["-z", "s.py"], ["--"], ["-O", "s.py"]])
 def test_parse_rejects_what_python_rejects_or_would_run_interactively(argv):
     with pytest.raises(UsageError):
         parse(argv)

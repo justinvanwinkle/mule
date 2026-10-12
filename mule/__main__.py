@@ -8,30 +8,65 @@ executable that replaces this process, so its exit status and standard streams
 are the program's own. `python -m mule.compiler` builds an executable instead.
 """
 
+import argparse
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from mule.diagnostics import configure, logger, phase
 from mule.compiler import ToolchainError
 from mule.compiler.cache import cached_executable
 from mule.compiler.inputs import read_source
 from mule.compiler.modules import find_module, search_path
+from mule.diagnostics import configure, logger, phase
 
-USAGE = "usage: mule [option] ... [-c cmd | -m mod | file | -] [arg] ..."
-HELP = f"""\
-{USAGE}
-Options:
--c cmd : program passed in as string (terminates option list)
--h     : print this help message and exit (also -? or --help)
--m mod : run library module as a script (terminates option list)
--v     : compiler progress and phase timings on stderr
--vv    : detailed compiler, input, and toolchain diagnostics on stderr
-file   : program read from script file
--      : program read from stdin
-arg ...: arguments passed to program in sys.argv[1:]
-"""
+
+def help_parser():
+    """The command's options, for its help and usage text. Parsing itself
+    follows ``python``: options end at the program, which argparse cannot
+    express, so ``parse`` interprets the arguments."""
+    parser = argparse.ArgumentParser(
+        prog="mule",
+        usage="mule [option] ... [-c cmd | -m mod | file | -] [arg] ...",
+        description="Run a Python program as a native executable.",
+        add_help=False,
+    )
+    parser.add_argument(
+        "-c", metavar="cmd", help="program passed in as string (terminates option list)"
+    )
+    parser.add_argument(
+        "-h",
+        "-?",
+        "--help",
+        action="store_true",
+        help="print this help message and exit",
+    )
+    parser.add_argument(
+        "-m",
+        metavar="mod",
+        help="run library module as a script (terminates option list)",
+    )
+    parser.add_argument(
+        "-O",
+        metavar="LEVEL",
+        choices=("0", "3"),
+        help="native build optimization, attached as -O0 or -O3: 3 (default) "
+        "compiles with -O3 and full LTO; 0 compiles with -O0 without LTO, "
+        "much faster to build",
+    )
+    parser.add_argument(
+        "-v",
+        action="count",
+        help="compiler progress and phase timings on stderr; "
+        "-vv adds detailed compiler, input, and toolchain diagnostics",
+    )
+    parser.add_argument(
+        "file", nargs="?", help="program read from script file, or - for stdin"
+    )
+    parser.add_argument(
+        "arg", nargs="*", help="arguments passed to program in sys.argv[1:]"
+    )
+    return parser
 
 
 class UsageError(Exception):
@@ -41,6 +76,7 @@ class UsageError(Exception):
 @dataclass
 class Options:
     verbosity: int = 0
+    optimize: bool = True
 
 
 def parse(argv, *, options=None):
@@ -55,6 +91,10 @@ def parse(argv, *, options=None):
         index += 1
         if argument.startswith("-v") and set(argument[1:]) == {"v"}:
             options.verbosity += len(argument) - 1
+            continue
+        # The level is attached: python's own -O and -OO take none.
+        if argument in ("-O0", "-O3"):
+            options.optimize = argument == "-O3"
             continue
         if argument in ("-h", "-?", "--help"):
             return "help", None, []
@@ -77,7 +117,7 @@ def parse(argv, *, options=None):
     raise UsageError("interactive mode is not supported; give a script, -c, -m or -")
 
 
-def run(kind, value, arguments):
+def run(kind, value, arguments, *, optimize=True):
     """Compile the selected program, then replace this process with it."""
     roots = search_path(Path.cwd())
     package = None
@@ -102,7 +142,9 @@ def run(kind, value, arguments):
         filename, argv0 = value, value
         roots = search_path(path.resolve().parent)
     with phase("prepare executable for %s", filename):
-        executable = cached_executable(source, filename, roots, package)
+        executable = cached_executable(
+            source, filename, roots, package, optimize=optimize
+        )
     logger.info("starting native program %s", executable)
     logger.debug("native argv: %r", [argv0, *arguments])
     os.execv(executable, [argv0, *arguments])
@@ -113,14 +155,15 @@ def main() -> int:
     try:
         kind, value, arguments = parse(sys.argv[1:], options=options)
     except UsageError as error:
-        print(f"{error}\n{USAGE}\nTry `mule -h' for more information.", file=sys.stderr)
+        usage = help_parser().format_usage().rstrip()
+        print(f"{error}\n{usage}\nTry `mule -h' for more information.", file=sys.stderr)
         return 2
     configure(options.verbosity)
     if kind == "help":
-        print(HELP, end="")
+        help_parser().print_help()
         return 0
     try:
-        return run(kind, value, arguments)
+        return run(kind, value, arguments, optimize=options.optimize)
     except SyntaxError as error:
         print(
             f"{error.filename}:{error.lineno}:{error.offset}: {error.msg}",
