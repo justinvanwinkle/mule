@@ -9,12 +9,13 @@ environment analysis, IR2) attach here as they are implemented.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from mule.diagnostics import phase
 from mule.parser import parse
 
 from . import checkgen, ir1opt, locall
+from .annotation_types import AnnotationLedger
 from .debug import check_ir1_consistency
 from .dfo import find_dfo, find_initial_dfo
 from .envanal import environment_analyze
@@ -25,7 +26,6 @@ from .ir1tran import (
     _ImportBindings,
 )
 from .ir1tran_lambda import convert_module, lambda_blocks
-from .annotation_types import CONTRADICTIONS, IGNORED_SOURCES
 from .ir1util import join_blocks_if_possible, substitute_lvar, unlink_node
 from .node import Cast, Component, Lambda
 
@@ -37,6 +37,7 @@ class Compilation:
     components: list[Component]
     converter: Converter
     facts: dict[Lambda, locall.LambdaFacts] | None = None
+    annotations: AnnotationLedger = field(default_factory=AnnotationLedger)
 
     @property
     def converters(self):
@@ -85,15 +86,16 @@ def ignore_contradicted_annotations(compilation: Compilation) -> bool:
     Python never enforces annotations, so a provably wrong one is reported
     rather than rejected. A typed native field's ``mule.int64`` declaration
     defines its raw storage, so a contradiction there remains an error."""
-    pending = list(CONTRADICTIONS)
-    CONTRADICTIONS.clear()
+    ledger = compilation.annotations
+    pending = ledger.contradictions
+    ledger.contradictions = []
     changed = False
     for source, location, name in pending:
         if source is None:
             raise SyntaxError(f"value contradicts annotation {name}", location)
-        if source in IGNORED_SOURCES:
+        if source in ledger.ignored:
             continue
-        IGNORED_SOURCES.add(source)
+        ledger.ignored.add(source)
         changed = True
         filename, line, column = location[:3]
         logger.warning(
@@ -118,7 +120,7 @@ def ignore_contradicted_annotations(compilation: Compilation) -> bool:
     for component in compilation.components:
         for block in list(component.blocks()):
             for node in list(block.nodes()):
-                if isinstance(node, Cast) and node.declaration in IGNORED_SOURCES:
+                if isinstance(node, Cast) and node.declaration in ledger.ignored:
                     _remove_cast(node)
         component.reoptimize = True
     return True
@@ -143,7 +145,9 @@ def _ir1_optimize_phase_1(compilation: Compilation) -> None:
                 if component.reanalyze:
                     find_dfo(component)
         with phase("IR1 local-call and flow analysis", level=logging.DEBUG):
-            compilation.facts = locall.analyze(compilation.lambdas)
+            compilation.facts = locall.analyze(
+                compilation.lambdas, compilation.annotations
+            )
         if not reoptimized and not any(
             component.reoptimize for component in compilation.components
         ):
@@ -189,7 +193,9 @@ def compile_toplevel(
         components = find_initial_dfo(initial, converter.functions)
         converter.split = True
         check_ir1_consistency(components)
-        compilation = Compilation(list(converter.functions), entry, components, converter)
+        compilation = Compilation(
+            list(converter.functions), entry, components, converter
+        )
     logger.debug(
         "IR1 module %s: %d lambdas, %d components",
         filename,

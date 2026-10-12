@@ -1,0 +1,327 @@
+"""Build artifacts as a graph of cached steps.
+
+Every artifact's key is the SHA3-256 digest of one JSON object holding the
+digest of every file of the Mule package, the settings applied to the step
+that builds the artifact, and the digest of each of its inputs. JSON with
+sorted keys makes the object deterministic regardless of the order in which
+settings and inputs were collected. A step whose key has a cache entry reuses
+its outputs; otherwise it runs. An input produced by another step is
+represented by the digest of that step's outputs, so a step whose outputs did
+not change leaves everything downstream cached.
+
+A step can also read files it discovers while running, such as the module
+search probes of an import. Those are recorded in the cache entry's manifest,
+and the entry is valid only while each still has the recorded state.
+
+Steps run on threads (the interpreter is free-threaded). Each input notifies
+the steps that consume it when it resolves; a step starts once all of its
+inputs have resolved, so independent steps run in parallel.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import queue
+import subprocess
+import tempfile
+import threading
+from collections.abc import Callable, Iterable
+from contextlib import contextmanager
+from functools import cache, cached_property
+from pathlib import Path
+
+from .inputs import digest, recording, unchanged
+
+MULE_PACKAGE = Path(__file__).resolve().parents[1]
+# Conversion recurses over the syntax tree; compile threads need room.
+STEP_STACK_SIZE = 256 << 20
+
+
+class ToolchainError(RuntimeError):
+    """The native toolchain or target runtime could not produce an artifact."""
+
+
+@cache
+def mule_hash() -> str:
+    """The digest of every file of the Mule package, by relative path."""
+    files = {
+        str(path.relative_to(MULE_PACKAGE)): digest(path.read_bytes())
+        for path in sorted(MULE_PACKAGE.rglob("*"))
+        if path.is_file() and "__pycache__" not in path.parts
+    }
+    return digest(json.dumps(files, sort_keys=True).encode())
+
+
+@cache
+def tool_identity(*command: str) -> str:
+    """A toolchain program's version report, part of the settings of every
+    step that runs it, so an upgrade rebuilds what it produced."""
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+    except FileNotFoundError as error:
+        raise ToolchainError(f"'{command[0]}' was not found") from error
+    if result.returncode:
+        raise ToolchainError(f"'{' '.join(command)}' failed:\n{result.stderr.strip()}")
+    return result.stdout
+
+
+def artifact_key(settings: dict, inputs: dict[str, str | None]) -> str:
+    """The cache key of an artifact built with ``settings`` from ``inputs``,
+    a mapping of each input to its digest (None for a probed absent file)."""
+    identity = {"mule": mule_hash(), "settings": settings, "inputs": inputs}
+    return digest(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode())
+
+
+def cache_directory() -> Path:
+    base = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
+    return Path(base) / "mule"
+
+
+@contextmanager
+def _locked(entry: Path):
+    entry.mkdir(parents=True, exist_ok=True)
+    with open(entry / ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+class Node:
+    """Something whose outputs steps consume."""
+
+    def __init__(self, graph: Graph, name: str):
+        self.graph = graph
+        self.name = name
+        self.dependents: list[Step] = []
+        self.error: BaseException | None = None
+        self.done = False
+
+    @cached_property
+    def output_hash(self) -> str | None:
+        raise NotImplementedError
+
+    def resolved(self) -> None:
+        """Notify every consumer that this node's outputs exist, or that it
+        failed."""
+        with self.graph.lock:
+            self.done = True
+            dependents = list(self.dependents)
+        for dependent in dependents:
+            dependent.notify(self)
+        self.graph.finished(self)
+
+
+class File(Node):
+    """A source file, or a probe for one: its digest is None when absent."""
+
+    def __init__(self, graph: Graph, path: Path):
+        super().__init__(graph, str(path))
+        self.path = path
+
+    @cached_property
+    def output_hash(self) -> str | None:
+        try:
+            return digest(self.path.read_bytes())
+        except FileNotFoundError, NotADirectoryError, IsADirectoryError:
+            return None
+
+
+class Step(Node):
+    """Produces ``outputs`` from its inputs by running ``action``.
+
+    ``action(inputs, directory)`` receives the resolved inputs and writes
+    each output, by name, into ``directory``. ``discover(step)`` runs after
+    the outputs exist, before any consumer is notified, so it can create
+    further steps and add them to consumers' inputs.
+    """
+
+    def __init__(
+        self,
+        graph: Graph,
+        name: str,
+        *,
+        inputs: Iterable[Node],
+        settings: dict,
+        outputs: tuple[str, ...],
+        action: Callable[[list[Node], Path], None],
+        discover: Callable[[Step], None] | None = None,
+    ):
+        super().__init__(graph, name)
+        self.inputs: list[Node] = []
+        self.settings = settings
+        self.outputs = outputs
+        self.action = action
+        self.discover = discover
+        self.directory: Path | None = None
+        self._waiting: set[Node] = set()
+        self._started = False
+        for node in inputs:
+            self.add_input(node)
+
+    def add_input(self, node: Node) -> None:
+        """Make ``node`` an input. A step adds inputs to a consumer before it
+        notifies that consumer, so the consumer cannot start early."""
+        with self.graph.lock:
+            if self._started:
+                raise RuntimeError(f"{self.name} already started")
+            self.inputs.append(node)
+            node.dependents.append(self)
+            if not node.done:
+                self._waiting.add(node)
+
+    def notify(self, node: Node) -> None:
+        with self.graph.lock:
+            self._waiting.discard(node)
+            ready = not self._waiting and not self._started
+            if ready:
+                self._started = True
+        if ready:
+            self.graph.submit(self)
+
+    def path(self, output: str) -> Path:
+        return self.directory / output
+
+    @cached_property
+    def key(self) -> str:
+        return artifact_key(
+            self.settings,
+            {node.name: node.output_hash for node in self.inputs},
+        )
+
+    @cached_property
+    def output_hash(self) -> str:
+        return digest(
+            "".join(
+                digest(self.path(output).read_bytes()) for output in self.outputs
+            ).encode()
+        )
+
+    def execute(self) -> None:
+        """Reuse the cache entry for this step's key or build it."""
+        failed = next((node for node in self.inputs if node.error is not None), None)
+        if failed is not None:
+            self.error = failed.error
+            return
+        entry = cache_directory() / "steps" / self.key
+        if not self._reusable(entry):
+            with _locked(entry):
+                if not self._reusable(entry):
+                    self._build(entry)
+        self.directory = entry
+        if self.discover is not None:
+            self.discover(self)
+
+    def _reusable(self, entry: Path) -> bool:
+        try:
+            manifest = json.loads((entry / "manifest.json").read_text())
+        except FileNotFoundError:
+            return False
+        return all((entry / output).is_file() for output in self.outputs) and unchanged(
+            manifest["discovered"]
+        )
+
+    def _build(self, entry: Path) -> None:
+        with tempfile.TemporaryDirectory(prefix=".build-", dir=entry) as directory:
+            built = Path(directory)
+            with recording() as discovered:
+                self.action(self.inputs, built)
+            for output in self.outputs:
+                os.replace(built / output, entry / output)
+            (built / "manifest.json").write_text(json.dumps({"discovered": discovered}))
+            os.replace(built / "manifest.json", entry / "manifest.json")
+
+
+class Graph:
+    """Steps and files, each created once per name, executed as their inputs
+    resolve."""
+
+    def __init__(self, workers: int | None = None):
+        self.lock = threading.RLock()
+        self.nodes: dict[str, Node] = {}
+        self._pending = 0
+        self._idle = threading.Condition(self.lock)
+        self._ready: queue.SimpleQueue[Step | None] = queue.SimpleQueue()
+        # Steps that became ready before ``run``: nothing executes until the
+        # initial graph is complete.
+        self._backlog: list[Step] | None = []
+        previous = threading.stack_size(STEP_STACK_SIZE)
+        try:
+            self._workers = [
+                threading.Thread(
+                    target=self._work, name=f"mule-step-{index}", daemon=True
+                )
+                for index in range(workers or os.cpu_count() or 1)
+            ]
+            for worker in self._workers:
+                worker.start()
+        finally:
+            threading.stack_size(previous)
+
+    def file(self, path: Path) -> File:
+        return self.node(str(path), lambda: File(self, path))
+
+    def node[T: Node](self, name: str, create: Callable[[], T]) -> T:
+        """The node named ``name``, created by ``create`` the first time."""
+        with self.lock:
+            existing = self.nodes.get(name)
+            if existing is not None:
+                return existing
+            node = create()
+            self.nodes[name] = node
+            self._pending += 1
+        if isinstance(node, Step):
+            node.notify(None)
+        else:
+            node.resolved()
+        return node
+
+    def submit(self, step: Step) -> None:
+        with self.lock:
+            if self._backlog is not None:
+                self._backlog.append(step)
+                return
+        self._ready.put(step)
+
+    def _work(self) -> None:
+        while (step := self._ready.get()) is not None:
+            try:
+                step.execute()
+            # Graph.run raises a step's failure; dependents fail without running.
+            except Exception as error:  # noqa: BLE001
+                step.error = error
+            step.resolved()
+
+    def finished(self, node: Node) -> None:
+        with self.lock:
+            self._pending -= 1
+            self._idle.notify_all()
+
+    def run(self, target: Node) -> Node:
+        """Execute the graph, waiting until every node has resolved; raise
+        the target's failure."""
+        with self.lock:
+            backlog, self._backlog = self._backlog or [], None
+        for step in backlog:
+            self._ready.put(step)
+        with self.lock:
+            while self._pending:
+                self._idle.wait()
+        if target.error is not None:
+            raise target.error
+        return target
+
+    def close(self) -> None:
+        for _ in self._workers:
+            self._ready.put(None)
+        for worker in self._workers:
+            worker.join()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exception):
+        self.close()

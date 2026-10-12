@@ -32,6 +32,10 @@ pub enum Data {
         keyword_entry: Option<Native>,
         /// Captured cells and values for a nested function, or NULL.
         closure: Value,
+        /// A static string with one byte per closure entry: `c` for a cell,
+        /// `v` for a value captured directly because it is never reassigned.
+        /// NULL without a closure.
+        closure_cells: *const c_char,
         /// The function's `__dict__` namespace, created on first assignment.
         attributes: Value,
     },
@@ -350,6 +354,7 @@ pub unsafe fn function(globals: Value, entry: Native, name: &str) -> Value {
             defaults: std::ptr::null_mut(),
             keyword_entry: None,
             closure: std::ptr::null_mut(),
+            closure_cells: std::ptr::null(),
             attributes: std::ptr::null_mut(),
         })
     }
@@ -364,6 +369,7 @@ pub unsafe fn function_attribute(function: Value, attribute: &str) -> Value {
             name,
             attributes,
             closure,
+            closure_cells,
             ..
         } = &(*function).data
         else {
@@ -386,13 +392,7 @@ pub unsafe fn function_attribute(function: Value, attribute: &str) -> Value {
             }
             "__doc__" => none_value(),
             "__globals__" if !globals.is_null() => retain(*globals),
-            "__closure__" => {
-                if closure.is_null() {
-                    none_value()
-                } else {
-                    retain(*closure)
-                }
-            }
+            "__closure__" => closure_cells_of(*closure, *closure_cells),
             "__dict__" => {
                 let Data::Function { attributes, .. } = &mut (*function).data else {
                     unreachable!();
@@ -1202,7 +1202,7 @@ unsafe fn special_binding_present(value: Value, representation: bool) -> bool {
 }
 
 /// A class's `module.qualname`, without the module for builtins.
-unsafe fn qualified_name(class: Value) -> String {
+pub(crate) unsafe fn qualified_name(class: Value) -> String {
     unsafe {
         let text = |name: &std::ffi::CStr| {
             let value = crate::classes::mule_get_attr(class, name.as_ptr());
@@ -1870,29 +1870,73 @@ pub unsafe extern "C" fn mule_function(
         )
     }
 }
-/// Create a nested function object owning its captured cells and values.
+/// A function's `__closure__`: a tuple holding a cell for each captured
+/// variable, or None. A value captured directly is never reassigned, so a
+/// new cell holding it reads the same as the variable's own would.
+unsafe fn closure_cells_of(closure: Value, kinds: *const c_char) -> Value {
+    unsafe {
+        if closure.is_null() {
+            return none_value();
+        }
+        let Data::Args(entries) = &(*closure).data else {
+            error("SystemError", "function closure is not a tuple");
+            return std::ptr::null_mut();
+        };
+        let globals = crate::sequences::mule_protocol_globals();
+        let (cell_new, cell_set) = (lookup(globals, "cell_new"), lookup(globals, "cell_set"));
+        if cell_new.is_null() || cell_set.is_null() {
+            error("SystemError", "closure cells are unavailable before the cell protocol");
+            return std::ptr::null_mut();
+        }
+        let mut cells = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.iter().enumerate() {
+            let cell = if *kinds.add(index) as u8 == b'c' {
+                retain(*entry)
+            } else {
+                let cell = call(cell_new, &[]);
+                if !cell.is_null() {
+                    let stored = call(cell_set, &[cell, *entry]);
+                    if stored.is_null() {
+                        release(cell);
+                    } else {
+                        release(stored);
+                    }
+                }
+                if has_error() { std::ptr::null_mut() } else { cell }
+            };
+            if cell.is_null() {
+                for cell in cells {
+                    release(cell);
+                }
+                return std::ptr::null_mut();
+            }
+            cells.push(cell);
+        }
+        new_value(Data::Args(cells))
+    }
+}
+
+/// Give a new nested function its captured cells and values, returning the
+/// function (NULL when creating it failed). `cells` describes each closure
+/// entry, as `Data::Function::closure_cells`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_function_closure(
-    globals: Value,
-    native: *mut c_void,
-    name: *const c_char,
-    captured: Value,
+    value: Value,
     closure: Value,
+    cells: *const c_char,
 ) -> Value {
     unsafe {
-        let value = if captured.is_null() {
-            mule_function(globals, native, name)
-        } else {
-            crate::arguments::mule_function_defaults(globals, native, name, captured)
-        };
         if !value.is_null() {
             let Data::Function {
-                closure: slot, ..
+                closure: slot,
+                closure_cells,
+                ..
             } = &mut (*value).data
             else {
                 unreachable!()
             };
             *slot = retain(closure);
+            *closure_cells = cells;
         }
         value
     }

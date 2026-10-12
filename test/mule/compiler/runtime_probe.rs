@@ -306,6 +306,28 @@ unsafe fn function(globals: Value, entry: Native, name: &std::ffi::CStr) -> Valu
     unsafe { mule_function(globals, entry as *const () as *mut c_void, name.as_ptr()) }
 }
 
+/// A class statement without keywords: `bases` become the bases tuple.
+unsafe fn class_statement(
+    name: &std::ffi::CStr,
+    bases: &[Value],
+    fields: &[*const std::ffi::c_char],
+    namespace: Value,
+) -> Value {
+    unsafe {
+        let bases = mule_sequence_tuple(bases.len() as isize, bases.as_ptr());
+        let class = mule_class(
+            name.as_ptr(),
+            bases,
+            fields.len() as isize,
+            fields.as_ptr(),
+            namespace,
+            mule_none(),
+        );
+        release(bases);
+        class
+    }
+}
+
 unsafe fn function_name(value: Value) -> Value {
     unsafe {
         match &(*value).data {
@@ -356,14 +378,14 @@ unsafe fn class_ownership(globals: Value) {
         let namespace = mule_namespace();
         assert_eq!(mule_store_global(namespace, c"__init__".as_ptr(), init), 0);
         assert_eq!(mule_store_global(namespace, c"add".as_ptr(), add), 0);
-        let base = mule_class(c"Base".as_ptr(), ptr::null_mut(), 2, fields.as_ptr(), namespace);
+        let base = class_statement(c"Base", &[], &fields, namespace);
         assert!(!base.is_null());
         release(namespace);
         release(init);
         release(add);
         let extra = [c"extra".as_ptr()];
         let namespace = mule_namespace();
-        let derived = mule_class(c"Derived".as_ptr(), base, 1, extra.as_ptr(), namespace);
+        let derived = class_statement(c"Derived", &[base], &extra, namespace);
         release(namespace);
         let values = [small(42)];
         let instance = mule_call(derived, 1, values.as_ptr());
@@ -449,7 +471,7 @@ unsafe fn class_ownership(globals: Value) {
         // An expired class cannot validate a reused site's cached slot index.
         let new_fields = [c"unused".as_ptr(), c"value".as_ptr()];
         let namespace = mule_namespace();
-        let later = mule_class(c"Later".as_ptr(), ptr::null_mut(), 2, new_fields.as_ptr(), namespace);
+        let later = class_statement(c"Later", &[], &new_fields, namespace);
         release(namespace);
         let later_instance = mule_call(later, 0, ptr::null());
         assert_eq!(
@@ -488,7 +510,7 @@ unsafe fn dynamic_tagged_attributes() {
         let attributes = namespace();
         assert!(bind(attributes, "number", small(42)));
         assert!(bind(attributes, "__bool__", small(42)));
-        let class = mule_class(c"Dynamic".as_ptr(), ptr::null_mut(), 0, ptr::null(), attributes);
+        let class = class_statement(c"Dynamic", &[], &[], attributes);
         release(attributes);
         assert_eq!(mule_get_attr(class, c"number".as_ptr()), small(42));
         let instance = mule_call(class, 0, ptr::null());

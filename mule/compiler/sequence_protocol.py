@@ -25,7 +25,8 @@ def exports(entry) -> dict:
 def prepare(program):
     """Compile the sequence protocols. Every program needs them: they own the
     method tables of the builtin storage types, including ``str``. Returns
-    the protocol module's entry lambda and its exported functions by name."""
+    the protocol module's entry lambda, its exported functions by name, and
+    the modules it imported, by name."""
     path = Path(__file__).resolve().parents[2] / "stdlib/_sequences.py"
     imports = ModuleCompiler(str(path), prefix="mule_sequences_", primitives=PRIMITIVES)
     compilation = compile_protocol(
@@ -35,6 +36,7 @@ def prepare(program):
         prefix="mule_sequences_",
         namespace="$mule.sequences",
     )
+    imports.compile_pending()
     add_lambdas(program, compilation.lambdas, compilation.facts)
     add_lambdas(program, imports.lambdas, imports.facts)
-    return compilation.entry, exports(compilation.entry)
+    return compilation.entry, exports(compilation.entry), imports.modules

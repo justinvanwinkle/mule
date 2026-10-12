@@ -77,6 +77,14 @@ def _keyword_calls(lambda_) -> bool:
     return False
 
 
+def bind_signatures(lambdas) -> None:
+    """Record the signature ``_arguments.bind`` binds each function's calls
+    with. A function with one takes keyword calls."""
+    for lambda_ in lambdas:
+        if lambda_.signature.kinds:
+            lambda_.binding = signature_literal(lambda_)
+
+
 def prepare(program):
     """Compile ``_arguments`` when any function needs binding and record each
     signature. Binders enter through native wrappers, never through global
@@ -86,9 +94,7 @@ def prepare(program):
         _keyword_calls(lambda_) for lambda_ in program.lambdas
     ):
         return None, None
-    for lambda_ in program.lambdas:
-        if lambda_.signature.kinds:
-            lambda_.binding = signature_literal(lambda_)
+    bind_signatures(program.lambdas)
     path = Path(__file__).resolve().parents[2] / "stdlib/_arguments.py"
     compilation = compile_protocol(
         read_source(path),

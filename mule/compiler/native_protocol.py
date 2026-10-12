@@ -87,7 +87,7 @@ def prepare(program):
         for function, role in zip(
             functions, ("construct", "get_field", "set_field"), strict=True
         ):
-            function.name = f"mule_protocol_{layout.index}_{role}"
+            function.name = f"mule_protocol_{program.unit}_{layout.index}_{role}"
             layout.protocols[role] = function
         add_lambdas(program, functions, compilation.facts)
     return layouts

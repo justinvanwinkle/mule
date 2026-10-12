@@ -81,12 +81,59 @@ def keyword_closure(base):
     return add
 add = keyword_closure(10)
 print(add(), add(2), add(amount=3, scale=2))
+def keyword_without_defaults(base):
+    def add(amount, *, scale):
+        return (base + amount) * scale
+    return add
+print(keyword_without_defaults(1)(amount=2, scale=3))
 """,
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "11 16 16\n2\n120\n5\n1\nunbound True\n1\n(2, 2, 2)\ndeleted\n11 12 26\n"
+        "11 16 16\n2\n120\n5\n1\nunbound True\n1\n(2, 2, 2)\ndeleted\n11 12 26\n9\n"
     )
+
+
+def test_closure_exposes_a_cell_for_each_captured_variable(tmp_path):
+    # A nonlocal declaration alone makes the variable free, as types.py's
+    # CellType idiom relies on; reassigned captures expose their shared cell.
+    result = execute(
+        tmp_path,
+        {},
+        """
+def factory():
+    a = 1
+    def unused():
+        nonlocal a
+    return unused.__closure__
+cells = factory()
+print(len(cells), cells[0].cell_contents)
+def shared():
+    count = 0
+    def bump():
+        nonlocal count
+        count += 1
+        return count
+    return bump
+bump = shared()
+cell = bump.__closure__[0]
+bump()
+print(cell.cell_contents)
+cell.cell_contents = 10
+print(bump())
+def plain():
+    return 1
+print(plain.__closure__)
+CellType = type(cells[0])
+print(CellType.__name__, CellType(5).cell_contents)
+try:
+    CellType().cell_contents
+except ValueError as error:
+    print(error)
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1 1\n1\n11\nNone\ncell 5\nCell is empty\n"
 
 
 def test_lambdas_bind_defaults_early_and_keep_their_own_scope(tmp_path):

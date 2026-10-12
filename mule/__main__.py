@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mule.compiler import ToolchainError
-from mule.compiler.cache import cached_executable
+from mule.compiler.driver import Toolchain, build_executable
 from mule.compiler.inputs import read_source
 from mule.compiler.modules import find_module, search_path
 from mule.diagnostics import configure, logger, phase
@@ -121,11 +121,13 @@ def run(kind, value, arguments, *, optimize=True):
     """Compile the selected program, then replace this process with it."""
     roots = search_path(Path.cwd())
     package = None
+    source_path = None
     if kind == "command":
         source, filename, argv0 = value, "<string>", "-c"
     elif kind == "module":
         path, package = find_module(value, roots)
         source, filename, argv0 = read_source(path), str(path), str(path.resolve())
+        source_path = path.resolve()
     elif value == "-":
         source, filename, argv0 = sys.stdin.read(), "<stdin>", "-"
     else:
@@ -141,9 +143,15 @@ def run(kind, value, arguments, *, optimize=True):
             return 2
         filename, argv0 = value, value
         roots = search_path(path.resolve().parent)
+        source_path = path.resolve()
     with phase("prepare executable for %s", filename):
-        executable = cached_executable(
-            source, filename, roots, package, optimize=optimize
+        executable = build_executable(
+            source,
+            filename,
+            roots=roots,
+            package=package,
+            toolchain=Toolchain(optimize=optimize),
+            source_path=source_path,
         )
     logger.info("starting native program %s", executable)
     logger.debug("native argv: %r", [argv0, *arguments])

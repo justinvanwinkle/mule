@@ -1,10 +1,16 @@
 """LLVM code generation over IR2, following ``src/compiler/codegen.lisp``.
 
-``generate`` turns a whole program (every lambda of the user's modules and of
-the compiled stdlib protocols, with their IR1 facts) into one LLVM module.
-For each lambda it runs the IR2 phases per entry context (template
-selection, IR2 conversion, representation selection) and then emits one LLVM
-function per body by invoking each VOP's generator in block order.
+``generate`` turns one unit (the lambdas of the user's modules, or of the
+compiled builtins layer, with their IR1 facts) into one LLVM module. For each
+lambda it runs the IR2 phases per entry context (template selection, IR2
+conversion, representation selection) and then emits one LLVM function per
+body by invoking each VOP's generator in block order.
+
+Units are compiled separately and linked. Every function's symbols derive
+from its lambda's name, which derives from its module's name, so a unit's
+output does not depend on what else is compiled with it. A unit declares the
+functions of other units it calls, and defines the import initializer of
+each module it owns as ``@"mule.import:NAME"``.
 
 Ownership: every TN of descriptor storage owns a runtime reference in an
 entry-block slot. Consuming a temporary clears its slot before borrowing the
@@ -14,9 +20,9 @@ shared error cleanup path, and the handler-edge unwind blocks release the
 temporaries before transferring to the handler.
 
 The module also carries SBCL's external entry points as thin wrappers: the
-argument-view entry (``@mule.fn.N``) validates and transfers arguments to the
-body (``@mule.body.N``); guarded entries (``.spec.V``) and native entries
-(``@mule.native.N``) are additional bodies of the same lambda.
+argument-view entry (``@"NAME.fn"``) validates and transfers arguments to the
+body (``@"NAME.body"``); guarded entries (``@"NAME.spec.V"``) and native
+entries (``@mule.native.N``) are additional bodies of the same lambda.
 """
 
 from __future__ import annotations
@@ -33,7 +39,7 @@ from .ctype import UNKNOWN, ValueType
 from .ir1util import block_exception_target, class_method_definitions
 from .ir2tran import ir2_convert
 from .ltn import EntryContext, ltn_analyze
-from .node import CallKind, Combination, FunctionalKind, Lambda, LambdaVar
+from .node import CallKind, Combination, FunctionalKind, Lambda, LambdaVar, Signature
 from .represent import select_native_plans, select_representations
 from .vop import BOOLEAN, CLASS, DESCRIPTOR, DOUBLE, IMMEDIATE, NULL, RANGE, SIGNED
 
@@ -86,7 +92,7 @@ declare ptr @mule_binding_default(ptr, ptr)
 declare ptr @mule_allocate_instance(ptr)
 declare ptr @mule_forward_call(ptr, ptr)
 declare ptr @mule_function(ptr, ptr, ptr)
-declare ptr @mule_function_closure(ptr, ptr, ptr, ptr, ptr)
+declare ptr @mule_function_closure(ptr, ptr, ptr)
 declare ptr @mule_closure(ptr)
 declare ptr @mule_function_closure_of(ptr)
 declare ptr @mule_class(ptr, ptr, i64, ptr, ptr, ptr)
@@ -163,18 +169,40 @@ declare ptr @mule_builtins_module()
 declare ptr @mule_import_missing(ptr)
 declare void @mule_module_loaded(ptr, ptr)
 declare ptr @mule_builtins_module_init(ptr)
+declare void @mule_register_finalizer(ptr)
+declare void @mule_run_finalizers()
 declare i32 @mule_run(ptr)
 declare void @llvm.assume(i1)
 """
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class ForeignFunction:
+    """A function compiled in another unit, as the units calling it see it:
+    its symbols derive from ``name``; ``signature`` maps static calls."""
+
+    name: str
+    parameters: tuple[str, ...]
+    signature: Signature
+    closure: bool
+
+    def call_order(self, keywords, count, *, receiver=False):
+        return self.signature.call_order(
+            self.parameters, keywords, count, receiver=receiver
+        )
+
+
 @dataclass(slots=True)
 class Program:
-    """Everything code generation needs: the lambdas of every module in
-    emission order, their facts, and the compiled-protocol entry points."""
+    """Everything code generation needs for one unit: the lambdas it defines
+    in emission order, their facts, and the compiled-protocol entry points.
+
+    ``external`` are other units' lambdas this unit may call. A unit with an
+    ``entry`` is the executable's main unit; ``exports`` makes its bodies
+    callable from other units."""
 
     lambdas: list[Lambda]
-    entry: Lambda
+    entry: Lambda | None
     facts: dict
     print_entry: Lambda | None = None
     protocol_entry: Lambda | None = None
@@ -182,6 +210,57 @@ class Program:
     argument_constructor: Lambda | None = None
     argument_binder: Lambda | None = None
     layouts: dict[str, object] = field(default_factory=dict)
+    external: list[Lambda] = field(default_factory=list)
+    external_facts: dict = field(default_factory=dict)
+    unit: str = "program"
+    exports: bool = False
+    # Units the main unit initializes before its own, in order.
+    dependencies: list[str] = field(default_factory=list)
+    # Other units' method definitions, predictions after this unit's own.
+    external_methods: dict[str, object] = field(default_factory=dict)
+    # A module unit's own import: its initializer belongs to this unit and
+    # initializes the unit before running the module body.
+    module_import: object = None
+
+
+def _symbol(name: str) -> str:
+    return '@"' + name + '"'
+
+
+def _suffixed(symbol: str, suffix: str) -> str:
+    """``symbol`` with ``suffix`` appended to its name."""
+    if symbol.endswith('"'):
+        return symbol[:-1] + suffix + '"'
+    return symbol + suffix
+
+
+def unit_initializer(unit: str) -> str:
+    """A unit's startup function: it builds the unit's constants."""
+    return _symbol(f"mule.unit:{unit}.initialize")
+
+
+def unit_finalizer(unit: str) -> str:
+    """A unit's exit function: it releases the unit's constants and modules."""
+    return _symbol(f"mule.unit:{unit}.finalize")
+
+
+class _Symbols:
+    """One kind of symbol for every lambda a unit may reference. A reference
+    to another unit's lambda is recorded so the unit declares it."""
+
+    def __init__(self, module, suffix):
+        self.module = module
+        self.suffix = suffix
+
+    def __getitem__(self, key):
+        lambda_, variant = key if isinstance(key, tuple) else (key, None)
+        if variant is None:
+            name = f"{lambda_.name}.{self.suffix}"
+        else:
+            name = f"{lambda_.name}.spec.{self.module.variant_index(lambda_, variant)}"
+        if lambda_ not in self.module.owned:
+            self.module.foreign[name] = (self.suffix, lambda_)
+        return _symbol(name)
 
 
 def generate(program: Program) -> str:
@@ -261,21 +340,15 @@ class ModuleGenerator:
     def __init__(self, program: Program):
         self.program = program
         lambdas = program.lambdas
-        self.facts = program.facts
-        self.functions = {
-            lambda_: f"@mule.fn.{index}" for index, lambda_ in enumerate(lambdas)
-        }
-        self.bodies = {
-            lambda_: f"@mule.body.{index}" for index, lambda_ in enumerate(lambdas)
-        }
-        self.bodies_by_name = {
-            lambda_.name: symbol for lambda_, symbol in self.bodies.items()
-        }
-        self.by_name = {lambda_.name: lambda_ for lambda_ in lambdas}
-        self.specialized = {
-            (lambda_, context.id): f"@mule.body.{index}.spec.{variant}"
-            for index, lambda_ in enumerate(lambdas)
-            for variant, context in enumerate(self.variants_of(lambda_))
+        self.owned = set(lambdas)
+        self.facts = {**program.external_facts, **program.facts}
+        # Other units' functions this unit refers to, by symbol name.
+        self.foreign: dict[str, tuple[str, Lambda]] = {}
+        self.functions = _Symbols(self, "fn")
+        self.bodies = _Symbols(self, "body")
+        self.specialized = _Symbols(self, "body")
+        self.by_name = {
+            lambda_.name: lambda_ for lambda_ in [*program.external, *lambdas]
         }
         self.layouts = program.layouts
         self.sequence_functions = program.sequence_functions
@@ -292,15 +365,32 @@ class ModuleGenerator:
         self.auxiliary: list[str] = []
         self.method_targets: dict[str, Lambda] = {}
         self.imports: dict[str, object] = {}
+        if program.module_import is not None:
+            self.imports[program.module_import.module_name] = program.module_import
         for lambda_ in lambdas:
             self._collect(lambda_)
+        # Other units' methods are predictions too, after this unit's own.
+        for method_name, target in program.external_methods.items():
+            self.method_targets.setdefault(method_name, target)
 
-    def _collect(self, lambda_: Lambda) -> None:
-        """Native method predictions (calls still check callable identity) and
-        the imported modules in first-use order."""
+    def bodies_by_name(self, name: str) -> str:
+        return self.bodies[self.by_name[name]]
+
+    def variant_index(self, lambda_: Lambda, context_id) -> int:
+        for index, context in enumerate(self.variants_of(lambda_)):
+            if context.id == context_id:
+                return index
+        raise KeyError((lambda_.name, context_id))
+
+    def _collect_methods(self, lambda_: Lambda) -> None:
+        """Native method predictions; calls still check callable identity."""
         for methods in class_method_definitions(lambda_).values():
             for method_name, target in methods.items():
                 self.method_targets.setdefault(method_name, target)
+
+    def _collect(self, lambda_: Lambda) -> None:
+        """Method predictions and the imported modules in first-use order."""
+        self._collect_methods(lambda_)
         for block in lambda_.component.blocks():
             for node in block.nodes():
                 if (
@@ -314,8 +404,10 @@ class ModuleGenerator:
         facts = self.facts.get(lambda_)
         return facts.variants if facts is not None else ()
 
-    def closure_of(self, lambda_: Lambda) -> bool:
+    def closure_of(self, lambda_) -> bool:
         """Whether the function body takes a closure parameter."""
+        if isinstance(lambda_, ForeignFunction):
+            return lambda_.closure
         environment = lambda_.environment
         return environment is not None and bool(environment.closure)
 
@@ -329,8 +421,19 @@ class ModuleGenerator:
         )
         return [f"ptr {closure}"]
 
-    def import_index(self, info) -> int:
-        return list(self.imports).index(info.module_name)
+    def import_symbol(self, info) -> str:
+        """The function returning the imported module. A missing module's is
+        private to the unit; a compiled module's belongs to its own unit."""
+        if info.missing:
+            return _symbol(f"mule.import.missing:{info.module_name}")
+        return _symbol(f"mule.import:{info.module_name}")
+
+    def owns_import(self, info) -> bool:
+        return (
+            info.native
+            or info.missing
+            or info.initializer in {lambda_.name for lambda_ in self.owned}
+        )
 
     def attribute_cache(self) -> str:
         name = f"@mule.cache.{len(self.auxiliary)}"
@@ -496,15 +599,18 @@ class ModuleGenerator:
         functions.extend(
             native_callbacks(self, layout) for layout in self.layouts.values()
         )
-        functions.extend(
-            self.import_initializer(info, index)
-            for index, info in enumerate(self.imports.values())
-        )
+        owned_imports = [
+            info for info in self.imports.values() if self.owns_import(info)
+        ]
+        functions.extend(self.import_initializer(info) for info in owned_imports)
         self.auxiliary.extend(
             f"{layout.schema} = internal global i8 0"
             for layout in self.layouts.values()
         )
-        literal_initialization = self.initialize_tuple_constants()
+        self.auxiliary.append(self.unit_lifecycle(owned_imports))
+        if program.entry is not None:
+            self.auxiliary.extend(self.executable_entry())
+        # Data first: the bodies emitted above registered their constants.
         globals_ = []
         for value, name in self.data.items():
             escaped = "".join(f"\\{byte:02X}" for byte in value + b"\0")
@@ -512,11 +618,92 @@ class ModuleGenerator:
                 f"{name} = private unnamed_addr constant "
                 f'[{len(value) + 1} x i8] c"{escaped}"'
             )
-        entry = self.functions[program.entry]
-        self.auxiliary.append(
+        return (
+            "\n\n".join(
+                [
+                    DECLARATIONS,
+                    self.foreign_declarations(),
+                    vops.helpers(),
+                    *globals_,
+                    *self.auxiliary,
+                    *functions,
+                ]
+            )
+            + "\n"
+        )
+
+    def foreign_declarations(self) -> str:
+        lines = []
+        for name, (kind, lambda_) in sorted(self.foreign.items()):
+            if kind == "fn":
+                lines.append(f"declare ptr {_symbol(name)}(ptr, ptr)")
+                continue
+            parameters = ", ".join(
+                ["ptr"]
+                + (["ptr"] if self.closure_of(lambda_) else [])
+                + ["ptr"] * len(lambda_.parameters)
+            )
+            lines.append(f"declare ptr {_symbol(name)}({parameters})")
+        for info in self.imports.values():
+            if not self.owns_import(info):
+                lines.append(f"declare ptr {self.import_symbol(info)}()")
+        return "\n".join(lines)
+
+    def unit_lifecycle(self, owned_imports) -> str:
+        """The unit's initializer, which builds its tuple constants, and its
+        finalizer, which releases them and the modules it owns."""
+        linkage = "" if self.program.exports else "internal "
+        initialize = (
+            f"define {linkage}ptr {unit_initializer(self.program.unit)}() {{\n"
+            "entry:\n"
+            + self.initialize_tuple_constants()
+            + "  ret ptr inttoptr (i64 1 to ptr)\n}"
+        )
+        releases = [
+            (f"%import.{index}", self.import_cache(info))
+            for index, info in enumerate(owned_imports)
+            if not info.missing
+        ] + [
+            (f"%literal.root.{index}", constant.slot)
+            for index, constant in reversed(
+                list(enumerate(self.tuple_constants.values()))
+            )
+        ]
+        finalize = (
+            f"define {linkage}void {unit_finalizer(self.program.unit)}() {{\n"
+            "entry:\n"
+            + "".join(
+                f"  {value} = load ptr, ptr {slot}\n"
+                f"  call void @mule_release(ptr {value})\n"
+                f"  store ptr null, ptr {slot}\n"
+                for value, slot in releases
+            )
+            + "  ret void\n}"
+        )
+        return initialize + "\n\n" + finalize
+
+    def executable_entry(self) -> list[str]:
+        """``main`` and the protocol startup it runs: every unit's constants,
+        then the sequence and print protocols."""
+        program = self.program
+        units = [*program.dependencies, program.unit]
+        definitions = [
+            f"declare ptr {unit_initializer(unit)}()\ndeclare void {unit_finalizer(unit)}()"
+            for unit in program.dependencies
+        ]
+        startup = []
+        for index, unit in enumerate(units):
+            startup += [
+                f"  %unit.{index} = call ptr {unit_initializer(unit)}()",
+                f"  %unit.bad.{index} = icmp eq ptr %unit.{index}, null",
+                f"  br i1 %unit.bad.{index}, label %failure, label %unit.ready.{index}",
+                f"unit.ready.{index}:",
+            ]
+        definitions.append(
             "define internal ptr @mule.initialize.protocols(ptr %globals, ptr %args) {\n"
             "entry:\n"
-            + literal_initialization
+            + "\n".join(startup)
+            + "\n"
             + f"  %sequence = call ptr {self.functions[program.protocol_entry]}(ptr %globals, ptr %args)\n"
             "  %failed = icmp eq ptr %sequence, null\n"
             "  call void @mule_release(ptr %sequence)\n"
@@ -528,11 +715,8 @@ class ModuleGenerator:
             "  ret ptr null\n"
             "}"
         )
-        run = (
-            f"call i32 @mule_run_protocols(ptr {entry}, ptr @mule.initialize.protocols)"
-        )
         if program.argument_constructor is not None:
-            self.auxiliary.append(
+            definitions.append(
                 "define internal ptr @mule.arguments.construct(ptr %class, ptr %view) {\n"
                 "entry:\n"
                 "  %globals = call ptr @mule_protocol_globals()\n"
@@ -541,7 +725,11 @@ class ModuleGenerator:
                 f"  %result = call ptr {self.bodies[program.argument_constructor]}(ptr %globals, ptr %owned.class, ptr %owned.view)\n"
                 "  ret ptr %result\n}"
             )
-        main = (
+        run = (
+            f"call i32 @mule_run_protocols(ptr {self.functions[program.entry]}, "
+            "ptr @mule.initialize.protocols)"
+        )
+        definitions.append(
             "define i32 @main(i32 %argc, ptr %argv) {\n"
             "entry:\n"
             "  call void @mule_set_process_arguments(i32 %argc, ptr %argv)\n"
@@ -551,37 +739,14 @@ class ModuleGenerator:
                 else ""
             )
             + f"  %status = {run}\n"
+            + "  call void @mule_run_finalizers()\n"
             + "".join(
-                f"  %import.{index} = load ptr, ptr @mule.import.cache.{index}\n"
-                f"  call void @mule_release(ptr %import.{index})\n"
-                f"  store ptr null, ptr @mule.import.cache.{index}\n"
-                for index, info in enumerate(self.imports.values())
-                if not info.missing
-            )
-            + "".join(
-                f"  %literal.root.{index} = load ptr, ptr {constant.slot}\n"
-                f"  call void @mule_release(ptr %literal.root.{index})\n"
-                f"  store ptr null, ptr {constant.slot}\n"
-                for index, constant in reversed(
-                    list(enumerate(self.tuple_constants.values()))
-                )
+                f"  call void {unit_finalizer(unit)}()\n" for unit in reversed(units)
             )
             + "  ret i32 %status\n"
             "}"
         )
-        return (
-            "\n\n".join(
-                [
-                    DECLARATIONS,
-                    vops.helpers(),
-                    *globals_,
-                    *self.auxiliary,
-                    *functions,
-                    main,
-                ]
-            )
-            + "\n"
-        )
+        return definitions
 
     def emit_body(self, lambda_: Lambda, context: EntryContext) -> str:
         with phase(
@@ -599,23 +764,48 @@ class ModuleGenerator:
         )
         return body
 
-    def import_initializer(self, info, index):
+    def unit_startup(self, info) -> list[str]:
+        """A module unit initializes itself when its module is first imported,
+        before any of its functions can exist, and releases its state at exit."""
+        own = self.program.module_import
+        if own is None or info.module_name != own.module_name:
+            return []
+        unit = self.program.unit
+        return [
+            f"  %unit = call ptr {unit_initializer(unit)}()",
+            "  %unit.bad = icmp eq ptr %unit, null",
+            "  br i1 %unit.bad, label %unit.failed, label %unit.ready",
+            "unit.failed:",
+            "  ret ptr null",
+            "unit.ready:",
+            f"  call void @mule_register_finalizer(ptr {unit_finalizer(unit)})",
+        ]
+
+    def import_cache(self, info) -> str:
+        return _symbol(f"mule.import.cache:{info.module_name}")
+
+    def import_initializer(self, info):
+        symbol = self.import_symbol(info)
         if info.missing:
             # Without compiled source, a module can still be one the program
             # installed in sys.modules; otherwise this raises ModuleNotFoundError.
             return "\n".join(
                 [
-                    f"define internal ptr @mule.import.{index}() {{",
+                    f"define internal ptr {symbol}() {{",
                     "entry:",
                     f"  %module = call ptr @mule_import_missing(ptr {self.text(info.module_name)})",
                     "  ret ptr %module",
                     "}",
                 ]
             )
-        cache = f"@mule.import.cache.{index}"
-        self.auxiliary.append(f"{cache} = internal global ptr null")
+        # Every unit importing a native module generates the same initializer;
+        # the linker keeps one, so the module stays a singleton. A compiled
+        # module's initializer is defined only by the unit owning its body.
+        linkage = "linkonce_odr " if info.native else ""
+        cache = self.import_cache(info)
+        self.auxiliary.append(f"{cache} = {linkage or 'internal '}global ptr null")
         lines = [
-            f"define internal ptr @mule.import.{index}() {{",
+            f"define {linkage}ptr {symbol}() {{",
             "entry:",
             f"  %cached = load ptr, ptr {cache}",
             "  %ready = icmp ne ptr %cached, null",
@@ -624,6 +814,7 @@ class ModuleGenerator:
             "  %owned = call ptr @mule_retain(ptr %cached)",
             "  ret ptr %owned",
             "initialize:",
+            *self.unit_startup(info),
             # The builtins module is the namespace builtin lookups consult.
             "  %globals = call ptr @mule_builtins_module()"
             if info.module_name == "builtins"
@@ -660,7 +851,7 @@ class ModuleGenerator:
                     "  %bad.frame = icmp slt i32 %frame, 0",
                     "  br i1 %bad.frame, label %failed, label %execute",
                     "execute:",
-                    f"  %result = call ptr {self.bodies_by_name[info.initializer]}(ptr %globals)",
+                    f"  %result = call ptr {self.bodies_by_name(info.initializer)}(ptr %globals)",
                     "  call void @mule_leave_frame()",
                 ]
             )
@@ -843,11 +1034,17 @@ class FunctionGenerator:
             if tn.primitive_type is not None and tn.sc is RANGE:
                 self.range_tns.append(tn)
                 tn.slot = f"%range.{len(self.range_tns) - 1}"
-            elif (
-                tn.leaf is None
-                or isinstance(tn.leaf, LambdaVar)
-                and tn.leaf.expression_temporary
-            ) and not (tn.name is not None and tn.name.startswith("$")):
+            elif isinstance(tn.leaf, LambdaVar) and tn.leaf.expression_temporary:
+                # A variable's slot is loaded and stored by name, so an
+                # expression temporary stays in a slot, released when an
+                # exception transfers out of the expression.
+                self.value_tns.append(tn)
+                tn.slot = f"%value.{len(self.value_tns) - 1}"
+            elif tn.leaf is None and not (
+                tn.name is not None and tn.name.startswith("$")
+            ):
+                # Compiler temporaries. The leafless "$cell:"/"$copy:" TNs
+                # holding captures are locals, below.
                 last = _block_local_last_vop(tn, positions)
                 if last is not None:
                     tn.slot = None
@@ -1167,9 +1364,9 @@ class FunctionGenerator:
         them here, so that arm consumes them before returning the error result.
         """
         body = (
-            self.module.bodies[function]
-            if isinstance(function, Lambda)
-            else self.module.bodies_by_name[function]
+            self.module.bodies_by_name(function)
+            if isinstance(function, str)
+            else self.module.bodies[function]
         )
         status = self.operation("call i32 @mule_enter_frame()")
         failed, entered, join = (
@@ -1459,10 +1656,14 @@ class FunctionGenerator:
         # Every object entry of a natively planned lambda, general or guarded,
         # becomes the adapter that checks the plan's boundaries and calls the
         # raw entry; its own body remains as the fallback.
+        # Other units call an exporting unit's bodies; native raw entries
+        # are called only through the unit's own adapters.
+        linkage = "" if self.module.program.exports and not self.raw else "internal "
         plan = self.module.native_plans.get(self.lambda_)
         if plan is not None:
-            adapter = native_adapter(self, plan)
-            self.body += ".boxed"
+            adapter = native_adapter(self, plan, linkage)
+            self.body = _suffixed(self.body, ".boxed")
+            linkage = "internal "
             self.lines = []
         lambda_ = self.lambda_
         parameters = ", ".join(
@@ -1476,7 +1677,7 @@ class FunctionGenerator:
         elif lambda_.policy.debug == 3:
             attributes = " noinline"
         self.lines.append(
-            f"define internal ptr {self.body}({parameters}){attributes} {{"
+            f"define {linkage}ptr {self.body}({parameters}){attributes} {{"
         )
         self.lines.append("entry:")
         if self.context.id is not None:
@@ -1762,14 +1963,14 @@ class FunctionGenerator:
         return "\n".join(lines)
 
 
-def native_adapter(gen: FunctionGenerator, plan) -> str:
+def native_adapter(gen: FunctionGenerator, plan, linkage: str) -> str:
     """Boxed entry checks physical boundaries once, then calls a raw entry."""
     parameters = ", ".join(
         ["ptr %globals", *(f"ptr %parameter.{i}" for i in range(len(plan.parameters)))]
     )
     attributes = " noinline" if plan.function.policy.debug == 3 else ""
     gen.lines = [
-        f"define internal ptr {gen.body}({parameters}){attributes} {{",
+        f"define {linkage}ptr {gen.body}({parameters}){attributes} {{",
         "entry:",
     ]
     gen.line("%result = alloca ptr")
@@ -1818,7 +2019,9 @@ def native_adapter(gen: FunctionGenerator, plan) -> str:
         gen.lines.append("fallback:")
         for slot in slots:
             gen.release(gen.operation(f"load ptr, ptr {slot}"))
-        result = gen.operation(f"call ptr {gen.body}.boxed({parameters})")
+        result = gen.operation(
+            f"call ptr {_suffixed(gen.body, '.boxed')}({parameters})"
+        )
         gen.line(f"ret ptr {result}")
     gen.lines.append("error:")
     gen.line("br label %cleanup")

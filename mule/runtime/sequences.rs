@@ -133,7 +133,7 @@ pub unsafe fn binding(value: Value, name: &str) -> Value {
         let Data::Class(layout) = &(*class).data else {
             unreachable!()
         };
-        layout.method(name)
+        layout.special(name)
     }
 }
 #[unsafe(no_mangle)]

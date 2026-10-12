@@ -15,9 +15,11 @@ from _mule_native import class_base as _class_base
 from _mule_native import class_lookup as _class_lookup
 from _mule_native import class_name as _class_name
 from _mule_native import class_own_names as _class_own_names
+from _mule_native import default_repr as _default_repr
 from _mule_native import delete_attribute as _delete_attribute
 from _mule_native import generic_get_attribute as _generic_get_attribute
 from _mule_native import generic_set_attribute as _generic_set_attribute
+from _mule_native import identity_hash as _identity_hash
 from _mule_native import instance_items as _instance_items
 from _mule_native import is_class as _is_class
 from _mule_native import is_instance as _is_instance
@@ -57,6 +59,44 @@ class object:
 
     def __delattr__(self, name):
         _delete_attribute(self, name)
+
+    # The runtime applies these defaults itself when a class inherits them
+    # (see ClassLayout::special); they exist for explicit calls such as
+    # ``object.__repr__(self)`` and must match that built-in behavior.
+    def __repr__(self):
+        return _default_repr(self)
+
+    def __str__(self):
+        return _type_of(self).__repr__(self)
+
+    def __format__(self, format_spec):
+        if format_spec:
+            raise TypeError(
+                f"unsupported format string passed to {_class_name(_type_of(self))}.__format__"
+            )
+        return str(self)
+
+    def __hash__(self):
+        return _identity_hash(self)
+
+    def __eq__(self, other):
+        return True if self is other else NotImplemented
+
+    def __ne__(self, other):
+        result = _type_of(self).__eq__(self, other)
+        return result if result is NotImplemented else not result
+
+    def __lt__(self, other):
+        return NotImplemented
+
+    def __le__(self, other):
+        return NotImplemented
+
+    def __gt__(self, other):
+        return NotImplemented
+
+    def __ge__(self, other):
+        return NotImplemented
 
     def __init_subclass__(cls):
         pass

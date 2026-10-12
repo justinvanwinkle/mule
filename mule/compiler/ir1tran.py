@@ -4278,7 +4278,7 @@ class _ClassMethods(ast.Visitor):
         return collector.methods
 
     def visit_Node(self, node):
-        if isinstance(node, ast.Statement) or isinstance(node, ast.ExceptionHandler):
+        if isinstance(node, (ast.Statement, ast.ExceptionHandler)):
             for child in node.children():
                 child.accept(self)
 
@@ -4392,8 +4392,11 @@ class _ScopeVisitor(_ImportNames):
                     f"name '{name}' is used or assigned before nonlocal declaration",
                     node,
                 )
-            if function.enclosing_local(name) is None:
+            var = function.enclosing_local(name)
+            if var is None:
                 function.error(f"no binding for nonlocal '{name}' found", node)
+            if var not in function.lambda_.declared_free:
+                function.lambda_.declared_free.append(var)
             function.nonlocals.add(name)
 
 
@@ -4587,6 +4590,7 @@ class _GlobalAnnotationStores:
                         contract,
                         location,
                         self.lambda_.policy.safety,
+                        declaration=("global", self.converter.namespace, node.var.name),
                     ),
                 )
 

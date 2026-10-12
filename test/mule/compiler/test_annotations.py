@@ -1,5 +1,6 @@
 """Exercise imported compiler annotation contracts through native execution."""
 
+import logging
 import runpy
 from pathlib import Path
 
@@ -12,6 +13,26 @@ from test.mule.compiler.test_native import run_native
 SIGNED = tuple((f"int{bits}", bits) for bits in (8, 16, 32, 64, 128))
 UNSIGNED = tuple((f"uint{bits}", bits) for bits in (8, 16, 32, 64, 128))
 FLOATS = ("float16", "float32", "float64", "float128")
+
+
+def contradiction_warnings(caplog, source, filename="<unknown>"):
+    """Compile ``source`` and return the annotation contradiction warnings.
+
+    The handler is attached to the compiler's logger itself: the command's
+    diagnostics configuration stops ``mule`` records from reaching the root
+    logger, and another test in this process may have applied it."""
+    logger = logging.getLogger("mule.compiler.main")
+    logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.WARNING, logger=logger.name):
+            emit_llvm(source, filename)
+    finally:
+        logger.removeHandler(caplog.handler)
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if "the annotation is ignored" in record.getMessage()
+    ]
 
 
 @pytest.mark.parametrize(("marker", "bits"), SIGNED + UNSIGNED)
@@ -61,18 +82,16 @@ def test_imported_aliases_and_declarations_compile(tmp_path, source):
 
 @pytest.mark.parametrize(("marker", "bits"), SIGNED + UNSIGNED)
 @pytest.mark.parametrize("boundary", ("below", "above"))
-def test_integer_annotation_rejects_statically_out_of_range_values(
-    marker, bits, boundary
+def test_integer_annotation_warns_about_statically_out_of_range_values(
+    caplog, marker, bits, boundary
 ):
     unsigned = marker.startswith("uint")
     minimum = 0 if unsigned else -(2 ** (bits - 1))
     maximum = 2 ** (bits if unsigned else bits - 1) - 1
     wrong = minimum - 1 if boundary == "below" else maximum + 1
     source = f"from mule import {marker}\nvalue: {marker} = {wrong}\n"
-    with pytest.raises(SyntaxError) as caught:
-        emit_llvm(source, "range_error.py")
-    assert caught.value.filename == "range_error.py"
-    assert caught.value.lineno == 2
+    warnings = contradiction_warnings(caplog, source, "range_error.py")
+    assert any(warning.startswith("range_error.py:2:") for warning in warnings)
 
 
 @pytest.mark.parametrize(
@@ -87,16 +106,38 @@ def test_integer_annotation_rejects_statically_out_of_range_values(
         "def bad():\n value: int32\n value = 'wrong'\nbad()\n",
     ],
 )
-def test_statically_wrong_annotations_are_compilation_errors(body):
-    with pytest.raises(SyntaxError):
-        emit_llvm("from mule import int32\n" + body, "wrong_annotation.py")
+def test_statically_wrong_annotations_warn(caplog, body):
+    assert contradiction_warnings(caplog, "from mule import int32\n" + body)
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("value: int8 = 128\nprint(value)\n", "128\n"),
+        ("value: int32 = True\nprint(value)\n", "True\n"),
+        ("value: int32 = 1\nvalue = 'wrong'\nprint(value)\n", "wrong\n"),
+        ("def bad() -> int32:\n pass\nprint(bad())\n", "None\n"),
+        (
+            "def identity(value: int32):\n return value\nprint(identity('wrong'))\n",
+            "wrong\n",
+        ),
+        (
+            "def bad():\n value: int32\n value = 1.25\n return value\nprint(bad())\n",
+            "1.25\n",
+        ),
+    ],
+)
+def test_contradicted_annotation_is_ignored_at_run_time(tmp_path, body, expected):
+    result = run_native(tmp_path, "from mule import int8, int32\n" + body)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected
 
 
 @pytest.mark.parametrize(
     ("declaration_before_writer", "write_line"), [(True, 5), (False, 4)]
 )
-def test_module_annotation_rejects_wrong_global_write_in_either_definition_order(
-    declaration_before_writer, write_line
+def test_module_annotation_warns_about_wrong_global_write_in_either_definition_order(
+    caplog, declaration_before_writer, write_line
 ):
     declaration = "value: int32 = 1\n"
     writer = "def bad():\n global value\n value = 'wrong'\n"
@@ -105,12 +146,10 @@ def test_module_annotation_rejects_wrong_global_write_in_either_definition_order
         declaration + writer if declaration_before_writer else writer + declaration
     )
     source += "bad()\n"
-    with pytest.raises(SyntaxError) as caught:
-        emit_llvm(source, "global_write.py")
-    assert caught.value.filename == "global_write.py"
-    assert caught.value.lineno == write_line
-    assert caught.value.offset == 2
-    assert caught.value.text == " value = 'wrong'\n"
+    warnings = contradiction_warnings(caplog, source, "global_write.py")
+    assert any(
+        warning.startswith(f"global_write.py:{write_line}:2:") for warning in warnings
+    )
 
 
 @pytest.mark.parametrize("declaration_before_writer", (True, False))
@@ -129,27 +168,40 @@ def test_module_annotation_checks_unknown_global_write_in_either_definition_orde
     assert "TypeError" in result.stderr
 
 
+def test_every_compilation_reports_its_own_contradictions(caplog):
+    # Each compilation owns its record of ignored declarations; a declaration
+    # one program ignored is still checked in the next.
+    source = "from mule import int32\nvalue: int32 = 'wrong'\n"
+    assert contradiction_warnings(caplog, source, "first.py")
+    caplog.clear()
+    assert contradiction_warnings(caplog, source, "second.py")
+
+
 @pytest.mark.parametrize("marker", FLOATS)
-def test_float_annotation_rejects_statically_wrong_object(marker):
-    with pytest.raises(SyntaxError):
-        emit_llvm(f"from mule import {marker}\nvalue: {marker} = 'wrong'\n")
+def test_float_annotation_warns_about_statically_wrong_object(caplog, marker):
+    assert contradiction_warnings(
+        caplog, f"from mule import {marker}\nvalue: {marker} = 'wrong'\n"
+    )
 
 
 @pytest.mark.parametrize("safety", (0, 1, 2, 3))
-def test_known_wrong_annotation_is_rejected_at_every_safety(safety):
-    source = (
+def test_known_wrong_annotation_is_ignored_at_every_safety(tmp_path, safety):
+    result = run_native(
+        tmp_path,
         "from mule import int32, optimize\n"
         f"@optimize(safety={safety})\ndef bad() -> int32:\n return 'wrong'\n"
+        "print(bad())\n",
     )
-    with pytest.raises(SyntaxError):
-        emit_llvm(source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "wrong\n"
 
 
 @pytest.mark.parametrize("marker", ("int32", "uint128"))
 @pytest.mark.parametrize("value", ("True", "False"))
-def test_fixed_integer_annotation_rejects_known_boolean(marker, value):
-    with pytest.raises(SyntaxError):
-        emit_llvm(f"from mule import {marker}\nvalue: {marker} = {value}\n")
+def test_fixed_integer_annotation_warns_about_known_boolean(caplog, marker, value):
+    assert contradiction_warnings(
+        caplog, f"from mule import {marker}\nvalue: {marker} = {value}\n"
+    )
 
 
 def test_uninitialized_annotated_local_still_raises_unbound_local_error(tmp_path):

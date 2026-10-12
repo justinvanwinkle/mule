@@ -568,18 +568,23 @@ def make_function(gen, vop):
     if defaults is None and target.binding is not None:
         defaults = "null"
     consumed = [value for value in (defaults, closure) if value not in (None, "null")]
-    if closure is not None:
-        call = (
-            f"call ptr @mule_function_closure(ptr %globals, ptr {native}, ptr {name}, "
-            f"ptr {defaults or 'null'}, ptr {closure})"
-        )
-    elif defaults is not None:
+    # A function taking keywords gets its keyword entry from
+    # ``mule_function_defaults``, even without defaults ("null").
+    if defaults is not None:
         call = (
             f"call ptr @mule_function_defaults(ptr %globals, ptr {native}, ptr {name}, "
             f"ptr {defaults})"
         )
     else:
         call = f"call ptr @mule_function(ptr %globals, ptr {native}, ptr {name})"
+    if closure is not None:
+        # Assigned captured variables live in cells; the others are captured
+        # by value. ``__closure__`` presents every entry as a cell.
+        cells = module.text(
+            "".join("c" if var.indirect else "v" for var in target.environment.closure)
+        )
+        function = gen.operation(call)
+        call = f"call ptr @mule_function_closure(ptr {function}, ptr {closure}, ptr {cells})"
     gen.pointer_result(result, call, consumed)
 
 
@@ -624,9 +629,7 @@ def class_namespace(gen, vop):
     )
 
 
-@define_vop(
-    "class-load", translate=fndb.CLASS_LOAD, args=(OBJECT,), results=(OBJECT,)
-)
+@define_vop("class-load", translate=fndb.CLASS_LOAD, args=(OBJECT,), results=(OBJECT,))
 def class_load(gen, vop):
     namespace = gen.take(vop.args[0])
     gen.pointer_result(
@@ -679,8 +682,8 @@ def class_delete(gen, vop):
 
 @define_vop("import", translate=fndb.IMPORT, results=(OBJECT,))
 def import_(gen, vop):
-    index = gen.module.import_index(vop.codegen_info)
-    gen.pointer_result(vop.results[0], f"call ptr @mule.import.{index}()")
+    symbol = gen.module.import_symbol(vop.codegen_info)
+    gen.pointer_result(vop.results[0], f"call ptr {symbol}()")
 
 
 @define_vop("yield", translate=fndb.YIELD, args=(OBJECT,), results=(OBJECT,))

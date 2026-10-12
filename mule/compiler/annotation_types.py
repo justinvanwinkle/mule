@@ -10,10 +10,27 @@ from dataclasses import dataclass
 from .ctype import FLOAT, PYTHON_INTEGER, IntegerType
 
 
-# Annotation declarations proven wrong since the IR1 phases last applied them,
-# as (source, location, annotation name), and every declaration ignored so far.
-CONTRADICTIONS: list = []
-IGNORED_SOURCES: set = set()
+class AnnotationLedger:
+    """The annotation declarations one module's compilation proved wrong.
+
+    A contradicted annotation is reported and then ignored rather than
+    failing compilation. Sources are ``("local", lambda, name)``,
+    ``("return", lambda)`` or ``("global", namespace, name)``; ``None`` marks
+    an assertion without a declaration to ignore."""
+
+    def __init__(self):
+        # Contradictions found since the IR1 phases last applied them, as
+        # (source, location, annotation name).
+        self.contradictions: list = []
+        self.ignored: set = set()
+
+    def check(self, contract, actual, location, source=None) -> bool:
+        """Whether ``actual`` provably contradicts ``contract``. A
+        contradiction of a declaration not yet ignored is recorded."""
+        if source in self.ignored or not contract.contradicts(actual):
+            return False
+        self.contradictions.append((source, location, contract.display_name))
+        return True
 
 
 class Contract:
@@ -34,15 +51,6 @@ class Contract:
         return True
 
     def boolean_conflict(self, actual):
-        return True
-
-    def validate(self, actual, location, source=None):
-        """Whether ``actual`` provably contradicts this contract. A
-        contradicted annotation is reported and then ignored, so it is
-        recorded for ``ignore_contradicted_annotations`` instead of failing."""
-        if source in IGNORED_SOURCES or not self.contradicts(actual):
-            return False
-        CONTRADICTIONS.append((source, location, self.display_name))
         return True
 
 

@@ -60,6 +60,21 @@ impl ClassLayout {
             .map_or(std::ptr::null_mut(), |(layout, _, index)| layout.attributes[index].1)
     }
 
+    /// The special method the runtime invokes implicitly for `name`, or NULL
+    /// when the class only inherits `object`'s definition. `object`'s methods
+    /// implement exactly the runtime's built-in behavior, which then applies
+    /// without a call.
+    pub fn special(&self, name: &str) -> Value {
+        let Some((owner, _, index)) = self.find(name) else {
+            return std::ptr::null_mut();
+        };
+        let object = builtin_type(Builtin::Object);
+        if !object.is_null() && std::ptr::eq(owner, unsafe { layout_of_class(object) }.unwrap()) {
+            return std::ptr::null_mut();
+        }
+        owner.attributes[index].1
+    }
+
     /// The class `depth` bases up from this one.
     fn ancestor(&self, depth: usize) -> &ClassLayout {
         let mut layout = self;
@@ -205,14 +220,7 @@ unsafe fn layout_of_class<'a>(class: Value) -> Option<&'a ClassLayout> {
 /// A hook such as `__getattribute__` or `__setattr__`, unless the class only
 /// inherits `object`'s default, which is the built-in behavior itself.
 fn hook(layout: &ClassLayout, name: &str) -> Value {
-    let Some((owner, _, index)) = layout.find(name) else {
-        return std::ptr::null_mut();
-    };
-    let object = builtin_type(Builtin::Object);
-    if !object.is_null() && std::ptr::eq(owner, unsafe { layout_of_class(object) }.unwrap()) {
-        return std::ptr::null_mut();
-    }
-    owner.attributes[index].1
+    layout.special(name)
 }
 
 unsafe fn base_layout<'a>(layout: &ClassLayout) -> Option<&'a ClassLayout> {
@@ -952,7 +960,7 @@ pub unsafe fn special_binding(receiver: Value, attribute: &str) -> Value {
         let Some((layout, _, _)) = layout(receiver) else {
             return std::ptr::null_mut();
         };
-        layout.method(attribute)
+        layout.special(attribute)
     }
 }
 
@@ -963,7 +971,7 @@ pub unsafe fn special_bound(receiver: Value, attribute: &str) -> Value {
         let Some((layout, true, owner)) = layout(receiver) else {
             return std::ptr::null_mut();
         };
-        let value = layout.method(attribute);
+        let value = layout.special(attribute);
         if value.is_null() {
             return value;
         }
@@ -978,7 +986,7 @@ pub unsafe fn special_bound_on_class(class: Value, attribute: &str) -> Value {
         let Some(meta) = layout_of_class(metaclass) else {
             return std::ptr::null_mut();
         };
-        let value = meta.method(attribute);
+        let value = meta.special(attribute);
         if value.is_null() {
             return value;
         }
@@ -991,7 +999,7 @@ pub unsafe fn special_method(receiver: Value, attribute: &str, args: &[Value]) -
         let Some((layout, _, owner)) = layout(receiver) else {
             return std::ptr::null_mut();
         };
-        let value = layout.method(attribute);
+        let value = layout.special(attribute);
         if value.is_null() {
             return value;
         }
@@ -1627,6 +1635,21 @@ unsafe extern "C" fn class_of(_: Value, args: Value) -> Value {
     }
 }
 
+/// `object.__repr__`: the class's qualified name and the value's address.
+unsafe extern "C" fn default_repr(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let class = class_of_value(value);
+        text(&format!(
+            "<{} object at {:#x}>",
+            object::qualified_name(class),
+            value as usize
+        ))
+    }
+}
+
 unsafe extern "C" fn class_base(_: Value, args: Value) -> Value {
     unsafe {
         let Some([class]) = operands(args) else {
@@ -2154,7 +2177,7 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 27] = [
+        let exports: [(&str, object::Native); 28] = [
             ("register_not_implemented", register_not_implemented),
             ("instance_items", instance_items),
             ("new_namespace", new_namespace),
@@ -2177,6 +2200,7 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("new_class", new_class),
             ("is_class", is_class),
             ("class_of", class_of),
+            ("default_repr", default_repr),
             ("class_base", class_base),
             ("class_lookup", class_lookup),
             ("bind_attribute", bind_attribute),

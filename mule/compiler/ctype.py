@@ -389,7 +389,9 @@ class PythonIntegerType(PrimitiveType):
         return other.join_python_integer(self)
 
     def join_python_integer(self, left):
-        return PythonIntegerType(may_be_unbound=self.may_be_unbound or left.may_be_unbound)
+        return PythonIntegerType(
+            may_be_unbound=self.may_be_unbound or left.may_be_unbound
+        )
 
 
 @dataclass(frozen=True, slots=True)

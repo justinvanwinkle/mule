@@ -5,6 +5,7 @@ import pytest
 from mule.compiler import emit_llvm
 from mule.compiler.main import compile_source
 from mule.compiler.node import CallKind, Combination
+from test.mule.compiler.test_annotations import contradiction_warnings
 from test.mule.compiler.test_native import run_native
 
 
@@ -87,28 +88,21 @@ def test_checked_builtin_int_rejects_unknown_non_integer(tmp_path, body):
 
 
 @pytest.mark.parametrize(
-    ("source", "line", "text"),
+    ("source", "line"),
     (
-        ("value: int = 'wrong'\n", 1, "value: int = 'wrong'\n"),
-        ("value: int = 1\nvalue = 1.5\n", 2, "value = 1.5\n"),
-        (
-            "def bad() -> int:\n return 'wrong'\n",
-            2,
-            " return 'wrong'\n",
-        ),
-        (
-            "def bad():\n value: int\n value = None\n",
-            3,
-            " value = None\n",
-        ),
+        ("value: int = 'wrong'\n", 1),
+        ("value: int = 1\nvalue = 1.5\n", 2),
+        ("def bad() -> int:\n return 'wrong'\n", 2),
+        ("def bad():\n value: int\n value = None\n", 3),
     ),
 )
-def test_known_builtin_int_contradictions_are_source_located(source, line, text):
-    with pytest.raises(SyntaxError, match="contradicts annotation") as caught:
-        emit_llvm(source, "builtin_annotation.py")
-    assert caught.value.filename == "builtin_annotation.py"
-    assert caught.value.lineno == line
-    assert caught.value.text == text
+def test_known_builtin_int_contradictions_warn_with_source_location(
+    caplog, source, line
+):
+    warnings = contradiction_warnings(caplog, source, "builtin_annotation.py")
+    assert any(
+        warning.startswith(f"builtin_annotation.py:{line}:") for warning in warnings
+    )
 
 
 def test_trusted_builtin_int_does_not_emit_runtime_category_checks():
@@ -224,8 +218,9 @@ def test_annotated_attribute_assignment_executes_value_but_not_annotation(
             "Annotated[int, 'metadata']",
             marks=pytest.mark.xfail(
                 strict=True,
-                raises=SyntaxError,
-                reason="typing_extensions is not a bundled library",
+                raises=AssertionError,
+                reason="typing_extensions is not a bundled library; importing "
+                "it raises ModuleNotFoundError at run time",
             ),
         ),
         ("from __future__ import annotations\n", "UnknownClass | None"),

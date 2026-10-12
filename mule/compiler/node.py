@@ -523,6 +523,7 @@ class Lambda(Functional):
         "binding",
         "calls",
         "component",
+        "declared_free",
         "entries",
         "environment",
         "home",
@@ -569,6 +570,9 @@ class Lambda(Functional):
         self.annotation_expressions: dict[str, ast.Expression] = {}
         # The constant signature tuple ``_arguments.bind`` binds calls with.
         self.binding: ast.Tuple | None = None
+        # Enclosing variables a ``nonlocal`` declaration makes free here.
+        # Python closes over them even when the body never uses them.
+        self.declared_free: list[LambdaVar] = []
 
     @property
     def parameters(self) -> tuple[str, ...]:

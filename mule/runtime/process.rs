@@ -14,6 +14,25 @@ struct Arguments {
 }
 
 // Compiled Python currently runs on the native main thread only.
+/// Unit finalizers in registration order. A module unit registers its
+/// finalizer when its import first runs; `mule_run_finalizers` calls them in
+/// reverse before the main unit releases its own state.
+static FINALIZERS: std::sync::Mutex<Vec<unsafe extern "C" fn()>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mule_register_finalizer(finalizer: unsafe extern "C" fn()) {
+    FINALIZERS.lock().unwrap().push(finalizer);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mule_run_finalizers() {
+    let finalizers = std::mem::take(&mut *FINALIZERS.lock().unwrap());
+    for finalizer in finalizers.into_iter().rev() {
+        unsafe { finalizer() };
+    }
+}
+
 thread_local! {
     static ARGUMENTS: Cell<Option<Arguments>> = const { Cell::new(None) };
 }

@@ -104,7 +104,9 @@ def join_fact(left: Fact, right: Fact) -> Fact:
 
 def _combine(a: Fact, b: Fact) -> Fact:
     target = a.target if a.target is b.target else None
-    return Fact(a.type.join(b.type), target, target is not None and a.proven and b.proven)
+    return Fact(
+        a.type.join(b.type), target, target is not None and a.proven and b.proven
+    )
 
 
 def join_states(left: dict, right: dict) -> tuple[dict, bool]:
@@ -244,7 +246,9 @@ class _Propagation(NodeVisitor):
 
     def visit_Cast(self, node: Cast):
         value = self.type_of(node.value)
-        if node.contract.validate(value, node.location, node.declaration):
+        if self.walk.annotations.check(
+            node.contract, value, node.location, node.declaration
+        ):
             return Fact(value)
         return Fact(node.contract.refine(value))
 
@@ -309,7 +313,8 @@ class _Propagation(NodeVisitor):
                 args[1:], node.info.default_contracts, parameters, strict=True
             ):
                 if contract is not None:
-                    contract.validate(
+                    self.walk.annotations.check(
+                        contract,
                         self.type_of(value),
                         node.info.location,
                         ("local", lambda_, lambda_.vars[index].name),
@@ -377,10 +382,13 @@ def _loop_headers(entry, successors) -> set:
 class _Walk:
     """One propagation over a lambda under given parameter facts."""
 
-    def __init__(self, lambda_: Lambda, global_targets, parameters, resolve_call):
+    def __init__(
+        self, lambda_: Lambda, global_targets, parameters, resolve_call, annotations
+    ):
         self.lambda_ = lambda_
         self.global_targets = global_targets
         self.resolve_call = resolve_call
+        self.annotations = annotations
         self.facts: dict[object, Fact] = {}
         self.blocks = list(lambda_.component.blocks())
         self.entry = lambda_.bind.block
@@ -419,7 +427,9 @@ class _Walk:
         }
         self.invalidated.update((var, UNKNOWN_FACT) for var in self.indirect)
         self.initial.update(
-            (key, fact) for key, fact in self.invalidated.items() if isinstance(key, tuple)
+            (key, fact)
+            for key, fact in self.invalidated.items()
+            if isinstance(key, tuple)
         )
 
     def invalidate_globals(self, state):
@@ -589,14 +599,18 @@ def _global_leaves(node):
         yield node.var
 
 
-def propagate(lambda_: Lambda, global_targets, parameters, resolve_call) -> Body:
+def propagate(
+    lambda_: Lambda, global_targets, parameters, resolve_call, annotations
+) -> Body:
     """Propagate facts through ``lambda_`` from the given parameter types.
 
     ``resolve_call(callee_fact, argument_types, location, keywords)`` supplies
     the result type of a call; local-call analysis provides it so that proven
-    local calls receive their callee's published return type.
+    local calls receive their callee's published return type. Annotation
+    contradictions are recorded in ``annotations``, the module's
+    ``AnnotationLedger``.
     """
-    return _Walk(lambda_, global_targets, parameters, resolve_call).run()
+    return _Walk(lambda_, global_targets, parameters, resolve_call, annotations).run()
 
 
 __all__ = [

@@ -15,13 +15,18 @@ _recording: ContextVar[dict[str, str | None] | None] = ContextVar(
 )
 
 
+def digest(data: bytes) -> str:
+    """The SHA3-256 digest every Mule artifact and input is identified by."""
+    return hashlib.sha3_256(data).hexdigest()
+
+
 def file_state(path):
-    """The SHA-256 digest of a regular file's bytes, or None when it is absent."""
+    """The SHA3-256 digest of a regular file's bytes, or None when it is absent."""
     try:
         data = Path(path).read_bytes()
     except FileNotFoundError, NotADirectoryError, IsADirectoryError:
         return None
-    return hashlib.sha256(data).hexdigest()
+    return digest(data)
 
 
 def _record(path, state):
@@ -33,7 +38,7 @@ def _record(path, state):
 def read_source(path):
     """Read a UTF-8 source file, recording its contents as a build input."""
     data = Path(path).read_bytes()
-    _record(path, hashlib.sha256(data).hexdigest())
+    _record(path, digest(data))
     return data.decode("utf-8")
 
 

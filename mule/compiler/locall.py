@@ -25,6 +25,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
+from .annotation_types import AnnotationLedger
 from .constraint import Body, Fact, join_fact, propagate, widen_fact
 from .ctype import BOTTOM, FIXNUM_MAX, FIXNUM_MIN, UNKNOWN, IntegerType, ValueType
 from .node import CallKind, Combination, GlobalVar, Lambda, Set
@@ -79,7 +80,7 @@ def _with_defined_arguments(arguments, continuation):
     )
 
 
-def analyze(lambdas) -> dict[Lambda, LambdaFacts]:
+def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]:
     """Solve local-call arguments and results, then publish entry contexts.
 
     General entries model externally supplied values. Observed integer
@@ -114,9 +115,15 @@ def analyze(lambdas) -> dict[Lambda, LambdaFacts]:
 
     def callee_inputs(target, context_parameters, context_summaries):
         return tuple(
-            (context_parameters.get((target, context)), context_summaries.get((target, context)))
+            (
+                context_parameters.get((target, context)),
+                context_summaries.get((target, context)),
+            )
             for context in ("observed", "fixnum", "general")
         )
+
+    # The callees whose summaries the current propagation consulted.
+    consulted: set[Lambda] = set()
 
     while True:
         changed = False
@@ -145,8 +152,6 @@ def analyze(lambdas) -> dict[Lambda, LambdaFacts]:
                 )
             )
 
-        consulted: set[Lambda] = set()
-
         def resolve_defined(
             callee, arguments, context_parameters, context_summaries, location, keywords
         ):
@@ -166,7 +171,9 @@ def analyze(lambdas) -> dict[Lambda, LambdaFacts]:
                 arguments, target.signature.annotations, target.vars, strict=True
             ):
                 if contract is not None:
-                    contract.validate(actual, location, ("local", target, var.name))
+                    annotations.check(
+                        contract, actual, location, ("local", target, var.name)
+                    )
             for context in ("observed", "fixnum", "general"):
                 key = target, context
                 expected = context_parameters.get(key)
@@ -180,21 +187,32 @@ def analyze(lambdas) -> dict[Lambda, LambdaFacts]:
         for key, expected in previous_parameters.items():
             lambda_ = key[0]
             recorded = inputs.get(key)
-            if recorded is not None and recorded[0] == expected and all(
-                callee_inputs(target, previous_parameters, previous_summaries) == state
-                for target, state in recorded[1].items()
+            if (
+                recorded is not None
+                and recorded[0] == expected
+                and all(
+                    callee_inputs(target, previous_parameters, previous_summaries)
+                    == state
+                    for target, state in recorded[1].items()
+                )
             ):
                 body = bodies[key]
             else:
                 consulted.clear()
                 body = propagate(
-                    lambda_, global_targets[lambda_.namespace], expected, resolve
+                    lambda_,
+                    global_targets[lambda_.namespace],
+                    expected,
+                    resolve,
+                    annotations,
                 )
                 bodies[key] = body
                 inputs[key] = (
                     expected,
                     {
-                        target: callee_inputs(target, previous_parameters, previous_summaries)
+                        target: callee_inputs(
+                            target, previous_parameters, previous_summaries
+                        )
                         for target in consulted
                     },
                 )

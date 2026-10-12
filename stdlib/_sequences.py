@@ -1641,16 +1641,40 @@ def context_exit(exit_method, value):
     return exit_method(_raised_class(value), value, None)
 
 
-class Cell:
-    """Shared storage for a variable captured by a nested function."""
+class cell:
+    """Shared storage for a variable captured by a nested function, as
+    ``types.CellType``."""
 
-    def __init__(self):
-        self.bound = False
-        self.value = None
+    def __init__(self, *contents):
+        if len(contents) > 1:
+            raise TypeError(f"cell expected at most 1 argument, got {len(contents)}")
+        self.bound = len(contents) == 1
+        self.value = contents[0] if contents else None
+
+    @property
+    def cell_contents(self):
+        if not self.bound:
+            raise ValueError("Cell is empty")
+        return self.value
+
+    @cell_contents.setter
+    def cell_contents(self, value):
+        cell_set(self, value)
+
+    @cell_contents.deleter
+    def cell_contents(self):
+        if not self.bound:
+            raise ValueError("Cell is empty")
+        cell_clear(self)
+
+    def __repr__(self):
+        if not self.bound:
+            return f"<cell at {id(self):#x}: empty>"
+        return f"<cell at {id(self):#x}: {type(self.value).__name__} object>"
 
 
 def cell_new():
-    return Cell()
+    return cell()
 
 
 def cell_get(cell):

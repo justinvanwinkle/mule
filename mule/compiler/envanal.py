@@ -63,9 +63,13 @@ def environment_analyze(compilation) -> None:
 
 def compute_closure(lambda_: Lambda) -> bool:
     """Close over every variable of ``lambda_`` referenced or assigned from
-    another lambda. Returns whether anything was closed over."""
+    another lambda, and every variable ``lambda_`` declares ``nonlocal``.
+    Returns whether anything was closed over."""
     environment = lambda_.environment
     closed = False
+    for var in lambda_.declared_free:
+        closed = True
+        _close_over(var, environment, var.home.environment)
     for var in lambda_.locals:
         for ref in var.refs:
             ref_lambda = ref.home_lambda

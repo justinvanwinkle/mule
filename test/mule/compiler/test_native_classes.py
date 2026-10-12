@@ -228,7 +228,6 @@ def test_native_classes(tmp_path, source, expected):
     ("source", "exception", "expected_stdout"),
     [
         ("class Empty:\n pass\nprint(Empty().missing)\n", "AttributeError", ""),
-        ("class Empty:\n pass\nobj = Empty()\nobj.new = 1\n", "AttributeError", ""),
         (
             (
                 "class Late:\n def initialize(self):\n  self.value = 42\n"
@@ -252,15 +251,6 @@ def test_native_classes(tmp_path, source, expected):
             "TypeError",
             "",
         ),
-        ("class Empty:\n pass\nEmpty.new = 1\n", "TypeError", ""),
-        (
-            (
-                "class Method:\n def run(self):\n  return 1\n"
-                "setattr(Method, 'run', None)\n"
-            ),
-            "TypeError",
-            "",
-        ),
         (
             (
                 "class Empty:\n pass\ndef argument():\n print('argument')\n return 1\n"
@@ -274,14 +264,11 @@ def test_native_classes(tmp_path, source, expected):
     ],
     ids=[
         "missing-instance-attribute",
-        "undeclared-instance-field",
         "uninitialized-declared-field",
         "non-none-constructor-result",
         "arguments-without-constructor",
         "missing-constructor-argument",
         "missing-method-argument",
-        "immutable-class-attributes",
-        "immutable-class-setattr",
         "missing-method-prevents-argument-evaluation",
         "scalar-attribute-error",
         "invalid-base",
@@ -350,17 +337,31 @@ def test_native_class_invalid_protocol_results(
     assert exception in result.stderr
 
 
-@pytest.mark.parametrize(
-    "source",
-    [
-        "class A:\n pass\nclass B:\n pass\nclass C(A, B):\n pass\n",
-        "class C(metaclass=type):\n pass\n",
-        "class C[T]:\n pass\n",
-    ],
-)
-def test_unimplemented_class_features_are_explicitly_rejected(source):
+def test_unimplemented_class_features_are_explicitly_rejected():
     with pytest.raises(UnsupportedSyntax):
-        lower(source)
+        lower("class C[T]:\n pass\n")
+
+
+def test_instances_and_classes_accept_new_attributes(tmp_path):
+    result = run_native(
+        tmp_path,
+        "class Empty:\n pass\n"
+        "obj = Empty()\nobj.new = 1\nEmpty.shared = 2\n"
+        "class Method:\n def run(self):\n  return 1\n"
+        "setattr(Method, 'run', None)\n"
+        "print(obj.new, obj.shared, Method.run)\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1 2 None\n"
+
+
+def test_multiple_inheritance_is_reported_at_class_creation(tmp_path):
+    result = run_native(
+        tmp_path,
+        "class A:\n pass\nclass B:\n pass\nclass C(A, B):\n pass\n",
+    )
+    assert result.returncode != 0
+    assert "multiple inheritance is not supported yet" in result.stderr
 
 
 @pytest.mark.parametrize(

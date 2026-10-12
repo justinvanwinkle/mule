@@ -115,12 +115,11 @@ def test_builtin_descriptors(tmp_path):
         "print(C.double(3), c.double(4), c.half)\n"
         "c.half = 7\n"
         "print(c.value, c.half)\n"
-        "try:\n"
-        " C.make(1).missing = 1\n"
-        "except AttributeError:\n"
-        " print('no instance dictionary')\n"
+        "extra = C.make(1)\n"
+        "extra.missing = 1\n"
+        "print(extra.missing)\n"
     )
-    assert_output(tmp_path, source, "6 8 5\n14 7\nno instance dictionary\n")
+    assert_output(tmp_path, source, "6 8 5\n14 7\n1\n")
 
 
 def test_property_takes_precedence_over_a_field_of_the_same_name(tmp_path):
@@ -197,14 +196,32 @@ def test_getattr_hook_handles_missing_attributes(tmp_path):
     assert_output(tmp_path, source, "1 computed absent\n")
 
 
-@pytest.mark.parametrize(
-    "source",
-    [
-        "class C(**options):\n pass\n",
-        "class C(*bases):\n pass\n",
-        "class C(flag=True):\n pass\n",
-    ],
-)
-def test_unimplemented_class_features_are_explicitly_rejected(source):
+def test_unimplemented_class_features_are_explicitly_rejected():
     with pytest.raises(UnsupportedSyntax):
-        lower(source)
+        lower("class C(*bases):\n pass\n")
+
+
+def test_metaclass_receives_class_keywords(tmp_path):
+    # The metaclass methods use super(), so they are closures over __class__,
+    # and keyword calls must still reach them.
+    source = (
+        "class Meta(type):\n"
+        " def __new__(mcs, name, bases, namespace, **options):\n"
+        "  cls = super().__new__(mcs, name, bases, namespace)\n"
+        "  cls.options = options\n"
+        "  return cls\n"
+        " def __init__(cls, name, bases, namespace, **options):\n"
+        "  super().__init__(name, bases, namespace)\n"
+        "class C(metaclass=Meta, flag=True):\n"
+        " pass\n"
+        "options = {'flag': False}\n"
+        "class D(metaclass=Meta, **options):\n"
+        " pass\n"
+        "print(C.options, D.options, type(C) is Meta)\n"
+        "print(Meta('E', (), {}, level=1).options)\n"
+    )
+    assert_output(
+        tmp_path,
+        source,
+        "{'flag': True} {'flag': False} True\n{'level': 1}\n",
+    )

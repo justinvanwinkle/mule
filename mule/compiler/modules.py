@@ -2,6 +2,7 @@
 
 import os
 import sysconfig
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +25,8 @@ class CompiledModule:
     # No source exists: importing it raises ModuleNotFoundError at run time,
     # where code such as ``try: import nt`` expects to handle it.
     missing: bool = False
+    # The symbol prefix of a compiled source module.
+    prefix: str = ""
 
 
 def search_path(first):
@@ -74,9 +77,14 @@ class ModuleCompiler:
         # Modules imported by a compiled protocol share its physical primitives.
         self.primitives = primitives
         self.modules = {}
-        # Lambdas and facts of every imported module, in import order.
+        # Lambdas and facts of every imported module, in compilation order.
         self.lambdas = []
         self.facts = {}
+        # Imported modules awaiting compilation. An importer needs only the
+        # descriptor, so modules compile one after another rather than nested
+        # inside their importer, and stack depth does not grow with import
+        # chains.
+        self.pending: deque[CompiledModule] = deque()
 
     def path_for(self, name):
         if name in NATIVE_MODULES:
@@ -147,30 +155,46 @@ class ModuleCompiler:
             descriptor = CompiledModule(name, None, "", missing=True)
             self.modules[name] = descriptor
             return descriptor
-        prefix = f"{self.prefix}mule_import_{len(self.modules)}_"
-        descriptor = CompiledModule(name, path, prefix + "mule_module")
+        # Derived from the module's name alone, so a module's symbols do not
+        # depend on which modules were compiled before it. Module names cannot
+        # contain ":", so prefixes are unique.
+        prefix = f"{self.prefix}mule_import_{name}:"
+        descriptor = CompiledModule(name, path, prefix + "mule_module", prefix=prefix)
         # Reserve identity before conversion so circular imports share one cache.
         self.modules[name] = descriptor
-        compilation = compile_source(
-            read_source(path),
-            str(path),
-            imports=self,
-            prefix=prefix,
-            namespace=name,
-            primitives=self.primitives,
-        )
-        self.lambdas.extend(compilation.lambdas)
-        self.facts.update(compilation.facts)
+        self.pending.append(descriptor)
         return descriptor
 
+    def compile_pending(self):
+        """Compile every module imported so far, and those they import."""
+        while self.pending:
+            descriptor = self.pending.popleft()
+            compilation = compile_source(
+                read_source(descriptor.path),
+                str(descriptor.path),
+                imports=self,
+                prefix=descriptor.prefix,
+                namespace=descriptor.name,
+                primitives=self.primitives,
+            )
+            self.lambdas.extend(compilation.lambdas)
+            self.facts.update(compilation.facts)
+
     def compile(self, source, filename):
-        """Compile the main module; imported modules accumulate on the
-        compiler. Returns the main module's ``Compilation``."""
-        return compile_source(source, filename, imports=self)
+        """Compile the main module and every module it imports; imported
+        modules accumulate on the compiler. Returns the main module's
+        ``Compilation``."""
+        compilation = compile_source(source, filename, imports=self)
+        self.compile_pending()
+        return compilation
 
 
-def compile_modules(source, filename="<unknown>", *, roots=None, package=None):
-    """Compile a program's modules. Returns the main compilation and the
-    module compiler holding the imported modules."""
+def compile_modules(
+    source, filename="<unknown>", *, roots=None, package=None, compiled=None
+):
+    """Compile a program's modules. ``compiled`` are modules another unit
+    already compiled, by name; an import of one reuses it. Returns the main
+    compilation and the module compiler holding the imported modules."""
     compiler = ModuleCompiler(filename, roots=roots, package=package)
+    compiler.modules.update(compiled or {})
     return compiler.compile(source, filename), compiler

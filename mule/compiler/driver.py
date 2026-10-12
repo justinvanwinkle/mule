@@ -1,13 +1,23 @@
-"""Build native executables from Mule LLVM IR and its Rust runtime."""
+"""Build native executables from Mule LLVM IR and its Rust runtime.
 
-import hashlib
+A build is a graph of cached steps (``artifacts``): the runtime library, the
+builtins unit (the compiled stdlib protocols, with an interface file other
+units compile against), one unit per program module, an object file per
+unit, and the link. Each step reuses its cached outputs when Mule, its
+settings and its inputs are unchanged, and runs as soon as its inputs exist.
+"""
+
+import json
 import os
 import shutil
 import struct
 import subprocess
 import sys
-import tempfile
+from dataclasses import asdict, dataclass
+from functools import cache
 from pathlib import Path
+
+from mule import ast
 
 from . import (
     argument_protocol,
@@ -16,51 +26,213 @@ from . import (
     print_protocol,
     sequence_protocol,
 )
-from .codegen import Program, generate
+from .artifacts import Graph, Node, Step, ToolchainError, digest, tool_identity
+from .codegen import ForeignFunction, Program, generate
 from .inputs import read_source
-from .modules import compile_modules, search_path
+from .ir1tran import ImportInfo
+from .ir1util import class_method_definitions
+from .main import compile_source
+from .modules import CompiledModule, ModuleCompiler, search_path
+from .node import Signature
+
+__all__ = [
+    "ToolchainError",
+    "build",
+    "build_runtime",
+    "compile_program",
+    "emit_llvm",
+    "link_llvm",
+]
+
+LINK_LIBRARIES = ("-lgmp", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl")
 
 
-class ToolchainError(RuntimeError):
-    """The native toolchain or target runtime could not produce an artifact."""
+@dataclass(slots=True)
+class BuiltinsInterface:
+    """What units compiled against the builtins unit need from it: its
+    functions by name, the methods programs may predict, the protocol entry
+    points, and the modules it compiled."""
+
+    functions: dict[str, ForeignFunction]
+    methods: dict[str, str]
+    sequence_functions: dict[str, str]
+    entries: dict[str, str | None]
+    modules: dict[str, CompiledModule]
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "functions": {
+                    name: {
+                        "parameters": list(function.parameters),
+                        "kinds": [kind.name for kind in function.signature.kinds],
+                        "defaults": list(function.signature.default_parameters),
+                        "variadic": function.signature.variadic,
+                        "closure": function.closure,
+                    }
+                    for name, function in self.functions.items()
+                },
+                "methods": self.methods,
+                "sequence_functions": self.sequence_functions,
+                "entries": self.entries,
+                "modules": {
+                    name: {
+                        **asdict(module),
+                        "path": None if module.path is None else str(module.path),
+                    }
+                    for name, module in self.modules.items()
+                },
+            },
+            sort_keys=True,
+            indent=0,
+        )
+
+    @classmethod
+    def from_json(cls, text: str) -> BuiltinsInterface:
+        data = json.loads(text)
+        functions = {
+            name: ForeignFunction(
+                name,
+                tuple(entry["parameters"]),
+                Signature(
+                    kinds=tuple(ast.ParameterKind[kind] for kind in entry["kinds"]),
+                    default_parameters=tuple(entry["defaults"]),
+                    variadic=entry["variadic"],
+                ),
+                entry["closure"],
+            )
+            for name, entry in data["functions"].items()
+        }
+        modules = {
+            name: CompiledModule(
+                **{
+                    **entry,
+                    "path": None if entry["path"] is None else Path(entry["path"]),
+                }
+            )
+            for name, entry in data["modules"].items()
+        }
+        return cls(
+            functions,
+            data["methods"],
+            data["sequence_functions"],
+            data["entries"],
+            modules,
+        )
 
 
-def compile_program(
+def compile_builtins() -> tuple[Program, dict[str, CompiledModule]]:
+    """Compile the stdlib protocols every program runs on, through the IR1
+    phases, as the exporting ``builtins`` unit."""
+    unit = Program([], None, {}, unit="builtins", exports=True)
+    unit.print_entry = print_protocol.prepare(unit)
+    unit.protocol_entry, unit.sequence_functions, modules = sequence_protocol.prepare(
+        unit
+    )
+    unit.argument_constructor, unit.argument_binder = argument_protocol.prepare(unit)
+    unit.layouts = native_protocol.prepare(unit)
+    format_protocol.prepare(unit)
+    return unit, modules
+
+
+def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
+    def closure(lambda_):
+        environment = lambda_.environment
+        return environment is not None and bool(environment.closure)
+
+    functions = {
+        lambda_.name: ForeignFunction(
+            lambda_.name, lambda_.parameters, lambda_.signature, closure(lambda_)
+        )
+        for lambda_ in unit.lambdas
+    }
+    methods = {}
+    for lambda_ in unit.lambdas:
+        for definitions in class_method_definitions(lambda_).values():
+            for method_name, target in definitions.items():
+                methods.setdefault(method_name, target.name)
+
+    def name(lambda_):
+        return None if lambda_ is None else lambda_.name
+
+    return BuiltinsInterface(
+        functions,
+        methods,
+        {key: lambda_.name for key, lambda_ in unit.sequence_functions.items()},
+        {
+            "print": name(unit.print_entry),
+            "protocol": name(unit.protocol_entry),
+            "argument_constructor": name(unit.argument_constructor),
+            "argument_binder": name(unit.argument_binder),
+        },
+        dict(modules),
+    )
+
+
+def module_descriptor(name: str, path: Path) -> CompiledModule:
+    """A compiled source module's descriptor, as every importer derives it."""
+    prefix = f"mule_import_{name}:"
+    return CompiledModule(name, path, prefix + "mule_module", prefix=prefix)
+
+
+def compile_unit(
     source: str,
-    filename: str = "<unknown>",
+    filename: str,
+    interface: BuiltinsInterface,
     *,
+    module: CompiledModule | None = None,
     roots: tuple[Path, ...] | None = None,
     package: str | None = None,
-) -> Program:
-    """Compile the main module, its imports, and the compiled stdlib
-    protocols the program needs, through the IR1 phases.
+) -> tuple[Program, list[CompiledModule]]:
+    """Compile one module as its own unit against the builtins interface:
+    the main module when ``module`` is None. Returns the unit and the source
+    modules it imports, which other units compile."""
+    compiler = ModuleCompiler(filename, roots=roots, package=package)
+    compiler.modules.update(interface.modules)
+    if module is None:
+        compilation = compile_source(source, filename, imports=compiler)
+        unit_name = "__main__"
+    else:
+        compiler.modules[module.name] = module
+        compilation = compile_source(
+            source,
+            filename,
+            imports=compiler,
+            prefix=module.prefix,
+            namespace=module.name,
+        )
+        unit_name = module.name
+    functions = interface.functions
 
-    ``roots`` is the module search path; ``package`` is the package of a main
-    module run with ``-m``, for its relative imports."""
-    main, modules = compile_modules(source, filename, roots=roots, package=package)
+    def entry(role):
+        name = interface.entries[role]
+        return None if name is None else functions[name]
+
     program = Program(
-        [*main.lambdas, *modules.lambdas], main.entry, {**main.facts, **modules.facts}
+        compilation.lambdas,
+        compilation.entry if module is None else None,
+        compilation.facts,
+        print_entry=entry("print"),
+        protocol_entry=entry("protocol"),
+        sequence_functions={
+            key: functions[name] for key, name in interface.sequence_functions.items()
+        },
+        argument_constructor=entry("argument_constructor"),
+        argument_binder=entry("argument_binder"),
+        external=list(functions.values()),
+        external_methods={
+            method: functions[name] for method, name in interface.methods.items()
+        },
+        unit=unit_name,
+        dependencies=["builtins"],
     )
-    program.print_entry = print_protocol.prepare(program)
-    program.protocol_entry, program.sequence_functions = sequence_protocol.prepare(
-        program
-    )
-    program.argument_constructor, program.argument_binder = argument_protocol.prepare(
-        program
-    )
+    if module is not None:
+        program.module_import = ImportInfo(
+            module.name, module.entry, str(module.path), False, False
+        )
+    argument_protocol.bind_signatures(program.lambdas)
     program.layouts = native_protocol.prepare(program)
-    format_protocol.prepare(program)
-    return program
-
-
-def emit_llvm(
-    source: str,
-    filename: str = "<unknown>",
-    *,
-    roots: tuple[Path, ...] | None = None,
-    package: str | None = None,
-) -> str:
-    return generate(compile_program(source, filename, roots=roots, package=package))
+    return program, list(compiler.pending)
 
 
 def build_runtime(
@@ -109,44 +281,7 @@ def build_runtime(
     return library
 
 
-def cache_directory() -> Path:
-    base = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
-    return Path(base) / "mule"
-
-
-def runtime_library(rustc: str, *, lto: bool) -> Path:
-    """The runtime static library, built once per runtime source, rustc version
-    and LTO mode, and shared by every build."""
-    try:
-        version = subprocess.run(
-            [rustc, "--version", "--verbose"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as error:
-        raise ToolchainError(f"Rust compiler '{rustc}' was not found") from error
-    if version.returncode:
-        raise ToolchainError(
-            "Rust runtime compilation failed: "
-            f"'{rustc} --version --verbose' exited with status {version.returncode}"
-        )
-    digest = hashlib.sha256(f"lto={lto}\0{version.stdout}\0".encode())
-    sources = Path(__file__).parents[1] / "runtime"
-    for path in sorted(sources.glob("*.rs")):
-        digest.update(path.name.encode() + b"\0" + path.read_bytes() + b"\0")
-    entry = cache_directory() / "runtime" / digest.hexdigest()
-    library = entry / "libmule_runtime.a"
-    if library.is_file():
-        return library
-    entry.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".build-", dir=entry) as directory:
-        built = build_runtime(Path(directory), rustc=rustc, lto=lto)
-        # Concurrent builds produce the same library; the rename is atomic.
-        os.replace(built, library)
-    return library
-
-
+@cache
 def lto_linker(rustc: str) -> Path:
     """Use rustc's own LLD to read its bitcode with a compatible LLVM version."""
     result = subprocess.run(
@@ -165,6 +300,313 @@ def lto_linker(rustc: str) -> Path:
     return linker
 
 
+@dataclass(frozen=True, slots=True)
+class Toolchain:
+    clang: str = "clang"
+    rustc: str = "rustc"
+    optimize: bool = True
+
+    def require_target(self) -> None:
+        if sys.platform != "linux" or struct.calcsize("P") != 8:
+            raise ToolchainError("the initial native target requires 64-bit Linux")
+        if shutil.which(self.clang) is None:
+            raise ToolchainError(f"LLVM Clang compiler '{self.clang}' was not found")
+
+    def clang_settings(self) -> dict:
+        return {
+            "clang": tool_identity(self.clang, "--version"),
+            "optimize": self.optimize,
+        }
+
+    def compile_flags(self) -> list[str]:
+        return ["-O3", "-flto=full"] if self.optimize else ["-O0"]
+
+    def link_flags(self) -> list[str]:
+        if self.optimize:
+            return [
+                "-O3",
+                "-flto=full",
+                "-Wl,--lto-O3",
+                "-Wl,--lto-CGO3",
+                "-Wl,--threads=1",
+            ]
+        return ["-O0"]
+
+
+def _run(command: list[str], failure: str) -> None:
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    if result.returncode:
+        raise ToolchainError(f"{failure}:\n{result.stderr.strip()}")
+
+
+class Build:
+    """The step graph of one executable."""
+
+    def __init__(self, graph: Graph, toolchain: Toolchain):
+        self.graph = graph
+        self.toolchain = toolchain
+        self.link: Step | None = None
+
+    def runtime(self) -> Step:
+        rustc, lto = self.toolchain.rustc, self.toolchain.optimize
+        sources = sorted((Path(__file__).parents[1] / "runtime").glob("*.rs"))
+
+        def action(inputs, directory):
+            built = build_runtime(directory, rustc=rustc, lto=lto)
+            if built != directory / "libmule_runtime.a":
+                os.replace(built, directory / "libmule_runtime.a")
+
+        return self.graph.node(
+            f"runtime lto={lto}",
+            lambda: Step(
+                self.graph,
+                f"runtime lto={lto}",
+                inputs=[self.graph.file(path) for path in sources],
+                settings={
+                    "step": "runtime",
+                    "lto": lto,
+                    "rustc": tool_identity(rustc, "--version", "--verbose"),
+                },
+                outputs=("libmule_runtime.a",),
+                action=action,
+            ),
+        )
+
+    def builtins(self) -> Step:
+        def action(inputs, directory):
+            unit, modules = compile_builtins()
+            interface = builtins_interface(unit, modules)
+            (directory / "unit.ll").write_text(generate(unit))
+            (directory / "interface.json").write_text(interface.to_json())
+
+        return self.graph.node(
+            "builtins",
+            lambda: Step(
+                self.graph,
+                "builtins",
+                inputs=[],
+                settings={"step": "builtins"},
+                outputs=("unit.ll", "interface.json"),
+                action=action,
+            ),
+        )
+
+    def object(self, unit: Step) -> Step:
+        toolchain = self.toolchain
+        name = f"{unit.name} object optimize={toolchain.optimize}"
+
+        def action(inputs, directory):
+            _run(
+                [
+                    toolchain.clang,
+                    *toolchain.compile_flags(),
+                    "-Wno-override-module",
+                    "-c",
+                    str(unit.path("unit.ll")),
+                    "-o",
+                    str(directory / "unit.o"),
+                ],
+                "LLVM compilation/linking failed",
+            )
+
+        return self.graph.node(
+            name,
+            lambda: Step(
+                self.graph,
+                name,
+                inputs=[unit],
+                settings={"step": "object", **toolchain.clang_settings()},
+                outputs=("unit.o",),
+                action=action,
+            ),
+        )
+
+    def module(self, descriptor: CompiledModule, roots, package) -> Step:
+        """The unit of an imported source module, and its object, added to
+        the link."""
+        builtins = self.builtins()
+        path = descriptor.path
+        name = f"module {descriptor.name} {path}"
+
+        def action(inputs, directory):
+            interface = load_interface(builtins.path("interface.json"))
+            program, imported = compile_unit(
+                read_source(path),
+                str(path),
+                interface,
+                module=descriptor,
+                roots=roots,
+                package=package,
+            )
+            (directory / "unit.ll").write_text(generate(program))
+            write_imports(directory / "imports.json", imported)
+
+        step = self.graph.node(
+            name,
+            lambda: Step(
+                self.graph,
+                name,
+                inputs=[self.graph.file(path), builtins],
+                settings={
+                    "step": "module",
+                    "name": descriptor.name,
+                    "roots": [str(root) for root in roots],
+                    "package": package,
+                },
+                outputs=("unit.ll", "imports.json"),
+                action=action,
+                discover=lambda step: self.discover(step, roots, package),
+            ),
+        )
+        return step
+
+    def discover(self, step: Step, roots, package) -> None:
+        """Add the units of the modules ``step`` imports to the link."""
+        for descriptor in read_imports(step.path("imports.json")):
+            self.link.add_input(self.object(self.module(descriptor, roots, package)))
+
+    def main(
+        self, source_node: Node, source: str, filename: str, roots, package
+    ) -> Step:
+        builtins = self.builtins()
+
+        def action(inputs, directory):
+            interface = load_interface(builtins.path("interface.json"))
+            program, imported = compile_unit(
+                source, filename, interface, roots=roots, package=package
+            )
+            (directory / "unit.ll").write_text(generate(program))
+            write_imports(directory / "imports.json", imported)
+
+        return self.graph.node(
+            "__main__",
+            lambda: Step(
+                self.graph,
+                "__main__",
+                inputs=[source_node, builtins],
+                settings={
+                    "step": "main",
+                    "filename": filename,
+                    "roots": None if roots is None else [str(root) for root in roots],
+                    "package": package,
+                },
+                outputs=("unit.ll", "imports.json"),
+                action=action,
+                discover=lambda step: self.discover(step, roots, package),
+            ),
+        )
+
+    def executable(self, units: list[Step]) -> Step:
+        toolchain = self.toolchain
+        runtime = self.runtime()
+
+        def action(inputs, directory):
+            objects = [
+                str(node.path("unit.o"))
+                for node in inputs
+                if isinstance(node, Step) and "unit.o" in node.outputs
+            ]
+            _run(
+                [
+                    toolchain.clang,
+                    *toolchain.link_flags(),
+                    f"--ld-path={lto_linker(toolchain.rustc)}",
+                    "-Wno-override-module",
+                    "-Wl,--gc-sections",
+                    "-Wl,--strip-debug",
+                    *objects,
+                    str(runtime.path("libmule_runtime.a")),
+                    *LINK_LIBRARIES,
+                    "-o",
+                    str(directory / "program"),
+                ],
+                "LLVM compilation/linking failed",
+            )
+
+        objects = [self.object(unit) for unit in units]
+        self.link = self.graph.node(
+            "link",
+            lambda: Step(
+                self.graph,
+                "link",
+                inputs=[runtime, *objects],
+                settings={"step": "link", **toolchain.clang_settings()},
+                outputs=("program",),
+                action=action,
+            ),
+        )
+        return self.link
+
+
+class Text(Node):
+    """Source text that is not a file, such as ``-c`` or standard input."""
+
+    def __init__(self, graph: Graph, name: str, text: str):
+        super().__init__(graph, name)
+        self.text = text
+
+    @property
+    def output_hash(self) -> str:
+        return digest(self.text.encode())
+
+
+@cache
+def _interface(path: Path, state: str) -> BuiltinsInterface:
+    return BuiltinsInterface.from_json(path.read_text())
+
+
+def load_interface(path: Path) -> BuiltinsInterface:
+    """The builtins interface in ``path``, read once per content."""
+    return _interface(path, digest(path.read_bytes()))
+
+
+def write_imports(path: Path, modules: list[CompiledModule]) -> None:
+    path.write_text(json.dumps([[module.name, str(module.path)] for module in modules]))
+
+
+def read_imports(path: Path) -> list[CompiledModule]:
+    return [
+        module_descriptor(name, Path(module_path))
+        for name, module_path in json.loads(path.read_text())
+    ]
+
+
+def cached_builtins_interface() -> BuiltinsInterface:
+    """The builtins interface, from the cache when unchanged."""
+    with Graph() as graph:
+        builtins = Build(graph, Toolchain()).builtins()
+        graph.run(builtins)
+    return load_interface(builtins.path("interface.json"))
+
+
+def compile_program(
+    source: str,
+    filename: str = "<unknown>",
+    *,
+    roots: tuple[Path, ...] | None = None,
+    package: str | None = None,
+) -> Program:
+    """Compile the main module through the IR1 phases as its own unit,
+    against the builtins unit.
+
+    ``roots`` is the module search path; ``package`` is the package of a main
+    module run with ``-m``, for its relative imports."""
+    interface = cached_builtins_interface()
+    program, _ = compile_unit(source, filename, interface, roots=roots, package=package)
+    return program
+
+
+def emit_llvm(
+    source: str,
+    filename: str = "<unknown>",
+    *,
+    roots: tuple[Path, ...] | None = None,
+    package: str | None = None,
+) -> str:
+    """The LLVM module of the main module's unit."""
+    return generate(compile_program(source, filename, roots=roots, package=package))
+
+
 def link_llvm(
     llvm: str,
     output: Path,
@@ -173,61 +615,72 @@ def link_llvm(
     rustc: str = "rustc",
     optimize: bool = True,
 ) -> Path:
-    """Compile LLVM and link the Rust runtime, replacing output only on success.
+    """Compile a main unit's LLVM, link it with the builtins unit and the
+    Rust runtime, and replace ``output`` only on success.
 
     ``optimize`` selects -O3 with full LTO across the program and runtime;
-    otherwise the program is compiled at -O0 and linked without LTO, which is
+    otherwise each unit is compiled at -O0 and linked without LTO, which is
     an order of magnitude faster to build."""
-    compiler = shutil.which(clang)
-    if compiler is None:
-        raise ToolchainError(f"LLVM Clang compiler '{clang}' was not found")
-    if sys.platform != "linux" or struct.calcsize("P") != 8:
-        raise ToolchainError("the initial native target requires 64-bit Linux")
+    toolchain = Toolchain(clang, rustc, optimize)
+    toolchain.require_target()
+    with Graph() as graph:
+        build = Build(graph, toolchain)
+        source = graph.node(
+            "main unit LLVM", lambda: Text(graph, "main unit LLVM", llvm)
+        )
+
+        def action(inputs, directory):
+            (directory / "unit.ll").write_text(llvm)
+
+        main = graph.node(
+            "main unit",
+            lambda: Step(
+                graph,
+                "main unit",
+                inputs=[source],
+                settings={"step": "llvm"},
+                outputs=("unit.ll",),
+                action=action,
+            ),
+        )
+        link = build.executable([build.builtins(), main])
+        graph.run(link)
+    return _install(link.path("program"), Path(output))
+
+
+def _install(artifact: Path, output: Path) -> Path:
+    """Place a cached executable at ``output``, replacing it atomically."""
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=".mule-build-", dir=output.parent
-    ) as directory:
-        temporary = Path(directory)
-        ir_path = temporary / "module.ll"
-        binary = temporary / "program"
-        ir_path.write_text(llvm)
-        runtime = runtime_library(rustc, lto=optimize)
-        linker = lto_linker(rustc)
-        if optimize:
-            optimization = [
-                "-O3",
-                "-flto=full",
-                "-Wl,--lto-O3",
-                "-Wl,--lto-CGO3",
-                "-Wl,--threads=1",
-            ]
-        else:
-            optimization = ["-O0"]
-        command = [
-            compiler,
-            *optimization,
-            f"--ld-path={linker}",
-            "-Wno-override-module",
-            "-Wl,--gc-sections",
-            "-Wl,--strip-debug",
-            str(ir_path),
-            str(runtime),
-            "-lgmp",
-            "-lutil",
-            "-lrt",
-            "-lpthread",
-            "-lm",
-            "-ldl",
-            "-o",
-            str(binary),
-        ]
-        result = subprocess.run(command, check=False, capture_output=True, text=True)
-        if result.returncode:
-            raise ToolchainError(
-                f"LLVM compilation/linking failed:\n{result.stderr.strip()}"
-            )
-        os.replace(binary, output)
+    temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
+    shutil.copy2(artifact, temporary)
+    os.replace(temporary, output)
     return output
+
+
+def build_executable(
+    source: str,
+    filename: str,
+    *,
+    roots: tuple[Path, ...] | None,
+    package: str | None = None,
+    toolchain: Toolchain | None = None,
+    source_path: Path | None = None,
+) -> Path:
+    """The cached executable of a program: every unit built or reused, then
+    linked. Returns the path inside the cache."""
+    toolchain = toolchain or Toolchain()
+    toolchain.require_target()
+    with Graph() as graph:
+        build = Build(graph, toolchain)
+        source_node = (
+            graph.file(source_path)
+            if source_path is not None
+            else graph.node("main source", lambda: Text(graph, "main source", source))
+        )
+        main = build.main(source_node, source, filename, roots, package)
+        link = build.executable([build.builtins(), main])
+        graph.run(link)
+    return link.path("program")
 
 
 def build(
@@ -251,13 +704,16 @@ def build(
         llvm_path = Path(llvm_output)
         if llvm_path.resolve() in (source_path.resolve(), output_path.resolve()):
             raise ValueError("LLVM output must differ from source and executable")
-    llvm = emit_llvm(
-        read_source(source_path),
+    roots = search_path(source_path.resolve().parent)
+    source_text = read_source(source_path)
+    executable = build_executable(
+        source_text,
         str(source_path),
-        roots=search_path(source_path.resolve().parent),
+        roots=roots,
+        toolchain=Toolchain(clang, rustc, optimize),
+        source_path=source_path.resolve(),
     )
-    link_llvm(llvm, output_path, clang=clang, rustc=rustc, optimize=optimize)
     if llvm_output is not None:
         llvm_path.parent.mkdir(parents=True, exist_ok=True)
-        llvm_path.write_text(llvm)
-    return output_path
+        llvm_path.write_text(emit_llvm(source_text, str(source_path), roots=roots))
+    return _install(executable, output_path)
