@@ -11,6 +11,7 @@ any other compiled builtin defines a class, so those classes derive from
 """
 
 from _mule_native import allocate_instance as _new_instance
+from _mule_native import bound_method as _bound_method
 from _mule_native import class_base as _class_base
 from _mule_native import class_bases as _class_bases
 from _mule_native import class_lookup as _class_lookup
@@ -703,9 +704,23 @@ class function(object):
     def __annotations__(self):
         return {}
 
+    def __get__(self, instance, owner=None):
+        # Functions are descriptors: reading one through an instance binds
+        # it, and through a class returns the function itself. Attribute
+        # lookup applies this natively; this method exists for code that
+        # looks the descriptor protocol up by name.
+        if instance is None:
+            return self
+        return _bound_method(self, instance)
+
 
 class builtin_function_or_method(object):
     """The class of functions the runtime implements natively."""
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        return _bound_method(self, instance)
 
 
 class method(object):
