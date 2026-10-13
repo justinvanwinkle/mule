@@ -13,6 +13,7 @@ STDLIB = Path(__file__).resolve().parents[2] / "stdlib"
 NATIVE_MODULES = {
     "_mule_native": "mule_native_module_init",
     "_posix": "mule_posix_module_init",
+    "_time": "mule_time_module_init",
     "builtins": "mule_builtins_module_init",
 }
 

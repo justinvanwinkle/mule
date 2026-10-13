@@ -194,7 +194,7 @@ unsafe fn index(value: Value) -> Option<usize> {
 pub unsafe extern "C" fn mule_tuple_shape_matches(value: Value, arity: usize) -> i32 {
     unsafe {
         if !value.is_null() && !object::is_fixnum(value) {
-            if let Data::Args(values) = &(*value).data {
+            if let Data::Args(values, ..) = &(*value).data {
                 return i32::from(values.len() == arity);
             }
         }
@@ -207,7 +207,7 @@ pub unsafe extern "C" fn mule_tuple_shape_matches(value: Value, arity: usize) ->
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_tuple_slot(value: Value, index: usize) -> Value {
     unsafe {
-        let Data::Args(values) = &(*value).data else {
+        let Data::Args(values, ..) = &(*value).data else {
             std::hint::unreachable_unchecked();
         };
         object::retain(*values.as_ptr().add(index))
@@ -219,8 +219,8 @@ pub unsafe extern "C" fn mule_storage_length(value: Value) -> Value {
     unsafe {
         if !value.is_null() && !object::is_fixnum(value) {
             let length = match &(*value).data {
-                Data::List(values) | Data::Args(values) => values.len(),
-                Data::Bytes(values) => values.len(),
+                Data::List(values, ..) | Data::Args(values, ..) => values.len(),
+                Data::Bytes(values, ..) => values.len(),
                 Data::Text(..) => return object::mule_text_length(value),
                 _ => {
                     object::error("TypeError", "sequence storage is required");
@@ -241,12 +241,12 @@ pub unsafe extern "C" fn mule_storage_read(value: Value, position: Value) -> Val
         };
         if !value.is_null() && !object::is_fixnum(value) {
             match &(*value).data {
-                Data::List(values) | Data::Args(values) => {
+                Data::List(values, ..) | Data::Args(values, ..) => {
                     if let Some(value) = values.get(index) {
                         return object::retain(*value);
                     }
                 }
-                Data::Bytes(values) => {
+                Data::Bytes(values, ..) => {
                     if let Some(value) = values.get(index) {
                         return object::small(i64::from(*value));
                     }
@@ -273,7 +273,7 @@ pub unsafe extern "C" fn mule_storage_write(
             return null_mut();
         };
         if !value.is_null() && !object::is_fixnum(value) {
-            if let Data::List(values) = &mut (*value).data {
+            if let Data::List(values, ..) = &mut (*value).data {
                 if let Some(slot) = values.get_mut(index) {
                     let old = *slot;
                     *slot = object::retain(replacement);
@@ -292,7 +292,7 @@ pub unsafe extern "C" fn mule_storage_write(
 pub unsafe extern "C" fn mule_storage_append(value: Value, element: Value) -> Value {
     unsafe {
         if !value.is_null() && !object::is_fixnum(value) {
-            if let Data::List(values) = &mut (*value).data {
+            if let Data::List(values, ..) = &mut (*value).data {
                 if values.try_reserve(1).is_err() {
                     object::error("MemoryError", "list allocation failed");
                     return null_mut();
@@ -317,7 +317,7 @@ pub unsafe extern "C" fn mule_storage_insert(
             return null_mut();
         };
         if !value.is_null() && !object::is_fixnum(value) {
-            if let Data::List(values) = &mut (*value).data {
+            if let Data::List(values, ..) = &mut (*value).data {
                 if index > values.len() {
                     object::error("IndexError", "storage index out of range");
                     return null_mut();
@@ -342,7 +342,7 @@ pub unsafe extern "C" fn mule_storage_delete(value: Value, start: Value, stop: V
             return null_mut();
         };
         if !value.is_null() && !object::is_fixnum(value) {
-            if let Data::List(values) = &mut (*value).data {
+            if let Data::List(values, ..) = &mut (*value).data {
                 if start > stop || stop > values.len() {
                     object::error("IndexError", "storage index out of range");
                     return null_mut();
@@ -365,7 +365,7 @@ pub unsafe extern "C" fn mule_tuple_storage(value: Value) -> Value {
         object::bool_value(
             !value.is_null()
                 && !object::is_fixnum(value)
-                && matches!(&(*value).data, Data::Args(_)),
+                && matches!(&(*value).data, Data::Args(..)),
         )
     }
 }
@@ -374,10 +374,10 @@ pub unsafe extern "C" fn mule_storage_tuple(value: Value) -> Value {
     unsafe {
         if !value.is_null() && !object::is_fixnum(value) {
             match &(*value).data {
-                Data::List(values) => {
+                Data::List(values, ..) => {
                     return object::mule_sequence_tuple(values.len() as isize, values.as_ptr());
                 }
-                Data::Args(_) => return object::retain(value),
+                Data::Args(..) => return object::retain(value),
                 _ => (),
             }
         }
@@ -394,7 +394,7 @@ pub unsafe extern "C" fn mule_storage_compatible(left: Value, right: Value) -> V
             && !object::is_fixnum(right)
             && matches!(
                 (&(*left).data, &(*right).data),
-                (Data::List(_), Data::List(_)) | (Data::Args(_), Data::Args(_))
+                (Data::List(..), Data::List(..)) | (Data::Args(..), Data::Args(..))
             );
         object::bool_value(result)
     }
@@ -443,7 +443,7 @@ pub unsafe extern "C" fn mule_raised_class(value: Value) -> Value {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_exception_targets(value: Value) -> Value {
     unsafe {
-        if !value.is_null() && !object::is_fixnum(value) && matches!(&(*value).data, Data::Args(_))
+        if !value.is_null() && !object::is_fixnum(value) && matches!(&(*value).data, Data::Args(..))
         {
             return object::retain(value);
         }
@@ -609,7 +609,7 @@ pub unsafe extern "C" fn mule_rest_args(args: Value, start: i32) -> Value {
             };
             values.push(object::retain(value));
         }
-        object::new_value(Data::Args(values))
+        object::new_value(Data::Args(values, std::ptr::null_mut()))
     }
 }
 

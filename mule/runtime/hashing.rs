@@ -102,7 +102,7 @@ unsafe extern "C" fn storage_hash(_: Value, args: Value) -> Value {
         let hash = match &(*value).data {
             Data::None => NONE_HASH,
             Data::Text(text, ..) => fnv(&text.to_wtf8()),
-            Data::Bytes(bytes) => fnv(bytes),
+            Data::Bytes(bytes, ..) => fnv(bytes),
             Data::Float(number, ..) if number.is_nan() => identity(value),
             Data::Float(number, ..) => double_hash(*number),
             _ => return object::none_value(),

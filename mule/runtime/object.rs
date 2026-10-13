@@ -207,7 +207,7 @@ pub enum Data {
     BigInt(BigInt, Value, Value),
     Float(f64, Value, Value),
     Text(Text, Value, Value),
-    Bytes(Vec<u8>),
+    Bytes(Vec<u8>, Value),
     ForeignPointerVector {
         base: *const *const c_char,
         length: usize,
@@ -230,7 +230,7 @@ pub enum Data {
         /// The function's `__dict__` namespace, created on first assignment.
         attributes: Value,
     },
-    Args(Vec<Value>),
+    Args(Vec<Value>, Value),
     ArgumentView {
         values: *const Value,
         count: usize,
@@ -254,7 +254,7 @@ pub enum Data {
         defaults: Value,
         closure: Value,
     },
-    List(Vec<Value>),
+    List(Vec<Value>, Value),
     Namespace(Namespace),
     Class(Box<crate::classes::ClassLayout>),
     Instance {
@@ -422,10 +422,14 @@ pub unsafe fn release(value: Value) {
         // are released before the Rust fields are dropped.
         let object = Box::from_raw(value);
         match &object.data {
-            Data::Args(values) | Data::List(values) => {
+            Data::Args(values, ty) | Data::List(values, ty) => {
+                release(*ty);
                 for value in values {
                     release(*value);
                 }
+            }
+            Data::Bytes(_, ty) => {
+                release(*ty);
             }
             Data::Namespace(_) => (),
             Data::BigInt(_, ty, attributes) | Data::Float(_, ty, attributes) | Data::Text(_, ty, attributes) => {
@@ -532,16 +536,16 @@ pub unsafe fn namespace() -> Value {
     unsafe { new_value(Data::Namespace(Namespace::default())) }
 }
 pub unsafe fn list() -> Value {
-    unsafe { new_value(Data::List(Vec::new())) }
+    unsafe { new_value(Data::List(Vec::new(), std::ptr::null_mut())) }
 }
 pub unsafe fn list_append(list: Value, value: Value) -> bool {
     unsafe {
-        if list.is_null() || is_fixnum(list) || !matches!(&(*list).data, Data::List(_)) {
+        if list.is_null() || is_fixnum(list) || !matches!(&(*list).data, Data::List(..)) {
             error("TypeError", "list append requires a list");
             return false;
         }
         match &mut (*list).data {
-            Data::List(values) => {
+            Data::List(values, ..) => {
                 values.push(retain(value));
                 true
             }
@@ -649,15 +653,6 @@ pub unsafe fn function_attribute(function: Value, attribute: &str) -> Value {
             "__doc__" => none_value(),
             "__globals__" if !globals.is_null() => retain(*globals),
             "__closure__" => closure_cells_of(*closure, *closure_cells),
-            "__dict__" => {
-                let Data::Function { attributes, .. } = &mut (*function).data else {
-                    unreachable!();
-                };
-                if attributes.is_null() {
-                    *attributes = namespace();
-                }
-                retain(*attributes)
-            }
             _ => std::ptr::null_mut(),
         }
     }
@@ -688,7 +683,7 @@ pub unsafe fn set_function_attribute(function: Value, attribute: &str, value: Va
 pub unsafe fn argument(args: Value, index: usize) -> Option<Value> {
     unsafe {
         if !args.is_null() && !is_fixnum(args) {
-            if let Data::Args(values) = &(*args).data {
+            if let Data::Args(values, ..) = &(*args).data {
                 return values.get(index).copied();
             }
             match &(*args).data {
@@ -723,7 +718,7 @@ pub unsafe fn argument(args: Value, index: usize) -> Option<Value> {
 pub unsafe fn argument_count(args: Value) -> Option<usize> {
     unsafe {
         if !args.is_null() && !is_fixnum(args) {
-            if let Data::Args(values) = &(*args).data {
+            if let Data::Args(values, ..) = &(*args).data {
                 return Some(values.len());
             }
             match &(*args).data {
@@ -909,8 +904,8 @@ pub unsafe fn truth(value: Value) -> Option<bool> {
             Data::BigInt(integer, ..) => integer.sign() != 0,
             Data::Float(value, ..) => *value != 0.0,
             Data::Text(value, ..) => !value.is_empty(),
-            Data::Bytes(value) => !value.is_empty(),
-            Data::Args(value) | Data::List(value) => !value.is_empty(),
+            Data::Bytes(value, ..) => !value.is_empty(),
+            Data::Args(value, ..) | Data::List(value, ..) => !value.is_empty(),
             Data::Namespace(bindings) => !bindings.is_empty(),
             Data::Instance { .. } | Data::NativeInstance { .. } => {
                 let result = special(value, "__bool__", &[]);
@@ -1009,12 +1004,12 @@ pub unsafe fn binary(op: i32, left: Value, right: Value, inplace: bool) -> Value
         }
         if !left.is_null() && !right.is_null() && !is_fixnum(left) && !is_fixnum(right) {
             match (&(*left).data, &(*right).data) {
-                (Data::Bytes(a), Data::Bytes(b)) if op == 0 => {
+                (Data::Bytes(a, ..), Data::Bytes(b, ..)) if op == 0 => {
                     let mut result = a.clone();
                     result.extend_from_slice(b);
-                    return new_value(Data::Bytes(result));
+                    return new_value(Data::Bytes(result, std::ptr::null_mut()));
                 }
-                (Data::List(a), Data::List(b)) if op == 0 => {
+                (Data::List(a, ..), Data::List(b, ..)) if op == 0 => {
                     // Snapshot borrowed values before mutating either aliased list.
                     let left_values = a.clone();
                     let right_values = b.clone();
@@ -1035,13 +1030,13 @@ pub unsafe fn binary(op: i32, left: Value, right: Value, inplace: bool) -> Value
         if op == 2 {
             let repeated = if !left.is_null()
                 && !is_fixnum(left)
-                && matches!(&(*left).data, Data::Bytes(_))
+                && matches!(&(*left).data, Data::Bytes(..))
                 && numeric::is_integer(right)
             {
                 Some((left, right))
             } else if !right.is_null()
                 && !is_fixnum(right)
-                && matches!(&(*right).data, Data::Bytes(_))
+                && matches!(&(*right).data, Data::Bytes(..))
                 && numeric::is_integer(left)
             {
                 Some((right, left))
@@ -1063,7 +1058,7 @@ unsafe fn repeat_bytes(bytes: Value, count: Value) -> Value {
         let Some(count) = numeric::integer_export(count) else {
             return std::ptr::null_mut();
         };
-        let Data::Bytes(data) = &(*bytes).data else {
+        let Data::Bytes(data, ..) = &(*bytes).data else {
             unreachable!()
         };
         let count = if count.sign() <= 0 || data.is_empty() {
@@ -1087,7 +1082,7 @@ unsafe fn repeat_bytes(bytes: Value, count: Value) -> Value {
         for _ in 0..count {
             result.extend_from_slice(data);
         }
-        new_value(Data::Bytes(result))
+        new_value(Data::Bytes(result, std::ptr::null_mut()))
     }
 }
 /// Try the in-place, forward, then reflected special method, as Python's
@@ -1140,7 +1135,7 @@ unsafe fn contains(container: Value, item: Value) -> Option<bool> {
                     release(result);
                     return found;
                 }
-                Data::Bytes(haystack) => {
+                Data::Bytes(haystack, ..) => {
                     if numeric::is_integer(item) {
                         let integer = numeric::integer_export(item)?;
                         let Some(byte) =
@@ -1152,7 +1147,7 @@ unsafe fn contains(container: Value, item: Value) -> Option<bool> {
                         return Some(haystack.contains(&byte));
                     }
                     if !item.is_null() && !is_fixnum(item) {
-                        if let Data::Bytes(needle) = &(*item).data {
+                        if let Data::Bytes(needle, ..) = &(*item).data {
                             return Some(
                                 needle.is_empty()
                                     || haystack
@@ -1164,7 +1159,7 @@ unsafe fn contains(container: Value, item: Value) -> Option<bool> {
                     error("TypeError", "incompatible string containment operand");
                     return None;
                 }
-                Data::Args(values) | Data::List(values) => {
+                Data::Args(values, ..) | Data::List(values, ..) => {
                     // Retain the snapshot across user equality/truth callbacks.
                     let values: Vec<_> = values.iter().map(|value| retain(*value)).collect();
                     let mut result = Some(false);
@@ -1235,7 +1230,7 @@ pub unsafe fn compare(op: i32, left: Value, right: Value) -> Value {
         } else if !left.is_null() && !right.is_null() && !is_fixnum(left) && !is_fixnum(right) {
             match (&(*left).data, &(*right).data) {
                 (Data::Text(a, ..), Data::Text(b, ..)) => Some(a.cmp(b)),
-                (Data::Bytes(a), Data::Bytes(b)) => Some(a.cmp(b)),
+                (Data::Bytes(a, ..), Data::Bytes(b, ..)) => Some(a.cmp(b)),
                 _ => None,
             }
             .map(|ordering| match ordering {
@@ -1396,9 +1391,9 @@ pub unsafe fn formatted_value(
                     bytes
                 }
             }
-            Data::Bytes(data) => quoted(data.iter().map(|value| u32::from(*value)), true, ascii_only)?,
-            Data::Args(values) | Data::List(values) => {
-                let list = matches!(&(*value).data, Data::List(_));
+            Data::Bytes(data, ..) => quoted(data.iter().map(|value| u32::from(*value)), true, ascii_only)?,
+            Data::Args(values, ..) | Data::List(values, ..) => {
+                let list = matches!(&(*value).data, Data::List(..));
                 let mut result = vec![if list { b'[' } else { b'(' }];
                 for (index, value) in values.iter().enumerate() {
                     if index > 0 {
@@ -1593,7 +1588,7 @@ unsafe fn literal_bytes(data: *const c_char, length: isize, text: bool) -> Value
             std::slice::from_raw_parts(data.cast::<u8>(), length as usize).to_vec()
         };
         if !text {
-            return new_value(Data::Bytes(bytes));
+            return new_value(Data::Bytes(bytes, std::ptr::null_mut()));
         }
         match Text::from_wtf8(&bytes) {
             Ok(text) => new_value(Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut())),
@@ -1721,14 +1716,14 @@ unsafe fn sequence_buffer(count: isize, values: *const Value) -> Option<Vec<Valu
 pub unsafe extern "C" fn mule_sequence_list(count: isize, values: *const Value) -> Value {
     unsafe {
         sequence_buffer(count, values)
-            .map_or(std::ptr::null_mut(), |values| new_value(Data::List(values)))
+            .map_or(std::ptr::null_mut(), |values| new_value(Data::List(values, std::ptr::null_mut())))
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_sequence_tuple(count: isize, values: *const Value) -> Value {
     unsafe {
         sequence_buffer(count, values)
-            .map_or(std::ptr::null_mut(), |values| new_value(Data::Args(values)))
+            .map_or(std::ptr::null_mut(), |values| new_value(Data::Args(values, std::ptr::null_mut())))
     }
 }
 
@@ -1762,7 +1757,7 @@ pub unsafe extern "C" fn mule_sequence_tuple_owned(
         if count != 0 {
             result.extend_from_slice(std::slice::from_raw_parts(values, count));
         }
-        new_value(Data::Args(result))
+        new_value(Data::Args(result, std::ptr::null_mut()))
     }
 }
 /// Return an owned callable from the receiver's class method table, or None
@@ -1918,9 +1913,9 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
                 Data::BigInt(..) => "int",
                 Data::Float(..) => "float",
                 Data::Text(..) => "str",
-                Data::Bytes(_) => "bytes",
-                Data::List(_) => "list",
-                Data::Args(_) => "tuple",
+                Data::Bytes(..) => "bytes",
+                Data::List(..) => "list",
+                Data::Args(..) => "tuple",
                 Data::Namespace(_) => "module",
                 Data::Function { .. } => "function",
                 Data::BoundMethod { .. } => "method",
@@ -1989,7 +1984,7 @@ pub unsafe extern "C" fn mule_text_join(pieces: Value) -> Value {
     unsafe {
         let values = if !pieces.is_null() && !is_fixnum(pieces) {
             match &(*pieces).data {
-                Data::List(values) | Data::Args(values) => Some(values),
+                Data::List(values, ..) | Data::Args(values, ..) => Some(values),
                 _ => None,
             }
         } else {
@@ -2261,7 +2256,7 @@ unsafe fn closure_cells_of(closure: Value, kinds: *const c_char) -> Value {
         if closure.is_null() {
             return none_value();
         }
-        let Data::Args(entries) = &(*closure).data else {
+        let Data::Args(entries, ..) = &(*closure).data else {
             error("SystemError", "function closure is not a tuple");
             return std::ptr::null_mut();
         };
@@ -2295,7 +2290,7 @@ unsafe fn closure_cells_of(closure: Value, kinds: *const c_char) -> Value {
             }
             cells.push(cell);
         }
-        new_value(Data::Args(cells))
+        new_value(Data::Args(cells, std::ptr::null_mut()))
     }
 }
 

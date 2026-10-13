@@ -432,14 +432,41 @@ def namedtuple(typename, field_names, *, rename=False, defaults=None, module=Non
 
     # Create all the named tuple methods to be added to the class namespace
 
-    namespace = {
-        '_tuple_new': tuple_new,
-        '__builtins__': {},
-        '__name__': f'namedtuple_{typename}',
-    }
-    code = f'lambda _cls, {arg_list}: _tuple_new(_cls, ({arg_list}))'
-    __new__ = eval(code, namespace)
-    __new__.__name__ = '__new__'
+    # Mule note: CPython builds __new__ with eval() of a generated lambda
+    # so the signature shows the field names. Mule has no runtime source
+    # compiler, so __new__ is a closure over the field names instead; it
+    # validates the argument count and keywords itself.
+    def __new__(_cls, *args, **kwds):
+        values = [None] * num_fields
+        filled = [False] * num_fields
+        if len(args) > num_fields:
+            raise TypeError(
+                f'{typename} expected at most {num_fields} arguments, '
+                f'got {len(args)}')
+        for index, value in enumerate(args):
+            values[index] = value
+            filled[index] = True
+        defaults = __new__.__defaults__ or ()
+        for name, value in kwds.items():
+            if name not in field_names:
+                raise TypeError(
+                    f'{typename} got an unexpected keyword argument {name!r}')
+            index = field_names.index(name)
+            if filled[index]:
+                raise TypeError(
+                    f'{typename} got multiple values for argument {name!r}')
+            values[index] = value
+            filled[index] = True
+        for index in range(num_fields):
+            if not filled[index]:
+                default_index = index - (num_fields - len(defaults))
+                if default_index < 0:
+                    raise TypeError(
+                        f'{typename} missing a required argument: '
+                        f'{field_names[index]!r}')
+                values[index] = defaults[default_index]
+        return tuple_new(_cls, tuple(values))
+
     __new__.__doc__ = f'Create new instance of {typename}({arg_list})'
     if defaults is not None:
         __new__.__defaults__ = defaults

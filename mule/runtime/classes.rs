@@ -202,12 +202,15 @@ pub unsafe fn class_of_value(value: Value) -> Value {
             Data::BigInt(_, ty, ..) | Data::Float(_, ty, ..) | Data::Text(_, ty, ..) if !ty.is_null() => {
                 return *ty;
             }
+            Data::Bytes(_, ty) | Data::List(_, ty) | Data::Args(_, ty) if !ty.is_null() => {
+                return *ty;
+            }
             Data::BigInt(..) => Builtin::Int,
             Data::Float(..) => Builtin::Float,
             Data::Text(..) => Builtin::Str,
-            Data::Bytes(_) => Builtin::Bytes,
-            Data::List(_) => Builtin::List,
-            Data::Args(_) => Builtin::Tuple,
+            Data::Bytes(..) => Builtin::Bytes,
+            Data::List(..) => Builtin::List,
+            Data::Args(..) => Builtin::Tuple,
             Data::Function { globals, .. } if globals.is_null() => Builtin::BuiltinFunction,
             Data::Function { .. } => Builtin::Function,
             Data::BoundMethod { .. } => Builtin::Method,
@@ -317,7 +320,7 @@ pub unsafe extern "C" fn mule_class(
         if object::has_error() {
             return std::ptr::null_mut();
         }
-        let Data::Args(base_values) = &(*bases).data else {
+        let Data::Args(base_values, ..) = &(*bases).data else {
             object::error("SystemError", "class bases must be a tuple");
             return std::ptr::null_mut();
         };
@@ -365,7 +368,7 @@ pub unsafe extern "C" fn mule_class_prepare(name: Value, bases: Value, keywords:
         if object::has_error() {
             return std::ptr::null_mut();
         }
-        let Data::Args(base_values) = &(*bases).data else {
+        let Data::Args(base_values, ..) = &(*bases).data else {
             object::error("SystemError", "class bases must be a tuple");
             return std::ptr::null_mut();
         };
@@ -1258,7 +1261,7 @@ unsafe fn slot_names_include_dict(slots: Value) -> bool {
             return false;
         }
         match &(*slots).data {
-            Data::Args(values) | Data::List(values) => values.iter().any(|value| is_dict(*value)),
+            Data::Args(values, ..) | Data::List(values, ..) => values.iter().any(|value| is_dict(*value)),
             _ => is_dict(slots),
         }
     }
@@ -2000,7 +2003,7 @@ unsafe extern "C" fn new_class(_: Value, args: Value) -> Value {
         let Some([metaclass, class_name, bases_arg, names, values, fields]) = operands(args) else {
             return std::ptr::null_mut();
         };
-        let Data::Args(fields) = &(*fields).data else {
+        let Data::Args(fields, ..) = &(*fields).data else {
             return fail("TypeError", "class fields must be a tuple");
         };
         let mut owned_fields = Vec::with_capacity(fields.len());
@@ -2011,7 +2014,7 @@ unsafe extern "C" fn new_class(_: Value, args: Value) -> Value {
             owned_fields.push(field);
         }
         let field_pointers: Vec<*const c_char> = owned_fields.iter().map(|field| field.as_ptr()).collect();
-        let (Some(class_name), Data::Args(names), Data::Args(values)) =
+        let (Some(class_name), Data::Args(names, ..), Data::Args(values, ..)) =
             (text_argument(class_name), &(*names).data, &(*values).data)
         else {
             return fail("TypeError", "class names and values must be tuples");
@@ -2034,7 +2037,7 @@ unsafe extern "C" fn new_class(_: Value, args: Value) -> Value {
             Vec::new()
         } else if !object::is_fixnum(bases_arg) {
             match &(*bases_arg).data {
-                Data::Args(values) => values.clone(),
+                Data::Args(values, ..) => values.clone(),
                 _ => vec![bases_arg],
             }
         } else {
@@ -2388,6 +2391,27 @@ unsafe extern "C" fn is_instance_export(_: Value, args: Value) -> Value {
 
 /// Bind the class storage operations compiled descriptor and `super` code
 /// uses into the compiler-owned native namespace.
+/// The attributes namespace of a function, created on demand when asked.
+unsafe extern "C" fn function_attributes(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([function]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        if function.is_null() || object::is_fixnum(function) {
+            object::error("TypeError", "a function is required");
+            return std::ptr::null_mut();
+        }
+        let Data::Function { attributes, .. } = &mut (*function).data else {
+            object::error("TypeError", "a function is required");
+            return std::ptr::null_mut();
+        };
+        if attributes.is_null() {
+            *attributes = object::namespace();
+        }
+        object::retain(*attributes)
+    }
+}
+
 /// `typed_value(value, class)`: record `class` on a freshly created int,
 /// float or str storage value, making it an instance of that subclass.
 unsafe extern "C" fn typed_value(_: Value, args: Value) -> Value {
@@ -2408,7 +2432,12 @@ unsafe extern "C" fn typed_value(_: Value, args: Value) -> Value {
             return std::ptr::null_mut();
         }
         match &mut (*value).data {
-            Data::BigInt(_, ty, _) | Data::Float(_, ty, _) | Data::Text(_, ty, _) => {
+            Data::BigInt(_, ty, _)
+            | Data::Float(_, ty, _)
+            | Data::Text(_, ty, _)
+            | Data::Bytes(_, ty)
+            | Data::List(_, ty)
+            | Data::Args(_, ty) => {
                 object::release(*ty);
                 *ty = object::retain(class);
                 object::retain(value)
@@ -2426,7 +2455,7 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 35] = [
+        let exports: [(&str, object::Native); 36] = [
             ("register_not_implemented", register_not_implemented),
             ("instance_items", instance_items),
             ("new_namespace", new_namespace),
@@ -2462,6 +2491,7 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("bound_method", bound_method),
             ("instance_field", instance_field),
             ("typed_value", typed_value),
+            ("function_attributes", function_attributes),
         ];
         for (name, entry) in exports {
             let function = object::function(std::ptr::null_mut(), entry, name);

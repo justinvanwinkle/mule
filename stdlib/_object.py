@@ -37,6 +37,7 @@ from _mule_native import traceback_field as _traceback_field
 from _mule_native import set_class_name as _set_class_name
 from _mule_native import type_of as _type_of
 from _mule_native import typed_value as _typed_value
+from _mule_native import function_attributes as _function_attributes
 
 # The runtime's conversion functions, captured before the classes below
 # take over their builtin names.
@@ -308,6 +309,9 @@ class type(object):
         if "__doc__" not in namespace:
             names.append("__doc__")
             values.append(None)
+        if "__annotations__" not in namespace:
+            names.append("__annotations__")
+            values.append({})
         # The metaclass of the new class is the most derived metaclass of
         # the bases, as type_new computes it; it starts as the metaclass
         # this call was made through (type itself for a plain type() call).
@@ -368,6 +372,18 @@ from _attributes import getattr, hasattr  # noqa: E402
 
 object.__init_subclass__ = classmethod(object.__init_subclass__)
 type.__prepare__ = classmethod(type.__prepare__)
+
+
+def _class_annotations(cls):
+    # A class without stored annotations has an empty dict, as
+    # type.__annotations__ provides in CPython. Classes keep their own
+    # stored dict when they define annotations.
+    if "__annotations__" in _class_own_names(cls):
+        return _namespace(cls)["__annotations__"]
+    return {}
+
+
+type.__annotations__ = property(_class_annotations)
 
 
 def _bases(cls):
@@ -608,6 +624,175 @@ class NoneType(object):
         return False
 
 
+def _complex_parts(value):
+    if isinstance(value, complex):
+        return value.real, value.imag
+    if isinstance(value, float):
+        return value, 0.0
+    if isinstance(value, int):
+        return _convert_float(value), 0.0
+    return None
+
+
+class complex(object):
+    """A complex number, stored as two float fields."""
+
+    def __new__(cls, real=0, imag=0):
+        if isinstance(real, str):
+            if imag != 0:
+                raise TypeError("complex() can't take second arg if first is a string")
+            return cls._parse(real)
+        parts = _complex_parts(real)
+        if parts is None:
+            raise TypeError("complex() first argument must be a string or a number")
+        real_part, imag_part = parts
+        if isinstance(imag, str):
+            raise TypeError("complex() second arg can't be a string")
+        imag_parts = _complex_parts(imag)
+        if imag_parts is None:
+            raise TypeError("complex() second argument must be a number")
+        real_part = real_part - imag_parts[1]
+        imag_part = imag_part + imag_parts[0]
+        instance = _new_instance(cls)
+        instance._real = _convert_float(real_part)
+        instance._imag = _convert_float(imag_part)
+        return instance
+
+    @classmethod
+    def _parse(cls, text):
+        value = text.strip().replace(" ", "")
+        if not value.endswith(("j", "J")):
+            instance = _new_instance(cls)
+            instance._real = _convert_float(float(value))
+            instance._imag = 0.0
+            return instance
+        body = value[:-1]
+        split = -1
+        index = 1
+        while index < len(body):
+            if body[index] in "+-" and body[index - 1] not in "eE":
+                split = index
+            index += 1
+        if split < 0:
+            real_part, imag_part = 0.0, float(body) if body not in ("", "+", "-") else (1.0 if body != "-" else -1.0)
+        else:
+            real_part = float(body[:split])
+            imag_text = body[split:]
+            imag_part = 1.0 if imag_text == "+" else (-1.0 if imag_text == "-" else float(imag_text))
+        instance = _new_instance(cls)
+        instance._real = _convert_float(real_part)
+        instance._imag = _convert_float(imag_part)
+        return instance
+
+    @property
+    def real(self):
+        return self._real
+
+    @property
+    def imag(self):
+        return self._imag
+
+    def conjugate(self):
+        instance = _new_instance(_type_of(self))
+        instance._real = self._real
+        instance._imag = -self._imag
+        return instance
+
+    def __complex__(self):
+        return self
+
+    def __add__(self, other):
+        parts = _complex_parts(other)
+        if parts is None:
+            return NotImplemented
+        return _make_complex(_type_of(self), self._real + parts[0], self._imag + parts[1])
+
+    def __radd__(self, other):
+        return self.__add__(other)
+
+    def __sub__(self, other):
+        parts = _complex_parts(other)
+        if parts is None:
+            return NotImplemented
+        return _make_complex(_type_of(self), self._real - parts[0], self._imag - parts[1])
+
+    def __rsub__(self, other):
+        parts = _complex_parts(other)
+        if parts is None:
+            return NotImplemented
+        return _make_complex(_type_of(self), parts[0] - self._real, parts[1] - self._imag)
+
+    def __mul__(self, other):
+        parts = _complex_parts(other)
+        if parts is None:
+            return NotImplemented
+        return _make_complex(
+            _type_of(self),
+            self._real * parts[0] - self._imag * parts[1],
+            self._real * parts[1] + self._imag * parts[0],
+        )
+
+    def __rmul__(self, other):
+        return self.__mul__(other)
+
+    def __truediv__(self, other):
+        parts = _complex_parts(other)
+        if parts is None:
+            return NotImplemented
+        denominator = parts[0] * parts[0] + parts[1] * parts[1]
+        if denominator == 0:
+            raise ZeroDivisionError("complex division by zero")
+        return _make_complex(
+            _type_of(self),
+            (self._real * parts[0] + self._imag * parts[1]) / denominator,
+            (self._imag * parts[0] - self._real * parts[1]) / denominator,
+        )
+
+    def __rtruediv__(self, other):
+        parts = _complex_parts(other)
+        if parts is None:
+            return NotImplemented
+        return _make_complex(_type_of(self), parts[0], parts[1]).__truediv__(self)
+
+    def __neg__(self):
+        return _make_complex(_type_of(self), -self._real, -self._imag)
+
+    def __pos__(self):
+        return self
+
+    def __abs__(self):
+        return (self._real * self._real + self._imag * self._imag) ** 0.5
+
+    def __bool__(self):
+        return self._real != 0 or self._imag != 0
+
+    def __eq__(self, other):
+        parts = _complex_parts(other)
+        if parts is None:
+            return NotImplemented
+        return self._real == parts[0] and self._imag == parts[1]
+
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        return result if result is NotImplemented else not result
+
+    def __hash__(self):
+        return hash((self._real, self._imag))
+
+    def __repr__(self):
+        if self._real == 0:
+            return repr(self._imag) + "j"
+        sign = "+" if self._imag >= 0 else "-"
+        return "(" + repr(self._real) + sign + repr(abs(self._imag)) + "j)"
+
+
+def _make_complex(cls, real, imag):
+    instance = _new_instance(cls)
+    instance._real = _convert_float(real)
+    instance._imag = _convert_float(imag)
+    return instance
+
+
 class int(object):
     def __new__(cls, *args):
         value = _convert_int(*args)
@@ -787,6 +972,10 @@ class function(object):
     @property
     def __annotations__(self):
         return {}
+
+    @property
+    def __dict__(self):
+        return _GlobalsDict(_function_attributes(self))
 
     def __get__(self, instance, owner=None):
         # Functions are descriptors: reading one through an instance binds

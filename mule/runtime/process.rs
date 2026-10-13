@@ -40,6 +40,185 @@ thread_local! {
     static ARGUMENTS: Cell<Option<Arguments>> = const { Cell::new(None) };
 }
 
+// The `_time` native module: clock and calendar services for stdlib/time.py.
+
+#[repr(C)]
+struct Timespec {
+    seconds: i64,
+    nanoseconds: i64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct Tm {
+    sec: i32,
+    min: i32,
+    hour: i32,
+    mday: i32,
+    mon: i32,
+    year: i32,
+    wday: i32,
+    yday: i32,
+    isdst: i32,
+    gmtoff: i64,
+    zone: *const c_char,
+}
+
+unsafe extern "C" {
+    fn clock_gettime(clock: i32, spec: *mut Timespec) -> i32;
+    fn nanosleep(requested: *const Timespec, remaining: *mut Timespec) -> i32;
+    fn localtime_r(time: *const i64, result: *mut Tm) -> *mut Tm;
+    fn gmtime_r(time: *const i64, result: *mut Tm) -> *mut Tm;
+    fn tzset();
+    static timezone: i64;
+    static daylight: i32;
+    static tzname: [*const c_char; 2];
+}
+
+unsafe fn time_float(seconds: i64, nanoseconds: i64) -> Value {
+    unsafe {
+        object::new_value(Data::Float(seconds as f64 + nanoseconds as f64 / 1_000_000_000.0, std::ptr::null_mut(), std::ptr::null_mut()))
+    }
+}
+
+unsafe fn time_clock(clock: i32) -> Option<(i64, i64)> {
+    unsafe {
+        let mut spec = Timespec { seconds: 0, nanoseconds: 0 };
+        if clock_gettime(clock, &mut spec) < 0 {
+            object::error("OSError", &std::io::Error::last_os_error().to_string());
+            return None;
+        }
+        Some((spec.seconds, spec.nanoseconds))
+    }
+}
+
+macro_rules! time_clock_fn {
+    ($name:ident, $clock:expr) => {
+        unsafe extern "C" fn $name(_: Value, args: Value) -> Value {
+            unsafe {
+                if operands::<0>(args).is_none() { return null_mut(); }
+                match time_clock($clock) {
+                    Some((seconds, ns)) => time_float(seconds, ns),
+                    None => null_mut(),
+                }
+            }
+        }
+    };
+}
+time_clock_fn!(time_monotonic, 1);
+time_clock_fn!(time_wall, 0);
+time_clock_fn!(time_process, 2);
+time_clock_fn!(time_thread, 3);
+
+unsafe extern "C" fn time_sleep(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands::<1>(args) else { return null_mut() };
+        let Some(seconds) = numeric::number_double(value) else { return null_mut() };
+        if seconds <= 0.0 {
+            return object::none_value();
+        }
+        let whole = seconds.floor();
+        let spec = Timespec {
+            seconds: whole as i64,
+            nanoseconds: ((seconds - whole) * 1_000_000_000.0) as i64,
+        };
+        nanosleep(&spec, std::ptr::null_mut());
+        object::none_value()
+    }
+}
+
+unsafe extern "C" fn time_parts(local: bool, value: Value) -> Value {
+    unsafe {
+        let seconds = numeric::number_double(value).map_or(0, |v| v.floor() as i64);
+        let mut tm = Tm::default();
+        let result = if local {
+            localtime_r(&seconds, &mut tm)
+        } else {
+            gmtime_r(&seconds, &mut tm)
+        };
+        if result.is_null() {
+            object::error("OSError", "timestamp out of range");
+            return null_mut();
+        }
+        let fields = [
+            tm.year + 1900, tm.mon + 1, tm.mday, tm.hour, tm.min, tm.sec,
+            (tm.wday + 6) % 7, tm.yday + 1, tm.isdst,
+        ];
+        let values: Vec<Value> = fields.iter().map(|field| object::small(i64::from(*field))).collect();
+        let result = object::mule_sequence_tuple(values.len() as isize, values.as_ptr());
+        for value in values { object::release(value); }
+        result
+    }
+}
+
+unsafe extern "C" fn time_localtime(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands::<1>(args) else { return null_mut() };
+        time_parts(true, value)
+    }
+}
+
+unsafe extern "C" fn time_gmtime(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands::<1>(args) else { return null_mut() };
+        time_parts(false, value)
+    }
+}
+
+unsafe extern "C" fn time_zoneinfo(_: Value, args: Value) -> Value {
+    unsafe {
+        if operands::<0>(args).is_none() { return null_mut(); }
+        tzset();
+        let names: Vec<Value> = tzname.iter().map(|name| {
+            if name.is_null() {
+                object::new_value(Data::Text(Text::from_rust_str(""), std::ptr::null_mut(), std::ptr::null_mut()))
+            } else {
+                object::new_value(Data::Text(Text::from_wtf8(CStr::from_ptr(*name).to_bytes()).unwrap_or_else(|_| Text::from_rust_str("")), std::ptr::null_mut(), std::ptr::null_mut()))
+            }
+        }).collect();
+        let values = [
+            object::small(timezone),
+            object::small(i64::from(daylight)),
+            object::mule_sequence_tuple(names.len() as isize, names.as_ptr()),
+        ];
+        for name in names { object::release(name); }
+        let result = object::mule_sequence_tuple(values.len() as isize, values.as_ptr());
+        for value in &values[..2] { object::release(*value); }
+        object::release(values[2]);
+        result
+    }
+}
+
+/// Populate the `_time` native module namespace.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_time_module_init(globals: Value) -> Value {
+    unsafe {
+        if object::has_error() {
+            return null_mut();
+        }
+        let exports: [(&str, Native); 7] = [
+            ("monotonic", time_monotonic),
+            ("wall", time_wall),
+            ("process", time_process),
+            ("thread", time_thread),
+            ("sleep_for", time_sleep),
+            ("localtime_parts", time_localtime),
+            ("gmtime_parts", time_gmtime),
+        ];
+        for (name, entry) in exports {
+            let function = object::function(null_mut(), entry, name);
+            let bound = object::bind(globals, name, function);
+            object::release(function);
+            if !bound { return null_mut(); }
+        }
+        let function = object::function(null_mut(), time_zoneinfo, "zoneinfo");
+        let bound = object::bind(globals, "zoneinfo", function);
+        object::release(function);
+        if !bound { return null_mut(); }
+        object::none_value()
+    }
+}
+
 fn fail(kind: &str, message: &str) -> Value {
     object::error(kind, message);
     null_mut()
@@ -160,14 +339,14 @@ unsafe extern "C" fn read_c_string(_: Value, args: Value) -> Value {
                 "read_c_string requires a foreign C string pointer",
             );
         };
-        object::new_value(Data::Bytes(CStr::from_ptr(*address).to_bytes().to_vec()))
+        object::new_value(Data::Bytes(CStr::from_ptr(*address).to_bytes().to_vec(), std::ptr::null_mut()))
     }
 }
 
 unsafe fn bytes_storage<'a>(value: Value) -> Option<&'a [u8]> {
     unsafe {
         if !value.is_null() && !object::is_fixnum(value) {
-            if let Data::Bytes(bytes) = &(*value).data {
+            if let Data::Bytes(bytes, ..) = &(*value).data {
                 return Some(bytes);
             }
         }
@@ -214,7 +393,7 @@ unsafe extern "C" fn text_from_codepoints(_: Value, args: Value) -> Value {
                 "text_from_codepoints requires list or tuple storage",
             );
         }
-        let (Data::List(values) | Data::Args(values)) = &(*value).data else {
+        let (Data::List(values, ..) | Data::Args(values, ..)) = &(*value).data else {
             return fail(
                 "TypeError",
                 "text_from_codepoints requires list or tuple storage",
@@ -252,7 +431,7 @@ unsafe extern "C" fn bytes_from_values(_: Value, args: Value) -> Value {
         };
         let values = if !value.is_null() && !object::is_fixnum(value) {
             match &(*value).data {
-                Data::List(values) | Data::Args(values) => Some(values),
+                Data::List(values, ..) | Data::Args(values, ..) => Some(values),
                 _ => None,
             }
         } else {
@@ -276,7 +455,7 @@ unsafe extern "C" fn bytes_from_values(_: Value, args: Value) -> Value {
             };
             bytes.push(byte);
         }
-        object::new_value(Data::Bytes(bytes))
+        object::new_value(Data::Bytes(bytes, std::ptr::null_mut()))
     }
 }
 
@@ -297,7 +476,7 @@ unsafe extern "C" fn write_fd(_: Value, args: Value) -> Value {
             object::error("TypeError", "a file descriptor must be an integer");
             return null_mut();
         }
-        let Data::Bytes(bytes) = &(*data).data else {
+        let Data::Bytes(bytes, ..) = &(*data).data else {
             object::error("TypeError", "a bytes-like object is required");
             return null_mut();
         };
@@ -396,7 +575,7 @@ unsafe fn posix_path(value: Value) -> Option<Vec<u8>> {
         }
         match &(*value).data {
             Data::Text(text, ..) => Some(text.to_wtf8()),
-            Data::Bytes(bytes) => Some(bytes.clone()),
+            Data::Bytes(bytes, ..) => Some(bytes.clone()),
             _ => {
                 object::error("TypeError", "expected str or bytes path");
                 None
@@ -444,7 +623,7 @@ unsafe fn posix_text(bytes: &[u8]) -> Value {
 }
 
 unsafe fn posix_bytes(bytes: &[u8]) -> Value {
-    unsafe { object::new_value(Data::Bytes(bytes.to_vec())) }
+    unsafe { object::new_value(Data::Bytes(bytes.to_vec(), std::ptr::null_mut())) }
 }
 
 unsafe fn posix_tuple(values: &[Value]) -> Value {
@@ -1017,13 +1196,13 @@ mod tests {
             let empty = invoke(module, "read_pointer", &[vector, object::small(0)]);
             assert!(matches!(&(*empty).data, Data::ForeignCString { .. }));
             let bytes = invoke(module, "read_c_string", &[empty]);
-            assert!(matches!(&(*bytes).data, Data::Bytes(bytes) if bytes.is_empty()));
+            assert!(matches!(&(*bytes).data, Data::Bytes(bytes, ..) if bytes.is_empty()));
             assert_eq!(object::fixnum(invoke(module, "byte_length", &[bytes])), 0);
             object::release(bytes);
             object::release(empty);
             let pointer = invoke(module, "read_pointer", &[vector, object::small(1)]);
             let bytes = invoke(module, "read_c_string", &[pointer]);
-            assert!(matches!(&(*bytes).data, Data::Bytes(bytes) if bytes == b"\xff\xed\xa0\x80"));
+            assert!(matches!(&(*bytes).data, Data::Bytes(bytes, ..) if bytes == b"\xff\xed\xa0\x80"));
             assert_eq!(
                 object::fixnum(invoke(module, "read_byte", &[bytes, object::small(0)])),
                 255
@@ -1096,9 +1275,9 @@ mod tests {
             for tuple in [false, true] {
                 let values = codes.map(object::small).to_vec();
                 let sequence = object::new_value(if tuple {
-                    Data::Args(values)
+                    Data::Args(values, ..)
                 } else {
-                    Data::List(values)
+                    Data::List(values, ..)
                 });
                 let result = invoke(module, "text_from_codepoints", &[sequence]);
                 let Data::Text(text, ..) = &(*result).data else {
@@ -1113,14 +1292,14 @@ mod tests {
                 object::release(sequence);
             }
             for code in [-1, 0x110000] {
-                let sequence = object::new_value(Data::List(vec![object::small(code)]));
+                let sequence = object::new_value(Data::List(vec![object::small(code)], std::ptr::null_mut()));
                 assert!(invoke(module, "text_from_codepoints", &[sequence]).is_null());
                 assert_eq!(object::error_kind(), "ValueError");
                 object::clear_error();
                 object::release(sequence);
             }
             let sequence =
-                object::new_value(Data::List(vec![object::new_value(Data::Text(Text::empty(), std::ptr::null_mut(), std::ptr::null_mut()))]));
+                object::new_value(Data::List(vec![object::new_value(Data::Text(Text::empty(), std::ptr::null_mut(), std::ptr::null_mut()))], std::ptr::null_mut()));
             assert!(invoke(module, "text_from_codepoints", &[sequence]).is_null());
             assert_eq!(object::error_kind(), "TypeError");
             object::clear_error();

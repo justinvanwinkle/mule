@@ -436,7 +436,7 @@ pub(crate) unsafe extern "C" fn call_with(_: Value, args: Value) -> Value {
                 return None;
             }
             match &(*value).data {
-                Data::Args(values) => Some(values),
+                Data::Args(values, ..) => Some(values),
                 _ => None,
             }
         };

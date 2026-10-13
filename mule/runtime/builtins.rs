@@ -31,7 +31,7 @@ unsafe fn text(value: Value) -> Option<Vec<u8>> {
         if !value.is_null() && !object::is_fixnum(value) {
             match &(*value).data {
                 Data::Text(text, ..) => Some(text.to_wtf8()),
-                Data::Bytes(bytes) => Some(bytes.clone()),
+                Data::Bytes(bytes, ..) => Some(bytes.clone()),
                 _ => None,
             }
         } else {
@@ -115,9 +115,9 @@ unsafe extern "C" fn len(_: Value, args: Value) -> Value {
             return fail("TypeError", "object has no len");
         }
         let length = match &(*value).data {
-            Data::Bytes(value) => value.len(),
+            Data::Bytes(value, ..) => value.len(),
             Data::Text(value, ..) => value.len(),
-            Data::Args(value) | Data::List(value) => value.len(),
+            Data::Args(value, ..) | Data::List(value, ..) => value.len(),
             Data::Namespace(value) => value.len(),
             Data::Instance { .. } | Data::NativeInstance { .. } => {
                 let result = object::special(value, "__len__", &[]);
@@ -326,7 +326,7 @@ unsafe extern "C" fn tuple(_: Value, args: Value) -> Value {
         if arity(args, 0, 0).is_none() {
             std::ptr::null_mut()
         } else {
-            object::new_value(Data::Args(Vec::new()))
+            object::new_value(Data::Args(Vec::new(), std::ptr::null_mut()))
         }
     }
 }
@@ -388,7 +388,7 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
         object::bind(globals, "__builtins__", namespace());
         let mut args = Object {
             references: usize::MAX,
-            data: Data::Args(Vec::new()),
+            data: Data::Args(Vec::new(), std::ptr::null_mut()),
         };
         let entry = std::mem::transmute::<*mut c_void, Native>(native);
         let result = if crate::sequences::initialize(protocols) {
@@ -456,7 +456,7 @@ pub unsafe extern "C" fn mule_import_star(module: Value, globals: Value) -> i32 
                 None
             } else {
                 match &(*public).data {
-                    Data::List(values) | Data::Args(values) => Some(values),
+                    Data::List(values, ..) | Data::Args(values, ..) => Some(values),
                     _ => None,
                 }
             };

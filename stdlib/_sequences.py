@@ -4,7 +4,7 @@ Underscored storage operations are bound by the compiler. These definitions
 execute as native Python functions and classes, in a private module namespace.
 """
 
-from _object import bool, float, globals, int, isinstance, issubclass, object, type, vars
+from _object import bool, complex, float, globals, int, isinstance, issubclass, object, type, vars
 from _mule_native import text_from_codepoints as _text_from_codepoints
 from _mule_native import typed_value as _typed_value
 from _str import TextStorage, ascii, decode, format, ord, repr
@@ -1314,6 +1314,10 @@ class range:
         return (self.start - self.stop - 1) // (-self.step) + 1
 
     def __getitem__(self, index):
+        if is_slice(index):
+            start, stop, step, count = positions(index, self.__len__())
+            first = self.start + start * self.step
+            return range(first, first + count * self.step * step, self.step * step)
         index = integer_index(index)
         length = self.__len__()
         if index < 0:
@@ -1441,16 +1445,18 @@ def max(*args, key=None, default=_missing_default):
 
 class list(ListStorage):
     def __new__(cls, *args):
+        value = _make_list(*args)
         if cls is not list:
-            raise TypeError("list subclasses are not supported yet")
-        return _make_list(*args)
+            return _typed_value(value, cls)
+        return value
 
 
 class tuple(TupleStorage):
     def __new__(cls, *args):
+        value = _make_tuple(*args)
         if cls is not tuple:
-            raise TypeError("tuple subclasses are not supported yet")
-        return _make_tuple(*args)
+            return _typed_value(value, cls)
+        return value
 
 
 class str(TextStorage):
@@ -1463,22 +1469,23 @@ class str(TextStorage):
 
 class bytes(BytesStorage):
     def __new__(cls, source=b"", encoding=None, errors="strict"):
-        if cls is not bytes:
-            raise TypeError("bytes subclasses are not supported yet")
         if _text_storage(source):
             if encoding is None:
                 raise TypeError("string argument without an encoding")
-            return source.encode(encoding, errors)
+            value = source.encode(encoding, errors)
+            return _typed_value(value, cls) if cls is not bytes else value
         if _integer_storage_kind(source):
             values = []
             index = 0
             while index < source:
                 _storage_append(values, 0)
                 index += 1
-            return _bytes_from_values(values)
+            value = _bytes_from_values(values)
+            return _typed_value(value, cls) if cls is not bytes else value
         if _type_name(source) == "bytes":
-            return source
-        return _bytes_from_values(_make_list(source))
+            return _typed_value(source, cls) if cls is not bytes else source
+        value = _bytes_from_values(_make_list(source))
+        return _typed_value(value, cls) if cls is not bytes else value
 
 
 def _integer_storage_kind(value):
@@ -1802,6 +1809,7 @@ _install_builtin("object", object)
 _install_builtin("int", int)
 _install_builtin("bool", bool)
 _install_builtin("float", float)
+_install_builtin("complex", complex)
 _install_builtin("isinstance", isinstance)
 _install_builtin("issubclass", issubclass)
 _install_builtin("vars", vars)

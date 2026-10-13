@@ -114,7 +114,7 @@ pub struct Coroutine {
 unsafe extern "C" fn coroutine_main(coroutine: *mut Coroutine) -> ! {
     unsafe {
         let arguments = match &(*(*coroutine).arguments).data {
-            Data::Args(values) => values.clone(),
+            Data::Args(values, ..) => values.clone(),
             _ => Vec::new(),
         };
         let result = object::call((*coroutine).function, &arguments);
@@ -307,7 +307,7 @@ unsafe extern "C" fn coroutine_new(_: Value, args: Value) -> Value {
         let Some([function, arguments]) = operands(args) else {
             return null_mut();
         };
-        if !matches!(&(*arguments).data, Data::Args(_)) {
+        if !matches!(&(*arguments).data, Data::Args(..)) {
             object::error("TypeError", "coroutine arguments must be a tuple");
             return null_mut();
         }
