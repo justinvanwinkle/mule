@@ -82,6 +82,34 @@ def test_unchecked_unbound_global_raises_when_used(tmp_path):
     assert result.stdout == "read\nraised\n"
 
 
+def test_tracebacks_record_each_frame_an_exception_passes_through(tmp_path):
+    source = (
+        "def inner(value):\n    return 10 // value\n"
+        "def outer(value):\n    return 1 + inner(value)\n"
+        "try:\n    outer(0)\nexcept ZeroDivisionError as error:\n"
+        "    entry = error.__traceback__\n"
+        "    while entry is not None:\n"
+        "        print(entry.tb_frame.f_code.co_name, entry.tb_lineno)\n"
+        "        entry = entry.tb_next\n"
+        "try:\n    raise TypeError\nexcept TypeError as exc:\n"
+        "    print(type(exc.__traceback__).__name__,"
+        " type(exc.__traceback__.tb_frame).__name__)\n"
+        "outer(0)\n"
+    )
+    result = run_native(tmp_path, source)
+    assert result.stdout == ("<module> 6\nouter 4\ninner 2\ntraceback frame\n")
+    assert result.returncode != 0
+    entries = [
+        line for line in result.stderr.splitlines() if line.startswith("  File ")
+    ]
+    assert [entry.rsplit(", ", 2)[1:] for entry in entries] == [
+        ["line 16", "in <module>"],
+        ["line 4", "in outer"],
+        ["line 2", "in inner"],
+    ]
+    assert result.stderr.startswith("Traceback (most recent call last):\n")
+
+
 def test_module_policy_assignment_must_precede_module_code():
     with pytest.raises(SyntaxError, match="must precede the module's code"):
         emit_llvm("print(1)\n__safety__ = 0\n")

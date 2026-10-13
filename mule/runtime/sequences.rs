@@ -473,6 +473,7 @@ pub unsafe extern "C" fn mule_raise_pending(value: Value) -> Value {
             object::retain(value)
         };
         if !instance.is_null() {
+            crate::traceback::resume(instance);
             PENDING.with(|slot| object::release(slot.replace(instance)));
         }
         null_mut()
@@ -480,6 +481,24 @@ pub unsafe extern "C" fn mule_raise_pending(value: Value) -> Value {
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_catch_exception() -> Value {
+    unsafe {
+        // The handler's exception carries the traceback it was raised along.
+        let traceback = crate::traceback::take();
+        let exception = caught_exception();
+        if exception.is_null() || traceback.is_null() {
+            object::release(traceback);
+            return exception;
+        }
+        let status = crate::classes::mule_set_attr(exception, c"__traceback__".as_ptr(), traceback);
+        object::release(traceback);
+        if status < 0 {
+            object::release(exception);
+            return null_mut();
+        }
+        exception
+    }
+}
+unsafe fn caught_exception() -> Value {
     unsafe {
         let exception = PENDING.with(|value| value.replace(null_mut()));
         if !exception.is_null() {
@@ -550,6 +569,7 @@ pub unsafe extern "C" fn mule_reraise() -> i32 {
     unsafe {
         ACTIVE.with_borrow(|values| {
             if let Some(value) = values.last() {
+                crate::traceback::resume(*value);
                 PENDING.with(|slot| object::release(slot.replace(object::retain(*value))));
             } else {
                 object::error("RuntimeError", "no active exception to reraise");

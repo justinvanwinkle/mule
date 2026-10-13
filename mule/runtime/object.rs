@@ -283,6 +283,23 @@ pub enum Data {
     /// What an unbound global's cell holds. Code checking for unbound names
     /// compares against it; using it unchecked raises `NameError`.
     Undefined,
+    /// One entry of an exception's traceback (see `traceback.rs`): the
+    /// frame, its line, and the entry nearer the raise, or NULL.
+    Traceback {
+        frame: Value,
+        line: i64,
+        next: Value,
+        /// The call that recorded the entry, compared, never dereferenced.
+        activation: usize,
+    },
+    /// A function call an exception passed through.
+    Frame {
+        code: *const crate::traceback::CodeInfo,
+        line: i64,
+        globals: Value,
+        /// The calling frame, or NULL until the exception reaches it.
+        back: Value,
+    },
 }
 thread_local! {
     static ERROR: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
@@ -295,6 +312,7 @@ pub fn error(kind: &str, message: &str) {
     ERROR.with_borrow_mut(|current| {
         if current.is_none() {
             *current = Some((kind.into(), message.into()));
+            crate::traceback::clear();
         }
     });
 }
@@ -304,21 +322,25 @@ pub fn has_error() -> bool {
 pub fn clear_error() {
     ERROR.with_borrow_mut(|current| *current = None);
     crate::sequences::clear_pending();
+    crate::traceback::clear();
 }
 /// The current error, removed so code can run and later restore it.
 pub struct SavedError {
     native: Option<(String, String)>,
     pending: Value,
+    traceback: Value,
 }
 pub fn save_error() -> SavedError {
     SavedError {
         native: ERROR.with_borrow_mut(Option::take),
         pending: crate::sequences::take_pending(),
+        traceback: crate::traceback::take(),
     }
 }
 pub fn restore_error(saved: SavedError) {
     ERROR.with_borrow_mut(|current| *current = saved.native);
     crate::sequences::restore_pending(saved.pending);
+    crate::traceback::restore(saved.traceback);
 }
 pub fn take_native_error() -> Option<(String, String)> {
     ERROR.with_borrow_mut(Option::take)
@@ -403,6 +425,14 @@ pub unsafe fn release(value: Value) {
                 }
             }
             Data::Namespace(_) => (),
+            Data::Traceback { frame, next, .. } => {
+                release(*frame);
+                release(*next);
+            }
+            Data::Frame { globals, back, .. } => {
+                release(*globals);
+                release(*back);
+            }
             Data::Class(layout) => {
                 release(layout.base);
                 release(layout.metaclass);
@@ -1379,6 +1409,13 @@ pub unsafe fn formatted_value(
             Data::WeakHandle { .. } => b"<weak handle>".to_vec(),
             Data::Coroutine(_) => b"<coroutine>".to_vec(),
             Data::Undefined => b"<undefined>".to_vec(),
+            Data::Traceback { .. } => b"<traceback object>".to_vec(),
+            Data::Frame { code, line, .. } => format!(
+                "<frame, file '{}', line {line}, code {}>",
+                (**code).filename(),
+                (**code).name()
+            )
+            .into_bytes(),
             Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => {
                 let user = special_binding_present(value, representation);
                 if user {
@@ -1851,6 +1888,8 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
                 Data::WeakHandle { .. } => "weak handle",
                 Data::Coroutine(_) => "coroutine",
                 Data::Undefined => "undefined",
+                Data::Traceback { .. } => "traceback",
+                Data::Frame { .. } => "frame",
                 Data::Class(_) => "type",
                 Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => {
                     match &(**ty).data {

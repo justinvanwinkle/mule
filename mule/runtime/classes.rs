@@ -104,8 +104,11 @@ pub enum Builtin {
     BuiltinFunction,
     Method,
     Module,
+    Traceback,
+    Frame,
 }
-const BUILTIN_NAMES: [&str; 14] = [
+const BUILTIN_COUNT: usize = 16;
+const BUILTIN_NAMES: [&str; BUILTIN_COUNT] = [
     "object",
     "type",
     "NoneType",
@@ -120,11 +123,13 @@ const BUILTIN_NAMES: [&str; 14] = [
     "builtin_function_or_method",
     "method",
     "module",
+    "traceback",
+    "frame",
 ];
 
 thread_local! {
-    static BUILTIN_TYPES: std::cell::RefCell<[Value; 14]> =
-        const { std::cell::RefCell::new([std::ptr::null_mut(); 14]) };
+    static BUILTIN_TYPES: std::cell::RefCell<[Value; BUILTIN_COUNT]> =
+        const { std::cell::RefCell::new([std::ptr::null_mut(); BUILTIN_COUNT]) };
 }
 
 pub unsafe fn register_builtin(kind: Builtin, class: Value) {
@@ -162,7 +167,7 @@ pub fn builtin_type(kind: Builtin) -> Value {
 pub unsafe fn finish_builtin_types() {
     unsafe {
         object::release(NOT_IMPLEMENTED.with(|slot| slot.replace(std::ptr::null_mut())));
-        let types = BUILTIN_TYPES.with_borrow_mut(|types| std::mem::replace(types, [std::ptr::null_mut(); 14]));
+        let types = BUILTIN_TYPES.with_borrow_mut(|types| std::mem::replace(types, [std::ptr::null_mut(); BUILTIN_COUNT]));
         for class in types {
             object::release(class);
         }
@@ -199,6 +204,8 @@ pub unsafe fn class_of_value(value: Value) -> Value {
             Data::Function { .. } => Builtin::Function,
             Data::BoundMethod { .. } => Builtin::Method,
             Data::Namespace(_) => Builtin::Module,
+            Data::Traceback { .. } => Builtin::Traceback,
+            Data::Frame { .. } => Builtin::Frame,
             _ => Builtin::Object,
         };
         builtin_type(kind)
@@ -1917,6 +1924,19 @@ unsafe extern "C" fn register_type(_: Value, args: Value) -> Value {
     }
 }
 
+/// `traceback_field(value, index)`: a field of a traceback or frame record.
+unsafe extern "C" fn traceback_field(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value, index]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        if !object::is_fixnum(index) {
+            return fail("TypeError", "traceback field index must be an int");
+        }
+        crate::traceback::field(value, object::fixnum(index))
+    }
+}
+
 /// `type(value)`: the class of any value.
 unsafe extern "C" fn type_of(_: Value, args: Value) -> Value {
     unsafe {
@@ -2176,7 +2196,7 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 28] = [
+        let exports: [(&str, object::Native); 29] = [
             ("register_not_implemented", register_not_implemented),
             ("instance_items", instance_items),
             ("new_namespace", new_namespace),
@@ -2185,6 +2205,7 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("generic_get_attribute", generic_get_attribute),
             ("generic_set_attribute", generic_set_attribute),
             ("register_type", register_type),
+            ("traceback_field", traceback_field),
             ("type_of", type_of),
             ("is_subclass", is_subclass_export),
             ("class_name", class_name),

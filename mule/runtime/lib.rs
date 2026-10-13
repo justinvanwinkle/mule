@@ -23,6 +23,7 @@ pub mod object;
 pub mod process;
 pub mod sequences;
 pub mod text;
+pub mod traceback;
 pub mod weakref;
 pub use sequences::*;
 

@@ -412,7 +412,9 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
                 exit_status()
             } else {
                 let message = format!("{}: {}\n", object::error_kind(), object::error_message());
-                let _ = io::stderr().lock().write_all(message.as_bytes());
+                let mut stderr = io::stderr().lock();
+                crate::traceback::print_pending(&mut stderr);
+                let _ = stderr.write_all(message.as_bytes());
                 1
             }
         } else {

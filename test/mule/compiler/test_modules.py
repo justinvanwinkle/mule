@@ -70,7 +70,9 @@ def test_assertions_evaluate_the_message_only_on_failure(tmp_path, failure):
     if failure:
         assert result.returncode != 0
         assert result.stdout == "message evaluated\n"
-        assert result.stderr == "AssertionError: broken\n"
+        assert result.stderr.startswith("Traceback (most recent call last):\n")
+        assert "line 4, in <module>\n" in result.stderr
+        assert result.stderr.endswith("\nAssertionError: broken\n")
     else:
         assert result.returncode == 0, result.stderr
         assert result.stdout == "continued\n"

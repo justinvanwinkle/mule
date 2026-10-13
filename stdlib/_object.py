@@ -26,6 +26,7 @@ from _mule_native import is_instance as _is_instance
 from _mule_native import is_subclass as _is_subclass
 from _mule_native import new_class as _new_class
 from _mule_native import register_type as _register_type
+from _mule_native import traceback_field as _traceback_field
 from _mule_native import set_class_name as _set_class_name
 from _mule_native import type_of as _type_of
 
@@ -486,10 +487,11 @@ class float(object):
 class code(object):
     """A function's compiled-code metadata."""
 
-    def __init__(self, name, filename):
+    def __init__(self, name, filename, qualname=None, firstlineno=0):
         self.co_name = name
-        self.co_qualname = name
+        self.co_qualname = name if qualname is None else qualname
         self.co_filename = filename
+        self.co_firstlineno = firstlineno
         self.co_flags = 0
 
 
@@ -525,6 +527,54 @@ class module(object):
     """A module namespace."""
 
 
+class traceback(object):
+    """One entry of an exception's traceback: a frame the exception passed
+    through, the line it was running, and the entry nearer the raise."""
+
+    @property
+    def tb_frame(self):
+        return _traceback_field(self, 0)
+
+    @property
+    def tb_lineno(self):
+        return _traceback_field(self, 1)
+
+    @property
+    def tb_next(self):
+        return _traceback_field(self, 2)
+
+    @property
+    def tb_lasti(self):
+        # Compiled code has no bytecode offsets.
+        return -1
+
+
+class frame(object):
+    """A function call an exception passed through. Compiled frames do not
+    keep their local variables."""
+
+    @property
+    def f_code(self):
+        info = _traceback_field(self, 0)
+        return code(info[0], info[2], info[1], info[3])
+
+    @property
+    def f_lineno(self):
+        return _traceback_field(self, 1)
+
+    @property
+    def f_globals(self):
+        return _traceback_field(self, 2)
+
+    @property
+    def f_back(self):
+        return _traceback_field(self, 3)
+
+    @property
+    def f_locals(self):
+        return {}
+
+
 # Bootstrap code runs before the exception classes exist, so it cannot use
 # loops, which end by raising StopIteration.
 _register_type("NoneType", NoneType)
@@ -535,6 +585,8 @@ _register_type("function", function)
 _register_type("builtin_function_or_method", builtin_function_or_method)
 _register_type("method", method)
 _register_type("module", module)
+_register_type("traceback", traceback)
+_register_type("frame", frame)
 
 
 def isinstance(obj, classinfo, /):

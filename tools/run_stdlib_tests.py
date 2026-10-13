@@ -322,7 +322,10 @@ def run_bootstrap(entry, cases, directory, timeout):
                 and result.returncode == 0
                 and "MULE_TEST_PASS " + case.name in lines
             )
-            failure = executed and result.stderr.startswith("AssertionError:")
+            # The exception follows the traceback on the last line, as
+            # CPython prints an uncaught exception.
+            exception = (result.stderr.strip().splitlines() or [""])[-1]
+            failure = executed and exception.startswith("AssertionError:")
             results.append(
                 {
                     "name": case.name,

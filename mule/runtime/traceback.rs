@@ -1,0 +1,204 @@
+//! Traceback and frame records for exceptions in flight.
+//!
+//! Python exposes a raised exception's path as values: `__traceback__` is a
+//! chain of traceback entries from the frame handling it toward the frame
+//! that raised it, and each entry's frame names its code and line. Compiled
+//! code reports errors through null results, so each function records its
+//! entry where an error reaches its failure path: the line of the failing
+//! operation, its code metadata, globals, and the activation it ran in. The
+//! entries accumulate here while the error is pending and move to the
+//! exception when a handler catches it. CPython builds the same chain while
+//! unwinding (`PyTraceBack_Here`). SBCL instead walks the stack with its
+//! compiled debug information when a backtrace is requested; Python needs the
+//! entries to exist as values while the exception is still being handled.
+//!
+//! Frames are created only for exceptions in flight, so they carry what the
+//! failure path knows: no local variables, and `f_back` is linked when the
+//! exception reaches the calling frame.
+use crate::object::{self, Data, Value};
+use std::cell::Cell;
+use std::ffi::{CStr, c_char};
+use std::io::Write;
+use std::ptr::null_mut;
+
+/// A compiled function's code metadata, emitted by the compiler as constant data.
+#[repr(C)]
+pub struct CodeInfo {
+    pub name: *const c_char,
+    pub qualname: *const c_char,
+    pub filename: *const c_char,
+    pub firstlineno: i32,
+}
+
+impl CodeInfo {
+    fn text(field: *const c_char) -> &'static str {
+        if field.is_null() {
+            return "<unknown>";
+        }
+        unsafe { CStr::from_ptr(field) }.to_str().unwrap_or("<unknown>")
+    }
+
+    pub fn name(&self) -> &'static str {
+        Self::text(self.name)
+    }
+
+    pub fn qualname(&self) -> &'static str {
+        Self::text(self.qualname)
+    }
+
+    pub fn filename(&self) -> &'static str {
+        Self::text(self.filename)
+    }
+}
+
+thread_local! {
+    /// The pending error's traceback, outermost entry first, or NULL.
+    static PENDING: Cell<Value> = const { Cell::new(null_mut()) };
+}
+
+/// Remove the pending error's traceback, owned.
+pub fn take() -> Value {
+    PENDING.with(|pending| pending.replace(null_mut()))
+}
+
+/// Make `traceback` (owned, or NULL) the pending error's traceback.
+pub fn restore(traceback: Value) {
+    PENDING.with(|pending| unsafe { object::release(pending.replace(traceback)) });
+}
+
+/// A new error starts with an empty traceback.
+pub fn clear() {
+    restore(null_mut());
+}
+
+/// Continue the traceback an exception already carries when it is raised
+/// again, as CPython does. Call it before the exception becomes pending:
+/// attribute access does not run while an error is pending.
+pub unsafe fn resume(exception: Value) {
+    unsafe {
+        let traceback = crate::classes::mule_get_attr(exception, c"__traceback__".as_ptr());
+        if traceback.is_null() {
+            // Not an exception carrying a traceback; nothing to continue.
+            object::clear_error();
+        }
+        let continued = if is_traceback(traceback) { object::retain(traceback) } else { null_mut() };
+        object::release(traceback);
+        restore(continued);
+    }
+}
+
+fn is_traceback(value: Value) -> bool {
+    !value.is_null() && !object::is_fixnum(value) && matches!(unsafe { &(*value).data }, Data::Traceback { .. })
+}
+
+/// Record that the pending error passed through a compiled function at
+/// `line`. `activation` identifies the call; a call records one entry per
+/// error however many of its failure paths the error takes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_traceback_here(
+    code: *const CodeInfo,
+    line: i32,
+    globals: Value,
+    activation: *const u8,
+) {
+    unsafe {
+        if !object::has_error() {
+            return;
+        }
+        let head = PENDING.with(Cell::get);
+        if let Some(Data::Traceback { activation: recorded, .. }) = (!head.is_null()).then(|| &(*head).data) {
+            if *recorded == activation as usize {
+                return;
+            }
+        }
+        let frame = object::new_value(Data::Frame {
+            code,
+            line: i64::from(line),
+            globals: object::retain(globals),
+            back: null_mut(),
+        });
+        if let Some(Data::Traceback { frame: inner, .. }) = (!head.is_null()).then(|| &(*head).data) {
+            if let Data::Frame { back, .. } = &mut (**inner).data {
+                *back = object::retain(frame);
+            }
+        }
+        // The new entry takes over the reference the pending slot held.
+        let traceback = object::new_value(Data::Traceback {
+            frame,
+            line: i64::from(line),
+            next: PENDING.with(|pending| pending.replace(null_mut())),
+            activation: activation as usize,
+        });
+        PENDING.with(|pending| pending.set(traceback));
+    }
+}
+
+/// Field `index` of a traceback (`tb_frame`, `tb_lineno`, `tb_next`) or a
+/// frame (code metadata as `(name, qualname, filename, firstlineno)`,
+/// `f_lineno`, `f_globals`, `f_back`), owned.
+pub unsafe fn field(value: Value, index: i64) -> Value {
+    unsafe {
+        let optional = |value: Value| object::retain(if value.is_null() { object::none_value() } else { value });
+        if value.is_null() || object::is_fixnum(value) {
+            object::error("TypeError", "expected a traceback or frame");
+            return null_mut();
+        }
+        match (&(*value).data, index) {
+            (Data::Traceback { frame, .. }, 0) => object::retain(*frame),
+            (Data::Traceback { line, .. }, 1) => object::small(*line),
+            (Data::Traceback { next, .. }, 2) => optional(*next),
+            (Data::Frame { code, .. }, 0) => {
+                let code = &**code;
+                let values = [
+                    text(code.name()),
+                    text(code.qualname()),
+                    text(code.filename()),
+                    object::small(i64::from(code.firstlineno)),
+                ];
+                let tuple = object::mule_sequence_tuple(values.len() as isize, values.as_ptr());
+                for value in values {
+                    object::release(value);
+                }
+                tuple
+            }
+            (Data::Frame { line, .. }, 1) => object::small(*line),
+            (Data::Frame { globals, .. }, 2) => optional(*globals),
+            (Data::Frame { back, .. }, 3) => optional(*back),
+            _ => {
+                object::error("IndexError", "no such traceback field");
+                null_mut()
+            }
+        }
+    }
+}
+
+fn text(value: &str) -> Value {
+    unsafe { object::new_value(Data::Text(crate::text::Text::from_rust_str(value))) }
+}
+
+/// Write the pending error's traceback as CPython prints an uncaught one.
+pub fn print_pending(output: &mut impl Write) {
+    let head = PENDING.with(Cell::get);
+    if head.is_null() {
+        return;
+    }
+    let _ = writeln!(output, "Traceback (most recent call last):");
+    let mut entry = head;
+    while let Some(Data::Traceback { frame, line, next, .. }) = (!entry.is_null()).then(|| unsafe { &(*entry).data }) {
+        if let Data::Frame { code, .. } = unsafe { &(**frame).data } {
+            let code = unsafe { &**code };
+            let _ = writeln!(output, "  File \"{}\", line {line}, in {}", code.filename(), code.name());
+            if let Some(source) = source_line(code.filename(), *line) {
+                let _ = writeln!(output, "    {source}");
+            }
+        }
+        entry = *next;
+    }
+}
+
+fn source_line(filename: &str, line: i64) -> Option<String> {
+    let index = usize::try_from(line).ok()?.checked_sub(1)?;
+    let text = std::fs::read_to_string(filename).ok()?;
+    let source = text.lines().nth(index)?.trim();
+    (!source.is_empty()).then(|| source.to_owned())
+}

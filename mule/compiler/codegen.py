@@ -40,7 +40,7 @@ from .ctype import UNKNOWN, ValueType
 from .ir1util import block_exception_target, class_method_definitions, known_calls
 from .ir2tran import ir2_convert
 from .ltn import EntryContext, ltn_analyze
-from .node import FunctionalKind, Lambda, Signature, linked
+from .node import CodeInfo, FunctionalKind, Lambda, Signature, linked
 from .represent import select_native_plans, select_representations
 from .vop import BOOLEAN, CLASS, DESCRIPTOR, DOUBLE, IMMEDIATE, NULL, RANGE, SIGNED
 
@@ -60,6 +60,7 @@ declare ptr @mule_bool(i32)
 declare ptr @mule_load_global(ptr, ptr)
 declare i32 @mule_store_global(ptr, ptr, ptr)
 declare i32 @mule_link_globals(ptr, i64, ptr, ptr, i32)
+declare void @mule_traceback_here(ptr, i32, ptr, ptr)
 declare ptr @mule_namespace()
 declare i32 @mule_namespace_bound(ptr, ptr)
 declare i32 @mule_assertion_failure(ptr)
@@ -410,6 +411,7 @@ class ModuleGenerator:
         # Each runtime namespace's static cells (the runtime's ``GlobalCell``),
         # by name, linked once per namespace.
         self.global_cells: dict[str, dict[str, str]] = {}
+        self.code_descriptors: set[str] = set()
         self.linked_namespaces: set[str] = set()
         # Names whose reads omit the unbound check because the builtins
         # define them, by namespace, and the namespaces code binds names in.
@@ -602,6 +604,25 @@ class ModuleGenerator:
                 + "\n}"
             )
         return definitions
+
+    def code(self, lambda_: Lambda) -> CodeInfo:
+        return lambda_.code or CodeInfo(
+            lambda_.source_name or lambda_.name, lambda_.name, "<unknown>", 0
+        )
+
+    def code_descriptor(self, lambda_: Lambda) -> str:
+        """The constant code metadata (the runtime's ``CodeInfo``) that
+        traceback entries for ``lambda_`` refer to."""
+        symbol = _suffixed(_symbol(lambda_.name), ".code")
+        if symbol not in self.code_descriptors:
+            code = self.code(lambda_)
+            self.code_descriptors.add(symbol)
+            self.auxiliary.append(
+                f"{symbol} = private unnamed_addr constant {{ptr, ptr, ptr, i32}} "
+                f"{{ptr {self.text(code.name)}, ptr {self.text(code.qualname)}, "
+                f"ptr {self.text(code.filename)}, i32 {code.firstlineno}}}"
+            )
+        return symbol
 
     def attribute_cache(self) -> str:
         name = f"@mule.cache.{len(self.auxiliary)}"
@@ -1264,6 +1285,9 @@ class FunctionGenerator:
                 if tn.leaf is not None:
                     self.local_slots[tn.leaf.name] = tn.slot
         self.landings: dict[tuple[str, tuple[str, ...]], str] = {}
+        # Each landing's predecessor blocks and the source line failing there.
+        self.landing_sites: dict[str, dict[str, int]] = {}
+        self.vop = None
         self.entry_end = 0
         self.uses_out = False
         self.owner_slots: dict[object, str] = {}
@@ -1305,23 +1329,52 @@ class FunctionGenerator:
                 if self.exception_target is None
                 else "unwind." + self.exception_target
             )
-        # Native entries leave value ownership to their boundary adapter.
-        owned = (
-            ()
-            if self.raw
-            else tuple(value for value in self.live.values() if value != failed_value)
-        )
-        if not owned:
+        # Native entries leave value ownership to their boundary adapter and
+        # report errors through their error flag.
+        if self.raw:
             return base
+        owned = tuple(value for value in self.live.values() if value != failed_value)
         key = (base, owned)
         label = self.landings.get(key)
         if label is None:
             label = self.landings[key] = self.fresh("release")[1:]
+        # Every failure edge enters a landing, which records the traceback
+        # entry for the line that failed (see mule/runtime/traceback.rs).
+        sites = self.landing_sites.setdefault(label, {})
+        sites.setdefault(self.current_block(), self.current_line())
         return label
 
-    def emit_landings(self) -> None:
+    def current_block(self) -> str:
+        """The label of the block being emitted: each failure check starts a
+        new block, so the label is a few lines back."""
+        for line in reversed(self.lines):
+            if not line.startswith(" ") and line.endswith(":"):
+                return line[:-1]
+        raise AssertionError("no block is being emitted")
+
+    def current_line(self) -> int:
+        """The source line of the operation being emitted."""
+        node = None if self.vop is None else self.vop.node
+        source = None if node is None else node.source
+        if source is not None and source.span is not None:
+            return source.span.start.line
+        return self.module.code(self.lambda_).firstlineno
+
+    def emit_landings(self, activation: str = "%return") -> None:
+        """The landing blocks: each records the traceback entry for the line
+        that failed, with ``activation``, a stack slot of this call, telling
+        calls apart, then releases its owned temporaries."""
+        code = self.module.code_descriptor(self.lambda_)
         for (base, owned), label in self.landings.items():
             self.lines.append(label + ":")
+            sites = self.landing_sites[label]
+            incoming = ", ".join(f"[{line}, %{block}]" for block, line in sites.items())
+            line = f"%failed.line.{label}"
+            self.line(f"{line} = phi i32 {incoming}")
+            self.line(
+                f"call void @mule_traceback_here(ptr {code}, i32 {line}, "
+                f"ptr %globals, ptr {activation})"
+            )
             for value in owned:
                 self.release(value)
             self.line(f"br label %{base}")
@@ -1958,6 +2011,7 @@ class FunctionGenerator:
                 self.component.ir2_blocks[target].label if target is not None else None
             )
             for vop in block.vops:
+                self.vop = vop
                 vop.info.generator(self, vop)
                 for tn in self.expiring.get(vop, ()):
                     value = self.live.pop(tn, None)
@@ -2240,6 +2294,11 @@ def native_adapter(gen: FunctionGenerator, plan, linkage: str) -> str:
             f"call ptr {_suffixed(gen.body, '.boxed')}({parameters})"
         )
         gen.line(f"ret ptr {result}")
+    # The adapter is its own function: its failure edges land here, and the
+    # body generated next starts without them.
+    gen.emit_landings(activation="%result")
+    gen.landings.clear()
+    gen.landing_sites.clear()
     gen.lines.append("error:")
     gen.line("br label %cleanup")
     gen.lines.append("cleanup:")

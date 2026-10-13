@@ -34,11 +34,18 @@ from _slice import is_slice, positions, slice
 
 
 class BaseException:
+    # Set when a handler catches the exception; see mule/runtime/traceback.rs.
+    __traceback__ = None
+
     def __init__(self, *args):
         self.args = args
         self.__cause__ = None
         self.__context__ = None
         self.__suppress_context__ = False
+
+    def with_traceback(self, tb):
+        self.__traceback__ = tb
+        return self
 
     def __str__(self):
         if len(self.args) == 0:

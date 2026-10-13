@@ -178,6 +178,24 @@ Settled departures from SBCL's design, with their reasons:
   SBCL's catch-block and unwind-block runtime structures are not cloned; the
   C extension interface requires CPython-style error returns and the Rust
   runtime is built with `panic=abort`. Cleanup-region analysis carries over.
+- **Tracebacks** are built while an error propagates, as CPython builds
+  them while unwinding (`PyTraceBack_Here`). SBCL instead walks the stack
+  with its compiled debug information when a backtrace is requested
+  (`src/code/debug-int.lisp`); Python must expose `__traceback__` as values
+  while the exception is being handled. Every failure edge enters a landing
+  block, which receives the failing operation's source line through a `phi`
+  (nothing runs on the success path) and calls `mule_traceback_here` with the
+  function's constant code metadata, its globals, and a stack slot that tells
+  calls apart. The runtime prepends a traceback entry and frame to the
+  pending error (`mule/runtime/traceback.rs`), attaches the chain to the
+  exception when a handler catches it, continues an exception's existing
+  chain when it is raised again, and prints the chain for an uncaught error.
+  Frames exist only for exceptions in flight: they have no local variables
+  (`f_locals` is empty), `f_lineno` is the line recorded for the entry rather
+  than a live frame's current line, and `f_back` is linked when the
+  exception reaches the caller. `sys._getframe` and live frames need a
+  per-call cost and are not implemented. Native entries report errors
+  through their error flag and record no entries.
 - **Memory management** stays reference counting, which the
   [C extension interface](cpython-interface.md#ownership-allocation-and-collection)
   requires. Cycle collection remains later work; no tracing collector.

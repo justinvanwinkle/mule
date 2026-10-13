@@ -29,6 +29,7 @@ from .ir1util import (
 from .node import (
     Bind,
     CallKind,
+    CodeInfo,
     Ctran,
     FunctionalKind,
     Lambda,
@@ -88,6 +89,15 @@ def convert_function(
         policy=policy,
         namespace=converter.namespace,
     )
+    qualname = qualname or (
+        parent.qualified(definition.name) if parent is not None else None
+    )
+    lambda_.code = CodeInfo(
+        definition.name,
+        qualname or definition.name,
+        converter.filename,
+        definition.source_start().line,
+    )
     lambda_.signature = Signature(
         kinds=tuple(parameter.kind for parameter in definition.parameters),
         default_parameters=tuple(
@@ -132,8 +142,7 @@ def convert_function(
         origin=definition,
         parent=parent,
         defining_class=defining_class,
-        qualname=qualname
-        or (parent.qualified(definition.name) if parent is not None else None),
+        qualname=qualname,
         body_kind=body_kind,
         annotation_scope=annotation_scope,
     )
@@ -260,6 +269,7 @@ def convert_module(converter: Converter, tree: ast.Module) -> Lambda:
     )
     entry.kind = FunctionalKind.TOPLEVEL
     entry.entry_fun = entry
+    entry.code = CodeInfo("<module>", "<module>", converter.filename, 1)
     converter.functions.append(entry)
     function = FunctionConverter(
         converter, entry, tree.statements, is_module=True, origin=tree

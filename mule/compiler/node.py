@@ -613,6 +613,17 @@ class Signature:
         return tuple(order)
 
 
+@dataclass(frozen=True, slots=True)
+class CodeInfo:
+    """What a Python code object reports about a function: its names, the
+    file it was compiled from, and the line its definition starts on."""
+
+    name: str
+    qualname: str
+    filename: str
+    firstlineno: int
+
+
 class Lambda(Functional):
     """A function body: ``vars`` are parameters, ``locals`` every local
     including parameters and hidden temporaries."""
@@ -622,6 +633,7 @@ class Lambda(Functional):
         "bind",
         "binding",
         "calls",
+        "code",
         "component",
         "declared_free",
         "entries",
@@ -664,6 +676,7 @@ class Lambda(Functional):
         self.optional_dispatch = None
         self.policy = policy
         self.namespace = namespace
+        self.code: CodeInfo | None = None
         self.owner_class: str | None = None
         self.signature = Signature()
         self.local_annotations: dict[str, object] = {}
