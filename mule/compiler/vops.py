@@ -132,7 +132,31 @@ def constant(gen, vop):
     if result.tn.sc in (SIGNED, BOOLEAN, NULL, DOUBLE):
         gen.store(result, literal.accept(_RawLiteral()))
         return
-    gen.pointer_result(result, gen.constant(literal))
+    literal.accept(_BoxedConstant(gen, result))
+
+
+class _BoxedConstant(ast.Visitor):
+    """Materialize constants using their compiled representation."""
+
+    def __init__(self, gen, result):
+        self.gen = gen
+        self.result = result
+
+    def visit_Node(self, node):
+        self.gen.pointer_result(self.result, self.gen.constant(node))
+
+    def visit_ComplexLiteral(self, node):
+        # Float boxing is infallible. The compiled call consumes both owned
+        # components on every path, including failed frame entry.
+        components = [
+            self.gen.operation(
+                f"call ptr @mule_literal_float(double {double_constant(value)})"
+            )
+            for value in (node.value.real, node.value.imag)
+        ]
+        value = self.gen.sequence_call("complex_literal", components)
+        self.gen.publish(self.result, value)
+        self.gen.check_pointer(value)
 
 
 class _RawLiteral(ast.Visitor):

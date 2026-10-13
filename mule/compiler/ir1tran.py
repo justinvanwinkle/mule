@@ -1400,6 +1400,7 @@ class _Expressions(ast.Visitor):
 
     visit_IntegerLiteral = literal
     visit_FloatLiteral = literal
+    visit_ComplexLiteral = literal
     visit_BooleanLiteral = literal
     visit_NoneLiteral = literal
     visit_TextLiteral = literal

@@ -1,5 +1,7 @@
 """IR1 conversion builds a consistent flow graph with SBCL's invariants."""
 
+import struct
+
 import pytest
 
 from mule import ast
@@ -60,6 +62,38 @@ def component_of(lambda_: Lambda) -> Component:
     component = lambda_.component
     assert component is not None, f"{lambda_.name} has no component"
     return component
+
+
+@pytest.mark.parametrize("source", ["0j", "1j", "2.5J", "1e999j"])
+def test_complex_literal_conversion_preserves_constant_leaf(source):
+    compilation = compile_toplevel(f"value = {source}\n")
+    literals = [
+        node.leaf.value
+        for block in component_of(compilation.entry).blocks()
+        for node in block.nodes()
+        if isinstance(node, Ref)
+        and isinstance(node.leaf, Constant)
+        and isinstance(node.leaf.value, ast.ComplexLiteral)
+    ]
+    assert len(literals) == 1
+    assert literals[0].value == complex(source)
+
+
+@pytest.mark.parametrize(
+    "source,real,imag",
+    [("-0j", -0.0, -0.0), ("+0j", 0.0, 0.0), ("-2j", -0.0, -2.0)],
+)
+def test_complex_literal_sign_folding_preserves_component_bits(source, real, imag):
+    compilation = compile_source(f"def value():\n return {source}\n")
+    returned = compilation.lambdas[1].return_
+    assert returned is not None
+    ref = returned.result.uses[0]
+    assert isinstance(ref, Ref)
+    assert isinstance(ref.leaf, Constant)
+    literal = ref.leaf.value
+    assert isinstance(literal, ast.ComplexLiteral)
+    assert struct.pack(">d", literal.value.real) == struct.pack(">d", real)
+    assert struct.pack(">d", literal.value.imag) == struct.pack(">d", imag)
 
 
 @pytest.mark.parametrize("source", SOURCES)

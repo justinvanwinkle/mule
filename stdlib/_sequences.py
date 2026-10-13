@@ -5,6 +5,7 @@ execute as native Python functions and classes, in a private module namespace.
 """
 
 from _object import bool, complex, float, globals, int, isinstance, issubclass, object, type, vars
+from _object import _make_complex
 from _mule_native import text_from_codepoints as _text_from_codepoints
 from _mule_native import typed_value as _typed_value
 from _str import TextStorage, ascii, decode, format, ord, repr
@@ -1934,6 +1935,11 @@ class ellipsis:
 
 
 Ellipsis = ellipsis()
+
+
+def complex_literal(real, imag):
+    """Materialize literal components without invoking a rebound constructor."""
+    return _make_complex(complex, real, imag)
 
 
 def ellipsis_value():

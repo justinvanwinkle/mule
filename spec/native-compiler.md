@@ -566,6 +566,43 @@ the complete SBCL pipeline or implementation of the target class policy matrix.
 
 ## Current limits and verification
 
+### Complex literal materialization
+
+Complex literals retain IR1 `Constant` leaves and `Ref` nodes, following SBCL
+`src/compiler/ir1tran.lisp`, `reference-constant`. The boxed constant VOP
+materializes the real and imaginary binary64 components through the compiled
+`complex_literal` helper in `stdlib/_sequences.py`. That helper uses
+`stdlib/_object.py`'s existing complex class and `_make_complex` allocator;
+construction and field initialization remain compiled Python. User rebinding
+of `complex` does not affect the private protocol binding. Zero imaginary
+literals remain complex values, and floating-point components preserve their
+bits, including signed zero and infinity.
+
+Unary `+` and `-` on complex constant operands fold in IR1, following SBCL
+`src/compiler/ir1opt.lisp`, `constant-fold-call`. Negation reverses both
+component signs, so `-0j` has a negative-zero real component as well as a
+negative-zero imaginary component. This does not add unary dispatch for
+nonconstant complex instances.
+
+SBCL `src/compiler/generic/vm-type.lisp` defines dedicated complex numeric
+representations, and `src/compiler/x86-64/float.lisp` supplies specialized
+construction VOPs. Mule's existing complex representation instead uses a compiled
+class instance with two boxed float fields. Literal materialization must establish
+that class identity at runtime, rather than embedding an SBCL object layout or
+adding a second Rust numeric representation. It allocates a fresh instance and
+two float arguments; it adds neither raw complex TNs nor constant-pool sharing.
+`mule_literal_float` cannot return a recoverable error; the compiled helper call
+takes ownership of both arguments even when frame entry fails. The result uses
+the ordinary boxed constant's owned slot and error check.
+
+The sequence module imports `_object` and its allocator before other dependencies
+can evaluate literals. This requires `_object`'s complex class to be initialized:
+complex literals evaluated earlier within `_object`'s own initialization remain
+a bootstrap limitation. General complex arithmetic specialization and full
+complex-constructor/formatting compatibility are not established by this slice.
+
+### Other limits
+
 Compilation errors retain filename and AST source positions. Mule reports runtime
 errors with a nonzero exit status, but native functions do not
 have Python frames, source tracebacks, or full function introspection. Functions
@@ -581,8 +618,9 @@ the program breaks them. Dynamic type construction is limited to empty bases
 and static special methods; general dynamic inheritance and descriptors are not
 available.
 Unicode representation formatting and float formatting have basic implementations,
-without complete compatibility guarantees. Numeric operations producing complex
-values are explicitly unsupported.
+without complete compatibility guarantees. Complex literals and the existing
+compiled complex-class methods are available; real-number runtime operations
+such as fractional powers do not automatically promote their results to complex.
 
 The runtime does not provide the CPython-compatible C extension interface yet.
 That interface must be implemented by Mule without linking CPython. See the

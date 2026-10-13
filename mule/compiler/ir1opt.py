@@ -9,9 +9,10 @@ SBCL uses. Type-dependent rewrites attach here as transforms once the facts
 established by ``constraint.py`` and ``locall.py`` are consulted per node.
 
 Python semantics shape the effect attributes in ``fndb.py``: nearly every
-operator may run user code, so arithmetic folding is limited to integer and
-boolean literals. Immutable tuples of supported constants also fold, while
-a reference to a possibly unbound name is never deleted because reading it raises.
+operator may run user code, so binary arithmetic folding is limited to integer
+and boolean literals; unary signs also fold complex constants. Immutable tuples
+of supported constants also fold, while a reference to a possibly unbound name
+is never deleted because reading it raises.
 """
 
 from __future__ import annotations
@@ -63,6 +64,10 @@ _FOLDABLE_COMPARE = {
 _BINARY_NAMES = {f"%{operator.name.lower()}": operator for operator in _FOLDABLE_BINARY}
 _COMPARE_NAMES = {
     f"%compare_{operator.name.lower()}": operator for operator in _FOLDABLE_COMPARE
+}
+_UNARY_NAMES = {
+    f"%unary_{operator.name.lower()}": operator
+    for operator in (ast.UnaryOperator.POSITIVE, ast.UnaryOperator.NEGATIVE)
 }
 # Folded integers stay within the bounds literal syntax reaches comfortably.
 _FOLD_LIMIT_BITS = 128
@@ -121,6 +126,8 @@ class _OptimizeNode(NodeVisitor):
             return True
         if node.fun_info.name == "%build_tuple" and node.fun_info.foldable:
             return _constant_fold_tuple(node)
+        if node.fun_info.name in _UNARY_NAMES:
+            return _constant_fold_unary(node)
         if node.fun_info.name in _BINARY_NAMES or node.fun_info.name in _COMPARE_NAMES:
             return _constant_fold(node)
         return False
@@ -244,6 +251,35 @@ def _constant_fold(node: Combination) -> bool:
     folded.span = node.source.span if node.source is not None else None
     replace_combination_with_constant(node, folded)
     return True
+
+
+def _constant_fold_unary(node: Combination) -> bool:
+    if node.lvar is None:
+        return False
+    literal = constant_literal(node.args[0])
+    if literal is None:
+        return False
+    operator = _UNARY_NAMES[linked(node.fun_info, node, "function info").name]
+    folded = literal.accept(_UnaryLiteralFold(operator))
+    if folded is None:
+        return False
+    folded.span = node.source.span if node.source is not None else None
+    replace_combination_with_constant(node, folded)
+    return True
+
+
+class _UnaryLiteralFold(ast.Visitor):
+    def __init__(self, operator):
+        self.operator = operator
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_ComplexLiteral(self, node):
+        value = (
+            -node.value if self.operator is ast.UnaryOperator.NEGATIVE else +node.value
+        )
+        return ast.ComplexLiteral(value)
 
 
 class _IntegerDomain:

@@ -93,3 +93,24 @@ def test_native_numeric_errors(tmp_path, expression, exception):
     result = run_native(tmp_path, f"print({expression})\n")
     assert result.returncode != 0
     assert exception in result.stderr
+
+
+def test_complex_literals_preserve_components_and_ignore_constructor_rebinding(
+    tmp_path,
+):
+    result = run_native(
+        tmp_path,
+        "complex_type = type(1j)\n"
+        "complex = None\n"
+        "def values(complex):\n"
+        " return [0j, 1j, 2.5J, 1e3j, 1e-999j, 1e999j, -0j, -2j]\n"
+        "items = values(None)\n"
+        "print(all(type(value) is complex_type for value in items))\n"
+        "print([value.real == 0.0 for value in items])\n"
+        "print([value.imag for value in items] == [0.0, 1.0, 2.5, 1000.0, 0.0, float('inf'), -0.0, -2.0])\n"
+        "print(str(items[-2].real).startswith('-'), str(items[-2].imag).startswith('-'))\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "True\n[True, True, True, True, True, True, True, True]\nTrue\nTrue True\n"
+    )
