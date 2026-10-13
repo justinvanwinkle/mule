@@ -202,12 +202,12 @@ pub enum Data {
     None,
     Bool(bool),
     /// The class of the value, or NULL for the builtin class itself.
-    /// Subclass instances of int, float and str keep their native storage
-    /// and record their class here.
+    /// Subclass values keep their native storage, a class reference, and
+    /// an owned attribute namespace created on first assignment.
     BigInt(BigInt, Value, Value),
     Float(f64, Value, Value),
     Text(Text, Value, Value),
-    Bytes(Vec<u8>, Value),
+    Bytes(Vec<u8>, Value, Value),
     ForeignPointerVector {
         base: *const *const c_char,
         length: usize,
@@ -230,7 +230,7 @@ pub enum Data {
         /// The function's `__dict__` namespace, created on first assignment.
         attributes: Value,
     },
-    Args(Vec<Value>, Value),
+    Args(Vec<Value>, Value, Value),
     ArgumentView {
         values: *const Value,
         count: usize,
@@ -254,7 +254,7 @@ pub enum Data {
         defaults: Value,
         closure: Value,
     },
-    List(Vec<Value>, Value),
+    List(Vec<Value>, Value, Value),
     Namespace(Namespace),
     Class(Box<crate::classes::ClassLayout>),
     Instance {
@@ -422,14 +422,16 @@ pub unsafe fn release(value: Value) {
         // are released before the Rust fields are dropped.
         let object = Box::from_raw(value);
         match &object.data {
-            Data::Args(values, ty) | Data::List(values, ty) => {
+            Data::Args(values, ty, attributes) | Data::List(values, ty, attributes) => {
                 release(*ty);
+                release(*attributes);
                 for value in values {
                     release(*value);
                 }
             }
-            Data::Bytes(_, ty) => {
+            Data::Bytes(_, ty, attributes) => {
                 release(*ty);
+                release(*attributes);
             }
             Data::Namespace(_) => (),
             Data::BigInt(_, ty, attributes) | Data::Float(_, ty, attributes) | Data::Text(_, ty, attributes) => {
@@ -536,7 +538,7 @@ pub unsafe fn namespace() -> Value {
     unsafe { new_value(Data::Namespace(Namespace::default())) }
 }
 pub unsafe fn list() -> Value {
-    unsafe { new_value(Data::List(Vec::new(), std::ptr::null_mut())) }
+    unsafe { new_value(Data::List(Vec::new(), std::ptr::null_mut(), std::ptr::null_mut())) }
 }
 pub unsafe fn list_append(list: Value, value: Value) -> bool {
     unsafe {
@@ -600,19 +602,31 @@ pub unsafe fn function(globals: Value, entry: Native, name: &str) -> Value {
     }
 }
 
-/// The attribute namespace of an int, float or str subclass value, or NULL
-/// for other values. Created on demand when `create` is set.
+/// The attribute namespace of a builtin-storage subclass with an instance
+/// dictionary, or NULL otherwise. Created on demand when `create` is set.
 pub unsafe fn typed_attributes(value: Value, create: bool) -> Value {
     unsafe {
         if value.is_null() || is_fixnum(value) {
             return std::ptr::null_mut();
         }
-        let attributes = match &mut (*value).data {
-            Data::BigInt(_, _, attributes)
-            | Data::Float(_, _, attributes)
-            | Data::Text(_, _, attributes) => attributes,
+        let (class, attributes) = match &mut (*value).data {
+            Data::BigInt(_, class, attributes)
+            | Data::Float(_, class, attributes)
+            | Data::Text(_, class, attributes)
+            | Data::Bytes(_, class, attributes)
+            | Data::Args(_, class, attributes)
+            | Data::List(_, class, attributes) => (class, attributes),
             _ => return std::ptr::null_mut(),
         };
+        if class.is_null() || is_fixnum(*class) {
+            return std::ptr::null_mut();
+        }
+        let Data::Class(layout) = &(**class).data else {
+            return std::ptr::null_mut();
+        };
+        if !layout.allows_instance_dictionary() {
+            return std::ptr::null_mut();
+        }
         if attributes.is_null() && create {
             *attributes = namespace();
         }
@@ -858,7 +872,9 @@ pub unsafe fn special(value: Value, name: &str, args: &[Value]) -> Value {
     unsafe {
         let method = crate::sequences::binding(value, name);
         if !method.is_null() {
-            return call_with_receiver(method, value, args);
+            return crate::classes::call_attribute(
+                method, value, crate::classes::class_of_value(value), args,
+            );
         }
         if value.is_null() || is_fixnum(value) {
             return std::ptr::null_mut();
@@ -1017,7 +1033,7 @@ pub unsafe fn binary(op: i32, left: Value, right: Value, inplace: bool) -> Value
                 (Data::Bytes(a, ..), Data::Bytes(b, ..)) if op == 0 => {
                     let mut result = a.clone();
                     result.extend_from_slice(b);
-                    return new_value(Data::Bytes(result, std::ptr::null_mut()));
+                    return new_value(Data::Bytes(result, std::ptr::null_mut(), std::ptr::null_mut()));
                 }
                 (Data::List(a, ..), Data::List(b, ..)) if op == 0 => {
                     // Snapshot borrowed values before mutating either aliased list.
@@ -1092,7 +1108,7 @@ unsafe fn repeat_bytes(bytes: Value, count: Value) -> Value {
         for _ in 0..count {
             result.extend_from_slice(data);
         }
-        new_value(Data::Bytes(result, std::ptr::null_mut()))
+        new_value(Data::Bytes(result, std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 /// Try the in-place, forward, then reflected special method, as Python's
@@ -1598,7 +1614,7 @@ unsafe fn literal_bytes(data: *const c_char, length: isize, text: bool) -> Value
             std::slice::from_raw_parts(data.cast::<u8>(), length as usize).to_vec()
         };
         if !text {
-            return new_value(Data::Bytes(bytes, std::ptr::null_mut()));
+            return new_value(Data::Bytes(bytes, std::ptr::null_mut(), std::ptr::null_mut()));
         }
         match Text::from_wtf8(&bytes) {
             Ok(text) => new_value(Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut())),
@@ -1726,14 +1742,14 @@ unsafe fn sequence_buffer(count: isize, values: *const Value) -> Option<Vec<Valu
 pub unsafe extern "C" fn mule_sequence_list(count: isize, values: *const Value) -> Value {
     unsafe {
         sequence_buffer(count, values)
-            .map_or(std::ptr::null_mut(), |values| new_value(Data::List(values, std::ptr::null_mut())))
+            .map_or(std::ptr::null_mut(), |values| new_value(Data::List(values, std::ptr::null_mut(), std::ptr::null_mut())))
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_sequence_tuple(count: isize, values: *const Value) -> Value {
     unsafe {
         sequence_buffer(count, values)
-            .map_or(std::ptr::null_mut(), |values| new_value(Data::Args(values, std::ptr::null_mut())))
+            .map_or(std::ptr::null_mut(), |values| new_value(Data::Args(values, std::ptr::null_mut(), std::ptr::null_mut())))
     }
 }
 
@@ -1767,7 +1783,7 @@ pub unsafe extern "C" fn mule_sequence_tuple_owned(
         if count != 0 {
             result.extend_from_slice(std::slice::from_raw_parts(values, count));
         }
-        new_value(Data::Args(result, std::ptr::null_mut()))
+        new_value(Data::Args(result, std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 /// Return an owned callable from the receiver's class method table, or None
@@ -2300,7 +2316,7 @@ unsafe fn closure_cells_of(closure: Value, kinds: *const c_char) -> Value {
             }
             cells.push(cell);
         }
-        new_value(Data::Args(cells, std::ptr::null_mut()))
+        new_value(Data::Args(cells, std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 

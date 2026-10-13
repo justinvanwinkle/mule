@@ -72,7 +72,7 @@ def bind(view, signature):
         if slot == rest:
             _storage_append(values, _binding_rest(view, positional))
         elif slot == keywords:
-            extra = dict()
+            extra = {}
             _storage_append(values, extra)
         elif slot < positional and slot < count:
             _storage_append(values, _binding_pos(view, slot))

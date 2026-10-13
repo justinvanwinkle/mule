@@ -334,6 +334,22 @@ CPython linkage or Rust integer/math algorithms are introduced. Binary64
 operations currently use boxed primitive entries; unboxed float representation
 selection remains compiler work, and this increment makes no speed claim.
 
+## Implicit special-method binding
+
+Implicit special-method calls use the same descriptor binder as explicit
+attribute calls. Plain compiled functions retain the borrowed receiver call
+path; `staticmethod`, `classmethod`, and user descriptors first obtain their
+callable through compiled `__get__`, then receive only the operation's arguments.
+Instance attributes remain excluded from special-method lookup.
+
+SBCL `src/pcl/dfun.lisp`, `get-secondary-dispatch-function1`, obtains an effective
+method via `compute-effective-method` before invoking it. Python selects methods
+from a class's special-method table and additionally applies descriptor binding;
+it has no Common Lisp method combination at this boundary. Mule reuses its
+existing class-attribute binder for that concrete semantic adaptation, keeping
+descriptor algorithms in compiled Python. The plain-function path introduces
+no bound-method allocation; descriptor calls have their normal binding cost.
+
 ## Annotation contracts
 
 ### Builtin Python annotations and SBCL correspondence
@@ -469,6 +485,85 @@ It does not wrap calls in the generated executable.
 These options currently control the behavior above, not every future compiler
 optimization or Python runtime check. Ownership, argument arity, dynamic errors,
 and recursion handling retain their existing contracts.
+
+## Default subclass hook
+
+The compiled root `object` provides `__subclasshook__` as an inherited classmethod
+with one positional-only argument. It returns `NotImplemented`, allowing the
+compiled `ABCMeta.__subclasscheck__` to continue its ordinary inheritance and
+virtual-subclass registry checks. Access through a class or an instance binds
+the hook to that class; user overrides retain normal descriptor semantics.
+
+SBCL `src/pcl/std-class.lisp`, `validate-superclass`, supplies default class
+protocol methods in compiled Lisp; `src/pcl/cpl.lisp`,
+`compute-class-precedence-list` and `compute-std-cpl`, also keep inheritance rules
+in Lisp. Mule follows that language-level boundary with compiled Python and its
+existing classmethod descriptor. Python's ABC hook, `NotImplemented` result,
+and class binding have no identical SBCL protocol and are required Python
+semantics. The default adds no Rust dispatch or inheritance analysis; it declines
+to decide virtual subclass membership.
+
+Bound methods expose their receiver through the compiled `method.__self__`
+read-only property. A checked native storage primitive retains the receiver
+already owned by the bound method; it does not perform attribute lookup or
+method selection. SBCL `src/compiler/x86-64/cell.lisp`, `closure-ref`, similarly
+reads captured callable storage directly. Python's separate bound-method object
+and public receiver property are a semantic adaptation, implemented with the
+existing compiled descriptor protocol and no additional receiver storage.
+
+## Builtin-subclass attributes
+
+Tuple, list, and bytes subclass values retain their physical sequence storage,
+their actual class, and an owned attribute namespace allocated on demand. The
+same namespace-access boundary serves int, float, and str subclasses. Exact
+builtin values do not gain dictionaries or arbitrary attributes. Compiled builtin
+storage classes declare empty slots, so a user subclass's empty slots can suppress
+its dictionary, while an unslotted subclass enables its own dictionary.
+
+Attribute lookup and assignment reuse the shared class/descriptor machinery;
+the compiled root methods select descriptor setters and deleters before invoking
+hook-bypassing physical access. Explicit `object` calls bypass user hooks.
+Dictionary views use raw binding primitives so dictionary writes and deletion do
+not invoke descriptors or user attribute hooks. Attribute and dictionary access
+share one owner. Sequence destruction releases that owner's namespace exactly
+once. Constructing a bytes subclass from existing bytes copies physical bytes
+instead of changing the source's class or sharing its attributes.
+
+SBCL `src/pcl/slots.lisp`, `standard-instance-access` and `slot-value-using-class`,
+keep values in the instance's own storage and perform access through its class
+metadata. Mule retains that ownership boundary. Python additionally requires
+native sequence payloads and mutable per-instance dictionaries on subclasses;
+the added namespace pointer is a physical-storage adaptation, not a Rust class
+evaluator or an external attribute registry. Attribute rules remain compiled
+Python over physical access and the existing shared dispatch boundary. Direct
+LLVM native field access still targets guarded `NativeInstance` payloads, while
+tuple element extraction uses its physical runtime primitive; neither assumes
+the internal Rust sequence variant's layout. Nonempty slots on builtin storage
+subclasses remain outside this dictionary-storage increment.
+
+Ordinary attribute access uses compiled `get_attribute` for exception-aware
+fallback. Its physical primary lookup invokes `__getattribute__` once but never
+`__getattr__`; compiled Python catches AttributeError and calls the class fallback.
+Module namespace hooks stay in the compiled module class and remain unbound
+functions, distinct from a constructed module subclass's bound class hook. This
+keeps explicit generic object lookup free of fallback and avoids invoking a hook
+twice when it raises AttributeError.
+
+Generated startup registers a static adapter only after sequence and print
+protocol initialization succeeds. The adapter retains borrowed receiver/name
+arguments before transferring them to the compiled body in a runtime frame.
+Protocol shutdown clears the adapter before releasing its globals. Before
+language protocol registration, the native-library bootstrap interface retains
+physical lookup, matching the existing compiled argument-constructor boundary;
+there is no environment or test selector. SBCL `src/code/load.lisp`, compiled
+initialization, and `src/pcl/slots.lisp`, class-aware storage access, retain the
+corresponding load/access separation. Python's exception-aware fallback requires
+the compiled wrapper rather than matching native exception text in Rust.
+
+The generic path boxes attribute text and crosses a compiled frame; it currently
+does not preserve per-source-site attribute caches. Guarded native-payload field
+access and tuple physical-element primitives are unchanged. These checks establish
+semantics and ownership, not an attribute-lookup performance improvement.
 
 ## Fixed-layout classes
 

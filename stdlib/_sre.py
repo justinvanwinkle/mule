@@ -377,13 +377,10 @@ class Pattern:
     def _match_at(self, string, pos, endpos, anchored_end=False):
         engine = self._engine(string, endpos)
         marks = [-1] * (2 * self.groups)
-        marks[0] = pos
         for stop, found in engine.run(0, pos, marks):
             if anchored_end and stop != engine.end:
                 continue
-            found = list(found)
-            found[1] = stop
-            return Match(self, string, found, pos, engine.end)
+            return Match(self, string, [pos, stop, *found], pos, engine.end)
         return None
 
     def match(self, string, pos=0, endpos=None):

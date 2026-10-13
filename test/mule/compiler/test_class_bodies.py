@@ -122,6 +122,33 @@ def test_builtin_descriptors(tmp_path):
     assert_output(tmp_path, source, "6 8 5\n14 7\n1\n")
 
 
+def test_default_subclass_hook_is_inherited_and_bound_to_the_class(tmp_path):
+    source = (
+        "class Base:\n"
+        " pass\n"
+        "class Child(Base):\n"
+        " pass\n"
+        "print(object.__subclasshook__(int) is NotImplemented)\n"
+        "print(Child.__subclasshook__(int) is NotImplemented)\n"
+        "print(Child().__subclasshook__(int) is NotImplemented)\n"
+        "print(Child.__subclasshook__.__self__ is Child)\n"
+    )
+    assert_output(tmp_path, source, "True\nTrue\nTrue\nTrue\n")
+
+
+def test_native_storage_subclass_uses_its_attribute_hook(tmp_path):
+    source = (
+        "class Number(int):\n"
+        " def __getattribute__(self, name):\n"
+        "  if name == 'label':\n"
+        "   return 'number'\n"
+        "  return object.__getattribute__(self, name)\n"
+        "value = Number(42)\n"
+        "print(value.label, value + 1, value.__class__ is Number)\n"
+    )
+    assert_output(tmp_path, source, "number 43 True\n")
+
+
 def test_property_takes_precedence_over_a_field_of_the_same_name(tmp_path):
     source = (
         "class C:\n"

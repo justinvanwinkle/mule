@@ -48,6 +48,165 @@ def test_circular_imports_share_the_initializing_module_namespace(tmp_path):
     assert result.stdout == "7\n"
 
 
+def test_main_module_registry_shares_live_globals_before_and_after_sys(tmp_path):
+    result = execute(
+        tmp_path,
+        {"__main__.py": "raise RuntimeError('second main namespace')\n"},
+        "value = 7\n"
+        "import __main__ as early\n"
+        "import sys\n"
+        "import __main__ as late\n"
+        "print(early is late, early is sys.modules['__main__'])\n"
+        "print(early.__name__, early.value)\n"
+        "early.value = 42\n"
+        "print(value, globals()['value'])\n"
+        "globals()['value'] = 100\n"
+        "print(late.value)\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "True True\n__main__ 7\n42 42\n100\n"
+
+
+@pytest.mark.integration
+def test_dataclass_string_pseudofields_resolve_main_module_imports(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        "import dataclasses as dc\n"
+        "import typing as t\n"
+        "from typing import ClassVar as CV\n"
+        "from dataclasses import InitVar as IV, KW_ONLY as KO\n"
+        "class Probe:\n"
+        " default = 1\n"
+        "for annotation in ['CV[int]', 't.ClassVar[int]']:\n"
+        " field = dc._get_field(Probe, 'default', annotation, False)\n"
+        " print(field._field_type is dc._FIELD_CLASSVAR)\n"
+        "for annotation in ['IV[int]', 'dc.InitVar[int]']:\n"
+        " field = dc._get_field(Probe, 'default', annotation, False)\n"
+        " print(field._field_type is dc._FIELD_INITVAR)\n"
+        "for annotation in ['KO', 'dc.KW_ONLY']:\n"
+        " print(dc._is_type(annotation, Probe, dc, dc.KW_ONLY, dc._is_kw_only))\n"
+        "for annotation in ['ClassVar[int]', 'wrong.ClassVar[int]', 'CVExtra']:\n"
+        " field = dc._get_field(Probe, 'default', annotation, False)\n"
+        " print(field._field_type is dc._FIELD)\n"
+        "field = dc._get_field(Probe, 'required', 'int', False)\n"
+        "print(field.default is dc.MISSING)\n"
+        "@dc.dataclass\n"
+        "class Example:\n"
+        " shared: CV[int] = 7\n"
+        " required: int\n"
+        " init_only: IV[int] = 9\n"
+        " def __post_init__(self, init_only):\n"
+        "  self.required += init_only\n"
+        "value = Example(33)\n"
+        "print(value.required, value.shared)\n"
+        "print([field.name for field in dc.fields(Example)])\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "True\n" * 10 + "42 7\n['required']\n"
+
+
+@pytest.mark.parametrize(
+    "lazy_read",
+    [
+        "print(metadata.lazy)\n",
+        "print(getattr(metadata, 'lazy'))\n",
+        "from metadata import lazy\nprint(lazy)\n",
+    ],
+)
+def test_module_getattr_handles_lazy_attributes_without_affecting_globals(
+    tmp_path, lazy_read
+):
+    result = execute(
+        tmp_path,
+        {
+            "metadata.py": (
+                "stored = None\n"
+                "def __getattr__(name):\n"
+                " print('hook', name)\n"
+                " if name == 'lazy':\n"
+                "  globals()[name] = 42\n"
+                "  return 42\n"
+                " if name == 'broken':\n"
+                "  raise ValueError('hook failed')\n"
+                " raise AttributeError(name)\n"
+                "def read_global():\n"
+                " return absent\n"
+            ),
+            "plain.py": "stored = None\n",
+        },
+        "import metadata\n"
+        "print(metadata.stored)\n"
+        "try:\n"
+        " object.__getattribute__(metadata, 'lazy')\n"
+        "except AttributeError:\n"
+        " print('bypass')\n" + lazy_read + "from metadata import lazy\n"
+        "print(getattr(metadata, 'lazy'), lazy)\n"
+        "try:\n"
+        " metadata.absent\n"
+        "except AttributeError:\n"
+        " print('missing')\n"
+        "try:\n"
+        " hasattr(metadata, 'broken')\n"
+        "except ValueError:\n"
+        " print('hook error')\n"
+        "try:\n"
+        " metadata.read_global()\n"
+        "except NameError:\n"
+        " print('global missing')\n"
+        "import plain\n"
+        "print(hasattr(plain, 'absent'))\n"
+        "try:\n"
+        " plain.absent\n"
+        "except AttributeError as error:\n"
+        " print('absent' in str(error), '__getattr__' in str(error))\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "None\nbypass\nhook lazy\n42\n42 42\nhook absent\nmissing\n"
+        "hook broken\nhook error\nglobal missing\nFalse\nTrue False\n"
+    )
+
+
+def test_module_getattr_bound_to_none_raises_type_error(tmp_path):
+    result = execute(
+        tmp_path,
+        {"metadata.py": "__getattr__ = None\n"},
+        "import metadata\n"
+        "try:\n"
+        " metadata.absent\n"
+        "except TypeError:\n"
+        " print('hook is not callable')\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "hook is not callable\n"
+
+
+def test_module_subclass_dictionary_updates_its_existing_attribute_storage(tmp_path):
+    result = execute(
+        tmp_path,
+        {"original.py": "stored = None\n"},
+        "import original\n"
+        "class Replacement(type(original)):\n"
+        " def __getattr__(self, name):\n"
+        "  if name == 'lazy':\n"
+        "   return 42\n"
+        "  raise AttributeError(name)\n"
+        "replacement = Replacement('replacement')\n"
+        "replacement.__dict__.update(original.__dict__)\n"
+        "print(type(replacement) is Replacement)\n"
+        "print(replacement.stored is None, replacement.__dict__['stored'] is None, replacement.lazy)\n"
+        "replacement.__dict__['stored'] = 42\n"
+        "print(replacement.stored, original.stored)\n"
+        "replacement.stored = 43\n"
+        "print(replacement.__dict__['stored'])\n"
+        "del replacement.__dict__['stored']\n"
+        "print('stored' in replacement.__dict__, hasattr(replacement, 'stored'))\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "True\nTrue True 42\n42 None\n43\nFalse False\n"
+
+
 @pytest.mark.parametrize("sys_first", [False, True])
 def test_failed_import_is_removed_and_retry_preserves_the_exception(
     tmp_path, sys_first

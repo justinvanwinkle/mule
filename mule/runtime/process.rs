@@ -339,7 +339,7 @@ unsafe extern "C" fn read_c_string(_: Value, args: Value) -> Value {
                 "read_c_string requires a foreign C string pointer",
             );
         };
-        object::new_value(Data::Bytes(CStr::from_ptr(*address).to_bytes().to_vec(), std::ptr::null_mut()))
+        object::new_value(Data::Bytes(CStr::from_ptr(*address).to_bytes().to_vec(), std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 
@@ -455,7 +455,7 @@ unsafe extern "C" fn bytes_from_values(_: Value, args: Value) -> Value {
             };
             bytes.push(byte);
         }
-        object::new_value(Data::Bytes(bytes, std::ptr::null_mut()))
+        object::new_value(Data::Bytes(bytes, std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 
@@ -623,7 +623,7 @@ unsafe fn posix_text(bytes: &[u8]) -> Value {
 }
 
 unsafe fn posix_bytes(bytes: &[u8]) -> Value {
-    unsafe { object::new_value(Data::Bytes(bytes.to_vec(), std::ptr::null_mut())) }
+    unsafe { object::new_value(Data::Bytes(bytes.to_vec(), std::ptr::null_mut(), std::ptr::null_mut())) }
 }
 
 unsafe fn posix_tuple(values: &[Value]) -> Value {
@@ -1292,14 +1292,14 @@ mod tests {
                 object::release(sequence);
             }
             for code in [-1, 0x110000] {
-                let sequence = object::new_value(Data::List(vec![object::small(code)], std::ptr::null_mut()));
+                let sequence = object::new_value(Data::List(vec![object::small(code)], std::ptr::null_mut(), std::ptr::null_mut()));
                 assert!(invoke(module, "text_from_codepoints", &[sequence]).is_null());
                 assert_eq!(object::error_kind(), "ValueError");
                 object::clear_error();
                 object::release(sequence);
             }
             let sequence =
-                object::new_value(Data::List(vec![object::new_value(Data::Text(Text::empty(), std::ptr::null_mut(), std::ptr::null_mut()))], std::ptr::null_mut()));
+                object::new_value(Data::List(vec![object::new_value(Data::Text(Text::empty(), std::ptr::null_mut(), std::ptr::null_mut()))], std::ptr::null_mut(), std::ptr::null_mut()));
             assert!(invoke(module, "text_from_codepoints", &[sequence]).is_null());
             assert_eq!(object::error_kind(), "TypeError");
             object::clear_error();

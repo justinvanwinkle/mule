@@ -91,7 +91,7 @@ class ModuleCompiler:
         self.requested: dict[str, None] = {}
 
     def path_for(self, name):
-        if name in NATIVE_MODULES:
+        if name in NATIVE_MODULES or name == "__main__":
             return None
         # The system module and its private decoder precede source-local modules.
         if name in ("sys", "_mule_codecs"):
@@ -164,11 +164,14 @@ class ModuleCompiler:
         # Derived from the module's name alone, so a module's symbols do not
         # depend on which modules were compiled before it. Module names cannot
         # contain ":", so prefixes are unique.
-        prefix = f"{self.prefix}mule_import_{name}:"
+        protocol_module = self.primitives is None or name.startswith("_")
+        unit_prefix = self.prefix if protocol_module else ""
+        prefix = f"{unit_prefix}mule_import_{name}:"
         descriptor = CompiledModule(name, path, prefix + "mule_module", prefix=prefix)
         # Reserve identity before conversion so circular imports share one cache.
         self.modules[name] = descriptor
-        self.pending.append(descriptor)
+        if protocol_module:
+            self.pending.append(descriptor)
         return descriptor
 
     def compile_pending(self):

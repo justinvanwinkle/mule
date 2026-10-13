@@ -136,6 +136,28 @@ own their namespaces until executable shutdown, preserving captured globals.
 Dynamic module discovery, extension loading, and concurrent imports remain
 future work. Unsupported source remains a compilation error.
 
+The executable's `__main__` namespace enters the same module registry before
+its first source statement, after generated LLVM links its global cells. If
+`sys` is imported later, its registration receives this namespace along with
+the early imports. `import __main__`, `sys.modules['__main__']`, and functions'
+captured globals therefore refer to the same mutable namespace. String
+`ClassVar` and `InitVar` annotations resolve through that namespace's actual
+imports and aliases; there is no fallback to an unrelated typing namespace.
+Static resolution of `__main__` selects registry lookup instead of compiling
+a same-named source file that would create a second executable namespace.
+
+SBCL `src/code/load.lisp`, `aux-fop-intern`, establishes package symbol identity
+before `fop-funcall*` executes compiled initialization. Python additionally
+requires the executable namespace to be an importable module object, even when
+no source file named `__main__.py` exists. Generated LLVM publishes the existing
+namespace through the same registry primitive used for imported modules; this
+adds one startup registration, without another registry or runtime evaluator.
+Before `sys` creates its compiled dictionary, registry lookup borrows the
+matching entry from the existing early-registration storage and returns a
+retained reference. This keeps early `import __main__` on the same object;
+after registration, lookup uses the compiled dictionary as usual.
+Shutdown releases early registry references even if `sys` was never imported.
+
 Failed initialization removes the module's registry entry before releasing its
 namespace and resetting the initializer cache. This applies both before `sys`
 registers `sys.modules` and afterward. A later import executes the body again;
@@ -159,6 +181,36 @@ namespace's only remaining owners. A failed namespace retained through a circula
 import remains a gap: its compiled functions and a later retry share fixed static
 global cells. Independent simultaneous namespaces for one compiled module require
 additional compiler cell-ownership machinery; registry cleanup does not provide it.
+
+Ordinary module attribute access routes through the compiled `module` class's
+`__getattribute__`. Stored namespace values, including None, retain precedence
+under the existing namespace lookup. After ordinary lookup raises AttributeError,
+compiled Python looks up the namespace's `__getattr__` without invoking hooks and
+calls it with the requested attribute string, without binding a module receiver.
+An absent hook preserves the original AttributeError; a present non-callable hook
+or any exception from the hook propagates normally. Hooks can cache results through
+`globals()`. Global-variable reads and explicit `object.__getattribute__` bypass
+this fallback. Direct access, `getattr`, `hasattr`, and ordinary from-import
+attribute lookup use this path. Raw child-submodule presence checks and star
+imports still bypass it and remain compatibility gaps.
+
+SBCL `src/code/target-package.lisp`, `find-symbol`, implements namespace policy in
+compiled Lisp over physical lookup; `src/compiler/ir1tran.lisp`, `find-free-var`,
+keeps global-leaf resolution separate. Python's module fallback has no identical
+SBCL hook. Mule implements that semantic adaptation in compiled Python, reusing
+the runtime's existing class-hook invocation and hooks-disabled storage lookup.
+It adds a compiled call to ordinary module attribute access, not a new Rust
+namespace algorithm, evaluator, cache, or binding store.
+
+The module dictionary property chooses the live view of its existing storage:
+imported native namespaces use `_GlobalsDict`, while constructed module objects
+and their subclasses use `_InstanceDict`. Dictionary writes, attribute writes,
+and deletion therefore share the same owner; copying an imported module's
+bindings into a constructed module does not create another attribute store.
+SBCL `src/pcl/slots.lisp`, `standard-instance-access` and `slot-value-using-class`,
+similarly read and write the instance's existing slot storage. Python's module
+dictionary view is an additional compiled-language interface to that storage,
+not a new namespace allocation or class-identity scheme.
 
 Relative names are resolved against the importing module's package, following
 the same static artifact resolution as absolute imports. SBCL's FASL loader

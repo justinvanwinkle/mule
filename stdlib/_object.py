@@ -11,7 +11,9 @@ any other compiled builtin defines a class, so those classes derive from
 """
 
 from _mule_native import allocate_instance as _new_instance
+from _mule_native import bind_attribute as _bind_attribute
 from _mule_native import bound_method as _bound_method
+from _mule_native import bound_method_receiver as _bound_method_receiver
 from _mule_native import class_base as _class_base
 from _mule_native import class_bases as _class_bases
 from _mule_native import class_lookup as _class_lookup
@@ -19,16 +21,20 @@ from _mule_native import class_mro as _class_mro
 from _mule_native import class_name as _class_name
 from _mule_native import class_own_names as _class_own_names
 from _mule_native import default_repr as _default_repr
-from _mule_native import delete_attribute as _delete_attribute
 from _mule_native import generic_get_attribute as _generic_get_attribute
 from _mule_native import generic_set_attribute as _generic_set_attribute
+from _mule_native import generic_delete_attribute as _generic_delete_attribute
 from _mule_native import identity_hash as _identity_hash
 from _mule_native import instance_items as _instance_items
+from _mule_native import instance_set_binding as _instance_set_binding
+from _mule_native import instance_delete_binding as _instance_delete_binding
+from _mule_native import storage_dictionary as _storage_dictionary
 from _mule_native import is_class as _is_class
 from _mule_native import is_instance as _is_instance
 from _mule_native import is_subclass as _is_subclass
 from _mule_native import new_class as _new_class
 from _mule_native import namespace_items as _namespace_items
+from _mule_native import namespace_binding as _namespace_binding
 from _mule_native import namespace_bind as _namespace_bind
 from _mule_native import namespace_unbind as _namespace_unbind
 from _mule_native import math_float_format as _math_float_format
@@ -212,7 +218,22 @@ class object:
         return _generic_get_attribute(self, name)
 
     def __setattr__(self, name, value):
-        _generic_set_attribute(self, name, value)
+        try:
+            descriptor = _class_lookup(_type_of(self), name)
+        except AttributeError:
+            _generic_set_attribute(self, name, value)
+            return
+        descriptor_type = _type_of(descriptor)
+        try:
+            setter = _class_lookup(descriptor_type, "__set__")
+        except AttributeError:
+            try:
+                _class_lookup(descriptor_type, "__delete__")
+            except AttributeError:
+                _generic_set_attribute(self, name, value)
+                return
+            raise AttributeError(f"attribute {name!r} is read-only")
+        _bind_attribute(setter, descriptor, descriptor_type)(self, value)
 
     def __reduce_ex__(self, protocol):
         # The default recipe copyreg provides: call the class with no
@@ -223,7 +244,22 @@ class object:
         return self.__reduce_ex__(2)
 
     def __delattr__(self, name):
-        _delete_attribute(self, name)
+        try:
+            descriptor = _class_lookup(_type_of(self), name)
+        except AttributeError:
+            _generic_delete_attribute(self, name)
+            return
+        descriptor_type = _type_of(descriptor)
+        try:
+            deleter = _class_lookup(descriptor_type, "__delete__")
+        except AttributeError:
+            try:
+                _class_lookup(descriptor_type, "__set__")
+            except AttributeError:
+                _generic_delete_attribute(self, name)
+                return
+            raise AttributeError(f"attribute {name!r} cannot be deleted")
+        _bind_attribute(deleter, descriptor, descriptor_type)(self)
 
     # The runtime applies these defaults itself when a class inherits them
     # (see ClassLayout::special); they exist for explicit calls such as
@@ -265,6 +301,9 @@ class object:
 
     def __init_subclass__(cls, **keywords):
         pass
+
+    def __subclasshook__(cls, subclass, /):
+        return NotImplemented
 
 
 _register_type("object", object)
@@ -392,6 +431,7 @@ from _descriptors import classmethod, property, staticmethod, super  # noqa: E40
 from _attributes import getattr, hasattr  # noqa: E402
 
 object.__init_subclass__ = classmethod(object.__init_subclass__)
+object.__subclasshook__ = classmethod(object.__subclasshook__)
 type.__prepare__ = classmethod(type.__prepare__)
 
 
@@ -441,12 +481,10 @@ class _InstanceDict(object):
         raise KeyError(key)
 
     def __setitem__(self, key, value):
-        _generic_set_attribute(self._owner, key, value)
+        _instance_set_binding(self._owner, key, value)
 
     def __delitem__(self, key):
-        try:
-            _delete_attribute(self._owner, key)
-        except AttributeError:
+        if not _instance_delete_binding(self._owner, key):
             raise KeyError(key)
 
     def __contains__(self, key):
@@ -508,7 +546,14 @@ class _InstanceDict(object):
         return repr(self.copy())
 
 
-object.__dict__ = property(_InstanceDict)
+def _object_dictionary(owner):
+    namespace = _storage_dictionary(owner)
+    if namespace is None:
+        return _InstanceDict(owner)
+    return _GlobalsDict(namespace)
+
+
+object.__dict__ = property(_object_dictionary)
 
 
 def vars(*args):
@@ -815,6 +860,8 @@ def _make_complex(cls, real, imag):
 
 
 class int(object):
+    __slots__ = ()
+
     def __new__(cls, *args):
         if args:
             value = args[0]
@@ -924,11 +971,15 @@ class int(object):
 
 
 class bool(int):
+    __slots__ = ()
+
     def __new__(cls, *args):
         return _convert_bool(*args)
 
 
 class float(object):
+    __slots__ = ()
+
     def __new__(cls, *args):
         value = _convert_float(*args)
         if cls is not float:
@@ -1056,6 +1107,10 @@ class builtin_function_or_method(object):
 class method(object):
     """A function bound to the instance it was read from."""
 
+    @property
+    def __self__(self):
+        return _bound_method_receiver(self)
+
 
 class module(object):
     """A module namespace."""
@@ -1067,8 +1122,19 @@ class module(object):
         self.__loader__ = None
         self.__spec__ = None
 
+    def __getattribute__(self, name):
+        try:
+            return _generic_get_attribute(self, name)
+        except AttributeError:
+            hook = _namespace_binding(self, "__getattr__")
+            if hook is None:
+                raise
+            return hook[0](name)
+
     @property
     def __dict__(self):
+        if _namespace_items(self) is None:
+            return _InstanceDict(self)
         return _GlobalsDict(self)
 
 

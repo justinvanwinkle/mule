@@ -712,7 +712,7 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                         return ptr::null_mut();
                     }
                 }
-                let items = new_value(Data::Args(vec![retain(left)]));
+                let items = new_value(Data::Args(vec![retain(left)], ptr::null_mut(), ptr::null_mut()));
                 let success =
                     show(mule_compare(8, left, items)) && show(mule_compare(9, left, items));
                 release(items);

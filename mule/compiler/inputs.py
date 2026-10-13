@@ -48,7 +48,8 @@ def source_exists(path):
     if not path.is_file():
         _record(path, None)
         return False
-    _record(path, file_state(path))
+    if _recording.get() is not None:
+        _record(path, file_state(path))
     return True
 
 

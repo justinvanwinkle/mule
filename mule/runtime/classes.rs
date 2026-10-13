@@ -14,6 +14,7 @@
 //! forwards to their hooks.
 use crate::object::{self, Data, Value};
 use crate::text::Text;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -21,6 +22,26 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static NEXT_CLASS_ID: AtomicUsize = AtomicUsize::new(1);
 /// Advanced by every class attribute assignment; caches record the epoch.
 static ATTRIBUTE_EPOCH: AtomicUsize = AtomicUsize::new(1);
+
+/// Compiled primary/fallback lookup. Arguments are borrowed, the result owned.
+/// Registered after sequence and print initialization; sequence shutdown clears
+/// it before releasing the protocol globals it accesses.
+pub type AttributeLookup = unsafe extern "C" fn(Value, Value) -> Value;
+thread_local! {
+    static ATTRIBUTE_LOOKUP: Cell<Option<AttributeLookup>> = const { Cell::new(None) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_set_attribute_lookup(entry: *mut c_void) {
+    ATTRIBUTE_LOOKUP.with(|current| {
+        current.set(if entry.is_null() {
+            None
+        } else {
+            Some(unsafe { std::mem::transmute::<*mut c_void, AttributeLookup>(entry) })
+        })
+    });
+}
+
 pub struct ClassLayout {
     pub id: usize,
     pub name: String,
@@ -45,6 +66,10 @@ pub struct ClassLayout {
 }
 
 impl ClassLayout {
+    pub fn allows_instance_dictionary(&self) -> bool {
+        self.dict_allowed
+    }
+
     /// The class defining `name` (this class or a base), how many bases up
     /// it is, and the attribute's index in that class's own table.
     fn find(&self, name: &str) -> Option<(&ClassLayout, usize, usize)> {
@@ -202,7 +227,7 @@ pub unsafe fn class_of_value(value: Value) -> Value {
             Data::BigInt(_, ty, ..) | Data::Float(_, ty, ..) | Data::Text(_, ty, ..) if !ty.is_null() => {
                 return *ty;
             }
-            Data::Bytes(_, ty) | Data::List(_, ty) | Data::Args(_, ty) if !ty.is_null() => {
+            Data::Bytes(_, ty, ..) | Data::List(_, ty, ..) | Data::Args(_, ty, ..) if !ty.is_null() => {
                 return *ty;
             }
             Data::BigInt(..) => Builtin::Int,
@@ -475,6 +500,14 @@ unsafe fn layout<'a>(receiver: Value) -> Option<(&'a ClassLayout, bool, Value)> 
                 Data::Class(layout) => Some((layout, true, *ty)),
                 _ => None,
             },
+            Data::BigInt(_, ty, ..)
+            | Data::Float(_, ty, ..)
+            | Data::Text(_, ty, ..)
+            | Data::Bytes(_, ty, ..)
+            | Data::List(_, ty, ..)
+            | Data::Args(_, ty, ..) if !ty.is_null() => {
+                layout_of_class(*ty).map(|layout| (layout, true, *ty))
+            }
             _ => None,
         }
     }
@@ -603,13 +636,14 @@ unsafe fn class_attribute(
 /// An attribute in the instance's `__dict__`, owned, if it has one.
 unsafe fn dict_attribute(receiver: Value, attribute: *const c_char) -> Option<Value> {
     unsafe {
-        let Data::Instance { attributes, .. } = &(*receiver).data else {
-            return None;
+        let attributes = match &(*receiver).data {
+            Data::Instance { attributes, .. } => *attributes,
+            _ => object::typed_attributes(receiver, false),
         };
         if attributes.is_null() {
             return None;
         }
-        let value = object::lookup(*attributes, name(attribute)?);
+        let value = object::lookup(attributes, name(attribute)?);
         (!value.is_null()).then(|| object::retain(value))
     }
 }
@@ -642,12 +676,13 @@ unsafe fn resolved(
                 let value = (native.getter)(native.globals, receiver, index as i64);
                 return (!value.is_null()).then_some(value);
             }
-            let Data::Instance { fields, .. } = &(*receiver).data else {
-                unreachable!();
-            };
-            let value = fields[index];
-            if !value.is_null() {
-                return Some(object::retain(value));
+            if let Data::Instance { fields, .. } = &(*receiver).data {
+                let value = fields[index];
+                if !value.is_null() {
+                    return Some(object::retain(value));
+                }
+            } else if let Some(value) = dict_attribute(receiver, attribute) {
+                return Some(value);
             }
         }
         // An unset field, or a field name read through the class, falls back
@@ -680,7 +715,7 @@ unsafe fn text(value: &str) -> Value {
 /// Call class attribute `index` as a method of `receiver`, as Python's
 /// implicit special-method calls do: through the class, with the descriptor
 /// protocol applied to anything that is not a plain function.
-unsafe fn call_attribute(value: Value, receiver: Value, owner: Value, args: &[Value]) -> Value {
+pub(crate) unsafe fn call_attribute(value: Value, receiver: Value, owner: Value, args: &[Value]) -> Value {
     unsafe {
         if attribute_kind(value) == METHOD {
             return object::call_with_receiver(value, receiver, args);
@@ -708,25 +743,56 @@ unsafe fn call_hook(hook: Value, receiver: Value, owner: Value, attribute: *cons
     }
 }
 
-/// Resolve an attribute before arguments are evaluated. The returned callable
-/// and optional receiver each carry ownership independent of class/slot changes.
+/// Resolve an attribute before arguments are evaluated. Once registered, the
+/// compiled protocol owns semantic lookup; the raw cache remains for bootstrap.
+/// The callable and optional receiver each carry independent owned references.
 unsafe fn resolve(
     receiver: Value,
     attribute: *const c_char,
     cache: *mut AttrCache,
     bound: *mut Value,
 ) -> Value {
-    unsafe { resolve_with(receiver, attribute, cache, bound, true) }
+    unsafe {
+        *bound = std::ptr::null_mut();
+        if object::has_error() {
+            return std::ptr::null_mut();
+        }
+        let Some(lookup) = ATTRIBUTE_LOOKUP.with(Cell::get) else {
+            return resolve_with(receiver, attribute, cache, bound, true, true);
+        };
+        let Some(attribute) = name(attribute) else {
+            return std::ptr::null_mut();
+        };
+        let attribute = text(attribute);
+        let result = lookup(receiver, attribute);
+        object::release(attribute);
+        if result.is_null() {
+            if !object::has_error() {
+                object::error("SystemError", "attribute lookup returned NULL without an error");
+            }
+            return result;
+        }
+        if !object::is_fixnum(result) {
+            if let Data::BoundMethod { receiver, method } = &(*result).data {
+                *bound = object::retain(*receiver);
+                let callable = object::retain(*method);
+                object::release(result);
+                return callable;
+            }
+        }
+        result
+    }
 }
 
-/// Attribute lookup; without `hooks` it is `object.__getattribute__`, which
-/// ignores the class's `__getattribute__` and `__getattr__`.
+/// Raw attribute lookup. `hooks` enables primary getter dispatch and `fallbacks`
+/// enables the bootstrap fallback. Explicit generic lookup disables both.
 unsafe fn resolve_with(
     receiver: Value,
     attribute: *const c_char,
     cache: *mut AttrCache,
     bound: *mut Value,
     hooks: bool,
+    fallbacks: bool,
 ) -> Value {
     unsafe {
         *bound = std::ptr::null_mut();
@@ -765,7 +831,7 @@ unsafe fn resolve_with(
             } else if let Some(value) = dict_attribute(receiver, attribute) {
                 return value;
             }
-            let fallback = if hooks { hook(layout, "__getattr__") } else { std::ptr::null_mut() };
+            let fallback = if fallbacks { hook(layout, "__getattr__") } else { std::ptr::null_mut() };
             if !fallback.is_null() {
                 return call_hook(fallback, receiver, owner, attribute);
             }
@@ -774,10 +840,42 @@ unsafe fn resolve_with(
             };
             return missing(Some(layout), instance, attribute);
         }
+        if hooks {
+            let owner = class_of_value(receiver);
+            if let Some(layout) = layout_of_class(owner) {
+                let getter = hook(layout, "__getattribute__");
+                if !getter.is_null() {
+                    return call_hook(getter, receiver, owner, attribute);
+                }
+            }
+        }
         let Some(attribute) = name(attribute) else {
             return std::ptr::null_mut();
         };
         resolve_on_value(receiver, attribute, bound)
+    }
+}
+
+/// Primary lookup for the compiled protocol: invoke the getter once, without
+/// invoking `__getattr__`. The boxed name and receiver are borrowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_attribute_lookup_once(receiver: Value, attribute: Value) -> Value {
+    unsafe {
+        let Some(attribute) = c_name(attribute) else {
+            return std::ptr::null_mut();
+        };
+        let mut bound = std::ptr::null_mut();
+        let method = resolve_with(
+            receiver, attribute.as_ptr(), std::ptr::null_mut(), &mut bound, true, false,
+        );
+        if method.is_null() {
+            object::release(bound);
+            return method;
+        }
+        if bound.is_null() {
+            return method;
+        }
+        object::new_value(Data::BoundMethod { receiver: bound, method })
     }
 }
 
@@ -801,12 +899,6 @@ unsafe fn resolve_on_value(receiver: Value, attribute: &str, bound: *mut Value) 
                     }
                 }
                 _ => (),
-            }
-        }
-        if attribute == "__dict__" {
-            let attributes = object::typed_attributes(receiver, true);
-            if !attributes.is_null() {
-                return object::retain(attributes);
             }
         }
         let typed = object::typed_attributes(receiver, false);
@@ -1501,7 +1593,13 @@ unsafe fn set_attribute_with(
                 };
                 return set_class_attribute(receiver, attribute, value);
             }
-            let setter = if hooks { hook(layout, "__setattr__") } else { std::ptr::null_mut() };
+            let setter = if !hooks {
+                std::ptr::null_mut()
+            } else if matches!(&(*receiver).data, Data::Instance { .. } | Data::NativeInstance { .. }) {
+                hook(layout, "__setattr__")
+            } else {
+                layout.method("__setattr__")
+            };
             if !setter.is_null() {
                 let Some(attribute) = name(attribute) else {
                     return -1;
@@ -1532,13 +1630,21 @@ unsafe fn set_attribute_with(
                         let native = layout.native.as_ref().expect("native allocation layout");
                         return (native.setter)(native.globals, receiver, index as i64, value);
                     }
-                    let Data::Instance { fields, .. } = &mut (*receiver).data else {
-                        unreachable!();
+                    if let Data::Instance { fields, .. } = &mut (*receiver).data {
+                        let old = fields[index];
+                        fields[index] = object::retain(value);
+                        object::release(old);
+                        return 0;
+                    }
+                    let Some(attribute) = name(attribute) else {
+                        return -1;
                     };
-                    let old = fields[index];
-                    fields[index] = object::retain(value);
-                    object::release(old);
-                    return 0;
+                    let attributes = object::typed_attributes(receiver, true);
+                    if attributes.is_null() {
+                        missing(Some(layout), true, attribute);
+                        return -1;
+                    }
+                    return if object::bind(attributes, attribute, value) { 0 } else { -1 };
                 }
                 Some(DATA_DESCRIPTOR) => {
                     let position = index.unwrap();
@@ -1566,6 +1672,10 @@ unsafe fn set_attribute_with(
                                 *attributes = object::namespace();
                             }
                             return if object::bind(*attributes, attribute, value) { 0 } else { -1 };
+                        }
+                        let attributes = object::typed_attributes(receiver, true);
+                        if !attributes.is_null() {
+                            return if object::bind(attributes, attribute, value) { 0 } else { -1 };
                         }
                     }
                     missing(Some(layout), true, attribute);
@@ -1868,6 +1978,20 @@ unsafe extern "C" fn bound_method(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn bound_method_receiver(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        if !object::is_fixnum(value) {
+            if let Data::BoundMethod { receiver, .. } = &(*value).data {
+                return object::retain(*receiver);
+            }
+        }
+        fail("TypeError", "a bound method is required")
+    }
+}
+
 unsafe extern "C" fn instance_field(_: Value, args: Value) -> Value {
     unsafe {
         let Some([instance, attribute]) = operands(args) else {
@@ -1939,7 +2063,25 @@ unsafe extern "C" fn delete_attribute(_: Value, args: Value) -> Value {
         let Some(attribute) = text_argument(attribute) else {
             return std::ptr::null_mut();
         };
-        let Some((layout, instance, _)) = layout(receiver) else {
+        delete_attribute_with(receiver, &attribute, true)
+    }
+}
+
+unsafe extern "C" fn generic_delete_attribute(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver, attribute]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(attribute) = text_argument(attribute) else {
+            return std::ptr::null_mut();
+        };
+        delete_attribute_with(receiver, &attribute, false)
+    }
+}
+
+unsafe fn delete_attribute_with(receiver: Value, attribute: &str, hooks: bool) -> Value {
+    unsafe {
+        let Some((layout, instance, owner)) = layout(receiver) else {
             return missing(None, false, &attribute);
         };
         if !instance {
@@ -1949,7 +2091,7 @@ unsafe extern "C" fn delete_attribute(_: Value, args: Value) -> Value {
             if layout.native.is_some() {
                 return fail("TypeError", "cannot delete attributes of a typed native class");
             }
-            let Some(index) = layout.attribute_lookup.remove(&attribute) else {
+            let Some(index) = layout.attribute_lookup.remove(attribute) else {
                 return missing(Some(layout), false, &attribute);
             };
             let (_, old) = layout.attributes.remove(index);
@@ -1962,35 +2104,26 @@ unsafe extern "C" fn delete_attribute(_: Value, args: Value) -> Value {
             ATTRIBUTE_EPOCH.fetch_add(1, Ordering::Relaxed);
             return object::none_value();
         }
-        let descriptor = layout.method(&attribute);
-        if !descriptor.is_null() && is_data_descriptor(descriptor) {
+        if hooks {
+            let deleter = layout.method("__delattr__");
+            if !deleter.is_null() {
+                let attribute = text(attribute);
+                let result = call_attribute(deleter, receiver, owner, &[attribute]);
+                object::release(attribute);
+                return result;
+            }
+        }
+        let descriptor = layout.method(attribute);
+        if matches!(&(*receiver).data, Data::Instance { .. } | Data::NativeInstance { .. })
+            && !descriptor.is_null() && is_data_descriptor(descriptor) {
             let result = special_method(descriptor, "__delete__", &[receiver]);
             if result.is_null() && !object::has_error() {
                 return fail("AttributeError", "attribute cannot be deleted");
             }
             return result;
         }
-        if let (Some(index), Data::Instance { fields, .. }) =
-            (layout.field_lookup.get(&attribute), &mut (*receiver).data)
-        {
-            let old = fields[*index];
-            if !old.is_null() {
-                fields[*index] = std::ptr::null_mut();
-                object::release(old);
-                return object::none_value();
-            }
-        }
-        if let Data::Instance { attributes, .. } = &mut (*receiver).data {
-            if let Data::Namespace(bindings) = (!attributes.is_null())
-                .then(|| &mut (**attributes).data)
-                .unwrap_or(&mut Data::None)
-            {
-                let old = bindings.take(&attribute);
-                if !old.is_null() {
-                    object::release(old);
-                    return object::none_value();
-                }
-            }
+        if remove_instance_binding(receiver, layout, attribute) {
+            return object::none_value();
         }
         missing(Some(layout), true, &attribute)
     }
@@ -2204,6 +2337,117 @@ unsafe extern "C" fn instance_items(_: Value, args: Value) -> Value {
     }
 }
 
+/// A dictionary-owning storage subclass's namespace, owned. Reference-field
+/// instances use the existing compiled instance view and return None instead.
+unsafe extern "C" fn storage_dictionary(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some((layout, true, _)) = layout(receiver) else {
+            return missing(None, true, "__dict__");
+        };
+        if !layout.dict_allowed {
+            return missing(Some(layout), true, "__dict__");
+        }
+        if matches!(&(*receiver).data, Data::Instance { .. }) {
+            return object::none_value();
+        }
+        let attributes = object::typed_attributes(receiver, true);
+        if attributes.is_null() {
+            return missing(Some(layout), true, "__dict__");
+        }
+        object::retain(attributes)
+    }
+}
+
+/// Write dictionary storage directly, without attribute hooks or descriptors.
+unsafe extern "C" fn instance_set_binding(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver, attribute, value]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(attribute) = text_argument(attribute) else {
+            return std::ptr::null_mut();
+        };
+        let Some((layout, true, _)) = layout(receiver) else {
+            return fail("TypeError", "an instance with dictionary storage is required");
+        };
+        if !layout.dict_allowed {
+            return missing(Some(layout), true, "__dict__");
+        }
+        let attributes = if let Data::Instance { fields, attributes, .. } = &mut (*receiver).data {
+            if let Some(index) = layout.field_lookup.get(&attribute) {
+                let old = std::mem::replace(&mut fields[*index], object::retain(value));
+                object::release(old);
+                return object::none_value();
+            }
+            if attributes.is_null() {
+                *attributes = object::namespace();
+            }
+            *attributes
+        } else {
+            object::typed_attributes(receiver, true)
+        };
+        if attributes.is_null() {
+            return fail("TypeError", "an instance with dictionary storage is required");
+        }
+        if object::bind(attributes, &attribute, value) {
+            object::none_value()
+        } else {
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Unbind raw instance storage. The caller owns absence/error translation.
+unsafe fn remove_instance_binding(receiver: Value, layout: &ClassLayout, attribute: &str) -> bool {
+    unsafe {
+        let attributes = if let Data::Instance { fields, attributes, .. } = &mut (*receiver).data {
+            if let Some(index) = layout.field_lookup.get(attribute) {
+                let old = std::mem::replace(&mut fields[*index], std::ptr::null_mut());
+                if !old.is_null() {
+                    object::release(old);
+                    return true;
+                }
+            }
+            *attributes
+        } else {
+            object::typed_attributes(receiver, false)
+        };
+        if attributes.is_null() {
+            return false;
+        }
+        let Data::Namespace(bindings) = &mut (*attributes).data else {
+            unreachable!("instance attributes use namespace storage");
+        };
+        let old = bindings.take(attribute);
+        if old.is_null() {
+            return false;
+        }
+        object::release(old);
+        true
+    }
+}
+
+unsafe extern "C" fn instance_delete_binding(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver, attribute]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(attribute) = text_argument(attribute) else {
+            return std::ptr::null_mut();
+        };
+        let Some((layout, true, _)) = layout(receiver) else {
+            return fail("TypeError", "an instance with dictionary storage is required");
+        };
+        if !layout.dict_allowed {
+            return missing(Some(layout), true, "__dict__");
+        }
+        object::bool_value(remove_instance_binding(receiver, layout, &attribute))
+    }
+}
+
 /// A fresh class-body namespace in the runtime's direct representation.
 unsafe extern "C" fn new_namespace(_: Value, args: Value) -> Value {
     unsafe {
@@ -2235,6 +2479,28 @@ unsafe extern "C" fn namespace_items(_: Value, args: Value) -> Value {
             object::release(pair);
         }
         result
+    }
+}
+
+/// An own namespace binding as a one-element tuple, or None for absence or
+/// other storage. Tuple wrapping distinguishes a binding whose value is None.
+unsafe extern "C" fn namespace_binding(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver, attribute]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        if receiver.is_null() || object::is_fixnum(receiver)
+            || !matches!(&(*receiver).data, Data::Namespace(_)) {
+            return object::none_value();
+        }
+        let Some(attribute) = text_argument(attribute) else {
+            return std::ptr::null_mut();
+        };
+        let value = object::lookup(receiver, &attribute);
+        if value.is_null() {
+            return if object::has_error() { std::ptr::null_mut() } else { object::none_value() };
+        }
+        object::mule_sequence_tuple(1, [value].as_ptr())
     }
 }
 
@@ -2278,7 +2544,9 @@ unsafe extern "C" fn namespace_unbind(_: Value, args: Value) -> Value {
                 return std::ptr::null_mut();
             }
         };
-        object::bool_value(!removed.is_null())
+        let found = !removed.is_null();
+        object::release(removed);
+        object::bool_value(found)
     }
 }
 
@@ -2356,7 +2624,7 @@ unsafe extern "C" fn generic_get_attribute(_: Value, args: Value) -> Value {
             return std::ptr::null_mut();
         };
         let mut bound = std::ptr::null_mut();
-        let method = resolve_with(receiver, attribute.as_ptr(), std::ptr::null_mut(), &mut bound, false);
+        let method = resolve_with(receiver, attribute.as_ptr(), std::ptr::null_mut(), &mut bound, false, false);
         if bound.is_null() || method.is_null() {
             return method;
         }
@@ -2435,9 +2703,9 @@ unsafe extern "C" fn typed_value(_: Value, args: Value) -> Value {
             Data::BigInt(_, ty, _)
             | Data::Float(_, ty, _)
             | Data::Text(_, ty, _)
-            | Data::Bytes(_, ty)
-            | Data::List(_, ty)
-            | Data::Args(_, ty) => {
+            | Data::Bytes(_, ty, _)
+            | Data::List(_, ty, _)
+            | Data::Args(_, ty, _) => {
                 object::release(*ty);
                 *ty = object::retain(class);
                 object::retain(value)
@@ -2455,16 +2723,21 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 36] = [
+        let exports: [(&str, object::Native); 42] = [
             ("register_not_implemented", register_not_implemented),
             ("instance_items", instance_items),
+            ("storage_dictionary", storage_dictionary),
+            ("instance_set_binding", instance_set_binding),
+            ("instance_delete_binding", instance_delete_binding),
             ("new_namespace", new_namespace),
             ("namespace_items", namespace_items),
+            ("namespace_binding", namespace_binding),
             ("namespace_bind", namespace_bind),
             ("namespace_unbind", namespace_unbind),
             ("overriding_new", overriding_new_export),
             ("generic_get_attribute", generic_get_attribute),
             ("generic_set_attribute", generic_set_attribute),
+            ("generic_delete_attribute", generic_delete_attribute),
             ("register_type", register_type),
             ("traceback_field", traceback_field),
             ("type_of", type_of),
@@ -2489,6 +2762,7 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("class_lookup_or_null", class_lookup_or_null),
             ("bind_attribute", bind_attribute),
             ("bound_method", bound_method),
+            ("bound_method_receiver", bound_method_receiver),
             ("instance_field", instance_field),
             ("typed_value", typed_value),
             ("function_attributes", function_attributes),

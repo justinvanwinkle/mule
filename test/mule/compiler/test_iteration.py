@@ -5,6 +5,75 @@ import pytest
 from test.mule.compiler.test_modules import execute
 
 
+def test_range_membership_matches_python_for_bounds_steps_and_numeric_values(tmp_path):
+    cases = [
+        (0, 5, 1, 0),
+        (0, 5, 1, 4),
+        (0, 5, 1, 5),
+        (2, 10, 3, 8),
+        (2, 10, 3, 7),
+        (8, -2, -3, 2),
+        (8, -2, -3, -1),
+        (8, -2, -3, -2),
+        (5, 0, 1, 3),
+        (0, 5, -1, 3),
+        (3, 3, 1, 3),
+        (0, 3, 1, True),
+        (0, 3, 1, False),
+        (0, 3, 1, 2.0),
+        (0, 3, 1, 2.5),
+        (0, 3, 1, "2"),
+        (0, 3, 1, None),
+        (0, 10**30, 3, 10**30 - 1),
+        (0, 10**30, 3, 10**30 - 2),
+        (10**30, 0, -3, 1),
+    ]
+    result = execute(
+        tmp_path,
+        {},
+        f"for start, stop, step, value in {cases!r}:\n"
+        " values = range(start, stop, step)\n"
+        " print(value in values, value not in values)\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "".join(
+        f"{value in range(start, stop, step)} {value not in range(start, stop, step)}\n"
+        for start, stop, step, value in cases
+    )
+
+
+def test_range_membership_uses_equality_without_converting_other_objects(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        "class Equal:\n"
+        " def __init__(self):\n"
+        "  self.seen = []\n"
+        " def __eq__(self, other):\n"
+        "  self.seen.append(other)\n"
+        "  return other == 3\n"
+        "needle = Equal()\n"
+        "print(needle in range(1, 6), needle.seen)\n"
+        "class IndexOnly:\n"
+        " def __index__(self):\n"
+        "  raise ValueError('must not convert')\n"
+        "print(IndexOnly() in range(3))\n"
+        "class EqualInt(int):\n"
+        " def __eq__(self, other):\n"
+        "  return other == 2\n"
+        "print(EqualInt(99) in range(3))\n"
+        "class Broken:\n"
+        " def __eq__(self, other):\n"
+        "  raise ValueError('comparison failed')\n"
+        "try:\n"
+        " Broken() in range(3)\n"
+        "except ValueError:\n"
+        " print('comparison error')\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "True [1, 2, 3]\nFalse\nTrue\ncomparison error\n"
+
+
 def test_indexing_assignment_and_augmented_assignment_order(tmp_path):
     result = execute(
         tmp_path,

@@ -34,7 +34,7 @@ from .ir1tran import ImportInfo
 from .ir1util import class_method_definitions, known_calls
 from .main import compile_source
 from .modules import CompiledModule, ModuleCompiler, search_path
-from .node import FunctionalKind, Signature
+from .node import CallKind, FunctionalKind, LeafVisitor, NodeVisitor, Signature, linked
 
 __all__ = [
     "ToolchainError",
@@ -205,6 +205,48 @@ class _TextValue(ast.Visitor):
         return node.value
 
 
+class _ContainsOpenText(ast.Visitor):
+    """Whether a constant literal is or contains the text ``"open"``."""
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_TextLiteral(self, node):
+        return node.value == "open"
+
+    def visit_Tuple(self, node):
+        return any(element.accept(self) for element in node.elements)
+
+
+class _ReferencesOpen(NodeVisitor, LeafVisitor):
+    """Whether a node or leaf can reach the ``open`` builtin."""
+
+    def __init__(self):
+        self._text = _ContainsOpenText()
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(self)
+
+    def visit_Combination(self, node):
+        return (
+            node.kind is CallKind.KNOWN
+            and linked(node.fun_info, node, "known function").name == "%getattr"
+            and linked(node.info, node, "attribute").name == "open"
+        )
+
+    def visit_Leaf(self, leaf):
+        return False
+
+    def visit_GlobalVar(self, leaf):
+        return leaf.name == "open"
+
+    def visit_Constant(self, leaf):
+        return leaf.value.accept(self._text)
+
+
 def compile_unit(
     source: str,
     filename: str,
@@ -263,6 +305,15 @@ def compile_unit(
         )
     argument_protocol.bind_signatures(program.lambdas)
     program.layouts = native_protocol.prepare(program)
+    open_check = _ReferencesOpen()
+    if any(
+        node.accept(open_check)
+        for lambda_ in program.lambdas
+        if lambda_.component is not None
+        for block in lambda_.component.blocks()
+        for node in block.nodes()
+    ):
+        compiler.resolve("io", None, None)
     return program, [compiler.modules[name] for name in compiler.requested]
 
 
@@ -448,6 +499,15 @@ class Build:
             ),
         )
 
+    def interface(self) -> BuiltinsInterface:
+        builtins = self.builtins()
+        if builtins.output_digests is None:
+            raise RuntimeError("builtins has not produced its outputs")
+        return _interface(
+            builtins.path("interface.json"),
+            builtins.output_digests["interface.json"],
+        )
+
     def object(self, unit: Step) -> Step:
         toolchain = self.toolchain
         name = f"{unit.name} object optimize={toolchain.optimize}"
@@ -488,17 +548,25 @@ class Build:
         if path is None:
             raise ValueError(f"module {descriptor.name} has no source file")
         name = f"module {descriptor.name} {path}"
+        validated: dict[Path, ModuleCompiler] = {}
 
         def resolver():
-            interface = load_interface(builtins.path("interface.json"))
-            return import_resolver(str(path), interface, descriptor, roots, package)
+            return import_resolver(
+                str(path), self.interface(), descriptor, roots, package
+            )
+
+        def validate(entry: Path) -> bool:
+            compiler = resolver()
+            if resolves_as_recorded(compiler, entry / "imports.json"):
+                validated[entry] = compiler
+                return True
+            return False
 
         def action(inputs, directory):
-            interface = load_interface(builtins.path("interface.json"))
             program, imported = compile_unit(
                 read_source(path),
                 str(path),
-                interface,
+                self.interface(),
                 module=descriptor,
                 roots=roots,
                 package=package,
@@ -518,10 +586,13 @@ class Build:
                 settings={"step": "module", "name": descriptor.name},
                 outputs=("unit.ll", "imports.json"),
                 action=action,
-                discover=lambda step: self.discover(step, resolver(), roots, package),
-                validate=lambda entry: resolves_as_recorded(
-                    resolver(), entry / "imports.json"
+                discover=lambda step: self.discover(
+                    step,
+                    validated.pop(step.directory, None) or resolver(),
+                    roots,
+                    package,
                 ),
+                validate=validate,
             ),
         )
         return step
@@ -531,7 +602,8 @@ class Build:
         as they resolve on this build's search path."""
         if self.link is None:
             raise RuntimeError("module discovery requires the link step")
-        resolve_recorded(resolver, step.path("imports.json"))
+        if not resolver.requested:
+            resolve_recorded(resolver, step.path("imports.json"))
         for descriptor in resolver.pending:
             self.link.add_input(self.object(self.module(descriptor, roots, package)))
 
@@ -541,13 +613,11 @@ class Build:
         builtins = self.builtins()
 
         def resolver():
-            interface = load_interface(builtins.path("interface.json"))
-            return import_resolver(filename, interface, None, roots, package)
+            return import_resolver(filename, self.interface(), None, roots, package)
 
         def action(inputs, directory):
-            interface = load_interface(builtins.path("interface.json"))
             program, imported = compile_unit(
-                source, filename, interface, roots=roots, package=package
+                source, filename, self.interface(), roots=roots, package=package
             )
             (directory / "unit.ll").write_text(generate(program))
             write_imports(directory / "imports.json", imported)
@@ -657,9 +727,9 @@ def builtins_object(toolchain: Toolchain) -> Path:
 def cached_builtins_interface() -> BuiltinsInterface:
     """The builtins interface, from the cache when unchanged."""
     with Graph(1) as graph:
-        builtins = Build(graph, Toolchain()).builtins()
-        graph.run(builtins)
-    return load_interface(builtins.path("interface.json"))
+        build = Build(graph, Toolchain())
+        graph.run(build.builtins())
+        return build.interface()
 
 
 def compile_program(

@@ -326,7 +326,7 @@ unsafe extern "C" fn tuple(_: Value, args: Value) -> Value {
         if arity(args, 0, 0).is_none() {
             std::ptr::null_mut()
         } else {
-            object::new_value(Data::Args(Vec::new(), std::ptr::null_mut()))
+            object::new_value(Data::Args(Vec::new(), std::ptr::null_mut(), std::ptr::null_mut()))
         }
     }
 }
@@ -388,7 +388,7 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
         object::bind(globals, "__builtins__", namespace());
         let mut args = Object {
             references: usize::MAX,
-            data: Data::Args(Vec::new(), std::ptr::null_mut()),
+            data: Data::Args(Vec::new(), std::ptr::null_mut(), std::ptr::null_mut()),
         };
         let entry = std::mem::transmute::<*mut c_void, Native>(native);
         let result = if crate::sequences::initialize(protocols) {
@@ -422,6 +422,10 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
         };
         BUILTINS.with(|storage| object::release(storage.replace(std::ptr::null_mut())));
         object::release(MODULES.with(|slot| slot.replace(std::ptr::null_mut())));
+        let early = EARLY_MODULES.with_borrow_mut(std::mem::take);
+        for (_, module) in early {
+            object::release(module);
+        }
         crate::sequences::finish();
         crate::classes::finish_builtin_types();
         status
@@ -612,7 +616,15 @@ pub unsafe extern "C" fn mule_import_missing(name: *const std::ffi::c_char) -> V
             return std::ptr::null_mut();
         };
         let modules = MODULES.with(Cell::get);
-        if !modules.is_null() {
+        if modules.is_null() {
+            let found = EARLY_MODULES.with_borrow(|early| {
+                early.iter().find(|(entry, _)| entry == name)
+                    .map(|(_, module)| object::retain(*module))
+            });
+            if let Some(module) = found {
+                return module;
+            }
+        } else {
             let key = object::new_value(Data::Text(Text::from_rust_str(name), std::ptr::null_mut(), std::ptr::null_mut()));
             let found = object::special(modules, "get", &[key, object::none_value()]);
             object::release(key);

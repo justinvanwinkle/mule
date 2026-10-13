@@ -227,12 +227,27 @@ requires rich equality, callback-exception handling and an explicit persistent
 iterator object; those rules remain compiled Python, not Rust dispatch.
 Keyword arguments are not implemented. Range's
 initial implementation is a private compiled class behind the builtin factory;
-full builtin type identity, repr, comparison, containment specialization, and
+full builtin type identity, repr, comparison, and
 slicing are not implemented. Exception classes have real single-base ancestry,
 owned `args`, and a compiled `__str__`; full exception metadata, chaining,
 tracebacks, exception groups, and specialized exception constructors remain gaps.
 Existing Rust scalar printing/truth/containment and dynamic class allocation
 remain bootstrap debt; this slice does not extend their language algorithms.
+
+Range membership is implemented by compiled `range.__contains__`. Exact integers
+and booleans use the signed-step bounds and `(value - start) % step == 0`, without
+enumerating elements or computing a machine-sized length. Other operands use
+range iteration with identity/equality matching, preserving custom equality and
+propagating comparison errors; membership never coerces operands with `__index__`.
+General iterable containment fallback for classes without `__contains__` remains
+a separate gap in the existing Rust comparison boundary.
+
+SBCL `src/code/seq.lisp`, `%find-position`, keeps sequence search in compiled Lisp;
+`src/compiler/seqtran.lisp`, `build-sequence-iterator`, selects representation-aware
+iteration when types are known. Mule keeps range search in compiled Python.
+Python's integer range progression additionally permits direct bounds/modulo
+membership, while arbitrary equality operands require iteration. These are
+concrete Python-semantic adaptations, not new Rust search or dispatch algorithms.
 
 Variadic parameter annotations preserve their syntax metadata and apply numeric
 contracts to each rest element, not the rest tuple. Checks follow the function's

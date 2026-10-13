@@ -974,6 +974,8 @@ def _reverse_in_place(sequence):
 class _OrderedSequence:
     """Equality and lexicographic ordering shared by list and tuple."""
 
+    __slots__ = ()
+
     def __eq__(self, other):
         return sequence_equal(self, other)
 
@@ -1031,6 +1033,8 @@ def _ordered_pair(left, right):
 
 
 class ListStorage(_OrderedSequence):
+    __slots__ = ()
+
     def __getitem__(self, index):
         if is_slice(index):
             return _selected(self, index)
@@ -1166,6 +1170,8 @@ class ListStorage(_OrderedSequence):
 
 
 class TupleStorage(_OrderedSequence):
+    __slots__ = ()
+
     def __getitem__(self, index):
         if is_slice(index):
             return _storage_tuple(_selected(self, index))
@@ -1340,6 +1346,8 @@ def _bytes_endswith(values, suffix, start, end):
 
 
 class BytesStorage:
+    __slots__ = ()
+
     def __getitem__(self, index):
         if is_slice(index):
             return _bytes_from_values(_selected(self, index))
@@ -1401,6 +1409,16 @@ def sequence_equal(left, right):
             return False
         index += 1
     return _storage_length(left) == _storage_length(right)
+
+
+def get_attribute(value, name):
+    try:
+        return _attribute_lookup(value, name)
+    except AttributeError:
+        fallback = _getattr_method(value)
+        if fallback is None:
+            raise
+        return fallback(name)
 
 
 def iterate(value):
@@ -1518,6 +1536,20 @@ class range:
 
     def __iter__(self):
         return RangeIterator(self.start, self.stop, self.step)
+
+    def __contains__(self, value):
+        value_type = type(value)
+        if value_type is int or value_type is bool:
+            if self.step > 0:
+                if value < self.start or value >= self.stop:
+                    return False
+            elif value > self.start or value <= self.stop:
+                return False
+            return (value - self.start) % self.step == 0
+        for item in self:
+            if item is value or item == value:
+                return True
+        return False
 
     def __len__(self):
         if self.step > 0:
@@ -1693,6 +1725,8 @@ def max(*args, key=None, default=_missing_default):
 
 
 class list(ListStorage):
+    __slots__ = ()
+
     def __new__(cls, *args):
         value = _make_list(*args)
         if cls is not list:
@@ -1701,6 +1735,8 @@ class list(ListStorage):
 
 
 class tuple(TupleStorage):
+    __slots__ = ()
+
     def __new__(cls, *args):
         value = _make_tuple(*args)
         if cls is not tuple:
@@ -1709,6 +1745,8 @@ class tuple(TupleStorage):
 
 
 class str(TextStorage):
+    __slots__ = ()
+
     def __new__(cls, *args):
         value = _make_str(*args)
         if cls is not str:
@@ -1717,6 +1755,8 @@ class str(TextStorage):
 
 
 class bytes(BytesStorage):
+    __slots__ = ()
+
     def __new__(cls, source=b"", encoding=None, errors="strict"):
         if _text_storage(source):
             if encoding is None:
@@ -1732,7 +1772,10 @@ class bytes(BytesStorage):
             value = _bytes_from_values(values)
             return _typed_value(value, cls) if cls is not bytes else value
         if _type_name(source) == "bytes":
-            return _typed_value(source, cls) if cls is not bytes else source
+            if cls is bytes and type(source) is bytes:
+                return source
+            value = _bytes_from_values(_make_list(source))
+            return _typed_value(value, cls) if cls is not bytes else value
         value = _bytes_from_values(_make_list(source))
         return _typed_value(value, cls) if cls is not bytes else value
 

@@ -247,12 +247,14 @@ def _representation(open, items, close):
 class dict(_Table):
     """Mapping with insertion-ordered keys."""
 
-    def __init__(self, *args):
+    def __init__(self, /, *args, **kwargs):
         self._clear_table()
         if len(args) > 1:
             raise TypeError(f"dict expected at most 1 argument, got {len(args)}")
         if args:
-            self.update(args[0])
+            self._update_other(args[0])
+        if kwargs:
+            self._update_table(kwargs)
 
     @classmethod
     def fromkeys(cls, iterable, value=None):
@@ -323,11 +325,11 @@ class dict(_Table):
         if not _is_dict(other):
             raise TypeError("unsupported operand type(s) for |")
         result = self.copy()
-        result.update(other)
+        result._update_table(other)
         return result
 
     def __ior__(self, other):
-        self.update(other)
+        self._update_other(other)
         return self
 
     def get(self, key, default=None):
@@ -367,12 +369,13 @@ class dict(_Table):
     def items(self):
         return dict_items(self)
 
-    def update(self, other=_MISSING):
-        if other is _MISSING:
-            return
+    def _update_table(self, other):
+        for index in other._live():
+            self._insert(other._keys[index], other._values[index])
+
+    def _update_other(self, other):
         if _is_dict(other):
-            for index in other._live():
-                self._insert(other._keys[index], other._values[index])
+            self._update_table(other)
             return
         owner = _raised_class(other)
         keys = None
@@ -389,13 +392,20 @@ class dict(_Table):
             key, value = item
             self._insert(key, value)
 
+    def update(self, /, *args, **kwargs):
+        if len(args) > 1:
+            raise TypeError(f"update expected at most 1 argument, got {len(args)}")
+        if args:
+            self._update_other(args[0])
+        if kwargs:
+            self._update_table(kwargs)
+
     def clear(self):
         self._clear_table()
 
     def copy(self):
-        result = dict()
-        for index in self._live():
-            result._insert(self._keys[index], self._values[index])
+        result = _empty_dict()
+        result._update_table(self)
         return result
 
 
@@ -704,9 +714,15 @@ class frozenset(_SetBase):
         return _signed(accumulator)
 
 
+def _empty_dict():
+    result = _allocate_instance(dict)
+    result._clear_table()
+    return result
+
+
 def build_dict(flat):
     """A dict display's keys and values, evaluated left to right as pairs."""
-    result = dict()
+    result = _empty_dict()
     index = 0
     while index < len(flat):
         result._insert(flat[index], flat[index + 1])

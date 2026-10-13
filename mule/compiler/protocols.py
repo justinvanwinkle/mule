@@ -36,6 +36,7 @@ _LOOKUPS = {
     "_reversed_method": "__reversed__",
     "_iter_method": "__iter__",
     "_next_method": "__next__",
+    "_getattr_method": "__getattr__",
     "_index_method": "__index__",
     "_init_method": "__init__",
     "_str_method": "__str__",
@@ -85,6 +86,7 @@ _TEXT_ACCESS = {
         "_forward_call",
     )
 }
+_TEXT_ACCESS["_attribute_lookup"] = "mule_attribute_lookup_once"
 _COMPILED_CALLS = {
     "_string_protocol": "mule_format_string",
     "_decimal_protocol": "mule_format_decimal_integer",

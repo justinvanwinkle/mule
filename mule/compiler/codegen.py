@@ -180,6 +180,8 @@ declare ptr @mule_builtins_module()
 declare ptr @mule_import_missing(ptr)
 declare void @mule_module_loaded(ptr, ptr)
 declare void @mule_module_failed(ptr)
+declare void @mule_set_attribute_lookup(ptr)
+declare ptr @mule_attribute_lookup_once(ptr, ptr)
 declare ptr @mule_builtins_module_init(ptr)
 declare void @mule_register_finalizer(ptr)
 declare void @mule_run_finalizers()
@@ -797,6 +799,15 @@ class ModuleGenerator:
             info for info in self.imports.values() if self.owns_import(info)
         ]
         functions.extend(self.import_initializer(info) for info in owned_imports)
+        if program.bootstrap:
+            functions.extend(
+                self.missing_import_initializer(info, linkage="weak")
+                for info in self.imports.values()
+                if not self.owns_import(info)
+            )
+        attribute_lookup = self.attribute_lookup_adapter()
+        if attribute_lookup is not None:
+            functions.append(attribute_lookup)
         self.auxiliary.extend(
             f"{layout.schema} = internal global i8 0"
             for layout in self.layouts.values()
@@ -829,6 +840,9 @@ class ModuleGenerator:
 
     def foreign_declarations(self) -> str:
         lines = []
+        target = self.sequence_functions.get("get_attribute")
+        if target is not None and target not in self.owned:
+            lines.append("declare ptr @mule.attribute.lookup(ptr, ptr)")
         for name, (kind, lambda_) in sorted(self.foreign.items()):
             if kind == "fn":
                 lines.append(f"declare ptr {_symbol(name)}(ptr, ptr)")
@@ -839,10 +853,34 @@ class ModuleGenerator:
                 + ["ptr"] * len(lambda_.parameters)
             )
             lines.append(f"declare ptr {_symbol(name)}({parameters})")
-        for info in self.imports.values():
-            if not self.owns_import(info):
-                lines.append(f"declare ptr {self.import_symbol(info)}()")
+        if not self.program.bootstrap:
+            for info in self.imports.values():
+                if not self.owns_import(info):
+                    lines.append(f"declare ptr {self.import_symbol(info)}()")
         return "\n".join(lines)
+
+    def attribute_lookup_adapter(self) -> str | None:
+        """Borrowed native arguments enter the owned compiled lookup protocol."""
+        target = self.sequence_functions.get("get_attribute")
+        if target not in self.owned:
+            return None
+        return (
+            "define ptr @mule.attribute.lookup(ptr %receiver, ptr %name) {\n"
+            "entry:\n"
+            "  %frame = call i32 @mule_enter_frame()\n"
+            "  %bad = icmp slt i32 %frame, 0\n"
+            "  br i1 %bad, label %failed, label %entered\n"
+            "entered:\n"
+            "  %globals = call ptr @mule_protocol_globals()\n"
+            "  %owned.receiver = call ptr @mule_retain(ptr %receiver)\n"
+            "  %owned.name = call ptr @mule_retain(ptr %name)\n"
+            f"  %result = call ptr {self.bodies[target]}(ptr %globals, ptr %owned.receiver, ptr %owned.name)\n"
+            "  call void @mule_leave_frame()\n"
+            "  ret ptr %result\n"
+            "failed:\n"
+            "  ret ptr null\n"
+            "}"
+        )
 
     def unit_lifecycle(self, owned_imports) -> str:
         """The unit's initializer, which builds its tuple constants, and its
@@ -930,6 +968,7 @@ class ModuleGenerator:
             "  %print.failed = icmp eq ptr %result, null\n"
             "  br i1 %print.failed, label %failure, label %unit\n"
             "unit:\n"
+            "  call void @mule_set_attribute_lookup(ptr @mule.attribute.lookup)\n"
             f"  %own = call ptr {unit_initializer(program.unit)}()\n"
             "  %own.failed = icmp eq ptr %own, null\n"
             "  br i1 %own.failed, label %own.failure, label %ready\n"
@@ -1011,20 +1050,24 @@ class ModuleGenerator:
     def import_cache(self, info) -> str:
         return _symbol(f"mule.import.cache:{info.module_name}")
 
-    def import_initializer(self, info):
+    def missing_import_initializer(self, info, linkage: str = "internal") -> str:
         symbol = self.import_symbol(info)
+        return "\n".join(
+            [
+                f"define {linkage} ptr {symbol}() {{",
+                "entry:",
+                f"  %module = call ptr @mule_import_missing(ptr {self.text(info.module_name)})",
+                "  ret ptr %module",
+                "}",
+            ]
+        )
+
+    def import_initializer(self, info):
         if info.missing:
             # Without compiled source, a module can still be one the program
             # installed in sys.modules; otherwise this raises ModuleNotFoundError.
-            return "\n".join(
-                [
-                    f"define internal ptr {symbol}() {{",
-                    "entry:",
-                    f"  %module = call ptr @mule_import_missing(ptr {self.text(info.module_name)})",
-                    "  ret ptr %module",
-                    "}",
-                ]
-            )
+            return self.missing_import_initializer(info)
+        symbol = self.import_symbol(info)
         # Every unit importing a native module generates the same initializer;
         # the linker keeps one, so the module stays a singleton. A compiled
         # module's initializer is defined only by the unit owning its body.
@@ -1974,6 +2017,9 @@ class FunctionGenerator:
             # The runtime creates the main program's globals and enters its
             # top-level body once, before any function it defines can exist.
             self.lines += self.module.link(lambda_.namespace, "%globals", "error", 0)
+            self.line(
+                f"call void @mule_module_loaded(ptr {self.module.text('__main__')}, ptr %globals)"
+            )
         self.line(
             f"call void @mule_frame_push(ptr {self.module.code_descriptor(lambda_)}, ptr %globals)"
         )

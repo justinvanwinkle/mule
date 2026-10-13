@@ -86,6 +86,7 @@ pub unsafe fn finish() {
                 object::release(value);
             }
         });
+        crate::classes::mule_set_attribute_lookup(null_mut());
         GLOBALS.with(|value| object::release(value.replace(null_mut())));
     }
 }
@@ -609,7 +610,7 @@ pub unsafe extern "C" fn mule_rest_args(args: Value, start: i32) -> Value {
             };
             values.push(object::retain(value));
         }
-        object::new_value(Data::Args(values, std::ptr::null_mut()))
+        object::new_value(Data::Args(values, std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 

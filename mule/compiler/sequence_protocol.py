@@ -34,4 +34,12 @@ def prepare(program):
     imports.compile_pending()
     add_lambdas(program, compilation.lambdas, compilation.facts)
     add_lambdas(program, imports.lambdas, imports.facts)
-    return compilation.entry, exports(compilation.entry), imports.modules
+    return (
+        compilation.entry,
+        exports(compilation.entry),
+        {
+            name: module
+            for name, module in imports.modules.items()
+            if module.native or name.startswith("_")
+        },
+    )

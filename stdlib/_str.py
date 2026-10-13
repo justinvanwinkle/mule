@@ -962,6 +962,8 @@ def ord(value, /):
 
 
 class TextStorage:
+    __slots__ = ()
+
     def __getitem__(self, index):
         if is_slice(index):
             start, stop, step, count = positions(index, _text_length(self))

@@ -221,7 +221,7 @@ def test_binascii_and_dependent_modules(tmp_path):
     assert result.stdout == (
         "907060870 3644492868\n"
         "b'68656c6c6f' b'hello'\n"
-        "b'6865:6c6c:6f' b'hello'\n"
+        "b'68:656c:6c6f' b'hello'\n"
         "b'aGVsbG8=\\n' b'hello'\n"
         "50018 b'a b\\xff'\n"
         "b'hello'\n"
