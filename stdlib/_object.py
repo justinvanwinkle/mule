@@ -29,6 +29,8 @@ from _mule_native import is_instance as _is_instance
 from _mule_native import is_subclass as _is_subclass
 from _mule_native import new_class as _new_class
 from _mule_native import namespace_items as _namespace_items
+from _mule_native import namespace_bind as _namespace_bind
+from _mule_native import namespace_unbind as _namespace_unbind
 from _mule_native import math_float_format as _math_float_format
 from _mule_native import register_type as _register_type
 from _mule_native import traceback_field as _traceback_field
@@ -260,7 +262,7 @@ class object:
     def __ge__(self, other):
         return NotImplemented
 
-    def __init_subclass__(cls):
+    def __init_subclass__(cls, **keywords):
         pass
 
 
@@ -306,8 +308,22 @@ class type(object):
         if "__doc__" not in namespace:
             names.append("__doc__")
             values.append(None)
+        # The metaclass of the new class is the most derived metaclass of
+        # the bases, as type_new computes it; it starts as the metaclass
+        # this call was made through (type itself for a plain type() call).
+        winner = metaclass
+        for base in bases:
+            candidate = _type_of(base)
+            if _is_subclass(candidate, winner):
+                winner = candidate
+            elif not _is_subclass(winner, candidate):
+                raise TypeError(
+                    "metaclass conflict: the metaclass of a derived class "
+                    "must be a (non-strict) subclass of the metaclasses "
+                    "of all its bases"
+                )
         cls = _new_class(
-            metaclass,
+            winner,
             name,
             bases,
             tuple(names),
@@ -467,13 +483,81 @@ def vars(*args):
 def globals(namespace):
     # The compiler supplies the calling function's namespace as the one
     # argument, as it supplies the implicit arguments of super(); see
-    # _CallTarget.visit_Name in the compiler. CPython returns the module's
-    # live dict; a Mule namespace is not a dict, so this returns a dict of
-    # its current bindings.
-    result = {}
-    for name, value in _namespace_items(namespace):
-        result[name] = value
-    return result
+    # _CallTarget.visit_Name in the compiler.
+    return _GlobalsDict(namespace)
+
+
+class _GlobalsDict(object):
+    """The live dict of a module's globals: reads and writes go to the
+    module namespace itself, so it behaves as ``globals()`` must."""
+
+    def __init__(self, namespace):
+        self._namespace = namespace
+
+    def __getitem__(self, key):
+        for name, value in _namespace_items(self._namespace):
+            if name == key:
+                return value
+        raise KeyError(key)
+
+    def __setitem__(self, key, value):
+        _namespace_bind(self._namespace, key, value)
+
+    def __delitem__(self, key):
+        if not _namespace_unbind(self._namespace, key):
+            raise KeyError(key)
+
+    def __contains__(self, key):
+        for name, value in _namespace_items(self._namespace):
+            if name == key:
+                return True
+        return False
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self):
+        return len(_namespace_items(self._namespace))
+
+    def keys(self):
+        return [name for name, value in _namespace_items(self._namespace)]
+
+    def values(self):
+        return [value for name, value in _namespace_items(self._namespace)]
+
+    def items(self):
+        return list(_namespace_items(self._namespace))
+
+    def get(self, key, default=None):
+        for name, value in _namespace_items(self._namespace):
+            if name == key:
+                return value
+        return default
+
+    def pop(self, key, *default):
+        for name, value in _namespace_items(self._namespace):
+            if name == key:
+                _namespace_unbind(self._namespace, key)
+                return value
+        if default:
+            return default[0]
+        raise KeyError(key)
+
+    def update(self, other=(), **keywords):
+        items = other.items() if hasattr(other, "keys") else other
+        for key, value in items:
+            self[key] = value
+        for key in keywords:
+            self[key] = keywords[key]
+
+    def copy(self):
+        return dict(_namespace_items(self._namespace))
+
+    def __eq__(self, other):
+        return self.copy() == other
+
+    def __repr__(self):
+        return repr(self.copy())
 
 
 class mappingproxy(object):

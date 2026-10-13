@@ -2235,6 +2235,50 @@ unsafe extern "C" fn namespace_items(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn namespace_bind(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([namespace, name, value]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(name) = text_argument(name) else {
+            return std::ptr::null_mut();
+        };
+        if namespace.is_null() || object::is_fixnum(namespace)
+            || !matches!(&(*namespace).data, Data::Namespace(_)) {
+            object::error("TypeError", "a namespace is required");
+            return std::ptr::null_mut();
+        }
+        if object::bind(namespace, &name, value) {
+            object::none_value()
+        } else {
+            std::ptr::null_mut()
+        }
+    }
+}
+
+unsafe extern "C" fn namespace_unbind(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([namespace, name]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(name) = text_argument(name) else {
+            return std::ptr::null_mut();
+        };
+        if namespace.is_null() || object::is_fixnum(namespace) {
+            object::error("TypeError", "a namespace is required");
+            return std::ptr::null_mut();
+        }
+        let removed = match &mut (*namespace).data {
+            Data::Namespace(bindings) => bindings.take(&name),
+            _ => {
+                object::error("TypeError", "a namespace is required");
+                return std::ptr::null_mut();
+            }
+        };
+        object::bool_value(!removed.is_null())
+    }
+}
+
 /// A class's own or inherited `__new__`, or None when only `object`'s applies.
 pub unsafe fn overriding_new(class: Value) -> Value {
     unsafe {
@@ -2382,11 +2426,13 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 33] = [
+        let exports: [(&str, object::Native); 35] = [
             ("register_not_implemented", register_not_implemented),
             ("instance_items", instance_items),
             ("new_namespace", new_namespace),
             ("namespace_items", namespace_items),
+            ("namespace_bind", namespace_bind),
+            ("namespace_unbind", namespace_unbind),
             ("overriding_new", overriding_new_export),
             ("generic_get_attribute", generic_get_attribute),
             ("generic_set_attribute", generic_set_attribute),

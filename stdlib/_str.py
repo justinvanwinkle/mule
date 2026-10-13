@@ -1047,6 +1047,35 @@ class TextStorage:
     def __mod__(self, values):
         return _percent_decimal_protocol(self, values)
 
+    def maketrans(*args):
+        # A static method in CPython. As a plain function it still works
+        # through the class, which is how maketrans is called.
+        if len(args) == 1:
+            source = args[0]
+            table = {}
+            for key in source:
+                value = source[key]
+                if isinstance(key, str):
+                    if len(key) != 1:
+                        raise ValueError("string keys in translate table must be of length 1")
+                    key = ord(key)
+                table[key] = value if value is None or isinstance(value, int) else ord(value)
+            return table
+        if len(args) == 2 or len(args) == 3:
+            chars, values = args[0], args[1]
+            if len(chars) != len(values):
+                raise ValueError("the first two maketrans arguments must have equal length")
+            table = {}
+            index = 0
+            while index < len(chars):
+                table[ord(chars[index])] = ord(values[index])
+                index += 1
+            if len(args) == 3:
+                for char in args[2]:
+                    table[ord(char)] = None
+            return table
+        raise TypeError("maketrans expected 1 to 3 arguments")
+
     def encode(self, encoding="utf-8", errors="strict"):
         return encode(self, encoding, errors)
 
