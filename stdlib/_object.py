@@ -28,6 +28,7 @@ from _mule_native import is_instance as _is_instance
 from _mule_native import is_subclass as _is_subclass
 from _mule_native import new_class as _new_class
 from _mule_native import namespace_items as _namespace_items
+from _mule_native import math_float_format as _math_float_format
 from _mule_native import register_type as _register_type
 from _mule_native import traceback_field as _traceback_field
 from _mule_native import set_class_name as _set_class_name
@@ -38,6 +39,153 @@ from _mule_native import type_of as _type_of
 _convert_int = int
 _convert_float = float
 _convert_bool = bool
+
+
+def _format_number(value, kind, format_spec):
+    """Apply a numeric format spec. ``kind`` picks the conversion family:
+    the float kinds format like float, ``s`` like str; signs, width,
+    grouping, and alignment are applied here."""
+    fill = " "
+    align = ">"
+    sign_option = "-"
+    alternate = False
+    zero = False
+    width = 0
+    group = False
+    precision = -1
+    index = 0
+    size = len(format_spec)
+    if index + 1 < size and format_spec[index + 1] in "<>^=":
+        fill = format_spec[index]
+        align = format_spec[index + 1]
+        index += 2
+    elif index < size and format_spec[index] in "<>^=":
+        align = format_spec[index]
+        index += 1
+    if index < size and format_spec[index] in "+- ":
+        sign_option = format_spec[index]
+        index += 1
+    if index < size and format_spec[index] == "#":
+        alternate = True
+        index += 1
+    if index < size and format_spec[index] == "0":
+        zero = True
+        if fill == " ":
+            fill = "0"
+        if align == ">":
+            align = "="
+        index += 1
+    while index < size and "0" <= format_spec[index] <= "9":
+        width = width * 10 + "0123456789".index(format_spec[index])
+        index += 1
+    if index < size and format_spec[index] == ",":
+        group = True
+        index += 1
+    if index < size and format_spec[index] == ".":
+        index += 1
+        precision = 0
+        while index < size and "0" <= format_spec[index] <= "9":
+            precision = precision * 10 + "0123456789".index(format_spec[index])
+            index += 1
+    conversion = format_spec[index] if index < size else ""
+    prefix = ""
+    if kind == "float":
+        codes = {"f": 0, "e": 1, "E": 2, "g": 3, "G": 4, "%": 5, "": 6}
+        if conversion not in codes:
+            raise ValueError("unknown format code '" + conversion + "' for object of type 'float'")
+        if precision < 0:
+            precision = 6
+        body = _math_float_format(value, codes[conversion], precision, alternate)
+    elif conversion in "eEfFgG%" and kind == "int":
+        codes = {"f": 0, "e": 1, "E": 2, "g": 3, "G": 4, "%": 5}
+        if precision < 0:
+            precision = 6
+        body = _math_float_format(_convert_float(value), codes[conversion], precision, alternate)
+        kind = "float"
+    elif kind == "int":
+        number = value
+        negative = number < 0
+        if negative:
+            number = -number
+        if conversion in ("d", ""):
+            body = str(number)
+        elif conversion in "xXo":
+            digits = "0123456789abcdef" if conversion != "X" else "0123456789ABCDEF"
+            base = 8 if conversion == "o" else 16
+            body = ""
+            if number == 0:
+                body = "0"
+            while number > 0:
+                body = digits[number % base] + body
+                number = number // base
+            if alternate:
+                prefix = "0o" if conversion == "o" else ("0x" if conversion == "x" else "0X")
+        elif conversion == "b":
+            body = ""
+            if number == 0:
+                body = "0"
+            while number > 0:
+                body = "01"[number % 2] + body
+                number = number // 2
+            if alternate:
+                prefix = "0b"
+        elif conversion == "c":
+            if negative or value > 0x10FFFF:
+                raise OverflowError("%c arg not in range(0x110000)")
+            return chr(value)
+        else:
+            raise ValueError("unknown format code '" + conversion + "' for object of type 'int'")
+        if precision >= 0:
+            while len(body) < precision:
+                body = "0" + body
+        body = ("-" if negative else "") + body
+    else:
+        if conversion not in ("s", ""):
+            raise ValueError("unknown format code '" + conversion + "' for object of type 'str'")
+        body = value
+        if precision >= 0:
+            body = body[:precision]
+    if group and kind != "str":
+        if "e" in body or "E" in body:
+            body = body
+        else:
+            dot = body.find(".")
+            head = body if dot < 0 else body[:dot]
+            tail = "" if dot < 0 else body[dot:]
+            digits = head[1:] if head[:1] in "+- " else head
+            signpart = head[: len(head) - len(digits)]
+            grouped = ""
+            count = 0
+            at = len(digits)
+            while at > 0:
+                start = at - 3 if at >= 3 else 0
+                piece = digits[start:at]
+                grouped = piece + ("," + grouped if grouped else "")
+                at = start
+                count += 1
+            body = signpart + grouped + tail
+    sign = ""
+    digits = body
+    if digits[:1] == "-":
+        sign = "-"
+        digits = digits[1:]
+    elif kind != "str" and sign_option == "+":
+        sign = "+"
+    elif kind != "str" and sign_option == " ":
+        sign = " "
+    text = sign + prefix + digits
+    if len(text) < width:
+        pad = width - len(text)
+        if align == "<":
+            text = text + fill * pad
+        elif align == "^":
+            before = pad // 2
+            text = fill * before + text + fill * (pad - before)
+        elif align == "=":
+            text = sign + prefix + fill * pad + digits
+        else:
+            text = fill * pad + text
+    return text
 
 
 class object:
@@ -60,6 +208,14 @@ class object:
 
     def __setattr__(self, name, value):
         _generic_set_attribute(self, name, value)
+
+    def __reduce_ex__(self, protocol):
+        # The default recipe copyreg provides: call the class with no
+        # arguments to reconstruct. Pickle state is not supported yet.
+        return (_type_of(self), ())
+
+    def __reduce__(self):
+        return self.__reduce_ex__(2)
 
     def __delattr__(self, name):
         _delete_attribute(self, name)
@@ -372,6 +528,11 @@ class int(object):
             raise TypeError("int subclasses are not supported yet")
         return _convert_int(*args)
 
+    def __format__(self, format_spec=""):
+        if format_spec == "":
+            return str(self)
+        return _format_number(self, "int", format_spec)
+
     def __index__(self):
         return self
 
@@ -443,6 +604,11 @@ class float(object):
         if cls is not float:
             raise TypeError("float subclasses are not supported yet")
         return _convert_float(*args)
+
+    def __format__(self, format_spec=""):
+        if format_spec == "":
+            return str(self)
+        return _format_number(self, "float", format_spec)
 
     def __float__(self):
         return self

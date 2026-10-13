@@ -52,9 +52,10 @@ def decimal_integer(value):
 
 
 def percent_decimal(pattern, values):
-    if not _storage_compatible(values, ()):
+    mapping = values if _type_name(values) == "dict" else None
+    if mapping is None and not _storage_compatible(values, ()):
         values = (values,)
-    count = _storage_length(values)
+    count = 0 if mapping is not None else _storage_length(values)
     consumed = 0
     index = 0
     size = _text_length(pattern)
@@ -67,18 +68,190 @@ def percent_decimal(pattern, values):
             continue
         if index == size:
             raise ValueError("incomplete format")
-        conversion = _text_character(pattern, index)
-        index += 1
-        if conversion == "%":
+        if _text_character(pattern, index) == "%":
+            index += 1
             result += "%"
             continue
-        if conversion != "d":
+        key = None
+        if _text_character(pattern, index) == "(":
+            close = index + 1
+            while close < size and _text_character(pattern, close) != ")":
+                close += 1
+            if close == size:
+                raise ValueError("incomplete format key")
+            key = ""
+            while index + 1 < close:
+                index += 1
+                key += _text_character(pattern, index)
+            index = close + 1
+            if index == size:
+                raise ValueError("incomplete format")
+        left = False
+        zero = False
+        plus = False
+        space = False
+        alternate = False
+        while index < size and _text_character(pattern, index) in "-0+ #":
+            flag = _text_character(pattern, index)
+            if flag == "-":
+                left = True
+            elif flag == "0":
+                zero = True
+            elif flag == "+":
+                plus = True
+            elif flag == " ":
+                space = True
+            else:
+                alternate = True
+            index += 1
+        width = 0
+        if index < size and _text_character(pattern, index) == "*":
+            index += 1
+            if mapping is not None or consumed == count:
+                raise TypeError("not enough arguments for format string")
+            width = _integer_storage(_storage_read(values, consumed))
+            consumed += 1
+            if width < 0:
+                left = True
+                width = -width
+        else:
+            while index < size and "0" <= _text_character(pattern, index) <= "9":
+                width = width * 10 + "0123456789".index(_text_character(pattern, index))
+                index += 1
+        precision = -1
+        if index < size and _text_character(pattern, index) == ".":
+            index += 1
+            precision = 0
+            if index < size and _text_character(pattern, index) == "*":
+                index += 1
+                if mapping is not None or consumed == count:
+                    raise TypeError("not enough arguments for format string")
+                precision = _integer_storage(_storage_read(values, consumed))
+                consumed += 1
+                if precision < 0:
+                    precision = -1
+            else:
+                while index < size and "0" <= _text_character(pattern, index) <= "9":
+                    precision = precision * 10 + "0123456789".index(_text_character(pattern, index))
+                    index += 1
+        if index == size:
+            raise ValueError("incomplete format")
+        conversion = _text_character(pattern, index)
+        index += 1
+        if conversion not in "diouxXeEfFgGcrsa":
             raise ValueError("unsupported percent format conversion")
-        if consumed == count:
-            raise TypeError("not enough arguments for format string")
-        result += _decimal_protocol(_storage_read(values, consumed))
-        consumed += 1
-    if consumed != count:
+        if key is not None:
+            if mapping is None:
+                raise TypeError("format requires a mapping")
+            value = mapping[key]
+        else:
+            if mapping is not None:
+                raise TypeError("not enough arguments for format string")
+            if consumed == count:
+                raise TypeError("not enough arguments for format string")
+            value = _storage_read(values, consumed)
+            consumed += 1
+        sign = ""
+        prefix = ""
+        body = ""
+        numeric = False
+        zero_pad = zero
+        if conversion in "sra":
+            if conversion == "s":
+                body = _string_protocol(value)
+            elif conversion == "r":
+                body = _representation_protocol(value)
+            else:
+                body = ascii_representation(value)
+            zero_pad = False
+            if precision >= 0:
+                body = body[:precision]
+        elif conversion == "c":
+            if _text_storage(value):
+                if _text_length(value) != 1:
+                    raise TypeError("%c requires int or char")
+                body = value
+            else:
+                body = chr(_integer_storage(value))
+            zero_pad = False
+        elif conversion in "diu":
+            numeric = True
+            number = _integer_storage(value)
+            if number < 0:
+                sign = "-"
+                number = -number
+            elif plus:
+                sign = "+"
+            elif space:
+                sign = " "
+            body = _decimal_protocol(number)
+            if precision == 0 and number == 0:
+                body = ""
+            while _text_length(body) < precision:
+                body = "0" + body
+            if precision >= 0:
+                zero_pad = False
+        elif conversion in "xXo":
+            numeric = True
+            number = _integer_storage(value)
+            if number < 0:
+                sign = "-"
+                number = -number
+            elif plus:
+                sign = "+"
+            elif space:
+                sign = " "
+            digits = "0123456789abcdef" if conversion != "X" else "0123456789ABCDEF"
+            base = 8 if conversion == "o" else 16
+            if number == 0:
+                body = "0"
+            while number > 0:
+                body = _text_character(digits, number % base) + body
+                number = number // base
+            if precision == 0 and body == "0":
+                body = ""
+            while _text_length(body) < precision:
+                body = "0" + body
+            if precision >= 0:
+                zero_pad = False
+            if alternate:
+                if conversion == "o":
+                    prefix = "0o"
+                elif conversion == "x":
+                    prefix = "0x"
+                else:
+                    prefix = "0X"
+        else:
+            numeric = True
+            specification = ""
+            if alternate:
+                specification += "#"
+            if precision >= 0:
+                specification += "." + _decimal_protocol(precision)
+            specification += conversion
+            body = _format_value_protocol(float(value), specification)
+            if body.startswith("-"):
+                sign = "-"
+                body = body[1:]
+            elif plus:
+                sign = "+"
+            elif space:
+                sign = " "
+        text = sign + prefix + body
+        if _text_length(text) < width:
+            pad = width - _text_length(text)
+            padding = ""
+            while pad > 0:
+                padding += "0" if zero_pad and numeric and not left else " "
+                pad -= 1
+            if left:
+                text = text + padding
+            elif zero_pad and numeric:
+                text = sign + prefix + padding + body
+            else:
+                text = padding + text
+        result += text
+    if mapping is None and consumed != count:
         raise TypeError("not all arguments converted during string formatting")
     return result
 

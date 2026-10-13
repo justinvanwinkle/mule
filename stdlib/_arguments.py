@@ -37,7 +37,11 @@ def construct(cls, view):
             return instance
     initializer = _init_method(instance)
     if initializer is None:
-        if _binding_count(view) != 0 or _binding_keyword_count(view) != 0:
+        # With an overriding __new__, CPython skips the inherited
+        # object.__init__ and its argument check (type_call).
+        if creator is None and (
+            _binding_count(view) != 0 or _binding_keyword_count(view) != 0
+        ):
             raise TypeError("instance constructor takes no arguments")
     else:
         result = _forward_call(initializer, view)

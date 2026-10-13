@@ -116,13 +116,7 @@ pub unsafe extern "C" fn mule_install_storage(
 /// Borrow the method of a builtin value's class, found through its bases.
 pub unsafe fn binding(value: Value, name: &str) -> Value {
     unsafe {
-        if value.is_null() || object::is_fixnum(value) {
-            return null_mut();
-        }
-        if !matches!(
-            &(*value).data,
-            Data::List(_) | Data::Args(_) | Data::Text(_) | Data::Bytes(_)
-        ) {
+        if value.is_null() {
             return null_mut();
         }
         let class = crate::classes::class_of_value(value);

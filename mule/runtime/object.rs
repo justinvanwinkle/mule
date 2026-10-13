@@ -1746,8 +1746,18 @@ pub unsafe extern "C" fn mule_lookup_special(value: Value, name: *const c_char) 
         let Some(name) = name_from_c(name) else {
             return std::ptr::null_mut();
         };
-        if value.is_null() || is_fixnum(value) {
+        if value.is_null() {
             return none_value();
+        }
+        if is_fixnum(value) {
+            let method = crate::sequences::binding(value, name);
+            if method.is_null() {
+                return none_value();
+            }
+            return new_value(Data::BoundMethod {
+                receiver: retain(value),
+                method: retain(method),
+            });
         }
         let method = match &(*value).data {
             Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => match &(**ty).data {
