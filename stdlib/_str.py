@@ -11,6 +11,7 @@ from _mule_native import bytes_from_values as _bytes_from_values
 from _mule_native import byte_length as _byte_length
 from _mule_native import read_byte as _read_byte
 from _mule_native import text_from_codepoints as _from_codepoints
+from _descriptors import staticmethod
 from _slice import is_slice, positions
 from _unicode_data import (
     fold_full,
@@ -1047,19 +1048,18 @@ class TextStorage:
     def __mod__(self, values):
         return _percent_decimal_protocol(self, values)
 
+    @staticmethod
     def maketrans(*args):
-        # A static method in CPython. As a plain function it still works
-        # through the class, which is how maketrans is called.
         if len(args) == 1:
             source = args[0]
             table = {}
             for key in source:
                 value = source[key]
-                if isinstance(key, str):
+                if _text_storage(key):
                     if len(key) != 1:
                         raise ValueError("string keys in translate table must be of length 1")
                     key = ord(key)
-                table[key] = value if value is None or isinstance(value, int) else ord(value)
+                table[key] = ord(value) if _text_storage(value) else value
             return table
         if len(args) == 2 or len(args) == 3:
             chars, values = args[0], args[1]
