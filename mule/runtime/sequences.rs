@@ -40,17 +40,21 @@ pub fn pending_kind() -> String {
 }
 pub fn pending_message() -> String {
     PENDING.with(|pending| unsafe {
-        let value = pending.replace(null_mut());
+        let value = pending.get();
+        // Formatting runs compiled user code, which may catch errors or fail.
+        // Preserve the complete original error, including its traceback.
+        let saved = object::save_error();
         let result = object::special(value, "__str__", &[]);
         let message = if result.is_null() {
-            String::new()
+            "<exception str() failed>".into()
         } else {
             object::formatted_value(result, false, false).map_or_else(String::new, |bytes| {
                 String::from_utf8_lossy(&bytes).into_owned()
             })
         };
         object::release(result);
-        pending.set(value);
+        object::clear_error();
+        object::restore_error(saved);
         message
     })
 }

@@ -391,7 +391,8 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
             data: Data::Args(Vec::new(), std::ptr::null_mut(), std::ptr::null_mut()),
         };
         let entry = std::mem::transmute::<*mut c_void, Native>(native);
-        let result = if crate::sequences::initialize(protocols) {
+        let initialized = crate::sequences::initialize(protocols);
+        let result = if initialized {
             entry(globals, &mut args)
         } else {
             std::ptr::null_mut()
@@ -408,6 +409,15 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
             object::error("OSError", "output failed");
         }
         let status = if object::has_error() {
+            if initialized && !protocols.is_null() {
+                // Uncaught primitive errors use the same exception instances
+                // and traceback transfer as errors entering a Python handler.
+                let exception = crate::sequences::mule_catch_exception();
+                if !exception.is_null() {
+                    crate::sequences::mule_raise_pending(exception);
+                    object::release(exception);
+                }
+            }
             if object::error_kind() == "SystemExit" {
                 exit_status()
             } else {

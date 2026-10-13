@@ -140,6 +140,76 @@ def test_tracebacks_record_each_frame_an_exception_passes_through(tmp_path):
     assert result.stderr.startswith("Traceback (most recent call last):\n")
 
 
+@pytest.mark.parametrize(
+    ("operation", "kind"),
+    [("return missing", "NameError"), ("raise ValueError('oops')", "ValueError")],
+)
+@pytest.mark.parametrize("cleanup", [False, True])
+def test_uncaught_exceptions_keep_tracebacks_after_formatting(
+    tmp_path, operation, kind, cleanup
+):
+    body = (
+        f"    try:\n        {operation}\n    finally:\n        pass\n"
+        if cleanup
+        else f"    {operation}\n"
+    )
+    result = run_native(
+        tmp_path,
+        "def inner():\n" + body + "def outer():\n    inner()\nouter()\n",
+    )
+    assert result.returncode == 1
+    assert result.stderr.startswith("Traceback (most recent call last):\n")
+    assert "in <module>\n" in result.stderr
+    assert "in outer\n" in result.stderr
+    assert "in inner\n" in result.stderr
+    assert result.stderr.splitlines()[-1].startswith(f"{kind}: ")
+
+
+def test_uncaught_builtin_error_uses_ordinary_exception_formatting(tmp_path):
+    result = run_native(
+        tmp_path,
+        "def describe(self):\n    return 'formatted: ' + self.args[0]\n"
+        "NameError.__str__ = describe\n"
+        "def inner():\n    return missing\ninner()\n",
+    )
+    assert result.returncode == 1
+    assert result.stderr.startswith("Traceback (most recent call last):\n")
+    assert "in inner\n" in result.stderr
+    assert result.stderr.splitlines()[-1] == (
+        "NameError: formatted: name 'missing' is not defined"
+    )
+
+
+@pytest.mark.parametrize(
+    ("formatter", "message"),
+    [
+        (
+            (
+                "        try:\n            return missing\n"
+                "        except NameError:\n            return 'original'\n"
+            ),
+            "original",
+        ),
+        ("        raise ValueError('formatting failed')\n", "<exception str() failed>"),
+    ],
+)
+def test_uncaught_exception_formatter_cannot_replace_original_error(
+    tmp_path, formatter, message
+):
+    result = run_native(
+        tmp_path,
+        "class Problem(Exception):\n    def __str__(self):\n"
+        + formatter
+        + "def inner():\n    raise Problem()\ninner()\n",
+    )
+    assert result.returncode == 1
+    assert result.stderr.startswith("Traceback (most recent call last):\n")
+    assert "in <module>\n" in result.stderr
+    assert "in inner\n" in result.stderr
+    assert "in __str__\n" not in result.stderr
+    assert result.stderr.splitlines()[-1] == f"Problem: {message}"
+
+
 def test_function_type_descriptors_allow_types_import(tmp_path):
     # types.py reads FunctionType.__globals__ through the class to name the
     # descriptor type; instances must still see their real globals.

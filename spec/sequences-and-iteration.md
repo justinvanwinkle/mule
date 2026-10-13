@@ -30,8 +30,24 @@ Exceptional analysis must join states before and after a potentially failing
 operation; successful stores must not be assumed on an exceptional edge.
 Caught exceptions and handler state are ordinary owned Mule class instances.
 Native primitive errors are converted to those instances at the catch boundary.
+The uncaught-error boundary uses the same conversion after protocol initialization;
+builtin errors are reported through their compiled exception classes and `__str__`.
 Exception hierarchy matching runs in compiled Python using actual class ancestry;
 there are no name-based exception matching rules or type-tag attributes.
+
+SBCL `src/code/debug.lisp`, `debugger-disabled-hook`, isolates condition printing
+and backtrace printing so a failure in user printing code cannot prevent reporting
+the original condition's stack. Mule saves the entire pending exception and
+traceback while calling compiled `__str__`, discards any formatting error, then
+restores the original state. A failing formatter reports `<exception str() failed>`.
+Python requires an owned `__traceback__` chain that survives handler transfers and
+reraises, whereas SBCL walks the native stack through its debug information.
+Mule's generated error landings record source frames during propagation and
+transfer the chain to the ordinary exception instance at a handler or uncaught
+boundary. This avoids walking already-unwound LLVM activations; frame allocation
+is restricted to failing paths. Tracebacks expose code, line, globals and caller
+links; captured local-variable mappings and complete traceback compatibility
+remain gaps.
 
 The first slice implements ordinary `try`/`except`/`else`, raising and reraising,
 list/tuple/text indexing, list replacement/append, sequence iteration, range,
@@ -229,8 +245,8 @@ Keyword arguments are not implemented. Range's
 initial implementation is a private compiled class behind the builtin factory;
 full builtin type identity, repr, comparison, and
 slicing are not implemented. Exception classes have real single-base ancestry,
-owned `args`, and a compiled `__str__`; full exception metadata, chaining,
-tracebacks, exception groups, and specialized exception constructors remain gaps.
+owned `args`, a compiled `__str__`, and source tracebacks; full exception metadata,
+chaining display, exception groups, and specialized exception constructors remain gaps.
 Existing Rust scalar printing/truth/containment and dynamic class allocation
 remain bootstrap debt; this slice does not extend their language algorithms.
 

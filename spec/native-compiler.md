@@ -801,8 +801,11 @@ complex-constructor/formatting compatibility are not established by this slice.
 ### Other limits
 
 Compilation errors retain filename and AST source positions. Mule reports runtime
-errors with a nonzero exit status, but native functions do not
-have Python frames, source tracebacks, or full function introspection. Functions
+errors with a nonzero exit status and source tracebacks, including builtin errors
+and errors propagated through handlers and `finally`. Exception formatting
+preserves the original traceback even if compiled `__str__` raises or handles
+another error. Traceback frames expose code, line, globals and caller links;
+local-variable mappings and full function introspection remain incomplete. Functions
 use Mule's native callable ABI. The runtime has a recursion depth guard. Module
 startup does not yet implement Python's command-line argument or import/module
 metadata protocols. Error cleanup preserves the first pending runtime error.
