@@ -239,7 +239,7 @@ unsafe extern "C" fn text_from_codepoints(_: Value, args: Value) -> Value {
             codes.push(code as u32);
         }
         match Text::from_codepoints(codes.into_iter()) {
-            Ok(text) => object::new_value(Data::Text(text, std::ptr::null_mut())),
+            Ok(text) => object::new_value(Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut())),
             Err(_) => fail("MemoryError", "text storage allocation failed"),
         }
     }
@@ -440,7 +440,7 @@ fn posix_error(error: &std::io::Error) -> Value {
 }
 
 unsafe fn posix_text(bytes: &[u8]) -> Value {
-    unsafe { object::new_value(Data::Text(Text::from_wtf8(bytes).unwrap_or_else(|_| Text::from_rust_str("")), std::ptr::null_mut())) }
+    unsafe { object::new_value(Data::Text(Text::from_wtf8(bytes).unwrap_or_else(|_| Text::from_rust_str("")), std::ptr::null_mut(), std::ptr::null_mut())) }
 }
 
 unsafe fn posix_bytes(bytes: &[u8]) -> Value {
@@ -1060,7 +1060,7 @@ mod tests {
             assert!(invoke(module, "read_pointer", &[vector, object::small(0)]).is_null());
             assert_eq!(object::error_kind(), "IndexError");
             object::clear_error();
-            let text = object::new_value(Data::Text(Text::empty(), std::ptr::null_mut()));
+            let text = object::new_value(Data::Text(Text::empty(), std::ptr::null_mut(), std::ptr::null_mut()));
             for (name, args) in [
                 ("byte_length", vec![text]),
                 ("read_byte", vec![text, object::small(0)]),
@@ -1120,7 +1120,7 @@ mod tests {
                 object::release(sequence);
             }
             let sequence =
-                object::new_value(Data::List(vec![object::new_value(Data::Text(Text::empty(), std::ptr::null_mut()))]));
+                object::new_value(Data::List(vec![object::new_value(Data::Text(Text::empty(), std::ptr::null_mut(), std::ptr::null_mut()))]));
             assert!(invoke(module, "text_from_codepoints", &[sequence]).is_null());
             assert_eq!(object::error_kind(), "TypeError");
             object::clear_error();

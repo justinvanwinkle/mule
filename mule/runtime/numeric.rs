@@ -70,7 +70,7 @@ pub unsafe fn integer_import(integer: &BigInt) -> Value {
             return object::small(value);
         }
     }
-    unsafe { object::new_value(Data::BigInt(integer.clone(), std::ptr::null_mut())) }
+    unsafe { object::new_value(Data::BigInt(integer.clone(), std::ptr::null_mut(), std::ptr::null_mut())) }
 }
 
 /// Lengths and slot indices normally fit the immediate representation.
@@ -90,7 +90,7 @@ pub unsafe fn integer_import_owned(integer: BigInt) -> Value {
             return object::small(value);
         }
     }
-    unsafe { object::new_value(Data::BigInt(integer, std::ptr::null_mut())) }
+    unsafe { object::new_value(Data::BigInt(integer, std::ptr::null_mut(), std::ptr::null_mut())) }
 }
 
 #[unsafe(no_mangle)]
@@ -119,7 +119,7 @@ pub unsafe extern "C" fn mule_literal_int(decimal: *const c_char) -> Value {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_literal_float(value: f64) -> Value {
-    unsafe { object::new_value(Data::Float(value, std::ptr::null_mut())) }
+    unsafe { object::new_value(Data::Float(value, std::ptr::null_mut(), std::ptr::null_mut())) }
 }
 
 pub unsafe fn number_double(value: Value) -> Option<f64> {

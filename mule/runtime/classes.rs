@@ -199,7 +199,7 @@ pub unsafe fn class_of_value(value: Value) -> Value {
             }
             Data::None => Builtin::NoneType,
             Data::Bool(_) => Builtin::Bool,
-            Data::BigInt(_, ty) | Data::Float(_, ty) | Data::Text(_, ty) if !ty.is_null() => {
+            Data::BigInt(_, ty, ..) | Data::Float(_, ty, ..) | Data::Text(_, ty, ..) if !ty.is_null() => {
                 return *ty;
             }
             Data::BigInt(..) => Builtin::Int,
@@ -671,7 +671,7 @@ unsafe fn missing(layout: Option<&ClassLayout>, instance: bool, attribute: &str)
 }
 
 unsafe fn text(value: &str) -> Value {
-    unsafe { object::new_value(Data::Text(Text::from_rust_str(value), std::ptr::null_mut())) }
+    unsafe { object::new_value(Data::Text(Text::from_rust_str(value), std::ptr::null_mut(), std::ptr::null_mut())) }
 }
 
 /// Call class attribute `index` as a method of `receiver`, as Python's
@@ -798,6 +798,28 @@ unsafe fn resolve_on_value(receiver: Value, attribute: &str, bound: *mut Value) 
                     }
                 }
                 _ => (),
+            }
+        }
+        if attribute == "__dict__" {
+            let attributes = object::typed_attributes(receiver, true);
+            if !attributes.is_null() {
+                return object::retain(attributes);
+            }
+        }
+        let typed = object::typed_attributes(receiver, false);
+        if !typed.is_null() {
+            let class = class_of_value(receiver);
+            if let Some(layout) = layout_of_class(class) {
+                if let Some((owner, _, index)) = layout.find(attribute) {
+                    let value = owner.attributes[index].1;
+                    if attribute_kind(value) == DATA_DESCRIPTOR {
+                        return bind_class_attribute(value, receiver, class);
+                    }
+                }
+            }
+            let value = object::lookup(typed, attribute);
+            if !value.is_null() {
+                return object::retain(value);
             }
         }
         let class = class_of_value(receiver);
@@ -1566,6 +1588,13 @@ unsafe fn set_attribute_with(
                 -1
             };
         }
+        let typed = object::typed_attributes(receiver, true);
+        if !typed.is_null() {
+            if object::bind(typed, attribute, value) {
+                return 0;
+            }
+            return -1;
+        }
         missing(None, false, attribute);
         -1
     }
@@ -2315,12 +2344,45 @@ unsafe extern "C" fn is_instance_export(_: Value, args: Value) -> Value {
 
 /// Bind the class storage operations compiled descriptor and `super` code
 /// uses into the compiler-owned native namespace.
+/// `typed_value(value, class)`: record `class` on a freshly created int,
+/// float or str storage value, making it an instance of that subclass.
+unsafe extern "C" fn typed_value(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value, class]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        if object::is_fixnum(value) {
+            let boxed = object::new_value(Data::BigInt(
+                crate::gmp::BigInt::from_i64(object::fixnum(value)),
+                object::retain(class),
+                std::ptr::null_mut(),
+            ));
+            return boxed;
+        }
+        if value.is_null() {
+            object::error("TypeError", "typed value storage is required");
+            return std::ptr::null_mut();
+        }
+        match &mut (*value).data {
+            Data::BigInt(_, ty, _) | Data::Float(_, ty, _) | Data::Text(_, ty, _) => {
+                object::release(*ty);
+                *ty = object::retain(class);
+                object::retain(value)
+            }
+            _ => {
+                object::error("TypeError", "typed value storage is required");
+                std::ptr::null_mut()
+            }
+        }
+    }
+}
+
 pub unsafe fn populate(globals: Value) -> bool {
     unsafe {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 32] = [
+        let exports: [(&str, object::Native); 33] = [
             ("register_not_implemented", register_not_implemented),
             ("instance_items", instance_items),
             ("new_namespace", new_namespace),
@@ -2353,6 +2415,7 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("bind_attribute", bind_attribute),
             ("bound_method", bound_method),
             ("instance_field", instance_field),
+            ("typed_value", typed_value),
         ];
         for (name, entry) in exports {
             let function = object::function(std::ptr::null_mut(), entry, name);

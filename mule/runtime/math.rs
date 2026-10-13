@@ -53,7 +53,7 @@ unsafe extern "C" fn to_double(_: Value, args: Value) -> Value {
         let Some(value) = numeric::number_double(value) else {
             return null_mut();
         };
-        object::new_value(Data::Float(value, std::ptr::null_mut()))
+        object::new_value(Data::Float(value, std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 
@@ -131,7 +131,7 @@ unsafe extern "C" fn sqrt(_: Value, args: Value) -> Value {
             object::error("TypeError", "binary64 storage is required");
             return null_mut();
         };
-        object::new_value(Data::Float(value.sqrt(), std::ptr::null_mut()))
+        object::new_value(Data::Float(value.sqrt(), std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 
@@ -165,7 +165,7 @@ unsafe extern "C" fn float_format(_: Value, args: Value) -> Value {
         };
         if number.is_nan() {
             let text = if kind == 2 || kind == 4 { "NAN" } else { "nan" };
-            return object::new_value(Data::Text(crate::text::Text::from_rust_str(text), std::ptr::null_mut()));
+            return object::new_value(Data::Text(crate::text::Text::from_rust_str(text), std::ptr::null_mut(), std::ptr::null_mut()));
         }
         if number.is_infinite() {
             let text = match (number < 0.0, kind == 2 || kind == 4) {
@@ -174,7 +174,7 @@ unsafe extern "C" fn float_format(_: Value, args: Value) -> Value {
                 (false, true) => "INF",
                 (false, false) => "inf",
             };
-            return object::new_value(Data::Text(crate::text::Text::from_rust_str(text), std::ptr::null_mut()));
+            return object::new_value(Data::Text(crate::text::Text::from_rust_str(text), std::ptr::null_mut(), std::ptr::null_mut()));
         }
         let precision = usize::try_from(precision).unwrap_or(6);
         let exponent_form = |number: f64, precision: usize, upper: bool| -> String {
@@ -246,7 +246,7 @@ unsafe extern "C" fn float_format(_: Value, args: Value) -> Value {
         } else {
             body
         };
-        object::new_value(Data::Text(crate::text::Text::from_rust_str(&signed), std::ptr::null_mut()))
+        object::new_value(Data::Text(crate::text::Text::from_rust_str(&signed), std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 
@@ -277,7 +277,7 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("math_inf", f64::INFINITY),
             ("math_nan", f64::from_bits(0x7ff8_0000_0000_0000)),
         ] {
-            let value = object::new_value(Data::Float(value, std::ptr::null_mut()));
+            let value = object::new_value(Data::Float(value, std::ptr::null_mut(), std::ptr::null_mut()));
             let bound = object::bind(globals, name, value);
             object::release(value);
             if !bound {

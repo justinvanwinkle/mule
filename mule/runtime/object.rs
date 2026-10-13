@@ -204,9 +204,9 @@ pub enum Data {
     /// The class of the value, or NULL for the builtin class itself.
     /// Subclass instances of int, float and str keep their native storage
     /// and record their class here.
-    BigInt(BigInt, Value),
-    Float(f64, Value),
-    Text(Text, Value),
+    BigInt(BigInt, Value, Value),
+    Float(f64, Value, Value),
+    Text(Text, Value, Value),
     Bytes(Vec<u8>),
     ForeignPointerVector {
         base: *const *const c_char,
@@ -428,8 +428,9 @@ pub unsafe fn release(value: Value) {
                 }
             }
             Data::Namespace(_) => (),
-            Data::BigInt(_, ty) | Data::Float(_, ty) | Data::Text(_, ty) => {
+            Data::BigInt(_, ty, attributes) | Data::Float(_, ty, attributes) | Data::Text(_, ty, attributes) => {
                 release(*ty);
+                release(*attributes);
             }
             Data::Traceback { frame, next, .. } => {
                 release(*frame);
@@ -595,6 +596,26 @@ pub unsafe fn function(globals: Value, entry: Native, name: &str) -> Value {
     }
 }
 
+/// The attribute namespace of an int, float or str subclass value, or NULL
+/// for other values. Created on demand when `create` is set.
+pub unsafe fn typed_attributes(value: Value, create: bool) -> Value {
+    unsafe {
+        if value.is_null() || is_fixnum(value) {
+            return std::ptr::null_mut();
+        }
+        let attributes = match &mut (*value).data {
+            Data::BigInt(_, _, attributes)
+            | Data::Float(_, _, attributes)
+            | Data::Text(_, _, attributes) => attributes,
+            _ => return std::ptr::null_mut(),
+        };
+        if attributes.is_null() && create {
+            *attributes = namespace();
+        }
+        *attributes
+    }
+}
+
 /// A function's own attribute: an assigned one, or one of the attributes
 /// every function has. NULL without an error when it has neither.
 pub unsafe fn function_attribute(function: Value, attribute: &str) -> Value {
@@ -617,7 +638,7 @@ pub unsafe fn function_attribute(function: Value, attribute: &str) -> Value {
             }
         }
         match attribute {
-            "__name__" | "__qualname__" => new_value(Data::Text(crate::text::Text::from_rust_str(name), std::ptr::null_mut())),
+            "__name__" | "__qualname__" => new_value(Data::Text(crate::text::Text::from_rust_str(name), std::ptr::null_mut(), std::ptr::null_mut())),
             "__module__" => {
                 if globals.is_null() {
                     return retain(none_value());
@@ -1575,7 +1596,7 @@ unsafe fn literal_bytes(data: *const c_char, length: isize, text: bool) -> Value
             return new_value(Data::Bytes(bytes));
         }
         match Text::from_wtf8(&bytes) {
-            Ok(text) => new_value(Data::Text(text, std::ptr::null_mut())),
+            Ok(text) => new_value(Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut())),
             Err(message) => {
                 error("UnicodeDecodeError", message);
                 std::ptr::null_mut()
@@ -1820,7 +1841,7 @@ pub unsafe extern "C" fn mule_text_result(value: Value) -> Value {
 pub unsafe fn text_value(bytes: &[u8]) -> Value {
     unsafe {
         match Text::from_wtf8(bytes) {
-            Ok(text) => new_value(Data::Text(text, std::ptr::null_mut())),
+            Ok(text) => new_value(Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut())),
             Err(message) => {
                 error("UnicodeDecodeError", message);
                 std::ptr::null_mut()
@@ -1872,7 +1893,7 @@ pub unsafe extern "C" fn mule_text_character(value: Value, index: Value) -> Valu
             return std::ptr::null_mut();
         };
         match text.slice(index, index + 1) {
-            Ok(character) => new_value(Data::Text(character, std::ptr::null_mut())),
+            Ok(character) => new_value(Data::Text(character, std::ptr::null_mut(), std::ptr::null_mut())),
             Err(_) => {
                 error("MemoryError", "text storage allocation failed");
                 std::ptr::null_mut()
@@ -1931,7 +1952,7 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
 pub unsafe extern "C" fn mule_type_name(value: Value) -> Value {
     unsafe {
         type_name(value).map_or(std::ptr::null_mut(), |name| {
-            new_value(Data::Text(Text::from_rust_str(&name), std::ptr::null_mut()))
+            new_value(Data::Text(Text::from_rust_str(&name), std::ptr::null_mut(), std::ptr::null_mut()))
         })
     }
 }
@@ -1954,7 +1975,7 @@ pub unsafe extern "C" fn mule_text_slice(value: Value, start: Value, stop: Value
             return std::ptr::null_mut();
         };
         match text.slice(start, stop) {
-            Ok(slice) => new_value(Data::Text(slice, std::ptr::null_mut())),
+            Ok(slice) => new_value(Data::Text(slice, std::ptr::null_mut(), std::ptr::null_mut())),
             Err(_) => {
                 error("MemoryError", "text storage allocation failed");
                 std::ptr::null_mut()
@@ -1991,7 +2012,7 @@ pub unsafe extern "C" fn mule_text_join(pieces: Value) -> Value {
             texts.push(text);
         }
         match Text::join(texts.into_iter()) {
-            Ok(text) => new_value(Data::Text(text, std::ptr::null_mut())),
+            Ok(text) => new_value(Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut())),
             Err(_) => {
                 error("MemoryError", "text storage allocation failed");
                 std::ptr::null_mut()

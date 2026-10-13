@@ -88,7 +88,7 @@ unsafe extern "C" fn abs(_: Value, args: Value) -> Value {
         }
         if !value.is_null() && !object::is_fixnum(value) {
             if let Data::Float(value, ..) = &(*value).data {
-                return object::new_value(Data::Float(value.abs(), std::ptr::null_mut()));
+                return object::new_value(Data::Float(value.abs(), std::ptr::null_mut(), std::ptr::null_mut()));
             }
         }
         fail("TypeError", "bad operand type for abs")
@@ -163,7 +163,7 @@ unsafe extern "C" fn input(_: Value, args: Value) -> Value {
                         line.pop();
                     }
                 }
-                object::new_value(Data::Text(Text::from_rust_str(&line), std::ptr::null_mut()))
+                object::new_value(Data::Text(Text::from_rust_str(&line), std::ptr::null_mut(), std::ptr::null_mut()))
             }
             Err(error) => fail(
                 if error.kind() == io::ErrorKind::InvalidData {
@@ -290,7 +290,7 @@ unsafe extern "C" fn float(_: Value, args: Value) -> Value {
             return std::ptr::null_mut();
         };
         if count == 0 {
-            return object::new_value(Data::Float(0.0, std::ptr::null_mut()));
+            return object::new_value(Data::Float(0.0, std::ptr::null_mut(), std::ptr::null_mut()));
         }
         let value = arg(args, 0);
         if let Some(bytes) = text(value) {
@@ -313,11 +313,11 @@ unsafe extern "C" fn float(_: Value, args: Value) -> Value {
                 .and_then(|value| value.parse::<f64>().ok());
             return value.map_or_else(
                 || fail("ValueError", "could not convert string to float"),
-                |value| object::new_value(Data::Float(value, std::ptr::null_mut())),
+                |value| object::new_value(Data::Float(value, std::ptr::null_mut(), std::ptr::null_mut())),
             );
         }
         numeric::number_double(value).map_or(std::ptr::null_mut(), |value| {
-            object::new_value(Data::Float(value, std::ptr::null_mut()))
+            object::new_value(Data::Float(value, std::ptr::null_mut(), std::ptr::null_mut()))
         })
     }
 }
@@ -382,7 +382,7 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
             };
         }
         let globals = object::namespace();
-        let name = object::new_value(Data::Text(Text::from_rust_str("__main__"), std::ptr::null_mut()));
+        let name = object::new_value(Data::Text(Text::from_rust_str("__main__"), std::ptr::null_mut(), std::ptr::null_mut()));
         object::bind(globals, "__name__", name);
         object::release(name);
         object::bind(globals, "__builtins__", namespace());
@@ -527,7 +527,7 @@ thread_local! {
 
 unsafe fn record_module(modules: Value, name: &str, module: Value) -> bool {
     unsafe {
-        let key = object::new_value(Data::Text(Text::from_rust_str(name), std::ptr::null_mut()));
+        let key = object::new_value(Data::Text(Text::from_rust_str(name), std::ptr::null_mut(), std::ptr::null_mut()));
         let result = object::special(modules, "__setitem__", &[key, module]);
         object::release(key);
         object::release(result);
@@ -584,7 +584,7 @@ pub unsafe extern "C" fn mule_import_missing(name: *const std::ffi::c_char) -> V
         };
         let modules = MODULES.with(Cell::get);
         if !modules.is_null() {
-            let key = object::new_value(Data::Text(Text::from_rust_str(name), std::ptr::null_mut()));
+            let key = object::new_value(Data::Text(Text::from_rust_str(name), std::ptr::null_mut(), std::ptr::null_mut()));
             let found = object::special(modules, "get", &[key, object::none_value()]);
             object::release(key);
             if found.is_null() {

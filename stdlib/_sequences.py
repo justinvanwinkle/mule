@@ -6,6 +6,7 @@ execute as native Python functions and classes, in a private module namespace.
 
 from _object import bool, float, globals, int, isinstance, issubclass, object, type, vars
 from _mule_native import text_from_codepoints as _text_from_codepoints
+from _mule_native import typed_value as _typed_value
 from _str import TextStorage, ascii, decode, format, ord, repr
 from _str import str as _make_str
 from _attributes import delattr, getattr, hasattr, setattr
@@ -1454,9 +1455,10 @@ class tuple(TupleStorage):
 
 class str(TextStorage):
     def __new__(cls, *args):
+        value = _make_str(*args)
         if cls is not str:
-            raise TypeError("str subclasses are not supported yet")
-        return _make_str(*args)
+            return _typed_value(value, cls)
+        return value
 
 
 class bytes(BytesStorage):

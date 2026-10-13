@@ -33,6 +33,7 @@ from _mule_native import register_type as _register_type
 from _mule_native import traceback_field as _traceback_field
 from _mule_native import set_class_name as _set_class_name
 from _mule_native import type_of as _type_of
+from _mule_native import typed_value as _typed_value
 
 # The runtime's conversion functions, captured before the classes below
 # take over their builtin names.
@@ -524,9 +525,10 @@ class NoneType(object):
 
 class int(object):
     def __new__(cls, *args):
+        value = _convert_int(*args)
         if cls is not int and cls is not bool:
-            raise TypeError("int subclasses are not supported yet")
-        return _convert_int(*args)
+            return _typed_value(value, cls)
+        return value
 
     def __format__(self, format_spec=""):
         if format_spec == "":
@@ -601,9 +603,10 @@ class bool(int):
 
 class float(object):
     def __new__(cls, *args):
+        value = _convert_float(*args)
         if cls is not float:
-            raise TypeError("float subclasses are not supported yet")
-        return _convert_float(*args)
+            return _typed_value(value, cls)
+        return value
 
     def __format__(self, format_spec=""):
         if format_spec == "":

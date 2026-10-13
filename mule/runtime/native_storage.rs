@@ -178,7 +178,7 @@ pub unsafe extern "C" fn mule_box_f64(value: f64) -> Value {
     if object::has_error() {
         return std::ptr::null_mut();
     }
-    unsafe { object::new_value(Data::Float(value, std::ptr::null_mut())) }
+    unsafe { object::new_value(Data::Float(value, std::ptr::null_mut(), std::ptr::null_mut())) }
 }
 
 #[unsafe(no_mangle)]

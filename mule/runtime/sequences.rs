@@ -63,7 +63,7 @@ pub unsafe fn initialize(native: *mut std::ffi::c_void) -> bool {
         GLOBALS.with(|value| value.set(globals));
         object::bind(globals, "__builtins__", crate::builtins::namespace());
         // The protocols define the builtins, so their classes report that module.
-        let name = object::new_value(Data::Text(crate::text::Text::from_rust_str("builtins"), std::ptr::null_mut()));
+        let name = object::new_value(Data::Text(crate::text::Text::from_rust_str("builtins"), std::ptr::null_mut(), std::ptr::null_mut()));
         object::bind(globals, "__name__", name);
         object::release(name);
         let function = object::function(
@@ -134,7 +134,7 @@ pub unsafe extern "C" fn mule_install_builtin(name: Value, value: Value) -> Valu
     unsafe {
         // Builtin classes report the builtins module, wherever they are defined.
         if !value.is_null() && !object::is_fixnum(value) && matches!(&(*value).data, Data::Class(_)) {
-            let module = object::new_value(Data::Text(crate::text::Text::from_rust_str("builtins"), std::ptr::null_mut()));
+            let module = object::new_value(Data::Text(crate::text::Text::from_rust_str("builtins"), std::ptr::null_mut(), std::ptr::null_mut()));
             let status = crate::classes::mule_set_attr(value, c"__module__".as_ptr(), module);
             object::release(module);
             if status < 0 {
@@ -507,7 +507,7 @@ unsafe fn caught_exception() -> Value {
             object::error(&kind, &message);
             return null_mut();
         }
-        let message = object::new_value(Data::Text(crate::text::Text::from_rust_str(&message), std::ptr::null_mut()));
+        let message = object::new_value(Data::Text(crate::text::Text::from_rust_str(&message), std::ptr::null_mut(), std::ptr::null_mut()));
         let result = object::call(class, &[message]);
         object::release(message);
         result
