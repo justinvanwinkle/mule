@@ -1487,6 +1487,128 @@ def _integer_storage_kind(value):
     return _type_name(value) == "int" or _type_name(value) == "bool"
 
 
+def _byte_value(value):
+    if not _integer_storage_kind(value):
+        raise TypeError("'" + _type_name(value) + "' object cannot be interpreted as an integer")
+    value = _integer_storage(value)
+    if value < 0 or value > 255:
+        raise ValueError("byte must be in range(0, 256)")
+    return value
+
+
+def _byte_values(source, encoding, errors):
+    if _text_storage(source):
+        if encoding is None:
+            raise TypeError("string argument without an encoding")
+        source = source.encode(encoding, errors)
+    if _integer_storage_kind(source):
+        count = _integer_storage(source)
+        if count < 0:
+            raise ValueError("negative count")
+        values = []
+        index = 0
+        while index < count:
+            _storage_append(values, 0)
+            index += 1
+        return values
+    values = []
+    for item in _make_list(source):
+        _storage_append(values, _byte_value(item))
+    return values
+
+
+class bytearray:
+    """A mutable sequence of bytes, stored as a list of ints in range(256)."""
+
+    def __init__(self, source=b"", encoding=None, errors="strict"):
+        self.values = _byte_values(source, encoding, errors)
+
+    def __len__(self):
+        return _storage_length(self.values)
+
+    def __getitem__(self, index):
+        if is_slice(index):
+            return bytearray(_selected(self.values, index))
+        return _storage_read(self.values, storage_index(self.values, index))
+
+    def __setitem__(self, index, value):
+        if is_slice(index):
+            replacement = _byte_values(value, None, "strict")
+            start, stop, step, count = positions(index, _storage_length(self.values))
+            if step == 1:
+                tail = []
+                at = stop
+                while at < _storage_length(self.values):
+                    _storage_append(tail, _storage_read(self.values, at))
+                    at += 1
+                while _storage_length(self.values) > start:
+                    del self.values[_storage_length(self.values) - 1]
+                for item in replacement:
+                    _storage_append(self.values, item)
+                for item in tail:
+                    _storage_append(self.values, item)
+                return
+            if len(replacement) != count:
+                raise ValueError("attempt to assign sequence of wrong size to extended slice")
+            at = 0
+            while at < count:
+                _storage_write(self.values, start + at * step, replacement[at])
+                at += 1
+            return
+        _storage_write(self.values, storage_index(self.values, index), _byte_value(value))
+
+    def __delitem__(self, index):
+        del self.values[index]
+
+    def __iter__(self):
+        return SequenceIterator(self)
+
+    def __eq__(self, other):
+        if _type_name(other) == "bytearray":
+            return self.values == other.values
+        if _type_name(other) == "bytes":
+            return self.values == _make_list(other)
+        return NotImplemented
+
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        return result if result is NotImplemented else not result
+
+    def __add__(self, other):
+        return bytearray(self.values + _byte_values(other, None, "strict"))
+
+    def __repr__(self):
+        return "bytearray(" + repr(_bytes_from_values(self.values)) + ")"
+
+    def append(self, value):
+        _storage_append(self.values, _byte_value(value))
+
+    def extend(self, values):
+        for item in _byte_values(values, None, "strict"):
+            _storage_append(self.values, item)
+
+    def insert(self, index, value):
+        self.values.insert(_list_position(self.values, index), _byte_value(value))
+
+    def pop(self, index=-1):
+        return self.values.pop(index)
+
+    def remove(self, value):
+        self.values.remove(_byte_value(value))
+
+    def clear(self):
+        self.values.clear()
+
+    def copy(self):
+        return bytearray(self.values)
+
+    def reverse(self):
+        self.values.reverse()
+
+    def decode(self, encoding="utf-8", errors="strict"):
+        return decode(_bytes_from_values(self.values), encoding, errors)
+
+
 _install_storage(list, tuple, str, bytes)
 
 _install_builtin("range", range)
@@ -1499,6 +1621,7 @@ _install_builtin("chr", chr)
 _install_builtin("ord", ord)
 _install_builtin("str", str)
 _install_builtin("bytes", bytes)
+_install_builtin("bytearray", bytearray)
 _install_builtin("repr", repr)
 _install_builtin("ascii", ascii)
 _install_builtin("format", format)

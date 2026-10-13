@@ -129,6 +129,29 @@ def test_function_type_descriptors_allow_types_import(tmp_path):
     assert result.stdout == "42 None\nTrue\nTrue\n42\n42\n"
 
 
+def test_bytearray_constructs_iterates_and_mutates(tmp_path):
+    source = (
+        "ba = bytearray(b'abc')\n"
+        "print(list(ba), len(ba), ba[0], ba[-1])\n"
+        "ba[0] = 65\nba.append(100)\n"
+        "print(bytes(ba), ba == b'Abcd', ba.decode())\n"
+        "print(bytearray(2), bytearray([1, 255]), bytearray('xy', 'utf-8'))\n"
+        "print(ba[1:3])\n"
+        "del ba[0]\nprint(ba.pop(), list(ba))\n"
+        "try:\n    bytearray([256])\nexcept ValueError as error:\n    print(error)\n"
+    )
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "[97, 98, 99] 3 97 99\n"
+        "b'Abcd' True Abcd\n"
+        "bytearray(b'\\x00\\x00') bytearray(b'\\x01\\xff') bytearray(b'xy')\n"
+        "bytearray(b'bc')\n"
+        "100 [98, 99]\n"
+        "byte must be in range(0, 256)\n"
+    )
+
+
 def test_module_policy_assignment_must_precede_module_code():
     with pytest.raises(SyntaxError, match="must precede the module's code"):
         emit_llvm("print(1)\n__safety__ = 0\n")
