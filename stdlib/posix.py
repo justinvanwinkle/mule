@@ -94,14 +94,11 @@ def putenv(name, value):
     key = _bytes(name)
     item = _bytes(value)
     _setenv_bytes(key, item)
-    environ[key] = item
 
 
 def unsetenv(name):
     key = _bytes(name)
     _unsetenv_bytes(key)
-    if key in environ:
-        del environ[key]
 
 
 class stat_result:

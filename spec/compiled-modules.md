@@ -6,6 +6,22 @@ and pass. General unittest support remains incomplete.
 
 ## SBCL correspondence and required adaptations
 
+### Process environment and its Python mapping
+
+`posix.putenv` and `posix.unsetenv` change the process environment through native
+OS primitives. They do not mutate the imported `posix.environ` dictionary.
+The compiled `os._Environ` methods own updates to their backing dictionary;
+deletion therefore removes a key once, and mapping `pop` can return its value
+without a second deletion raising `KeyError`. Direct POSIX changes leave the
+Python mapping unchanged, as in CPython.
+
+SBCL `contrib/sb-posix/interface.lisp`, the `setenv` and `unsetenv` `define-call`
+forms and `putenv`, changes native environment storage through foreign calls.
+Mule keeps that OS boundary. Python additionally exposes a cached dictionary
+and an `os.environ` wrapper over it; that mapping policy stays in compiled
+Python. Removing dictionary mutation from the POSIX wrappers avoids duplicate
+updates and does not add runtime dispatch or change the native call cost.
+
 ### Initial sys module
 
 `sys` is compiled from `stdlib/sys.py`, with shared decoding in
