@@ -51,6 +51,9 @@ IMPORT = defknown("%import", "call", "unsafe")
 # ``from module import *``: bind the module's public names in the globals.
 IMPORT_STAR = defknown("%import_star", "unsafe", result=False)
 HAS_BINDING = defknown("%has_binding")
+# The globals namespace of the function being compiled: every native entry
+# receives it, and ``globals()`` returns it (converted where it is called).
+CURRENT_GLOBALS = defknown("%current_globals", "flushable")
 
 # Suspend the running generator, returning the value it is resumed with.
 YIELD = defknown("%yield", "call", "unsafe")
@@ -131,6 +134,7 @@ __all__ = [
     "CLASS_NAMESPACE",
     "CLASS_STORE",
     "COMPARE",
+    "CURRENT_GLOBALS",
     "ENTER_HANDLER",
     "FORMAT",
     "GETATTR",

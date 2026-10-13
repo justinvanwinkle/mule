@@ -4161,10 +4161,32 @@ class _CallTarget(ast.Visitor):
         )
 
     def visit_Name(self, node):
-        """Zero-argument ``super()`` receives the defining class's ``__class__``
-        cell and the calling function's first argument, as CPython's compiler
-        supplies them. The ``super`` name itself is still looked up normally."""
+        """``globals()`` and zero-argument ``super()`` receive an argument the
+        source does not write: the calling function's globals namespace, or
+        the defining class's ``__class__`` cell and the calling function's
+        first argument, as CPython's compiler supplies them. The name itself
+        is still looked up normally."""
         function = self.function
+        if (
+            node.identifier == "globals"
+            and not self.call.arguments
+            and not function.local("globals")
+        ):
+            ctran, callee = function.value(self.start, node)
+            following, namespace = Ctran(), Lvar()
+            function.known(
+                ctran, following, namespace, fndb.CURRENT_GLOBALS, (), node
+            )
+            function.full_call(
+                following,
+                self.next,
+                self.result,
+                callee,
+                (namespace,),
+                node,
+                CallInfo((), function.converter.location(node)),
+            )
+            return
         if node.identifier != "super" or self.call.arguments:
             return self.visit_Node(node)
         parameters = function.lambda_.vars

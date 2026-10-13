@@ -25,6 +25,7 @@ from _mule_native import is_class as _is_class
 from _mule_native import is_instance as _is_instance
 from _mule_native import is_subclass as _is_subclass
 from _mule_native import new_class as _new_class
+from _mule_native import namespace_items as _namespace_items
 from _mule_native import register_type as _register_type
 from _mule_native import traceback_field as _traceback_field
 from _mule_native import set_class_name as _set_class_name
@@ -311,6 +312,18 @@ def vars(*args):
     return args[0].__dict__
 
 
+def globals(namespace):
+    # The compiler supplies the calling function's namespace as the one
+    # argument, as it supplies the implicit arguments of super(); see
+    # _CallTarget.visit_Name in the compiler. CPython returns the module's
+    # live dict; a Mule namespace is not a dict, so this returns a dict of
+    # its current bindings.
+    result = {}
+    for name, value in _namespace_items(namespace):
+        result[name] = value
+    return result
+
+
 class mappingproxy(object):
     """A read-only view of a mapping, as ``type.__dict__`` returns."""
 
@@ -497,6 +510,19 @@ class code(object):
 
 class function(object):
     """The class of functions defined in compiled Python."""
+
+    # The runtime supplies a function's real globals and closure cells
+    # before class lookup (see function_attribute in the runtime), so these
+    # getters only serve values with no native function behind them. Their
+    # presence on the class is what types.py reads, as it reads __code__,
+    # to name the descriptor types.
+    @property
+    def __globals__(self):
+        return {}
+
+    @property
+    def __closure__(self):
+        return None
 
     @property
     def __code__(self):

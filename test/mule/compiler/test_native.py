@@ -110,6 +110,25 @@ def test_tracebacks_record_each_frame_an_exception_passes_through(tmp_path):
     assert result.stderr.startswith("Traceback (most recent call last):\n")
 
 
+def test_function_type_descriptors_allow_types_import(tmp_path):
+    # types.py reads FunctionType.__globals__ through the class to name the
+    # descriptor type; instances must still see their real globals.
+    source = (
+        "import types\n"
+        "marker = 42\n"
+        "def probe():\n    return marker\n"
+        "print(probe.__globals__.marker, probe.__closure__)\n"
+        "print(types.FunctionType.__globals__ is types.FunctionType.__globals__)\n"
+        "print(types.FunctionType.__closure__ is types.FunctionType.__closure__)\n"
+        "print(globals()['marker'])\n"
+        "def current():\n    return globals()['marker']\n"
+        "print(current())\n"
+    )
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "42 None\nTrue\nTrue\n42\n42\n"
+
+
 def test_module_policy_assignment_must_precede_module_code():
     with pytest.raises(SyntaxError, match="must precede the module's code"):
         emit_llvm("print(1)\n__safety__ = 0\n")

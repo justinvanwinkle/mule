@@ -4,7 +4,7 @@ Underscored storage operations are bound by the compiler. These definitions
 execute as native Python functions and classes, in a private module namespace.
 """
 
-from _object import bool, float, int, isinstance, issubclass, object, type, vars
+from _object import bool, float, globals, int, isinstance, issubclass, object, type, vars
 from _mule_native import text_from_codepoints as _text_from_codepoints
 from _str import TextStorage, ascii, decode, format, ord, repr
 from _str import str as _make_str
@@ -1517,6 +1517,7 @@ _install_builtin("float", float)
 _install_builtin("isinstance", isinstance)
 _install_builtin("issubclass", issubclass)
 _install_builtin("vars", vars)
+_install_builtin("globals", globals)
 _install_builtin("sorted", sorted)
 _install_builtin("callable", callable)
 _install_builtin("pow", pow)

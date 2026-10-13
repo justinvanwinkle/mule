@@ -714,6 +714,12 @@ def has_binding(gen, vop):
     gen.pointer_result(vop.results[0], f"call ptr @mule_bool(i32 {status})")
 
 
+@define_vop("current-globals", translate=fndb.CURRENT_GLOBALS, results=(OBJECT,))
+def current_globals(gen, vop):
+    # The entry's globals argument, retained for the result's owner.
+    gen.pointer_result(vop.results[0], "call ptr @mule.fast.retain(ptr %globals)")
+
+
 def _sequence(gen, vop, primitive):
     values = [gen.take(element) for element in vop.args]
     gen.argv(values)
