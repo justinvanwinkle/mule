@@ -289,7 +289,9 @@ class StatementParserMixin:
         node.body = self.suite(type_comment_target=node)
         if self.match("else"):
             node.else_body = self.suite()
-        return self.finish(node, start, end=(node.else_body or node.body)[-1].source_end())
+        return self.finish(
+            node, start, end=(node.else_body or node.body)[-1].source_end()
+        )
 
     def with_statement(self: Parser, *, start=None, is_async=False):
         with_token = self.expect("with")

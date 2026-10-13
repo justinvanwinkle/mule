@@ -288,7 +288,14 @@ class Cast(ValuedNode):
     __slots__ = ("contract", "declaration", "location", "safety", "type_check", "value")
 
     def __init__(
-        self, lexenv, source, value: Lvar, contract, location, safety: int, declaration=None
+        self,
+        lexenv,
+        source,
+        value: Lvar,
+        contract,
+        location,
+        safety: int,
+        declaration=None,
     ):
         super().__init__(lexenv, source)
         # None once the assertion is removed from the IR.

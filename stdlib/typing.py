@@ -959,8 +959,13 @@ def _make_forward_ref(code, *, parent_fwdref=None, **kwargs):
         if parent_fwdref.__owner__ is not None:
             kwargs['owner'] = parent_fwdref.__owner__
     forward_ref = _lazy_annotationlib.ForwardRef(code, **kwargs)
-    # For compatibility, eagerly compile the forwardref's code.
-    forward_ref.__forward_code__
+    # For compatibility, eagerly compile the forwardref's code. Compiled
+    # programs have no runtime compiler to do this with, so there the
+    # reference simply stays unevaluated.
+    try:
+        forward_ref.__forward_code__
+    except NameError:
+        pass
     return forward_ref
 
 

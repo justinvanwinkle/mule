@@ -839,6 +839,16 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
                 }
                 return result;
             }
+            // A bound method's underlying callable need not be a plain
+            // function: ``classmethod(SomeClass)`` binds the class itself,
+            // and calling the method calls that callable with the receiver
+            // as its first argument (constructing the class in that case).
+            if matches!((*method).data, Data::Class(_) | Data::Instance { .. } | Data::NativeInstance { .. }) {
+                let mut full = Vec::with_capacity(args.len() + 1);
+                full.push(receiver);
+                full.extend_from_slice(args);
+                return call(method, &full);
+            }
         }
         error("TypeError", "method is not a native function");
         std::ptr::null_mut()

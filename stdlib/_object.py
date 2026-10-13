@@ -289,6 +289,24 @@ class type(object):
             raise TypeError("type.__new__() argument 1 must be str")
         if not _is_instance(bases, tuple):
             raise TypeError("type.__new__() argument 2 must be tuple")
+        original_bases = bases
+        resolved = []
+        changed = False
+        for base in bases:
+            if _is_class(base):
+                resolved.append(base)
+                continue
+            method = getattr(base, "__mro_entries__", None)
+            if method is None:
+                resolved.append(base)
+                continue
+            entries = method(bases)
+            if not _is_instance(entries, tuple):
+                raise TypeError("__mro_entries__ must return a tuple")
+            changed = True
+            for entry in entries:
+                resolved.append(entry)
+        bases = tuple(resolved)
         fields = ()
         names, values = [], []
         for key in namespace:
@@ -312,6 +330,9 @@ class type(object):
         if "__annotations__" not in namespace:
             names.append("__annotations__")
             values.append({})
+        if changed and "__orig_bases__" not in namespace:
+            names.append("__orig_bases__")
+            values.append(original_bases)
         # The metaclass of the new class is the most derived metaclass of
         # the bases, as type_new computes it; it starts as the metaclass
         # this call was made through (type itself for a plain type() call).
@@ -1038,6 +1059,17 @@ class method(object):
 
 class module(object):
     """A module namespace."""
+
+    def __init__(self, name, doc=None):
+        self.__name__ = name
+        self.__doc__ = doc
+        self.__package__ = None
+        self.__loader__ = None
+        self.__spec__ = None
+
+    @property
+    def __dict__(self):
+        return _GlobalsDict(self)
 
 
 class traceback(object):

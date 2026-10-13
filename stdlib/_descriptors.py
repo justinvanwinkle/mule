@@ -13,12 +13,13 @@ storage operations; the rules here are ordinary compiled Python.
 from _mule_native import bind_attribute as _bind_attribute
 from _mule_native import bound_method as _bound_method
 from _mule_native import class_mro as _class_mro
-from _mule_native import class_lookup_or_null as _class_lookup_or_null
+from _mule_native import class_own_names as _class_own_names
 from _mule_native import class_lookup as _class_lookup
 from _mule_native import class_of as _class_of
 from _mule_native import instance_field as _instance_field
 from _mule_native import is_class as _is_class
 from _mule_native import is_subclass as _is_subclass
+from _mule_native import type_of as _type_of
 
 
 class staticmethod:
@@ -85,8 +86,8 @@ class super:
     """Attribute lookup that starts after ``__thisclass__`` in the class
     hierarchy of ``__self__``, binding what it finds to ``__self__``.
 
-    The search follows the MRO of ``__self__``'s class (or of ``__self__``
-    itself when it is a class), starting just after ``__thisclass__``."""
+    The search follows the MRO of ``__self__``'s class, or of ``__self__``
+    itself when it is a subclass of ``__thisclass__``."""
 
     def __init__(self, type, obj):
         self.__thisclass__ = type
@@ -102,15 +103,18 @@ class super:
         if _is_class(obj) and _is_subclass(obj, thisclass):
             owner, instance = obj, None
         else:
-            owner, instance = _class_of(obj), obj
+            owner, instance = _type_of(obj), obj
         order = _class_mro(owner)
         index = 0
         while index < len(order) and order[index] is not thisclass:
             index += 1
         index += 1
         while index < len(order):
-            value = _class_lookup_or_null(order[index], name)
-            if value is not None:
+            # Only a class's own attributes count here: an attribute a
+            # class merely inherits belongs to a later MRO entry, and
+            # returning it now would skip that entry's own definition.
+            if name in _class_own_names(order[index]):
+                value = _class_lookup(order[index], name)
                 return _bind_attribute(value, instance, owner)
             index += 1
         raise AttributeError("'super' object has no attribute '" + name + "'")

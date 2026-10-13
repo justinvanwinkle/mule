@@ -37,9 +37,13 @@ def phase(label: str, *arguments, level: int = logging.INFO):
     try:
         yield
     except BaseException:
-        logger.log(level, "%s%s failed after %.3f s", indent, label, perf_counter() - started)
+        logger.log(
+            level, "%s%s failed after %.3f s", indent, label, perf_counter() - started
+        )
         raise
     else:
-        logger.log(level, "%s%s completed in %.3f s", indent, label, perf_counter() - started)
+        logger.log(
+            level, "%s%s completed in %.3f s", indent, label, perf_counter() - started
+        )
     finally:
         _depth.reset(token)

@@ -341,7 +341,9 @@ class ExpressionParserMixin:
                     )
                     self.expect("}")
                     return self.finish(result, start)
-                entries = [self.finish(ast.DictEntry(first, value), first.source_start())]
+                entries = [
+                    self.finish(ast.DictEntry(first, value), first.source_start())
+                ]
             else:
                 if self.current.text in ("for", "async"):
                     result = self.comprehension(ast.ComprehensionKind.SET, first)

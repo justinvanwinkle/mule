@@ -333,8 +333,7 @@ class Step(Node):
             with recording() as discovered:
                 self.action(self.inputs, built)
             outputs = {
-                output: digest((built / output).read_bytes())
-                for output in self.outputs
+                output: digest((built / output).read_bytes()) for output in self.outputs
             }
             manifest = {"outputs": outputs, "discovered": discovered}
             (built / MANIFEST).write_text(json.dumps(manifest))

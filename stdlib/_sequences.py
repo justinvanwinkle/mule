@@ -747,12 +747,37 @@ def _direct_bases(bases):
     return True
 
 
+def _resolved_bases(bases):
+    """Expand non-class bases through ``__mro_entries__`` (PEP 560).
+
+    Returns the resolved bases and whether any base was replaced; the
+    caller keeps the original tuple for ``__orig_bases__`` in that case."""
+    resolved = []
+    changed = False
+    for base in bases:
+        if _is_class(base):
+            _storage_append(resolved, base)
+            continue
+        method = getattr(base, "__mro_entries__", None)
+        if method is None:
+            _storage_append(resolved, base)
+            continue
+        entries = method(bases)
+        if not _tuple_storage(entries):
+            raise TypeError("__mro_entries__ must return a tuple")
+        changed = True
+        for entry in entries:
+            _storage_append(resolved, entry)
+    return _storage_tuple(resolved), changed
+
+
 def prepare_class(name, bases, keywords):
     """The namespace a class body runs against (``__build_class__``)."""
     if keywords is None and len(bases) <= 1 and _direct_bases(bases):
         return _new_namespace()
     keywords = {} if keywords is None else keywords
     explicit = keywords.get("metaclass")
+    bases, _changed = _resolved_bases(bases)
     metaclass = _metaclass(bases, explicit)
     if metaclass is type:
         return _new_namespace()
@@ -767,6 +792,8 @@ def build_class(name, bases, namespace, keywords, fields):
     """Create a class through its metaclass after its body has run."""
     keywords = {} if keywords is None else keywords
     explicit = keywords.get("metaclass")
+    original = bases
+    bases, changed = _resolved_bases(bases)
     metaclass = _metaclass(bases, explicit)
     others = {}
     for key in keywords:
@@ -777,6 +804,8 @@ def build_class(name, bases, namespace, keywords, fields):
         namespace = {}
         for key, value in items:
             namespace[key] = value
+    if changed:
+        namespace["__orig_bases__"] = original
     namespace["__mule_fields__"] = fields
     return metaclass(name, bases, namespace, **others)
 
@@ -1834,18 +1863,98 @@ class bytearray:
         return _make_bytes_translation_table(frm, to)
 
 
+def _memoryview_format_size(format):
+    if format in "Bbc?":
+        return 1
+    if format in "hHe":
+        return 2
+    if format in "iIf":
+        return 4
+    if format in "lLqQdP":
+        return 8
+    return 0
+
+
+def _scale_binary(value, exponent):
+    while exponent > 0:
+        value *= 2.0
+        exponent -= 1
+    while exponent < 0:
+        value /= 2.0
+        exponent += 1
+    return value
+
+
+def _float_from_bits(bits, mantissa_bits, exponent_bits):
+    bias = (1 << (exponent_bits - 1)) - 1
+    max_exponent = (1 << exponent_bits) - 1
+    negative = bits >> (mantissa_bits + exponent_bits)
+    exponent = (bits >> mantissa_bits) & max_exponent
+    fraction = bits & ((1 << mantissa_bits) - 1)
+    if exponent == max_exponent:
+        value = float("inf") if fraction == 0 else float("nan")
+    elif exponent == 0:
+        value = _scale_binary(float(fraction), 1 - bias - mantissa_bits)
+    else:
+        value = _scale_binary(1.0 + fraction / (2.0 ** mantissa_bits), exponent - bias)
+    return -value if negative else value
+
+
+def _float_to_bits(value, mantissa_bits, exponent_bits):
+    value = float(value)
+    bias = (1 << (exponent_bits - 1)) - 1
+    max_exponent = (1 << exponent_bits) - 1
+    negative = value < 0.0 or (value == 0.0 and str(value).startswith("-"))
+    magnitude = -value if value < 0.0 else value
+    sign = (1 << (mantissa_bits + exponent_bits)) if negative else 0
+    if value != value:
+        return sign | (max_exponent << mantissa_bits) | (1 << (mantissa_bits - 1))
+    if magnitude == float("inf"):
+        return sign | (max_exponent << mantissa_bits)
+    if magnitude == 0.0:
+        return sign
+    exponent = 0
+    while magnitude >= 2.0:
+        magnitude /= 2.0
+        exponent += 1
+    while magnitude < 1.0:
+        magnitude *= 2.0
+        exponent -= 1
+    biased = exponent + bias
+    if biased >= max_exponent:
+        raise OverflowError("float too large to pack with this format")
+    if biased <= 0:
+        scaled = _scale_binary(magnitude, mantissa_bits + biased - 1)
+        fraction = int(scaled)
+        if scaled - fraction > 0.5 or (scaled - fraction == 0.5 and fraction % 2):
+            fraction += 1
+        if fraction >= (1 << mantissa_bits):
+            return sign | (1 << mantissa_bits)
+        return sign | fraction
+    scaled = (magnitude - 1.0) * (2.0 ** mantissa_bits)
+    fraction = int(scaled)
+    if scaled - fraction > 0.5 or (scaled - fraction == 0.5 and fraction % 2):
+        fraction += 1
+    if fraction >= (1 << mantissa_bits):
+        fraction = 0
+        biased += 1
+    return sign | (biased << mantissa_bits) | fraction
+
+
 class memoryview:
     """A one-dimensional view of a bytes or bytearray object, with format
     ``'B'``. Slices share the underlying storage through an offset and step."""
 
     def __init__(self, source):
         self.released = False
+        self.format_code = "B"
         if _type_name(source) == "memoryview":
             self.source = source.source
             self.start = source.start
             self.step = source.step
             self.length = source.length
             self.readonly = source.readonly
+            self.format_code = source.format_code
         elif _type_name(source) == "bytearray":
             self.source = source
             self.start = 0
@@ -1881,13 +1990,95 @@ class memoryview:
         at = self.start + index * self.step
         _storage_write(self.source.values, at, _byte_value(value))
 
+    def _itemsize(self):
+        return _memoryview_format_size(self.format_code)
+
+    def _raw_byte(self, offset):
+        if _type_name(self.source) == "bytearray":
+            return _storage_read(self.source.values, offset)
+        return _storage_read(self.source, offset)
+
+    def _value_at(self, index):
+        size = self._itemsize()
+        base = self.start + index * self.step
+        code = self.format_code
+        if code == "B":
+            return self._raw_byte(base)
+        if code == "c":
+            return _bytes_from_values([self._raw_byte(base)])
+        bits = 0
+        position = 0
+        while position < size:
+            bits |= self._raw_byte(base + position) << (position * 8)
+            position += 1
+        if code == "?":
+            return bits != 0
+        if code == "e":
+            return _float_from_bits(bits, 10, 5)
+        if code == "f":
+            return _float_from_bits(bits, 23, 8)
+        if code == "d":
+            return _float_from_bits(bits, 52, 11)
+        if code in "bhiq" or code == "l":
+            sign = 1 << (size * 8 - 1)
+            return bits - (1 << (size * 8)) if bits & sign else bits
+        return bits
+
+    def _set_value_at(self, index, value):
+        if self.readonly:
+            raise TypeError("cannot modify read-only memory")
+        size = self._itemsize()
+        base = self.start + index * self.step
+        code = self.format_code
+        if code == "c":
+            data = _byte_values(value, None, "strict")
+            if len(data) != 1:
+                raise TypeError("memoryview: invalid value for format 'c'")
+            bits = data[0]
+        elif code == "?":
+            bits = 1 if value else 0
+        elif code == "e":
+            bits = _float_to_bits(value, 10, 5)
+        elif code == "f":
+            bits = _float_to_bits(value, 23, 8)
+        elif code == "d":
+            bits = _float_to_bits(value, 52, 11)
+        else:
+            bits = integer_index(value) & ((1 << (size * 8)) - 1)
+        position = 0
+        while position < size:
+            at = base + position
+            _storage_write(self.source.values, at, (bits >> (position * 8)) & 0xFF)
+            position += 1
+
+    def cast(self, format, shape=None):
+        self._check()
+        if _memoryview_format_size(format) == 0:
+            raise TypeError("memoryview: destination format must be a native single character format")
+        if self.step != self._itemsize():
+            raise TypeError("memoryview: casts are restricted to C-contiguous views")
+        total = self.length * self._itemsize()
+        size = _memoryview_format_size(format)
+        if total % size:
+            raise TypeError("memoryview: length is not a multiple of itemsize")
+        result = memoryview(self)
+        result.format_code = format
+        result.length = total // size
+        result.step = size
+        if shape is not None:
+            if len(shape) != 1:
+                raise NotImplementedError("memoryview: multi-dimensional casts are not supported")
+            if shape[0] != result.length:
+                raise TypeError("memoryview: product(shape) * itemsize != buffer size")
+        return result
+
     @property
     def format(self):
-        return "B"
+        return self.format_code
 
     @property
     def itemsize(self):
-        return 1
+        return self._itemsize()
 
     @property
     def ndim(self):
@@ -1895,7 +2086,7 @@ class memoryview:
 
     @property
     def nbytes(self):
-        return self.length
+        return self.length * self._itemsize()
 
     @property
     def shape(self):
@@ -1911,7 +2102,7 @@ class memoryview:
 
     @property
     def c_contiguous(self):
-        return self.step == 1
+        return self.step == self._itemsize()
 
     def __len__(self):
         self._check()
@@ -1926,21 +2117,30 @@ class memoryview:
             result.step = self.step * step
             result.length = count
             return result
-        return self._byte_at(_view_index(self, index))
+        return self._value_at(_view_index(self, index))
 
     def __setitem__(self, index, value):
         self._check()
         if is_slice(index):
-            values = _byte_values(value, None, "strict") if _type_name(value) != "memoryview" else value.tolist()
+            if self._itemsize() != 1:
+                values = _make_list(value)
+            else:
+                values = _byte_values(value, None, "strict") if _type_name(value) != "memoryview" else value.tolist()
             start, stop, step, count = positions(index, self.length)
             if len(values) != count:
                 raise ValueError("memoryview assignment: lvalue and rvalue have different structures")
             at = 0
             while at < count:
-                self._set_byte_at(start + at * step, values[at])
+                if self._itemsize() != 1:
+                    self._set_value_at(start + at * step, values[at])
+                else:
+                    self._set_byte_at(start + at * step, values[at])
                 at += 1
             return
-        self._set_byte_at(_view_index(self, index), value)
+        if self._itemsize() != 1:
+            self._set_value_at(_view_index(self, index), value)
+        else:
+            self._set_byte_at(_view_index(self, index), value)
 
     def __iter__(self):
         return SequenceIterator(self)
@@ -1972,21 +2172,30 @@ class memoryview:
 
     def tobytes(self):
         self._check()
-        return _bytes_from_values(self.tolist())
+        values = []
+        element = 0
+        while element < self.length:
+            base = self.start + element * self.step
+            position = 0
+            while position < self._itemsize():
+                _storage_append(values, self._raw_byte(base + position))
+                position += 1
+            element += 1
+        return _bytes_from_values(values)
 
     def tolist(self):
         self._check()
         values = []
         index = 0
         while index < self.length:
-            _storage_append(values, self._byte_at(index))
+            _storage_append(values, self._value_at(index))
             index += 1
         return values
 
     def hex(self):
         digits = "0123456789abcdef"
         result = ""
-        for value in self.tolist():
+        for value in _make_list(self.tobytes()):
             result += digits[value >> 4] + digits[value & 15]
         return result
 

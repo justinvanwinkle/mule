@@ -276,6 +276,20 @@ class Converter:
             end.column + 1,
         )
 
+    def source_text(self, node):
+        """The exact source text a node's span covers."""
+        start, end = node.span.start, node.span.end
+        lines = self.source_lines
+        if start.line == end.line:
+            return lines[start.line - 1][start.column:end.column]
+        parts = [lines[start.line - 1][start.column:]]
+        line = start.line
+        while line < end.line - 1:
+            parts.append(lines[line])
+            line += 1
+        parts.append(lines[end.line - 1][:end.column])
+        return "".join(parts)
+
     def error(self, message: str, node: ast.Node, *, unsupported=False) -> NoReturn:
         error_type = UnsupportedSyntax if unsupported else SyntaxError
         raise error_type(message, self.location(node))
@@ -300,7 +314,9 @@ class Converter:
         compile-time declarations, not runtime decorators."""
         policy = inherited
         for decorator in decorators:
-            policy = decorator.accept(_DecoratorBinding(self)).policy(self, decorator, policy)
+            policy = decorator.accept(_DecoratorBinding(self)).policy(
+                self, decorator, policy
+            )
         return policy
 
     def runtime_decorators(self, decorators):
@@ -428,9 +444,7 @@ class FunctionConverter:
     def component(self):
         return self.converter.component
 
-    def error(
-        self, message: str, node: ast.Node, *, unsupported=False
-    ) -> NoReturn:
+    def error(self, message: str, node: ast.Node, *, unsupported=False) -> NoReturn:
         self.converter.error(message, node, unsupported=unsupported)
 
     def _bindings(self, statements):
@@ -538,10 +552,9 @@ class FunctionConverter:
         """The class body whose namespace holds ``name``, if it is bound there."""
         if self.comprehension_variable(name) is not None:
             return None
-        if (
-            self.comprehension_scopes
-            and self.comprehension_scopes[-1].class_depth == len(self.class_scopes)
-        ):
+        if self.comprehension_scopes and self.comprehension_scopes[
+            -1
+        ].class_depth == len(self.class_scopes):
             return None
         if self.class_scopes and name in self.class_scopes[-1].bound:
             return self.class_scopes[-1]
@@ -586,10 +599,9 @@ class FunctionConverter:
         every name a class body does not declare global (LOAD_NAME)."""
         if not self.class_scopes or self.comprehension_variable(name) is not None:
             return None
-        if (
-            self.comprehension_scopes
-            and self.comprehension_scopes[-1].class_depth == len(self.class_scopes)
-        ):
+        if self.comprehension_scopes and self.comprehension_scopes[
+            -1
+        ].class_depth == len(self.class_scopes):
             return None
         scope = self.class_scopes[-1]
         if name in scope.globals or name.startswith("$"):
@@ -626,7 +638,15 @@ class FunctionConverter:
         return node
 
     def cast(
-        self, start, next_, result, value: Lvar, contract, node, safety=None, declaration=None
+        self,
+        start,
+        next_,
+        result,
+        value: Lvar,
+        contract,
+        node,
+        safety=None,
+        declaration=None,
     ):
         cast = Cast(
             self.lexenv,
@@ -1044,7 +1064,12 @@ class FunctionConverter:
                 self.protocol(ctran, following, None, "add_keyword", operands, argument)
             else:
                 self.protocol(
-                    ctran, following, None, "merge_keywords", (held, argument.value), argument
+                    ctran,
+                    following,
+                    None,
+                    "merge_keywords",
+                    (held, argument.value),
+                    argument,
                 )
             current = following
         return current
@@ -1066,10 +1091,13 @@ class FunctionConverter:
             self.set_var(ctran, current, var, value, node)
         for argument in node.arguments:
             if argument.kind in (ast.ArgumentKind.POSITIONAL, ast.ArgumentKind.STARRED):
-                target, name = positional, (
-                    "append_argument"
-                    if argument.kind == ast.ArgumentKind.POSITIONAL
-                    else "extend_arguments"
+                target, name = (
+                    positional,
+                    (
+                        "append_argument"
+                        if argument.kind == ast.ArgumentKind.POSITIONAL
+                        else "extend_arguments"
+                    ),
                 )
                 operands = []
             else:
@@ -1085,7 +1113,12 @@ class FunctionConverter:
             self.ref(current, ctran, held, target, argument)
             following = Ctran()
             self.protocol(
-                ctran, following, None, name, (held, *operands, argument.value), argument
+                ctran,
+                following,
+                None,
+                name,
+                (held, *operands, argument.value),
+                argument,
             )
             current = following
         operands = []
@@ -1320,7 +1353,14 @@ class _ClassNamespaceLoad(LeafVisitor):
 
     def namespace(self):
         return self.function.class_namespace_operation(
-            self.start, self.next, self.result, fndb.CLASS_LOAD, self.scope, self.name, (), self.source
+            self.start,
+            self.next,
+            self.result,
+            fndb.CLASS_LOAD,
+            self.scope,
+            self.name,
+            (),
+            self.source,
         )
 
     def visit_Leaf(self, leaf):
@@ -1458,7 +1498,9 @@ class _Expressions(ast.Visitor):
         function = self.function
         start, next_, result = self.frame
         ctran, items = Ctran(), Lvar()
-        function.known(start, ctran, items, fndb.BUILD_TUPLE, tuple(node.elements), node)
+        function.known(
+            start, ctran, items, fndb.BUILD_TUPLE, tuple(node.elements), node
+        )
         function.protocol(ctran, next_, result, "build_set", (items,), node)
 
     def visit_Yield(self, node):
@@ -1516,7 +1558,9 @@ class _Expressions(ast.Visitor):
             definition, function.lambda_.policy, parent=function
         )
         ctran, created = Ctran(), Lvar()
-        function.define_function(start, ctran, created, lambda_, definition, definition.name)
+        function.define_function(
+            start, ctran, created, lambda_, definition, definition.name
+        )
         ctran, iterable = function.value(ctran, node.clauses[0].iterable)
         following, iterator = Ctran(), Lvar()
         function.protocol(ctran, following, iterator, "iterate", (iterable,), node)
@@ -1609,11 +1653,15 @@ class _Expressions(ast.Visitor):
         function.ref(ctran, next_, result, accumulator, node, final=True)
 
     def visit_List(self, node):
-        self.display(node, lambda display: self.sequence(display, fndb.BUILD_LIST), None)
+        self.display(
+            node, lambda display: self.sequence(display, fndb.BUILD_LIST), None
+        )
 
     def visit_Tuple(self, node):
         self.display(
-            node, lambda display: self.sequence(display, fndb.BUILD_TUPLE), "tuple_from_list"
+            node,
+            lambda display: self.sequence(display, fndb.BUILD_TUPLE),
+            "tuple_from_list",
         )
 
     def display(self, node, build, conversion):
@@ -1870,7 +1918,12 @@ class _DisplayItem(ast.Visitor):
 
     def visit_Unpack(self, node):
         self.function.protocol(
-            self.start, self.next, None, "extend_arguments", (self.held, node.value), node
+            self.start,
+            self.next,
+            None,
+            "extend_arguments",
+            (self.held, node.value),
+            node,
         )
 
 
@@ -1931,7 +1984,9 @@ class _Statements(ast.Visitor):
 
     def visit_Match(self, node):
         start, next_, _ = self.frame
-        self.expanded(start, next_, _MatchLowering(self.function, node.span).statements(node))
+        self.expanded(
+            start, next_, _MatchLowering(self.function, node.span).statements(node)
+        )
 
     def visit_TypeAlias(self, node):
         """``type Name[...] = value``: a TypeAliasType evaluating its value
@@ -1942,7 +1997,9 @@ class _Statements(ast.Visitor):
         statements = _annotation_scope_body(node, span)
         create = ast.Call(
             ast.Attribute(
-                ast.Attribute(ast.Name("$typing", span=span), "TypeAliasType", span=span),
+                ast.Attribute(
+                    ast.Name("$typing", span=span), "TypeAliasType", span=span
+                ),
                 "_lazy",
                 span=span,
             ),
@@ -1958,7 +2015,9 @@ class _Statements(ast.Visitor):
             span=span,
         )
         statements.append(ast.Return(create, span=span))
-        scope = ast.FunctionDefinition(f"<generic parameters of {node.name}>", [], statements, span=span)
+        scope = ast.FunctionDefinition(
+            f"<generic parameters of {node.name}>", [], statements, span=span
+        )
         lambda_ = function.converter.function(
             scope,
             function.lambda_.policy,
@@ -2234,7 +2293,9 @@ class _Statements(ast.Visitor):
             # A handler covers only the body: its blocks start here.
             body = function.block()
             function.jump(start, body)
-            frontier = function.convert_body(linked(body.start, body, "start"), node.body)
+            frontier = function.convert_body(
+                linked(body.start, body, "start"), node.body
+            )
             if frontier is not None:
                 function.jump(frontier, success)
         frontier = function.convert_body(
@@ -2579,7 +2640,9 @@ class _Statements(ast.Visitor):
         function.jump(start, test)
         function.condition(test.start, node.condition, loop, other)
         with function.with_loop(LoopTarget(test, done, function.lexenv.cleanup)):
-            frontier = function.convert_body(linked(loop.start, loop, "start"), node.body)
+            frontier = function.convert_body(
+                linked(loop.start, loop, "start"), node.body
+            )
         if frontier is not None:
             function.jump(frontier, test)
         frontier = function.convert_body(
@@ -2674,7 +2737,8 @@ class _Statements(ast.Visitor):
             return
         outer = function.class_scopes[-1] if function.class_scopes else None
         policy = converter.policy(
-            node.decorators, outer.policy if outer is not None else function.lambda_.policy
+            node.decorators,
+            outer.policy if outer is not None else function.lambda_.policy,
         )
         positional = [
             argument
@@ -2684,7 +2748,8 @@ class _Statements(ast.Visitor):
         keywords = [
             argument
             for argument in node.arguments
-            if argument.kind in (ast.ArgumentKind.KEYWORD, ast.ArgumentKind.DOUBLE_STARRED)
+            if argument.kind
+            in (ast.ArgumentKind.KEYWORD, ast.ArgumentKind.DOUBLE_STARRED)
         ]
         identity = f"{converter.prefix}mule_cls_{converter.class_definitions}"
         converter.class_definitions += 1
@@ -2781,9 +2846,7 @@ class _Statements(ast.Visitor):
             receiver = method.parameters[0]
             if receiver.kind == ast.ParameterKind.VAR_POSITIONAL:
                 continue
-            collector = _ReceiverFields(
-                receiver.name, fields, declaration=native
-            )
+            collector = _ReceiverFields(receiver.name, fields, declaration=native)
             for statement in method.body:
                 statement.accept(collector)
         if native is not None:
@@ -2796,6 +2859,29 @@ class _Statements(ast.Visitor):
             function.class_scopes.pop()
         if frontier is None:
             return
+        declarations = tuple(
+            declaration
+            for statement in body
+            for declaration in statement.accept(_NamedAnnotations())
+        )
+        if declarations and "__annotations__" not in bindings.bound:
+            # Class annotations are deferred metadata (PEP 649): record
+            # each annotation's source text in ``__annotations__`` so
+            # runtime consumers such as dataclasses and annotationlib
+            # can find the declared names without evaluating anything.
+            entries = [
+                ast.DictEntry(
+                    ast.TextLiteral(name, span=node.span),
+                    ast.TextLiteral(converter.source_text(annotation), span=annotation.span),
+                    span=node.span,
+                )
+                for name, annotation in declarations
+            ]
+            ctran, annotations = function.value(frontier, ast.Dict(entries, span=node.span))
+            frontier = Ctran()
+            function.class_namespace_operation(
+                ctran, frontier, None, fndb.CLASS_STORE, scope, "__annotations__", (annotations,), node
+            )
         operands = []
         for var in (bases, namespace, class_keywords):
             ctran, value = Ctran(), Lvar()
@@ -2813,16 +2899,10 @@ class _Statements(ast.Visitor):
             converter.location(node),
             identity,
             identity if native is not None else None,
-            tuple(
-                declaration
-                for statement in body
-                for declaration in statement.accept(_NamedAnnotations())
-            ),
+            declarations,
         )
         following, created = Ctran(), Lvar()
-        function.known(
-            ctran, following, created, fndb.MAKE_CLASS, operands, node, info
-        )
+        function.known(ctran, following, created, fndb.MAKE_CLASS, operands, node, info)
         if scope.cell is not None:
             # Methods using super() or __class__ see the finished class.
             klass = function.temporary()
@@ -2851,10 +2931,16 @@ class _Statements(ast.Visitor):
             *definition,
             ast.Return(ast.Name(node.name, span=span), span=span),
         ]
-        scope = ast.FunctionDefinition(f"<generic parameters of {node.name}>", [], statements, span=span)
+        scope = ast.FunctionDefinition(
+            f"<generic parameters of {node.name}>", [], statements, span=span
+        )
         decorators = converter.runtime_decorators(node.decorators)
         current, held = function.evaluate_decorators(start, decorators)
-        outer = function.class_scopes[-1] if function.class_scopes else function.defining_class
+        outer = (
+            function.class_scopes[-1]
+            if function.class_scopes
+            else function.defining_class
+        )
         lambda_ = converter.function(
             scope,
             function.lambda_.policy,
@@ -2866,7 +2952,13 @@ class _Statements(ast.Visitor):
         function.define_function(current, ctran, created, lambda_, scope, scope.name)
         following, result = Ctran(), Lvar()
         function.full_call(
-            ctran, following, result, created, (), node, CallInfo((), converter.location(node))
+            ctran,
+            following,
+            result,
+            created,
+            (),
+            node,
+            CallInfo((), converter.location(node)),
         )
         ctran, result = function.apply_decorators(following, held, result, decorators)
         function.store(ctran, next_, node.name, result, node)
@@ -2877,7 +2969,11 @@ class _Statements(ast.Visitor):
         return [
             replace(node, type_parameters=[], decorators=[]),
             ast.Assignment(
-                [ast.Attribute(ast.Name(node.name, span=span), "__type_params__", span=span)],
+                [
+                    ast.Attribute(
+                        ast.Name(node.name, span=span), "__type_params__", span=span
+                    )
+                ],
                 _type_parameter_tuple(node, span),
                 span=span,
             ),
@@ -2892,7 +2988,9 @@ class _Statements(ast.Visitor):
             for argument in node.arguments
             if argument.kind in (ast.ArgumentKind.POSITIONAL, ast.ArgumentKind.STARRED)
         ]
-        keywords = [argument for argument in node.arguments if argument not in positional]
+        keywords = [
+            argument for argument in node.arguments if argument not in positional
+        ]
         generic = ast.CallArgument(
             ast.Subscript(
                 ast.Attribute(ast.Name("$typing", span=span), "Generic", span=span),
@@ -2961,14 +3059,18 @@ class _MatchLowering:
 
     def index(self, sequence, position):
         return ast.Subscript(
-            self.name(sequence), ast.IntegerLiteral(position, span=self.span), span=self.span
+            self.name(sequence),
+            ast.IntegerLiteral(position, span=self.span),
+            span=self.span,
         )
 
     def statements(self, node):
         self.helpers = self.temporary()
         subject = self.temporary()
         result = [
-            ast.Import([ast.ImportItem("_match", self.helpers, span=self.span)], span=self.span),
+            ast.Import(
+                [ast.ImportItem("_match", self.helpers, span=self.span)], span=self.span
+            ),
             self.assign(subject, node.subject),
         ]
         return result + self.cases(node.cases, 0, subject)
@@ -2980,7 +3082,9 @@ class _MatchLowering:
         flag = self.temporary()
         test = self.name(flag)
         if case.guard is not None:
-            test = ast.Boolean(ast.BooleanOperator.AND, [test, case.guard], span=self.span)
+            test = ast.Boolean(
+                ast.BooleanOperator.AND, [test, case.guard], span=self.span
+            )
         return [
             *self.pattern(case.pattern, subject, flag),
             ast.If(
@@ -3019,18 +3123,26 @@ class _MatchLowering:
         count = ast.IntegerLiteral(len(elements) - len(stars), span=self.span)
         size_check = self.compare(
             length,
-            ast.ComparisonOperator.GREATER_EQUAL if stars else ast.ComparisonOperator.EQUAL,
+            ast.ComparisonOperator.GREATER_EQUAL
+            if stars
+            else ast.ComparisonOperator.EQUAL,
             count,
         )
         split = _SequenceElements(self, values, elements, stars)
         patterns, positions, captures = split.patterns, split.positions, split.captures
-        matched = [*captures, self.assign(flag, self.constant(True)), *self.items(values, patterns, flag, positions)]
+        matched = [
+            *captures,
+            self.assign(flag, self.constant(True)),
+            *self.items(values, patterns, flag, positions),
+        ]
         return [
             self.assign(values, self.call("sequence", self.name(subject))),
             self.assign(
                 flag,
                 self.compare(
-                    self.name(values), ast.ComparisonOperator.IS_NOT, ast.NoneLiteral(None, span=self.span)
+                    self.name(values),
+                    ast.ComparisonOperator.IS_NOT,
+                    ast.NoneLiteral(None, span=self.span),
                 ),
             ),
             self.when(flag, [self.assign(flag, size_check), self.when(flag, matched)]),
@@ -3041,13 +3153,19 @@ class _MatchLowering:
         keys = ast.Tuple([entry.key for entry in pattern.entries], span=self.span)
         rest = []
         if pattern.rest is not None:
-            rest = [self.assign(pattern.rest, self.call("mapping_rest", self.name(subject), keys))]
+            rest = [
+                self.assign(
+                    pattern.rest, self.call("mapping_rest", self.name(subject), keys)
+                )
+            ]
         inner = [
             self.assign(values, self.call("mapping_values", self.name(subject), keys)),
             self.assign(
                 flag,
                 self.compare(
-                    self.name(values), ast.ComparisonOperator.IS_NOT, ast.NoneLiteral(None, span=self.span)
+                    self.name(values),
+                    ast.ComparisonOperator.IS_NOT,
+                    ast.NoneLiteral(None, span=self.span),
                 ),
             ),
             self.when(
@@ -3065,15 +3183,24 @@ class _MatchLowering:
                 else rest or [ast.Pass(span=self.span)],
             ),
         ]
-        return [self.assign(flag, self.call("mapping", self.name(subject))), self.when(flag, inner)]
+        return [
+            self.assign(flag, self.call("mapping", self.name(subject))),
+            self.when(flag, inner),
+        ]
 
     def class_pattern(self, pattern, subject, flag):
         values = self.temporary()
         names = ast.Tuple(
-            [ast.TextLiteral(keyword.name, span=self.span) for keyword in pattern.keywords],
+            [
+                ast.TextLiteral(keyword.name, span=self.span)
+                for keyword in pattern.keywords
+            ],
             span=self.span,
         )
-        patterns = [*pattern.positional, *(keyword.pattern for keyword in pattern.keywords)]
+        patterns = [
+            *pattern.positional,
+            *(keyword.pattern for keyword in pattern.keywords),
+        ]
         return [
             self.assign(
                 values,
@@ -3088,11 +3215,18 @@ class _MatchLowering:
             self.assign(
                 flag,
                 self.compare(
-                    self.name(values), ast.ComparisonOperator.IS_NOT, ast.NoneLiteral(None, span=self.span)
+                    self.name(values),
+                    ast.ComparisonOperator.IS_NOT,
+                    ast.NoneLiteral(None, span=self.span),
                 ),
             ),
             *(
-                [self.when(flag, self.items(values, patterns, flag, list(range(len(patterns)))))]
+                [
+                    self.when(
+                        flag,
+                        self.items(values, patterns, flag, list(range(len(patterns)))),
+                    )
+                ]
                 if patterns
                 else []
             ),
@@ -3112,20 +3246,33 @@ class _PatternTest(ast.Visitor):
 
     def visit_CapturePattern(self, node):
         lowering, flag = self.lowering, self.flag
-        bind = [] if node.name is None else [lowering.assign(node.name, lowering.name(self.subject))]
+        bind = (
+            []
+            if node.name is None
+            else [lowering.assign(node.name, lowering.name(self.subject))]
+        )
         return [*bind, lowering.assign(flag, lowering.constant(True))]
 
     def visit_LiteralPattern(self, node):
         lowering = self.lowering
         operator = node.value.literal_pattern_operator()
-        return [lowering.assign(self.flag, lowering.compare(lowering.name(self.subject), operator, node.value))]
+        return [
+            lowering.assign(
+                self.flag,
+                lowering.compare(lowering.name(self.subject), operator, node.value),
+            )
+        ]
 
     def visit_ValuePattern(self, node):
         lowering = self.lowering
         return [
             lowering.assign(
                 self.flag,
-                lowering.compare(lowering.name(self.subject), ast.ComparisonOperator.EQUAL, node.value),
+                lowering.compare(
+                    lowering.name(self.subject),
+                    ast.ComparisonOperator.EQUAL,
+                    node.value,
+                ),
             )
         ]
 
@@ -3142,7 +3289,9 @@ class _PatternTest(ast.Visitor):
         for alternative in node.alternatives:
             result.append(
                 ast.If(
-                    ast.Unary(ast.UnaryOperator.NOT, lowering.name(flag), span=lowering.span),
+                    ast.Unary(
+                        ast.UnaryOperator.NOT, lowering.name(flag), span=lowering.span
+                    ),
                     lowering.pattern(alternative, subject, flag),
                     span=lowering.span,
                 )
@@ -3201,7 +3350,9 @@ class _SequenceElements(ast.Visitor):
     def visit_Node(self, node):
         index, stars = self.index, self.stars
         self.patterns.append(node)
-        self.positions.append(index if not stars or index < stars[0] else index - self.count)
+        self.positions.append(
+            index if not stars or index < stars[0] else index - self.count
+        )
 
     def visit_StarPattern(self, node):
         if node.name is None:
@@ -3246,7 +3397,9 @@ def _async_with(function, node):
 
     def call(callee, *arguments):
         return ast.Call(
-            callee, [ast.CallArgument(argument, span=span) for argument in arguments], span=span
+            callee,
+            [ast.CallArgument(argument, span=span) for argument in arguments],
+            span=span,
         )
 
     def assign(target, value):
@@ -3256,7 +3409,12 @@ def _async_with(function, node):
     if item.target is not None:
         body.insert(0, assign(item.target, name(value)))
     exit_with_error = ast.Await(
-        call(name(exit_), ast.Attribute(name(error), "__class__", span=span), name(error), none),
+        call(
+            name(exit_),
+            ast.Attribute(name(error), "__class__", span=span),
+            name(error),
+            none,
+        ),
         span=span,
     )
     return [
@@ -3264,7 +3422,9 @@ def _async_with(function, node):
         assign(name(exit_), ast.Attribute(name(manager), "__aexit__", span=span)),
         assign(
             name(value),
-            ast.Await(call(ast.Attribute(name(manager), "__aenter__", span=span)), span=span),
+            ast.Await(
+                call(ast.Attribute(name(manager), "__aenter__", span=span)), span=span
+            ),
         ),
         assign(name(handled), ast.BooleanLiteral(False, span=span)),
         ast.Try(
@@ -3276,7 +3436,9 @@ def _async_with(function, node):
                     [
                         assign(name(handled), ast.BooleanLiteral(True, span=span)),
                         ast.If(
-                            ast.Unary(ast.UnaryOperator.NOT, exit_with_error, span=span),
+                            ast.Unary(
+                                ast.UnaryOperator.NOT, exit_with_error, span=span
+                            ),
                             [ast.Raise(span=span)],
                             span=span,
                         ),
@@ -3321,7 +3483,10 @@ def _async_for(function, node):
                     assign(
                         name(value),
                         ast.Await(
-                            ast.Call(ast.Attribute(name(iterator), "__anext__", span=span), span=span),
+                            ast.Call(
+                                ast.Attribute(name(iterator), "__anext__", span=span),
+                                span=span,
+                            ),
                             span=span,
                         ),
                     )
@@ -3330,7 +3495,12 @@ def _async_for(function, node):
                     ast.ExceptionHandler(
                         name("StopAsyncIteration"),
                         None,
-                        [assign(name(exhausted), ast.BooleanLiteral(True, span=span)), ast.Break(span=span)],
+                        [
+                            assign(
+                                name(exhausted), ast.BooleanLiteral(True, span=span)
+                            ),
+                            ast.Break(span=span),
+                        ],
                         span=span,
                     )
                 ],
@@ -3364,7 +3534,9 @@ _TYPE_PARAMETER_KINDS = {
 def _annotation_scope_body(node, span):
     """Statements creating ``node``'s type parameters, each lazily evaluating
     its bound, constraints and default, and the names they bind."""
-    statements = [ast.Import([ast.ImportItem("_typing", "$typing", span=span)], span=span)]
+    statements = [
+        ast.Import([ast.ImportItem("_typing", "$typing", span=span)], span=span)
+    ]
 
     def lazy(expression):
         if expression is None:
@@ -3541,7 +3713,12 @@ class _AssignmentTarget(ast.Visitor):
             function.constant(ctran, following, high, ast.IntegerLiteral(after))
             ctran, values = Ctran(), Lvar()
             function.protocol(
-                following, ctran, values, "unpack_starred", (self.value, low, high), node
+                following,
+                ctran,
+                values,
+                "unpack_starred",
+                (self.value, low, high),
+                node,
             )
             following = ctran
         else:
@@ -3601,7 +3778,9 @@ class _UnpackedTarget(_AssignmentTarget):
     the items no other element takes."""
 
     def visit_Unpack(self, node):
-        node.value.accept(_AssignmentTarget(self.function, self.value, self.start, self.next))
+        node.value.accept(
+            _AssignmentTarget(self.function, self.value, self.start, self.next)
+        )
 
 
 class _DeleteTarget(ast.Visitor):
@@ -3863,8 +4042,10 @@ class _AnnotationReference(ast.Visitor):
             return binding
         shadows = self.converter.module_annotation_shadows
         # A wildcard import can rebind any builtin name at runtime.
-        if name in shadows or "*" in shadows or (
-            self.scope is not None and self.scope.local(name)
+        if (
+            name in shadows
+            or "*" in shadows
+            or (self.scope is not None and self.scope.local(name))
         ):
             return _OPAQUE_BINDING
         return _BUILTIN_BINDINGS.get(name, _OPAQUE_BINDING)
@@ -4180,9 +4361,7 @@ class _CallTarget(ast.Visitor):
         ):
             ctran, callee = function.value(self.start, node)
             following, namespace = Ctran(), Lvar()
-            function.known(
-                ctran, following, namespace, fndb.CURRENT_GLOBALS, (), node
-            )
+            function.known(ctran, following, namespace, fndb.CURRENT_GLOBALS, (), node)
             function.full_call(
                 following,
                 self.next,
@@ -4517,7 +4696,8 @@ class _SlotNames(ast.Visitor):
 
     def visit_Assignment(self, node):
         if not (
-            len(node.targets) == 1 and node.targets[0].accept(_ReceiverName("__slots__"))
+            len(node.targets) == 1
+            and node.targets[0].accept(_ReceiverName("__slots__"))
         ):
             return ()
         return node.value.accept(_SlotDeclaration())
@@ -4545,7 +4725,9 @@ class _SlotDeclaration(_SlotName):
         return self.elements(node)
 
     def elements(self, node):
-        return tuple(name for element in node.elements for name in element.accept(_SlotName()))
+        return tuple(
+            name for element in node.elements for name in element.accept(_SlotName())
+        )
 
 
 class _ContainsYield(ast.Visitor):

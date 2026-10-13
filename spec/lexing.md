@@ -26,6 +26,11 @@ the false mode uses exact operator codes and parser-facing layout coordinates.
 The iterator does not add `ENCODING`: `tokenize.py` owns encoding detection and
 that token. Byte callbacks with explicit encoding decode each returned line using
 the available codec implementation, matching the low-level iterator boundary.
+Native comparisons cover UTF-8 and Latin-1; the current native codec layer does
+not supply every codec accepted by CPython. The public byte-input
+`tokenize.tokenize` wrapper additionally requires `iter(callable, sentinel)`,
+which the current compiled builtin does not yet support. Direct encoded-byte
+`TokenizerIter` calls and `tokenize.generate_tokens` do not need that form.
 
 SBCL `src/code/reader.lisp`, `read-token` and `%read-preserving-whitespace`, keeps
 stream reading and token-buffer behavior in compiled Lisp. Mule likewise keeps

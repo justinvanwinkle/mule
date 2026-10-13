@@ -692,8 +692,9 @@ def format_text(text, specification):
 class _Fields:
     """Positional replacement-field numbering state for ``str.format``."""
 
-    def __init__(self, args):
+    def __init__(self, args, keyws):
         self.args = args
+        self.keyws = keyws
         self.next_index = 0
         self.manual = False
         self.automatic = False
@@ -716,20 +717,29 @@ def _field_value(name, fields):
         fields.automatic = True
         position = fields.next_index
         fields.next_index += 1
+        if position >= _storage_length(fields.args):
+            raise IndexError(
+                f"Replacement index {position} out of range for positional args tuple"
+            )
+        value = _storage_read(fields.args, position)
     else:
         position, end = _digits(first, 0, _text_length(first))
         if end != _text_length(first):
-            raise KeyError(first)
-        if fields.automatic:
-            raise ValueError(
-                "cannot switch from automatic field numbering to manual field specification"
-            )
-        fields.manual = True
-    if position >= _storage_length(fields.args):
-        raise IndexError(
-            f"Replacement index {position} out of range for positional args tuple"
-        )
-    value = _storage_read(fields.args, position)
+            if first in fields.keyws:
+                value = fields.keyws[first]
+            else:
+                raise KeyError(first)
+        else:
+            if fields.automatic:
+                raise ValueError(
+                    "cannot switch from automatic field numbering to manual field specification"
+                )
+            fields.manual = True
+            if position >= _storage_length(fields.args):
+                raise IndexError(
+                    f"Replacement index {position} out of range for positional args tuple"
+                )
+            value = _storage_read(fields.args, position)
     while index < size:
         character = _text_character(name, index)
         index += 1
@@ -1523,8 +1533,8 @@ class TextStorage:
             codes.append(mapped)
         return _from_codepoints(codes)
 
-    def format(self, *args):
-        return _expand(self, _Fields(args), 1)
+    def format(self, *args, **keyws):
+        return _expand(self, _Fields(args, keyws), 1)
 
 
 class TextIterator:

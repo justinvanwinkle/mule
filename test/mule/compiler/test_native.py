@@ -45,10 +45,15 @@ except TypeError:
 """
     result = run_native(tmp_path, source)
     assert result.returncode == 0, result.stderr
-    assert result.stdout == (
-        "5\n-42\n255\n1000\n1267650600228229401496703205376\n"
-        "invalid\ninvalid\ninvalid\ninvalid\n"
-    ) * 2 + "not text\n"
+    assert (
+        result.stdout
+        == (
+            "5\n-42\n255\n1000\n1267650600228229401496703205376\n"
+            "invalid\ninvalid\ninvalid\ninvalid\n"
+        )
+        * 2
+        + "not text\n"
+    )
 
 
 def test_global_reads_follow_rebinding_shadowing_and_deletion(tmp_path):
@@ -186,6 +191,48 @@ def test_bytearray_constructs_iterates_and_mutates(tmp_path):
         "subsection not found\n"
         "100 [98, 99]\n"
         "byte must be in range(0, 256)\n"
+    )
+
+
+def test_binascii_and_dependent_modules(tmp_path):
+    source = (
+        "import binascii\n"
+        "print(binascii.crc32(b'hello'), binascii.crc32(b'hello world', binascii.crc32(b'hello')))\n"
+        "print(binascii.hexlify(b'hello'), binascii.unhexlify(b'68656c6c6f'))\n"
+        "print(binascii.b2a_hex(b'hello', b':', 2), binascii.a2b_hex('68656c6c6f'))\n"
+        "print(binascii.b2a_base64(b'hello'), binascii.a2b_base64(b'aGVsbG8='))\n"
+        "print(binascii.crc_hqx(b'hello', 0), binascii.a2b_qp(binascii.b2a_qp(b'a b\\xff')))\n"
+        "print(binascii.a2b_uu(binascii.b2a_uu(b'hello')))\n"
+        "try:\n    binascii.a2b_hex(b'zz')\nexcept binascii.Error as error:\n    print(error)\n"
+        "import base64\n"
+        "print(base64.b64encode(b'hello'), base64.b64decode(b'aGVsbG8='))\n"
+        "import zipfile\n"
+        "print(zipfile.ZIP_DEFLATED, zipfile.crc32(b'hello'))\n"
+        "import struct\n"
+        "print(struct.pack('<3i', 1, -2, 300) == struct.pack('<3i', 1, -2, 300))\n"
+        "print(struct.unpack('>hH', struct.pack('>hH', -5, 60000)))\n"
+        "print(struct.calcsize('@ci'), struct.calcsize('<l'), struct.calcsize('@l'))\n"
+        "print(struct.unpack('<fd', struct.pack('<fd', 1.5, -2.25)))\n"
+        "data = bytearray(8)\nstruct.pack_into('<i', data, 2, -77)\n"
+        "print(struct.unpack_from('<i', data, 2), list(struct.iter_unpack('<h', struct.pack('<3h', 1, 2, 3))))\n"
+    )
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "907060870 3644492868\n"
+        "b'68656c6c6f' b'hello'\n"
+        "b'6865:6c6c:6f' b'hello'\n"
+        "b'aGVsbG8=\\n' b'hello'\n"
+        "50018 b'a b\\xff'\n"
+        "b'hello'\n"
+        "Non-hexadecimal digit found\n"
+        "b'aGVsbG8=' b'hello'\n"
+        "8 907060870\n"
+        "True\n"
+        "(-5, 60000)\n"
+        "8 4 8\n"
+        "(1.5, -2.25)\n"
+        "(-77,) [(1,), (2,), (3,)]\n"
     )
 
 

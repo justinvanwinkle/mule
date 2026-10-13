@@ -434,20 +434,22 @@ def _tuple_str(obj_name, fields):
 
 
 class _FuncBuilder:
+    """Collect the methods a dataclass needs, as ready-made functions.
+
+    CPython generates these methods as source text and ``exec``s it;
+    compiled programs have no interpreter to run that text, so the
+    call sites below build equivalent closures directly and hand them
+    here. Assignment policy (which methods may replace an existing
+    class attribute, and which collisions are errors) is unchanged."""
+
     def __init__(self, globals):
         self.names = []
-        self.src = []
+        self.fns = {}
         self.globals = globals
-        self.locals = {}
         self.overwrite_errors = {}
         self.unconditional_adds = {}
-        self.method_annotations = {}
 
-    def add_fn(self, name, args, body, *, locals=None, return_type=MISSING,
-               overwrite_error=False, unconditional_add=False, decorator=None,
-               annotation_fields=None):
-        if locals is not None:
-            self.locals.update(locals)
+    def add_fn(self, name, fn, *, overwrite_error=False, unconditional_add=False):
 
         # Keep track if this method is allowed to be overwritten if it already
         # exists in the class.  The error is method-specific, so keep it with
@@ -465,58 +467,13 @@ class _FuncBuilder:
             self.unconditional_adds[name] = True
 
         self.names.append(name)
-
-        if annotation_fields is not None:
-            self.method_annotations[name] = (annotation_fields, return_type)
-
-        args = ','.join(args)
-        body = '\n'.join(body)
-
-        # Compute the text of the entire function, add it to the text we're generating.
-        self.src.append(f'{f' {decorator}\n' if decorator else ''} def {name}({args}):\n{body}')
+        self.fns[name] = fn
 
     def add_fns_to_class(self, cls):
-        # The source to all of the functions we're generating.
-        fns_src = '\n'.join(self.src)
-
-        # The locals they use.
-        local_vars = ','.join(self.locals.keys())
-
-        # The names of all of the functions, used for the return value of the
-        # outer function.  Need to handle the 0-tuple specially.
-        if len(self.names) == 0:
-            return_names = '()'
-        else:
-            return_names  =f'({",".join(self.names)},)'
-
-        # txt is the entire function we're going to execute, including the
-        # bodies of the functions we're defining.  Here's a greatly simplified
-        # version:
-        # def __create_fn__():
-        #  def __init__(self, x, y):
-        #   self.x = x
-        #   self.y = y
-        #  @recursive_repr
-        #  def __repr__(self):
-        #   return f"cls(x={self.x!r},y={self.y!r})"
-        # return __init__,__repr__
-
-        txt = f"def __create_fn__({local_vars}):\n{fns_src}\n return {return_names}"
-        ns = {}
-        exec(txt, self.globals, ns)
-        fns = ns['__create_fn__'](**self.locals)
-
         # Now that we've generated the functions, assign them into cls.
-        for name, fn in zip(self.names, fns):
+        for name in self.names:
+            fn = self.fns[name]
             fn.__qualname__ = f"{cls.__qualname__}.{fn.__name__}"
-
-            try:
-                annotation_fields, return_type = self.method_annotations[name]
-            except KeyError:
-                pass
-            else:
-                annotate_fn = _make_annotate_function(cls, name, annotation_fields, return_type)
-                fn.__annotate__ = annotate_fn
 
             if self.unconditional_adds.get(name, False):
                 setattr(cls, name, fn)
@@ -671,12 +628,6 @@ def _init_fn(fields, std_fields, kw_only_fields, frozen, has_post_init,
              self_name, func_builder, slots):
     # fields contains both real fields and InitVar pseudo-fields.
 
-    # Make sure we don't have fields without defaults following fields
-    # with defaults.  This actually would be caught when exec-ing the
-    # function source code, but catching it here gives a better error
-    # message, and future-proofs us in case we build up the function
-    # using ast.
-
     seen_default = None
     for f in std_fields:
         # Only consider the non-kw-only fields in the __init__ call.
@@ -687,65 +638,88 @@ def _init_fn(fields, std_fields, kw_only_fields, frozen, has_post_init,
                 raise TypeError(f'non-default argument {f.name!r} '
                                 f'follows default argument {seen_default.name!r}')
 
-    annotation_fields = [f.name for f in fields if f.init]
+    std_params = [f for f in std_fields if f.init]
+    kw_params = [f for f in kw_only_fields if f.init]
 
-    locals = {'__dataclass_HAS_DEFAULT_FACTORY__': _HAS_DEFAULT_FACTORY,
-              '__dataclass_builtins_object__': object}
+    def __init__(self, *args, **kwargs):
+        cls_name = type(self).__name__
+        if len(args) > len(std_params):
+            raise TypeError(
+                f'{cls_name}.__init__() takes {len(std_params) + 1} '
+                f'positional arguments but {len(args) + 1} were given')
+        values = {}
+        index = 0
+        while index < len(args):
+            values[std_params[index].name] = args[index]
+            index += 1
+        for f in std_params[len(args):] + kw_params:
+            if f.name in kwargs:
+                values[f.name] = kwargs.pop(f.name)
+            elif f.default is not MISSING:
+                values[f.name] = f.default
+            elif f.default_factory is not MISSING:
+                values[f.name] = _HAS_DEFAULT_FACTORY
+            elif f in kw_params:
+                raise TypeError(
+                    f"{cls_name}.__init__() missing 1 required "
+                    f"keyword-only argument: '{f.name}'")
+            else:
+                raise TypeError(
+                    f"{cls_name}.__init__() missing 1 required "
+                    f"positional argument: '{f.name}'")
+        # A keyword naming an already-bound parameter is an error,
+        # as is any argument that is not a parameter at all.
+        for f in std_params[:len(args)]:
+            if f.name in kwargs:
+                raise TypeError(
+                    f"{cls_name}.__init__() got multiple values "
+                    f"for argument '{f.name}'")
+        if kwargs:
+            key = next(iter(kwargs))
+            raise TypeError(
+                f"{cls_name}.__init__() got an unexpected "
+                f"keyword argument '{key}'")
+        initvars = []
+        for f in fields:
+            if f._field_type is _FIELD_INITVAR:
+                initvars.append(values.get(f.name))
+                continue
+            if f.init:
+                value = values[f.name]
+                if value is _HAS_DEFAULT_FACTORY:
+                    value = f.default_factory()
+            elif f.default_factory is not MISSING:
+                value = f.default_factory()
+            elif slots and f.default is not MISSING:
+                value = f.default
+            else:
+                # The class attribute holds the default, if any.
+                continue
+            if frozen:
+                object.__setattr__(self, f.name, value)
+            else:
+                setattr(self, f.name, value)
+        if has_post_init:
+            getattr(self, _POST_INIT_NAME)(*initvars)
 
-    body_lines = []
-    for f in fields:
-        line = _field_init(f, frozen, locals, self_name, slots)
-        # line is None means that this field doesn't require
-        # initialization (it's a pseudo-field).  Just skip it.
-        if line:
-            body_lines.append(line)
-
-    # Does this class have a post-init function?
-    if has_post_init:
-        params_str = ','.join(f.name for f in fields
-                              if f._field_type is _FIELD_INITVAR)
-        body_lines.append(f'  {self_name}.{_POST_INIT_NAME}({params_str})')
-
-    # If no body lines, use 'pass'.
-    if not body_lines:
-        body_lines = ['  pass']
-
-    _init_params = [_init_param(f) for f in std_fields]
-    if kw_only_fields:
-        # Add the keyword-only args.  Because the * can only be added if
-        # there's at least one keyword-only arg, there needs to be a test here
-        # (instead of just concatenating the lists together).
-        _init_params += ['*']
-        _init_params += [_init_param(f) for f in kw_only_fields]
-    func_builder.add_fn('__init__',
-                        [self_name] + _init_params,
-                        body_lines,
-                        locals=locals,
-                        return_type=None,
-                        annotation_fields=annotation_fields)
+    func_builder.add_fn('__init__', __init__)
 
 
 def _frozen_set_del_attr(cls, fields, func_builder):
-    locals = {'__class__': cls,
-              'FrozenInstanceError': FrozenInstanceError}
-    condition = 'type(self) is __class__'
-    if fields:
-        condition += ' or name in {' + ', '.join(repr(f.name) for f in fields) + '}'
+    field_names = {f.name for f in fields}
 
-    func_builder.add_fn('__setattr__',
-                        ('self', 'name', 'value'),
-                        (f'  if {condition}:',
-                          '   raise FrozenInstanceError(f"cannot assign to field {name!r}")',
-                         f'  super(__class__, self).__setattr__(name, value)'),
-                        locals=locals,
-                        overwrite_error=True)
-    func_builder.add_fn('__delattr__',
-                        ('self', 'name'),
-                        (f'  if {condition}:',
-                          '   raise FrozenInstanceError(f"cannot delete field {name!r}")',
-                         f'  super(__class__, self).__delattr__(name)'),
-                        locals=locals,
-                        overwrite_error=True)
+    def __setattr__(self, name, value):
+        if type(self) is cls or name in field_names:
+            raise FrozenInstanceError(f'cannot assign to field {name!r}')
+        super(cls, self).__setattr__(name, value)
+
+    def __delattr__(self, name):
+        if type(self) is cls or name in field_names:
+            raise FrozenInstanceError(f'cannot delete field {name!r}')
+        super(cls, self).__delattr__(name)
+
+    func_builder.add_fn('__setattr__', __setattr__, overwrite_error=True)
+    func_builder.add_fn('__delattr__', __delattr__, overwrite_error=True)
 
 
 def _is_classvar(a_type, typing):
@@ -942,11 +916,11 @@ def _hash_set_none(cls, fields, func_builder):
 
 def _hash_add(cls, fields, func_builder):
     flds = [f for f in fields if (f.compare if f.hash is None else f.hash)]
-    self_tuple = _tuple_str('self', flds)
-    func_builder.add_fn('__hash__',
-                        ('self',),
-                        [f'  return hash({self_tuple})'],
-                        unconditional_add=True)
+
+    def __hash__(self):
+        return hash(tuple(getattr(self, f.name) for f in flds))
+
+    func_builder.add_fn('__hash__', __hash__, unconditional_add=True)
 
 def _hash_exception(cls, fields, func_builder):
     # Raise an exception.
@@ -1155,48 +1129,56 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen,
 
     if repr:
         flds = [f for f in field_list if f.repr]
-        func_builder.add_fn('__repr__',
-                            ('self',),
-                            ['  return f"{self.__class__.__qualname__}(' +
-                             ', '.join([f"{f.name}={{self.{f.name}!r}}"
-                                        for f in flds]) + ')"'],
-                            locals={'__dataclasses_recursive_repr': recursive_repr},
-                            decorator="@__dataclasses_recursive_repr()")
+
+        def __repr__(self):
+            parts = ', '.join(f'{f.name}={getattr(self, f.name)!r}' for f in flds)
+            return f'{self.__class__.__qualname__}({parts})'
+
+        __repr__ = recursive_repr()( __repr__)
+        func_builder.add_fn('__repr__', __repr__)
 
     if eq:
         # Create __eq__ method.  There's no need for a __ne__ method,
         # since python will call __eq__ and negate it.
-        cmp_fields = (field for field in field_list if field.compare)
-        terms = [f'self.{field.name}==other.{field.name}' for field in cmp_fields]
-        field_comparisons = ' and '.join(terms) or 'True'
-        func_builder.add_fn('__eq__',
-                            ('self', 'other'),
-                            [ '  if self is other:',
-                              '   return True',
-                              '  if other.__class__ is self.__class__:',
-                             f'   return {field_comparisons}',
-                              '  return NotImplemented'])
+        cmp_fields = [field for field in field_list if field.compare]
+
+        def __eq__(self, other):
+            if self is other:
+                return True
+            if other.__class__ is self.__class__:
+                return all(
+                    getattr(self, field.name) == getattr(other, field.name)
+                    for field in cmp_fields
+                )
+            return NotImplemented
+
+        func_builder.add_fn('__eq__', __eq__)
 
     if order:
         # Create and set the ordering methods.
         flds = [f for f in field_list if f.compare]
-        self_tuple = _tuple_str('self', flds)
-        other_tuple = _tuple_str('other', flds)
-        for name, op in [('__lt__', '<'),
-                         ('__le__', '<='),
-                         ('__gt__', '>'),
-                         ('__ge__', '>='),
+
+        def _comparison(op):
+            def compare(self, other):
+                if other.__class__ is self.__class__:
+                    left = tuple(getattr(self, f.name) for f in flds)
+                    right = tuple(getattr(other, f.name) for f in flds)
+                    return op(left, right)
+                return NotImplemented
+
+            return compare
+
+        import operator as _operator_module
+
+        for name, op in [('__lt__', _operator_module.lt),
+                         ('__le__', _operator_module.le),
+                         ('__gt__', _operator_module.gt),
+                         ('__ge__', _operator_module.ge),
                          ]:
-            # Create a comparison function.  If the fields in the object are
-            # named 'x' and 'y', then self_tuple is the string
-            # '(self.x,self.y)' and other_tuple is the string
-            # '(other.x,other.y)'.
-            func_builder.add_fn(name,
-                            ('self', 'other'),
-                            [ '  if other.__class__ is self.__class__:',
-                             f'   return {self_tuple}{op}{other_tuple}',
-                              '  return NotImplemented'],
-                            overwrite_error='Consider using functools.total_ordering')
+            fn = _comparison(op)
+            fn.__name__ = name
+            func_builder.add_fn(name, fn,
+                                overwrite_error='Consider using functools.total_ordering')
 
     if frozen:
         _frozen_set_del_attr(cls, field_list, func_builder)
