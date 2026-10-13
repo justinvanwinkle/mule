@@ -25,6 +25,11 @@ pub struct ClassLayout {
     pub id: usize,
     pub name: String,
     pub base: Value,
+    /// Every direct base, retained. `base` is the first of these.
+    pub bases: Vec<Value>,
+    /// Ancestors in C3 method-resolution order, excluding this class.
+    /// Not retained: each is reachable through the direct bases' chains.
+    pub mro: Vec<Value>,
     /// The class's own class: `type` or a metaclass derived from it.
     pub metaclass: Value,
     pub fields: Vec<String>,
@@ -43,15 +48,16 @@ impl ClassLayout {
     /// The class defining `name` (this class or a base), how many bases up
     /// it is, and the attribute's index in that class's own table.
     fn find(&self, name: &str) -> Option<(&ClassLayout, usize, usize)> {
-        let mut layout = self;
-        let mut depth = 0;
-        loop {
-            if let Some(index) = layout.attribute_lookup.get(name) {
-                return Some((layout, depth, *index));
-            }
-            layout = unsafe { base_layout(layout)? };
-            depth += 1;
+        if let Some(index) = self.attribute_lookup.get(name) {
+            return Some((self, 0, *index));
         }
+        for (position, ancestor) in self.mro.iter().enumerate() {
+            let layout = unsafe { layout_of_class(*ancestor) }?;
+            if let Some(index) = layout.attribute_lookup.get(name) {
+                return Some((layout, position + 1, *index));
+            }
+        }
+        None
     }
 
     /// The raw class attribute, borrowed, or NULL when absent.
@@ -77,11 +83,10 @@ impl ClassLayout {
 
     /// The class `depth` bases up from this one.
     fn ancestor(&self, depth: usize) -> &ClassLayout {
-        let mut layout = self;
-        for _ in 0..depth {
-            layout = unsafe { base_layout(layout) }.expect("cached base chain");
+        if depth == 0 {
+            return self;
         }
-        layout
+        unsafe { layout_of_class(self.mro[depth - 1]) }.expect("cached MRO")
     }
 }
 
@@ -942,22 +947,13 @@ pub unsafe fn is_instance(value: Value, class: Value) -> bool {
 /// Whether `derived` is `class` or has it among its bases.
 pub unsafe fn is_subclass(derived: Value, class: Value) -> bool {
     unsafe {
-        let mut owner = derived;
-        if owner.is_null() {
+        if derived.is_null() || derived == class {
+            return derived == class && !derived.is_null();
+        }
+        let Some(layout) = class_layout(derived) else {
             return false;
-        }
-        loop {
-            if owner == class {
-                return true;
-            }
-            let Data::Class(layout) = &(*owner).data else {
-                return false;
-            };
-            if layout.base.is_null() {
-                return false;
-            }
-            owner = layout.base;
-        }
+        };
+        layout.mro.contains(&class)
     }
 }
 
@@ -1022,14 +1018,50 @@ unsafe fn create_class(
     namespace: Value,
     native: Option<NativeLayout>,
 ) -> Value {
-    unsafe { create_class_with(class_name, base, std::ptr::null_mut(), field_count, field_names, namespace, native) }
+    let bases = if base.is_null() { Vec::new() } else { vec![base] };
+    unsafe { create_class_with(class_name, bases, std::ptr::null_mut(), field_count, field_names, namespace, native) }
+}
+
+/// The C3 linearization of a new class with the given direct bases:
+/// the ancestors after the class itself, or None when the bases' orders
+/// conflict or a base repeats.
+fn linearize(bases: &[Value]) -> Option<Vec<Value>> {
+    let mut sequences: Vec<Vec<Value>> = Vec::with_capacity(bases.len() + 1);
+    for base in bases {
+        let layout = unsafe { layout_of_class(*base) }?;
+        let mut sequence = Vec::with_capacity(layout.mro.len() + 1);
+        sequence.push(*base);
+        sequence.extend_from_slice(&layout.mro);
+        sequences.push(sequence);
+    }
+    sequences.push(bases.to_vec());
+    let mut result = Vec::new();
+    loop {
+        sequences.retain(|sequence| !sequence.is_empty());
+        if sequences.is_empty() {
+            return Some(result);
+        }
+        let candidate = sequences.iter().find_map(|sequence| {
+            let head = sequence[0];
+            sequences
+                .iter()
+                .all(|other| !other[1..].contains(&head))
+                .then_some(head)
+        })?;
+        result.push(candidate);
+        for sequence in &mut sequences {
+            if sequence[0] == candidate {
+                sequence.remove(0);
+            }
+        }
+    }
 }
 
 /// Create a class. A NULL base means `object` (once it exists), and a NULL
 /// metaclass means the base's metaclass, or `type`.
 unsafe fn create_class_with(
     class_name: *const c_char,
-    base: Value,
+    bases: Vec<Value>,
     metaclass: Value,
     field_count: isize,
     field_names: *const *const c_char,
@@ -1037,11 +1069,17 @@ unsafe fn create_class_with(
     native: Option<NativeLayout>,
 ) -> Value {
     unsafe {
-        let base = if base.is_null() && native.is_none() {
-            builtin_type(Builtin::Object)
+        let bases = if bases.is_empty() && native.is_none() {
+            let object = builtin_type(Builtin::Object);
+            if object.is_null() { Vec::new() } else { vec![object] }
         } else {
-            base
+            bases
         };
+        if bases.iter().enumerate().any(|(index, base)| bases[..index].contains(base)) {
+            object::error("TypeError", "duplicate base class");
+            return std::ptr::null_mut();
+        }
+        let base = bases.first().copied().unwrap_or(std::ptr::null_mut());
         let metaclass = if !metaclass.is_null() {
             metaclass
         } else if let Some(layout) = layout_of_class(base) {
@@ -1071,14 +1109,12 @@ unsafe fn create_class_with(
         let Some(class_name) = name(class_name) else {
             return std::ptr::null_mut();
         };
-        let inherited = if base.is_null() {
-            None
-        } else {
-            if object::is_fixnum(base) || !matches!(&(*base).data, Data::Class(_)) {
+        for candidate in &bases {
+            if object::is_fixnum(*candidate) || !matches!(&(**candidate).data, Data::Class(_)) {
                 object::error("TypeError", "base must be a fixed-layout Mule class");
                 return std::ptr::null_mut();
             }
-            let Data::Class(layout) = &(*base).data else {
+            let Data::Class(layout) = &(**candidate).data else {
                 unreachable!();
             };
             if layout.native.is_some() {
@@ -1090,12 +1126,39 @@ unsafe fn create_class_with(
                 );
                 return std::ptr::null_mut();
             }
+        }
+        let Some(mro) = linearize(&bases) else {
+            object::error(
+                "TypeError",
+                "Cannot create a consistent method resolution order (MRO) for bases",
+            );
+            return std::ptr::null_mut();
+        };
+        let inherited = if base.is_null() {
+            None
+        } else {
+            let Data::Class(layout) = &(*base).data else {
+                unreachable!();
+            };
             Some(layout)
         };
         // Validate all names before taking ownership, making every rejection atomic.
         let mut fields = inherited.map_or_else(Vec::new, |layout| layout.fields.clone());
         let mut field_lookup: HashMap<String, usize> = inherited
             .map_or_else(HashMap::new, |layout| layout.field_lookup.clone());
+        // Fields declared on later bases (in MRO order) get slots after the
+        // primary base's, so every base's methods find their fields.
+        for ancestor in &mro {
+            let Some(layout) = layout_of_class(*ancestor) else {
+                continue;
+            };
+            for field in &layout.fields {
+                if !fields.iter().any(|known| known == field) {
+                    field_lookup.insert(field.clone(), fields.len());
+                    fields.push(field.clone());
+                }
+            }
+        }
         for index in 0..field_count as usize {
             let Some(attribute) = name(*field_names.add(index)) else {
                 return std::ptr::null_mut();
@@ -1136,13 +1199,18 @@ unsafe fn create_class_with(
             None => !base.is_null(),
             Some(slots) => slot_names_include_dict(slots),
         };
-        let dict_allowed = native.is_none() && (inherited.is_some_and(|layout| layout.dict_allowed) || own_dict);
+        let any_dict = mro.iter().any(|ancestor| {
+            layout_of_class(*ancestor).is_some_and(|layout| layout.dict_allowed)
+        });
+        let dict_allowed = native.is_none() && (any_dict || own_dict);
         let id = NEXT_CLASS_ID.fetch_add(1, Ordering::Relaxed);
         assert_ne!(id, 0, "class identity space exhausted");
         object::new_value(Data::Class(Box::new(ClassLayout {
             id,
             name: class_name.into(),
-            base: object::retain(base),
+            base,
+            bases: bases.iter().map(|base| object::retain(*base)).collect(),
+            mro,
             metaclass: object::retain(metaclass),
             fields,
             attributes,
@@ -1672,6 +1740,33 @@ unsafe extern "C" fn class_base(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn class_bases(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(layout) = class_layout(class) else {
+            return std::ptr::null_mut();
+        };
+        object::mule_sequence_tuple(layout.bases.len() as isize, layout.bases.as_ptr())
+    }
+}
+
+unsafe extern "C" fn class_mro(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(layout) = class_layout(class) else {
+            return std::ptr::null_mut();
+        };
+        let mut values = Vec::with_capacity(layout.mro.len() + 1);
+        values.push(class);
+        values.extend_from_slice(&layout.mro);
+        object::mule_sequence_tuple(values.len() as isize, values.as_ptr())
+    }
+}
+
 unsafe extern "C" fn class_lookup(_: Value, args: Value) -> Value {
     unsafe {
         let Some([class, attribute]) = operands(args) else {
@@ -1688,6 +1783,27 @@ unsafe extern "C" fn class_lookup(_: Value, args: Value) -> Value {
             return missing(Some(layout), false, &attribute);
         }
         object::retain(value)
+    }
+}
+
+unsafe extern "C" fn class_lookup_or_null(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class, attribute]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(layout) = layout_of_class(class) else {
+            object::error("TypeError", "a compiled class is required");
+            return std::ptr::null_mut();
+        };
+        let Some(attribute) = text_argument(attribute) else {
+            return std::ptr::null_mut();
+        };
+        let value = layout.method(&attribute);
+        if value.is_null() {
+            object::none_value()
+        } else {
+            object::retain(value)
+        }
     }
 }
 
@@ -1846,10 +1962,10 @@ unsafe extern "C" fn delete_attribute(_: Value, args: Value) -> Value {
 }
 
 /// `type(name, bases, namespace)` after compiled code has validated the
-/// arguments: the base (or None) and the namespace's names and values in order.
+/// arguments: the bases tuple and the namespace's names and values in order.
 unsafe extern "C" fn new_class(_: Value, args: Value) -> Value {
     unsafe {
-        let Some([metaclass, class_name, base, names, values, fields]) = operands(args) else {
+        let Some([metaclass, class_name, bases_arg, names, values, fields]) = operands(args) else {
             return std::ptr::null_mut();
         };
         let Data::Args(fields) = &(*fields).data else {
@@ -1882,14 +1998,19 @@ unsafe extern "C" fn new_class(_: Value, args: Value) -> Value {
                 return std::ptr::null_mut();
             }
         }
-        let base = if base == object::none_value() {
-            std::ptr::null_mut()
+        let bases: Vec<Value> = if bases_arg == object::none_value() {
+            Vec::new()
+        } else if !object::is_fixnum(bases_arg) {
+            match &(*bases_arg).data {
+                Data::Args(values) => values.clone(),
+                _ => vec![bases_arg],
+            }
         } else {
-            base
+            vec![bases_arg]
         };
         let class = create_class_with(
             class_name.as_ptr(),
-            base,
+            bases,
             metaclass,
             field_pointers.len() as isize,
             field_pointers.as_ptr(),
@@ -2196,7 +2317,7 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 29] = [
+        let exports: [(&str, object::Native); 32] = [
             ("register_not_implemented", register_not_implemented),
             ("instance_items", instance_items),
             ("new_namespace", new_namespace),
@@ -2222,7 +2343,10 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("class_of", class_of),
             ("default_repr", default_repr),
             ("class_base", class_base),
+            ("class_bases", class_bases),
+            ("class_mro", class_mro),
             ("class_lookup", class_lookup),
+            ("class_lookup_or_null", class_lookup_or_null),
             ("bind_attribute", bind_attribute),
             ("bound_method", bound_method),
             ("instance_field", instance_field),

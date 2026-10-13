@@ -12,7 +12,9 @@ any other compiled builtin defines a class, so those classes derive from
 
 from _mule_native import allocate_instance as _new_instance
 from _mule_native import class_base as _class_base
+from _mule_native import class_bases as _class_bases
 from _mule_native import class_lookup as _class_lookup
+from _mule_native import class_mro as _class_mro
 from _mule_native import class_name as _class_name
 from _mule_native import class_own_names as _class_own_names
 from _mule_native import default_repr as _default_repr
@@ -126,8 +128,6 @@ class type(object):
             raise TypeError("type.__new__() argument 1 must be str")
         if not _is_instance(bases, tuple):
             raise TypeError("type.__new__() argument 2 must be tuple")
-        if len(bases) > 1:
-            raise TypeError("multiple inheritance is not supported yet")
         fields = ()
         names, values = [], []
         for key in namespace:
@@ -151,7 +151,7 @@ class type(object):
         cls = _new_class(
             metaclass,
             name,
-            bases[0] if bases else None,
+            bases,
             tuple(names),
             tuple(values),
             fields,
@@ -172,12 +172,7 @@ class type(object):
         return {}
 
     def mro(cls):
-        order = []
-        current = cls
-        while current is not None:
-            order.append(current)
-            current = _class_base(current)
-        return order
+        return list(_class_mro(cls))
 
     def __instancecheck__(cls, instance):
         return _is_instance(instance, cls)
@@ -202,8 +197,7 @@ type.__prepare__ = classmethod(type.__prepare__)
 
 
 def _bases(cls):
-    base = _class_base(cls)
-    return () if base is None else (base,)
+    return _class_bases(cls)
 
 
 def _namespace(cls):

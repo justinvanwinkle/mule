@@ -12,7 +12,8 @@ storage operations; the rules here are ordinary compiled Python.
 
 from _mule_native import bind_attribute as _bind_attribute
 from _mule_native import bound_method as _bound_method
-from _mule_native import class_base as _class_base
+from _mule_native import class_mro as _class_mro
+from _mule_native import class_lookup_or_null as _class_lookup_or_null
 from _mule_native import class_lookup as _class_lookup
 from _mule_native import class_of as _class_of
 from _mule_native import instance_field as _instance_field
@@ -83,9 +84,8 @@ class super:
     """Attribute lookup that starts after ``__thisclass__`` in the class
     hierarchy of ``__self__``, binding what it finds to ``__self__``.
 
-    Classes have single inheritance, so the hierarchy after a class is its
-    base chain, and each class's attribute table already includes what it
-    inherits."""
+    The search follows the MRO of ``__self__``'s class (or of ``__self__``
+    itself when it is a class), starting just after ``__thisclass__``."""
 
     def __init__(self, type, obj):
         self.__thisclass__ = type
@@ -98,7 +98,14 @@ class super:
             owner, instance = obj, None
         else:
             owner, instance = _class_of(obj), obj
-        start = _class_base(thisclass)
-        if start is None:
-            raise AttributeError("'super' object has no attribute '" + name + "'")
-        return _bind_attribute(_class_lookup(start, name), instance, owner)
+        order = _class_mro(owner)
+        index = 0
+        while index < len(order) and order[index] is not thisclass:
+            index += 1
+        index += 1
+        while index < len(order):
+            value = _class_lookup_or_null(order[index], name)
+            if value is not None:
+                return _bind_attribute(value, instance, owner)
+            index += 1
+        raise AttributeError("'super' object has no attribute '" + name + "'")

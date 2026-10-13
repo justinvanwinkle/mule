@@ -768,15 +768,10 @@ def format_(gen, vop):
 def range_prepare(gen, vop):
     callee, iterator = gen.take(vop.args[0]), gen.take(vop.args[1])
     state = vop.args[2].tn.slot
-    module = gen.module
-    globals_value = gen.operation("call ptr @mule_protocol_globals()")
-    matched = gen.operation(
-        f"call i32 @mule_function_matches(ptr {callee}, "
-        f"ptr {module.functions[module.sequence_functions['range']]}, ptr {globals_value})"
-    )
+    # No callable-identity guard: `range` is a class, and the storage check
+    # only accepts iterators of the protocol's own RangeIterator class.
     stored = gen.operation(f"call i32 @mule_range_storage(ptr {iterator}, ptr {state})")
-    accepted = gen.operation(f"and i32 {matched}, {stored}")
-    result = gen.operation(f"call ptr @mule_bool(i32 {accepted})")
+    result = gen.operation(f"call ptr @mule_bool(i32 {stored})")
     gen.publish(vop.results[0], result)
     gen.release(callee)
     gen.release(iterator)

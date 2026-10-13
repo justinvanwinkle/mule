@@ -1279,8 +1279,8 @@ class RangeIterator:
         return current
 
 
-class Range:
-    def __init__(self, args):
+class range:
+    def __init__(self, *args):
         count = _storage_length(args)
         if count == 1:
             start = 0
@@ -1335,10 +1335,6 @@ class Enumerate:
         index = self.index
         self.index = index + 1
         return (index, value)
-
-
-def range(*args):
-    return Range(args)
 
 
 def enumerate(*args):

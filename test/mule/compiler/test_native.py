@@ -170,6 +170,27 @@ def test_sys_getframe_walks_the_call_stack(tmp_path):
     )
 
 
+def test_multiple_inheritance_follows_c3_mro(tmp_path):
+    source = (
+        "class A:\n    def who(self):\n        return 'A'\n"
+        "    def common(self):\n        return 'A-common'\n"
+        "class B(A):\n    def who(self):\n        return 'B'\n"
+        "class C(A):\n    def who(self):\n        return 'C'\n"
+        "    def extra(self):\n        return 'C-extra'\n"
+        "class D(B, C):\n    pass\n"
+        "print([c.__name__ for c in D.mro()])\n"
+        "d = D()\nprint(d.who(), d.common(), d.extra())\n"
+        "print(isinstance(d, C), issubclass(D, C), D.__bases__ == (B, C))\n"
+        "class E(B, C):\n    def who(self):\n        return 'E>' + super().who()\n"
+        "print(E().who())\n"
+    )
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "['D', 'B', 'C', 'A', 'object']\nB A-common C-extra\nTrue True True\nE>B\n"
+    )
+
+
 def test_module_policy_assignment_must_precede_module_code():
     with pytest.raises(SyntaxError, match="must precede the module's code"):
         emit_llvm("print(1)\n__safety__ = 0\n")

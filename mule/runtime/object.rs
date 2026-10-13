@@ -434,7 +434,9 @@ pub unsafe fn release(value: Value) {
                 release(*back);
             }
             Data::Class(layout) => {
-                release(layout.base);
+                for base in &layout.bases {
+                    release(*base);
+                }
                 release(layout.metaclass);
                 for (_, method) in &layout.attributes {
                     release(*method);
