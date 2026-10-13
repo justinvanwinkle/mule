@@ -487,7 +487,12 @@ class FunctionConverter:
                 if cell is not None:
                     return cell
         primitive = self.converter.primitives.get(name)
-        if primitive is not None:
+        # Explicit module bindings shadow the implicit physical primitives,
+        # including in functions that read those bindings as globals.
+        if (
+            primitive is not None
+            and name not in self.converter.module_annotation_shadows
+        ):
             return self.converter.known(primitive)
         return self.converter.global_var(name)
 

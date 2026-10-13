@@ -68,6 +68,15 @@ but no fabricated `__file__`. Imports, aliases, passing callables, and module
 attribute rebinding retain ordinary Python behavior; no call-site spelling is
 rewritten. This does not introduce a separate runtime module registry or evaluator.
 
+Explicit module bindings, including import aliases, take precedence over implicit
+protocol primitive bindings, both for stores and for global reads inside functions.
+Unshadowed protocol primitives still resolve to known functions. SBCL separates
+these lookups in `src/compiler/ir1tran.lisp`, `find-free-var` and `find-free-fun`;
+Mule must account for Python's shared variable/callable namespace while retaining
+SBCL's invariant that assignment destinations are variable leaves, not function
+leaves. Shadowed primitives use ordinary mutable globals rather than unconditional
+primitive lowering.
+
 Exports are positional-only physical operations:
 
 | Export | Storage contract |

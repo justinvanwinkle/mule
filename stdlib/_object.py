@@ -829,6 +829,34 @@ class int(object):
             return NotImplemented
         return (self // other, self % other)
 
+    def to_bytes(self, length=1, byteorder='little', *, signed=False):
+        if length < 0:
+            raise ValueError("length argument must be non-negative")
+        value = self
+        if value < 0:
+            if not signed:
+                raise OverflowError("can't convert negative int to unsigned")
+            value += 1 << (8 * length)
+            if value < 0:
+                raise OverflowError("int too large to convert")
+        elif value >= (1 << (8 * length)):
+            raise OverflowError("int too large to convert")
+        result = bytearray(length)
+        for index in range(length):
+            shift = 8 * index if byteorder == 'little' else 8 * (length - 1 - index)
+            result[index] = (value >> shift) & 0xFF
+        return bytes(result)
+
+    @classmethod
+    def from_bytes(cls, data, byteorder='little', *, signed=False):
+        value = 0
+        for index in range(len(data)):
+            shift = 8 * index if byteorder == 'little' else 8 * (len(data) - 1 - index)
+            value |= data[index] << shift
+        if signed and len(data) and (data[0] if byteorder == 'big' else data[len(data) - 1]) & 0x80:
+            value -= 1 << (8 * len(data))
+        return value
+
     def __trunc__(self):
         return self
 

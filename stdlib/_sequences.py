@@ -1780,8 +1780,15 @@ def _view_index(view, index):
     return index
 
 
+def open(file, mode='r', buffering=-1, encoding=None, errors=None, newline=None, closefd=True, opener=None):
+    import io as _io
+
+    return _io.open(file, mode, buffering, encoding, errors, newline, closefd, opener)
+
+
 _install_storage(list, tuple, str, bytes)
 
+_install_builtin("open", open)
 _install_builtin("range", range)
 _install_builtin("enumerate", enumerate)
 _install_builtin("iter", iter)

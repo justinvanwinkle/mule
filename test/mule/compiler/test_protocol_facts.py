@@ -13,9 +13,10 @@ from mule.compiler.ctype import (
     TupleType,
 )
 from mule.compiler.driver import compile_program
-from mule.compiler.main import compile_source
-from mule.compiler.node import Combination, Set
-from mule.compiler.protocols import compile_protocol
+from mule.compiler.main import compile_source, compile_toplevel
+from mule.compiler.modules import ModuleCompiler
+from mule.compiler.node import Combination, GlobalVar, Ref, Set
+from mule.compiler.protocols import PRIMITIVES, compile_protocol
 
 
 @pytest.mark.parametrize(
@@ -129,6 +130,38 @@ def test_physical_primitive_results_have_proven_types(primitive, expected):
     )
     probe = compilation.lambdas[1]
     assert compilation.facts[probe].return_type == expected
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "_active_exception = None\n",
+        "from _mule_native import active_exception as _active_exception\n",
+    ],
+)
+def test_module_binding_shadowing_primitive_uses_mutable_global(binding):
+    compilation = compile_toplevel(
+        binding + "def probe():\n return _active_exception\n",
+        imports=ModuleCompiler("<primitive-shadow>"),
+        primitives=PRIMITIVES,
+    )
+    stores = [
+        node
+        for component in compilation.components
+        for block in component.blocks()
+        for node in block.nodes()
+        if isinstance(node, Set) and node.var.name == "_active_exception"
+    ]
+    assert len(stores) == 1
+    variable = stores[0].var
+    assert isinstance(variable, GlobalVar)
+    probe = compilation.lambdas[1]
+    assert probe.component is not None
+    assert any(
+        isinstance(node, Ref) and node.leaf is variable
+        for block in probe.component.blocks()
+        for node in block.nodes()
+    )
 
 
 def test_unpack_capture_belongs_to_exception_transfer_cleanup():
