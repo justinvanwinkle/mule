@@ -7,6 +7,12 @@ from typing import NoReturn
 
 from mule.ast import Position
 
+from .lexical import NUMBER as _NUMBER
+from .lexical import OPERATORS as _OPERATORS
+from .lexical import name_continue as _name_continue
+from .lexical import name_start as _name_start
+from .lexical import string_header
+
 
 @dataclass(frozen=True, slots=True)
 class Token:
@@ -20,68 +26,6 @@ class Token:
 
 
 _ORIGIN = Position(1, 0)
-
-_PREFIXES = {"", "r", "u", "b", "f", "t", "br", "rb", "fr", "rf", "tr", "rt"}
-_DIGITS = r"[0-9](?:_?[0-9])*"
-_NUMBER = re.compile(
-    rf"(?:0[xX](?:_?[0-9a-fA-F])+|0[oO](?:_?[0-7])+|0[bB](?:_?[01])+|"
-    rf"(?:(?:{_DIGITS}\.(?:{_DIGITS})?|\.{_DIGITS})(?:[eE][+-]?{_DIGITS})?|"
-    rf"{_DIGITS}[eE][+-]?{_DIGITS}|{_DIGITS})[jJ]?)"
-)
-_OPERATORS = sorted(
-    {
-        "+",
-        "-",
-        "*",
-        "**",
-        "/",
-        "//",
-        "%",
-        "@",
-        "<<",
-        ">>",
-        "&",
-        "|",
-        "^",
-        "~",
-        ":=",
-        "<",
-        ">",
-        "<=",
-        ">=",
-        "==",
-        "!=",
-        "=",
-        "+=",
-        "-=",
-        "*=",
-        "**=",
-        "/=",
-        "//=",
-        "%=",
-        "@=",
-        "<<=",
-        ">>=",
-        "&=",
-        "|=",
-        "^=",
-        "->",
-        "...",
-        ":",
-        ".",
-        ",",
-        ";",
-        "(",
-        ")",
-        "[",
-        "]",
-        "{",
-        "}",
-        "!",
-    },
-    key=len,
-    reverse=True,
-)
 
 
 def position_at(source: str, index: int, start: Position = _ORIGIN) -> Position:
@@ -106,21 +50,6 @@ def lexical_error(
     if position.line == start.line:
         line = " " * start.column + line
     raise error_type(message, (filename, position.line, position.column + 1, line))
-
-
-def string_header(source: str, index: int) -> tuple[str, str, int] | None:
-    """Return prefix, quote delimiter, and body start for a literal at index."""
-    end = index
-    while end < len(source) and source[end] in "rRuUbBfFtT":
-        end += 1
-    if end >= len(source) or source[end] not in "'\"":
-        return None
-    prefix = source[index:end]
-    if prefix.lower() not in _PREFIXES:
-        return None
-    quote = source[end]
-    delimiter = quote * 3 if source.startswith(quote * 3, end) else quote
-    return prefix, delimiter, end + len(delimiter)
 
 
 def scan_string(
@@ -237,14 +166,6 @@ def scan_format(source, index, filename, start, outer_quote):
         else:
             cursor += 1
     lexical_error("unterminated format specification", source, index, filename, start)
-
-
-def _name_start(character: str) -> bool:
-    return character == "_" or character.isidentifier()
-
-
-def _name_continue(character: str) -> bool:
-    return ("a" + character).isidentifier()
 
 
 def lex(

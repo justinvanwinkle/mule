@@ -1162,11 +1162,51 @@ class TupleStorage(_OrderedSequence):
 def _byte_sequence_values(value):
     if _integer_storage_kind(value):
         return [_byte_value(value)]
-    if _text_storage(value):
+    return _bytes_like_values(value)
+
+
+def _bytes_like_values(value):
+    if _integer_storage_kind(value) or _text_storage(value):
         raise TypeError(
             "a bytes-like object is required, not '" + _type_name(value) + "'"
         )
     return _byte_values(value, None, "strict")
+
+
+def _bytes_translated(values, table, delete):
+    table_values = None
+    if table is not None:
+        table_values = _bytes_like_values(table)
+        if _storage_length(table_values) != 256:
+            raise ValueError("translation table must be 256 characters long")
+    delete_values = _bytes_like_values(delete)
+    result = []
+    index = 0
+    while index < _storage_length(values):
+        value = _storage_read(values, index)
+        if _bytes_find(delete_values, value, 0, None) < 0:
+            if table_values is not None:
+                value = _storage_read(table_values, value)
+            _storage_append(result, value)
+        index += 1
+    return result
+
+
+def _make_bytes_translation_table(frm, to):
+    from_values = _bytes_like_values(frm)
+    to_values = _bytes_like_values(to)
+    if _storage_length(from_values) != _storage_length(to_values):
+        raise ValueError("maketrans arguments must have same length")
+    result = []
+    value = 0
+    while value < 256:
+        _storage_append(result, value)
+        value += 1
+    index = 0
+    while index < _storage_length(from_values):
+        _storage_write(result, _storage_read(from_values, index), _storage_read(to_values, index))
+        index += 1
+    return _bytes_from_values(result)
 
 
 def _bytes_bounds(length, start, end):
@@ -1308,6 +1348,13 @@ class BytesStorage:
 
     def endswith(self, suffix, start=0, end=None):
         return _bytes_endswith(_make_list(self), suffix, start, end)
+
+    def translate(self, table, delete=b""):
+        return _bytes_from_values(_bytes_translated(_make_list(self), table, delete))
+
+    @staticmethod
+    def maketrans(frm, to):
+        return _make_bytes_translation_table(frm, to)
 
 
 def sequence_equal(left, right):
@@ -1778,6 +1825,13 @@ class bytearray:
 
     def endswith(self, suffix, start=0, end=None):
         return _bytes_endswith(self.values, suffix, start, end)
+
+    def translate(self, table, delete=b""):
+        return bytearray(_bytes_translated(self.values, table, delete))
+
+    @staticmethod
+    def maketrans(frm, to):
+        return _make_bytes_translation_table(frm, to)
 
 
 class memoryview:
