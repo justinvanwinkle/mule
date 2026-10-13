@@ -22,6 +22,62 @@ and an `os.environ` wrapper over it; that mapping policy stays in compiled
 Python. Removing dictionary mutation from the POSIX wrappers avoids duplicate
 updates and does not add runtime dispatch or change the native call cost.
 
+### Native process exit
+
+`SystemExit` asks its code value for an exit-status pair in compiled Python:
+integers (including bool and subclasses) supply a process status, `None`
+supplies zero, and other values supply status one and their text. Integer
+status handling follows the 64-bit Linux native-long boundary and the OS's
+low byte; integers outside native-long range yield 255. The native runner
+only reads the resulting status/text storage and writes the requested message.
+
+SBCL `src/code/cold-init.lisp`, `exit`, keeps status policy in compiled Lisp
+before handing the status to native termination. Mule follows that boundary;
+Python's `SystemExit.code` and integer subclasses require the value-owned
+protocol. This migrates the runner's previous tag-only exit policy out of Rust
+and prevents boxed `IntEnum` statuses from being printed as errors.
+
+### OS random bytes
+
+The compiled `posix.urandom` wrapper, also exported through `os`, applies the
+integer-index protocol and rejects negative lengths. Its `_posix.entropy_bytes`
+primitive allocates byte storage and fills it through Linux `getrandom` with
+flags zero, retrying interrupted and short reads. Zero length returns empty
+bytes; unrepresentable lengths and allocation/OS failures raise errors.
+
+SBCL `src/code/target-random.lisp`, `os-random-seed`, obtains OS entropy through
+`/dev/urandom` and passes it to compiled Lisp random-state initialization. Mule
+keeps entropy acquisition as an OS service; Python's `os.urandom` additionally
+requires a byte result of the requested length. Linux `getrandom` blocks until
+the kernel RNG is initialized and avoids descriptor management. Unlike SBCL's
+noncryptographic seed fallback, this API does not substitute time or PID when
+entropy acquisition fails. The wrapper is compiled Python, and Rust contains
+only allocation and syscall handling; no PRNG algorithm is added there.
+
+### Compiled random core
+
+`stdlib/_random.py` supplies the MT19937 core used by the existing compiled
+`random` module. All initialization, array seeding, twisting, tempering,
+53-bit fraction generation, bit generation, and state transfer execute as
+compiled Python. The initial seed boundary supports `None` (OS entropy) and
+integer-index seeds; generic hashable core seeds and the public module's
+SHA-512 string seed dependency remain gaps. No native evaluator or Rust PRNG
+implementation is used.
+
+SBCL `src/code/target-random.lisp`, `init-random-state`, `seed-random-state`,
+`random-mt19937-update`, and `random-chunk`, provides the same 624-word MT19937
+state, 397-word recurrence, array initialization multipliers, and tempering
+masks. Mule stores the state as packed unsigned 32-bit words in byte storage;
+a compiled word-buffer class owns extraction and replacement. Unlike SBCL's
+machine-word array VOPs, each word currently requires four byte accesses.
+The explicit little-endian packing keeps physical state independent of the
+host's byte order and reuses Mule's existing mutable byte storage; it adds no
+boxed object per stored word. Combining those byte accesses into a direct
+word load/store remains compiler optimization work, not a speed claim.
+Python's stable random sequence requires little-endian seed word extraction,
+two tempered words for each 53-bit fraction, and low-word-first `getrandbits`.
+These sampling and state API adaptations stay in compiled Python.
+
 ### Initial sys module
 
 `sys` is compiled from `stdlib/sys.py`, with shared decoding in

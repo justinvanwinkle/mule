@@ -161,6 +161,7 @@ class ClassScope:
     qualname: str
     # The ``__class__`` cell, created when a method needs it.
     cell: LambdaVar | None = None
+    annotation_namespace_used: bool = False
 
     def class_cell(self) -> LambdaVar:
         if self.cell is None:
@@ -251,6 +252,7 @@ class Converter:
         self.compiler_bindings = {}
         self.active_compiler_bindings = {}
         self.module_annotations = {}
+        self.future_annotations = False
         self.class_definitions = 0
         self.class_fields = {}
         self.module_annotation_shadows = set()
@@ -281,13 +283,13 @@ class Converter:
         start, end = node.span.start, node.span.end
         lines = self.source_lines
         if start.line == end.line:
-            return lines[start.line - 1][start.column:end.column]
-        parts = [lines[start.line - 1][start.column:]]
+            return lines[start.line - 1][start.column : end.column]
+        parts = [lines[start.line - 1][start.column :]]
         line = start.line
         while line < end.line - 1:
             parts.append(lines[line])
             line += 1
-        parts.append(lines[end.line - 1][:end.column])
+        parts.append(lines[end.line - 1][: end.column])
         return "".join(parts)
 
     def error(self, message: str, node: ast.Node, *, unsupported=False) -> NoReturn:
@@ -558,6 +560,14 @@ class FunctionConverter:
             return None
         if self.class_scopes and name in self.class_scopes[-1].bound:
             return self.class_scopes[-1]
+        if (
+            self.annotation_scope
+            and self.defining_class is not None
+            and name in self.defining_class.bound
+            and name not in self.locals
+        ):
+            self.defining_class.annotation_namespace_used = True
+            return self.defining_class
         return None
 
     def annotation_for(self, name):
@@ -1269,10 +1279,17 @@ class FunctionConverter:
             lambda_.signature.annotations[index]
             for index in lambda_.signature.default_parameters
         )
+        from .annotation_runtime import AnnotationThunk
+
+        annotate = AnnotationThunk(
+            self.converter, definition, _RuntimeAnnotation(self.converter)
+        ).build()
+        created = Lvar() if annotate is not None else result
+        after = Ctran() if annotate is not None else next_
         self.known(
             following,
-            next_,
-            result,
+            after,
+            created,
             fndb.MAKE_FUNCTION,
             (fun, *defaults),
             definition,
@@ -1280,6 +1297,37 @@ class FunctionConverter:
                 public_name, default_contracts, self.converter.location(definition)
             ),
         )
+        if annotate is None:
+            return
+        original = self.temporary()
+        current = Ctran()
+        self.set_var(after, current, original, created, definition)
+        scope = self.class_scopes[-1] if self.class_scopes else self.defining_class
+        thunk = self.converter.function(
+            annotate,
+            lambda_.policy,
+            parent=self,
+            defining_class=scope,
+            qualname=f"{lambda_.code.qualname}.__annotate__",
+            annotation_scope=True,
+        )
+        following, callback = Ctran(), Lvar()
+        self.define_function(
+            current, following, callback, thunk, annotate, "__annotate__"
+        )
+        current, owner = Ctran(), Lvar()
+        self.ref(following, current, owner, original, definition)
+        following = Ctran()
+        self.known(
+            current,
+            following,
+            None,
+            fndb.SETATTR,
+            (owner, callback),
+            definition,
+            AttributeInfo("__annotate__", self.converter.location(definition)),
+        )
+        self.ref(following, next_, result, original, definition, final=True)
 
 
 class _CleanupScope:
@@ -2872,20 +2920,38 @@ class _Statements(ast.Visitor):
             entries = [
                 ast.DictEntry(
                     ast.TextLiteral(name, span=node.span),
-                    ast.TextLiteral(converter.source_text(annotation), span=annotation.span),
+                    ast.TextLiteral(
+                        converter.source_text(annotation), span=annotation.span
+                    ),
                     span=node.span,
                 )
                 for name, annotation in declarations
             ]
-            ctran, annotations = function.value(frontier, ast.Dict(entries, span=node.span))
+            ctran, annotations = function.value(
+                frontier, ast.Dict(entries, span=node.span)
+            )
             frontier = Ctran()
             function.class_namespace_operation(
-                ctran, frontier, None, fndb.CLASS_STORE, scope, "__annotations__", (annotations,), node
+                ctran,
+                frontier,
+                None,
+                fndb.CLASS_STORE,
+                scope,
+                "__annotations__",
+                (annotations,),
+                node,
             )
         operands = []
         for var in (bases, namespace, class_keywords):
             ctran, value = Ctran(), Lvar()
-            function.ref(frontier, ctran, value, var, node, final=True)
+            function.ref(
+                frontier,
+                ctran,
+                value,
+                var,
+                node,
+                final=var is not namespace or not scope.annotation_namespace_used,
+            )
             frontier = ctran
             operands.append(value)
         info = ClassInfo(
@@ -2903,6 +2969,27 @@ class _Statements(ast.Visitor):
         )
         following, created = Ctran(), Lvar()
         function.known(ctran, following, created, fndb.MAKE_CLASS, operands, node, info)
+        if scope.annotation_namespace_used:
+            klass = function.temporary()
+            ctran = Ctran()
+            function.set_var(following, ctran, klass, created, node)
+            following, value = Ctran(), Lvar()
+            function.ref(ctran, following, value, klass, node)
+            ctran, live = Ctran(), Lvar()
+            function.known(
+                following,
+                ctran,
+                live,
+                fndb.GETATTR,
+                (value,),
+                node,
+                AttributeInfo("__dict__", converter.location(node)),
+            )
+            following = Ctran()
+            function.set_var(ctran, following, namespace, live, node)
+            ctran, created = Ctran(), Lvar()
+            function.ref(following, ctran, created, klass, node, final=True)
+            following = ctran
         if scope.cell is not None:
             # Methods using super() or __class__ see the finished class.
             klass = function.temporary()
@@ -3920,6 +4007,9 @@ class _AnnotationIndex(ast.Visitor):
 
 
 class _CompilerBinding:
+    def supports_runtime_annotation(self):
+        return True
+
     def annotation(self, converter, node):
         return None
 
@@ -3944,6 +4034,9 @@ class _CompilerBinding:
 
 
 class _NumericBinding(_CompilerBinding):
+    def supports_runtime_annotation(self):
+        return False
+
     def __init__(self, contract):
         self.contract = contract
 
@@ -3964,6 +4057,9 @@ class _OptimizeBinding(_CompilerBinding):
 
 
 class _ModuleBinding(_CompilerBinding):
+    def supports_runtime_annotation(self):
+        return False
+
     def member(self, attribute, converter, node):
         binding = _EXPORT_BINDINGS.get(attribute)
         if binding is None:
@@ -4009,6 +4105,7 @@ class _ImportBindings(ast.Visitor):
                 item.name == "annotations" and item.alias is None for item in node.items
             )
         ):
+            self.converter.future_annotations = True
             return
         if node.module == "__future__" and node.level == 0:
             self.converter.error(
@@ -4025,6 +4122,18 @@ class _ImportBindings(ast.Visitor):
                     unsupported=True,
                 )
             self.bind(item.alias or item.name, binding, item)
+
+
+class _RuntimeAnnotation(ast.Visitor):
+    def __init__(self, converter):
+        self.converter = converter
+
+    def visit_Node(self, node):
+        return all(child.accept(self) for child in node.children())
+
+    def visit_Name(self, node):
+        binding = self.converter.active_compiler_bindings.get(node.identifier)
+        return binding is None or binding.supports_runtime_annotation()
 
 
 class _AnnotationReference(ast.Visitor):

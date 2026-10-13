@@ -48,6 +48,8 @@ pub struct ClassLayout {
     pub base: Value,
     /// Every direct base, retained. `base` is the first of these.
     pub bases: Vec<Value>,
+    /// Borrowed direct children. A child unlinks before releasing its bases.
+    subclasses: Vec<Value>,
     /// Ancestors in C3 method-resolution order, excluding this class.
     /// Not retained: each is reachable through the direct bases' chains.
     pub mro: Vec<Value>,
@@ -66,6 +68,10 @@ pub struct ClassLayout {
 }
 
 impl ClassLayout {
+    pub(crate) fn remove_subclass(&mut self, child: Value) {
+        self.subclasses.retain(|entry| *entry != child);
+    }
+
     pub fn allows_instance_dictionary(&self) -> bool {
         self.dict_allowed
     }
@@ -1325,11 +1331,12 @@ unsafe fn create_class_with(
         let dict_allowed = native.is_none() && (any_dict || own_dict);
         let id = NEXT_CLASS_ID.fetch_add(1, Ordering::Relaxed);
         assert_ne!(id, 0, "class identity space exhausted");
-        object::new_value(Data::Class(Box::new(ClassLayout {
+        let class = object::new_value(Data::Class(Box::new(ClassLayout {
             id,
             name: class_name.into(),
             base,
             bases: bases.iter().map(|base| object::retain(*base)).collect(),
+            subclasses: Vec::new(),
             mro,
             metaclass: object::retain(metaclass),
             fields,
@@ -1338,7 +1345,17 @@ unsafe fn create_class_with(
             attribute_lookup,
             dict_allowed,
             native,
-        })))
+        })));
+        for base in &bases {
+            let Data::Class(layout) = &mut (**base).data else { unreachable!() };
+            if layout.subclasses.try_reserve(1).is_err() {
+                object::error("MemoryError", "class relationship storage allocation failed");
+                object::release(class);
+                return std::ptr::null_mut();
+            }
+            layout.subclasses.push(class);
+        }
+        class
     }
 }
 
@@ -1683,6 +1700,20 @@ unsafe fn set_attribute_with(
                 }
             }
         }
+        let owner = class_of_value(receiver);
+        if let Some(layout) = layout_of_class(owner) {
+            if let Some((defining, _, index)) = layout.find(name(attribute).unwrap_or("")) {
+                let descriptor = defining.attributes[index].1;
+                if attribute_kind(descriptor) == DATA_DESCRIPTOR {
+                    let result = special_method(descriptor, "__set__", &[receiver, value]);
+                    if result.is_null() {
+                        return -1;
+                    }
+                    object::release(result);
+                    return 0;
+                }
+            }
+        }
         let Some(attribute) = name(attribute) else {
             return -1;
         };
@@ -1885,6 +1916,16 @@ unsafe extern "C" fn class_base(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn class_subclasses(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class]) = operands(args) else { return std::ptr::null_mut() };
+        let Some(layout) = layout_of_class(class) else {
+            return fail("TypeError", "class storage is required");
+        };
+        object::mule_sequence_tuple(layout.subclasses.len() as isize, layout.subclasses.as_ptr())
+    }
+}
+
 unsafe extern "C" fn class_bases(_: Value, args: Value) -> Value {
     unsafe {
         let Some([class]) = operands(args) else {
@@ -1992,6 +2033,18 @@ unsafe extern "C" fn bound_method_receiver(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn bound_method_function(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else { return std::ptr::null_mut() };
+        if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::BoundMethod { method, .. } = &(*value).data {
+                return object::retain(*method);
+            }
+        }
+        fail("TypeError", "bound method storage is required")
+    }
+}
+
 unsafe extern "C" fn instance_field(_: Value, args: Value) -> Value {
     unsafe {
         let Some([instance, attribute]) = operands(args) else {
@@ -2082,6 +2135,15 @@ unsafe extern "C" fn generic_delete_attribute(_: Value, args: Value) -> Value {
 unsafe fn delete_attribute_with(receiver: Value, attribute: &str, hooks: bool) -> Value {
     unsafe {
         let Some((layout, instance, owner)) = layout(receiver) else {
+            let owner = class_of_value(receiver);
+            if let Some(layout) = layout_of_class(owner) {
+                if let Some((defining, _, index)) = layout.find(attribute) {
+                    let descriptor = defining.attributes[index].1;
+                    if attribute_kind(descriptor) == DATA_DESCRIPTOR {
+                        return special_method(descriptor, "__delete__", &[receiver]);
+                    }
+                }
+            }
             return missing(None, false, &attribute);
         };
         if !instance {
@@ -2718,12 +2780,52 @@ unsafe extern "C" fn typed_value(_: Value, args: Value) -> Value {
     }
 }
 
+macro_rules! function_annotation_slot {
+    ($getter:ident, $setter:ident, $slot:ident) => {
+        unsafe extern "C" fn $getter(_: Value, args: Value) -> Value {
+            unsafe {
+                let Some([function]) = operands(args) else { return std::ptr::null_mut() };
+                if function.is_null() || object::is_fixnum(function) {
+                    return fail("TypeError", "function storage is required");
+                }
+                let Data::Function { $slot, .. } = &(*function).data else {
+                    return fail("TypeError", "function storage is required");
+                };
+                object::retain(if $slot.is_null() { object::none_value() } else { *$slot })
+            }
+        }
+
+        unsafe extern "C" fn $setter(_: Value, args: Value) -> Value {
+            unsafe {
+                let Some([function, value]) = operands(args) else { return std::ptr::null_mut() };
+                if function.is_null() || object::is_fixnum(function) {
+                    return fail("TypeError", "function storage is required");
+                }
+                let Data::Function { $slot, .. } = &mut (*function).data else {
+                    return fail("TypeError", "function storage is required");
+                };
+                object::release(std::mem::replace($slot, object::retain(value)));
+                object::none_value()
+            }
+        }
+    };
+}
+
+function_annotation_slot!(function_annotate, set_function_annotate, annotate);
+function_annotation_slot!(function_annotations, set_function_annotations, annotations);
+
 pub unsafe fn populate(globals: Value) -> bool {
     unsafe {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 42] = [
+        let exports: [(&str, object::Native); 48] = [
+            ("class_subclasses", class_subclasses),
+            ("bound_method_function", bound_method_function),
+            ("function_annotate", function_annotate),
+            ("set_function_annotate", set_function_annotate),
+            ("function_annotations", function_annotations),
+            ("set_function_annotations", set_function_annotations),
             ("register_not_implemented", register_not_implemented),
             ("instance_items", instance_items),
             ("storage_dictionary", storage_dictionary),

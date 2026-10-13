@@ -12,6 +12,7 @@ from _posix import cwd as _cwd
 from _posix import dup as _dup
 from _posix import dup2 as _dup2
 from _posix import environ_items as _environ_items
+from _posix import entropy_bytes as _entropy_bytes
 from _posix import fstat as _fstat
 from _posix import fsync as _fsync
 from _posix import getegid as _getegid
@@ -50,7 +51,7 @@ __all__ = [
     "lstat", "mkdir", "open", "pipe", "putenv", "read", "readlink", "scandir",
     "remove", "rename", "rmdir", "stat", "stat_result", "strerror",
     "symlink", "sysconf", "sysconf_names", "umask", "uname",
-    "uname_result", "unsetenv", "unlink", "write",
+    "uname_result", "unsetenv", "unlink", "urandom", "write",
 ]
 
 F_OK = 0
@@ -99,6 +100,14 @@ def putenv(name, value):
 def unsetenv(name):
     key = _bytes(name)
     _unsetenv_bytes(key)
+
+
+def urandom(size, /):
+    from math.integer import _index
+    size = _index(size)
+    if size < 0:
+        raise ValueError("negative argument not allowed")
+    return _entropy_bytes(size)
 
 
 class stat_result:

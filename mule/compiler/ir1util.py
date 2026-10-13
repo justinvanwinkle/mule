@@ -644,18 +644,15 @@ def class_method_definitions(lambda_: Lambda) -> dict[str, dict[str, Lambda]]:
 
 class _ClassMethodDefinitions(NodeVisitor):
     def __init__(self):
-        self.definitions: dict[Node, Lambda] = {}
         self.classes: dict[str, dict[str, Lambda]] = {}
 
     def visit_Combination(self, node):
         if node.kind is not CallKind.KNOWN:
             return
         name = node.fun_info.name
-        if name == "%make_function":
-            self.definitions[node] = made_lambda(node)
-        elif name == "%class_store":
+        if name == "%class_store":
             value = node.args[1]
-            target = self.definitions.get(value.uses[0]) if value.uses else None
+            target = made_function(value.uses[0]) if len(value.uses) == 1 else None
             if target is not None:
                 self.classes.setdefault(node.info.identity, {})[node.info.name] = target
 
@@ -666,14 +663,29 @@ def made_lambda(node: Combination) -> Lambda:
 
 
 def made_function(node: Node) -> Lambda | None:
-    """The lambda ``node`` makes a function object from, when it is a
-    ``%make_function`` call."""
+    """The function made by a node or its single-assignment temporary."""
     return node.accept(_MadeFunction())
 
 
-class _MadeFunction(NodeVisitor):
+class _MadeFunction(NodeVisitor, LeafVisitor):
+    def __init__(self):
+        self.visited = set()
+
     def visit_Node(self, node):
         return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf):
+        if leaf in self.visited or len(leaf.sets) != 1:
+            return None
+        self.visited.add(leaf)
+        value = leaf.sets[0].value
+        return value.uses[0].accept(self) if len(value.uses) == 1 else None
 
     def visit_Combination(self, node):
         if node.kind is CallKind.KNOWN and node.fun_info.name == "%make_function":

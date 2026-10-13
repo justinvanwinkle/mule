@@ -921,6 +921,48 @@ unsafe extern "C" fn posix_environ(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" {
+    fn getrandom(buffer: *mut u8, count: usize, flags: u32) -> isize;
+}
+
+unsafe extern "C" fn posix_entropy(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([length]) = operands::<1>(args) else { return null_mut() };
+        let Some(length) = posix_int(length) else {
+            if !object::has_error() {
+                object::error("OverflowError", "byte storage length is too large");
+            }
+            return null_mut();
+        };
+        let Ok(length) = usize::try_from(length) else {
+            object::error("ValueError", "byte storage length must be nonnegative");
+            return null_mut();
+        };
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(length).is_err() {
+            object::error("MemoryError", "entropy byte storage allocation failed");
+            return null_mut();
+        }
+        bytes.resize(length, 0);
+        let mut offset = 0;
+        while offset < length {
+            let count = getrandom(bytes.as_mut_ptr().add(offset), length - offset, 0);
+            if count < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return posix_error(&error);
+            }
+            if count == 0 {
+                return posix_error(&std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+            }
+            offset += count as usize;
+        }
+        object::new_value(Data::Bytes(bytes, null_mut(), null_mut()))
+    }
+}
+
 unsafe extern "C" fn posix_setenv(_: Value, args: Value) -> Value {
     unsafe {
         let Some([name, value]) = operands::<2>(args) else { return null_mut() };
@@ -1052,7 +1094,7 @@ pub unsafe extern "C" fn mule_posix_module_init(globals: Value) -> Value {
         }
         use std::os::unix::ffi::OsStrExt;
         let _ = globals;
-        let exports: [(&str, Native); 33] = [
+        let exports: [(&str, Native); 34] = [
             ("cwd", posix_cwd),
             ("chdir", posix_chdir),
             ("listdir", posix_listdir),
@@ -1076,6 +1118,7 @@ pub unsafe extern "C" fn mule_posix_module_init(globals: Value) -> Value {
             ("dup2", posix_dup2),
             ("pipe", posix_pipe),
             ("environ_items", posix_environ),
+            ("entropy_bytes", posix_entropy),
             ("setenv_bytes", posix_setenv),
             ("unsetenv_bytes", posix_unsetenv),
             ("uname_items", posix_uname),

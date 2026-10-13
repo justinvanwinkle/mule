@@ -293,10 +293,12 @@ neither a second stream hierarchy nor a Rust language-level print algorithm.
 
 `math` is a compiled Python package providing `sqrt`, `factorial`, `comb`,
 `perm`, `gcd`, `lcm` and `isqrt`, plus `pi`, `e`, `tau`, `inf` and `nan`.
+It also provides `log`, `log2`, `exp`, `sin`, `cos`, `acos`, `lgamma`, `fabs`,
+`floor`, `ceil`, `isfinite`, `isinf`, and `isnan` for standard-library startup.
 The integer functions are implemented in `math.integer` and re-exported by
 `math` as the same function objects. This is initial math support, not the
-complete Python math API; trigonometric/logarithmic functions, floating-point
-reductions and the remaining operations are not implemented yet.
+complete Python math API; the remaining transcendental functions and
+floating-point reductions are not implemented yet.
 
 Argument conversion, integer algorithms and domain checks execute in compiled
 Python. Square root accepts builtin real numbers and the supported `__float__`
@@ -334,6 +336,35 @@ CPython linkage or Rust integer/math algorithms are introduced. Binary64
 operations currently use boxed primitive entries; unboxed float representation
 selection remains compiler work, and this increment makes no speed claim.
 
+The added transcendental operations follow SBCL `src/code/irrat.lisp`,
+`def-math-rtn`, `handle-reals`, `exp`, `log`, `sin`, `cos`, and `acos`:
+compiled Python converts arguments and checks domains/overflow, then calls a
+physical binary64 primitive. `lgamma` uses the already-linked system libm;
+it adds no library dependency. Python rejects real-domain errors instead of
+returning SBCL's complex results, and reports finite-input overflow as
+`OverflowError` while accepting infinite inputs where Python does.
+
+For large integer logarithms, SBCL's `log2/nonnegative-integer` extracts the
+leading double-float precision bits and adds the removed binary exponent.
+Mule performs that normalization with compiled integer shifts and the existing
+bit-length primitive, avoiding overflow during conversion to binary64. `log`
+with a base divides the two independently computed logarithms and raises
+`ZeroDivisionError` for base one, following Python. This keeps bigint
+normalization and operation selection in compiled Python, at the cost of a
+temporary shifted integer rather than SBCL's direct limb extraction.
+
+`floor` and `ceil` call the value's special rounding method, falling back to
+real conversion and the existing float rounding methods. Predicates and `fabs`
+also perform normal real conversion in compiled Python. Physical primitives
+remain boxed entries; this change adds no representation proof or speed claim.
+The compiled integer `__floor__` and `__ceil__` methods normalize their result
+to an ordinary integer through the existing conversion primitive, including
+inherited boolean methods. The math callers do not inspect operand classes;
+subclass overrides and user rounding methods keep ordinary dispatch. SBCL
+`src/code/numbers.lisp`, `floor` and `ceiling`, likewise produce an integer
+quotient through their numeric operations. Python's rounding special methods
+are the concrete dispatch adaptation.
+
 ## Implicit special-method binding
 
 Implicit special-method calls use the same descriptor binder as explicit
@@ -359,8 +390,79 @@ user classes, generic subscriptions, unions, and calls. Their Mule ASTs are
 retained separately from the compiler's semantic contracts. An annotation does
 not require the compiler to understand its type in order to compile the body.
 Function/module/class annotations are deferred, following Python 3.14; local
-annotations are not evaluated. Runtime annotation introspection/evaluation is
-not implemented yet. Supported contract expressions additionally guide analysis.
+annotations are not evaluated. Functions with annotations have a compiled
+`__annotate__` thunk. The function class lazily evaluates and caches
+`__annotations__`; supported contract expressions additionally guide analysis.
+
+### Function annotation thunks
+
+SBCL `src/compiler/ir1tran-lambda.lisp`, `ir1-convert-lambda` and
+`ir1-convert-lambda-body`, converts nested lambdas with their lexical
+environments, and its environment analysis captures referenced bindings.
+Mule retains that path for annotation thunks: it builds owned syntax nodes,
+converts a normal nested lambda through IR1/IR2, and attaches its native
+function object before applying decorators. Python requires annotations to
+execute later, with current globals and retained enclosing cells; SBCL's
+compile-time type declarations do not have this deferred runtime protocol.
+No source parsing, host evaluation, or Rust annotation evaluator occurs at
+annotation access.
+Method annotation closures retain a shared class-namespace cell. It starts as
+the prepared namespace while the class body and metaclass run, then refers to
+the constructed class's live dictionary view before decorators execute. Later
+class attribute changes are therefore visible to an uncached annotation call.
+The class dictionary property now wraps a live compiled view over its own
+stored bindings, rather than copying them. SBCL `src/pcl/slots.lisp`,
+`slot-value-using-class`, similarly reads an existing object's slot storage.
+Python's class dictionary view additionally excludes inherited names and
+returns raw descriptor objects. The view implements those rules in compiled
+Python over the existing class storage primitives.
+
+The thunk accepts VALUE (1), resolved FORWARDREF (2), and STRING (4). STRING
+returns the retained annotation source text without evaluating it. VALUE and
+resolved FORWARDREF evaluate ordinary annotation expressions in source order;
+unknown names raise `NameError`. Creating unresolved `ForwardRef` proxies
+remains a gap. `from __future__ import annotations` returns source strings
+for VALUE and FORWARDREF. STRING currently preserves source spelling rather
+than CPython's complete source normalization. Runtime value introspection of
+compiler-only Mule numeric marker imports raises `NotImplementedError`; their
+STRING metadata remains available. Class/module annotation callbacks and
+general evaluation of dynamically supplied annotation strings remain gaps.
+
+The compiled function class owns lazy evaluation, cache invalidation and
+annotation assignment checks. Native storage primitives only retain and
+replace its annotation callable and cache slots. An annotation failure does
+not fill the cache, and annotations do not execute merely because a function
+is defined or called. Physical slots keep this state separate from the
+function's ordinary attribute dictionary. This adds a native closure per
+annotated definition and an owned dictionary on first VALUE access; it makes
+no optimization claim about annotation access.
+Existing assigned `__defaults__`/`__kwdefaults__` metadata remains writable;
+dynamic signature/default replacement in the compiled binder is still a gap.
+
+Function identity analysis follows a temporary with one assignment back to its
+function-making node, so attaching metadata preserves native method discovery
+and guarded local calls. SBCL `src/compiler/ir1util.lisp`, `lvar-fun-name`,
+likewise resolves the function represented by an IR value. This adds no
+runtime guard bypass: mutable global aliases remain subject to normal guarded
+call analysis, and decorated call results are not assumed to be their inputs.
+
+`NoneType` supplies its `__class__` read through the existing physical type
+query. An ordinary Python property uses `None` as its class-access argument,
+which cannot represent the actual singleton receiver at this boundary. This
+owned method implements the singleton's physical class attribute without
+requiring callers such as ABC checks to inspect the value. User-defined
+descriptor protocols continue to receive their ordinary Python arguments.
+
+The compiled `type.__subclasses__` method returns a snapshot of its direct
+children, allowing compiled ABC checks to recurse through real subclasses and
+their virtual registrations. SBCL `src/pcl/std-class.lisp`,
+`add-direct-subclass` and `remove-direct-subclass`, maintains corresponding
+backpointers. Mule's existing native class layout stores the physical links;
+the child retains its bases, while parent-to-child pointers are borrowed and
+removed before the child releases those bases. Python requires creation order,
+so registration appends rather than SBCL's `pushnew`. The storage primitive
+retains a snapshot; traversal and ABC policy remain compiled Python. No class
+is kept alive merely by its parent's subclass list.
 
 Builtin `int` denotes arbitrary-precision Python integers, including booleans.
 It does not impose a machine width. Builtin `float` denotes Python's binary64

@@ -245,6 +245,9 @@ def _representation(open, items, close):
 
 
 class dict(_Table):
+    def __mule_annotation_mapping__(self):
+        return self
+
     """Mapping with insertion-ordered keys."""
 
     def __init__(self, /, *args, **kwargs):

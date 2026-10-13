@@ -648,25 +648,28 @@ unsafe fn exit_status() -> i32 {
     unsafe {
         let exception = crate::sequences::take_pending();
         object::clear_error();
-        let code = crate::classes::mule_get_attr(exception, c"code".as_ptr());
+        let result = object::special(exception, "__mule_process_status__", &[]);
         object::release(exception);
-        if code.is_null() {
+        if result.is_null() {
             object::clear_error();
             return 1;
         }
-        let status = if code == object::none_value() {
-            0
-        } else if object::is_fixnum(code) {
-            object::fixnum(code) as i32
-        } else {
-            if let Some(text) = object::formatted_value(code, false, false) {
-                let mut text = text;
-                text.push(b'\n');
-                let _ = io::stderr().lock().write_all(&text);
-            }
-            1
+        let Some(status) = object::argument(result, 0).filter(|value| object::is_fixnum(*value)) else {
+            object::release(result);
+            object::clear_error();
+            return 1;
         };
-        object::release(code);
+        let status = object::fixnum(status) as i32;
+        if let Some(message) = object::argument(result, 1) {
+            if message != object::none_value() {
+                if let Some(text) = object::formatted_value(message, false, false) {
+                    let mut text = text;
+                    text.push(b'\n');
+                    let _ = io::stderr().lock().write_all(&text);
+                }
+            }
+        }
+        object::release(result);
         status
     }
 }

@@ -14,8 +14,10 @@ from _mule_native import allocate_instance as _new_instance
 from _mule_native import bind_attribute as _bind_attribute
 from _mule_native import bound_method as _bound_method
 from _mule_native import bound_method_receiver as _bound_method_receiver
+from _mule_native import bound_method_function as _bound_method_function
 from _mule_native import class_base as _class_base
 from _mule_native import class_bases as _class_bases
+from _mule_native import class_subclasses as _class_subclasses
 from _mule_native import class_lookup as _class_lookup
 from _mule_native import class_mro as _class_mro
 from _mule_native import class_name as _class_name
@@ -44,6 +46,10 @@ from _mule_native import set_class_name as _set_class_name
 from _mule_native import type_of as _type_of
 from _mule_native import typed_value as _typed_value
 from _mule_native import function_attributes as _function_attributes
+from _mule_native import function_annotate as _function_annotate
+from _mule_native import function_annotations as _function_annotations
+from _mule_native import set_function_annotate as _set_function_annotate
+from _mule_native import set_function_annotations as _set_function_annotations
 
 # The runtime's conversion functions, captured before the classes below
 # take over their builtin names.
@@ -216,6 +222,12 @@ class object:
 
     def __getattribute__(self, name):
         return _generic_get_attribute(self, name)
+
+    def __mule_annotation_mapping__(self):
+        raise TypeError("__annotations__ must be a dict or None")
+
+    def __mule_exit_status__(self):
+        return (1, str(self))
 
     def __setattr__(self, name, value):
         try:
@@ -421,7 +433,7 @@ class type(object):
         return _is_subclass(subclass, cls)
 
     def __subclasses__(cls):
-        return []
+        return list(_class_subclasses(cls))
 
 
 _register_type("type", type)
@@ -452,10 +464,7 @@ def _bases(cls):
 
 
 def _namespace(cls):
-    own = {}
-    for name in _class_own_names(cls):
-        own[name] = _class_lookup(cls, name)
-    return mappingproxy(own)
+    return mappingproxy(_ClassDict(cls))
 
 
 object.__class__ = property(_type_of)
@@ -642,6 +651,45 @@ class _GlobalsDict(object):
         return repr(self.copy())
 
 
+class _ClassDict(object):
+    """Read the class's own current bindings, without descriptor binding."""
+
+    def __init__(self, owner):
+        self._owner = owner
+
+    def __getitem__(self, key):
+        if key not in _class_own_names(self._owner):
+            raise KeyError(key)
+        return _class_lookup(self._owner, key)
+
+    def __contains__(self, key):
+        return key in _class_own_names(self._owner)
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self):
+        return len(self.keys())
+
+    def keys(self):
+        return _class_own_names(self._owner)
+
+    def values(self):
+        return [self[key] for key in self.keys()]
+
+    def items(self):
+        return [(key, self[key]) for key in self.keys()]
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+    def copy(self):
+        return dict(self.items())
+
+    def __repr__(self):
+        return repr(self.copy())
+
+
 class mappingproxy(object):
     """A read-only view of a mapping, as ``type.__dict__`` returns."""
 
@@ -682,6 +730,14 @@ class mappingproxy(object):
 class NoneType(object):
     def __new__(cls):
         return None
+
+    def __getattribute__(self, name):
+        if name == "__class__":
+            return _type_of(self)
+        return _generic_get_attribute(self, name)
+
+    def __mule_exit_status__(self):
+        return (0, None)
 
     def __repr__(self):
         return "None"
@@ -937,10 +993,16 @@ class int(object):
         return self
 
     def __floor__(self):
-        return self
+        return _convert_int(self)
 
     def __ceil__(self):
-        return self
+        return _convert_int(self)
+
+    def __mule_exit_status__(self):
+        value = _convert_int(self)
+        if value < -9223372036854775808 or value > 9223372036854775807:
+            return (255, None)
+        return (value & 255, None)
 
     def bit_length(self):
         value = -self if self < 0 else self
@@ -1073,13 +1135,49 @@ class function(object):
     def __defaults__(self):
         return None
 
+    @__defaults__.setter
+    def __defaults__(self, value):
+        _namespace_bind(_function_attributes(self), "__defaults__", value)
+
     @property
     def __kwdefaults__(self):
         return None
 
+    @__kwdefaults__.setter
+    def __kwdefaults__(self, value):
+        _namespace_bind(_function_attributes(self), "__kwdefaults__", value)
+
     @property
     def __annotations__(self):
-        return {}
+        annotations = _function_annotations(self)
+        if annotations is None:
+            annotate = _function_annotate(self)
+            annotations = {} if annotate is None else annotate(1).__mule_annotation_mapping__()
+            _set_function_annotations(self, annotations)
+        return annotations
+
+    @__annotations__.setter
+    def __annotations__(self, value):
+        if value is not None:
+            value = value.__mule_annotation_mapping__()
+        _set_function_annotations(self, value)
+        _set_function_annotate(self, None)
+
+    @__annotations__.deleter
+    def __annotations__(self):
+        _set_function_annotations(self, None)
+
+    @property
+    def __annotate__(self):
+        return _function_annotate(self)
+
+    @__annotate__.setter
+    def __annotate__(self, value):
+        if value is not None and not callable(value):
+            raise TypeError("__annotate__ must be callable or None")
+        _set_function_annotate(self, value)
+        if value is not None:
+            _set_function_annotations(self, None)
 
     @property
     def __dict__(self):
@@ -1110,6 +1208,16 @@ class method(object):
     @property
     def __self__(self):
         return _bound_method_receiver(self)
+
+    @property
+    def __func__(self):
+        return _bound_method_function(self)
+
+    def __getattribute__(self, name):
+        try:
+            return _generic_get_attribute(self, name)
+        except AttributeError:
+            return getattr(_bound_method_function(self), name)
 
 
 class module(object):

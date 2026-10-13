@@ -229,6 +229,9 @@ pub enum Data {
         closure_cells: *const c_char,
         /// The function's `__dict__` namespace, created on first assignment.
         attributes: Value,
+        /// Deferred annotation callable and lazy cache, owned independently.
+        annotate: Value,
+        annotations: Value,
     },
     Args(Vec<Value>, Value, Value),
     ArgumentView {
@@ -448,6 +451,9 @@ pub unsafe fn release(value: Value) {
             }
             Data::Class(layout) => {
                 for base in &layout.bases {
+                    if let Data::Class(parent) = &mut (**base).data {
+                        parent.remove_subclass(value);
+                    }
                     release(*base);
                 }
                 release(layout.metaclass);
@@ -481,11 +487,15 @@ pub unsafe fn release(value: Value) {
                 defaults,
                 closure,
                 attributes,
+                annotate,
+                annotations,
                 ..
             } => {
                 release(*defaults);
                 release(*closure);
                 release(*attributes);
+                release(*annotate);
+                release(*annotations);
             }
             _ => (), // Function globals are borrowed from the executing module.
         }
@@ -598,6 +608,8 @@ pub unsafe fn function(globals: Value, entry: Native, name: &str) -> Value {
             closure: std::ptr::null_mut(),
             closure_cells: std::ptr::null(),
             attributes: std::ptr::null_mut(),
+            annotate: std::ptr::null_mut(),
+            annotations: std::ptr::null_mut(),
         })
     }
 }

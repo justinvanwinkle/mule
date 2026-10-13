@@ -135,6 +135,38 @@ unsafe extern "C" fn sqrt(_: Value, args: Value) -> Value {
     }
 }
 
+macro_rules! unary_binary64 {
+    ($name:ident, $operation:expr) => {
+        unsafe extern "C" fn $name(_: Value, args: Value) -> Value {
+            unsafe {
+                let Some([value]) = operands(args) else { return null_mut() };
+                if value.is_null() || object::is_fixnum(value) {
+                    object::error("TypeError", "binary64 storage is required");
+                    return null_mut();
+                }
+                let Data::Float(value, ..) = &(*value).data else {
+                    object::error("TypeError", "binary64 storage is required");
+                    return null_mut();
+                };
+                object::new_value(Data::Float(($operation)(*value), null_mut(), null_mut()))
+            }
+        }
+    };
+}
+
+unsafe extern "C" {
+    #[link_name = "lgamma"]
+    fn system_lgamma(value: f64) -> f64;
+}
+
+unary_binary64!(log, f64::ln);
+unary_binary64!(log2, f64::log2);
+unary_binary64!(exp, f64::exp);
+unary_binary64!(sin, f64::sin);
+unary_binary64!(cos, f64::cos);
+unary_binary64!(acos, f64::acos);
+unary_binary64!(lgamma, |value| system_lgamma(value));
+
 /// Format a binary64 value for one percent/format conversion kind
 /// (0=f, 1=e, 2=E, 3=g, 4=G, 5=percent, 6=shortest). Compiled Python owns
 /// signs, width, grouping, and alignment.
@@ -256,13 +288,20 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, Native); 7] = [
+        let exports: [(&str, Native); 14] = [
             ("math_number_kind", number_kind),
             ("math_to_double", to_double),
             ("math_integer_value", integer_value),
             ("math_integer_bit_length", integer_bit_length),
             ("math_special_method", special_method),
             ("math_sqrt", sqrt),
+            ("math_log", log),
+            ("math_log2", log2),
+            ("math_exp", exp),
+            ("math_sin", sin),
+            ("math_cos", cos),
+            ("math_acos", acos),
+            ("math_lgamma", lgamma),
             ("math_float_format", float_format),
         ];
         for (name, entry) in exports {

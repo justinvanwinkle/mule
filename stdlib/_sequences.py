@@ -163,6 +163,9 @@ class UnicodeDecodeError(UnicodeError):
 
 
 class SystemExit(BaseException):
+    def __mule_process_status__(self):
+        return self.code.__mule_exit_status__()
+
     @property
     def code(self):
         if not self.args:

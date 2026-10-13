@@ -162,3 +162,61 @@ def test_math_integer_module_reexports_share_function_objects(tmp_path):
     assert result.returncode == 0, result.stderr
     assert result.stdout == "True True\n210 5040 111\n"
     assert result.stderr == ""
+
+
+def test_math_rounding_dispatch_and_integer_results_match_python(tmp_path):
+    assert_matches_python(
+        tmp_path,
+        "import math\n"
+        "class Integer(int):\n pass\n"
+        "class CustomInteger(int):\n"
+        " def __floor__(self):\n  return 'custom floor'\n"
+        " def __ceil__(self):\n  return 'custom ceil'\n"
+        "class Rounded:\n"
+        " def __floor__(self):\n  return 'floor'\n"
+        " def __ceil__(self):\n  return 'ceil'\n"
+        "class Real:\n def __float__(self):\n  return -1.25\n"
+        "for function in (math.floor, math.ceil):\n"
+        " for value in (True, False, 3, 2 ** 100, Integer(3), 1.25, -1.25):\n"
+        "  result = function(value)\n"
+        "  print(result, type(result) is int)\n"
+        " print(function(CustomInteger(3)), function(Rounded()), function(Real()))\n",
+    )
+
+
+def test_math_transcendentals_predicates_and_large_logs_match_python(tmp_path):
+    assert_matches_python(
+        tmp_path,
+        "import math\n"
+        "for function in (math.log, math.log2, math.exp, math.sin, math.cos, math.acos, math.lgamma):\n"
+        " print(round(function(0.5), 12))\n"
+        "print(math.log(8, 2), math.log2(2 ** 4096))\n"
+        "print(round(math.log(10 ** 1000), 10))\n"
+        "for value in (-math.inf, -0.0, 0, 1, math.inf, math.nan):\n"
+        " print(math.isfinite(value), math.isinf(value), math.isnan(value))\n"
+        "print(math.fabs(-0.0), math.fabs(-3))\n"
+        "print(math.exp(-math.inf), math.exp(math.inf), math.lgamma(-math.inf))\n"
+        "class Real:\n def __float__(self):\n  return 0.5\n"
+        "class Index:\n def __index__(self):\n  return 1\n"
+        "print(round(math.log(Real()), 12), math.log(Index()), math.isfinite(Real()))\n"
+        "print(math.isnan(math.log(math.nan)), math.isnan(math.sin(math.nan)))\n",
+    )
+
+
+def test_math_transcendental_errors_preserve_python_boundaries(tmp_path):
+    assert_matches_python(
+        tmp_path,
+        "import math\n"
+        "for function, value in ((math.log, 0), (math.log2, -1), (math.sin, math.inf),\n"
+        " (math.cos, -math.inf), (math.acos, 2), (math.lgamma, 0), (math.lgamma, -2),\n"
+        " (math.exp, 1000), (math.lgamma, 1e308), (math.ceil, math.inf), (math.floor, math.nan)):\n"
+        " try:\n  function(value)\n"
+        " except (ValueError, OverflowError) as error:\n  print(type(error).__name__)\n"
+        "try:\n math.log(2, 1)\n"
+        "except ZeroDivisionError:\n print('base one')\n"
+        "for function in (math.log, math.exp, math.isfinite):\n"
+        " try:\n  function('1')\n"
+        " except TypeError:\n  print('type')\n"
+        "try:\n math.log(x=1)\n"
+        "except TypeError:\n print('keyword')\n",
+    )
