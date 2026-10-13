@@ -136,6 +136,30 @@ own their namespaces until executable shutdown, preserving captured globals.
 Dynamic module discovery, extension loading, and concurrent imports remain
 future work. Unsupported source remains a compilation error.
 
+Failed initialization removes the module's registry entry before releasing its
+namespace and resetting the initializer cache. This applies both before `sys`
+registers `sys.modules` and afterward. A later import executes the body again;
+the original exception is preserved across cleanup. Generated LLVM selects this
+failure path; the existing native registry owner releases its retained entry,
+using compiled dictionary `pop` when `sys.modules` is available. Successful
+dependencies remain registered.
+
+SBCL `src/code/load.lisp`, `aux-fop-intern`, resolves package symbols before
+compiled references use them; `src/compiler/ir1tran.lisp`, `find-free-var`,
+canonicalizes global leaves, and `src/compiler/x86-64/cell.lisp`,
+`%set-symbol-global-value`, writes the symbol's value slot directly. Mule retains
+fixed global cells and compiled initialization, but Python imports additionally
+require removing a failed module registration so it can be retried. This cleanup
+adds a compiled dictionary call only on initialization failure; it introduces no
+source evaluation or Rust dictionary algorithm. Registry storage remains existing
+native bootstrap infrastructure, not a new language-level import implementation.
+
+This supports retries when the registry and initializer cache are the failed
+namespace's only remaining owners. A failed namespace retained through a circular
+import remains a gap: its compiled functions and a later retry share fixed static
+global cells. Independent simultaneous namespaces for one compiled module require
+additional compiler cell-ownership machinery; registry cleanup does not provide it.
+
 Relative names are resolved against the importing module's package, following
 the same static artifact resolution as absolute imports. SBCL's FASL loader
 resolves compiled initialization and named bindings (`load-as-fasl` and

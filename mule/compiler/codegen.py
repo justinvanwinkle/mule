@@ -179,6 +179,7 @@ declare ptr @mule_time_module_init(ptr)
 declare ptr @mule_builtins_module()
 declare ptr @mule_import_missing(ptr)
 declare void @mule_module_loaded(ptr, ptr)
+declare void @mule_module_failed(ptr)
 declare ptr @mule_builtins_module_init(ptr)
 declare void @mule_register_finalizer(ptr)
 declare void @mule_run_finalizers()
@@ -1050,7 +1051,7 @@ class ModuleGenerator:
         if info.native:
             self.shared_namespaces.add(info.module_name)
         # Before the module body or any of its functions run.
-        lines += self.link(info.module_name, "%globals", "failed", 0)
+        lines += self.link(info.module_name, "%globals", "unregistered.failure", 0)
         fields = [("__name__", info.module_name)]
         if info.filename is not None:
             fields.append(("__file__", info.filename))
@@ -1094,6 +1095,9 @@ class ModuleGenerator:
                 "  %module = call ptr @mule_retain(ptr %globals)",
                 "  ret ptr %module",
                 "failed:",
+                f"  call void @mule_module_failed(ptr {self.text(info.module_name)})",
+                "  br label %unregistered.failure",
+                "unregistered.failure:",
                 f"  store ptr null, ptr {cache}",
                 "  call void @mule_release(ptr %globals)",
                 "  ret ptr null",

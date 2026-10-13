@@ -634,7 +634,7 @@ def callable(obj, /):
     kind = _type_name(obj)
     if kind in ("function", "builtin_function_or_method", "method"):
         return True
-    return getattr(type(obj), "__call__", None) is not None
+    return hasattr(type(obj), "__call__")
 
 
 def id(obj, /):
@@ -1567,10 +1567,44 @@ def enumerate(*args):
     return Enumerate(iterate(_storage_read(args, 0)), start)
 
 
+class CallableIterator:
+    def __init__(self, function, sentinel):
+        self.function = function
+        self.sentinel = sentinel
+        self.exhausted = False
+
+    def __iter__(self):
+        return self
+
+    def exhaust(self):
+        self.exhausted = True
+        self.function = None
+        self.sentinel = None
+
+    def __next__(self):
+        if self.exhausted:
+            raise StopIteration
+        try:
+            value = self.function()
+        except StopIteration:
+            self.exhaust()
+            raise StopIteration
+        if value is self.sentinel or self.sentinel == value:
+            self.exhaust()
+            raise StopIteration
+        return value
+
+
 def iter(*args):
-    if _storage_length(args) != 1:
-        raise TypeError("iter currently expects one argument")
-    return iterate(_storage_read(args, 0))
+    count = _storage_length(args)
+    if count == 1:
+        return iterate(_storage_read(args, 0))
+    if count == 2:
+        function = _storage_read(args, 0)
+        if not callable(function):
+            raise TypeError("iter(v, w): v must be callable")
+        return CallableIterator(function, _storage_read(args, 1))
+    raise TypeError("iter expected one or two arguments")
 
 
 def next(*args):

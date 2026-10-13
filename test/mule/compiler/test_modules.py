@@ -48,6 +48,27 @@ def test_circular_imports_share_the_initializing_module_namespace(tmp_path):
     assert result.stdout == "7\n"
 
 
+@pytest.mark.parametrize("sys_first", [False, True])
+def test_failed_import_is_removed_and_retry_preserves_the_exception(
+    tmp_path, sys_first
+):
+    result = execute(
+        tmp_path,
+        {"broken.py": "print('initializing')\nraise ValueError('broken import')\n"},
+        ("import sys\n" if sys_first else "") + "for attempt in range(2):\n"
+        " try:\n"
+        "  import broken\n"
+        " except ValueError as error:\n"
+        "  print(error)\n"
+        "import sys\n"
+        "print('broken' in sys.modules)\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "initializing\nbroken import\ninitializing\nbroken import\nFalse\n"
+    )
+
+
 def test_packages_and_from_imports_use_the_same_module_objects(tmp_path):
     result = execute(
         tmp_path,

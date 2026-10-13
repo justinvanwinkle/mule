@@ -555,6 +555,35 @@ pub unsafe extern "C" fn mule_module_loaded(name: *const std::ffi::c_char, modul
     }
 }
 
+/// Drop a failed initializer's registry reference while preserving its error.
+/// Generated initialization calls this before releasing its own namespace.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_module_failed(name: *const std::ffi::c_char) {
+    unsafe {
+        let Some(name) = object::name_from_c(name) else {
+            return;
+        };
+        let modules = MODULES.with(Cell::get);
+        if modules.is_null() {
+            let removed = EARLY_MODULES.with_borrow_mut(|early| {
+                early.iter().position(|(entry, _)| entry == name)
+                    .map(|index| early.remove(index).1)
+            });
+            if let Some(module) = removed {
+                object::release(module);
+            }
+            return;
+        }
+        let saved = object::save_error();
+        let key = object::new_value(Data::Text(Text::from_rust_str(name), std::ptr::null_mut(), std::ptr::null_mut()));
+        let removed = object::special(modules, "pop", &[key, object::none_value()]);
+        object::release(key);
+        object::release(removed);
+        object::clear_error();
+        object::restore_error(saved);
+    }
+}
+
 /// `register_modules(modules)`: the sys module's sys.modules dict.
 pub(crate) unsafe extern "C" fn register_modules(_: Value, args: Value) -> Value {
     unsafe {

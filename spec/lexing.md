@@ -28,9 +28,8 @@ that token. Byte callbacks with explicit encoding decode each returned line usin
 the available codec implementation, matching the low-level iterator boundary.
 Native comparisons cover UTF-8 and Latin-1; the current native codec layer does
 not supply every codec accepted by CPython. The public byte-input
-`tokenize.tokenize` wrapper additionally requires `iter(callable, sentinel)`,
-which the current compiled builtin does not yet support. Direct encoded-byte
-`TokenizerIter` calls and `tokenize.generate_tokens` do not need that form.
+`tokenize.tokenize` wrapper uses the compiled `iter(callable, sentinel)` builtin
+to read through byte EOF, while `tokenize.generate_tokens` accepts text directly.
 
 SBCL `src/code/reader.lisp`, `read-token` and `%read-preserving-whitespace`, keeps
 stream reading and token-buffer behavior in compiled Lisp. Mule likewise keeps

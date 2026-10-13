@@ -215,7 +215,17 @@ recursive element comparisons. Iterators observe list appends/replacements until
 exhaustion and remain exhausted thereafter. Iteration accepts user protocols and
 the legacy indexed-sequence fallback. Constructors `list` and `tuple` consume
 iterables; `range`, `enumerate`, `iter`, and `next` are compiled Python entries.
-`iter(callable, sentinel)` and keyword arguments are not implemented. Range's
+`iter(callable, sentinel)` uses a compiled callable iterator. Construction checks
+callability without invoking the callback. Each step calls it once; sentinel
+identity or truth of `sentinel == value` ends iteration. Callback `StopIteration`
+also exhausts it permanently, releasing the saved callback and sentinel. Other
+callback errors and comparison errors propagate without exhausting the iterator.
+In particular, `StopIteration` raised by comparison does not clear its state.
+SBCL `src/code/reader.lisp`, `%read-preserving-whitespace`, similarly calls a
+compiled stream operation until its EOF sentinel is returned. Python additionally
+requires rich equality, callback-exception handling and an explicit persistent
+iterator object; those rules remain compiled Python, not Rust dispatch.
+Keyword arguments are not implemented. Range's
 initial implementation is a private compiled class behind the builtin factory;
 full builtin type identity, repr, comparison, containment specialization, and
 slicing are not implemented. Exception classes have real single-base ancestry,
