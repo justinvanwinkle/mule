@@ -8,7 +8,6 @@ import pytest
 
 from mule.compiler import build
 
-
 PROGRAMS = {
     "builtin_error.py": """def inner():
     return missing
@@ -53,12 +52,16 @@ outer()
 
 
 @pytest.mark.parametrize("filename", PROGRAMS)
-def test_tracebacks_match_python_314_verbatim(tmp_path, filename):
+@pytest.mark.parametrize("debug_ranges", [True, False])
+def test_tracebacks_match_python_314_verbatim(tmp_path, filename, debug_ranges):
     assert sys.version_info[:2] == (3, 14), "traceback oracle must be Python 3.14"
     for name, source in PROGRAMS.items():
         (tmp_path / name).write_text(source)
     path = tmp_path / filename
     environment = {**os.environ, "PYTHON_COLORS": "0"}
+    environment.pop("PYTHONNODEBUGRANGES", None)
+    if not debug_ranges:
+        environment["PYTHONNODEBUGRANGES"] = "1"
     oracle = subprocess.run(
         [sys.executable, str(path)],
         cwd=tmp_path,

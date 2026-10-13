@@ -133,14 +133,18 @@ fn is_traceback(value: Value) -> bool {
 }
 
 /// Record that the pending error passed through a compiled function at
-/// `line`. `activation` identifies the call; a call records one entry per
-/// error however many of its failure paths the error takes.
+/// `line`. `activation` identifies the call; ordinary propagation records
+/// one entry per activation. An explicit raise adds a new entry even when
+/// the existing traceback already starts in this activation. `marker` is a
+/// compiler-planned constant highlight, never parsed by the runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_traceback_here(
     code: *const CodeInfo,
     line: i32,
     globals: Value,
     activation: *const u8,
+    explicit_raise: i32,
+    marker: *const c_char,
 ) {
     unsafe {
         if !object::has_error() {
@@ -148,7 +152,7 @@ pub unsafe extern "C" fn mule_traceback_here(
         }
         let head = PENDING.with(Cell::get);
         if let Some(Data::Traceback { activation: recorded, .. }) = (!head.is_null()).then(|| &(*head).data) {
-            if *recorded == activation as usize {
+            if explicit_raise == 0 && *recorded == activation as usize {
                 return;
             }
         }
@@ -167,6 +171,7 @@ pub unsafe extern "C" fn mule_traceback_here(
         let traceback = object::new_value(Data::Traceback {
             frame,
             line: i64::from(line),
+            marker,
             next: PENDING.with(|pending| pending.replace(null_mut())),
             activation: activation as usize,
         });
@@ -224,13 +229,17 @@ pub fn print_pending(output: &mut impl Write) {
         return;
     }
     let _ = writeln!(output, "Traceback (most recent call last):");
+    let show_ranges = std::env::var_os("PYTHONNODEBUGRANGES").is_none();
     let mut entry = head;
-    while let Some(Data::Traceback { frame, line, next, .. }) = (!entry.is_null()).then(|| unsafe { &(*entry).data }) {
+    while let Some(Data::Traceback { frame, line, next, marker, .. }) = (!entry.is_null()).then(|| unsafe { &(*entry).data }) {
         if let Data::Frame { code, .. } = unsafe { &(**frame).data } {
             let code = unsafe { &**code };
             let _ = writeln!(output, "  File \"{}\", line {line}, in {}", code.filename(), code.name());
             if let Some(source) = source_line(code.filename(), *line) {
                 let _ = writeln!(output, "    {source}");
+                if show_ranges && !marker.is_null() {
+                    let _ = writeln!(output, "    {}", CodeInfo::text(*marker));
+                }
             }
         }
         entry = *next;

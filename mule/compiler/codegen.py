@@ -42,6 +42,7 @@ from .ir2tran import ir2_convert
 from .ltn import EntryContext, ltn_analyze
 from .node import CodeInfo, FunctionalKind, Lambda, Signature, linked
 from .represent import select_native_plans, select_representations
+from .traceback_sites import SourceHighlights
 from .vop import BOOLEAN, CLASS, DESCRIPTOR, DOUBLE, IMMEDIATE, NULL, RANGE, SIGNED
 
 if TYPE_CHECKING:
@@ -60,7 +61,7 @@ declare ptr @mule_bool(i32)
 declare ptr @mule_load_global(ptr, ptr)
 declare i32 @mule_store_global(ptr, ptr, ptr)
 declare i32 @mule_link_globals(ptr, i64, ptr, ptr, i32)
-declare void @mule_traceback_here(ptr, i32, ptr, ptr)
+declare void @mule_traceback_here(ptr, i32, ptr, ptr, i32, ptr)
 declare void @mule_frame_push(ptr, ptr)
 declare void @mule_frame_pop()
 declare ptr @mule_namespace()
@@ -419,6 +420,7 @@ class ModuleGenerator:
         # by name, linked once per namespace.
         self.global_cells: dict[str, dict[str, str]] = {}
         self.code_descriptors: set[str] = set()
+        self.source_highlights = SourceHighlights()
         self.linked_namespaces: set[str] = set()
         # Names whose reads omit the unbound check because the builtins
         # define them, by namespace, and the namespaces code binds names in.
@@ -1335,9 +1337,9 @@ class FunctionGenerator:
                 tn.slot = f"%local.{len(self.local_tns) - 1}"
                 if tn.leaf is not None:
                     self.local_slots[tn.leaf.name] = tn.slot
-        self.landings: dict[tuple[str, tuple[str, ...]], str] = {}
+        self.landings: dict[tuple[str, tuple[str, ...], bool, bool], str] = {}
         # Each landing's predecessor blocks and the source line failing there.
-        self.landing_sites: dict[str, dict[str, int]] = {}
+        self.landing_sites: dict[str, dict[str, tuple[int, str]]] = {}
         self.vop = None
         self.entry_end = 0
         self.uses_out = False
@@ -1370,7 +1372,14 @@ class FunctionGenerator:
         self.line(f"{value} = {text}")
         return value
 
-    def failure_target(self, base: str | None = None, failed_value=None) -> str:
+    def failure_target(
+        self,
+        base: str | None = None,
+        failed_value=None,
+        *,
+        record_traceback: bool = True,
+        explicit_raise: bool = False,
+    ) -> str:
         """The label a failure edge branches to: ``base`` (the handler's unwind
         block or ``error`` by default) after releasing the owned temporaries
         live here. ``failed_value`` is the NULL result being checked."""
@@ -1385,14 +1394,27 @@ class FunctionGenerator:
         if self.raw:
             return base
         owned = tuple(value for value in self.live.values() if value != failed_value)
-        key = (base, owned)
+        key = (base, owned, record_traceback, explicit_raise)
         label = self.landings.get(key)
         if label is None:
             label = self.landings[key] = self.fresh("release")[1:]
-        # Every failure edge enters a landing, which records the traceback
-        # entry for the line that failed (see mule/runtime/traceback.rs).
+        # Landings release owned temporaries; only new failures and explicit
+        # raises add source entries. Resuming a caught transfer preserves them.
         sites = self.landing_sites.setdefault(label, {})
-        sites.setdefault(self.current_block(), self.current_line())
+        source = (
+            None if self.vop is None or self.vop.node is None else self.vop.node.source
+        )
+        marker = (
+            self.module.source_highlights.marker(
+                self.module.code(self.lambda_).filename, source
+            )
+            if record_traceback
+            else ""
+        )
+        sites.setdefault(
+            self.current_block(),
+            (self.current_line(), self.module.text(marker) if marker else "null"),
+        )
         return label
 
     def current_block(self) -> str:
@@ -1412,20 +1434,33 @@ class FunctionGenerator:
         return self.module.code(self.lambda_).firstlineno
 
     def emit_landings(self, activation: str = "%return") -> None:
-        """The landing blocks: each records the traceback entry for the line
-        that failed, with ``activation``, a stack slot of this call, telling
-        calls apart, then releases its owned temporaries."""
+        """Record source failures (unless resuming a caught transfer), then
+        release owned temporaries. ``activation`` is a stack slot of this call
+        that tells ordinary propagation apart from distinct activations."""
         code = self.module.code_descriptor(self.lambda_)
-        for (base, owned), label in self.landings.items():
+        for (
+            base,
+            owned,
+            record_traceback,
+            explicit_raise,
+        ), label in self.landings.items():
             self.lines.append(label + ":")
             sites = self.landing_sites[label]
-            incoming = ", ".join(f"[{line}, %{block}]" for block, line in sites.items())
+            incoming = ", ".join(
+                f"[{site[0]}, %{block}]" for block, site in sites.items()
+            )
             line = f"%failed.line.{label}"
             self.line(f"{line} = phi i32 {incoming}")
-            self.line(
-                f"call void @mule_traceback_here(ptr {code}, i32 {line}, "
-                f"ptr %globals, ptr {activation})"
-            )
+            if record_traceback:
+                incoming_markers = ", ".join(
+                    f"[{site[1]}, %{block}]" for block, site in sites.items()
+                )
+                marker = f"%failed.marker.{label}"
+                self.line(f"{marker} = phi ptr {incoming_markers}")
+                self.line(
+                    f"call void @mule_traceback_here(ptr {code}, i32 {line}, "
+                    f"ptr %globals, ptr {activation}, i32 {int(explicit_raise)}, ptr {marker})"
+                )
             for value in owned:
                 self.release(value)
             self.line(f"br label %{base}")
@@ -1445,8 +1480,11 @@ class FunctionGenerator:
     def check_status(self, value: str) -> str:
         return self.guard(self.operation(f"icmp slt i32 {value}, 0"))
 
-    def propagate(self) -> None:
-        self.line(f"br label %{self.failure_target()}")
+    def propagate(self, *, record_traceback=True, explicit_raise=False) -> None:
+        target = self.failure_target(
+            record_traceback=record_traceback, explicit_raise=explicit_raise
+        )
+        self.line(f"br label %{target}")
 
     # TN access
 

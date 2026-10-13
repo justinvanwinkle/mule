@@ -294,6 +294,8 @@ pub enum Data {
     Traceback {
         frame: Value,
         line: i64,
+        /// Constant compiler-planned highlight, or NULL without source ranges.
+        marker: *const c_char,
         next: Value,
         /// The call that recorded the entry, compared, never dereferenced.
         activation: usize,

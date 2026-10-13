@@ -119,6 +119,9 @@ LEAVE_HANDLER = defknown("%leave_handler", "unsafe", result=False)
 ASSERTION_FAILURE = defknown("%assertion_failure", "unsafe", result=False)
 RAISE = defknown("%raise", "unsafe", "never_returns", result=False)
 RERAISE = defknown("%reraise", "unsafe", "never_returns", result=False)
+RESUME_EXCEPTION = defknown(
+    "%resume_exception", "unsafe", "never_returns", result=False
+)
 UNWIND = defknown("%unwind", "unsafe", "never_returns", result=False)
 
 __all__ = [
@@ -152,6 +155,7 @@ __all__ = [
     "RANGE_PREPARE",
     "RERAISE",
     "RESOLVE_METHOD",
+    "RESUME_EXCEPTION",
     "SETATTR",
     "UNARY",
     "UNPACK_REF",

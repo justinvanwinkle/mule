@@ -378,6 +378,7 @@ def iteration_exhausted(value):
 
 
 def raise_value(value):
+    """Prepare an exception; the source raise VOP installs pending state."""
     parent = _raised_class(value)
     valid = False
     while parent is not None:
@@ -394,7 +395,7 @@ def raise_value(value):
     active = _active_exception()
     if active is not None and active is not instance and instance.__context__ is None:
         instance.__context__ = active
-    return _raise_pending(instance)
+    return instance
 
 
 def exception_instance(value):

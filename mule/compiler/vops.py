@@ -364,7 +364,9 @@ def full_call(gen, vop):
     gen.refine(result.tn, value)
 
 
-TERMINATORS = frozenset({"branch", "jump", "return", "raise", "reraise", "unwind"})
+TERMINATORS = frozenset(
+    {"branch", "jump", "return", "raise", "reraise", "resume-exception", "unwind"}
+)
 
 # Known functions over objects.
 
@@ -927,8 +929,18 @@ def assertion_failure(gen, vop):
 def raise_(gen, vop):
     value = gen.take(vop.args[0])
     result = gen.sequence_call("raise_value", [value])
+    gen.check_pointer(result)
+    gen.line(f"call ptr @mule_raise_pending(ptr {result})")
     gen.release(result)
-    gen.propagate()
+    gen.propagate(explicit_raise=True)
+
+
+@define_vop("resume-exception", translate=fndb.RESUME_EXCEPTION, args=(OBJECT,))
+def resume_exception(gen, vop):
+    value = gen.take(vop.args[0])
+    gen.line(f"call ptr @mule_raise_pending(ptr {value})")
+    gen.release(value)
+    gen.propagate(record_traceback=False)
 
 
 @define_vop("reraise", translate=fndb.RERAISE)

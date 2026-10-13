@@ -49,6 +49,36 @@ is restricted to failing paths. Tracebacks expose code, line, globals and caller
 links; captured local-variable mappings and complete traceback compatibility
 remain gaps.
 
+SBCL `src/compiler/ir1-translators.lisp`'s `unwind-protect` translator resumes
+the saved `(next, start, count)` transfer through `%unwind` after cleanup;
+`src/compiler/ir2tran.lisp`, `ir2-convert-throw` and `emit-nlx-start`, separately
+initiates transfers and prepares nonlocal targets. Mule likewise separates
+explicit Python `raise` from reinstating an
+already caught exception after `finally`, a nonmatching handler, context exit,
+or an iteration exhaustion check. Reinstatement preserves the original source
+traceback without adding the cleanup construct's line. Explicit `raise error`
+adds its own source entry even when that activation already occurs in the chain;
+bare `raise` continues the existing entry in the handling activation.
+The compiled raising protocol validates and prepares an ordinary exception, then
+returns it successfully; the caller's terminal VOP installs pending state and
+records the source raise. Successful preparation does not become an artificial
+traceback frame. Python's observable traceback values require this distinction
+beyond SBCL's stack debug records; it changes neither exception ancestry nor
+ownership cleanup and allocates source entries only on the transfer path.
+
+SBCL `src/compiler/debug-dump.lisp`, `debug-source-for-info`, preserves source
+positions alongside compiled code. Mule additionally plans single-line traceback
+highlights from its owned AST spans and emits constant marker strings with the
+failure-site metadata. Python 3.14 underlines the call parentheses with carets,
+the callee with tildes, and a failing name with carets; complete simple return-call
+and assignment-call expressions suppress those highlights. The compiler uses
+Mule's parser for the enclosing source statement, never the host AST. The native
+runtime stores and writes these constant debug records without parsing or
+evaluating source. `PYTHONNODEBUGRANGES` suppresses marker lines as in Python.
+Multiline highlighting and complete expression-specific anchor formatting remain
+gaps; the verbatim oracle tests cover single-line names and calls, nested cleanup,
+and bare and explicit reraises with ranges both enabled and disabled.
+
 The first slice implements ordinary `try`/`except`/`else`, raising and reraising,
 list/tuple/text indexing, list replacement/append, sequence iteration, range,
 enumerate, and non-starred unpacking. `finally`, exception groups/chaining,

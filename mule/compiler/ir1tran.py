@@ -2329,7 +2329,7 @@ class _Statements(ast.Visitor):
         if frontier is not None:
             ctran, value = Ctran(), Lvar()
             function.ref(frontier, ctran, value, exception, node, final=True)
-            self.terminal(ctran, fndb.RAISE, (value,), node)
+            self.terminal(ctran, fndb.RESUME_EXCEPTION, (value,), node)
         function.flow(linked(done.start, done, "start"), next_)
 
     def try_handlers(self, start, next_, node):
@@ -2415,7 +2415,7 @@ class _Statements(ast.Visitor):
         # No handler matched: reinstall the original caught exception.
         ctran, value = Ctran(), Lvar()
         function.ref(current, ctran, value, exception, node, final=True)
-        self.terminal(ctran, fndb.RAISE, (value,), node)
+        self.terminal(ctran, fndb.RESUME_EXCEPTION, (value,), node)
         ctran = Ctran()
         function.set_var(done.start, ctran, exception, None, node)
         function.flow(ctran, next_)
@@ -2531,7 +2531,7 @@ class _Statements(ast.Visitor):
         function.if_node(ctran, suppressed, done, reraise, item)
         ctran, value = Ctran(), Lvar()
         function.ref(reraise.start, ctran, value, exception, item, final=True)
-        self.terminal(ctran, fndb.RAISE, (value,), item)
+        self.terminal(ctran, fndb.RESUME_EXCEPTION, (value,), item)
         function.flow(linked(done.start, done, "start"), next_)
 
     def visit_For(self, node):
@@ -2667,7 +2667,7 @@ class _Statements(ast.Visitor):
         function.if_node(following, matches, finished, failed, node)
         ctran, value = Ctran(), Lvar()
         function.ref(failed.start, ctran, value, exception, node, final=True)
-        self.terminal(ctran, fndb.RAISE, (value,), node)
+        self.terminal(ctran, fndb.RESUME_EXCEPTION, (value,), node)
         ctran = Ctran()
         function.discard(finished.start, ctran, exception.name, node)
         frontier = function.convert_body(ctran, node.else_body)
@@ -4452,8 +4452,8 @@ class _CallTarget(ast.Visitor):
             self.result,
             callee,
             self.arguments(),
-            node,
-            CallInfo(self.keywords(), function.converter.location(node)),
+            self.call,
+            CallInfo(self.keywords(), function.converter.location(self.call)),
         )
 
     def visit_Name(self, node):
@@ -4477,8 +4477,8 @@ class _CallTarget(ast.Visitor):
                 self.result,
                 callee,
                 (namespace,),
-                node,
-                CallInfo((), function.converter.location(node)),
+                self.call,
+                CallInfo((), function.converter.location(self.call)),
             )
             return
         if node.identifier != "super" or self.call.arguments:
@@ -4503,8 +4503,8 @@ class _CallTarget(ast.Visitor):
             self.result,
             callee,
             (owner, receiver),
-            node,
-            CallInfo((), function.converter.location(node)),
+            self.call,
+            CallInfo((), function.converter.location(self.call)),
         )
 
     def visit_Attribute(self, node):
@@ -4526,7 +4526,7 @@ class _CallTarget(ast.Visitor):
             self.result,
             fndb.CALL_RESOLVED,
             (resolved, *self.arguments()),
-            node,
+            self.call,
             CallInfo(self.keywords(), None),
         )
 
