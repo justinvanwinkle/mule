@@ -3,7 +3,7 @@
 import importlib
 import importlib.util
 import io
-import sys
+import tokenize as reference_public_tokenize
 from pathlib import Path
 
 import pytest
@@ -24,23 +24,9 @@ def _load_source(path, name):
 @pytest.fixture(scope="module")
 def mule_tokenizer():
     root = Path(__file__).resolve().parents[3]
-    lexical_path = root / "stdlib/_mule_lexical.py"
-    lexical = sys.modules.get("_mule_lexical")
-    owns_dependency = lexical is None
-    if owns_dependency:
-        lexical = _load_source(lexical_path, "_mule_lexical")
-        sys.modules["_mule_lexical"] = lexical
-    else:
-        assert lexical.__file__ is not None
-        assert Path(lexical.__file__).resolve() == lexical_path.resolve()
-    try:
-        # The oracle remains the real extension module. Only Mule's private
-        # lexical dependency is registered under the import it owns.
-        yield _load_source(root / "stdlib/_tokenize.py", "mule_test_tokenizer")
-    finally:
-        if owns_dependency:
-            assert sys.modules["_mule_lexical"] is lexical
-            del sys.modules["_mule_lexical"]
+    # Load the independent stdlib implementation without replacing the real
+    # extension module used as the oracle.
+    return _load_source(root / "stdlib/_tokenize.py", "mule_test_tokenizer")
 
 
 SOURCES = [
@@ -72,6 +58,7 @@ SOURCES = [
     ),
     pytest.param('f"{value!r:>{width}}"\n', id="conversion-and-nested-format-field"),
     pytest.param("f\"{f'{value}'}\"\n", id="nested-fstring"),
+    pytest.param('f"{(\n    1 + 2\n)}"\n', id="multiline-replacement-field"),
     pytest.param('f"""first {value}\nlast"""\n', id="multiline-fstring"),
     pytest.param('t"hello {name!s}"\n', id="template-string"),
 ]
@@ -177,6 +164,23 @@ def test_tokenizer_noncallable_source_fails_on_iteration(mule_tokenizer):
         next(tokens)
 
 
+def test_tokenizer_extra_tokens_argument_is_required(mule_tokenizer):
+    with pytest.raises(TypeError):
+        mule_tokenizer.TokenizerIter(io.StringIO("x = 1\n").readline)
+
+
+def test_tokenizer_remains_exhausted_without_reading_again(mule_tokenizer):
+    reader = _Reader(["x = 1\n"])
+    tokens = mule_tokenizer.TokenizerIter(reader, extra_tokens=True)
+    assert iter(tokens) is tokens
+    list(tokens)
+    consumed = list(reader.read_lines)
+    for _ in range(2):
+        with pytest.raises(StopIteration):
+            next(tokens)
+    assert reader.read_lines == consumed
+
+
 ERROR_SOURCES = [
     'x = "unterminated\n',
     'x = """unterminated\n',
@@ -267,6 +271,75 @@ def test_native_tokenizer_matches_cpython(tmp_path, extra_tokens):
         "for index in range(len(sources)):\n"
         f" actual = list(_tokenize.TokenizerIter(Reader(sources[index]).read, extra_tokens={extra_tokens!r}))\n"
         " assert actual == expected[index]\n"
+        "print('ok')\n"
+    )
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ok\n"
+
+
+@pytest.mark.integration
+def test_native_generate_tokens_matches_cpython(tmp_path):
+    text = "x = 1 # comment\nf'{x!r}'\n"
+    expected = [
+        tuple(item)
+        for item in reference_public_tokenize.generate_tokens(
+            io.StringIO(text).readline
+        )
+    ]
+    source = (
+        "import tokenize\n"
+        "class Reader:\n"
+        " def __init__(self, source):\n"
+        "  self.lines = iter(source.splitlines(True))\n"
+        " def read(self):\n"
+        "  return next(self.lines, '')\n"
+        f"expected = {expected!r}\n"
+        f"actual = list(tokenize.generate_tokens(Reader({text!r}).read))\n"
+        "assert actual == expected\n"
+        "print('ok')\n"
+    )
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ok\n"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("encoding", ["utf-8", "latin-1"])
+def test_native_tokenizer_encoded_lines_match_cpython(tmp_path, encoding):
+    chunks = [line.encode(encoding) for line in ["é = 1\n", "x = 'é'"]]
+    expected = list(
+        reference_tokenize.TokenizerIter(
+            iter(chunks).__next__, encoding=encoding, extra_tokens=True
+        )
+    )
+    source = (
+        "import _tokenize\n"
+        f"lines = iter({chunks!r})\n"
+        "def read():\n return next(lines, b'')\n"
+        f"actual = list(_tokenize.TokenizerIter(read, encoding={encoding!r}, extra_tokens=True))\n"
+        f"assert actual == {expected!r}\n"
+        "print('ok')\n"
+    )
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ok\n"
+
+
+@pytest.mark.integration
+def test_native_tokenize_bytes_matches_cpython(tmp_path):
+    data = b"x = 1 # comment\nf'{x!r}'\n"
+    expected = [
+        tuple(item)
+        for item in reference_public_tokenize.tokenize(io.BytesIO(data).readline)
+    ]
+    chunks = data.splitlines(True)
+    source = (
+        "import tokenize\n"
+        f"lines = iter({chunks!r})\n"
+        "def read():\n return next(lines, b'')\n"
+        "actual = list(tokenize.tokenize(read))\n"
+        f"assert actual == {expected!r}\n"
         "print('ok')\n"
     )
     result = run_native(tmp_path, source)

@@ -192,6 +192,22 @@ required. Internal iterator state never becomes a language attribute/type tag.
 
 ## Implemented subset and limits
 
+`int` accepts `bytes` and `bytearray` digit sequences, with a default decimal
+base or an explicit base. Its compiled `stdlib/_object.py` constructor uses the
+base class's Latin-1 decoder to preserve byte values without invoking a subclass
+decoder override. The existing integer parser validates signs, prefixes,
+underscores, digits, and whitespace; malformed byte sequences raise `ValueError`,
+including non-ASCII bytes and embedded NULs. This also supports the regex
+compiler's bytearray-to-integer bitmap conversion.
+
+SBCL `src/code/reader.lisp`, `parse-integer`, parses character strings in compiled
+Lisp, selecting word arithmetic for short decimal/hexadecimal strings and general
+integer arithmetic otherwise. Python additionally accepts byte sequences, so
+Mule normalizes these in compiled Python before parsing. Normalization takes
+linear time and allocates a decoded string; it does not add Rust language-level
+dispatch. The existing Rust integer parser remains bootstrap debt, rather than
+an implementation of SBCL's compiled-language parsing boundary.
+
 List/tuple/str/bytes storage shares ordinary compiled method tables. Indexing
 supports integers, booleans, and user `__index__`; lists support replacement and
 append. Sequence equality is compiled Python, including identity shortcuts and

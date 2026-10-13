@@ -26,6 +26,31 @@ def run_native(tmp_path, source):
     )
 
 
+def test_int_byte_sequences_parse_with_and_without_explicit_base(tmp_path):
+    source = """for make in (bytes, bytearray):
+    print(int(make(b'101'), 2))
+    print(int(make(b'  -42\\n')))
+    print(int(make(b'0xff'), 0))
+    print(int(make(b'1_000')))
+    print(int(make(b'1' + b'0' * 100), 2))
+    for value in (b'', b'2', b'1\\x00', b'\\xff'):
+        try:
+            int(make(value), 2)
+        except ValueError:
+            print('invalid')
+try:
+    int(101, 2)
+except TypeError:
+    print('not text')
+"""
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "5\n-42\n255\n1000\n1267650600228229401496703205376\n"
+        "invalid\ninvalid\ninvalid\ninvalid\n"
+    ) * 2 + "not text\n"
+
+
 def test_global_reads_follow_rebinding_shadowing_and_deletion(tmp_path):
     # Each read site caches its name's cells after first use; every later
     # binding change must still be visible through that site.

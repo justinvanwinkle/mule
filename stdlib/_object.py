@@ -795,6 +795,14 @@ def _make_complex(cls, real, imag):
 
 class int(object):
     def __new__(cls, *args):
+        if args:
+            value = args[0]
+            # Latin-1 preserves every byte so invalid input reaches the integer
+            # parser as ValueError rather than failing UTF-8 decoding first.
+            if isinstance(value, bytes):
+                args = (bytes.decode(value, "latin-1"),) + args[1:]
+            elif isinstance(value, bytearray):
+                args = (bytearray.decode(value, "latin-1"),) + args[1:]
         value = _convert_int(*args)
         if cls is not int and cls is not bool:
             return _typed_value(value, cls)

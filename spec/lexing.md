@@ -15,6 +15,27 @@ Identifier tokens are normalized to Unicode NFKC when consumed as identifiers
 by the parser. Hard keywords cannot be consumed as identifiers; soft keyword
 syntax is interpreted in its grammatical context.
 
+## Standard-library tokenizer
+
+The standard-library `_tokenize.TokenizerIter` is independent of the compiler
+lexer. Its implementation belongs entirely in `stdlib/`; neither implementation
+imports the other or shares scanner source. It consumes a readline callable and
+returns `(type, text, start, end, line)` tuples. `extra_tokens=True` preserves
+comments, nonlogical newlines and source-layout text with generic operator codes;
+the false mode uses exact operator codes and parser-facing layout coordinates.
+The iterator does not add `ENCODING`: `tokenize.py` owns encoding detection and
+that token. Byte callbacks with explicit encoding decode each returned line using
+the available codec implementation, matching the low-level iterator boundary.
+
+SBCL `src/code/reader.lisp`, `read-token` and `%read-preserving-whitespace`, keeps
+stream reading and token-buffer behavior in compiled Lisp. Mule likewise keeps
+this language-level scanner in compiled Python, with no Rust tokenizer or host
+parser fallback. Python requires source-preserving token tuples, indentation and
+f-string/template-string token modes rather than Common Lisp reader forms.
+The iterator retains the current physical line and unfinished-token text, not
+the entire input. CPython 3.14 is the token and error oracle; selected comparisons
+do not establish exhaustive grammar or codec compatibility.
+
 ## String representation
 
 Ordinary text and bytes literals become `Literal` values. String parsing handles

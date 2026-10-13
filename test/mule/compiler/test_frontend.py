@@ -64,7 +64,6 @@ def test_invalid_context_is_rejected_before_emission(source):
     "source",
     [
         "import os\n",
-        "x = 1j\n",
         "try:\n pass\nexcept* ValueError:\n pass\n",
         "async def f(y):\n return [x async for x in y]\n",
     ],
@@ -76,10 +75,10 @@ def test_unsupported_syntax_fails_explicitly_even_when_unreachable(source):
 
 def test_error_preserves_original_filename_and_unicode_columns():
     with pytest.raises(UnsupportedSyntax) as caught:
-        lower("名 = 1\n名 = 2j\n", "unicode.py")
+        lower("名 = 1\n名 = [x async for x in y]\n", "unicode.py")
     error = caught.value
     assert (error.filename, error.lineno, error.offset) == ("unicode.py", 2, 5)
-    assert error.text == "名 = 2j\n"
+    assert error.text == "名 = [x async for x in y]\n"
 
 
 def test_late_assignment_classifies_all_function_reads_as_local():

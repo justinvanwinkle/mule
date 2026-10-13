@@ -355,13 +355,18 @@ def test_instances_and_classes_accept_new_attributes(tmp_path):
     assert result.stdout == "1 2 None\n"
 
 
-def test_multiple_inheritance_is_reported_at_class_creation(tmp_path):
+def test_multiple_inheritance_combines_unrelated_bases(tmp_path):
     result = run_native(
         tmp_path,
-        "class A:\n pass\nclass B:\n pass\nclass C(A, B):\n pass\n",
+        "class A:\n def first(self):\n  return 'A'\n"
+        "class B:\n def second(self):\n  return 'B'\n"
+        "class C(A, B):\n pass\n"
+        "print(C().first(), C().second())\n"
+        "print([base.__name__ for base in C.__bases__])\n"
+        "print([cls.__name__ for cls in C.mro()])\n",
     )
-    assert result.returncode != 0
-    assert "multiple inheritance is not supported yet" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "A B\n['A', 'B']\n['C', 'A', 'B', 'object']\n"
 
 
 @pytest.mark.parametrize(

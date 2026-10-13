@@ -18,6 +18,7 @@ from _mule_native import class_lookup as _class_lookup
 from _mule_native import class_of as _class_of
 from _mule_native import instance_field as _instance_field
 from _mule_native import is_class as _is_class
+from _mule_native import is_subclass as _is_subclass
 
 
 class staticmethod:
@@ -94,7 +95,11 @@ class super:
     def __getattribute__(self, name):
         thisclass = _instance_field(self, "__thisclass__")
         obj = _instance_field(self, "__self__")
-        if _is_class(obj):
+        # When obj is a class, it selects its own hierarchy only if it is
+        # a subclass of thisclass (the classmethod case). A class that is
+        # merely an instance of thisclass, as a class is of its metaclass,
+        # searches the hierarchy of its own class instead.
+        if _is_class(obj) and _is_subclass(obj, thisclass):
             owner, instance = obj, None
         else:
             owner, instance = _class_of(obj), obj
