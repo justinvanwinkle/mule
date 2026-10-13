@@ -226,11 +226,10 @@ def test_policy_is_applied_to_native_function_definition(policy, attributes):
     assert any(line.endswith(f") {attributes} {{") for line in definitions)
 
 
-@pytest.mark.parametrize("policy", ("", "@optimize(safety=0)\n"))
-def test_trusted_annotations_do_not_emit_runtime_annotation_checks(policy):
+def test_trusted_annotations_do_not_emit_runtime_annotation_checks():
     llvm = emit_llvm(
         "from mule import int32, optimize\n"
-        f"{policy}def identity(value: int32) -> int32:\n return value\n"
+        "@optimize(safety=0)\ndef identity(value: int32) -> int32:\n return value\n"
     )
     assert "call i32 @mule_assert_integer(" not in llvm
 

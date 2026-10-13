@@ -12,7 +12,13 @@ from __future__ import annotations
 from mule import ast
 
 from . import fndb
-from .ir1tran import Converter, FunctionConverter, UnsupportedSyntax, _ContainsYield
+from .ir1tran import (
+    Converter,
+    FunctionConverter,
+    UnsupportedSyntax,
+    _ContainsYield,
+    module_policy,
+)
 from .ir1util import (
     block_exception_target,
     ctran_starts_block,
@@ -33,7 +39,6 @@ from .node import (
     Signature,
     linked,
 )
-from .policy import OptimizationPolicy
 
 
 def convert_function(
@@ -221,7 +226,9 @@ def _start_generator(function, definition, kind, start):
         following,
         arguments,
         fndb.BUILD_TUPLE,
-        tuple(ast.Name(parameter.name, span=span) for parameter in definition.parameters),
+        tuple(
+            ast.Name(parameter.name, span=span) for parameter in definition.parameters
+        ),
         definition,
     )
     ctran = Ctran()
@@ -248,7 +255,7 @@ def convert_module(converter: Converter, tree: ast.Module) -> Lambda:
     entry = Lambda(
         f"{converter.prefix}mule_module",
         None,
-        policy=OptimizationPolicy(),
+        policy=module_policy(converter, tree.statements),
         namespace=converter.namespace,
     )
     entry.kind = FunctionalKind.TOPLEVEL

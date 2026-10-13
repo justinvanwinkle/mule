@@ -129,7 +129,8 @@ class _OptimizeNode(NodeVisitor):
         return _optimize_if(node)
 
 
-def _literal(lvar):
+def constant_literal(lvar):
+    """The literal ``lvar`` always delivers, or None when it is not a constant."""
     if len(lvar.uses) != 1:
         return None
     return lvar.uses[0].accept(_ConstantValue())
@@ -185,7 +186,7 @@ def _constant_fold_tuple(node: Combination) -> bool:
     """Capture immutable evaluated constants, never mutable or dynamic operands."""
     if node.lvar is None:
         return False
-    literals = [_literal(arg) for arg in node.args]
+    literals = [constant_literal(arg) for arg in node.args]
     if not all(_immutable_literal(literal) for literal in literals):
         return False
     folded = ast.Tuple(literals)
@@ -198,7 +199,7 @@ def _constant_fold(node: Combination) -> bool:
     """Replace a known operation on integer/boolean literals with its value."""
     if node.lvar is None:
         return False
-    literals = [_literal(arg) for arg in node.args]
+    literals = [constant_literal(arg) for arg in node.args]
     if any(literal is None for literal in literals):
         return False
     domains = [literal.accept(_FoldDomainOf()) for literal in literals]
@@ -393,7 +394,7 @@ class _LiteralTruth(ast.Visitor):
 
 def _optimize_if(node: If) -> bool:
     """Replace a branch on a literal test by a jump to the live arm."""
-    literal = _literal(node.test)
+    literal = constant_literal(node.test)
     if literal is None:
         return False
     truth = _literal_truth(literal)

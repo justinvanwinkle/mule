@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from mule.compiler import build
+from mule.compiler import build, emit_llvm
 
 
 def run_native(tmp_path, source):
@@ -53,6 +53,38 @@ print(show())
     assert result.stdout == (
         "(3, 1)\n(3, 2)\n(-1, 2)\n(3, 2)\nname 'counter' is not defined\n(3, 3)\n"
     )
+
+
+@pytest.mark.parametrize(("safety", "expected"), [(3, "3\n99\n"), (2, "3\n3\n")])
+def test_builtin_rebinding_is_visible_only_at_safety_three(tmp_path, safety, expected):
+    # Safety 2 assumes builtins are never rebound, so the module keeps the
+    # builtin it started with; safety 3 is exact Python.
+    source = (
+        f"__safety__ = {safety}\nimport builtins\n"
+        "def measure():\n    return len('abc')\n"
+        "print(measure())\nbuiltins.len = lambda value: 99\nprint(measure())\n"
+    )
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected
+
+
+def test_unchecked_unbound_global_raises_when_used(tmp_path):
+    # Safety 0 omits the unbound check: the read succeeds, and using the
+    # value raises NameError.
+    source = (
+        "__safety__ = 0\n"
+        "def probe():\n    value = missing\n    print('read')\n    return value\n"
+        "try:\n    probe()()\nexcept NameError:\n    print('raised')\n"
+    )
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "read\nraised\n"
+
+
+def test_module_policy_assignment_must_precede_module_code():
+    with pytest.raises(SyntaxError, match="must precede the module's code"):
+        emit_llvm("print(1)\n__safety__ = 0\n")
 
 
 @pytest.mark.parametrize(

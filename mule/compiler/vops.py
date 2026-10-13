@@ -184,7 +184,9 @@ def load_global(gen, vop):
         # A native body's class dependency was loaded and guarded at entry.
         gen.store(result, gen.dependency(vop.codegen_info))
         return
-    gen.pointer_result(result, gen.module.load_global(vop.codegen_info))
+    gen.pointer_result(
+        result, gen.module.load_global(vop.codegen_info, gen.lambda_.policy.safety)
+    )
 
 
 @define_vop("move", args=(None,), results=(None,))
@@ -1310,6 +1312,7 @@ declare {i64, i1} @llvm.smul.with.overflow.i64(i64, i64)
 @mule.true = external global i8
 @mule.false = external global i8
 @mule.none = external global i8
+@mule.undefined = external global i8
 """
 
 
@@ -1370,24 +1373,55 @@ slow:
   ret i32 %result
 }
 
-define internal ptr @mule.fast.global(ptr %cells, ptr %name) alwaysinline {
+; A cell never holds NULL: an unbound name's cell holds the undefined object.
+define internal ptr @mule.global.unchecked(ptr %cell, ptr %name) alwaysinline {
 entry:
-  %module.cell = load ptr, ptr %cells
-  %module.value = load ptr, ptr %module.cell
-  %module.bound = icmp ne ptr %module.value, null
-  br i1 %module.bound, label %bound, label %builtin
-builtin:
-  %builtin.slot = getelementptr inbounds [3 x ptr], ptr %cells, i64 0, i64 1
-  %builtin.cell = load ptr, ptr %builtin.slot
-  %builtin.value = load ptr, ptr %builtin.cell
-  %builtin.bound = icmp ne ptr %builtin.value, null
-  br i1 %builtin.bound, label %bound, label %slow
+  %value = load ptr, ptr %cell, !nonnull !{}
+  %owned = call ptr @mule.fast.retain(ptr %value)
+  ret ptr %owned
+}
+
+define internal ptr @mule.global.checked(ptr %cell, ptr %name) alwaysinline {
+entry:
+  %value = load ptr, ptr %cell, !nonnull !{}
+  %unbound = icmp eq ptr %value, @mule.undefined
+  br i1 %unbound, label %slow, label %bound
 bound:
-  %value = phi ptr [%module.value, %entry], [%builtin.value, %builtin]
   %owned = call ptr @mule.fast.retain(ptr %value)
   ret ptr %owned
 slow:
-  %result = call ptr @mule_load_global(ptr %cells, ptr %name)
+  %result = call ptr @mule_load_global(ptr %cell, ptr %name)
+  ret ptr %result
+}
+
+define internal ptr @mule.global.live(ptr %cell, ptr %name) alwaysinline {
+entry:
+  %own.slot = getelementptr inbounds {ptr, i64, ptr, ptr}, ptr %cell, i64 0, i32 1
+  %own = load i64, ptr %own.slot
+  %bound = icmp ne i64 %own, 0
+  br i1 %bound, label %module, label %builtin
+module:
+  %value = load ptr, ptr %cell, !nonnull !{}
+  br label %found
+builtin:
+  %builtin.slot = getelementptr inbounds {ptr, i64, ptr, ptr}, ptr %cell, i64 0, i32 2
+  %builtin.cell = load ptr, ptr %builtin.slot
+  %builtin.missing = icmp eq ptr %builtin.cell, null
+  br i1 %builtin.missing, label %slow, label %builtin.check
+builtin.check:
+  %builtin.own.slot = getelementptr inbounds {ptr, i64, ptr, ptr}, ptr %builtin.cell, i64 0, i32 1
+  %builtin.own = load i64, ptr %builtin.own.slot
+  %builtin.bound = icmp ne i64 %builtin.own, 0
+  br i1 %builtin.bound, label %builtin.value, label %slow
+builtin.value:
+  %live = load ptr, ptr %builtin.cell, !nonnull !{}
+  br label %found
+found:
+  %result.value = phi ptr [%value, %module], [%live, %builtin.value]
+  %owned = call ptr @mule.fast.retain(ptr %result.value)
+  ret ptr %owned
+slow:
+  %result = call ptr @mule_load_global(ptr %cell, ptr %name)
   ret ptr %result
 }
 

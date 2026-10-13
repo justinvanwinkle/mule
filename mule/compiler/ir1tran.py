@@ -3867,6 +3867,84 @@ class _AnnotationReference(ast.Visitor):
         return node.value.accept(self).member(node.attribute, self.converter, node)
 
 
+# The module-level assignments that set a module's policy, and the quality
+# each sets. Python forbids assigning ``__debug__``.
+MODULE_POLICY_NAMES = {
+    "__speed__": "speed",
+    "__safety__": "safety",
+    "__debug_level__": "debug",
+}
+
+
+class _ModulePolicyAssignment(ast.Visitor):
+    """The quality and level a module-level policy assignment such as
+    ``__safety__ = 2`` sets, or None for any other statement."""
+
+    def __init__(self, converter):
+        self.converter = converter
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Assignment(self, node):
+        qualities = [target.accept(_PolicyName()) for target in node.targets]
+        if not any(qualities):
+            return None
+        if len(qualities) != 1:
+            self.converter.error("a module policy must be assigned on its own", node)
+        return qualities[0], node.value.accept(_PolicyLevel(self.converter))
+
+
+class _PolicyName(ast.Visitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Name(self, node):
+        return MODULE_POLICY_NAMES.get(node.identifier)
+
+
+class _ModulePrologue(ast.Visitor):
+    """Whether a statement may precede a module's policy assignments: an
+    import, or the docstring."""
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Import(self, node):
+        return True
+
+    def visit_ImportFrom(self, node):
+        return True
+
+
+def module_policy(converter, statements):
+    """The policy of the module's top-level code and the default for its
+    definitions: the default policy with the levels the module assigns to
+    ``__speed__``, ``__safety__`` and ``__debug_level__``, as SBCL's top-level
+    ``declaim`` sets the policy for the rest of a file. The top-level code is
+    one lambda with one policy, so the assignments must come before the
+    module's other statements. They remain ordinary bindings at run time."""
+    changes = {}
+    prologue = True
+    for index, statement in enumerate(statements):
+        assignment = statement.accept(_ModulePolicyAssignment(converter))
+        if assignment is not None:
+            quality, level = assignment
+            if not prologue:
+                converter.error(
+                    "a module policy assignment must precede the module's code",
+                    statement,
+                )
+            if quality in changes:
+                converter.error(f"duplicate module policy for {quality}", statement)
+            changes[quality] = level
+            continue
+        docstring = index == 0 and statement.accept(_ClassDocstring())
+        if not docstring and not statement.accept(_ModulePrologue()):
+            prologue = False
+    return replace(OptimizationPolicy(), **changes)
+
+
 class _PolicyDecorator(ast.Visitor):
     def __init__(self, converter, policy):
         self.converter = converter

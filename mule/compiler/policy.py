@@ -11,7 +11,9 @@ from dataclasses import dataclass
 @dataclass(frozen=True, slots=True)
 class OptimizationPolicy:
     speed: int = 3
-    safety: int = 0
+    # Safety 3 is exact Python. Safety 2, the default, also assumes builtins
+    # are never rebound once installed; safety 0 drops unbound-name checks.
+    safety: int = 2
     debug: int = 1
 
     @property

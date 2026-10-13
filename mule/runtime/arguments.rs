@@ -91,6 +91,11 @@ unsafe fn call_buffers(
             } => {
                 return call_buffers(*method, *bound, values, names, keyword_values);
             }
+            // An unbound global read without a check (safety zero).
+            Data::Undefined => {
+                object::error("NameError", "name is not defined");
+                return std::ptr::null_mut();
+            }
             Data::Instance { .. } | Data::NativeInstance { .. } => {
                 let name = c"__call__";
                 let method = object::mule_lookup_special(callable, name.as_ptr());

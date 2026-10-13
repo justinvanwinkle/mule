@@ -59,8 +59,7 @@ declare ptr @mule_none()
 declare ptr @mule_bool(i32)
 declare ptr @mule_load_global(ptr, ptr)
 declare i32 @mule_store_global(ptr, ptr, ptr)
-declare i32 @mule_link_globals(ptr, i64, ptr, ptr)
-@mule_unresolved_cell = external constant ptr
+declare i32 @mule_link_globals(ptr, i64, ptr, ptr, i32)
 declare ptr @mule_namespace()
 declare i32 @mule_namespace_bound(ptr, ptr)
 declare i32 @mule_assertion_failure(ptr)
@@ -221,6 +220,13 @@ class Program:
     argument_constructor: Function | None = None
     argument_binder: Function | None = None
     layouts: dict[str, Layout] = field(default_factory=dict)
+    # Names the builtins unit installs as builtins, which later units can
+    # copy once they link.
+    builtin_names: frozenset[str] = frozenset()
+    # The builtins unit's code runs while its protocols install the builtins,
+    # replacing runtime-provided ones such as ``tuple``, so it reads globals
+    # live whatever its safety.
+    bootstrap: bool = False
     external: list[ForeignFunction] = field(default_factory=list)
     external_facts: dict = field(default_factory=dict)
     unit: str = "program"
@@ -234,10 +240,14 @@ class Program:
     module_import: ImportInfo | None = None
 
 
-def is_protocol_namespace(namespace: str) -> bool:
-    """Whether code compiled under ``namespace`` is protocol code, which runs
-    under the protocol globals: its namespaces are named ``$mule.*``."""
-    return namespace.startswith("$")
+# Every protocol (``$mule.*`` compilation namespaces) runs under the one
+# protocol globals namespace, so their cells are keyed by it.
+PROTOCOL_NAMESPACE = "$mule.protocols"
+
+
+def runtime_namespace(namespace: str) -> str:
+    """The runtime namespace code compiled under ``namespace`` runs in."""
+    return PROTOCOL_NAMESPACE if namespace.startswith("$") else namespace
 
 
 def _symbol(name: str) -> str:
@@ -397,10 +407,14 @@ class ModuleGenerator:
         self.data: dict[bytes, str] = {}
         self.tuple_constants: dict[tuple, TupleConstant] = {}
         self.auxiliary: list[str] = []
-        # Each namespace's global references, by name: the runtime's
-        # ``GlobalCells`` for that name, linked once per namespace.
+        # Each runtime namespace's static cells (the runtime's ``GlobalCell``),
+        # by name, linked once per namespace.
         self.global_cells: dict[str, dict[str, str]] = {}
         self.linked_namespaces: set[str] = set()
+        # Names whose reads omit the unbound check because the builtins
+        # define them, by namespace, and the namespaces code binds names in.
+        self.expected_builtins: dict[str, set[str]] = {}
+        self.bound_namespaces: set[str] = set()
         # Namespaces whose cells a linkonce_odr initializer uses, which must
         # then be shared definitions too.
         self.shared_namespaces: set[str] = set()
@@ -474,33 +488,57 @@ class ModuleGenerator:
             or info.initializer in {lambda_.name for lambda_ in self.owned}
         )
 
-    def cells(self, namespace: str, name: str) -> str:
-        """The cells of global ``name`` that code running under ``namespace``
-        reads and writes."""
+    def cell(self, namespace: str, name: str) -> str:
+        """The static cell (the runtime's ``GlobalCell``) of global ``name``
+        for code compiled under ``namespace``."""
+        namespace = runtime_namespace(namespace)
         cells = self.global_cells.setdefault(namespace, {})
         symbol = cells.get(name)
         if symbol is None:
             symbol = cells[name] = _symbol(f"mule.cell:{namespace}:{name}")
         return symbol
 
-    def load_global(self, var) -> str:
-        """The call reading global ``var``, owned."""
-        cells = self.cells(var.namespace, var.name)
-        return f"call ptr @mule.fast.global(ptr {cells}, ptr {self.text(var.name)})"
+    def load_global(self, var, safety: int) -> str:
+        """The call reading global ``var``, owned, under ``safety``.
+
+        Safety 3 is exact Python: the namespace's own binding, else the
+        builtin's current value. Below that, builtins are assumed never to be
+        rebound, so a cell holds a copy of its builtin until the namespace
+        binds the name, and reading a name the builtins define needs no
+        check. Other names are checked for being unbound except at safety 0,
+        where an unbound read yields the undefined object.
+        """
+        cell = self.cell(var.namespace, var.name)
+        if safety == 3 or self.program.bootstrap:
+            helper = "live"
+        elif var.name in self.program.builtin_names:
+            helper = "unchecked"
+            self.expected_builtins.setdefault(
+                runtime_namespace(var.namespace), set()
+            ).add(var.name)
+        elif safety == 0:
+            helper = "unchecked"
+        else:
+            helper = "checked"
+        return f"call ptr @mule.global.{helper}(ptr {cell}, ptr {self.text(var.name)})"
 
     def store_global(self, namespace: str, name: str, value: str) -> str:
         """The call binding global ``name`` to ``value``, borrowed; its status
         is negative on failure."""
-        cells = self.cells(namespace, name)
-        return f"call i32 @mule_store_global(ptr {cells}, ptr {self.text(name)}, ptr {value})"
+        self.bound_namespaces.add(runtime_namespace(namespace))
+        cell = self.cell(namespace, name)
+        return f"call i32 @mule_store_global(ptr {cell}, ptr {self.text(name)}, ptr {value})"
 
     def delete_global(self, var) -> str:
-        cells = self.cells(var.namespace, var.name)
-        return f"call i32 @mule_delete_global(ptr {cells}, ptr {self.text(var.name)})"
+        self.bound_namespaces.add(runtime_namespace(var.namespace))
+        cell = self.cell(var.namespace, var.name)
+        return f"call i32 @mule_delete_global(ptr {cell}, ptr {self.text(var.name)})"
 
     def link(self, namespace: str, value: str, failed: str, index: int) -> list[str]:
-        """Lines linking ``namespace``'s references to the namespace object
-        ``value``, branching to ``failed`` when linking fails."""
+        """Lines linking ``namespace``'s cells into the namespace object
+        ``value`` (``null`` for cells that only read builtins), branching to
+        ``failed`` when linking fails."""
+        namespace = runtime_namespace(namespace)
         self.linked_namespaces.add(namespace)
         self.global_cells.setdefault(namespace, {})
         return [
@@ -520,32 +558,49 @@ class ModuleGenerator:
             shared = namespace in self.shared_namespaces
             linkage = "linkonce_odr" if shared else "internal"
             constant = "linkonce_odr constant" if shared else "private constant"
-            for symbol in cells.values():
-                definitions.append(
-                    f"{symbol} = {linkage} global [3 x ptr] "
-                    "[ptr @mule_unresolved_cell, ptr @mule_unresolved_cell, ptr null]"
-                )
-            link = _symbol(f"mule.link:{namespace}")
-            if not cells:
-                definitions.append(
-                    f"define {linkage} i32 {link}(ptr %namespace) {{\nentry:\n  ret i32 0\n}}"
-                )
-                continue
-            names = _symbol(f"mule.names:{namespace}")
-            table = _symbol(f"mule.cells:{namespace}")
-            count = len(cells)
-            name_values = ", ".join(f"ptr {self.text(name)}" for name in cells)
-            cell_values = ", ".join(f"ptr {symbol}" for symbol in cells.values())
-            definitions += [
-                f"{names} = {constant} [{count} x ptr] [{name_values}]",
-                f"{table} = {constant} [{count} x ptr] [{cell_values}]",
-                (
-                    f"define {linkage} i32 {link}(ptr %namespace) {{\n"
-                    "entry:\n"
-                    f"  %status = call i32 @mule_link_globals(ptr %namespace, i64 {count}, ptr {names}, ptr {table})\n"
-                    "  ret i32 %status\n}"
-                ),
+            definitions.extend(
+                f"{symbol} = {linkage} global {{ptr, i64, ptr, ptr}} "
+                "{ptr @mule.undefined, i64 0, ptr null, ptr null}"
+                for symbol in cells.values()
+            )
+            # Names read without a check must be installed builtins.
+            expected = self.expected_builtins.get(namespace, set())
+            groups = [
+                (suffix, [name for name in cells if (name in expected) == builtin])
+                for suffix, builtin in (("builtins", True), ("names", False))
             ]
+            calls = []
+            for suffix, names in groups:
+                if not names:
+                    continue
+                name_table = _symbol(f"mule.{suffix}:{namespace}")
+                cell_table = _symbol(f"mule.{suffix}.cells:{namespace}")
+                name_values = ", ".join(f"ptr {self.text(name)}" for name in names)
+                cell_values = ", ".join(f"ptr {cells[name]}" for name in names)
+                definitions += [
+                    f"{name_table} = {constant} [{len(names)} x ptr] [{name_values}]",
+                    f"{cell_table} = {constant} [{len(names)} x ptr] [{cell_values}]",
+                ]
+                calls.append(
+                    f"  %{suffix} = call i32 @mule_link_globals(ptr %namespace, "
+                    f"i64 {len(names)}, ptr {name_table}, ptr {cell_table}, "
+                    f"i32 {int(suffix == 'builtins')})"
+                )
+            body = ["entry:"]
+            for index, call in enumerate(calls):
+                status = call.split(" = ")[0].strip()
+                body += [
+                    call,
+                    f"  %failed.{index} = icmp slt i32 {status}, 0",
+                    f"  br i1 %failed.{index}, label %failure, label %next.{index}",
+                    f"next.{index}:",
+                ]
+            body += ["  ret i32 0", "failure:", "  ret i32 -1"]
+            definitions.append(
+                f"define {linkage} i32 {_symbol(f'mule.link:{namespace}')}(ptr %namespace) {{\n"
+                + "\n".join(body)
+                + "\n}"
+            )
         return definitions
 
     def attribute_cache(self) -> str:
@@ -768,13 +823,23 @@ class ModuleGenerator:
         finalizer, which releases them and the modules it owns."""
         linkage = "" if self.program.exports else "internal "
         # Protocol code runs under the protocol globals whoever calls it,
-        # and the unit initializer runs after they exist.
+        # and the unit initializer runs after they exist. Only the unit with
+        # the protocols' module bodies (the builtins unit) binds names there;
+        # elsewhere protocol code (the format, argument and native class
+        # protocols) only reads builtins, so its cells join no namespace.
         links = []
-        protocols = [name for name in self.global_cells if is_protocol_namespace(name)]
-        if protocols:
+        if PROTOCOL_NAMESPACE in self.global_cells:
+            target = "%protocol.globals"
+            if not any(
+                lambda_.kind is FunctionalKind.TOPLEVEL
+                and runtime_namespace(lambda_.namespace) == PROTOCOL_NAMESPACE
+                for lambda_ in self.program.lambdas
+            ):
+                if PROTOCOL_NAMESPACE in self.bound_namespaces:
+                    raise AssertionError("protocol code binds globals outside its unit")
+                target = "null"
             links.append("  %protocol.globals = call ptr @mule_protocol_globals()")
-        for index, namespace in enumerate(protocols):
-            links += self.link(namespace, "%protocol.globals", "link.failed", index)
+            links += self.link(PROTOCOL_NAMESPACE, target, "link.failed", 0)
         initialize = (
             f"define {linkage}ptr {unit_initializer(self.program.unit)}() {{\n"
             "entry:\n"
@@ -808,8 +873,9 @@ class ModuleGenerator:
         return initialize + "\n\n" + finalize
 
     def executable_entry(self) -> list[str]:
-        """``main`` and the protocol startup it runs: every unit's constants,
-        then the sequence and print protocols."""
+        """``main`` and the protocol startup it runs: the units it depends on,
+        the sequence and print protocols, then this unit, whose cells copy
+        the builtins those protocols install."""
         program = self.program
         units = [*program.dependencies, program.unit]
         definitions = [
@@ -817,7 +883,7 @@ class ModuleGenerator:
             for unit in program.dependencies
         ]
         startup = []
-        for index, unit in enumerate(units):
+        for index, unit in enumerate(program.dependencies):
             startup += [
                 f"  %unit.{index} = call ptr {unit_initializer(unit)}()",
                 f"  %unit.bad.{index} = icmp eq ptr %unit.{index}, null",
@@ -835,7 +901,17 @@ class ModuleGenerator:
             "  br i1 %failed, label %failure, label %print\n"
             "print:\n"
             f"  %result = call ptr {self.functions[linked(program.print_entry, program, 'print entry')]}(ptr %globals, ptr %args)\n"
+            "  %print.failed = icmp eq ptr %result, null\n"
+            "  br i1 %print.failed, label %failure, label %unit\n"
+            "unit:\n"
+            f"  %own = call ptr {unit_initializer(program.unit)}()\n"
+            "  %own.failed = icmp eq ptr %own, null\n"
+            "  br i1 %own.failed, label %own.failure, label %ready\n"
+            "ready:\n"
             "  ret ptr %result\n"
+            "own.failure:\n"
+            "  call void @mule_release(ptr %result)\n"
+            "  br label %failure\n"
             "failure:\n"
             "  ret ptr null\n"
             "}"
@@ -2128,7 +2204,7 @@ def native_adapter(gen: FunctionGenerator, plan, linkage: str) -> str:
         gen.line(f"{slot} = alloca ptr")
         gen.line(f"store ptr null, ptr {slot}")
     for index, (var, prediction) in enumerate(plan.dependencies.items()):
-        value = gen.operation(gen.module.load_global(var))
+        value = gen.operation(gen.module.load_global(var, gen.lambda_.policy.safety))
         gen.line(f"store ptr {value}, ptr {slots[index]}")
         gen.check_pointer(value)
         matched = gen.operation(

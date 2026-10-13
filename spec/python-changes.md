@@ -40,20 +40,22 @@ Adaptations, each a concrete departure from `node.lisp`/`ir1tran.lisp`:
   temporary's extent is marked so ownership lowering can move the value.
 - `Set` with no value represents Python's unbinding (`del`, the implicit
   deletion of an `except ... as` name).
-- Module globals are `GlobalVar` leaves per namespace, read and written at
-  execution time through value cells, as SBCL code reaches a symbol's value
-  cell or an fdefn from its constant vector. A namespace keeps each binding
-  in a boxed cell that never moves; unbinding stores NULL and keeps the cell.
-  A unit has one cell pair per namespace and name it references, holding
-  that name's cell in the namespace and in the builtins. Each namespace's
-  pairs are linked once, after the namespace exists and before any of its
-  code runs, as SBCL fixes up constants when it loads code: a module's in its
-  import initializer, the main program's when its top-level body starts, and
-  protocol code's (`$mule.*`, which runs under the protocol globals whoever
-  calls it) in the unit initializer. Linking creates unbound cells for names
-  not yet bound. A read loads the module cell's value, then the builtin
-  cell's when that is NULL; an unlinked pair points at an always-NULL cell, so
-  a read before linking reaches the slow path, which reports it.
+- Module globals are `GlobalVar` leaves per namespace, stored in value cells
+  at fixed addresses, as SBCL code reaches immobile symbols' value cells. A
+  unit emits a static cell `{value, own, builtin, namespace}` for each
+  namespace and name its code references, and code reads `value` directly.
+  A namespace links a unit's cells once, after the namespace exists and
+  before any of its code runs: a module's in its import initializer, the main
+  program's when its top-level body starts, and the protocols' (all `$mule.*`
+  code runs under the one protocol globals namespace) in the unit
+  initializer, where protocol code outside the builtins unit only reads
+  builtins and joins no namespace. The main unit initializes after the
+  protocols install the builtins. Names first bound at run time get boxed
+  cells. A cell is never NULL: it holds the namespace's own value, else a copy
+  of the builtin of that name, else the undefined object. `own` marks the
+  namespace's own bindings, the only ones queries and star imports see, and
+  `del` restores the builtin copy. How much a read checks depends on safety
+  (see the optimization policies).
   Calls through globals are full calls; local-call analysis may convert
   them only under an identity guard, because the binding is mutable until the
   module has executed. The module body is the top-level lambda, as in

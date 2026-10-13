@@ -29,11 +29,12 @@ from . import (
 from .artifacts import Graph, Node, Step, ToolchainError, digest, tool_identity
 from .codegen import ForeignFunction, Program, generate
 from .inputs import read_source
+from .ir1opt import constant_literal
 from .ir1tran import ImportInfo
-from .ir1util import class_method_definitions
+from .ir1util import class_method_definitions, known_calls
 from .main import compile_source
 from .modules import CompiledModule, ModuleCompiler, search_path
-from .node import Signature
+from .node import FunctionalKind, Signature
 
 __all__ = [
     "ToolchainError",
@@ -52,13 +53,15 @@ LINK_LIBRARIES = ("-lgmp", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl")
 class BuiltinsInterface:
     """What units compiled against the builtins unit need from it: its
     functions by name, the methods programs may predict, the protocol entry
-    points, and the modules it compiled."""
+    points, the modules it compiled, and the names its protocols install as
+    builtins."""
 
     functions: dict[str, ForeignFunction]
     methods: dict[str, str]
     sequence_functions: dict[str, str]
     entries: dict[str, str | None]
     modules: dict[str, CompiledModule]
+    builtins: list[str]
 
     def to_json(self) -> str:
         return json.dumps(
@@ -76,6 +79,7 @@ class BuiltinsInterface:
                 "methods": self.methods,
                 "sequence_functions": self.sequence_functions,
                 "entries": self.entries,
+                "builtins": self.builtins,
                 "modules": {
                     name: {
                         **asdict(module),
@@ -121,13 +125,14 @@ class BuiltinsInterface:
             data["sequence_functions"],
             data["entries"],
             modules,
+            data["builtins"],
         )
 
 
 def compile_builtins() -> tuple[Program, dict[str, CompiledModule]]:
     """Compile the stdlib protocols every program runs on, through the IR1
     phases, as the exporting ``builtins`` unit."""
-    unit = Program([], None, {}, unit="builtins", exports=True)
+    unit = Program([], None, {}, unit="builtins", exports=True, bootstrap=True)
     unit.print_entry = print_protocol.prepare(unit)
     unit.protocol_entry, unit.sequence_functions, modules = sequence_protocol.prepare(
         unit
@@ -165,7 +170,39 @@ def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
             "argument_binder": name(unit.argument_binder),
         },
         dict(modules),
+        installed_builtins(unit),
     )
+
+
+# Builtins the runtime defines itself (``builtins::namespace`` in
+# ``mule/runtime/builtins.rs``). Linking verifies every name a unit assumed is
+# a builtin, so a drift from that list fails at startup.
+RUNTIME_BUILTINS = ("abs", "bool", "float", "input", "int", "len", "list", "tuple")
+
+
+def installed_builtins(unit: Program) -> list[str]:
+    """The builtins every later unit can rely on being defined: the runtime's
+    own and those the builtins unit's module bodies install by literal name."""
+    names = set(RUNTIME_BUILTINS)
+    for lambda_ in unit.lambdas:
+        if lambda_.kind is not FunctionalKind.TOPLEVEL:
+            continue
+        for call in known_calls(lambda_, "_install_builtin"):
+            literal = constant_literal(call.args[0])
+            name = None if literal is None else literal.accept(_TextValue())
+            if name is not None:
+                names.add(name)
+    return sorted(names)
+
+
+class _TextValue(ast.Visitor):
+    """A text literal's value, or None for any other literal."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_TextLiteral(self, node):
+        return node.value
 
 
 def compile_unit(
@@ -212,6 +249,7 @@ def compile_unit(
         },
         argument_constructor=entry("argument_constructor"),
         argument_binder=entry("argument_binder"),
+        builtin_names=frozenset(interface.builtins),
         external=list(functions.values()),
         external_methods={
             method: functions[name] for method, name in interface.methods.items()

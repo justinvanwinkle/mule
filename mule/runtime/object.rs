@@ -10,64 +10,169 @@ pub struct Object {
     pub references: usize,
     pub data: Data,
 }
-/// A namespace's bindings, in binding order. Each value lives in its own boxed
-/// cell whose address never changes, so compiled code resolves a global once
-/// and then reads and writes the cell directly, as SBCL code reaches a
-/// symbol's value cell or an fdefn through its constant vector. Unbinding a
-/// name stores NULL in its cell rather than dropping it, and every query
-/// treats a NULL cell as absent.
+/// A global's storage: one per namespace and name, at an address that never
+/// changes, so compiled code reads `value` directly. A unit's cells are its
+/// static data, registered with the namespace when the unit links it, as SBCL
+/// code reaches immobile symbols' value cells at fixed addresses; a namespace
+/// boxes cells for names first bound at run time.
+#[repr(C)]
+pub struct GlobalCell {
+    /// The namespace's own value, else a copy of the builtin of the same
+    /// name, else the undefined object; never NULL.
+    value: Value,
+    /// Nonzero while the namespace itself binds the name.
+    own: usize,
+    /// The builtins' cell for the same name: what exact-semantics code reads
+    /// and what `del` restores. NULL in the builtins' own cells.
+    builtin: *mut GlobalCell,
+    /// The namespace the cell belongs to. NULL for a cell used only to read
+    /// builtins, and once the namespace is freed.
+    namespace: Value,
+}
+
+impl GlobalCell {
+    fn unbound(builtin: *mut GlobalCell, namespace: Value) -> Self {
+        let mut cell = Self { value: undefined_value(), own: 0, builtin, namespace };
+        cell.value = unsafe { cell.inherited() };
+        cell
+    }
+
+    fn bound(&self) -> bool {
+        self.own != 0
+    }
+
+    /// The value the name has while the namespace does not bind it: the
+    /// builtin's, owned, or the undefined object.
+    unsafe fn inherited(&self) -> Value {
+        unsafe {
+            if !self.builtin.is_null() && (*self.builtin).bound() {
+                retain((*self.builtin).value)
+            } else {
+                undefined_value()
+            }
+        }
+    }
+}
+
+struct Entry {
+    name: String,
+    cell: *mut GlobalCell,
+    /// The namespace allocated the cell and frees it; a unit's static cell
+    /// is only registered here.
+    boxed: bool,
+}
+
+/// A namespace's names and their cells, in binding order: a name moves to
+/// the end when it becomes bound, as a key added to a dict does. Only names
+/// the namespace itself binds are visible to queries.
 #[derive(Default)]
 pub struct Namespace {
-    cells: Vec<(String, Box<Value>)>,
+    entries: Vec<Entry>,
+}
+
+impl Drop for Namespace {
+    fn drop(&mut self) {
+        for entry in &self.entries {
+            if entry.boxed {
+                drop(unsafe { Box::from_raw(entry.cell) });
+            }
+        }
+    }
 }
 
 impl Namespace {
     fn position(&self, name: &str) -> Option<usize> {
-        self.cells.iter().position(|(key, _)| key == name)
+        self.entries.iter().position(|entry| entry.name == name)
     }
 
-    /// The value bound to `name`, borrowed, or NULL when unbound.
+    fn cell_of(&self, name: &str) -> Option<&GlobalCell> {
+        self.position(name).map(|index| unsafe { &*self.entries[index].cell })
+    }
+
+    /// The value the namespace binds to `name`, borrowed, or NULL.
     pub fn get(&self, name: &str) -> Value {
-        self.position(name).map_or(std::ptr::null_mut(), |index| *self.cells[index].1)
+        self.cell_of(name)
+            .filter(|cell| cell.bound())
+            .map_or(std::ptr::null_mut(), |cell| cell.value)
     }
 
-    /// The cell holding `name`'s value, created unbound when absent.
-    pub fn cell(&mut self, name: &str) -> *mut Value {
+    /// The cell of `name`, boxed and unbound when the namespace has none.
+    /// `this` is the namespace object owning these bindings.
+    fn cell(&mut self, name: &str, builtin: *mut GlobalCell, this: Value) -> *mut GlobalCell {
+        match self.position(name) {
+            Some(index) => self.entries[index].cell,
+            None => {
+                let cell = Box::into_raw(Box::new(GlobalCell::unbound(builtin, this)));
+                self.entries.push(Entry { name: name.into(), cell, boxed: true });
+                cell
+            }
+        }
+    }
+
+    /// Bind `name` to `value`, which the cell takes over, and return what the
+    /// cell held, owned: the previous binding, an inherited copy, or the
+    /// undefined object. `this` is the namespace object owning these bindings.
+    pub fn replace(&mut self, name: &str, value: Value, this: Value) -> Value {
         let index = self.position(name).unwrap_or_else(|| {
-            self.cells.push((name.into(), Box::new(std::ptr::null_mut())));
-            self.cells.len() - 1
+            let cell = Box::into_raw(Box::new(GlobalCell::unbound(std::ptr::null_mut(), this)));
+            self.entries.push(Entry { name: name.into(), cell, boxed: true });
+            self.entries.len() - 1
         });
-        &raw mut *self.cells[index].1
-    }
-
-    /// Bind `name` to `value`, which the cell takes over, and return the
-    /// previous value, owned, or NULL when it was unbound. A name bound anew
-    /// moves to the end, as a key added to a dict does; its cell stays put.
-    pub fn replace(&mut self, name: &str, value: Value) -> Value {
-        let Some(index) = self.position(name) else {
-            self.cells.push((name.into(), Box::new(value)));
-            return std::ptr::null_mut();
-        };
-        let previous = std::mem::replace(&mut *self.cells[index].1, value);
-        if previous.is_null() {
-            let entry = self.cells.remove(index);
-            self.cells.push(entry);
+        let cell = unsafe { &mut *self.entries[index].cell };
+        let previous = std::mem::replace(&mut cell.value, value);
+        if !cell.bound() {
+            cell.own = 1;
+            let entry = self.entries.remove(index);
+            self.entries.push(entry);
         }
         previous
     }
 
-    /// Unbind `name`, returning its value, owned, or NULL when unbound.
+    /// Unbind `name`, returning its value, owned, or NULL when the namespace
+    /// does not bind it. The cell goes back to inheriting the builtin.
     pub fn take(&mut self, name: &str) -> Value {
-        self.position(name)
-            .map_or(std::ptr::null_mut(), |index| std::mem::replace(&mut *self.cells[index].1, std::ptr::null_mut()))
+        let Some(index) = self.position(name) else {
+            return std::ptr::null_mut();
+        };
+        let cell = unsafe { &mut *self.entries[index].cell };
+        if !cell.bound() {
+            return std::ptr::null_mut();
+        }
+        cell.own = 0;
+        let inherited = unsafe { cell.inherited() };
+        std::mem::replace(&mut cell.value, inherited)
+    }
+
+    /// Register a unit's static `cell` for `name`. A value the runtime bound
+    /// before linking moves into it.
+    fn link(&mut self, name: &str, cell: *mut GlobalCell, builtin: *mut GlobalCell, this: Value) -> Result<(), String> {
+        unsafe {
+            match self.position(name) {
+                Some(index) => {
+                    let entry = &mut self.entries[index];
+                    if !entry.boxed {
+                        return Err(format!("global '{name}' is linked by two units"));
+                    }
+                    let previous = Box::from_raw(entry.cell);
+                    *cell = GlobalCell { value: previous.value, own: previous.own, builtin, namespace: this };
+                    entry.cell = cell;
+                    entry.boxed = false;
+                }
+                None => {
+                    *cell = GlobalCell::unbound(builtin, this);
+                    self.entries.push(Entry { name: name.into(), cell, boxed: false });
+                }
+            }
+            Ok(())
+        }
     }
 
     /// The bound names and their borrowed values, in binding order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, Value)> {
-        self.cells
-            .iter()
-            .filter(|(_, cell)| !cell.is_null())
-            .map(|(name, cell)| (name.as_str(), **cell))
+        self.entries.iter().filter_map(|entry| {
+            let cell = unsafe { &*entry.cell };
+            cell.bound().then_some((entry.name.as_str(), cell.value))
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -78,50 +183,18 @@ impl Namespace {
         self.iter().next().is_none()
     }
 
-    /// Unbind every name, returning the values, owned.
+    /// Detach every cell, returning the values it held, owned. Static cells
+    /// outlive the namespace, so they are left unbound and unowned.
     fn clear(&mut self) -> Vec<Value> {
-        self.cells
-            .iter_mut()
-            .map(|(_, cell)| std::mem::replace(&mut **cell, std::ptr::null_mut()))
-            .filter(|value| !value.is_null())
+        self.entries
+            .iter()
+            .map(|entry| {
+                let cell = unsafe { &mut *entry.cell };
+                cell.own = 0;
+                cell.namespace = std::ptr::null_mut();
+                std::mem::replace(&mut cell.value, undefined_value())
+            })
             .collect()
-    }
-}
-
-/// A compiled global reference's cells: its name's cell in the namespace its
-/// code runs under and in the builtins, and that namespace. A unit links them
-/// once, when the namespace exists and before any of its code runs (SBCL fixes
-/// up a code object's constant vector when it loads the code), so a read is
-/// two loads, and a third for a builtin.
-#[repr(C)]
-pub struct GlobalCells {
-    module: *mut Value,
-    builtin: *mut Value,
-    namespace: Value,
-}
-
-/// The cell compiled references hold until their unit links them. It is
-/// always NULL, so a read before linking takes the slow path, which reports it.
-#[repr(transparent)]
-pub struct UnresolvedCell(Value);
-// SAFETY: the cell is never written.
-unsafe impl Sync for UnresolvedCell {}
-#[unsafe(no_mangle)]
-#[allow(non_upper_case_globals)]
-pub static mule_unresolved_cell: UnresolvedCell = UnresolvedCell(std::ptr::null_mut());
-
-fn unresolved_cell() -> *mut Value {
-    (&raw const mule_unresolved_cell).cast::<Value>().cast_mut()
-}
-
-/// Unlinked cells, as generated code initializes them.
-impl Default for GlobalCells {
-    fn default() -> Self {
-        Self {
-            module: unresolved_cell(),
-            builtin: unresolved_cell(),
-            namespace: std::ptr::null_mut(),
-        }
     }
 }
 
@@ -207,6 +280,9 @@ pub enum Data {
     },
     /// A generator's suspended execution on its own native stack.
     Coroutine(Box<crate::coroutine::Coroutine>),
+    /// What an unbound global's cell holds. Code checking for unbound names
+    /// compares against it; using it unchecked raises `NameError`.
+    Undefined,
 }
 thread_local! {
     static ERROR: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
@@ -312,7 +388,7 @@ pub unsafe fn release(value: Value) {
         }
         if let Data::Namespace(namespace) = &mut (*value).data {
             // Unbind before releasing: a finalizer a release runs may still
-            // read this namespace through a cached cell.
+            // read this namespace's cells.
             for released in namespace.clear() {
                 release(released);
             }
@@ -370,13 +446,24 @@ pub unsafe fn release(value: Value) {
         }
     }
 }
-/// This private wrapper is used only for frozen None/Bool objects. These variants
+/// This private wrapper is used only for frozen None/Bool/Undefined objects. These variants
 /// own no pointers or mutable storage, and their immortal reference count is
 /// never modified by retain/release. No other Object variants may be stored here.
 #[repr(transparent)]
 struct ImmortalObject(Object);
 unsafe impl Sync for ImmortalObject {}
 
+#[unsafe(export_name = "mule.undefined")]
+static UNDEFINED: ImmortalObject = ImmortalObject(Object {
+    references: usize::MAX,
+    data: Data::Undefined,
+});
+pub fn undefined_value() -> Value {
+    std::ptr::addr_of!(UNDEFINED.0).cast_mut()
+}
+pub fn is_undefined(value: Value) -> bool {
+    std::ptr::eq(value, undefined_value())
+}
 #[unsafe(export_name = "mule.none")]
 static NONE: ImmortalObject = ImmortalObject(Object {
     references: usize::MAX,
@@ -446,7 +533,7 @@ pub unsafe fn bind(namespace: Value, name: &str, value: Value) -> bool {
             && matches!(&(*namespace).data, Data::Namespace(_))
         {
             if let Data::Namespace(bindings) = &mut (*namespace).data {
-                let previous = bindings.replace(name, retain(value));
+                let previous = bindings.replace(name, retain(value), namespace);
                 release(previous);
                 return true;
             }
@@ -615,6 +702,10 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
                 return result;
             }
             Data::Function { .. } => (),
+            Data::Undefined => {
+                error("NameError", "name is not defined");
+                return std::ptr::null_mut();
+            }
             _ => {
                 error("TypeError", "object is not callable");
                 return std::ptr::null_mut();
@@ -1287,6 +1378,7 @@ pub unsafe fn formatted_value(
             Data::BoundMethod { .. } => b"<bound native method>".to_vec(),
             Data::WeakHandle { .. } => b"<weak handle>".to_vec(),
             Data::Coroutine(_) => b"<coroutine>".to_vec(),
+            Data::Undefined => b"<undefined>".to_vec(),
             Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => {
                 let user = special_binding_present(value, representation);
                 if user {
@@ -1758,6 +1850,7 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
                 Data::BoundMethod { .. } => "method",
                 Data::WeakHandle { .. } => "weak handle",
                 Data::Coroutine(_) => "coroutine",
+                Data::Undefined => "undefined",
                 Data::Class(_) => "type",
                 Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => {
                     match &(**ty).data {
@@ -1877,18 +1970,23 @@ pub unsafe fn load_global(globals: Value, name: &str) -> Value {
     }
 }
 
-/// Link `count` compiled references: point `cells[i]` at the cells of
-/// `names[i]` in `namespace` and in the builtins, creating unbound cells for
-/// names not bound yet.
+/// Link a unit's static cells for `count` names into `namespace`, or, when
+/// `namespace` is NULL, prepare cells that only ever read builtins. Each cell
+/// starts with the namespace's own value, else a copy of the builtin, else
+/// the undefined object. With `builtin_expected`, every name must already be
+/// an installed builtin, as the compiler assumed when it omitted their checks.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_link_globals(
     namespace: Value,
     count: i64,
     names: *const *const c_char,
-    cells: *const *mut GlobalCells,
+    cells: *const *mut GlobalCell,
+    builtin_expected: i32,
 ) -> i32 {
     unsafe {
-        if namespace.is_null() || is_fixnum(namespace) || !matches!(&(*namespace).data, Data::Namespace(_)) {
+        if !namespace.is_null()
+            && (is_fixnum(namespace) || !matches!(&(*namespace).data, Data::Namespace(_)))
+        {
             error("TypeError", "expected a Mule namespace");
             return -1;
         }
@@ -1897,46 +1995,51 @@ pub unsafe extern "C" fn mule_link_globals(
             let Some(name) = name_from_c(*names.add(index)) else {
                 return -1;
             };
-            // The builtins module's own code runs with the builtins as its
-            // globals, so the two cells can be one; take each borrow in turn.
-            let Data::Namespace(bindings) = &mut (*namespace).data else { unreachable!() };
-            let module = bindings.cell(name);
-            let Data::Namespace(bindings) = &mut (*builtins).data else {
-                error("SystemError", "builtins namespace storage is required");
-                return -1;
+            let cell = *cells.add(index);
+            // The builtins module's own code links the builtins themselves;
+            // take each namespace borrow in turn.
+            let builtin = if std::ptr::eq(namespace, builtins) {
+                std::ptr::null_mut()
+            } else {
+                let Data::Namespace(bindings) = &mut (*builtins).data else {
+                    error("SystemError", "builtins namespace storage is required");
+                    return -1;
+                };
+                bindings.cell(name, std::ptr::null_mut(), builtins)
             };
-            let builtin = bindings.cell(name);
-            **cells.add(index) = GlobalCells { module, builtin, namespace };
+            if builtin_expected != 0 && (builtin.is_null() || !(*builtin).bound()) {
+                error("SystemError", &format!("builtin '{name}' is not installed"));
+                return -1;
+            }
+            if namespace.is_null() {
+                *cell = GlobalCell::unbound(builtin, std::ptr::null_mut());
+                continue;
+            }
+            let Data::Namespace(bindings) = &mut (*namespace).data else { unreachable!() };
+            if let Err(message) = bindings.link(name, cell, builtin, namespace) {
+                error("SystemError", &message);
+                return -1;
+            }
         }
         0
     }
 }
 
-/// Report a reference used before its unit linked it, which is a compiler
-/// defect; false when `cells` are linked.
-unsafe fn unlinked(cells: *mut GlobalCells, name: *const c_char) -> bool {
-    unsafe {
-        if (*cells).module != unresolved_cell() {
-            return false;
-        }
-        let name = name_from_c(name).unwrap_or("<invalid name>");
-        error("SystemError", &format!("global '{name}' used before its namespace was linked"));
-        true
-    }
-}
-
-/// The slow path of a global read, which generated code inlines: the value
-/// when bound, else `NameError`.
+/// The slow path of a global read, which generated code inlines: the
+/// namespace's own value, else the builtin (refreshing the cell's copy, for
+/// cells linked before that builtin was installed), else `NameError`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mule_load_global(cells: *mut GlobalCells, name: *const c_char) -> Value {
+pub unsafe extern "C" fn mule_load_global(cell: *mut GlobalCell, name: *const c_char) -> Value {
     unsafe {
-        if unlinked(cells, name) {
-            return std::ptr::null_mut();
+        let cell = &mut *cell;
+        if cell.bound() {
+            return retain(cell.value);
         }
-        for cell in [(*cells).module, (*cells).builtin] {
-            if !(*cell).is_null() {
-                return retain(*cell);
-            }
+        if !cell.builtin.is_null() && (*cell.builtin).bound() {
+            let value = (*cell.builtin).value;
+            let previous = std::mem::replace(&mut cell.value, retain(value));
+            release(previous);
+            return retain(value);
         }
         let name = name_from_c(name).unwrap_or("<invalid name>");
         error("NameError", &format!("name '{name}' is not defined"));
@@ -1945,32 +2048,36 @@ pub unsafe extern "C" fn mule_load_global(cells: *mut GlobalCells, name: *const 
 }
 /// Bind global `name` to `value` (borrowed).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mule_store_global(cells: *mut GlobalCells, name: *const c_char, value: Value) -> i32 {
+pub unsafe extern "C" fn mule_store_global(cell: *mut GlobalCell, name: *const c_char, value: Value) -> i32 {
     unsafe {
-        if unlinked(cells, name) {
+        let cell = &mut *cell;
+        if cell.bound() {
+            let previous = std::mem::replace(&mut cell.value, retain(value));
+            release(previous);
+            return 0;
+        }
+        let Some(name) = name_from_c(name) else {
+            return -1;
+        };
+        if cell.namespace.is_null() {
+            error("SystemError", &format!("global '{name}' has no namespace"));
             return -1;
         }
-        let cell = (*cells).module;
-        if (*cell).is_null() {
-            // A new binding also takes its place in the namespace's order;
-            // it lands in this same cell.
-            return name_from_c(name)
-                .map_or(-1, |name| if bind((*cells).namespace, name, value) { 0 } else { -1 });
-        }
-        let previous = std::mem::replace(&mut *cell, retain(value));
-        release(previous);
-        0
+        // A new binding takes its place in the namespace's order; it lands
+        // in this same cell.
+        if bind(cell.namespace, name, value) { 0 } else { -1 }
     }
 }
 /// Unbind global `name` (`del`), ignoring a name that is not bound.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mule_delete_global(cells: *mut GlobalCells, name: *const c_char) -> i32 {
+pub unsafe extern "C" fn mule_delete_global(cell: *mut GlobalCell, _name: *const c_char) -> i32 {
     unsafe {
-        if unlinked(cells, name) {
-            return -1;
+        let cell = &mut *cell;
+        if cell.bound() {
+            cell.own = 0;
+            let inherited = cell.inherited();
+            release(std::mem::replace(&mut cell.value, inherited));
         }
-        let previous = std::mem::replace(&mut *(*cells).module, std::ptr::null_mut());
-        release(previous);
         0
     }
 }

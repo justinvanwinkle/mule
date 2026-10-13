@@ -122,10 +122,45 @@ dynamic, and a function's higher speed cannot make a dynamic argument sealed.
 The receiver's class contract governs attribute operations.
 
 Proposed default: an undecorated class uses `speed=1`, preserving ordinary Python
-class semantics. Restrictions require an explicit class policy. The explicit
-`optimize()` directive retains its current defaults of `speed=3`, `safety=0`,
-`debug=1`; checked native classes use `safety=3` explicitly. This class-default
-rule requires a compiler change; today's default policy remains `3, 0, 1`.
+class semantics. Restrictions require an explicit class policy. This class-default
+rule requires a compiler change.
+
+The default policy is `speed=3, safety=2, debug=1`. An `optimize()` directive
+changes only the qualities it names; omitted qualities keep the enclosing
+policy, as an SBCL `(declare (optimize speed))` leaves safety alone. Checked
+native classes use `safety=3` explicitly.
+
+A module sets its own policy by assigning integer literals to `__speed__`,
+`__safety__` and `__debug_level__` (Python forbids assigning `__debug__`), as
+SBCL's top-level `declaim` sets the policy for the rest of a file. The policy
+applies to the module's top-level code and is the default for every
+definition in the module, which decorators may override. The module's
+top-level code is one lambda with one policy, so these assignments must come
+before any statement other than the docstring and imports; a later one is a
+compilation error. They remain ordinary module bindings at run time.
+
+```python
+"""A module compiled with exact Python semantics."""
+__safety__ = 3
+
+import builtins
+```
+
+### Safety and global names
+
+Safety also selects how much of Python's global-name semantics compiled code
+assumes, alongside the contract checks above:
+
+| Safety | Builtin names (`len`, `ValueError`, ...) | Other names |
+|---|---|---|
+| 3 | Exact Python: the module's own binding, else the builtin's current value, so rebinding a builtin is visible | `NameError` at the read |
+| 2, 1 | Builtins are assumed never to be rebound once installed: a module's cell holds a copy of the builtin until the module binds the name, and a read is one load | `NameError` at the read |
+| 0 | as at 2 | Unchecked: an unbound read yields the undefined object, which raises `NameError` when used |
+
+SBCL's `symbol-value` likewise omits its unbound check only at `(safety 0)`. The
+builtins unit itself reads globals as at safety 3, because its protocols
+install the builtins while it runs, replacing runtime-provided ones such as
+`tuple`.
 
 ## Target class speed levels
 

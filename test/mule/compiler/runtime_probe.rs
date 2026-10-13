@@ -22,21 +22,32 @@ unsafe extern "C" {
     static IMMORTAL_NONE: u8;
 }
 
-/// Link a global reference in `namespace` as a unit would, then read it.
+/// Read a global through its linked cell, as compiled code does.
 unsafe fn load_global(namespace: Value, name: *const std::ffi::c_char) -> Value {
-    unsafe { mule_load_global(&mut linked(namespace, name), name) }
+    unsafe { mule_load_global(linked(namespace, name), name) }
 }
 
-/// Link a global reference in `namespace` as a unit would, then bind it.
+/// Bind a global through its linked cell, as compiled code does.
 unsafe fn store_global(namespace: Value, name: *const std::ffi::c_char, value: Value) -> i32 {
-    unsafe { mule_store_global(&mut linked(namespace, name), name, value) }
+    unsafe { mule_store_global(linked(namespace, name), name, value) }
 }
 
-unsafe fn linked(namespace: Value, name: *const std::ffi::c_char) -> GlobalCells {
-    let mut cells = GlobalCells::default();
-    let status = unsafe { mule_link_globals(namespace, 1, &name, &(&raw mut cells)) };
-    assert_eq!(status, 0, "linking a global reference failed");
-    cells
+/// The cell a unit would link for `name` in `namespace`, linked on first
+/// use. A unit's cells are static, so these are leaked to outlive it.
+unsafe fn linked(namespace: Value, name: *const std::ffi::c_char) -> *mut GlobalCell {
+    thread_local! {
+        static CELLS: std::cell::RefCell<std::collections::HashMap<(usize, Vec<u8>), usize>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    let key = (namespace as usize, unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes().to_vec());
+    if let Some(cell) = CELLS.with_borrow(|cells| cells.get(&key).copied()) {
+        return cell as *mut GlobalCell;
+    }
+    let cell = Box::leak(Box::new(std::mem::MaybeUninit::<GlobalCell>::uninit())).as_mut_ptr();
+    let status = unsafe { mule_link_globals(namespace, 1, &name, &cell, 0) };
+    assert_eq!(status, 0, "linking a global cell failed");
+    CELLS.with_borrow_mut(|cells| cells.insert(key, cell as usize));
+    cell
 }
 
 unsafe extern "C" fn record_frame(_globals: Value, args: Value) -> Value {

@@ -81,13 +81,17 @@ class float128:
     """IEEE binary128 float annotation; storage lowering is not implemented yet."""
 
 
-def optimize(*, speed=3, safety=0, debug=1):
+def optimize(*, speed=None, safety=None, debug=None):
     """Set a Mule function's compiler policy; preserve it on the host interpreter.
 
-    Each level is an integer between zero and three. Mule's compiler recognizes
-    this decorator through its imported binding and applies the policy itself.
+    Each level is an integer between zero and three; an omitted level keeps
+    the enclosing policy. Mule's compiler recognizes this decorator through its
+    imported binding and applies the policy itself. A module sets its own
+    policy by assigning ``__speed__``, ``__safety__`` or ``__debug_level__``.
     """
     for option, level in (("speed", speed), ("safety", safety), ("debug", debug)):
+        if level is None:
+            continue
         if not 0 <= level <= 3:
             raise ValueError(f"{option} must be between 0 and 3")
         # Subscription applies the integer index protocol without inspecting types.
