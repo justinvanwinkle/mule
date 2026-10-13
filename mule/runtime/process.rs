@@ -349,6 +349,26 @@ unsafe extern "C" fn active_exception(_: Value, args: Value) -> Value {
     }
 }
 
+/// The frame `depth` steps out from `sys._getframe`'s own frame, or None
+/// when the call stack is not that deep (`sys._getframe`).
+unsafe extern "C" fn current_frame(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([depth]) = operands::<1>(args) else {
+            return null_mut();
+        };
+        if !object::is_fixnum(depth) || object::fixnum(depth) < 0 {
+            object::error("SystemError", "frame depth must be a non-negative integer");
+            return null_mut();
+        }
+        let frame = crate::traceback::frame_at(object::fixnum(depth) as usize);
+        if frame.is_null() {
+            object::none_value()
+        } else {
+            frame
+        }
+    }
+}
+
 unsafe extern "C" fn isatty_fd(_: Value, args: Value) -> Value {
     unsafe {
         let Some([fd]) = operands(args) else {
@@ -390,7 +410,7 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
         if !bound {
             return null_mut();
         }
-        let exports: [(&str, Native); 12] = [
+        let exports: [(&str, Native); 13] = [
             ("read_pointer", read_pointer),
             ("read_c_string", read_c_string),
             ("byte_length", byte_length),
@@ -403,6 +423,7 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
             ("isatty", isatty_fd),
             ("register_modules", crate::builtins::register_modules),
             ("active_exception", active_exception),
+            ("current_frame", current_frame),
         ];
         for (name, entry) in exports {
             let function = object::function(null_mut(), entry, name);

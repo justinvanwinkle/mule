@@ -16,7 +16,7 @@
 //! failure path knows: no local variables, and `f_back` is linked when the
 //! exception reaches the calling frame.
 use crate::object::{self, Data, Value};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char};
 use std::io::Write;
 use std::ptr::null_mut;
@@ -54,6 +54,47 @@ impl CodeInfo {
 thread_local! {
     /// The pending error's traceback, outermost entry first, or NULL.
     static PENDING: Cell<Value> = const { Cell::new(null_mut()) };
+    /// Live activations, innermost last: code metadata and retained globals.
+    static FRAMES: RefCell<Vec<(*const CodeInfo, Value)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Enter a compiled function activation.
+#[unsafe(no_mangle)]
+pub extern "C" fn mule_frame_push(code: *const CodeInfo, globals: Value) {
+    unsafe { object::retain(globals) };
+    FRAMES.with_borrow_mut(|frames| frames.push((code, globals)));
+}
+
+/// Leave the innermost compiled function activation.
+#[unsafe(no_mangle)]
+pub extern "C" fn mule_frame_pop() {
+    let popped = FRAMES.with_borrow_mut(|frames| frames.pop());
+    if let Some((_, globals)) = popped {
+        unsafe { object::release(globals) };
+    }
+}
+
+/// A frame value for the activation `depth` steps out from the innermost
+/// one, with its `back` chain built from the activations outside it, or NULL
+/// when the stack is not that deep. The frame's line is its code's first
+/// line: compiled bodies do not record a current line for live frames.
+pub unsafe fn frame_at(depth: usize) -> Value {
+    unsafe {
+        let records: Vec<(*const CodeInfo, Value)> = FRAMES.with_borrow(|frames| frames.clone());
+        if depth >= records.len() {
+            return null_mut();
+        }
+        let mut back = null_mut();
+        for (code, globals) in records[..records.len() - depth].iter() {
+            back = object::new_value(Data::Frame {
+                code: *code,
+                line: i64::from((*(*code)).firstlineno),
+                globals: object::retain(*globals),
+                back,
+            });
+        }
+        back
+    }
 }
 
 /// Remove the pending error's traceback, owned.

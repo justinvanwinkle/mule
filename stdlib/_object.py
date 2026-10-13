@@ -576,8 +576,9 @@ class traceback(object):
 
 
 class frame(object):
-    """A function call an exception passed through. Compiled frames do not
-    keep their local variables."""
+    """A function call, live or one an exception passed through. Compiled
+    frames do not keep their local variables; ``f_locals`` is the frame's
+    globals under the framelocalsproxy type, as it is for a module frame."""
 
     @property
     def f_code(self):
@@ -598,7 +599,47 @@ class frame(object):
 
     @property
     def f_locals(self):
-        return {}
+        result = {}
+        for name, value in _namespace_items(_traceback_field(self, 2)):
+            result[name] = value
+        return framelocalsproxy(result)
+
+
+class framelocalsproxy(object):
+    """The mapping type of a frame's ``f_locals`` (PEP 667)."""
+
+    def __init__(self, mapping):
+        self._mapping = mapping
+
+    def __getitem__(self, key):
+        return self._mapping[key]
+
+    def __contains__(self, key):
+        return key in self._mapping
+
+    def __iter__(self):
+        return iter(self._mapping)
+
+    def __len__(self):
+        return len(self._mapping)
+
+    def get(self, key, default=None):
+        return self._mapping.get(key, default)
+
+    def keys(self):
+        return self._mapping.keys()
+
+    def values(self):
+        return self._mapping.values()
+
+    def items(self):
+        return self._mapping.items()
+
+    def copy(self):
+        return self._mapping.copy()
+
+    def __repr__(self):
+        return repr(self._mapping)
 
 
 # Bootstrap code runs before the exception classes exist, so it cannot use

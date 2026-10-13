@@ -1609,6 +1609,172 @@ class bytearray:
         return decode(_bytes_from_values(self.values), encoding, errors)
 
 
+class memoryview:
+    """A one-dimensional view of a bytes or bytearray object, with format
+    ``'B'``. Slices share the underlying storage through an offset and step."""
+
+    def __init__(self, source):
+        self.released = False
+        if _type_name(source) == "memoryview":
+            self.source = source.source
+            self.start = source.start
+            self.step = source.step
+            self.length = source.length
+            self.readonly = source.readonly
+        elif _type_name(source) == "bytearray":
+            self.source = source
+            self.start = 0
+            self.step = 1
+            self.length = _storage_length(source.values)
+            self.readonly = False
+        elif _type_name(source) == "bytes":
+            self.source = source
+            self.start = 0
+            self.step = 1
+            self.length = _storage_length(source)
+            self.readonly = True
+        else:
+            raise TypeError(
+                "memoryview: a bytes-like object is required, not '"
+                + _type_name(source)
+                + "'"
+            )
+
+    def _check(self):
+        if self.released:
+            raise ValueError("operation forbidden on released memoryview object")
+
+    def _byte_at(self, index):
+        at = self.start + index * self.step
+        if _type_name(self.source) == "bytearray":
+            return _storage_read(self.source.values, at)
+        return _storage_read(self.source, at)
+
+    def _set_byte_at(self, index, value):
+        if self.readonly:
+            raise TypeError("cannot modify read-only memory")
+        at = self.start + index * self.step
+        _storage_write(self.source.values, at, _byte_value(value))
+
+    @property
+    def format(self):
+        return "B"
+
+    @property
+    def itemsize(self):
+        return 1
+
+    @property
+    def ndim(self):
+        return 1
+
+    @property
+    def nbytes(self):
+        return self.length
+
+    @property
+    def shape(self):
+        return (self.length,)
+
+    @property
+    def strides(self):
+        return (self.step,)
+
+    @property
+    def obj(self):
+        return self.source
+
+    @property
+    def c_contiguous(self):
+        return self.step == 1
+
+    def __len__(self):
+        self._check()
+        return self.length
+
+    def __getitem__(self, index):
+        self._check()
+        if is_slice(index):
+            start, stop, step, count = positions(index, self.length)
+            result = memoryview(self)
+            result.start = self.start + start * self.step
+            result.step = self.step * step
+            result.length = count
+            return result
+        return self._byte_at(_view_index(self, index))
+
+    def __setitem__(self, index, value):
+        self._check()
+        if is_slice(index):
+            values = _byte_values(value, None, "strict") if _type_name(value) != "memoryview" else value.tolist()
+            start, stop, step, count = positions(index, self.length)
+            if len(values) != count:
+                raise ValueError("memoryview assignment: lvalue and rvalue have different structures")
+            at = 0
+            while at < count:
+                self._set_byte_at(start + at * step, values[at])
+                at += 1
+            return
+        self._set_byte_at(_view_index(self, index), value)
+
+    def __iter__(self):
+        return SequenceIterator(self)
+
+    def __eq__(self, other):
+        if _type_name(other) in ("bytes", "bytearray", "memoryview"):
+            if _type_name(other) == "memoryview":
+                return self.tobytes() == other.tobytes()
+            return self.tobytes() == bytes(other)
+        return NotImplemented
+
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        return result if result is NotImplemented else not result
+
+    def __repr__(self):
+        return "<memory at " + hex(id(self)) + ">"
+
+    def __enter__(self):
+        self._check()
+        return self
+
+    def __exit__(self, kind, value, traceback):
+        self.release()
+        return False
+
+    def release(self):
+        self.released = True
+
+    def tobytes(self):
+        self._check()
+        return _bytes_from_values(self.tolist())
+
+    def tolist(self):
+        self._check()
+        values = []
+        index = 0
+        while index < self.length:
+            _storage_append(values, self._byte_at(index))
+            index += 1
+        return values
+
+    def hex(self):
+        digits = "0123456789abcdef"
+        result = ""
+        for value in self.tolist():
+            result += digits[value >> 4] + digits[value & 15]
+        return result
+
+
+def _view_index(view, index):
+    index = integer_index(index)
+    if index < 0:
+        index += view.length
+    if index < 0 or index >= view.length:
+        raise IndexError("index out of bounds on dimension 1")
+    return index
+
+
 _install_storage(list, tuple, str, bytes)
 
 _install_builtin("range", range)
@@ -1622,6 +1788,7 @@ _install_builtin("ord", ord)
 _install_builtin("str", str)
 _install_builtin("bytes", bytes)
 _install_builtin("bytearray", bytearray)
+_install_builtin("memoryview", memoryview)
 _install_builtin("repr", repr)
 _install_builtin("ascii", ascii)
 _install_builtin("format", format)

@@ -61,6 +61,8 @@ declare ptr @mule_load_global(ptr, ptr)
 declare i32 @mule_store_global(ptr, ptr, ptr)
 declare i32 @mule_link_globals(ptr, i64, ptr, ptr, i32)
 declare void @mule_traceback_here(ptr, i32, ptr, ptr)
+declare void @mule_frame_push(ptr, ptr)
+declare void @mule_frame_pop()
 declare ptr @mule_namespace()
 declare i32 @mule_namespace_bound(ptr, ptr)
 declare i32 @mule_assertion_failure(ptr)
@@ -1966,6 +1968,9 @@ class FunctionGenerator:
             # The runtime creates the main program's globals and enters its
             # top-level body once, before any function it defines can exist.
             self.lines += self.module.link(lambda_.namespace, "%globals", "error", 0)
+        self.line(
+            f"call void @mule_frame_push(ptr {self.module.code_descriptor(lambda_)}, ptr %globals)"
+        )
         self.line(f"br label %{self.component.blocks[0].label}")
         self.emit_blocks()
         handler_live = None
@@ -1998,6 +2003,7 @@ class FunctionGenerator:
         for tn in [*self.local_tns, *self.value_tns]:
             if tn.sc is DESCRIPTOR:
                 self.release(self.operation(f"load ptr, ptr {tn.slot}"))
+        self.line("call void @mule_frame_pop()")
         value = self.operation("load ptr, ptr %return")
         self.line(f"ret ptr {value}")
         self.lines.append("}")

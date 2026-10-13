@@ -152,6 +152,24 @@ def test_bytearray_constructs_iterates_and_mutates(tmp_path):
     )
 
 
+def test_sys_getframe_walks_the_call_stack(tmp_path):
+    source = (
+        "import sys\n"
+        "def inner():\n    return sys._getframe(1)\n"
+        "def outer():\n    return inner()\n"
+        "frame = outer()\n"
+        "print(frame.f_code.co_name, frame.f_back.f_code.co_name)\n"
+        "print(type(frame.f_locals).__name__)\n"
+        "print(sys._getframe(0).f_code.co_name)\n"
+        "try:\n    sys._getframe(100)\nexcept ValueError as error:\n    print(error)\n"
+    )
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "outer <module>\nframelocalsproxy\n<module>\ncall stack is not deep enough\n"
+    )
+
+
 def test_module_policy_assignment_must_precede_module_code():
     with pytest.raises(SyntaxError, match="must precede the module's code"):
         emit_llvm("print(1)\n__safety__ = 0\n")

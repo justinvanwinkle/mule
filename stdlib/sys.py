@@ -11,6 +11,7 @@ from _mule_codecs import utf8_decode as _decode_argv
 from _mule_native import active_exception as _active_exception
 from _mule_native import argc as _argc
 from _mule_native import argv as _argv
+from _mule_native import current_frame as _current_frame
 from _mule_native import flush_fd as _flush_fd
 from _mule_native import isatty as _isatty
 from _mule_native import read_c_string as _read_c_string
@@ -423,7 +424,13 @@ def getprofile():
 
 
 def _getframe(depth=0, /):
-    raise ValueError("call stack frames are not available in Mule")
+    if depth < 0:
+        raise ValueError("depth must be >= 0")
+    # This function's own frame is one deeper than CPython's C _getframe.
+    frame = _current_frame(depth + 1)
+    if frame is None:
+        raise ValueError("call stack is not deep enough")
+    return frame
 
 
 def _getframemodulename(depth=0):
