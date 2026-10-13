@@ -199,9 +199,12 @@ pub unsafe fn class_of_value(value: Value) -> Value {
             }
             Data::None => Builtin::NoneType,
             Data::Bool(_) => Builtin::Bool,
-            Data::BigInt(_) => Builtin::Int,
-            Data::Float(_) => Builtin::Float,
-            Data::Text(_) => Builtin::Str,
+            Data::BigInt(_, ty) | Data::Float(_, ty) | Data::Text(_, ty) if !ty.is_null() => {
+                return *ty;
+            }
+            Data::BigInt(..) => Builtin::Int,
+            Data::Float(..) => Builtin::Float,
+            Data::Text(..) => Builtin::Str,
             Data::Bytes(_) => Builtin::Bytes,
             Data::List(_) => Builtin::List,
             Data::Args(_) => Builtin::Tuple,
@@ -668,7 +671,7 @@ unsafe fn missing(layout: Option<&ClassLayout>, instance: bool, attribute: &str)
 }
 
 unsafe fn text(value: &str) -> Value {
-    unsafe { object::new_value(Data::Text(Text::from_rust_str(value))) }
+    unsafe { object::new_value(Data::Text(Text::from_rust_str(value), std::ptr::null_mut())) }
 }
 
 /// Call class attribute `index` as a method of `receiver`, as Python's
@@ -1227,7 +1230,7 @@ unsafe fn slot_names_include_dict(slots: Value) -> bool {
     unsafe {
         let is_dict = |value: Value| {
             !object::is_fixnum(value)
-                && matches!(&(*value).data, Data::Text(text) if text.to_rust_string().as_deref() == Some("__dict__"))
+                && matches!(&(*value).data, Data::Text(text, ..) if text.to_rust_string().as_deref() == Some("__dict__"))
         };
         if object::is_fixnum(slots) {
             return false;
@@ -1676,7 +1679,7 @@ unsafe fn class_layout<'a>(value: Value) -> Option<&'a ClassLayout> {
 unsafe fn text_argument(value: Value) -> Option<String> {
     unsafe {
         if !value.is_null() && !object::is_fixnum(value) {
-            if let Data::Text(text) = &(*value).data {
+            if let Data::Text(text, ..) = &(*value).data {
                 return text.to_rust_string();
             }
         }

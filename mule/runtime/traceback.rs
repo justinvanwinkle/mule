@@ -214,7 +214,7 @@ pub unsafe fn field(value: Value, index: i64) -> Value {
 }
 
 fn text(value: &str) -> Value {
-    unsafe { object::new_value(Data::Text(crate::text::Text::from_rust_str(value))) }
+    unsafe { object::new_value(Data::Text(crate::text::Text::from_rust_str(value), std::ptr::null_mut())) }
 }
 
 /// Write the pending error's traceback as CPython prints an uncaught one.

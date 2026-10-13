@@ -391,7 +391,7 @@ pub unsafe extern "C" fn mule_binding_keyword_name(view: Value, offset: Value) -
         let Some(name) = object::name_from_c(*names.add(offset)) else {
             return std::ptr::null_mut();
         };
-        object::new_value(Data::Text(crate::text::Text::from_rust_str(name)))
+        object::new_value(Data::Text(crate::text::Text::from_rust_str(name), std::ptr::null_mut()))
     }
 }
 #[unsafe(no_mangle)]
@@ -450,7 +450,7 @@ pub(crate) unsafe extern "C" fn call_with(_: Value, args: Value) -> Value {
         for name in names {
             let text = if object::is_fixnum(*name) {
                 None
-            } else if let Data::Text(text) = &(**name).data {
+            } else if let Data::Text(text, ..) = &(**name).data {
                 text.to_rust_string()
             } else {
                 None

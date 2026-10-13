@@ -201,9 +201,12 @@ impl Namespace {
 pub enum Data {
     None,
     Bool(bool),
-    BigInt(BigInt),
-    Float(f64),
-    Text(Text),
+    /// The class of the value, or NULL for the builtin class itself.
+    /// Subclass instances of int, float and str keep their native storage
+    /// and record their class here.
+    BigInt(BigInt, Value),
+    Float(f64, Value),
+    Text(Text, Value),
     Bytes(Vec<u8>),
     ForeignPointerVector {
         base: *const *const c_char,
@@ -425,6 +428,9 @@ pub unsafe fn release(value: Value) {
                 }
             }
             Data::Namespace(_) => (),
+            Data::BigInt(_, ty) | Data::Float(_, ty) | Data::Text(_, ty) => {
+                release(*ty);
+            }
             Data::Traceback { frame, next, .. } => {
                 release(*frame);
                 release(*next);
@@ -611,7 +617,7 @@ pub unsafe fn function_attribute(function: Value, attribute: &str) -> Value {
             }
         }
         match attribute {
-            "__name__" | "__qualname__" => new_value(Data::Text(crate::text::Text::from_rust_str(name))),
+            "__name__" | "__qualname__" => new_value(Data::Text(crate::text::Text::from_rust_str(name), std::ptr::null_mut())),
             "__module__" => {
                 if globals.is_null() {
                     return retain(none_value());
@@ -643,7 +649,7 @@ pub unsafe fn set_function_attribute(function: Value, attribute: &str, value: Va
             return false;
         };
         if attribute == "__name__" || attribute == "__qualname__" {
-            if let Data::Text(text) = &(*value).data {
+            if let Data::Text(text, ..) = &(*value).data {
                 if attribute == "__name__" {
                     if let Some(text) = text.to_rust_string() {
                         *name = text;
@@ -879,9 +885,9 @@ pub unsafe fn truth(value: Value) -> Option<bool> {
         Some(match &(*value).data {
             Data::None => false,
             Data::Bool(value) => *value,
-            Data::BigInt(integer) => integer.sign() != 0,
-            Data::Float(value) => *value != 0.0,
-            Data::Text(value) => !value.is_empty(),
+            Data::BigInt(integer, ..) => integer.sign() != 0,
+            Data::Float(value, ..) => *value != 0.0,
+            Data::Text(value, ..) => !value.is_empty(),
             Data::Bytes(value) => !value.is_empty(),
             Data::Args(value) | Data::List(value) => !value.is_empty(),
             Data::Namespace(bindings) => !bindings.is_empty(),
@@ -972,7 +978,7 @@ const BINARY_METHODS: [(&str, &str, &str, &str); 13] = [
 unsafe fn numeric_operand(value: Value) -> bool {
     unsafe {
         numeric::is_integer(value)
-            || (!value.is_null() && !is_fixnum(value) && matches!(&(*value).data, Data::Float(_)))
+            || (!value.is_null() && !is_fixnum(value) && matches!(&(*value).data, Data::Float(..)))
     }
 }
 pub unsafe fn binary(op: i32, left: Value, right: Value, inplace: bool) -> Value {
@@ -1101,7 +1107,7 @@ unsafe fn contains(container: Value, item: Value) -> Option<bool> {
     unsafe {
         if !container.is_null() && !is_fixnum(container) {
             match &(*container).data {
-                Data::Text(_) | Data::Instance { .. } | Data::NativeInstance { .. } => {
+                Data::Text(..) | Data::Instance { .. } | Data::NativeInstance { .. } => {
                     let result = special(container, "__contains__", &[item]);
                     if result.is_null() {
                         if !has_error() {
@@ -1201,13 +1207,13 @@ pub unsafe fn compare(op: i32, left: Value, right: Value) -> Value {
             numeric::is_integer(value)
                 || (!value.is_null()
                     && !is_fixnum(value)
-                    && matches!(&(*value).data, Data::Float(_)))
+                    && matches!(&(*value).data, Data::Float(..)))
         };
         let ordering = if numeric_value(left) && numeric_value(right) {
             numeric::compare(left, right)
         } else if !left.is_null() && !right.is_null() && !is_fixnum(left) && !is_fixnum(right) {
             match (&(*left).data, &(*right).data) {
-                (Data::Text(a), Data::Text(b)) => Some(a.cmp(b)),
+                (Data::Text(a, ..), Data::Text(b, ..)) => Some(a.cmp(b)),
                 (Data::Bytes(a), Data::Bytes(b)) => Some(a.cmp(b)),
                 _ => None,
             }
@@ -1332,16 +1338,16 @@ pub unsafe fn formatted_value(
                     b"False".to_vec()
                 }
             }
-            Data::BigInt(value) => value.to_decimal().into_bytes(),
-            Data::Float(value) => float_repr(*value).into_bytes(),
-            Data::Text(data) if !representation => match data.to_utf8() {
+            Data::BigInt(value, ..) => value.to_decimal().into_bytes(),
+            Data::Float(value, ..) => float_repr(*value).into_bytes(),
+            Data::Text(data, ..) if !representation => match data.to_utf8() {
                 Ok(bytes) => bytes,
                 Err(_) => {
                     error("UnicodeEncodeError", "cannot encode surrogate to UTF-8");
                     return None;
                 }
             },
-            Data::Text(data) => {
+            Data::Text(data, ..) => {
                 // The compiled str protocol owns repr; the quoting below serves
                 // only runtimes linked without it, such as the runtime probe.
                 let method = crate::sequences::binding(value, "__repr__");
@@ -1352,7 +1358,7 @@ pub unsafe fn formatted_value(
                     if result.is_null() {
                         return None;
                     }
-                    let Data::Text(text) = &(*result).data else {
+                    let Data::Text(text, ..) = &(*result).data else {
                         release(result);
                         error("TypeError", "__repr__ returned non-string");
                         return None;
@@ -1452,7 +1458,7 @@ pub(crate) unsafe fn qualified_name(class: Value) -> String {
                 return None;
             }
             let result = match &(*value).data {
-                Data::Text(text) => text.to_rust_string(),
+                Data::Text(text, ..) => text.to_rust_string(),
                 _ => None,
             };
             release(value);
@@ -1496,7 +1502,7 @@ unsafe fn user_text(value: Value, representation: bool, ascii_only: bool) -> Opt
             return None;
         }
         let bytes = match &(*result).data {
-            Data::Text(text) => {
+            Data::Text(text, ..) => {
                 let mut bytes = Vec::new();
                 for code in text.codepoints() {
                     if ascii_only && code >= 0x80 {
@@ -1569,7 +1575,7 @@ unsafe fn literal_bytes(data: *const c_char, length: isize, text: bool) -> Value
             return new_value(Data::Bytes(bytes));
         }
         match Text::from_wtf8(&bytes) {
-            Ok(text) => new_value(Data::Text(text)),
+            Ok(text) => new_value(Data::Text(text, std::ptr::null_mut())),
             Err(message) => {
                 error("UnicodeDecodeError", message);
                 std::ptr::null_mut()
@@ -1802,7 +1808,7 @@ pub unsafe extern "C" fn mule_render_text(value: Value, representation: i32) -> 
 pub unsafe extern "C" fn mule_text_result(value: Value) -> Value {
     unsafe {
         if !value.is_null() && !is_fixnum(value) {
-            if let Data::Text(_) = &(*value).data {
+            if let Data::Text(..) = &(*value).data {
                 return retain(value);
             }
         }
@@ -1814,7 +1820,7 @@ pub unsafe extern "C" fn mule_text_result(value: Value) -> Value {
 pub unsafe fn text_value(bytes: &[u8]) -> Value {
     unsafe {
         match Text::from_wtf8(bytes) {
-            Ok(text) => new_value(Data::Text(text)),
+            Ok(text) => new_value(Data::Text(text, std::ptr::null_mut())),
             Err(message) => {
                 error("UnicodeDecodeError", message);
                 std::ptr::null_mut()
@@ -1826,7 +1832,7 @@ pub unsafe fn text_value(bytes: &[u8]) -> Value {
 pub unsafe fn text_storage<'a>(value: Value) -> Option<&'a Text> {
     unsafe {
         if !value.is_null() && !is_fixnum(value) {
-            if let Data::Text(text) = &(*value).data {
+            if let Data::Text(text, ..) = &(*value).data {
                 return Some(text);
             }
         }
@@ -1866,7 +1872,7 @@ pub unsafe extern "C" fn mule_text_character(value: Value, index: Value) -> Valu
             return std::ptr::null_mut();
         };
         match text.slice(index, index + 1) {
-            Ok(character) => new_value(Data::Text(character)),
+            Ok(character) => new_value(Data::Text(character, std::ptr::null_mut())),
             Err(_) => {
                 error("MemoryError", "text storage allocation failed");
                 std::ptr::null_mut()
@@ -1888,9 +1894,9 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
             match &(*value).data {
                 Data::None => "NoneType",
                 Data::Bool(_) => "bool",
-                Data::BigInt(_) => "int",
-                Data::Float(_) => "float",
-                Data::Text(_) => "str",
+                Data::BigInt(..) => "int",
+                Data::Float(..) => "float",
+                Data::Text(..) => "str",
                 Data::Bytes(_) => "bytes",
                 Data::List(_) => "list",
                 Data::Args(_) => "tuple",
@@ -1925,7 +1931,7 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
 pub unsafe extern "C" fn mule_type_name(value: Value) -> Value {
     unsafe {
         type_name(value).map_or(std::ptr::null_mut(), |name| {
-            new_value(Data::Text(Text::from_rust_str(&name)))
+            new_value(Data::Text(Text::from_rust_str(&name), std::ptr::null_mut()))
         })
     }
 }
@@ -1948,7 +1954,7 @@ pub unsafe extern "C" fn mule_text_slice(value: Value, start: Value, stop: Value
             return std::ptr::null_mut();
         };
         match text.slice(start, stop) {
-            Ok(slice) => new_value(Data::Text(slice)),
+            Ok(slice) => new_value(Data::Text(slice, std::ptr::null_mut())),
             Err(_) => {
                 error("MemoryError", "text storage allocation failed");
                 std::ptr::null_mut()
@@ -1978,14 +1984,14 @@ pub unsafe extern "C" fn mule_text_join(pieces: Value) -> Value {
                 error("TypeError", "text join requires str pieces");
                 return std::ptr::null_mut();
             }
-            let Data::Text(text) = &(**value).data else {
+            let Data::Text(text, ..) = &(**value).data else {
                 error("TypeError", "text join requires str pieces");
                 return std::ptr::null_mut();
             };
             texts.push(text);
         }
         match Text::join(texts.into_iter()) {
-            Ok(text) => new_value(Data::Text(text)),
+            Ok(text) => new_value(Data::Text(text, std::ptr::null_mut())),
             Err(_) => {
                 error("MemoryError", "text storage allocation failed");
                 std::ptr::null_mut()

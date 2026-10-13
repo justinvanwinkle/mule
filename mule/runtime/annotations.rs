@@ -68,7 +68,7 @@ pub unsafe extern "C" fn mule_assert_integer(
         return failed(name);
     } else {
         match unsafe { &(*value).data } {
-            Data::BigInt(value) => Integer::Big(value),
+            Data::BigInt(value, ..) => Integer::Big(value),
             _ => return failed(name),
         }
     };
@@ -101,7 +101,7 @@ pub unsafe extern "C" fn mule_assert_integer(
 pub unsafe extern "C" fn mule_assert_float(value: Value, name: *const c_char) -> i32 {
     if !value.is_null()
         && !object::is_fixnum(value)
-        && matches!(unsafe { &(*value).data }, Data::Float(_))
+        && matches!(unsafe { &(*value).data }, Data::Float(..))
     {
         0
     } else {

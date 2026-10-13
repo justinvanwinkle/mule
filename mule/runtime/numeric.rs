@@ -33,7 +33,7 @@ unsafe fn float_value(value: Value) -> Option<f64> {
         return None;
     }
     match unsafe { &(*value).data } {
-        Data::Float(value) => Some(*value),
+        Data::Float(value, ..) => Some(*value),
         _ => None,
     }
 }
@@ -42,7 +42,7 @@ pub unsafe fn is_integer(value: Value) -> bool {
     if object::is_fixnum(value) {
         return true;
     }
-    !value.is_null() && matches!(unsafe { &(*value).data }, Data::Bool(_) | Data::BigInt(_))
+    !value.is_null() && matches!(unsafe { &(*value).data }, Data::Bool(_) | Data::BigInt(..))
 }
 
 pub unsafe fn integer_export(value: Value) -> Option<BigInt> {
@@ -56,7 +56,7 @@ unsafe fn integer_view<'a>(value: Value) -> Option<Cow<'a, BigInt>> {
         return Some(Cow::Owned(BigInt::from_i64(value)));
     }
     if !value.is_null() {
-        if let Data::BigInt(integer) = unsafe { &(*value).data } {
+        if let Data::BigInt(integer, ..) = unsafe { &(*value).data } {
             return Some(Cow::Borrowed(integer));
         }
     }
@@ -70,7 +70,7 @@ pub unsafe fn integer_import(integer: &BigInt) -> Value {
             return object::small(value);
         }
     }
-    unsafe { object::new_value(Data::BigInt(integer.clone())) }
+    unsafe { object::new_value(Data::BigInt(integer.clone(), std::ptr::null_mut())) }
 }
 
 /// Lengths and slot indices normally fit the immediate representation.
@@ -90,7 +90,7 @@ pub unsafe fn integer_import_owned(integer: BigInt) -> Value {
             return object::small(value);
         }
     }
-    unsafe { object::new_value(Data::BigInt(integer)) }
+    unsafe { object::new_value(Data::BigInt(integer, std::ptr::null_mut())) }
 }
 
 #[unsafe(no_mangle)]
@@ -119,7 +119,7 @@ pub unsafe extern "C" fn mule_literal_int(decimal: *const c_char) -> Value {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_literal_float(value: f64) -> Value {
-    unsafe { object::new_value(Data::Float(value)) }
+    unsafe { object::new_value(Data::Float(value, std::ptr::null_mut())) }
 }
 
 pub unsafe fn number_double(value: Value) -> Option<f64> {
@@ -130,7 +130,7 @@ pub unsafe fn number_double(value: Value) -> Option<f64> {
         return Some(value);
     }
     if !value.is_null() {
-        if let Data::BigInt(integer) = unsafe { &(*value).data } {
+        if let Data::BigInt(integer, ..) = unsafe { &(*value).data } {
             return quotient_double(integer, &BigInt::from_u64(1));
         }
     }
@@ -473,13 +473,13 @@ pub unsafe fn try_binary_reuse(
             || right.is_null()
             || left == right
             || object::is_fixnum(left)
-            || !matches!(&(*left).data, Data::BigInt(_))
+            || !matches!(&(*left).data, Data::BigInt(..))
         {
             return None;
         }
         // Bool arithmetic has separate representation rules. Only exact ints
         // participate here; the generic path still handles mixed numeric kinds.
-        if !object::is_fixnum(right) && !matches!(&(*right).data, Data::BigInt(_)) {
+        if !object::is_fixnum(right) && !matches!(&(*right).data, Data::BigInt(..)) {
             return None;
         }
         let references = (*left).references;
@@ -488,7 +488,7 @@ pub unsafe fn try_binary_reuse(
         }
         let demoted = if op == 2 && object::is_fixnum(right) {
             let multiplier = object::fixnum(right);
-            let Data::BigInt(integer) = &mut (*left).data else {
+            let Data::BigInt(integer, ..) = &mut (*left).data else {
                 unreachable!()
             };
             integer.mul_assign_i64(multiplier);
@@ -497,7 +497,7 @@ pub unsafe fn try_binary_reuse(
             // `right != left` and the reference proof exclude a shared GMP
             // object; keep only the other operand borrowed during mutation.
             let other = integer_view(right)?;
-            let Data::BigInt(integer) = &mut (*left).data else {
+            let Data::BigInt(integer, ..) = &mut (*left).data else {
                 unreachable!()
             };
             match op {

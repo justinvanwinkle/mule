@@ -35,7 +35,7 @@ unsafe extern "C" fn number_kind(_: Value, args: Value) -> Value {
             1
         } else if !value.is_null()
             && !object::is_fixnum(value)
-            && matches!(&(*value).data, Data::Float(_))
+            && matches!(&(*value).data, Data::Float(..))
         {
             2
         } else {
@@ -53,7 +53,7 @@ unsafe extern "C" fn to_double(_: Value, args: Value) -> Value {
         let Some(value) = numeric::number_double(value) else {
             return null_mut();
         };
-        object::new_value(Data::Float(value))
+        object::new_value(Data::Float(value, std::ptr::null_mut()))
     }
 }
 
@@ -76,7 +76,7 @@ unsafe extern "C" fn integer_bit_length(_: Value, args: Value) -> Value {
             (u64::BITS - magnitude.leading_zeros()) as usize
         } else if !value.is_null() {
             match &(*value).data {
-                Data::BigInt(value) => {
+                Data::BigInt(value, ..) => {
                     if value.sign() == 0 {
                         0
                     } else {
@@ -106,7 +106,7 @@ unsafe extern "C" fn special_method(_: Value, args: Value) -> Value {
             object::error("TypeError", "method name storage requires text");
             return null_mut();
         }
-        let Data::Text(bytes) = &(*name).data else {
+        let Data::Text(bytes, ..) = &(*name).data else {
             object::error("TypeError", "method name storage requires text");
             return null_mut();
         };
@@ -127,11 +127,11 @@ unsafe extern "C" fn sqrt(_: Value, args: Value) -> Value {
             object::error("TypeError", "binary64 storage is required");
             return null_mut();
         }
-        let Data::Float(value) = &(*value).data else {
+        let Data::Float(value, ..) = &(*value).data else {
             object::error("TypeError", "binary64 storage is required");
             return null_mut();
         };
-        object::new_value(Data::Float(value.sqrt()))
+        object::new_value(Data::Float(value.sqrt(), std::ptr::null_mut()))
     }
 }
 
@@ -153,7 +153,7 @@ unsafe extern "C" fn float_format(_: Value, args: Value) -> Value {
         let alternate = alternate == object::bool_value(true);
         let number = if !value.is_null() && !object::is_fixnum(value) {
             match &(*value).data {
-                Data::Float(number) => *number,
+                Data::Float(number, ..) => *number,
                 _ => {
                     object::error("TypeError", "binary64 storage is required");
                     return null_mut();
@@ -165,7 +165,7 @@ unsafe extern "C" fn float_format(_: Value, args: Value) -> Value {
         };
         if number.is_nan() {
             let text = if kind == 2 || kind == 4 { "NAN" } else { "nan" };
-            return object::new_value(Data::Text(crate::text::Text::from_rust_str(text)));
+            return object::new_value(Data::Text(crate::text::Text::from_rust_str(text), std::ptr::null_mut()));
         }
         if number.is_infinite() {
             let text = match (number < 0.0, kind == 2 || kind == 4) {
@@ -174,7 +174,7 @@ unsafe extern "C" fn float_format(_: Value, args: Value) -> Value {
                 (false, true) => "INF",
                 (false, false) => "inf",
             };
-            return object::new_value(Data::Text(crate::text::Text::from_rust_str(text)));
+            return object::new_value(Data::Text(crate::text::Text::from_rust_str(text), std::ptr::null_mut()));
         }
         let precision = usize::try_from(precision).unwrap_or(6);
         let exponent_form = |number: f64, precision: usize, upper: bool| -> String {
@@ -246,7 +246,7 @@ unsafe extern "C" fn float_format(_: Value, args: Value) -> Value {
         } else {
             body
         };
-        object::new_value(Data::Text(crate::text::Text::from_rust_str(&signed)))
+        object::new_value(Data::Text(crate::text::Text::from_rust_str(&signed), std::ptr::null_mut()))
     }
 }
 
@@ -277,7 +277,7 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("math_inf", f64::INFINITY),
             ("math_nan", f64::from_bits(0x7ff8_0000_0000_0000)),
         ] {
-            let value = object::new_value(Data::Float(value));
+            let value = object::new_value(Data::Float(value, std::ptr::null_mut()));
             let bound = object::bind(globals, name, value);
             object::release(value);
             if !bound {

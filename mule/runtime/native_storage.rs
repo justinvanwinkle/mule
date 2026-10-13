@@ -118,7 +118,7 @@ pub unsafe extern "C" fn mule_unbox_i64(value: Value, output: *mut i64) -> i32 {
         None
     } else {
         match unsafe { &(*value).data } {
-            Data::BigInt(integer) => integer.to_i64(),
+            Data::BigInt(integer, ..) => integer.to_i64(),
             _ => None,
         }
     };
@@ -159,7 +159,7 @@ pub unsafe extern "C" fn mule_unbox_f64(value: Value, output: *mut f64) -> i32 {
         None
     } else {
         match unsafe { &(*value).data } {
-            Data::Float(float) => Some(*float),
+            Data::Float(float, ..) => Some(*float),
             _ => None,
         }
     };
@@ -178,7 +178,7 @@ pub unsafe extern "C" fn mule_box_f64(value: f64) -> Value {
     if object::has_error() {
         return std::ptr::null_mut();
     }
-    unsafe { object::new_value(Data::Float(value)) }
+    unsafe { object::new_value(Data::Float(value, std::ptr::null_mut())) }
 }
 
 #[unsafe(no_mangle)]

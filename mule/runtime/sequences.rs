@@ -63,7 +63,7 @@ pub unsafe fn initialize(native: *mut std::ffi::c_void) -> bool {
         GLOBALS.with(|value| value.set(globals));
         object::bind(globals, "__builtins__", crate::builtins::namespace());
         // The protocols define the builtins, so their classes report that module.
-        let name = object::new_value(Data::Text(crate::text::Text::from_rust_str("builtins")));
+        let name = object::new_value(Data::Text(crate::text::Text::from_rust_str("builtins"), std::ptr::null_mut()));
         object::bind(globals, "__name__", name);
         object::release(name);
         let function = object::function(
@@ -134,7 +134,7 @@ pub unsafe extern "C" fn mule_install_builtin(name: Value, value: Value) -> Valu
     unsafe {
         // Builtin classes report the builtins module, wherever they are defined.
         if !value.is_null() && !object::is_fixnum(value) && matches!(&(*value).data, Data::Class(_)) {
-            let module = object::new_value(Data::Text(crate::text::Text::from_rust_str("builtins")));
+            let module = object::new_value(Data::Text(crate::text::Text::from_rust_str("builtins"), std::ptr::null_mut()));
             let status = crate::classes::mule_set_attr(value, c"__module__".as_ptr(), module);
             object::release(module);
             if status < 0 {
@@ -142,7 +142,7 @@ pub unsafe extern "C" fn mule_install_builtin(name: Value, value: Value) -> Valu
             }
         }
         if !name.is_null() && !object::is_fixnum(name) {
-            if let Data::Text(name) = &(*name).data {
+            if let Data::Text(name, ..) = &(*name).data {
                 if let Some(name) = name.to_rust_string() {
                     if object::bind(crate::builtins::namespace(), &name, value) {
                         return object::none_value();
@@ -162,7 +162,7 @@ pub unsafe extern "C" fn mule_integer_storage(value: Value) -> Value {
         }
         if !value.is_null() {
             match &(*value).data {
-                Data::BigInt(_) => return object::retain(value),
+                Data::BigInt(..) => return object::retain(value),
                 Data::Bool(value) => return object::small(i64::from(*value)),
                 _ => (),
             }
@@ -177,7 +177,7 @@ unsafe fn index(value: Value) -> Option<usize> {
             Some(object::fixnum(value))
         } else if !value.is_null() {
             match &(*value).data {
-                Data::BigInt(number) => number.to_i64(),
+                Data::BigInt(number, ..) => number.to_i64(),
                 _ => None,
             }
         } else {
@@ -221,7 +221,7 @@ pub unsafe extern "C" fn mule_storage_length(value: Value) -> Value {
             let length = match &(*value).data {
                 Data::List(values) | Data::Args(values) => values.len(),
                 Data::Bytes(values) => values.len(),
-                Data::Text(_) => return object::mule_text_length(value),
+                Data::Text(..) => return object::mule_text_length(value),
                 _ => {
                     object::error("TypeError", "sequence storage is required");
                     return null_mut();
@@ -251,7 +251,7 @@ pub unsafe extern "C" fn mule_storage_read(value: Value, position: Value) -> Val
                         return object::small(i64::from(*value));
                     }
                 }
-                Data::Text(_) => return object::mule_text_character(value, position),
+                Data::Text(..) => return object::mule_text_character(value, position),
                 _ => {
                     object::error("TypeError", "sequence storage is required");
                     return null_mut();
@@ -507,7 +507,7 @@ unsafe fn caught_exception() -> Value {
             object::error(&kind, &message);
             return null_mut();
         }
-        let message = object::new_value(Data::Text(crate::text::Text::from_rust_str(&message)));
+        let message = object::new_value(Data::Text(crate::text::Text::from_rust_str(&message), std::ptr::null_mut()));
         let result = object::call(class, &[message]);
         object::release(message);
         result
