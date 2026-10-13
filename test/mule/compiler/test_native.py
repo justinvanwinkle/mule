@@ -137,6 +137,11 @@ def test_bytearray_constructs_iterates_and_mutates(tmp_path):
         "print(bytes(ba), ba == b'Abcd', ba.decode())\n"
         "print(bytearray(2), bytearray([1, 255]), bytearray('xy', 'utf-8'))\n"
         "print(ba[1:3])\n"
+        "print(ba.find(98), ba.find(b'bc'), ba.find(b'bc', 2), ba.find(122))\n"
+        "print(ba.rfind(b'b'), ba.index(99), ba.count(98), ba.count(b''))\n"
+        "print(ba.startswith((b'x', b'Ab')), ba.endswith(b'cd', 0, 3))\n"
+        "print(b'hello'.find(b'l', 3), b'hello'.rfind(108), b'hello'.count(b'l'))\n"
+        "try:\n    ba.index(b'z')\nexcept ValueError as error:\n    print(error)\n"
         "del ba[0]\nprint(ba.pop(), list(ba))\n"
         "try:\n    bytearray([256])\nexcept ValueError as error:\n    print(error)\n"
     )
@@ -147,6 +152,11 @@ def test_bytearray_constructs_iterates_and_mutates(tmp_path):
         "b'Abcd' True Abcd\n"
         "bytearray(b'\\x00\\x00') bytearray(b'\\x01\\xff') bytearray(b'xy')\n"
         "bytearray(b'bc')\n"
+        "1 1 -1 -1\n"
+        "1 2 1 5\n"
+        "True False\n"
+        "3 3 2\n"
+        "subsection not found\n"
         "100 [98, 99]\n"
         "byte must be in range(0, 256)\n"
     )

@@ -1159,6 +1159,117 @@ class TupleStorage(_OrderedSequence):
         return _storage_tuple(_repeat(self, count))
 
 
+def _byte_sequence_values(value):
+    if _integer_storage_kind(value):
+        return [_byte_value(value)]
+    if _text_storage(value):
+        raise TypeError(
+            "a bytes-like object is required, not '" + _type_name(value) + "'"
+        )
+    return _byte_values(value, None, "strict")
+
+
+def _bytes_bounds(length, start, end):
+    start = integer_index(start)
+    if start < 0:
+        start += length
+        if start < 0:
+            start = 0
+    if end is None:
+        end = length
+    else:
+        end = integer_index(end)
+        if end > length:
+            end = length
+        elif end < 0:
+            end += length
+            if end < 0:
+                end = 0
+    return start, end
+
+
+def _bytes_match(values, needle, position):
+    offset = 0
+    while offset < _storage_length(needle):
+        if _storage_read(values, position + offset) != _storage_read(needle, offset):
+            return False
+        offset += 1
+    return True
+
+
+def _bytes_find(values, sub, start, end):
+    needle = _byte_sequence_values(sub)
+    start, end = _bytes_bounds(_storage_length(values), start, end)
+    if _storage_length(needle) == 0:
+        return start if start <= end else -1
+    position = start
+    last = end - _storage_length(needle)
+    while position <= last:
+        if _bytes_match(values, needle, position):
+            return position
+        position += 1
+    return -1
+
+
+def _bytes_rfind(values, sub, start, end):
+    needle = _byte_sequence_values(sub)
+    start, end = _bytes_bounds(_storage_length(values), start, end)
+    if _storage_length(needle) == 0:
+        return end if start <= end else -1
+    position = end - _storage_length(needle)
+    while position >= start:
+        if _bytes_match(values, needle, position):
+            return position
+        position -= 1
+    return -1
+
+
+def _bytes_count(values, sub, start, end):
+    needle = _byte_sequence_values(sub)
+    start, end = _bytes_bounds(_storage_length(values), start, end)
+    if _storage_length(needle) == 0:
+        return end - start + 1 if start <= end else 0
+    found = 0
+    position = start
+    while position + _storage_length(needle) <= end:
+        if _bytes_match(values, needle, position):
+            found += 1
+            position += _storage_length(needle)
+        else:
+            position += 1
+    return found
+
+
+def _bytes_startswith(values, prefix, start, end):
+    if _tuple_storage(prefix):
+        index = 0
+        while index < _storage_length(prefix):
+            if _bytes_startswith(values, _storage_read(prefix, index), start, end):
+                return True
+            index += 1
+        return False
+    needle = _byte_sequence_values(prefix)
+    start, end = _bytes_bounds(_storage_length(values), start, end)
+    if end - start < _storage_length(needle):
+        return False
+    return _bytes_match(values, needle, start)
+
+
+def _bytes_endswith(values, suffix, start, end):
+    if _tuple_storage(suffix):
+        index = 0
+        while index < _storage_length(suffix):
+            if _bytes_endswith(values, _storage_read(suffix, index), start, end):
+                return True
+            index += 1
+        return False
+    needle = _byte_sequence_values(suffix)
+    start, end = _bytes_bounds(_storage_length(values), start, end)
+    if end - start < _storage_length(needle):
+        return False
+    return _bytes_match(values, needle, end - _storage_length(needle))
+
+
 class BytesStorage:
     def __getitem__(self, index):
         if is_slice(index):
@@ -1170,6 +1281,33 @@ class BytesStorage:
 
     def decode(self, encoding="utf-8", errors="strict"):
         return decode(self, encoding, errors)
+
+    def find(self, sub, start=0, end=None):
+        return _bytes_find(_make_list(self), sub, start, end)
+
+    def rfind(self, sub, start=0, end=None):
+        return _bytes_rfind(_make_list(self), sub, start, end)
+
+    def index(self, sub, start=0, end=None):
+        result = _bytes_find(_make_list(self), sub, start, end)
+        if result < 0:
+            raise ValueError("subsection not found")
+        return result
+
+    def rindex(self, sub, start=0, end=None):
+        result = _bytes_rfind(_make_list(self), sub, start, end)
+        if result < 0:
+            raise ValueError("subsection not found")
+        return result
+
+    def count(self, sub, start=0, end=None):
+        return _bytes_count(_make_list(self), sub, start, end)
+
+    def startswith(self, prefix, start=0, end=None):
+        return _bytes_startswith(_make_list(self), prefix, start, end)
+
+    def endswith(self, suffix, start=0, end=None):
+        return _bytes_endswith(_make_list(self), suffix, start, end)
 
 
 def sequence_equal(left, right):
@@ -1613,6 +1751,33 @@ class bytearray:
 
     def decode(self, encoding="utf-8", errors="strict"):
         return decode(_bytes_from_values(self.values), encoding, errors)
+
+    def find(self, sub, start=0, end=None):
+        return _bytes_find(self.values, sub, start, end)
+
+    def rfind(self, sub, start=0, end=None):
+        return _bytes_rfind(self.values, sub, start, end)
+
+    def index(self, sub, start=0, end=None):
+        result = _bytes_find(self.values, sub, start, end)
+        if result < 0:
+            raise ValueError("subsection not found")
+        return result
+
+    def rindex(self, sub, start=0, end=None):
+        result = _bytes_rfind(self.values, sub, start, end)
+        if result < 0:
+            raise ValueError("subsection not found")
+        return result
+
+    def count(self, sub, start=0, end=None):
+        return _bytes_count(self.values, sub, start, end)
+
+    def startswith(self, prefix, start=0, end=None):
+        return _bytes_startswith(self.values, prefix, start, end)
+
+    def endswith(self, suffix, start=0, end=None):
+        return _bytes_endswith(self.values, suffix, start, end)
 
 
 class memoryview:
