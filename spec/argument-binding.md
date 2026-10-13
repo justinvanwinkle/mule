@@ -4,6 +4,19 @@ Status: implemented for the subset below.
 
 ## SBCL reference and required adaptations
 
+SBCL `src/compiler/debug-dump.lisp`, `debug-info-for-component`, emits the
+simple-fun name, argument list, source/documentation and type metadata from entry
+information. Mule likewise emits immutable signature metadata from its Lambda
+and Signature records beside the existing native code header. Code objects are
+compiled Python objects cached per native code header, shared between closures
+and traceback frames; Rust only stores header pointers and retained metadata/cache
+values. Parameter counts, canonical `co_varnames` argument order, code flags,
+cell/free names and initial captured positional/keyword defaults are available
+to ordinary Python introspection. No bytecode object or evaluator is introduced.
+Code replacement is unsupported. Public default replacement and keyword-default
+mutation do not yet alter compiled binders; that existing gap requires mutable
+signature/default analysis and invalidation of omitted-default direct-call proofs.
+
 `src/compiler/locall.lisp:make-xep-lambda-expression` constructs external entries
 for fixed and optional-dispatch functions. External entries select the applicable
 arity and transfer control to an internal entry. `convert-more-call` verifies

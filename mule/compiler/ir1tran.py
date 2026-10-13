@@ -253,6 +253,7 @@ class Converter:
         self.active_compiler_bindings = {}
         self.module_annotations = {}
         self.future_annotations = False
+        self.named_constants = {"__debug__": ast.BooleanLiteral(True)}
         self.class_definitions = 0
         self.class_fields = {}
         self.module_annotation_shadows = set()
@@ -330,7 +331,12 @@ class Converter:
             )
         ]
 
+    def constant_binding(self, name, node):
+        if name in self.named_constants:
+            self.error(f"cannot assign to {name}", node)
+
     def reserved(self, name, node):
+        self.constant_binding(name, node)
         if name in self.compiler_bindings:
             self.error(f"cannot shadow compiler-only import '{name}'", node)
 
@@ -1500,6 +1506,11 @@ class _Expressions(ast.Visitor):
 
     def visit_Name(self, node):
         function = self.function
+        constant = function.converter.named_constants.get(node.identifier)
+        if constant is not None:
+            start, next_, result = self.frame
+            function.constant(start, next_, result, replace(constant, span=node.span))
+            return
         if node.identifier in function.converter.compiler_bindings:
             function.error(
                 f"compiler-only import '{node.identifier}' cannot be used as a runtime value",
@@ -2105,6 +2116,10 @@ class _Statements(ast.Visitor):
 
     def visit_Import(self, node):
         function = self.function
+        for item in node.items:
+            function.converter.constant_binding(
+                item.alias or item.name.split(".")[0], item
+            )
         start, next_, _ = self.frame
         current = start
         for item in node.items:
@@ -2129,6 +2144,8 @@ class _Statements(ast.Visitor):
 
     def visit_ImportFrom(self, node):
         function = self.function
+        for item in node.items:
+            function.converter.constant_binding(item.alias or item.name, item)
         start, next_, _ = self.frame
         if node.level == 0 and node.module in ("mule", "__future__"):
             function._import_directive(node)

@@ -71,6 +71,7 @@ declare ptr @mule_sequence_list(i64, ptr)
 declare ptr @mule_sequence_tuple(i64, ptr)
 declare ptr @mule_sequence_tuple_owned(i64, ptr)
 declare ptr @mule_lookup_special(ptr, ptr)
+declare ptr @mule_lookup_special_including_defaults(ptr, ptr)
 declare ptr @mule_render_text(ptr, i32)
 declare ptr @mule_text_result(ptr)
 declare ptr @mule_text_length(ptr)
@@ -102,6 +103,7 @@ declare ptr @mule_binding_default(ptr, ptr)
 declare ptr @mule_allocate_instance(ptr)
 declare ptr @mule_forward_call(ptr, ptr)
 declare ptr @mule_function(ptr, ptr, ptr)
+declare void @mule_set_function_metadata(ptr, ptr, ptr)
 declare ptr @mule_function_closure(ptr, ptr, ptr)
 declare ptr @mule_closure(ptr)
 declare ptr @mule_function_closure_of(ptr)
@@ -627,11 +629,85 @@ class ModuleGenerator:
             code = self.code(lambda_)
             self.code_descriptors.add(symbol)
             self.auxiliary.append(
-                f"{symbol} = private unnamed_addr constant {{ptr, ptr, ptr, i32}} "
+                f"{symbol} = private constant {{ptr, ptr, ptr, i32}} "
                 f"{{ptr {self.text(code.name)}, ptr {self.text(code.qualname)}, "
                 f"ptr {self.text(code.filename)}, i32 {code.firstlineno}}}"
             )
         return symbol
+
+    def code_metadata(self, lambda_: Lambda) -> ast.Tuple:
+        """Immutable Python introspection facts, from the existing IR signature."""
+        code = self.code(lambda_)
+        signature = lambda_.signature
+        parameters = lambda_.parameters
+        kinds = signature.kinds
+        positional_kinds = (
+            ast.ParameterKind.POSITIONAL_ONLY,
+            ast.ParameterKind.POSITIONAL_OR_KEYWORD,
+        )
+        order = [index for index, kind in enumerate(kinds) if kind in positional_kinds]
+        positional = len(order)
+        order += [
+            index
+            for index, kind in enumerate(kinds)
+            if kind == ast.ParameterKind.KEYWORD_ONLY
+        ]
+        keyword_only = len(order) - positional
+        order += [
+            index
+            for index, kind in enumerate(kinds)
+            if kind in (ast.ParameterKind.VAR_POSITIONAL, ast.ParameterKind.VAR_KEYWORD)
+        ]
+        names = [parameters[index] for index in order]
+        names += [
+            var.name
+            for var in lambda_.locals
+            if var.name not in parameters
+            and not var.name.startswith("$")
+            and not var.indirect
+        ]
+        flags = code.flags
+        if ast.ParameterKind.VAR_POSITIONAL in kinds:
+            flags |= 4
+        if ast.ParameterKind.VAR_KEYWORD in kinds:
+            flags |= 8
+        texts = lambda values: ast.Tuple([ast.TextLiteral(value) for value in values])
+        return ast.Tuple(
+            [
+                ast.TextLiteral(code.name),
+                ast.TextLiteral(code.filename),
+                ast.TextLiteral(code.qualname),
+                ast.IntegerLiteral(code.firstlineno),
+                ast.IntegerLiteral(positional),
+                ast.IntegerLiteral(kinds.count(ast.ParameterKind.POSITIONAL_ONLY)),
+                ast.IntegerLiteral(keyword_only),
+                ast.IntegerLiteral(flags),
+                texts(names),
+                texts(
+                    var.name
+                    for var in lambda_.locals
+                    if var.indirect and not var.name.startswith("$")
+                ),
+                texts(
+                    var.name
+                    for var in lambda_.environment.closure
+                    if not var.name.startswith("$")
+                )
+                if lambda_.environment
+                else texts(()),
+                ast.IntegerLiteral(
+                    sum(
+                        kinds[index] in positional_kinds
+                        for index in signature.default_parameters
+                    )
+                ),
+                texts(
+                    parameters[index]
+                    for index in signature.default_parameters
+                    if kinds[index] == ast.ParameterKind.KEYWORD_ONLY
+                ),
+            ]
+        )
 
     def attribute_cache(self) -> str:
         name = f"@mule.cache.{len(self.auxiliary)}"

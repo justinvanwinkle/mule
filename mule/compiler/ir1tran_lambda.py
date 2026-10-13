@@ -97,6 +97,9 @@ def convert_function(
         qualname or definition.name,
         converter.filename,
         definition.source_start().line,
+        3
+        | (16 if parent is not None and not parent.is_module else 0)
+        | {"generator": 32, "coroutine": 128, "async_generator": 512}.get(kind, 0),
     )
     lambda_.signature = Signature(
         kinds=tuple(parameter.kind for parameter in definition.parameters),

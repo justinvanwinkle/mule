@@ -800,6 +800,14 @@ complex-constructor/formatting compatibility are not established by this slice.
 
 ### Other limits
 
+SBCL `src/compiler/ir1tran.lisp`, `find-free-var`, makes constant-symbol
+references constant leaves instead of dynamic global variables. Mule similarly
+converts the language constant `__debug__` to a boolean literal and rejects
+attempts to bind its name. LLVM optimization levels control generated native
+code, not Python's assertion-eliding `-O` semantics: `__debug__` remains true at
+all current native optimization levels. The builtin namespace also exposes its
+initial value; mutating that dictionary does not change source constant reads.
+
 Compilation errors retain filename and AST source positions. Mule reports runtime
 errors with a nonzero exit status and source tracebacks, including builtin errors
 and errors propagated through handlers and `finally`. Exception formatting

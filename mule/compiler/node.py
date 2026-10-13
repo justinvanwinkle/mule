@@ -629,6 +629,7 @@ class CodeInfo:
     qualname: str
     filename: str
     firstlineno: int
+    flags: int = 0
 
 
 class Lambda(Functional):

@@ -6,6 +6,42 @@ and pass. General unittest support remains incomplete.
 
 ## SBCL correspondence and required adaptations
 
+### Attribute enumeration
+
+SBCL `src/code/defpackage.lisp`, `apropos-list`, enumerates names from existing
+package storage in compiled Lisp and sorts the result. Mule's `dir(object)`
+similarly calls compiled `__dir__` and sorts its iterable result. Each class
+family owns enumeration: ordinary objects combine their instance dictionary
+with all class MRO namespaces, classes expose their MRO namespaces, and modules
+expose only their own namespace or their namespace's custom `__dir__` hook.
+Names are enumerated without evaluating properties. Python's object attributes
+and module hooks require these separate methods instead of SBCL package symbols;
+Rust's existing storage accessors supply only names/dictionary views. Zero-argument
+`dir()` remains an explicit gap requiring compiler local-variable snapshots.
+The complete-MRO binding primitive includes `object.__dir__`. Older bootstrap
+hooks retain their explicit native-default filtering until their scalar default
+methods migrate to compiled Python; both lookup modes share class/metaclass
+resolution and descriptor binding instead of branching on receiver storage.
+SBCL `src/pcl/methods.lisp`, `find-method`, likewise separates method selection
+from method invocation. This lookup policy changes which stored root entry is
+eligible, without implementing attribute enumeration in Rust.
+
+### Inactive monitoring controls
+
+SBCL `src/code/profile.lisp`, `profile-encapsulation-lambdas`, keeps registration
+and callback behavior in compiled Lisp closures around instrumented functions.
+Mule's initial `sys.monitoring` namespace similarly keeps Python 3.14 event
+constants, reserved tool IDs, tool ownership and callback replacement in compiled
+Python. Clearing/freeing tools releases callback registrations; empty global and
+local event masks can be read and reset normally. Nonempty event activation is
+explicitly rejected with `NotImplementedError`: native compiler instrumentation,
+event positions, per-site disabling and event delivery are not implemented yet.
+This is an inactive control interface that lets debugger modules import their
+event declarations, not an implementation of active tracing or profiling.
+Python's source/exception events require IR instrumentation beyond SBCL's
+function encapsulation; adding callbacks without probes would silently lose
+events, so activation remains unsupported until that compiler stage exists.
+
 ### Process environment and its Python mapping
 
 `posix.putenv` and `posix.unsetenv` change the process environment through native

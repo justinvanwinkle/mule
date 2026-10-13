@@ -17,6 +17,7 @@
 //! exception reaches the calling frame.
 use crate::object::{self, Data, Value};
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::{CStr, c_char};
 use std::io::Write;
 use std::ptr::null_mut;
@@ -52,10 +53,64 @@ impl CodeInfo {
 }
 
 thread_local! {
+    static CODES: RefCell<HashMap<usize, (Value, Value)>> = RefCell::new(HashMap::new());
     /// The pending error's traceback, outermost entry first, or NULL.
     static PENDING: Cell<Value> = const { Cell::new(null_mut()) };
     /// Live activations, innermost last: code metadata and retained globals.
     static FRAMES: RefCell<Vec<(*const CodeInfo, Value)>> = const { RefCell::new(Vec::new()) };
+}
+
+unsafe fn code_info(receiver: Value) -> *const CodeInfo {
+    unsafe {
+        if receiver.is_null() || object::is_fixnum(receiver) { return std::ptr::null(); }
+        match &(*receiver).data {
+            Data::Function { code_info, .. } => *code_info,
+            Data::Frame { code, .. } => *code,
+            _ => std::ptr::null(),
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_set_function_metadata(function: Value, info: *const CodeInfo, metadata: Value) {
+    unsafe {
+        let Data::Function { code_info, .. } = &mut (*function).data else { unreachable!() };
+        *code_info = info;
+        CODES.with_borrow_mut(|codes| {
+            let entry = codes.entry(info as usize).or_insert((null_mut(), null_mut()));
+            if entry.0.is_null() { entry.0 = object::retain(metadata); }
+        });
+    }
+}
+
+pub unsafe fn code_metadata(receiver: Value, cached: bool) -> Value {
+    unsafe {
+        let info = code_info(receiver);
+        let value = CODES.with_borrow(|codes| codes.get(&(info as usize)).map_or(null_mut(), |entry| if cached { entry.1 } else { entry.0 }));
+        object::retain(if value.is_null() { object::none_value() } else { value })
+    }
+}
+
+pub unsafe fn cache_code(receiver: Value, code: Value) -> Value {
+    unsafe {
+        let info = code_info(receiver);
+        if info.is_null() {
+            object::error("TypeError", "native code metadata is unavailable");
+            return null_mut();
+        }
+        CODES.with_borrow_mut(|codes| {
+            let entry = codes.entry(info as usize).or_insert((null_mut(), null_mut()));
+            object::release(std::mem::replace(&mut entry.1, object::retain(code)));
+        });
+        object::none_value()
+    }
+}
+
+pub fn clear_code_cache() {
+    let codes = CODES.with_borrow_mut(std::mem::take);
+    for (metadata, code) in codes.into_values() {
+        unsafe { object::release(metadata); object::release(code); }
+    }
 }
 
 /// Enter a compiled function activation.

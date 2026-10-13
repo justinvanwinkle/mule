@@ -66,6 +66,20 @@ unsafe extern "C" fn integer_value(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn negate(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else { return null_mut(); };
+        numeric::unary(1, value)
+    }
+}
+
+unsafe extern "C" fn invert(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else { return null_mut(); };
+        numeric::unary(2, value)
+    }
+}
+
 unsafe extern "C" fn integer_bit_length(_: Value, args: Value) -> Value {
     unsafe {
         let Some([value]) = operands(args) else {
@@ -160,6 +174,7 @@ unsafe extern "C" {
 }
 
 unary_binary64!(log, f64::ln);
+unary_binary64!(fabs, f64::abs);
 unary_binary64!(log2, f64::log2);
 unary_binary64!(exp, f64::exp);
 unary_binary64!(sin, f64::sin);
@@ -288,7 +303,10 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, Native); 14] = [
+        let exports: [(&str, Native); 17] = [
+            ("math_fabs", fabs),
+            ("numeric_negate", negate),
+            ("numeric_invert", invert),
             ("math_number_kind", number_kind),
             ("math_to_double", to_double),
             ("math_integer_value", integer_value),

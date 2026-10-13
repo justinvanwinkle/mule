@@ -107,6 +107,22 @@ division by zero and unsupported cases take runtime paths with normal errors.
 Non-integer values retain their dynamic protocols. Boolean bitwise operations
 retain boolean results, and user comparison/truth callbacks retain their order.
 
+SBCL `src/code/numbers.lisp`, `%negate`, owns generic numeric negation in
+compiled Lisp; `src/compiler/float-tran.lisp`'s `%negate` transforms specialize
+proven representations. Mule's unary VOPs likewise keep proven scalar/fixnum
+paths and direct tagged-integer guards, but unknown non-tagged values call
+compiled `positive`, `negative` or `invert` protocols. These resolve special
+methods on the class, including descriptor binding, and return the method's
+result unchanged. Python permits user unary methods outside the numeric class
+hierarchy, unlike SBCL's `number` dispatch, so missing methods raise Python
+`TypeError` rather than failing a native numeric-storage assertion. Builtin int
+and float classes own their unary methods; Rust exposes only existing physical
+negation/inversion of canonical numeric storage. Float negation preserves signed
+zero, and numeric subclasses' inherited unary methods produce base scalar values.
+`abs` uses the same compiled special-method boundary; scalar classes own
+absolute-value conversion and sign handling, with binary64 magnitude as a physical
+primitive. User `__abs__` results and exceptions propagate unchanged.
+
 Tagged integers, booleans, and `None` need no reference-count updates. Ownership
 templates skip those values; heap values retain the Rust ownership protocol.
 Unknown local loads still check for the unbound marker.

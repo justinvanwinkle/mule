@@ -79,6 +79,25 @@ Multiline highlighting and complete expression-specific anchor formatting remain
 gaps; the verbatim oracle tests cover single-line names and calls, nested cleanup,
 and bare and explicit reraises with ranges both enabled and disabled.
 
+SBCL `src/code/target-error.lisp`, `define-condition` and `make-condition`,
+implements condition classes, inherited slots and report functions in compiled
+language code. `src/code/cross-condition.lisp`'s `encapsulated-condition` stores
+another condition as an ordinary slot. Mule's exception groups similarly use
+ordinary compiled Python classes and tuple fields, not a new Rust object tag.
+Python requires a nonempty sequence of exception instances, readonly message and
+children, automatic `BaseExceptionGroup` to `ExceptionGroup` selection when all
+children are ordinary exceptions, and an `ExceptionGroup` class inheriting both
+`BaseExceptionGroup` and `Exception`. Matching uses the existing full class MRO,
+including secondary bases. Tree selection is compiled Python: `subgroup`, `split`
+and `derive` preserve nesting, matching identity and traceback/cause/context/notes
+on derived groups. Generic subscription uses the shared generic alias protocol.
+Exception cause/context descriptors validate exception-or-None values; assigning
+a cause enables context suppression, and suppression accepts only booleans.
+`BaseException` owns argument repr and validated string notes shared by all groups.
+Unlike SBCL's restart handling, group selection partitions a Python exception
+tree; it neither executes handlers nor resumes computation. `except*` lowering
+and structured uncaught-group rendering remain separate, unimplemented contracts.
+
 The first slice implements ordinary `try`/`except`/`else`, raising and reraising,
 list/tuple/text indexing, list replacement/append, sequence iteration, range,
 enumerate, and non-starred unpacking. `finally`, exception groups/chaining,

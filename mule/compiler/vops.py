@@ -442,7 +442,8 @@ def _define_unary(operator, opcode):
         result = vop.results[0]
         operand = vop.args[0]
         value = gen.take(operand)
-        fixnum = (operand.tn.type or UNKNOWN).is_fixnum
+        operand_type = operand.tn.type or UNKNOWN
+        fixnum = operand_type.is_fixnum
         if fixnum and (result.tn.type or UNKNOWN).is_fixnum and opcode < 3:
             decoded = gen.decode(value)
             integer = (
@@ -461,6 +462,30 @@ def _define_unary(operator, opcode):
                 f"select i1 {zero}, ptr @mule.true, ptr @mule.false"
             )
             gen.native_result(result, boolean, (value,))
+            return
+        if opcode < 3 and not (
+            operand_type.fits(PYTHON_INTEGER) or operand_type.fits(FLOAT)
+        ):
+            tagged = gen.operation(f"ptrtoint ptr {value} to i64")
+            tag = gen.operation(f"and i64 {tagged}, 1")
+            integer = gen.operation(f"icmp ne i64 {tag}, 0")
+            fast, protocol, joined = (
+                gen.fresh(name)[1:]
+                for name in ("unary.integer", "unary.protocol", "unary.join")
+            )
+            gen.line(f"br i1 {integer}, label %{fast}, label %{protocol}")
+            gen.lines.append(fast + ":")
+            scalar = gen.operation(f"call ptr @mule.fixnum.unary.{opcode}(ptr {value})")
+            gen.line(f"br label %{joined}")
+            gen.lines.append(protocol + ":")
+            name = ("positive", "negative", "invert")[opcode]
+            dynamic = gen.sequence_call(name, [value])
+            protocol_end = gen.current_block()
+            gen.line(f"br label %{joined}")
+            gen.lines.append(joined + ":")
+            gen.pointer_result(
+                result, f"phi ptr [{scalar}, %{fast}], [{dynamic}, %{protocol_end}]"
+            )
             return
         prefix = "fixnum" if fixnum and opcode < 3 else "fast"
         gen.pointer_result(
@@ -610,6 +635,12 @@ def make_function(gen, vop):
         function = gen.operation(call)
         call = f"call ptr @mule_function_closure(ptr {function}, ptr {closure}, ptr {cells})"
     gen.pointer_result(result, call, consumed)
+
+    metadata = gen.operation(gen.constant(module.code_metadata(target)))
+    gen.check_pointer(metadata)
+    function = gen.load(result)
+    gen.line(f"call void @mule_set_function_metadata(ptr {function}, ptr {module.code_descriptor(target)}, ptr {metadata})")
+    gen.release(metadata)
 
 
 @define_vop("make-class", translate=fndb.MAKE_CLASS, results=(OBJECT,))
@@ -985,10 +1016,16 @@ def text_access(function):
     return emit
 
 
-def lookup_method(name):
+def lookup_method(name, *, include_object_defaults=False):
+    entry = (
+        "mule_lookup_special_including_defaults"
+        if include_object_defaults
+        else "mule_lookup_special"
+    )
+
     def emit(gen, vop, values):
         return gen.operation(
-            f"call ptr @mule_lookup_special(ptr {values[0]}, ptr {gen.module.text(name)})"
+            f"call ptr @{entry}(ptr {values[0]}, ptr {gen.module.text(name)})"
         )
 
     return emit

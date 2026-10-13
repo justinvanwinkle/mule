@@ -38,12 +38,46 @@ from _slice import is_slice, positions, slice
 class BaseException:
     # Set when a handler catches the exception; see mule/runtime/traceback.rs.
     __traceback__ = None
+    _cause = None
+    _context = None
+    _suppress_context = False
 
     def __init__(self, *args):
         self.args = args
         self.__cause__ = None
         self.__context__ = None
         self.__suppress_context__ = False
+
+    @property
+    def __cause__(self):
+        return self._cause
+
+    @__cause__.setter
+    def __cause__(self, value):
+        if value is not None and not isinstance(value, BaseException):
+            raise TypeError("exception cause must be None or derive from BaseException")
+        self._cause = value
+        self.__suppress_context__ = True
+
+    @property
+    def __context__(self):
+        return self._context
+
+    @__context__.setter
+    def __context__(self, value):
+        if value is not None and not isinstance(value, BaseException):
+            raise TypeError("exception context must be None or derive from BaseException")
+        self._context = value
+
+    @property
+    def __suppress_context__(self):
+        return self._suppress_context
+
+    @__suppress_context__.setter
+    def __suppress_context__(self, value):
+        if not isinstance(value, bool):
+            raise TypeError("attribute value type must be bool")
+        self._suppress_context = value
 
     def with_traceback(self, tb):
         self.__traceback__ = tb
@@ -55,6 +89,16 @@ class BaseException:
         if len(self.args) == 1:
             return str(self.args[0])
         return str(self.args)
+
+    def __repr__(self):
+        return type(self).__name__ + "(" + ", ".join(repr(arg) for arg in self.args) + ")"
+
+    def add_note(self, note):
+        if not isinstance(note, str):
+            raise TypeError("note must be a str, not '" + type(note).__name__ + "'")
+        if not hasattr(self, "__notes__"):
+            self.__notes__ = []
+        self.__notes__.append(note)
 
 
 class Exception(BaseException):
@@ -356,19 +400,11 @@ def exception_matches(value, expected):
     while index < _storage_length(choices):
         target = _storage_read(choices, index)
         parent = _class_identity(target)
-        valid = False
-        while parent is not None:
-            if parent is BaseException:
-                valid = True
-                break
-            parent = _class_parent(parent)
-        if not valid:
+        if parent is None or not issubclass(parent, BaseException):
             raise TypeError("catching classes that do not inherit from BaseException")
         parent = _raised_class(value)
-        while parent is not None:
-            if parent is target:
-                return True
-            parent = _class_parent(parent)
+        if parent is not None and issubclass(parent, target):
+            return True
         index += 1
     return False
 
@@ -380,13 +416,7 @@ def iteration_exhausted(value):
 def raise_value(value):
     """Prepare an exception; the source raise VOP installs pending state."""
     parent = _raised_class(value)
-    valid = False
-    while parent is not None:
-        if parent is BaseException:
-            valid = True
-            break
-        parent = _class_parent(parent)
-    if not valid:
+    if parent is None or not issubclass(parent, BaseException):
         # Use the physical error primitive here to avoid recursive invalid raises.
         return _invalid_raise()
     instance = _exception_instance(value)
@@ -401,13 +431,7 @@ def raise_value(value):
 def exception_instance(value):
     """The instance a ``raise`` statement will raise, creating it from a class."""
     parent = _raised_class(value)
-    valid = False
-    while parent is not None:
-        if parent is BaseException:
-            valid = True
-            break
-        parent = _class_parent(parent)
-    if not valid:
+    if parent is None or not issubclass(parent, BaseException):
         raise TypeError("exceptions must derive from BaseException")
     return _exception_instance(value)
 
@@ -418,6 +442,34 @@ def set_exception_cause(instance, cause):
         cause = exception_instance(cause)
     instance.__cause__ = cause
     instance.__suppress_context__ = True
+
+
+def positive(value):
+    method = _pos_method(value)
+    if method is None:
+        raise TypeError(f"bad operand type for unary +: '{type(value).__name__}'")
+    return method()
+
+
+def negative(value):
+    method = _neg_method(value)
+    if method is None:
+        raise TypeError(f"bad operand type for unary -: '{type(value).__name__}'")
+    return method()
+
+
+def invert(value):
+    method = _invert_method(value)
+    if method is None:
+        raise TypeError(f"bad operand type for unary ~: '{type(value).__name__}'")
+    return method()
+
+
+def abs(value, /):
+    method = _abs_method(value)
+    if method is None:
+        raise TypeError(f"bad operand type for abs(): '{type(value).__name__}'")
+    return method()
 
 
 def integer_index(value):
@@ -649,6 +701,15 @@ def sorted(iterable, /, *, key=None, reverse=False):
     result = list(iterable)
     result.sort(key=key, reverse=reverse)
     return result
+
+
+def dir(*args):
+    if not args:
+        raise NotImplementedError("dir() requires compiler local-variable snapshots")
+    if len(args) > 1:
+        raise TypeError(f"dir expected at most 1 argument, got {len(args)}")
+    method = _dir_method(args[0])
+    return sorted(method())
 
 
 def append_argument(positional, value):
@@ -2332,6 +2393,7 @@ _install_builtin("issubclass", issubclass)
 _install_builtin("vars", vars)
 _install_builtin("globals", globals)
 _install_builtin("sorted", sorted)
+_install_builtin("dir", dir)
 _install_builtin("callable", callable)
 _install_builtin("pow", pow)
 _install_builtin("divmod", divmod)
@@ -2356,6 +2418,8 @@ _install_builtin("classmethod", classmethod)
 _install_builtin("property", property)
 _install_builtin("super", super)
 _install_builtin("BaseException", BaseException)
+_install_builtin("abs", abs)
+_install_builtin("__debug__", True)
 _install_builtin("Exception", Exception)
 _install_builtin("ArithmeticError", ArithmeticError)
 _install_builtin("LookupError", LookupError)
@@ -2525,6 +2589,14 @@ from _template import build_template as _build_template  # noqa: E402
 from _generic_alias import class_getitem as _class_getitem  # noqa: E402
 from _generic_alias import type_or as _type_or  # noqa: E402
 from _generic_alias import type_ror as _type_ror  # noqa: E402
+from _exceptiongroup import BaseExceptionGroup, ExceptionGroup  # noqa: E402
+from _object import _install_code_fields  # noqa: E402
+
+_install_code_fields()
+
+_install_builtin("BaseExceptionGroup", BaseExceptionGroup)
+_install_builtin("ExceptionGroup", ExceptionGroup)
+BaseExceptionGroup.__class_getitem__ = classmethod(_class_getitem)
 
 # Builtin classes that accept type arguments, such as ``list[int]``.
 list.__class_getitem__ = classmethod(_class_getitem)

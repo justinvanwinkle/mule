@@ -30,6 +30,10 @@ from .vops import (
 )
 
 _LOOKUPS = {
+    "_pos_method": "__pos__",
+    "_neg_method": "__neg__",
+    "_invert_method": "__invert__",
+    "_abs_method": "__abs__",
     "_getitem_method": "__getitem__",
     "_setitem_method": "__setitem__",
     "_delitem_method": "__delitem__",
@@ -96,6 +100,7 @@ _COMPILED_CALLS = {
     "_hex_protocol": "mule_format__hex",
 }
 _EMITTERS = {
+    "_dir_method": lookup_method("__dir__", include_object_defaults=True),
     **{name: lookup_method(method) for name, method in _LOOKUPS.items()},
     **{name: text_access(function) for name, function in _TEXT_ACCESS.items()},
     **{name: compiled_call(function) for name, function in _COMPILED_CALLS.items()},

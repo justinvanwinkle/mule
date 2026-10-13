@@ -40,12 +40,23 @@ from _mule_native import namespace_binding as _namespace_binding
 from _mule_native import namespace_bind as _namespace_bind
 from _mule_native import namespace_unbind as _namespace_unbind
 from _mule_native import math_float_format as _math_float_format
+from _mule_native import numeric_negate as _numeric_negate
+from _mule_native import numeric_invert as _numeric_invert
+from _mule_native import math_fabs as _math_fabs
 from _mule_native import register_type as _register_type
 from _mule_native import traceback_field as _traceback_field
 from _mule_native import set_class_name as _set_class_name
 from _mule_native import type_of as _type_of
 from _mule_native import typed_value as _typed_value
 from _mule_native import function_attributes as _function_attributes
+from _mule_native import code_metadata as _code_metadata
+from _mule_native import code_cache as _code_cache
+from _mule_native import set_code_cache as _set_code_cache
+from _mule_native import function_captured_defaults as _function_captured_defaults
+from _mule_native import function_positional_defaults as _function_positional_defaults
+from _mule_native import set_function_positional_defaults as _set_function_positional_defaults
+from _mule_native import function_keyword_defaults as _function_keyword_defaults
+from _mule_native import set_function_keyword_defaults as _set_function_keyword_defaults
 from _mule_native import function_annotate as _function_annotate
 from _mule_native import function_annotations as _function_annotations
 from _mule_native import set_function_annotate as _set_function_annotate
@@ -225,6 +236,15 @@ class object:
 
     def __mule_annotation_mapping__(self):
         raise TypeError("__annotations__ must be a dict or None")
+
+    def __dir__(self):
+        try:
+            names = set(self.__dict__)
+        except AttributeError:
+            names = set()
+        for cls in _class_mro(_type_of(self)):
+            names.update(_class_own_names(cls))
+        return list(names)
 
     def __mule_exit_status__(self):
         return (1, str(self))
@@ -434,6 +454,12 @@ class type(object):
 
     def __subclasses__(cls):
         return list(_class_subclasses(cls))
+
+    def __dir__(cls):
+        names = set()
+        for base in _class_mro(cls):
+            names.update(_class_own_names(base))
+        return list(names)
 
 
 _register_type("type", type)
@@ -916,6 +942,18 @@ def _make_complex(cls, real, imag):
 
 
 class int(object):
+    def __pos__(self):
+        return _convert_int(self)
+
+    def __neg__(self):
+        return _numeric_negate(_convert_int(self))
+
+    def __invert__(self):
+        return _numeric_invert(_convert_int(self))
+
+    def __abs__(self):
+        value = _convert_int(self)
+        return _numeric_negate(value) if value < 0 else value
     __slots__ = ()
 
     def __new__(cls, *args):
@@ -1040,6 +1078,14 @@ class bool(int):
 
 
 class float(object):
+    def __pos__(self):
+        return _convert_float(self)
+
+    def __neg__(self):
+        return _numeric_negate(_convert_float(self))
+
+    def __abs__(self):
+        return _math_fabs(_convert_float(self))
     __slots__ = ()
 
     def __new__(cls, *args):
@@ -1103,12 +1149,45 @@ class float(object):
 class code(object):
     """A function's compiled-code metadata."""
 
-    def __init__(self, name, filename, qualname=None, firstlineno=0):
-        self.co_name = name
-        self.co_qualname = name if qualname is None else qualname
-        self.co_filename = filename
-        self.co_firstlineno = firstlineno
-        self.co_flags = 0
+    def __init__(self, name, filename, qualname=None, firstlineno=0,
+                 argcount=0, posonly=0, kwonly=0, flags=0, varnames=(),
+                 cellvars=(), freevars=(), positional_defaults=0, keyword_defaults=()):
+        self._metadata = (name, filename, name if qualname is None else qualname,
+                          firstlineno, argcount, posonly, kwonly, flags, varnames,
+                          cellvars, freevars, positional_defaults, keyword_defaults)
+
+    @property
+    def co_nlocals(self):
+        return len(self.co_varnames)
+
+
+def _code_field(index):
+    return property(lambda self: self._metadata[index])
+
+
+def _install_code_fields():
+    # Called after sequence/descriptor builtins finish bootstrapping.
+    for index, name in enumerate((
+        "co_name", "co_filename", "co_qualname", "co_firstlineno", "co_argcount",
+        "co_posonlyargcount", "co_kwonlyargcount", "co_flags", "co_varnames",
+        "co_cellvars", "co_freevars", "_positional_defaults", "_keyword_defaults",
+    )):
+        setattr(code, name, _code_field(index))
+
+
+def _code_for(receiver, fallback=None):
+    cached = _code_cache(receiver)
+    if cached is not None:
+        return cached
+    metadata = _code_metadata(receiver)
+    if metadata is None:
+        if fallback is None:
+            raise AttributeError("native callable has no Python code metadata")
+        cached = code(fallback[0], fallback[2], fallback[1], fallback[3])
+    else:
+        cached = code(*metadata)
+    _set_code_cache(receiver, cached)
+    return cached
 
 
 class function(object):
@@ -1129,11 +1208,20 @@ class function(object):
 
     @property
     def __code__(self):
-        return code(self.__name__, None)
+        return _code_for(self)
 
     @property
     def __defaults__(self):
-        return None
+        defaults = _function_positional_defaults(self)
+        if defaults is not None:
+            return defaults
+        count = self.__code__._positional_defaults
+        if not count:
+            return None
+        captured = _function_captured_defaults(self)
+        defaults = tuple(captured[index] for index in range(count))
+        _set_function_positional_defaults(self, defaults)
+        return defaults
 
     @__defaults__.setter
     def __defaults__(self, value):
@@ -1141,7 +1229,18 @@ class function(object):
 
     @property
     def __kwdefaults__(self):
-        return None
+        defaults = _function_keyword_defaults(self)
+        if defaults is not None:
+            return defaults
+        metadata = self.__code__
+        names = metadata._keyword_defaults
+        if not names:
+            return None
+        captured = _function_captured_defaults(self)
+        defaults = {name: captured[metadata._positional_defaults + index]
+                    for index, name in enumerate(names)}
+        _set_function_keyword_defaults(self, defaults)
+        return defaults
 
     @__kwdefaults__.setter
     def __kwdefaults__(self, value):
@@ -1245,6 +1344,12 @@ class module(object):
             return _InstanceDict(self)
         return _GlobalsDict(self)
 
+    def __dir__(self):
+        namespace = self.__dict__
+        if "__dir__" in namespace:
+            return namespace["__dir__"]()
+        return list(namespace)
+
 
 class traceback(object):
     """One entry of an exception's traceback: a frame the exception passed
@@ -1276,7 +1381,7 @@ class frame(object):
     @property
     def f_code(self):
         info = _traceback_field(self, 0)
-        return code(info[0], info[2], info[1], info[3])
+        return _code_for(self, info)
 
     @property
     def f_lineno(self):

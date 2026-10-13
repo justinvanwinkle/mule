@@ -40,6 +40,9 @@ _base_executable = executable
 modules = {}
 _register_modules(modules)
 
+import _monitoring as monitoring
+modules["sys.monitoring"] = monitoring
+
 platform = "linux"
 byteorder = "little"
 maxsize = 9223372036854775807

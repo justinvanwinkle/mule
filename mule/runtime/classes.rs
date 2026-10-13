@@ -68,6 +68,10 @@ pub struct ClassLayout {
 }
 
 impl ClassLayout {
+    /// Borrow an attribute through the complete MRO, including object defaults.
+    pub fn attribute(&self, name: &str) -> Value {
+        self.find(name).map_or(std::ptr::null_mut(), |(owner, _, index)| owner.attributes[index].1)
+    }
     pub(crate) fn remove_subclass(&mut self, child: Value) {
         self.subclasses.retain(|entry| *entry != child);
     }
@@ -1105,6 +1109,20 @@ pub unsafe fn special_bound(receiver: Value, attribute: &str) -> Value {
             return value;
         }
         bind_class_attribute(value, receiver, owner)
+    }
+}
+
+/// Explicit protocol lookup binds the complete class namespace. Unlike native
+/// bootstrap hooks, it must include compiled object's default implementations.
+pub unsafe fn lookup_special_bound(receiver: Value, attribute: &str, include_object_defaults: bool) -> Value {
+    unsafe {
+        let class = class_of_value(receiver);
+        let Some(layout) = layout_of_class(class) else {
+            return std::ptr::null_mut();
+        };
+        let value = if include_object_defaults { layout.attribute(attribute) } else { layout.special(attribute) };
+        if value.is_null() { return value; }
+        bind_class_attribute(value, receiver, class)
     }
 }
 
@@ -2813,13 +2831,53 @@ macro_rules! function_annotation_slot {
 
 function_annotation_slot!(function_annotate, set_function_annotate, annotate);
 function_annotation_slot!(function_annotations, set_function_annotations, annotations);
+function_annotation_slot!(function_positional_defaults, set_function_positional_defaults, positional_defaults);
+function_annotation_slot!(function_keyword_defaults, set_function_keyword_defaults, keyword_defaults);
+
+unsafe extern "C" fn code_metadata(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver]) = operands(args) else { return std::ptr::null_mut(); };
+        crate::traceback::code_metadata(receiver, false)
+    }
+}
+
+unsafe extern "C" fn code_cache(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver]) = operands(args) else { return std::ptr::null_mut(); };
+        crate::traceback::code_metadata(receiver, true)
+    }
+}
+
+unsafe extern "C" fn set_code_cache(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver, code]) = operands(args) else { return std::ptr::null_mut(); };
+        crate::traceback::cache_code(receiver, code)
+    }
+}
+
+unsafe extern "C" fn function_captured_defaults(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([function]) = operands(args) else { return std::ptr::null_mut(); };
+        if function.is_null() || object::is_fixnum(function) { return fail("TypeError", "function storage is required"); }
+        let Data::Function { defaults, .. } = &(*function).data else { return fail("TypeError", "function storage is required"); };
+        object::retain(if defaults.is_null() { object::none_value() } else { *defaults })
+    }
+}
 
 pub unsafe fn populate(globals: Value) -> bool {
     unsafe {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 48] = [
+        let exports: [(&str, object::Native); 56] = [
+            ("code_metadata", code_metadata),
+            ("code_cache", code_cache),
+            ("set_code_cache", set_code_cache),
+            ("function_captured_defaults", function_captured_defaults),
+            ("function_positional_defaults", function_positional_defaults),
+            ("set_function_positional_defaults", set_function_positional_defaults),
+            ("function_keyword_defaults", function_keyword_defaults),
+            ("set_function_keyword_defaults", set_function_keyword_defaults),
             ("class_subclasses", class_subclasses),
             ("bound_method_function", bound_method_function),
             ("function_annotate", function_annotate),

@@ -84,6 +84,7 @@ pub unsafe fn initialize(native: *mut std::ffi::c_void) -> bool {
 }
 pub unsafe fn finish() {
     unsafe {
+        crate::traceback::clear_code_cache();
         clear_pending();
         ACTIVE.with_borrow_mut(|values| {
             for value in values.drain(..) {

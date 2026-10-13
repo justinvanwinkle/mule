@@ -232,6 +232,9 @@ pub enum Data {
         /// Deferred annotation callable and lazy cache, owned independently.
         annotate: Value,
         annotations: Value,
+        code_info: *const crate::traceback::CodeInfo,
+        positional_defaults: Value,
+        keyword_defaults: Value,
     },
     Args(Vec<Value>, Value, Value),
     ArgumentView {
@@ -491,6 +494,8 @@ pub unsafe fn release(value: Value) {
                 attributes,
                 annotate,
                 annotations,
+                positional_defaults,
+                keyword_defaults,
                 ..
             } => {
                 release(*defaults);
@@ -498,6 +503,8 @@ pub unsafe fn release(value: Value) {
                 release(*attributes);
                 release(*annotate);
                 release(*annotations);
+                release(*positional_defaults);
+                release(*keyword_defaults);
             }
             _ => (), // Function globals are borrowed from the executing module.
         }
@@ -612,6 +619,9 @@ pub unsafe fn function(globals: Value, entry: Native, name: &str) -> Value {
             attributes: std::ptr::null_mut(),
             annotate: std::ptr::null_mut(),
             annotations: std::ptr::null_mut(),
+            code_info: std::ptr::null(),
+            positional_defaults: std::ptr::null_mut(),
+            keyword_defaults: std::ptr::null_mut(),
         })
     }
 }
@@ -1804,6 +1814,15 @@ pub unsafe extern "C" fn mule_sequence_tuple_owned(
 /// when absent. Instance fields are intentionally not consulted.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_lookup_special(value: Value, name: *const c_char) -> Value {
+    unsafe { lookup_special(value, name, false) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_lookup_special_including_defaults(value: Value, name: *const c_char) -> Value {
+    unsafe { lookup_special(value, name, true) }
+}
+
+unsafe fn lookup_special(value: Value, name: *const c_char, include_object_defaults: bool) -> Value {
     unsafe {
         let Some(name) = name_from_c(name) else {
             return std::ptr::null_mut();
@@ -1811,46 +1830,12 @@ pub unsafe extern "C" fn mule_lookup_special(value: Value, name: *const c_char) 
         if value.is_null() {
             return none_value();
         }
-        if is_fixnum(value) {
-            let method = crate::sequences::binding(value, name);
-            if method.is_null() {
-                return none_value();
-            }
-            return new_value(Data::BoundMethod {
-                receiver: retain(value),
-                method: retain(method),
-            });
+        let bound = crate::classes::lookup_special_bound(value, name, include_object_defaults);
+        if bound.is_null() && !has_error() {
+            none_value()
+        } else {
+            bound
         }
-        let method = match &(*value).data {
-            Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => match &(**ty).data {
-                Data::Class(_) => {
-                    let bound = crate::classes::special_bound(value, name);
-                    return if bound.is_null() && !has_error() {
-                        none_value()
-                    } else {
-                        bound
-                    };
-                }
-                _ => unreachable!(),
-            },
-            Data::Class(_) => {
-                // A class's special methods come from its metaclass.
-                let bound = crate::classes::special_bound_on_class(value, name);
-                return if bound.is_null() && !has_error() {
-                    none_value()
-                } else {
-                    bound
-                };
-            }
-            _ => crate::sequences::binding(value, name),
-        };
-        if method.is_null() {
-            return none_value();
-        }
-        new_value(Data::BoundMethod {
-            receiver: retain(value),
-            method: retain(method),
-        })
     }
 }
 #[unsafe(no_mangle)]
