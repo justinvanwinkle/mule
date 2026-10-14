@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 
 from mule import ast
-from mule.diagnostics import phase
+from mule.diagnostics import annotation_warning_level, phase
 from mule.parser import parse
 
 from . import checkgen, ir1opt, locall, loop
@@ -21,6 +21,7 @@ from .debug import check_ir1_consistency
 from .dfo import find_dfo, find_initial_dfo
 from .envanal import environment_analyze
 from .import_dependencies import discover as import_dependencies
+from .interface_annotations import imported_bindings as interface_bindings
 from .ir1tran import (
     Converter,
     _AnnotationShadows,
@@ -99,7 +100,8 @@ def ignore_contradicted_annotations(compilation: Compilation) -> bool:
         ledger.ignored.add(source)
         changed = True
         filename, line, column = location[:3]
-        logger.warning(
+        logger.log(
+            annotation_warning_level(filename),
             "%s:%s:%s: warning: value contradicts annotation %s; the annotation is ignored",
             filename,
             line,
@@ -211,6 +213,7 @@ def compile_toplevel(
         for statement in tree.statements:
             statement.accept(shadows)
         converter.module_annotation_shadows = shadows.names
+        converter.interface_bindings = interface_bindings(tree.statements)
         entry = convert_module(converter, tree)
         for lambda_ in converter.functions:
             _GlobalAnnotationStores(converter, lambda_).apply(lambda_blocks(lambda_))

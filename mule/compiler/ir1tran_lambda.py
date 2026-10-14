@@ -12,6 +12,7 @@ from __future__ import annotations
 from mule import ast
 
 from . import fndb
+from .interface_annotations import declaration as _interface_declaration
 from .ir1tran import (
     Converter,
     FunctionConverter,
@@ -67,6 +68,7 @@ def convert_function(
     else:
         kind = "generator" if yields else None
     generator = kind is not None
+    interface_declaration = _interface_declaration(converter, definition, parent)
     names = []
     annotations = []
     variadic = False
@@ -122,15 +124,18 @@ def convert_function(
         ),
         # A generator function returns a generator; its annotation describes
         # what the generator produces, not a value to check on return.
+        # An interface annotation remains metadata, never a body assertion.
         return_annotation=(
             converter.annotation(definition.return_annotation)
-            if definition.return_annotation is not None and not generator
+            if definition.return_annotation is not None
+            and (not generator or interface_declaration)
             else None
         ),
         annotation_expressions=tuple(
             parameter.annotation for parameter in definition.parameters
         ),
         return_annotation_expression=definition.return_annotation,
+        interface_declaration=interface_declaration,
     )
     lambda_.owner_class = owner_class
     converter.functions.append(lambda_)
@@ -323,7 +328,7 @@ def convert_lambda_body(function: FunctionConverter, statements, prologue, origi
         current = prologue(postbind) if prologue is not None else postbind
         frontier = function.convert_body(current, statements)
         if frontier is not None:
-            annotation = lambda_.signature.return_annotation
+            annotation = lambda_.signature.implementation_return_annotation
             ctran = Ctran()
             delivered = Lvar() if annotation is not None else result
             function.constant(frontier, ctran, delivered, ast.NoneLiteral(None))

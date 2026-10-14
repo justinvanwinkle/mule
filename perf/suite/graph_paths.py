@@ -38,7 +38,7 @@ def prepare(size, seed):
     return graph
 
 
-def untyped(graph):
+def run(graph):
     infinity = len(graph) * 97 + 1
     distances = [infinity] * len(graph)
     distances[0] = 0
@@ -54,52 +54,6 @@ def untyped(graph):
                 heapq.heappush(pending, (candidate, target))
     checksum = 0
     reachable = 0
-    for vertex in range(len(graph)):
-        if distances[vertex] < infinity:
-            checksum += (vertex + 1) * distances[vertex]
-            reachable += 1
-    return checksum, reachable
-
-
-def partial(graph: list) -> tuple:
-    infinity = len(graph) * 97 + 1
-    distances = [infinity] * len(graph)
-    distances[0] = 0
-    pending = [(0, 0)]
-    while pending:
-        distance, vertex = heapq.heappop(pending)
-        if distance != distances[vertex]:
-            continue
-        for target, weight in graph[vertex]:
-            candidate = distance + weight
-            if candidate < distances[target]:
-                distances[target] = candidate
-                heapq.heappush(pending, (candidate, target))
-    checksum = 0
-    reachable = 0
-    for vertex in range(len(graph)):
-        if distances[vertex] < infinity:
-            checksum += (vertex + 1) * distances[vertex]
-            reachable += 1
-    return checksum, reachable
-
-
-def typed(graph: list[list[tuple[int, int]]]) -> tuple[int, int]:
-    infinity: int = len(graph) * 97 + 1
-    distances: list[int] = [infinity] * len(graph)
-    distances[0] = 0
-    pending: list[tuple[int, int]] = [(0, 0)]
-    while pending:
-        distance, vertex = heapq.heappop(pending)
-        if distance != distances[vertex]:
-            continue
-        for target, weight in graph[vertex]:
-            candidate: int = distance + weight
-            if candidate < distances[target]:
-                distances[target] = candidate
-                heapq.heappush(pending, (candidate, target))
-    checksum: int = 0
-    reachable: int = 0
     for vertex in range(len(graph)):
         if distances[vertex] < infinity:
             checksum += (vertex + 1) * distances[vertex]
@@ -108,14 +62,7 @@ def typed(graph: list[list[tuple[int, int]]]) -> tuple[int, int]:
 
 
 def main():
-    run_case(
-        NAME,
-        DESCRIPTION,
-        DEFAULT_SIZE,
-        DEFAULT_SEED,
-        prepare,
-        {"untyped": untyped, "partial": partial, "typed": typed},
-    )
+    run_case(NAME, DESCRIPTION, DEFAULT_SIZE, DEFAULT_SEED, prepare, run)
 
 
 if __name__ == "__main__":

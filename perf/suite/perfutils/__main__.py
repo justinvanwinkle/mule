@@ -14,7 +14,6 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .case import VARIANTS
 from .report import write_report
 
 SUITE = Path(__file__).resolve().parents[1]
@@ -66,7 +65,7 @@ def invoke(command, cwd, timeout):
     ), elapsed
 
 
-def read_sample(process, wall, case, variant):
+def read_sample(process, wall, case):
     fields = {}
     for line in process.stdout.splitlines():
         key, separator, value = line.partition("\t")
@@ -77,7 +76,6 @@ def read_sample(process, wall, case, variant):
         "CASE",
         "SIZE",
         "SEED",
-        "VARIANT",
         "LOOPS",
         "RESULT",
         "PREPARE",
@@ -85,8 +83,8 @@ def read_sample(process, wall, case, variant):
     }
     if set(fields) != required or fields["CASE"] != case:
         raise RunFailure("invalid_output", "missing fields or wrong scenario identity")
-    if fields["VARIANT"] != variant or not fields["RESULT"]:
-        raise RunFailure("invalid_output", "wrong variant or empty result")
+    if not fields["RESULT"]:
+        raise RunFailure("invalid_output", "empty result")
     try:
         kernel = float(fields.pop("KERNEL"))
         preparation = float(fields.pop("PREPARE"))
@@ -153,10 +151,8 @@ def summarize(samples):
     return summary
 
 
-def scenario_command(entry, variant, args):
+def scenario_command(entry, args):
     options = [
-        "--variant",
-        variant,
         "--seed",
         str(args.seed),
         "--loops",
@@ -169,11 +165,9 @@ def scenario_command(entry, variant, args):
     return entry["command"] + options
 
 
-def scenario_sample(entry, case, variant, args):
-    process, wall = invoke(
-        scenario_command(entry, variant, args), entry["cwd"], args.timeout
-    )
-    observation = read_sample(process, wall, case, variant)
+def scenario_sample(entry, case, args):
+    process, wall = invoke(scenario_command(entry, args), entry["cwd"], args.timeout)
+    observation = read_sample(process, wall, case)
     fields = observation["fields"]
     if int(fields["SEED"]) != args.seed or int(fields["LOOPS"]) != args.loops:
         raise RunFailure("invalid_output", "scenario ignored seed or loops")
@@ -201,14 +195,13 @@ def revision(cwd):
     }
 
 
-def measure_group(case, variant, entries, baseline, args, reference):
+def measure_group(case, entries, baseline, args, reference):
     """Validate all candidates before rotating serial timed process samples."""
     rows = []
     active = []
     for entry in entries:
         row = {
             "case": case,
-            "variant": variant,
             "runtime": entry["runtime"],
             "samples": [],
         }
@@ -217,17 +210,17 @@ def measure_group(case, variant, entries, baseline, args, reference):
             row.update(entry["error"])
             continue
         if reference is None:
-            row.update(status="reference_failed", error="baseline untyped run failed")
+            row.update(status="reference_failed", error="baseline run failed")
             continue
-        row["command"] = scenario_command(entry, variant, args)
+        row["command"] = scenario_command(entry, args)
 
         def sample(entry=entry):
-            observation = scenario_sample(entry, case, variant, args)
+            observation = scenario_sample(entry, case, args)
             fields = observation["fields"]
             for field in ("SIZE", "SEED", "LOOPS", "RESULT"):
                 if fields[field] != reference["fields"][field]:
                     raise RunFailure(
-                        "incorrect_result", f"{field} differs from baseline untyped"
+                        "incorrect_result", f"{field} differs from baseline"
                     )
             return observation
 
@@ -308,7 +301,7 @@ def main():
     options["config"] = str(args.config) if args.config else None
     options["output"] = str(output)
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_utc": stamp,
         "baseline": baseline,
         "platform": platform.platform(),
@@ -380,16 +373,15 @@ def main():
         reference = None
         if not reference_entry.get("error"):
             try:
-                reference = scenario_sample(reference_entry, case, "untyped", args)
+                reference = scenario_sample(reference_entry, case, args)
             except RunFailure as error:
                 reference_entry["error"] = {"status": error.status, "error": str(error)}
-        for variant in VARIANTS:
-            print(f"Measuring {case}: {variant}", flush=True)
-            rows = measure_group(case, variant, entries, baseline, args, reference)
-            report["rows"].extend(rows)
-            write_report(report, output)
-            for row in rows:
-                print(f"  {row['runtime']}: {row['status']}", flush=True)
+        print(f"Measuring {case}", flush=True)
+        rows = measure_group(case, entries, baseline, args, reference)
+        report["rows"].extend(rows)
+        write_report(report, output)
+        for row in rows:
+            print(f"  {row['runtime']}: {row['status']}", flush=True)
     print(output / "index.html")
     return int(any(row["status"] != "ok" for row in report["rows"]))
 

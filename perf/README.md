@@ -15,7 +15,7 @@ XDG_CACHE_HOME=/tmp/mule-progress-cache uv run python -m perf.suite.perfutils ru
 
 # Run one scenario directly, from any working directory.
 uv run python perf/suite/log_aggregation.py \
-  --size 10000 --seed 17 --variant typed --loops 3
+  --size 10000 --seed 17 --loops 3
 
 # The shorter module invocation also works from perf/suite/.
 cd perf/suite
@@ -38,14 +38,14 @@ concurrency, and latency distributions are future separate cases.
 ## Common scenario pattern
 
 Keep `NAME`, `DESCRIPTION`, `DEFAULT_SIZE`, and `DEFAULT_SEED` at module scope.
-`prepare(size, seed)` constructs repeatable runtime input. `untyped(data)`,
-`partial(data)`, and `typed(data)` implement the same algorithm and return a
-deterministic tuple of integers. They differ in annotation coverage; setup is
-shared and unmeasured. Typed means ordinary Python annotations, not an unsafe
-policy or a promise that Mule currently specializes every annotation.
+`prepare(size, seed)` constructs repeatable runtime input. `run(data)` implements
+the workload and returns a deterministic tuple of integers. Each scenario has
+one implementation. Annotations follow that scenario's code naturally; setup is
+shared and unmeasured. Annotations do not promise that Mule currently specializes
+every declared type.
 
 `main()` passes those functions and metadata to `perfutils.run_case`. All cases
-accept `--size`, `--seed`, `--variant`, `--loops`, `--warmups`, and `--help`.
+accept `--size`, `--seed`, `--loops`, `--warmups`, and `--help`.
 Kernels must not mutate prepared input. Every warmup and measured invocation's
 result is checked outside its timer, and the final result is printed. The small
 tab-separated protocol keeps JSON, subprocess, and dashboard code out of the
@@ -69,8 +69,8 @@ their working directory and their own compiler-host Python executable.
 The designated baseline must be a trusted CPython interpreter.
 
 All native builds complete before validation or timing begins. Each case is
-built once, containing all three kernels. The harness validates every runtime
-and variant against the baseline's untyped result, then runs processes serially
+built once. The harness validates every runtime
+against the baseline's result, then runs processes serially
 with rotated runtime order. Each sample repeats validation. Build failures,
 timeouts, and incorrect results appear in the report and produce a nonzero
 exit status; other comparisons continue.

@@ -24,27 +24,7 @@ def prepare(size, seed):
     return values
 
 
-def untyped(data):
-    total = 0
-    positives = 0
-    for value in data:
-        total += value
-        if value > 0:
-            positives += 1
-    return total, positives
-
-
-def partial(data: list[int]):
-    total = 0
-    positives = 0
-    for value in data:
-        total += value
-        if value > 0:
-            positives += 1
-    return total, positives
-
-
-def typed(data: list[int]) -> tuple[int, int]:
+def run(data: list[int]) -> tuple[int, int]:
     total: int = 0
     positives: int = 0
     for value in data:
@@ -55,14 +35,7 @@ def typed(data: list[int]) -> tuple[int, int]:
 
 
 def main():
-    run_case(
-        NAME,
-        DESCRIPTION,
-        DEFAULT_SIZE,
-        DEFAULT_SEED,
-        prepare,
-        {"untyped": untyped, "partial": partial, "typed": typed},
-    )
+    run_case(NAME, DESCRIPTION, DEFAULT_SIZE, DEFAULT_SEED, prepare, run)
 
 
 if __name__ == "__main__":

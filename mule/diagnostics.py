@@ -2,12 +2,36 @@
 
 import logging
 import sys
+import sysconfig
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
 from time import perf_counter
 
 logger = logging.getLogger("mule")
 _depth = ContextVar("mule_diagnostic_depth", default=0)
+
+
+def annotation_warning_level(filename: str) -> int:
+    """Library declaration noise is opt-in; application warnings stay visible."""
+    source = Path(filename).resolve()
+    standard_roots = (
+        Path(__file__).resolve().parents[1] / "stdlib",
+        Path(sysconfig.get_path("stdlib")).resolve(),
+        Path(sysconfig.get_path("platstdlib")).resolve(),
+    )
+    third_party_roots = (
+        Path(sysconfig.get_path("purelib")).resolve(),
+        Path(sysconfig.get_path("platlib")).resolve(),
+        *(root / "site-packages" for root in standard_roots),
+    )
+    if any(source.is_relative_to(root) for root in third_party_roots):
+        return logging.WARNING
+    return (
+        logging.INFO
+        if any(source.is_relative_to(root) for root in standard_roots)
+        else logging.WARNING
+    )
 
 
 def configure(verbosity: int) -> None:

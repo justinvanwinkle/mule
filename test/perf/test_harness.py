@@ -16,7 +16,6 @@ def protocol(**overrides):
         "CASE": "integer_accumulation",
         "SIZE": "10",
         "SEED": "42",
-        "VARIANT": "untyped",
         "LOOPS": "1",
         "RESULT": "(12, 3)",
         "PREPARE": "0.001",
@@ -32,14 +31,14 @@ def protocol(**overrides):
 def test_protocol_rejects_invalid_measurements(changes):
     process = subprocess.CompletedProcess([], 0, protocol(**changes), "")
     with pytest.raises(RunFailure) as error:
-        read_sample(process, 0.1, "integer_accumulation", "untyped")
+        read_sample(process, 0.1, "integer_accumulation")
     assert error.value.status == "invalid_output"
 
 
 def test_protocol_rejects_duplicate_fields():
     process = subprocess.CompletedProcess([], 0, protocol() + "KERNEL\t0.1\n", "")
     with pytest.raises(RunFailure, match="duplicate"):
-        read_sample(process, 0.1, "integer_accumulation", "untyped")
+        read_sample(process, 0.1, "integer_accumulation")
 
 
 def test_config_rejects_duplicate_names(tmp_path):
@@ -97,7 +96,7 @@ def test_harness_records_bad_results_and_continues(tmp_path):
     )
     assert process.returncode == 1, process.stderr
     report = json.loads((output / "results.json").read_text())
-    assert len(report["rows"]) == 9
+    assert len(report["rows"]) == 3
     for row in report["rows"]:
         if row["runtime"] == "corrupt":
             assert row["status"] == "incorrect_result"

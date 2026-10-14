@@ -627,8 +627,9 @@ class _Select(NodeVisitor, LeafVisitor):
             if contract is None or self.value(argument) != contract.accept(_Contract()):
                 raise NotNative
         self.plan.calls.add(target)
-        if target.signature.return_annotation is not None:
-            return target.signature.return_annotation.accept(_Contract())
+        annotation = target.signature.implementation_return_annotation
+        if annotation is not None:
+            return annotation.accept(_Contract())
         known = self.known_plans.get(target)
         if known is None:
             raise Deferred
@@ -897,14 +898,14 @@ class _Int64Operands(NodeVisitor):
 
 def _result_contracts(lambda_, blocks) -> set:
     """Producers whose value an ``int64`` contract constrains: cast operands
-    and, under an ``int64`` return annotation, returned values."""
+    and, under an implementation ``int64`` return constraint, returned values."""
     constrained = set()
     operands = _Int64Operands(constrained)
     for block in blocks:
         for node in block.nodes():
             node.accept(operands)
     if (
-        lambda_.signature.return_annotation is EXPORTS["int64"]
+        lambda_.signature.implementation_return_annotation is EXPORTS["int64"]
         and lambda_.return_ is not None
     ):
         constrained.update(lambda_.return_.result.uses)

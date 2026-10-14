@@ -34,7 +34,7 @@ def prepare(size, seed):
     return logs
 
 
-def untyped(data):
+def run(data: list[str]):
     routes = {}
     statuses = {}
     count = 0
@@ -68,100 +68,6 @@ def untyped(data):
         route_number = int(route.rsplit("/", 1)[1]) + 1
         route_checksum += route_number * (group[0] + group[1] + group[2])
     status_checksum = 0
-    for status, status_count in statuses.items():
-        status_checksum += status * status_count
-    return (
-        count,
-        byte_total,
-        latency_total,
-        latency_max,
-        route_checksum,
-        status_checksum,
-        client_checksum,
-    )
-
-
-def partial(data: list[str]):
-    routes = {}
-    statuses = {}
-    count = 0
-    byte_total = 0
-    latency_total = 0
-    latency_max = 0
-    client_checksum = 0
-    for line in data:
-        fields = line.split()
-        client = int(fields[0].rsplit(".", 1)[1])
-        method_weight = 2 if fields[1] == "POST" else 1
-        route = fields[2]
-        status = int(fields[3])
-        response_bytes = int(fields[4])
-        latency = int(fields[5])
-        group = routes.get(route)
-        if group is None:
-            group = [0, 0, 0]
-            routes[route] = group
-        group[0] += 1
-        group[1] += latency
-        group[2] = max(group[2], latency)
-        statuses[status] = statuses.get(status, 0) + 1
-        count += 1
-        byte_total += response_bytes
-        latency_total += latency
-        latency_max = max(latency_max, latency)
-        client_checksum += client * method_weight
-    route_checksum = 0
-    for route, group in routes.items():
-        route_number = int(route.rsplit("/", 1)[1]) + 1
-        route_checksum += route_number * (group[0] + group[1] + group[2])
-    status_checksum = 0
-    for status, status_count in statuses.items():
-        status_checksum += status * status_count
-    return (
-        count,
-        byte_total,
-        latency_total,
-        latency_max,
-        route_checksum,
-        status_checksum,
-        client_checksum,
-    )
-
-
-def typed(data: list[str]) -> tuple[int, int, int, int, int, int, int]:
-    routes: dict[str, list[int]] = {}
-    statuses: dict[int, int] = {}
-    count: int = 0
-    byte_total: int = 0
-    latency_total: int = 0
-    latency_max: int = 0
-    client_checksum: int = 0
-    for line in data:
-        fields: list[str] = line.split()
-        client: int = int(fields[0].rsplit(".", 1)[1])
-        method_weight: int = 2 if fields[1] == "POST" else 1
-        route: str = fields[2]
-        status: int = int(fields[3])
-        response_bytes: int = int(fields[4])
-        latency: int = int(fields[5])
-        group: list[int] | None = routes.get(route)
-        if group is None:
-            group = [0, 0, 0]
-            routes[route] = group
-        group[0] += 1
-        group[1] += latency
-        group[2] = max(group[2], latency)
-        statuses[status] = statuses.get(status, 0) + 1
-        count += 1
-        byte_total += response_bytes
-        latency_total += latency
-        latency_max = max(latency_max, latency)
-        client_checksum += client * method_weight
-    route_checksum: int = 0
-    for route, group in routes.items():
-        route_number: int = int(route.rsplit("/", 1)[1]) + 1
-        route_checksum += route_number * (group[0] + group[1] + group[2])
-    status_checksum: int = 0
     for status, status_count in statuses.items():
         status_checksum += status * status_count
     return (
@@ -176,14 +82,7 @@ def typed(data: list[str]) -> tuple[int, int, int, int, int, int, int]:
 
 
 def main():
-    run_case(
-        NAME,
-        DESCRIPTION,
-        DEFAULT_SIZE,
-        DEFAULT_SEED,
-        prepare,
-        {"untyped": untyped, "partial": partial, "typed": typed},
-    )
+    run_case(NAME, DESCRIPTION, DEFAULT_SIZE, DEFAULT_SEED, prepare, run)
 
 
 if __name__ == "__main__":

@@ -51,63 +51,7 @@ def prepare(size, seed):
     return requests
 
 
-def handle_untyped(request):
-    head, _separator, body = request.partition("\r\n\r\n")
-    lines = head.split("\r\n")
-    method, target, _version = lines[0].split(" ")
-    path, _separator, query = target.partition("?")
-    content_length = 0
-    for line in lines[1:]:
-        name, _separator, value = line.partition(":")
-        if name.lower() == "content-length":
-            content_length = int(value.strip())
-    if method == "GET" and path == "/health":
-        return 1, 200, "ok\n"
-    if path == "/items":
-        if method != "GET":
-            return 2, 405, "method not allowed\n"
-        identifier = ""
-        for field in query.split("&"):
-            name, _separator, value = field.partition("=")
-            if name == "id":
-                identifier = value
-        return 2, 200, '{"id":' + identifier + "}\n"
-    if method == "POST" and path == "/events":
-        if content_length != len(body):
-            return 3, 400, "invalid content length\n"
-        return 3, 202, '{"accepted":' + str(content_length) + "}\n"
-    return 4, 404, "not found\n"
-
-
-def handle_partial(request: str):
-    head, _separator, body = request.partition("\r\n\r\n")
-    lines = head.split("\r\n")
-    method, target, _version = lines[0].split(" ")
-    path, _separator, query = target.partition("?")
-    content_length = 0
-    for line in lines[1:]:
-        name, _separator, value = line.partition(":")
-        if name.lower() == "content-length":
-            content_length = int(value.strip())
-    if method == "GET" and path == "/health":
-        return 1, 200, "ok\n"
-    if path == "/items":
-        if method != "GET":
-            return 2, 405, "method not allowed\n"
-        identifier = ""
-        for field in query.split("&"):
-            name, _separator, value = field.partition("=")
-            if name == "id":
-                identifier = value
-        return 2, 200, '{"id":' + identifier + "}\n"
-    if method == "POST" and path == "/events":
-        if content_length != len(body):
-            return 3, 400, "invalid content length\n"
-        return 3, 202, '{"accepted":' + str(content_length) + "}\n"
-    return 4, 404, "not found\n"
-
-
-def handle_typed(request: str) -> tuple[int, int, str]:
+def handle(request: str) -> tuple[int, int, str]:
     head: str
     _separator: str
     body: str
@@ -145,31 +89,7 @@ def handle_typed(request: str) -> tuple[int, int, str]:
     return 4, 404, "not found\n"
 
 
-def untyped(data):
-    routes = 0
-    statuses = 0
-    response_bytes = 0
-    for request in data:
-        route, status, response = handle_untyped(request)
-        routes += route
-        statuses += status
-        response_bytes += len(response)
-    return routes, statuses, response_bytes
-
-
-def partial(data: list[str]):
-    routes = 0
-    statuses = 0
-    response_bytes = 0
-    for request in data:
-        route, status, response = handle_partial(request)
-        routes += route
-        statuses += status
-        response_bytes += len(response)
-    return routes, statuses, response_bytes
-
-
-def typed(data: list[str]) -> tuple[int, int, int]:
+def run(data: list[str]) -> tuple[int, int, int]:
     routes: int = 0
     statuses: int = 0
     response_bytes: int = 0
@@ -178,7 +98,7 @@ def typed(data: list[str]) -> tuple[int, int, int]:
     status: int
     response: str
     for request in data:
-        route, status, response = handle_typed(request)
+        route, status, response = handle(request)
         routes += route
         statuses += status
         response_bytes += len(response)
@@ -186,14 +106,7 @@ def typed(data: list[str]) -> tuple[int, int, int]:
 
 
 def main():
-    run_case(
-        NAME,
-        DESCRIPTION,
-        DEFAULT_SIZE,
-        DEFAULT_SEED,
-        prepare,
-        {"untyped": untyped, "partial": partial, "typed": typed},
-    )
+    run_case(NAME, DESCRIPTION, DEFAULT_SIZE, DEFAULT_SEED, prepare, run)
 
 
 if __name__ == "__main__":

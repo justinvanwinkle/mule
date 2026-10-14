@@ -3,10 +3,8 @@
 import sys
 import time
 
-VARIANTS = ("untyped", "partial", "typed")
 
-
-def run_case(name, description, default_size, default_seed, prepare, kernels):
+def run_case(name, description, default_size, default_seed, prepare, kernel):
     """Prepare once, time calls, and consume every result outside the timer.
 
     Kernels must leave their input unchanged and return a deterministic tuple
@@ -16,14 +14,13 @@ def run_case(name, description, default_size, default_seed, prepare, kernels):
     options = {
         "--size": str(default_size),
         "--seed": str(default_seed),
-        "--variant": "untyped",
         "--loops": "1",
         "--warmups": "1",
     }
     arguments = sys.argv[1:]
     if arguments == ["--help"]:
         print(name + ": " + description)
-        print("--size N --seed N --variant untyped|partial|typed --loops N --warmups N")
+        print("--size N --seed N --loops N --warmups N")
         return
     if len(arguments) % 2:
         raise ValueError("options require a value; use --help for usage")
@@ -38,12 +35,8 @@ def run_case(name, description, default_size, default_seed, prepare, kernels):
     seed = int(options["--seed"])
     loops = int(options["--loops"])
     warmups = int(options["--warmups"])
-    variant = options["--variant"]
     if size < 1 or loops < 1 or warmups < 0:
         raise ValueError("size and loops must be positive; warmups must be nonnegative")
-    if variant not in VARIANTS:
-        raise ValueError("unknown variant: " + variant)
-    kernel = kernels[variant]
     started = time.perf_counter()
     data = prepare(size, seed)
     preparation = time.perf_counter() - started
@@ -66,7 +59,6 @@ def run_case(name, description, default_size, default_seed, prepare, kernels):
     print("CASE\t" + name)
     print("SIZE\t" + str(size))
     print("SEED\t" + str(seed))
-    print("VARIANT\t" + variant)
     print("LOOPS\t" + str(loops))
     print("RESULT\t" + repr(expected))
     print("PREPARE\t" + str(preparation))

@@ -569,8 +569,14 @@ class Signature:
     variadic: bool = False
     annotations: tuple = ()
     return_annotation: object = None
+    interface_declaration: bool = False
     annotation_expressions: tuple = ()
     return_annotation_expression: ast.Expression | None = None
+
+    @property
+    def implementation_return_annotation(self):
+        """A declaration describes an interface, not its placeholder body."""
+        return None if self.interface_declaration else self.return_annotation
 
     @property
     def positional_body(self) -> bool:

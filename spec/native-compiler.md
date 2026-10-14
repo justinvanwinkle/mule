@@ -722,6 +722,44 @@ booleans. They are not wrapping conversions. Proven contradictions produce a
 source-positioned warning and remove the affected optional annotation and all
 its assertions; every original value-flow branch remains intact. Fixed native
 field contracts define physical storage and still reject contradictions.
+Annotation contradiction diagnostics from Mule's vendored standard library and
+the host standard library are shown with `-v`, rather than at default verbosity.
+Application and third-party package warnings remain visible by default. This
+changes reporting only: contradicted annotations are still removed normally,
+and native storage contradictions remain errors.
+
+SBCL separates reporting in `src/compiler/ir1report.lisp`
+(`compiler-warning-handler`, `compiler-style-warning-handler`, and
+`compiler-notify`) from the analyses that establish a contradiction; its
+`inhibit-warnings` policy in `src/compiler/policy.lisp` controls compiler notes.
+Mule adapts that diagnostic separation to Python's noisy library annotations:
+standard-library source origins lower this diagnostic to the verbose logging
+level, without changing type propagation, checks, or optimization policy.
+
+Function signatures distinguish an interface declaration from its implementation
+return constraint. A body consisting solely of `...`, optionally preceded by a
+docstring, retains its recognized return annotation without asserting that the
+implicit `None` return satisfies it. The same separation applies to unshadowed
+module imports of `abc.abstractmethod` (including aliases and qualified names),
+and the deprecated abstract class/static/property decorators. Their bodies are
+still compiled and analyzed, including real abstract-method implementations.
+Plain `pass` bodies and similarly named user decorators do not receive this
+treatment. Rebound imports and enclosing/class bindings prevent recognition.
+
+This follows SBCL's distinction between declared function types and definition
+types: `src/compiler/locall.lisp:propagate-to-args` explicitly distinguishes
+FTYPEs for calls from definitions, and `src/compiler/ir1tran.lisp`'s
+`process-ftype-decl` records declarations and calls `assert-definition-type` for
+an available implementation. Python requires a concrete adaptation: ellipsis
+and abstract declarations commonly describe a future implementation while their
+current bodies remain callable Python code. Mule retains that interface without
+applying it as a return assertion to the placeholder. Local-call summaries still
+come from body analysis, and native representation selection consults only an
+implementation return constraint or an inferred result, never the interface
+annotation alone. Calling an ellipsis body therefore returns `None`; its
+annotation cannot cause unchecked numeric lowering. Ordinary concrete-function
+contradictions retain the existing warning-and-ignore behavior.
+
 Uncontradicted annotations propagate trusted facts into the existing
 analysis and native operation selection. Eligible signed `int64` functions and
 native class methods have raw `i64` internal entries and locals. Native fields

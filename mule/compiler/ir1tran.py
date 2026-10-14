@@ -281,6 +281,7 @@ class Converter:
         self.class_definitions = 0
         self.class_fields = {}
         self.module_annotation_shadows = set()
+        self.interface_bindings = {}
         # Set once the module's lambdas have their own components. Functions
         # defined later, by cleanup code converted during environment
         # analysis, collect in fresh initial components to split then.
@@ -2786,7 +2787,7 @@ class _Statements(ast.Visitor):
         lambda_ = function.lambda_
         return_ = linked(lambda_.return_, lambda_, "return")
         result = return_.result
-        annotation = lambda_.signature.return_annotation
+        annotation = lambda_.signature.implementation_return_annotation
         ctran = Ctran()
         delivered = Lvar() if annotation is not None else result
         if node.value is None:

@@ -4,11 +4,12 @@ import html
 import json
 import math
 
-COLORS = {"untyped": "#4f46e5", "partial": "#0891b2", "typed": "#c026d3"}
+COLORS = ("#4f46e5", "#0891b2", "#c026d3", "#d97706")
 
 
 def chart(report, metric):
     rows = [row for row in report["rows"] if row.get("speedup", {}).get(metric)]
+    runtime_names = [runtime["name"] for runtime in report["runtimes"]]
     width, left, right = 960, 350, 110
     height = 85 + 31 * max(1, len(rows))
     values = [math.log2(row["speedup"][metric]) for row in rows]
@@ -21,7 +22,7 @@ def chart(report, metric):
     svg = [
         (
             f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
-            'role="img" aria-label="Speedup relative to the same baseline typing variant">'
+            'role="img" aria-label="Speedup relative to the baseline for the same workload">'
         ),
         f'<rect width="{width}" height="{height}" rx="16" fill="#fff"/>',
         '<g font-family="system-ui,sans-serif" font-size="13" fill="#334155">',
@@ -40,12 +41,12 @@ def chart(report, metric):
         y = 80 + index * 31
         value = row["speedup"][metric]
         endpoint = x(math.log2(value))
-        label = html.escape(f"{row['case']} · {row['variant']} · {row['runtime']}")
+        label = html.escape(f"{row['case']} · {row['runtime']}")
         svg.append(f'<text x="20" y="{y + 14}" font-size="11">{label}</text>')
         svg.append(
             f'<rect x="{min(zero, endpoint):.2f}" y="{y}" '
             f'width="{max(1, abs(endpoint - zero)):.2f}" height="19" rx="3" '
-            f'fill="{COLORS[row["variant"]]}"/>'
+            f'fill="{COLORS[runtime_names.index(row["runtime"]) % len(COLORS)]}"/>'
         )
         svg.append(f'<text x="{width - right + 12}" y="{y + 14}">{value:.3g}×</text>')
     if not rows:
@@ -57,9 +58,7 @@ def chart(report, metric):
 def dashboard(report):
     rows = []
     for row in report["rows"]:
-        cells = [
-            html.escape(row[key]) for key in ("case", "variant", "runtime", "status")
-        ]
+        cells = [html.escape(row[key]) for key in ("case", "runtime", "status")]
         if row["status"] == "ok":
             for metric in ("kernel_seconds", "process_seconds"):
                 summary = row["summary"][metric]
@@ -76,7 +75,7 @@ def dashboard(report):
         )
         if row.get("error"):
             rows.append(
-                '<tr><td colspan="7"><details><summary>Failure details</summary><pre>'
+                '<tr><td colspan="6"><details><summary>Failure details</summary><pre>'
                 + html.escape(row["error"])
                 + "</pre></details></td></tr>"
             )
@@ -104,13 +103,13 @@ th{{background:#e0e7ff}}small{{display:block;color:#64748b}}pre{{white-space:pre
 <p><a href="results.json">Raw results &amp; provenance</a> · <a href="kernel.svg">Kernel SVG</a> · <a href="process.svg">Process SVG</a></p></header>
 <section><p>Preparation and result checks are excluded from kernel time. Whole-process time includes
 startup, preparation, warmups, and measured calls; compilation is separate. Each ratio compares
-the same scenario, input, and typing variant. σ describes sample variation, not a confidence interval.
+the same scenario and input. σ describes sample variation, not a confidence interval.
 Short kernels can be dominated by measurement overhead; increase workload size before drawing conclusions.</p></section>
 <section><img src="kernel.svg" alt="Kernel speedup chart"></section>
 <section><img src="process.svg" alt="Whole-process speedup chart"></section>
-<section class="table"><table><thead><tr><th>Scenario</th><th>Typing</th><th>Runtime</th><th>Status</th>
+<section class="table"><table><thead><tr><th>Scenario</th><th>Runtime</th><th>Status</th>
 <th>Kernel median</th><th>Process median</th><th>Kernel speedup</th></tr></thead><tbody>{content}</tbody></table></section>
-<p>Untyped: indigo · Partial: cyan · Typed: magenta. Failures contribute no speedup.</p></main></html>"""
+<p>Each scenario has one implementation. Failures contribute no speedup.</p></main></html>"""
 
 
 def write_report(report, directory):
