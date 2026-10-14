@@ -14,8 +14,8 @@ HTML/SVG reports. The initial cases cover integer traversal, graph shortest
 paths, access-log aggregation, and in-process HTTP parsing/routing. Socket/server
 load tests and memory measurement are not implemented in this first set.
 
-`tools/bench_native.py` builds programs at LLVM and Rust optimization level 3
-with full LTO, checks their stdout against CPython 3.14, then alternates direct
+`tools/bench_native.py` builds programs at LLVM and Rust optimization level 3,
+with full LTO enabled separately by `--lto`, checks their stdout against CPython 3.14, then alternates direct
 native and Python executions. Compilation is measured separately and excluded
 from program timings. Timings include process startup. Inputs come from command
 line arguments rather than compile-time constants. JSON reports contain input,

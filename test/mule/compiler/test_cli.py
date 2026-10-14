@@ -190,6 +190,36 @@ def test_run_mode_keeps_native_optimization_separate_from_python_optimization():
     assert command.arguments == ["--compile"]
 
 
+@pytest.mark.parametrize("mode", ("--compile", "--run"))
+@pytest.mark.parametrize("level", (0, 1, 2, 3))
+@pytest.mark.parametrize(
+    "flags,lto", (([], False), (["--lto"], True), (["--lto", "--no-lto"], False))
+)
+def test_native_lto_is_separate_from_optimization(mode, level, flags, lto):
+    command = parse([mode, "--opt-level", str(level), *flags, "script.py"])
+    assert command.options.opt_level == level
+    assert command.options.lto is lto
+
+
+def test_run_mode_leaves_lto_flags_after_program_untouched():
+    command = parse(["--run", "script.py", "--lto"])
+    assert command.options.lto is False
+    assert command.arguments == ["--lto"]
+
+
+@pytest.mark.parametrize("mode", ("--compile", "--run"))
+def test_native_build_defaults_are_visible_in_help(mode):
+    from mule.cli import parser
+
+    command = parse([mode, "script.py"])
+    assert command.options.opt_level == 1
+    assert command.options.lto is False
+    help_text = " ".join(parser(command.mode).format_help().split())
+    assert "(default: 1)" in help_text
+    assert "(default: False)" in help_text
+    assert "default: None" not in help_text
+
+
 @pytest.mark.parametrize("mode", ["--compile", "--run"])
 def test_native_mode_help_is_available_without_a_program(mode):
     assert parse([mode, "--help"]).options.help_kind == "help"
@@ -199,7 +229,7 @@ def test_native_mode_help_is_available_without_a_program(mode):
     "argv",
     [
         ["--compile"],
-        ["--compile", "--opt-level", "1", "s.py"],
+        ["--compile", "--opt-level", "4", "s.py"],
         ["--run", "--output", "x", "s.py"],
     ],
 )

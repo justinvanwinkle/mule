@@ -20,8 +20,9 @@ dependencies are pytest and Ruff, resolved in `uv.lock`.
 
 Native builds additionally require Clang, Rust with its bundled LLVM LLD linker,
 64-bit Linux, and the GMP shared library. The Rust runtime uses handwritten GMP
-bindings without external crates. Generated LLVM and Rust runtime bitcode are
-optimized together with full link-time optimization at level 3.
+bindings without external crates. Generated LLVM is optimized at level 1 by
+default; the Rust runtime always uses optimization level 3. Full cross-language
+link-time optimization is separately enabled with `--lto`.
 Small integers use Mule's tagged native values;
 arbitrary-precision integers use the approved GMP dependency. Executables do not
 depend on a Python runtime installation.
@@ -241,8 +242,10 @@ native layouts, and direct calls, following SBCL's corresponding mechanisms.
 Dynamic language paths belong in compiled Mule code backed by low-level
 primitives. Do not replace missing compiler work with a Rust evaluator or
 per-operation Rust language dispatch. Verify optimization claims with optimized
-IR or machine code and representative benchmarks. Keep LLVM at `-O3` and Rust
-at optimization level 3; those flags alone do not establish efficient code.
+IR or machine code and representative benchmarks. Ordinary builds default to
+LLVM `-O1`; use explicit `-O3` for maximum-optimization measurements and record
+whether `--lto` is enabled. Rust remains at optimization level 3. Those flags
+alone do not establish efficient code.
 
 ## Object-oriented design
 

@@ -1644,7 +1644,7 @@ def _ownership() -> str:
         # Fixnums and NULL are not objects. Immortal objects, including
         # True, False and None, carry the reference count the runtime
         # leaves unchanged; that check inlines with the runtime under LTO.
-        functions.append(f"""define internal {result} @mule.fast.{name}(ptr %value) alwaysinline {{
+        functions.append(f"""define internal {result} @mule.fast.{name}(ptr %value) {{
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
@@ -1661,7 +1661,7 @@ done:
 
 
 def _truth() -> str:
-    return """define internal i32 @mule.fast.truth(ptr %value) alwaysinline {
+    return """define internal i32 @mule.fast.truth(ptr %value) {
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
@@ -1689,14 +1689,14 @@ slow:
 }
 
 ; A cell never holds NULL: an unbound name's cell holds the undefined object.
-define internal ptr @mule.global.unchecked(ptr %cell, ptr %name) alwaysinline {
+define internal ptr @mule.global.unchecked(ptr %cell, ptr %name) {
 entry:
   %value = load ptr, ptr %cell, !nonnull !{}
   %owned = call ptr @mule.fast.retain(ptr %value)
   ret ptr %owned
 }
 
-define internal ptr @mule.global.checked(ptr %cell, ptr %name) alwaysinline {
+define internal ptr @mule.global.checked(ptr %cell, ptr %name) {
 entry:
   %value = load ptr, ptr %cell, !nonnull !{}
   %unbound = icmp eq ptr %value, @mule.undefined
@@ -1740,7 +1740,7 @@ slow:
   ret ptr %result
 }
 
-define internal ptr @mule.fast.local(ptr %value, ptr %name) alwaysinline {
+define internal ptr @mule.fast.local(ptr %value, ptr %name) {
 entry:
   %missing = icmp eq ptr %value, null
   br i1 %missing, label %slow, label %loaded
@@ -1752,7 +1752,7 @@ slow:
   ret ptr %error
 }
 
-define internal ptr @mule.fast.local.move(ptr %value, ptr %name) alwaysinline {
+define internal ptr @mule.fast.local.move(ptr %value, ptr %name) {
 entry:
   %missing = icmp eq ptr %value, null
   br i1 %missing, label %slow, label %loaded
@@ -1848,7 +1848,7 @@ slow.call:
         else f"""  %fallback = call ptr @mule_binary_reuse(i32 {op}, ptr %left, ptr %right, i32 %inplace, ptr null)
   ret ptr %fallback"""
     )
-    return f"""define internal ptr @mule.{prefix}.binary.{op}(ptr %left, ptr %right, i32 %inplace, ptr %reuse, ptr %reuse.slot) alwaysinline {{
+    return f"""define internal ptr @mule.{prefix}.binary.{op}(ptr %left, ptr %right, i32 %inplace, ptr %reuse, ptr %reuse.slot) {{
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
@@ -1865,7 +1865,7 @@ slow:
 
 def _unary_helper(op: int, *, fixnum: bool = False) -> str:
     if op == 3:
-        return """define internal ptr @mule.fast.unary.3(ptr %operand) alwaysinline {
+        return """define internal ptr @mule.fast.unary.3(ptr %operand) {
 entry:
   %truth = call i32 @mule.fast.truth(ptr %operand)
   %error = icmp slt i32 %truth, 0
@@ -1897,7 +1897,7 @@ negate:
 fixnum:
 """
     )
-    return f"""define internal ptr @mule.{prefix}.unary.{op}(ptr %operand) alwaysinline {{
+    return f"""define internal ptr @mule.{prefix}.unary.{op}(ptr %operand) {{
 entry:
   %bits = ptrtoint ptr %operand to i64
 {guard}
@@ -1915,13 +1915,13 @@ def _compare_helper(op: int) -> str:
   %value = select i1 %compared, ptr @mule.true, ptr @mule.false
   ret ptr %value"""
     if op in (6, 7):
-        return f"""define internal ptr @mule.fast.compare.{op}(ptr %left, ptr %right) alwaysinline {{
+        return f"""define internal ptr @mule.fast.compare.{op}(ptr %left, ptr %right) {{
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
 {operation}
 }}"""
-    return f"""define internal ptr @mule.fast.compare.{op}(ptr %left, ptr %right) alwaysinline {{
+    return f"""define internal ptr @mule.fast.compare.{op}(ptr %left, ptr %right) {{
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
@@ -1940,7 +1940,7 @@ slow:
 # Exact ordering of a machine integer against a binary64: doubles beyond the
 # i64 range order by sign, and in-range doubles split into an integer part,
 # which is compared as an integer, and a fraction that breaks ties.
-MIXED_COMPARE = """define internal i32 @mule.compare.i64.double(i64 %integer, double %double) alwaysinline {
+MIXED_COMPARE = """define internal i32 @mule.compare.i64.double(i64 %integer, double %double) {
 entry:
   %unordered = fcmp uno double %double, %double
   br i1 %unordered, label %nan, label %ordered

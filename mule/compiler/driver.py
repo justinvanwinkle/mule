@@ -367,7 +367,7 @@ def build_runtime(
     *,
     rustc: str = "rustc",
     crate_type: str = "staticlib",
-    lto: bool = True,
+    lto: bool = False,
 ) -> Path:
     """Build the Rust runtime without third-party Rust packages.
 
@@ -429,7 +429,13 @@ def lto_linker(rustc: str) -> Path:
 class Toolchain:
     clang: str = "clang"
     rustc: str = "rustc"
-    optimize: bool = True
+    optimize: int = 1
+    lto: bool = False
+
+    def __post_init__(self):
+        if self.optimize not in (0, 1, 2, 3):
+            raise ValueError("optimization level must be 0, 1, 2, or 3")
+        object.__setattr__(self, "optimize", int(self.optimize))
 
     def require_target(self) -> None:
         if sys.platform != "linux" or struct.calcsize("P") != 8:
@@ -445,25 +451,28 @@ class Toolchain:
                 failure="LLVM compilation/linking failed",
             ),
             "optimize": self.optimize,
+            "lto": self.lto,
         }
 
-    def compile_flags(self, *, lto: bool = True) -> list[str]:
-        if not self.optimize:
-            return ["-O0"]
-        if lto:
-            return ["-O3", "-flto=full"]
-        return ["-O3"]
+    def compile_flags(self) -> list[str]:
+        flags = [f"-O{self.optimize}"]
+        if self.lto:
+            flags.append("-flto=full")
+        return flags
 
     def link_flags(self) -> list[str]:
-        if self.optimize:
-            return [
-                "-O3",
-                "-flto=full",
-                "-Wl,--lto-O3",
-                "-Wl,--lto-CGO3",
-                "-Wl,--threads=1",
-            ]
-        return ["-O0"]
+        flags = [f"-O{self.optimize}"]
+        if self.lto:
+            level = self.optimize
+            flags.extend(
+                [
+                    "-flto=full",
+                    f"-Wl,--lto-O{level}",
+                    f"-Wl,--lto-CGO{level}",
+                    "-Wl,--threads=1",
+                ]
+            )
+        return flags
 
 
 def _run(command: list[str], failure: str) -> None:
@@ -483,7 +492,7 @@ class Build:
         self.objects: dict[str, Step] = {}
 
     def runtime(self) -> Step:
-        rustc, lto = self.toolchain.rustc, self.toolchain.optimize
+        rustc, lto = self.toolchain.rustc, self.toolchain.lto
         sources = sorted((Path(__file__).parents[1] / "runtime").glob("*.rs"))
 
         def action(inputs, directory):
@@ -541,14 +550,14 @@ class Build:
 
     def object(self, unit: Step) -> Step:
         toolchain = self.toolchain
-        lto = toolchain.optimize
-        name = f"{unit.name} object optimize={toolchain.optimize}"
+        lto = toolchain.lto
+        name = f"{unit.name} object optimize={toolchain.optimize} lto={lto}"
 
         def action(inputs, directory):
             _run(
                 [
                     toolchain.clang,
-                    *toolchain.compile_flags(lto=lto),
+                    *toolchain.compile_flags(),
                     "-Wno-override-module",
                     "-c",
                     str(unit.path("unit.ll")),
@@ -816,15 +825,15 @@ def link_llvm(
     *,
     clang: str = "clang",
     rustc: str = "rustc",
-    optimize: bool = True,
+    optimize: int = 1,
+    lto: bool = False,
 ) -> Path:
     """Compile a main unit's LLVM, link it with the builtins unit and the
     Rust runtime, and replace ``output`` only on success.
 
-    ``optimize`` selects -O3 with full LTO across the program and runtime;
-    otherwise each unit is compiled at -O0 and linked without LTO, which is
-    an order of magnitude faster to build."""
-    toolchain = Toolchain(clang, rustc, optimize)
+    ``optimize`` selects the generated code's level (0 through 3, default 1). ``lto``
+    independently requests full LTO across the program and Rust runtime."""
+    toolchain = Toolchain(clang, rustc, optimize, lto)
     toolchain.require_target()
     with Graph() as graph:
         build = Build(graph, toolchain)
@@ -893,7 +902,8 @@ def build(
     llvm_output: str | Path | None = None,
     clang: str = "clang",
     rustc: str = "rustc",
-    optimize: bool = True,
+    optimize: int = 1,
+    lto: bool = False,
     workers: int | None = None,
 ) -> Path:
     """Compile a source file into a native executable, replacing output on success.
@@ -914,7 +924,7 @@ def build(
         source_text,
         str(source_path),
         roots=roots,
-        toolchain=Toolchain(clang, rustc, optimize),
+        toolchain=Toolchain(clang, rustc, optimize, lto),
         source_path=source_path.resolve(),
         workers=workers,
     )

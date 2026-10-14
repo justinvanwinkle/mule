@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from mule.cli_help import DefaultsHelpFormatter
+
 
 class Mode(StrEnum):
     PYTHON = "python"
@@ -262,11 +264,29 @@ _NATIVE_OPTIONS = (
         ("--opt-level",),
         dict(
             type=int,
-            choices=(0, 3),
-            default=3,
-            help="native optimization level; 3 uses full LTO",
+            choices=(0, 1, 2, 3),
+            default=1,
+            help="per-unit native optimization level; independent of --lto",
         ),
         True,
+    ),
+    _Option(
+        ("--lto",),
+        dict(
+            dest="lto",
+            action="store_true",
+            default=False,
+            help="enable full link-time optimization (off by default)",
+        ),
+    ),
+    _Option(
+        ("--no-lto",),
+        dict(
+            dest="lto",
+            action="store_false",
+            default=False,
+            help="disable link-time optimization",
+        ),
     ),
     _Option(
         ("--clang",),
@@ -308,6 +328,7 @@ def parser(mode=Mode.PYTHON):
         prog=prog,
         add_help=False,
         allow_abbrev=False,
+        formatter_class=DefaultsHelpFormatter,
         usage=None
         if mode == Mode.COMPILE
         else f"{prog} [option] ... [-c cmd | -m mod | file | -] [arg] ...",

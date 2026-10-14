@@ -197,13 +197,16 @@ in-process loader, so it builds the whole program into an executable first; the
 cache plays the role of reusing `compile-file` output.
 
 `python -m mule.compiler` builds an executable without running it. `-o` defaults to the source path without its suffix.
-`-O3` (the default, and what the `mule` command uses) compiles and links with full
-LTO across the program and the runtime. `-O0` compiles the program without
-optimization and links it without LTO, which is roughly ten times faster to
-build; the test suite uses it except where a test inspects optimized machine
-code, and the conformance suite keeps `-O3`. The Rust runtime static library is
+`-O1` is the default per-unit optimization level. `-O0` through `-O3` select
+per-unit optimization independently of link-time optimization.
+`--lto` separately enables full LTO across the program and runtime; `--no-lto`
+explicitly disables it (the default). Both LTO modes work at every optimization
+level. Whole-program linking can take substantially longer, so ordinary optimized
+builds no longer pay that cost. The test suite normally uses `-O0` and enables
+LTO explicitly where it inspects cross-unit optimization. The Rust runtime
+remains compiled at Rust optimization level 3 in every mode. Its static library is
 built once per runtime source, `rustc` version and LTO mode, and kept in
-`$XDG_CACHE_HOME/mule/runtime`. `--emit-llvm PATH` optionally
+`$XDG_CACHE_HOME/mule/steps`. `--emit-llvm PATH` optionally
 saves the generated IR. Output paths must differ from the source and each other.
 An existing executable is replaced only after native compilation and linking
 succeed. A later failure saving optional LLVM output does not undo that executable.
@@ -247,14 +250,14 @@ Rust's code generation also uses LLVM. No C runtime source is compiled.
 
 ### Optimization across the runtime boundary
 
-The native build uses full cross-language LLVM LTO: rustc produces a
+When `--lto` is enabled, the native build uses full cross-language LLVM LTO: rustc produces a
 bitcode static library with `-C linker-plugin-lto -C lto=fat`, and Clang compiles
 every Mule IR unit with `-flto=full`, including builtins and imported modules.
 Compiling a library unit directly to machine code hides its compiled Python
-protocols from link-time optimization, so optimized builds retain those units
-as bitcode until the final link. Unoptimized builds still emit native objects.
+protocols from link-time optimization, so LTO builds retain those units
+as bitcode until the final link. Without LTO, all units emit native objects.
 The LLD shipped with the selected Rust toolchain links
-and optimizes both at level 3. Using that linker avoids reading newer Rust LLVM
+and optimizes both at the selected `-O` level. Using that linker avoids reading newer Rust LLVM
 bitcode with an older system linker. Native runtime-probe `rlib` builds continue
 to use rustc's ordinary Rust library format.
 
@@ -264,9 +267,15 @@ local calls. Mule's semantic analyses retain that responsibility. This build
 adaptation additionally exposes the Rust primitive bodies to LLVM's optimizer,
 so it can inline and eliminate calls across generated code and runtime code.
 SBCL does not need cross-language LLVM LTO because its backend generates code
-directly and its implementation is predominantly compiled Lisp. Mule requires
-this extra link-time stage because its approved Rust primitives and Python
-frontend feed LLVM through different compilation drivers. It can increase build
+directly and its implementation is predominantly compiled Lisp. Mule uses
+this extra link-time stage for cross-driver optimization because its approved Rust primitives and Python
+frontend feed LLVM through different compilation drivers. This link-time stage
+is optional: SBCL's component optimization in `compile-component` remains the
+model for per-unit optimization whether or not a final whole-program pass is
+requested. Separating these controls changes build cost and cross-unit inlining,
+not Python semantics or safety checks. Object and executable cache keys include
+both optimization level and LTO mode, while runtime cache keys include its LTO
+format. It can increase build
 time; it does not replace semantic proofs, representation selection, or migration
 of language-level Rust bootstrap code into Mule Python.
 

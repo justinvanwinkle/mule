@@ -171,7 +171,7 @@ storage classes, and carries the generator that emits its LLVM text; the
 runtime helper templates it emits once per module (`helpers()`) cover integer
 addition, subtraction, multiplication, floor division, remainder, shifts,
 bitwise operations, unary operations, comparisons, truth testing, and
-ownership as always-inline LLVM functions. Proven operands and bounded results
+ownership as internal LLVM functions. Proven operands and bounded results
 emit LLVM primitives directly without tag or overflow checks. Proven fixnum
 operands with wider results use helpers without tag checks but retain overflow
 recovery. Otherwise helpers test tags before decoding integers and executing

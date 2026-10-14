@@ -67,6 +67,10 @@ Tokens support `{source}`, `{binary}`, and `{python}` (the harness interpreter).
 `cwd` is resolved relative to the config. For other Mule checkouts, set both
 their working directory and their own compiler-host Python executable.
 The designated baseline must be a trusted CPython interpreter.
+Mule builds use `-O1` per-unit optimization by default; the example runtime selects
+`-O3` explicitly. Append `--lto` to a build
+command to measure full link-time optimization separately; this can increase
+link time substantially.
 
 All native builds complete before validation or timing begins. Each case is
 built once. The harness validates every runtime

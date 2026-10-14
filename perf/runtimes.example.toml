@@ -15,6 +15,7 @@ name = "mule-o3"
 cwd = ".."
 command = ["{binary}"]
 build = ["{python}", "-m", "mule.compiler", "{source}", "-o", "{binary}", "-O", "3"]
+# Append "--lto" to this build command to enable full link-time optimization.
 
 # A different Mule checkout should use its own compiler-host Python executable,
 # e.g. /absolute/path/to/other-checkout/.venv/bin/python, and that checkout's cwd.

@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from mule.__main__ import Options, UsageError, parse
+from mule.__main__ import Options, UsageError, help_parser, parse
 from mule.compiler.inputs import recording, unchanged
 from mule.compiler.modules import compile_modules
 from test.python_host import python_host
@@ -35,9 +35,9 @@ def test_parse_stops_options_at_the_program_like_python(argv, expected):
 @pytest.mark.parametrize(
     ("argv", "optimize", "arguments"),
     [
-        (["-m", "pytest", "-O0"], True, ["-O0"]),
-        (["-O0", "-m", "pytest", "-q"], False, ["-q"]),
-        (["-O0", "-O3", "s.py"], True, []),
+        (["-m", "pytest", "-O0"], 1, ["-O0"]),
+        (["-O0", "-m", "pytest", "-q"], 0, ["-q"]),
+        (["-O0", "-O3", "s.py"], 3, []),
     ],
 )
 def test_parse_optimization_level_applies_only_before_the_program(
@@ -45,7 +45,46 @@ def test_parse_optimization_level_applies_only_before_the_program(
 ):
     options = Options()
     assert parse(argv, options=options)[2] == arguments
-    assert options.optimize is optimize
+    assert options.optimize == optimize
+
+
+@pytest.mark.parametrize(
+    "argv,optimize,lto,arguments",
+    (
+        (["-O3", "s.py"], 3, False, []),
+        (["--lto", "-O0", "s.py"], 0, True, []),
+        (["-O3", "--lto", "s.py"], 3, True, []),
+        (["--lto", "--no-lto", "s.py"], 1, False, []),
+        (["s.py", "--lto"], 1, False, ["--lto"]),
+        (["-c", "pass", "--no-lto"], 1, False, ["--no-lto"]),
+    ),
+)
+def test_lto_is_independent_and_stops_at_program_boundary(
+    argv, optimize, lto, arguments
+):
+    options = Options()
+    assert parse(argv, options=options)[2] == arguments
+    assert options.optimize == optimize
+    assert options.lto is lto
+
+
+def test_help_exposes_real_build_defaults():
+    parser = help_parser()
+    help_text = " ".join(parser.format_help().split())
+    assert "(default: 1)" in help_text
+    assert "--lto, --no-lto" in help_text
+    assert "(default: False)" in help_text
+    assert "default: None" not in help_text
+    options = Options()
+    assert options.optimize == 1
+    assert options.lto is False
+
+
+@pytest.mark.parametrize("level", (0, 1, 2, 3))
+def test_all_native_optimization_levels_are_accepted(level):
+    options = Options()
+    parse([f"-O{level}", "script.py"], options=options)
+    assert options.optimize == level
 
 
 @pytest.mark.parametrize("argv", [[], ["-c"], ["-z", "s.py"], ["--"], ["-O", "s.py"]])

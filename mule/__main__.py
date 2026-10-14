@@ -14,6 +14,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from mule.cli_help import DefaultsHelpFormatter
 from mule.compiler import ToolchainError
 from mule.compiler.driver import Toolchain, build_executable
 from mule.compiler.inputs import read_source
@@ -30,6 +31,7 @@ def help_parser():
         usage="mule [option] ... [-c cmd | -m mod | file | -] [arg] ...",
         description="Run a Python program as a native executable.",
         add_help=False,
+        formatter_class=DefaultsHelpFormatter,
     )
     parser.add_argument(
         "-c", metavar="cmd", help="program passed in as string (terminates option list)"
@@ -54,14 +56,20 @@ def help_parser():
     parser.add_argument(
         "-O",
         metavar="LEVEL",
-        choices=("0", "3"),
-        help="native build optimization, attached as -O0 or -O3: 3 (default) "
-        "compiles with -O3 and full LTO; 0 compiles with -O0 without LTO, "
-        "much faster to build",
+        choices=("0", "1", "2", "3"),
+        default="1",
+        help="per-unit native optimization, attached as -O0 through -O3",
+    )
+    parser.add_argument(
+        "--lto",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="enable full link-time optimization (slower to link)",
     )
     parser.add_argument(
         "-v",
         action="count",
+        default=0,
         help="compiler progress and phase timings on stderr; "
         "-vv adds detailed compiler, input, and toolchain diagnostics",
     )
@@ -81,7 +89,8 @@ class UsageError(Exception):
 @dataclass
 class Options:
     verbosity: int = 0
-    optimize: bool = True
+    optimize: int = 1
+    lto: bool = False
 
 
 def parse(argv, *, options=None):
@@ -100,8 +109,11 @@ def parse(argv, *, options=None):
             options.verbosity += len(argument) - 1
             continue
         # The level is attached: python's own -O and -OO take none.
-        if argument in ("-O0", "-O3"):
-            options.optimize = argument == "-O3"
+        if argument in ("-O0", "-O1", "-O2", "-O3"):
+            options.optimize = int(argument[2:])
+            continue
+        if argument in ("--lto", "--no-lto"):
+            options.lto = argument == "--lto"
             continue
         if argument in ("-h", "-?", "--help"):
             return "help", None, []
@@ -124,7 +136,7 @@ def parse(argv, *, options=None):
     raise UsageError("interactive mode is not supported; give a script, -c, -m or -")
 
 
-def run(kind, value, arguments, *, optimize=True):
+def run(kind, value, arguments, *, optimize=1, lto=False):
     """Compile the selected program, then replace this process with it."""
     roots = search_path(Path.cwd())
     package = None
@@ -157,7 +169,7 @@ def run(kind, value, arguments, *, optimize=True):
             filename,
             roots=roots,
             package=package,
-            toolchain=Toolchain(optimize=optimize),
+            toolchain=Toolchain(optimize=optimize, lto=lto),
             source_path=source_path,
         )
     logger.info("starting native program %s", executable)
@@ -178,7 +190,7 @@ def main() -> int:
         help_parser().print_help()
         return 0
     try:
-        return run(kind, value, arguments, optimize=options.optimize)
+        return run(kind, value, arguments, optimize=options.optimize, lto=options.lto)
     except SyntaxError as error:
         print(
             f"{error.filename}:{error.lineno}:{error.offset}: {error.msg}",

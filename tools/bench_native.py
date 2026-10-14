@@ -44,14 +44,21 @@ def run(command, timeout):
 
 
 def benchmark(
-    name, count, directory, samples, timeout, rebuild, baseline_directory=None
+    name,
+    count,
+    directory,
+    samples,
+    timeout,
+    rebuild,
+    baseline_directory=None,
+    lto=False,
 ):
     source = SOURCES.get(name, ROOT / "examples/performance" / (name + ".py"))
     executable = directory / name
     built_seconds = None
     if rebuild or not executable.exists():
         started = time.perf_counter()
-        build(source, executable, optimize=True, workers=1)
+        build(source, executable, optimize=3, lto=lto, workers=1)
         built_seconds = time.perf_counter() - started
     python_command = [sys.executable, str(source), str(count)]
     native_command = [str(executable), str(count)]
@@ -116,6 +123,9 @@ def main():
     parser.add_argument("--reuse", action="store_true")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--baseline-directory", type=Path)
+    parser.add_argument(
+        "--lto", action="store_true", help="enable full LTO for new builds"
+    )
     args = parser.parse_args()
     if args.samples < 1:
         parser.error("--samples must be positive")
@@ -138,7 +148,8 @@ def main():
         "python_executable": sys.executable,
         "platform": platform.platform(),
         "affinity": sorted(os.sched_getaffinity(0)),
-        "optimization": "LLVM O3 and Rust O3, full LTO",
+        "optimization": "LLVM O3 and Rust O3",
+        "lto": args.lto,
         "compiler_revision": revision,
         "compiler_diff_sha3_256": hashlib.sha3_256(diff).hexdigest(),
         "compiler_state_applies_to_reused_executables": False,
@@ -158,6 +169,7 @@ def main():
                 args.timeout,
                 not args.reuse,
                 args.baseline_directory,
+                args.lto,
             )
         except subprocess.TimeoutExpired as error:
             timed_out = True

@@ -87,7 +87,7 @@ entry:
   ret i32 %status
 }
 """
-    executable = link_llvm(llvm, tmp_path / "lto-probe")
+    executable = link_llvm(llvm, tmp_path / "lto-probe", optimize=3, lto=True)
     result = subprocess.run([executable], check=False, capture_output=True, timeout=10)
     assert result.returncode == 0
     assembly = subprocess.run(
@@ -102,8 +102,11 @@ entry:
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("optimize", (False, True))
-def test_lto_exposes_imported_unit_bodies_to_the_native_optimizer(tmp_path, optimize):
+@pytest.mark.parametrize("optimize", (0, 1, 2, 3))
+@pytest.mark.parametrize("lto", (False, True))
+def test_lto_exposes_imported_unit_bodies_to_the_native_optimizer(
+    tmp_path, optimize, lto
+):
     from mule.compiler.artifacts import Graph, Step
     from mule.compiler.driver import Build, Toolchain, lto_linker
 
@@ -122,7 +125,7 @@ entry:
   ret i32 %status
 }
 """
-    toolchain = Toolchain(optimize=optimize)
+    toolchain = Toolchain(optimize=optimize, lto=lto)
     with Graph(1) as graph:
         builder = Build(graph, toolchain)
         objects = []
@@ -145,6 +148,11 @@ entry:
             )
             object_file = builder.object(unit)
             graph.run(object_file)
+            assert (
+                object_file.path("unit.o")
+                .read_bytes()
+                .startswith(b"BC" if lto else b"\x7fELF")
+            )
             objects.append(str(object_file.path("unit.o")))
     executable = tmp_path / "cross-unit-probe"
     subprocess.run(
@@ -169,8 +177,8 @@ entry:
         text=True,
     ).stdout
     assert "<main>:" in assembly
-    if optimize:
+    if optimize >= 2 and lto:
         assert "mule_test_increment" not in assembly
         assert "\tcall" not in assembly
-    else:
+    elif not lto or optimize == 0:
         assert "mule_test_increment" in assembly
