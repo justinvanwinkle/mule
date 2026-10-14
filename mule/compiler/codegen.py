@@ -167,6 +167,8 @@ declare ptr @mule_rest_args(ptr, i32)
 declare ptr @mule_storage_length(ptr)
 declare ptr @mule_storage_read(ptr, ptr)
 declare ptr @mule_storage_write(ptr, ptr, ptr)
+declare ptr @mule_fast_getitem(ptr, ptr)
+declare i32 @mule_fast_setitem(ptr, ptr, ptr)
 declare ptr @mule_storage_append(ptr, ptr)
 declare ptr @mule_storage_insert(ptr, ptr, ptr)
 declare ptr @mule_storage_delete(ptr, ptr, ptr)
@@ -318,9 +320,11 @@ class _SpecializedSymbols:
 
     def __init__(self, module):
         self.module = module
+        self.requested: set[tuple[Function, object]] = set()
 
     def __getitem__(self, key: tuple[Function, object]) -> str:
         lambda_, context_id = key
+        self.requested.add(key)
         variant = self.module.variant_index(lambda_, context_id)
         return self.module.reference(lambda_, f"{lambda_.name}.spec.{variant}", "body")
 
@@ -790,87 +794,73 @@ class ModuleGenerator:
         self.auxiliary.extend(
             [
                 f"{constant.slot} = internal global ptr null",
-                (
-                    f"define internal nonnull ptr {constant.entry}() alwaysinline {{\n"
-                    "entry:\n"
-                    f"  %value = load ptr, ptr {constant.slot}\n"
-                    "  %owned = call ptr @mule.fast.retain(ptr %value)\n"
-                    "  ret ptr %owned\n}"
-                ),
+                self.tuple_constant_builder(constant),
             ]
         )
         return constant.entry
 
-    def initialize_tuple_constants(self) -> str:
-        """Construct the pool inside the runtime's startup error boundary.
-
-        The argument buffer owns each scalar/child reference until construction
-        finishes. On failure it is unwound here; main releases initialized roots.
-        """
-        if not self.tuple_constants:
-            return ""
-        count = max(
-            1,
-            max(
-                len(constant.literal.elements)
-                for constant in self.tuple_constants.values()
-            ),
-        )
+    def tuple_constant_builder(self, constant: TupleConstant) -> str:
+        """Construct the cached tuple on first use; main releases initialized roots."""
+        elements = constant.literal.elements
+        count = max(1, len(elements))
+        current_label = "build"
         lines = [
-            f"  %literal.argv = alloca [{count} x ptr]",
-            f"  store [{count} x ptr] zeroinitializer, ptr %literal.argv",
+            f"define internal ptr {constant.entry}() noinline optnone {{",
+            "entry:",
+            f"  %cached = load ptr, ptr {constant.slot}",
+            "  %present = icmp ne ptr %cached, null",
+            "  br i1 %present, label %ready, label %build",
+            "build:",
+            f"  %argv = alloca [{count} x ptr]",
+            f"  store [{count} x ptr] zeroinitializer, ptr %argv",
         ]
-        for index, constant in enumerate(self.tuple_constants.values()):
-            operands = []
-            for position, element in enumerate(constant.literal.elements):
-                value = f"%literal.{index}.value.{position}"
-                address = f"%literal.{index}.arg.{position}"
-                operation = element.accept(vops.LiteralEmitter(self))
+        for position, element in enumerate(elements):
+            value = f"%value.{position}"
+            address = f"%arg.{position}"
+            operation = element.accept(vops.LiteralEmitter(self))
+            lines.extend(
+                [
+                    f"  {value} = {operation}",
+                    f"  {address} = getelementptr [{count} x ptr], ptr %argv, i64 0, i64 {position}",
+                    f"  store ptr {value}, ptr {address}",
+                ]
+            )
+            if operation.startswith("call "):
+                current_label = f"after.{position}"
                 lines.extend(
                     [
-                        f"  {value} = {operation}",
-                        f"  {address} = getelementptr [{count} x ptr], ptr %literal.argv, i64 0, i64 {position}",
-                        f"  store ptr {value}, ptr {address}",
+                        f"  %bad.{position} = icmp eq ptr {value}, null",
+                        f"  br i1 %bad.{position}, label %failure, label %{current_label}",
+                        f"{current_label}:",
                     ]
                 )
-                operands.append((value, address))
-                if operation.startswith("call "):
-                    lines.extend(
-                        [
-                            f"  %literal.{index}.bad.{position} = icmp eq ptr {value}, null",
-                            f"  br i1 %literal.{index}.bad.{position}, label %literal.failure, label %literal.{index}.after.{position}",
-                            f"literal.{index}.after.{position}:",
-                        ]
-                    )
-            result = f"%literal.{index}.tuple"
+        lines.extend(
+            [
+                f"  %tuple = call ptr @mule_sequence_tuple_owned(i64 {len(elements)}, ptr %argv)",
+                f"  store ptr %tuple, ptr {constant.slot}",
+                "  %tuple.bad = icmp eq ptr %tuple, null",
+                "  br i1 %tuple.bad, label %failed.tuple, label %ready",
+                "ready:",
+                f"  %result = phi ptr [%cached, %entry], [%tuple, %{current_label}]",
+                "  %owned = call ptr @mule_retain(ptr %result)",
+                "  ret ptr %owned",
+                "failed.tuple:",
+                "  ret ptr null",
+                "failure:",
+            ]
+        )
+        for position in range(len(elements)):
+            address = f"%failed.arg.{position}"
+            value = f"%failed.value.{position}"
             lines.extend(
                 [
-                    f"  {result} = call ptr @mule_sequence_tuple_owned(i64 {len(operands)}, ptr %literal.argv)",
-                    f"  store ptr {result}, ptr {constant.slot}",
-                ]
-            )
-            for _, address in operands:
-                lines.append(f"  store ptr null, ptr {address}")
-            lines.extend(
-                [
-                    f"  %literal.{index}.bad = icmp eq ptr {result}, null",
-                    f"  br i1 %literal.{index}.bad, label %literal.failure, label %literal.{index}.ready",
-                    f"literal.{index}.ready:",
-                ]
-            )
-        lines.extend(["  br label %protocols", "literal.failure:"])
-        for position in range(count):
-            address = f"%literal.failed.arg.{position}"
-            value = f"%literal.failed.value.{position}"
-            lines.extend(
-                [
-                    f"  {address} = getelementptr [{count} x ptr], ptr %literal.argv, i64 0, i64 {position}",
+                    f"  {address} = getelementptr [{count} x ptr], ptr %argv, i64 0, i64 {position}",
                     f"  {value} = load ptr, ptr {address}",
                     f"  call void @mule.fast.release(ptr {value})",
                 ]
             )
-        lines.extend(["  ret ptr null", "protocols:"])
-        return "\n".join(lines) + "\n"
+        lines.extend(["  ret ptr null", "}"])
+        return "\n".join(lines)
 
     def contexts(self, lambda_: Lambda):
         """The general entry context and the guarded variants."""
@@ -897,10 +887,21 @@ class ModuleGenerator:
     def emit(self) -> str:
         program = self.program
         functions = []
+        variants_by_key = {}
         for lambda_ in program.lambdas:
             general, variants = self.contexts(lambda_)
             functions.append(self.emit_body(lambda_, general))
-            functions.extend(self.emit_body(lambda_, variant) for variant in variants)
+            for variant in variants:
+                variants_by_key[lambda_, variant.id] = (lambda_, variant)
+        emitted_variants = set()
+        while (
+            pending := (self.specialized.requested & variants_by_key.keys())
+            - emitted_variants
+        ):
+            for key in sorted(pending, key=lambda item: (item[0].name, str(item[1]))):
+                emitted_variants.add(key)
+                lambda_, variant = variants_by_key[key]
+                functions.append(self.emit_body(lambda_, variant))
         for lambda_, plan in self.native_plans.items():
             facts = self.facts[lambda_]
             context = EntryContext(
@@ -945,7 +946,7 @@ class ModuleGenerator:
                 [
                     DECLARATIONS,
                     self.foreign_declarations(),
-                    vops.helpers(),
+                    vops.helpers(bootstrap=program.bootstrap),
                     *globals_,
                     *self.auxiliary,
                     *functions,
@@ -1031,8 +1032,8 @@ class ModuleGenerator:
         )
 
     def unit_lifecycle(self, owned_imports) -> str:
-        """The unit's initializer, which builds its tuple constants, and its
-        finalizer, which releases them and the modules it owns."""
+        """The unit's initializer, which links its protocol cells, and its
+        finalizer, which releases its tuple constants and the modules it owns."""
         linkage = "" if self.program.exports else "internal "
         # Protocol code runs under the protocol globals whoever calls it,
         # and the unit initializer runs after they exist. Only the unit with
@@ -1053,10 +1054,9 @@ class ModuleGenerator:
             links.append("  %protocol.globals = call ptr @mule_protocol_globals()")
             links += self.link(PROTOCOL_NAMESPACE, target, "link.failed", 0)
         initialize = (
-            f"define {linkage}ptr {unit_initializer(self.program.unit)}() {{\n"
+            f"define {linkage}ptr {unit_initializer(self.program.unit)}() noinline optnone {{\n"
             "entry:\n"
             + "".join(line + "\n" for line in links)
-            + self.initialize_tuple_constants()
             + "  ret ptr inttoptr (i64 1 to ptr)\n"
             + ("link.failed:\n  ret ptr null\n" if links else "")
             + "}"
@@ -1072,7 +1072,7 @@ class ModuleGenerator:
             )
         ]
         finalize = (
-            f"define {linkage}void {unit_finalizer(self.program.unit)}() {{\n"
+            f"define {linkage}void {unit_finalizer(self.program.unit)}() noinline optnone {{\n"
             "entry:\n"
             + "".join(
                 f"  {value} = load ptr, ptr {slot}\n"
@@ -1527,35 +1527,6 @@ class _TypeAssumption(ValueTypeVisitor):
                 valid = operation(f"and i1 {valid}, {upper}")
         return valid
 
-    def visit_NoneType(self, fact: ValueType) -> str | None:
-        if not fact.is_immortal:
-            return None
-        return self.gen.operation(f"icmp eq ptr {self.value}, @mule.none")
-
-    def visit_BooleanType(self, fact: ValueType) -> str | None:
-        if not fact.is_immortal:
-            return None
-        return _ArgumentGuard(self.gen, self.value).visit_BooleanType(fact)
-
-    def visit_ImmortalType(self, fact: ValueType) -> str | None:
-        if not fact.is_immortal:
-            return None
-        return _ArgumentGuard(self.gen, self.value).visit_ImmortalType(fact)
-
-    def heap_object(self, fact: ValueType) -> str | None:
-        if fact.may_be_unbound:
-            return None
-        operation = self.gen.operation
-        bits = operation(f"ptrtoint ptr {self.value} to i64")
-        tag = operation(f"and i64 {bits}, 1")
-        return operation(f"icmp eq i64 {tag}, 0")
-
-    visit_FloatType = heap_object
-    visit_TextType = heap_object
-    visit_BytesType = heap_object
-    visit_FunctionType = heap_object
-    visit_TupleType = heap_object
-
 
 def _block_local_last_vop(tn, positions):
     """The last vop using a temporary that is written once and read only by
@@ -1591,6 +1562,7 @@ class FunctionGenerator:
         self.raw = self.plan is not None
         self.environment = component.environment
         self.immortal_values: set[str] = set()
+        self.heap_values: set[str] = set()
         self.lines: list[str] = []
         self.serial = 0
         self.exception_target: str | None = None
@@ -1707,29 +1679,34 @@ class FunctionGenerator:
             return base
         # Builtin algorithms have no Python source frame in the exception chain.
         # Their live activations remain available to native debug diagnostics.
-        record_traceback = record_traceback and not self.module.program.bootstrap
+        record_traceback = (
+            record_traceback
+            and not self.module.program.bootstrap
+            and self.lambda_.policy.records_traceback
+        )
         owned = tuple(value for value in self.live.values() if value != failed_value)
+        if not record_traceback and not owned:
+            return base
         key = (base, owned, record_traceback, explicit_raise)
         label = self.landings.get(key)
         if label is None:
             label = self.landings[key] = self.fresh("release")[1:]
-        # Landings release owned temporaries; only new failures and explicit
-        # raises add source entries. Resuming a caught transfer preserves them.
-        sites = self.landing_sites.setdefault(label, {})
-        source = (
-            None if self.vop is None or self.vop.node is None else self.vop.node.source
-        )
-        marker = (
-            self.module.source_highlights.marker(
+        if record_traceback:
+            # Landings release owned temporaries; only new failures and explicit
+            # raises add source entries. Resuming a caught transfer preserves them.
+            sites = self.landing_sites.setdefault(label, {})
+            source = (
+                None
+                if self.vop is None or self.vop.node is None
+                else self.vop.node.source
+            )
+            marker = self.module.source_highlights.marker(
                 self.module.code(self.lambda_).filename, source
             )
-            if record_traceback
-            else ""
-        )
-        sites.setdefault(
-            self.current_block(),
-            (self.current_line(), self.module.text(marker) if marker else "null"),
-        )
+            sites.setdefault(
+                self.current_block(),
+                (self.current_line(), self.module.text(marker) if marker else "null"),
+            )
         return label
 
     def current_block(self) -> str:
@@ -1760,13 +1737,13 @@ class FunctionGenerator:
             explicit_raise,
         ), label in self.landings.items():
             self.lines.append(label + ":")
-            sites = self.landing_sites[label]
-            incoming = ", ".join(
-                f"[{site[0]}, %{block}]" for block, site in sites.items()
-            )
-            line = f"%failed.line.{label}"
-            self.line(f"{line} = phi i32 {incoming}")
             if record_traceback:
+                sites = self.landing_sites[label]
+                incoming = ", ".join(
+                    f"[{site[0]}, %{block}]" for block, site in sites.items()
+                )
+                line = f"%failed.line.{label}"
+                self.line(f"{line} = phi i32 {incoming}")
                 incoming_markers = ", ".join(
                     f"[{site[1]}, %{block}]" for block, site in sites.items()
                 )
@@ -1873,19 +1850,45 @@ class FunctionGenerator:
         self.line(f"store ptr {value}, ptr {tn.slot}")
         self.mark_immortal(tn, value)
 
+    def record_facts(self, tn, value: str) -> None:
+        self.mark_immortal(tn, value)
+        fact = tn.type or UNKNOWN
+        if fact.is_fixnum or fact.is_immortal:
+            self.immortal_values.add(value)
+            if self.live.get(tn) == value:
+                self.live.pop(tn, None)
+        elif fact.is_heap_object:
+            self.heap_values.add(value)
+
+    def retain(self, value: str) -> str:
+        if value in self.immortal_values:
+            return value
+        if value in self.heap_values:
+            self.line(f"call ptr @mule_retain(ptr {value})")
+            return value
+        self.line(f"call ptr @mule.fast.retain(ptr {value})")
+        return value
+
     def release(self, value: str) -> None:
         if value in self.immortal_values:
+            return
+        if value in self.heap_values:
+            self.line(f"call void @mule_release(ptr {value})")
             return
         self.line(f"call void @mule.fast.release(ptr {value})")
 
     def refine(self, tn, value: str) -> None:
         """Expose proven representation/range facts after the error check."""
-        self.mark_immortal(tn, value)
-        self.refine_type(tn.type or UNKNOWN, value)
+        self.record_facts(tn, value)
+        if tn.reads:
+            self.refine_type(tn.type or UNKNOWN, value)
 
     def refine_type(self, fact: ValueType, value: str, *, nullable=False) -> None:
-        if not nullable and (fact.is_fixnum or fact.is_immortal):
-            self.immortal_values.add(value)
+        if not nullable:
+            if fact.is_fixnum or fact.is_immortal:
+                self.immortal_values.add(value)
+            elif fact.is_heap_object:
+                self.heap_values.add(value)
         valid = fact.accept(_TypeAssumption(self, value))
         if valid is None:
             return
@@ -1903,10 +1906,10 @@ class FunctionGenerator:
         self.refine(ref.tn, value)
 
     def native_result(self, ref, value: str, consumed=()) -> None:
+        self.record_facts(ref.tn, value)
         self.publish(ref, value)
         for operand in consumed:
             self.release(operand)
-        self.refine(ref.tn, value)
 
     def parameter(self, index: int) -> str:
         return f"%parameter.{index}"
@@ -2342,9 +2345,11 @@ class FunctionGenerator:
         # Every object entry of a natively planned lambda, general or guarded,
         # becomes the adapter that checks the plan's boundaries and calls the
         # raw entry; its own body remains as the fallback.
-        # Other units call an exporting unit's bodies; native raw entries
-        # are called only through the unit's own adapters.
-        linkage = "" if self.module.program.exports and not self.raw else "internal "
+        linkage = (
+            ""
+            if self.module.program.exports and not self.raw and self.context.id is None
+            else "internal "
+        )
         plan = self.module.native_plans.get(self.lambda_)
         if plan is not None:
             adapter = native_adapter(self, plan, linkage)
@@ -2358,7 +2363,9 @@ class FunctionGenerator:
             + [f"ptr %parameter.{index}" for index in range(len(lambda_.vars))]
         )
         attributes = ""
-        if lambda_.policy.speed == 0:
+        if lambda_.policy.speed == 0 or (
+            self.module.program.bootstrap and lambda_.kind is FunctionalKind.TOPLEVEL
+        ):
             attributes = " noinline optnone"
         elif lambda_.policy.debug == 3:
             attributes = " noinline"
@@ -2425,7 +2432,14 @@ class FunctionGenerator:
         self.lines.append("cleanup:")
         for tn in [*self.local_tns, *self.value_tns]:
             if tn.sc is DESCRIPTOR:
-                self.release(self.operation(f"load ptr, ptr {tn.slot}"))
+                fact = tn.type or UNKNOWN
+                if fact.is_fixnum or fact.is_immortal:
+                    continue
+                loaded = self.operation(f"load ptr, ptr {tn.slot}")
+                if len(self.component.blocks) > 8:
+                    self.line(f"call void @mule_release(ptr {loaded})")
+                else:
+                    self.release(loaded)
         self.line("call void @mule_frame_pop()")
         value = self.operation("load ptr, ptr %return")
         self.line(f"ret ptr {value}")

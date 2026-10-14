@@ -1,10 +1,17 @@
 """Validate discovery and strict reporting independently of compiler coverage."""
 
+import shutil
 import subprocess
 import sys
 
 from tools.run_stdlib_tests import STRICT_RESULT, Entry, discover_entries, run_entry
 from tools.stdlib_bootstrap import discover_cases
+
+
+def _external_python_host() -> str:
+    if sys.implementation.name == "mule":
+        return shutil.which("python3") or "python3"
+    return sys.executable
 
 
 def test_discovery_preserves_package_hooks_and_missing_extension_tests(tmp_path):
@@ -55,7 +62,7 @@ def test_strict_result_rejects_skips_and_expected_failures(tmp_path):
         "print(len(result.failures), len(result.expectedFailures), result.wasSuccessful())\n"
     )
     result = subprocess.run(
-        [sys.executable, "-I", "-S", "-B", "-c", program],
+        [_external_python_host(), "-I", "-S", "-B", "-c", program],
         cwd=tmp_path,
         capture_output=True,
         text=True,

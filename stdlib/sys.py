@@ -19,6 +19,8 @@ from _mule_native import read_pointer as _read_pointer
 from _mule_native import register_modules as _register_modules
 from _mule_native import write_fd as _write_fd
 from _posix import read as _read
+from _posix import environ_items as _environ_items
+from _posix import executable_path_bytes as _executable_path_bytes
 
 
 def _make_argv():
@@ -35,7 +37,10 @@ def _make_argv():
 
 argv = _make_argv()
 orig_argv = list(argv)
-executable = argv[0] if argv else ""
+try:
+    executable = _executable_path_bytes().decode('utf-8', 'surrogateescape')
+except OSError:
+    executable = ""
 _base_executable = executable
 
 modules = {}
@@ -43,6 +48,32 @@ _register_modules(modules)
 
 import _monitoring as monitoring
 modules["sys.monitoring"] = monitoring
+
+
+def _initial_cpu_count():
+    value = None
+    for key, item in _environ_items():
+        if key == b'PYTHON_CPU_COUNT':
+            value = item
+            break
+    if value is None or value == b'default':
+        return -1
+    digits = value[1:] if value.startswith((b'+', b'-')) else value
+    message = 'PYTHON_CPU_COUNT must be a positive integer fitting C int'
+    if not digits or any(byte < 48 or byte > 57 for byte in digits):
+        raise ValueError(message)
+    count = int(value)
+    if count <= 0 or count >= (1 << 31):
+        raise ValueError(message)
+    return count
+
+
+_cpu_count_config = _initial_cpu_count()
+
+
+def _get_cpu_count_config():
+    return _cpu_count_config
+
 
 platform = "linux"
 byteorder = "little"

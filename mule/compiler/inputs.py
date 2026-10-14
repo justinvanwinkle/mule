@@ -20,6 +20,53 @@ def digest(data: bytes) -> str:
     return hashlib.sha3_256(data).hexdigest()
 
 
+class _FileDigests:
+    """Content digests of file versions already read by this process."""
+
+    def __init__(self):
+        self._versions = {}
+
+    def version(self, path):
+        state = path.stat()
+        return (
+            state.st_dev,
+            state.st_ino,
+            state.st_size,
+            state.st_mtime_ns,
+            state.st_ctime_ns,
+        )
+
+    def read(self, path):
+        before = self.version(path)
+        cached = self._versions.get(path)
+        if cached is not None and cached[0] == before:
+            return cached[1]
+        return self.remember(path, before, path.read_bytes())
+
+    def current(self, path):
+        try:
+            return self.version(path)
+        except OSError:
+            return None
+
+    def remember(self, path, before, data):
+        after_read = self.current(path)
+        cached = self._versions.get(path)
+        if before == after_read and cached is not None and cached[0] == before:
+            return cached[1]
+        state = digest(data)
+        if before == after_read and before == self.current(path):
+            self._versions[path] = before, state
+        return state
+
+
+_file_digests = _FileDigests()
+
+
+def file_digest(path):
+    return _file_digests.read(Path(path))
+
+
 def _directory_inventory(path):
     entries = sorted((entry.name, entry.is_dir()) for entry in path.iterdir())
     data = "\0".join(name + ("/" if directory else "") for name, directory in entries)
@@ -32,10 +79,9 @@ def file_state(path):
     if path.is_dir():
         return _directory_inventory(path)[1]
     try:
-        data = path.read_bytes()
+        return file_digest(path)
     except FileNotFoundError, NotADirectoryError, IsADirectoryError:
         return None
-    return digest(data)
 
 
 def _record(path, state):
@@ -46,8 +92,10 @@ def _record(path, state):
 
 def read_source(path):
     """Read a UTF-8 source file, recording its contents as a build input."""
-    data = Path(path).read_bytes()
-    _record(path, digest(data))
+    path = Path(path)
+    before = _file_digests.version(path)
+    data = path.read_bytes()
+    _record(path, _file_digests.remember(path, before, data))
     return data.decode("utf-8")
 
 

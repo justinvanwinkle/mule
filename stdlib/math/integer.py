@@ -1,5 +1,7 @@
 """Compiled exact integer operations for the initial math package."""
 
+__mule_builtin_implementation__ = True
+
 from _mule_native import math_integer_bit_length as _bit_length
 from _mule_native import math_integer_value as _integer_value
 from _mule_native import math_number_kind as _number_kind
@@ -23,7 +25,7 @@ def _index(value):
 def factorial(n, /):
     n = _index(n)
     if n < 0:
-        raise ValueError("factorial requires a nonnegative integer")
+        raise ValueError("factorial() not defined for negative values")
     result = 1
     factor = 2
     while factor <= n:

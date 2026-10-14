@@ -815,6 +815,7 @@ class Block:
         "info",
         "kill",
         "last",
+        "loop",
         "next",
         "number",
         "out",
@@ -843,6 +844,7 @@ class Block:
         self.flag = None
         self.number = 0
         self.dominator = None
+        self.loop = None
         self.kill = None
         self.in_ = None
         self.out = None
@@ -860,12 +862,107 @@ class Block:
                 return
             ctran = node.next
 
+    def dominated_by(self, other):
+        block = self
+        while block is not None:
+            if block is other:
+                return True
+            block = block.dominator
+        return False
+
     def __repr__(self):
         if self.component is not None and self is self.component.head:
             return "<Block HEAD>"
         if self.component is not None and self is self.component.tail:
             return "<Block TAIL>"
         return f"<Block {self.number} start={self.start!r}>"
+
+
+class Loop:
+    """A flow-graph loop with its immediate nesting and exit metadata."""
+
+    def __init__(self, head, tails=()):
+        self.head = head
+        self.tails = list(tails)
+        self.blocks = []
+        self.inferiors = []
+        self.superior = None
+        self.exits = []
+        self.depth = 0
+
+    def accepts(self, block):
+        raise TypeError(f"loop membership is undefined for {self!r}")
+
+    def predecessor_seeds(self, predecessors):
+        return predecessors[self.head]
+
+    def completion_seeds(self, predecessors):
+        return ()
+
+    def is_header(self, block):
+        return block is self.head
+
+    def attach(self, inner):
+        if inner.superior is not None:
+            raise ValueError("loop already has a superior")
+        inner.superior = self
+        self.inferiors.append(inner)
+
+    def assign_depths(self):
+        pending = [(self, 0)]
+        while pending:
+            loop, depth = pending.pop()
+            loop.depth = depth
+            pending.extend((inner, depth + 1) for inner in loop.inferiors)
+
+
+class NaturalLoop(Loop):
+    def accepts(self, block):
+        return block.dominated_by(self.head)
+
+
+class StrangeLoop(Loop):
+    def __init__(self, head, tails, successors):
+        super().__init__(head, tails)
+        self._segments = set()
+        pending = [head]
+        while pending:
+            block = pending.pop()
+            if block in self._segments:
+                continue
+            self._segments.add(block)
+            pending.extend(
+                successor
+                for successor in successors[block]
+                if successor.number < head.number
+            )
+
+    def accepts(self, block):
+        return block in self._segments
+
+    def predecessor_seeds(self, predecessors):
+        seeds = []
+        pending = [self]
+        while pending:
+            loop = pending.pop()
+            for block in loop.blocks:
+                seeds.extend(predecessors[block])
+            pending.extend(loop.inferiors)
+        return seeds
+
+
+class OuterLoop(Loop):
+    def accepts(self, block):
+        return True
+
+    def is_header(self, block):
+        return False
+
+    def completion_seeds(self, predecessors):
+        seeds = []
+        for inner in self.inferiors:
+            seeds.extend(inner.predecessor_seeds(predecessors))
+        return seeds
 
 
 class ComponentKind(Enum):
@@ -888,6 +985,7 @@ class Component:
         "last_block",
         "name",
         "new_functionals",
+        "outer_loop",
         "reanalyze",
         "reanalyze_functionals",
         "reoptimize",
@@ -897,6 +995,7 @@ class Component:
     def __init__(self, name="<unknown>"):
         self.head = Block(component=self)
         self.tail = Block(component=self)
+        self.outer_loop = OuterLoop(self.head, (self.tail,))
         self.head.flag = True
         self.tail.flag = True
         self.head.next = self.tail

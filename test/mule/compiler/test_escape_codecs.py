@@ -30,6 +30,37 @@ for error in (UnicodeEncodeError('sample', 'aé💩', 0, 1, 'why'),
 
 
 @pytest.mark.integration
+def test_named_unicode_escapes_incremental_errors_and_aliases(tmp_path):
+    compare(
+        tmp_path,
+        r"""
+import codecs
+for data in (b'\\N', b'\\N{', b'\\N{}', b'\\Nx', b'\\N{BELL',
+             b'\\N{BELL}', b'\\N{bell}', b'\\N{NULL}',
+             b'\\N{GRINNING FACE}', b'\\N{CJK UNIFIED IDEOGRAPH-4E00}',
+             b'\\N{INVALID}', b'\\N{KEYCAP NUMBER SIGN}', b'\\N{BEL\xff}',
+             b'a\\N{BELL\x00x}z'):
+    for final in (False, True):
+        for errors in ('strict', 'replace', 'ignore', 'backslashreplace'):
+            try:
+                print(data, final, errors, codecs.unicode_escape_decode(data, errors, final))
+            except UnicodeDecodeError as error:
+                print(error.encoding, error.start, error.end, error.reason, str(error))
+decoder = codecs.getincrementaldecoder('unicode_escape')()
+for data in (b'a\\N', b'{GRINNING', b' FACE}z'):
+    print(repr(decoder.decode(data)), decoder.getstate())
+print(repr(decoder.decode(b'', final=True)))
+print(repr(b'\\N{BELL}'.decode('raw_unicode_escape')))
+def replacement(error):
+    print(error.start, error.end, error.reason)
+    return '[bad]', error.end
+codecs.register_error('named_replace', replacement)
+print(b'a\\N{}z\\N{INVALID}b'.decode('unicode_escape', 'named_replace'))
+""",
+    )
+
+
+@pytest.mark.integration
 def test_escape_codecs_incremental_consumption_and_error_handlers(tmp_path):
     compare(
         tmp_path,

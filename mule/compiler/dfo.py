@@ -52,7 +52,8 @@ def find_dfo(component: Component) -> None:
         if unvisited is None:
             break
         _find_dfo_aux(unvisited, head)
-    number = 0
+    number = 1
+    component.tail.number = number
     block = linked(component.tail.prev, component.tail, "previous block")
     while block is not head:
         previous = block.prev
@@ -62,6 +63,7 @@ def find_dfo(component: Component) -> None:
         else:
             delete_block(block)
         block = linked(previous, block, "previous block")
+    component.head.number = number + 1
     for block in list(component.delete_blocks):
         if block.component is not None:
             delete_block(block)

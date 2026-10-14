@@ -45,19 +45,19 @@ def _is_word(char):
 
 
 def _category_matches(category, char, code):
-    if category in (0, 10):
+    if category == 0 or category == 10:
         return char.isdecimal()
-    if category in (1, 11):
+    if category == 1 or category == 11:
         return not char.isdecimal()
-    if category in (2, 12):
+    if category == 2 or category == 12:
         return char.isspace()
-    if category in (3, 13):
+    if category == 3 or category == 13:
         return not char.isspace()
-    if category in (4, 8, 14):
+    if category == 4 or category == 8 or category == 14:
         return _is_word(char)
-    if category in (5, 9, 15):
+    if category == 5 or category == 9 or category == 15:
         return not _is_word(char)
-    if category in (6, 16):
+    if category == 6 or category == 16:
         return char in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
     return char not in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
@@ -98,15 +98,23 @@ class _Engine:
                     pos += 1
                 else:
                     return
-            elif op in (_LITERAL_IGNORE, _LITERAL_LOC_IGNORE, _LITERAL_UNI_IGNORE,
-                        _NOT_LITERAL_IGNORE, _NOT_LITERAL_LOC_IGNORE,
-                        _NOT_LITERAL_UNI_IGNORE):
-                negate = op in (_NOT_LITERAL_IGNORE, _NOT_LITERAL_LOC_IGNORE,
-                                _NOT_LITERAL_UNI_IGNORE)
+            elif (
+                op == _LITERAL_IGNORE
+                or op == _LITERAL_LOC_IGNORE
+                or op == _LITERAL_UNI_IGNORE
+                or op == _NOT_LITERAL_IGNORE
+                or op == _NOT_LITERAL_LOC_IGNORE
+                or op == _NOT_LITERAL_UNI_IGNORE
+            ):
+                negate = (
+                    op == _NOT_LITERAL_IGNORE
+                    or op == _NOT_LITERAL_LOC_IGNORE
+                    or op == _NOT_LITERAL_UNI_IGNORE
+                )
                 if pos >= self.end:
                     return
                 char = self.char(pos)
-                if op in (_LITERAL_UNI_IGNORE, _NOT_LITERAL_UNI_IGNORE):
+                if op == _LITERAL_UNI_IGNORE or op == _NOT_LITERAL_UNI_IGNORE:
                     char = unicode_tolower(char)
                 else:
                     char = ascii_tolower(char)
@@ -129,13 +137,18 @@ class _Engine:
                 at = pc + 1
                 while True:
                     arm = at + 1
-                    if code[arm] not in _SINGLE_CHAR_OPS or self._match_one(arm, pos):
+                    if not _is_single_char_op(code[arm]) or self._match_one(arm, pos):
                         yield from self.run(arm, pos, marks, halt)
                     at = at + code[at]
                     if code[at] == _FAILURE:
                         break
                 return
-            elif op in (_IN, _IN_IGNORE, _IN_UNI_IGNORE, _IN_LOC_IGNORE):
+            elif (
+                op == _IN
+                or op == _IN_IGNORE
+                or op == _IN_UNI_IGNORE
+                or op == _IN_LOC_IGNORE
+            ):
                 if pos >= self.end:
                     return
                 if not self._in_charset(pc + 2, pos, op):
@@ -153,8 +166,12 @@ class _Engine:
                 if not self._at_matches(code[pc + 1], pos):
                     return
                 pc += 2
-            elif op in (_GROUPREF, _GROUPREF_IGNORE, _GROUPREF_LOC_IGNORE,
-                        _GROUPREF_UNI_IGNORE):
+            elif (
+                op == _GROUPREF
+                or op == _GROUPREF_IGNORE
+                or op == _GROUPREF_LOC_IGNORE
+                or op == _GROUPREF_UNI_IGNORE
+            ):
                 group = code[pc + 1]
                 start, stop = marks[2 * group], marks[2 * group + 1]
                 if start < 0 or stop < 0:
@@ -181,8 +198,13 @@ class _Engine:
                     pc += 3
                 else:
                     pc = pc + 2 + code[pc + 2]
-            elif op in (_REPEAT, _REPEAT_ONE, _MIN_REPEAT_ONE,
-                        _POSSESSIVE_REPEAT, _POSSESSIVE_REPEAT_ONE):
+            elif (
+                op == _REPEAT
+                or op == _REPEAT_ONE
+                or op == _MIN_REPEAT_ONE
+                or op == _POSSESSIVE_REPEAT
+                or op == _POSSESSIVE_REPEAT_ONE
+            ):
                 yield from self._repeat(pc, pos, marks, halt)
                 return
             elif op == _ATOMIC_GROUP:
@@ -191,7 +213,7 @@ class _Engine:
                     yield from self.run(stop, state[0], state[1], halt)
                     break
                 return
-            elif op in (_ASSERT, _ASSERT_NOT):
+            elif op == _ASSERT or op == _ASSERT_NOT:
                 stop = pc + 1 + code[pc + 1]
                 direction = code[pc + 2]
                 states = self._assert_states(pc + 3, pos, direction, stop)
@@ -224,15 +246,19 @@ class _Engine:
         code = self.code
         op = code[pc]
         stop = pc + 1 + code[pc + 1]
-        following = stop + 1 if op in (_REPEAT, _POSSESSIVE_REPEAT) else stop
+        following = stop + 1 if (op == _REPEAT or op == _POSSESSIVE_REPEAT) else stop
         minimum, maximum = code[pc + 2], code[pc + 3]
-        greedy = op not in (_MIN_REPEAT_ONE,)
+        greedy = op != _MIN_REPEAT_ONE
         # For a general REPEAT the tail is MAX_UNTIL or MIN_UNTIL.
         if op == _REPEAT:
             greedy = code[stop] == _MAX_UNTIL
-        possessive = op in (_POSSESSIVE_REPEAT, _POSSESSIVE_REPEAT_ONE)
+        possessive = op == _POSSESSIVE_REPEAT or op == _POSSESSIVE_REPEAT_ONE
 
-        if op in (_REPEAT_ONE, _MIN_REPEAT_ONE, _POSSESSIVE_REPEAT_ONE):
+        if (
+            op == _REPEAT_ONE
+            or op == _MIN_REPEAT_ONE
+            or op == _POSSESSIVE_REPEAT_ONE
+        ):
             # re's compiler proves these bodies consume exactly one character
             # and contain no capture marks. Keep repetition in this activation.
             count = 0
@@ -265,21 +291,42 @@ class _Engine:
         if pos >= self.end:
             return False
         code, op = self.code, self.code[pc]
-        if op in (_LITERAL, _NOT_LITERAL):
+        if op == _LITERAL or op == _NOT_LITERAL:
             return (self.char(pos) == code[pc + 1]) == (op == _LITERAL)
-        if op in (_ANY, _ANY_ALL):
+        if op == _ANY or op == _ANY_ALL:
             return op == _ANY_ALL or self.char(pos) != 10
-        if op in (_IN, _IN_IGNORE, _IN_UNI_IGNORE, _IN_LOC_IGNORE):
+        if (
+            op == _IN
+            or op == _IN_IGNORE
+            or op == _IN_UNI_IGNORE
+            or op == _IN_LOC_IGNORE
+        ):
             return self._in_charset(pc + 2, pos, op)
         if op == _CATEGORY:
-            return _category_matches(code[pc + 1], self.text_char(pos), self.char(pos))
-        if op in (_LITERAL_IGNORE, _LITERAL_LOC_IGNORE, _LITERAL_UNI_IGNORE,
-                  _NOT_LITERAL_IGNORE, _NOT_LITERAL_LOC_IGNORE, _NOT_LITERAL_UNI_IGNORE):
-            negate = op in (_NOT_LITERAL_IGNORE, _NOT_LITERAL_LOC_IGNORE, _NOT_LITERAL_UNI_IGNORE)
+            return _category_matches(
+                code[pc + 1], self.text_char(pos), self.char(pos)
+            )
+        if (
+            op == _LITERAL_IGNORE
+            or op == _LITERAL_LOC_IGNORE
+            or op == _LITERAL_UNI_IGNORE
+            or op == _NOT_LITERAL_IGNORE
+            or op == _NOT_LITERAL_LOC_IGNORE
+            or op == _NOT_LITERAL_UNI_IGNORE
+        ):
+            negate = (
+                op == _NOT_LITERAL_IGNORE
+                or op == _NOT_LITERAL_LOC_IGNORE
+                or op == _NOT_LITERAL_UNI_IGNORE
+            )
             char = self.char(pos)
-            char = unicode_tolower(char) if op in (_LITERAL_UNI_IGNORE, _NOT_LITERAL_UNI_IGNORE) else ascii_tolower(char)
+            char = (
+                unicode_tolower(char)
+                if (op == _LITERAL_UNI_IGNORE or op == _NOT_LITERAL_UNI_IGNORE)
+                else ascii_tolower(char)
+            )
             return (char == code[pc + 1]) != negate
-        raise ValueError('unsupported single-character repeat opcode %r' % (op,))
+        raise ValueError("unsupported single-character repeat opcode %r" % (op,))
 
     def _repeat_states(self, body, stop, pos, marks, minimum, maximum, greedy):
         # Keep depth-first branch order without consuming the Python call stack
@@ -312,10 +359,241 @@ class _Engine:
                 if iterator is not None:
                     iterator.close()
 
+    def _search_state(self, pc, pos, marks, anchored_end=False):
+        code = self.code
+        string = self.string
+        while True:
+            op = code[pc]
+            if op == _SUCCESS:
+                if anchored_end and pos != self.end:
+                    return None
+                return pos, marks
+            if op == _FAILURE:
+                return None
+            if op == _INFO:
+                pc = pc + 1 + code[pc + 1]
+            elif op == _LITERAL or op == _NOT_LITERAL:
+                if pos < self.end and (self.char(pos) == code[pc + 1]) == (
+                    op == _LITERAL
+                ):
+                    pc += 2
+                    pos += 1
+                else:
+                    return None
+            elif (
+                op == _LITERAL_IGNORE
+                or op == _LITERAL_LOC_IGNORE
+                or op == _LITERAL_UNI_IGNORE
+                or op == _NOT_LITERAL_IGNORE
+                or op == _NOT_LITERAL_LOC_IGNORE
+                or op == _NOT_LITERAL_UNI_IGNORE
+            ):
+                negate = (
+                    op == _NOT_LITERAL_IGNORE
+                    or op == _NOT_LITERAL_LOC_IGNORE
+                    or op == _NOT_LITERAL_UNI_IGNORE
+                )
+                if pos >= self.end:
+                    return None
+                char = self.char(pos)
+                if op == _LITERAL_UNI_IGNORE or op == _NOT_LITERAL_UNI_IGNORE:
+                    char = unicode_tolower(char)
+                else:
+                    char = ascii_tolower(char)
+                if (char == code[pc + 1]) == negate:
+                    return None
+                pc += 2
+                pos += 1
+            elif op == _ANY or op == _ANY_ALL:
+                if pos >= self.end or (op == _ANY and self.char(pos) == 10):
+                    return None
+                pc += 1
+                pos += 1
+            elif op == _MARK:
+                marks = list(marks)
+                marks[code[pc + 1]] = pos
+                pc += 2
+            elif op == _JUMP:
+                pc = pc + 1 + code[pc + 1]
+            elif op == _BRANCH:
+                at = pc + 1
+                while True:
+                    arm = at + 1
+                    if not _is_single_char_op(code[arm]) or self._match_one(
+                        arm, pos
+                    ):
+                        found = self._search_state(arm, pos, marks, anchored_end)
+                        if found is not None:
+                            return found
+                    at = at + code[at]
+                    if code[at] == _FAILURE:
+                        break
+                return None
+            elif (
+                op == _IN
+                or op == _IN_IGNORE
+                or op == _IN_UNI_IGNORE
+                or op == _IN_LOC_IGNORE
+            ):
+                if pos >= self.end:
+                    return None
+                if not self._in_charset(pc + 2, pos, op):
+                    return None
+                pc = pc + 1 + code[pc + 1]
+                pos += 1
+            elif op == _CATEGORY:
+                if pos >= self.end:
+                    return None
+                if not _category_matches(
+                    code[pc + 1], self.text_char(pos), self.char(pos)
+                ):
+                    return None
+                pc += 2
+                pos += 1
+            elif op == _AT:
+                if not self._at_matches(code[pc + 1], pos):
+                    return None
+                pc += 2
+            elif (
+                op == _GROUPREF
+                or op == _GROUPREF_IGNORE
+                or op == _GROUPREF_LOC_IGNORE
+                or op == _GROUPREF_UNI_IGNORE
+            ):
+                group = code[pc + 1]
+                start, stop = marks[2 * group], marks[2 * group + 1]
+                if start < 0 or stop < 0:
+                    return None
+                size = stop - start
+                if pos + size > self.end:
+                    return None
+                wanted = string[start:stop]
+                found = string[pos : pos + size]
+                if op != _GROUPREF:
+                    if self.bytes:
+                        wanted = bytes(ascii_tolower(c) for c in wanted)
+                        found = bytes(ascii_tolower(c) for c in found)
+                    else:
+                        wanted = wanted.lower()
+                        found = found.lower()
+                if found != wanted:
+                    return None
+                pc += 2
+                pos += size
+            elif op == _GROUPREF_EXISTS:
+                group = code[pc + 1]
+                if marks[2 * group] >= 0:
+                    pc += 3
+                else:
+                    pc = pc + 2 + code[pc + 2]
+            elif (
+                op == _REPEAT
+                or op == _REPEAT_ONE
+                or op == _MIN_REPEAT_ONE
+                or op == _POSSESSIVE_REPEAT
+                or op == _POSSESSIVE_REPEAT_ONE
+            ):
+                return self._repeat_search(pc, pos, marks, anchored_end)
+            elif op == _ATOMIC_GROUP:
+                stop = pc + 1 + code[pc + 1]
+                states = self.run(pc + 2, pos, marks, stop)
+                try:
+                    for state in states:
+                        return self._search_state(
+                            stop, state[0], state[1], anchored_end
+                        )
+                finally:
+                    states.close()
+                return None
+            elif op == _ASSERT or op == _ASSERT_NOT:
+                stop = pc + 1 + code[pc + 1]
+                direction = code[pc + 2]
+                states = self._assert_states(pc + 3, pos, direction, stop)
+                if op == _ASSERT:
+                    if not states:
+                        return None
+                    pc, marks = stop, states[0][1]
+                else:
+                    if states:
+                        return None
+                    pc = stop
+            else:
+                raise ValueError("unsupported SRE opcode %r" % (op,))
+
+    def _repeat_search(self, pc, pos, marks, anchored_end):
+        code = self.code
+        op = code[pc]
+        stop = pc + 1 + code[pc + 1]
+        following = (
+            stop + 1
+            if (op == _REPEAT or op == _POSSESSIVE_REPEAT)
+            else stop
+        )
+        minimum, maximum = code[pc + 2], code[pc + 3]
+        greedy = op != _MIN_REPEAT_ONE
+        if op == _REPEAT:
+            greedy = code[stop] == _MAX_UNTIL
+        possessive = op == _POSSESSIVE_REPEAT or op == _POSSESSIVE_REPEAT_ONE
+
+        if (
+            op == _REPEAT_ONE
+            or op == _MIN_REPEAT_ONE
+            or op == _POSSESSIVE_REPEAT_ONE
+        ):
+            tail_pc = following
+            while code[tail_pc] == _MARK:
+                tail_pc += 2
+            tail_op = code[tail_pc]
+            tail_single = _is_single_char_op(tail_op)
+            count = 0
+            while count < minimum:
+                if not self._match_one(pc + 4, pos + count):
+                    return None
+                count += 1
+            if greedy:
+                while count < maximum and self._match_one(pc + 4, pos + count):
+                    count += 1
+                while count >= minimum:
+                    if not tail_single or self._match_one(tail_pc, pos + count):
+                        found = self._search_state(
+                            following, pos + count, marks, anchored_end
+                        )
+                        if found is not None:
+                            return found
+                    if possessive:
+                        return None
+                    count -= 1
+            else:
+                while True:
+                    if not tail_single or self._match_one(tail_pc, pos + count):
+                        found = self._search_state(
+                            following, pos + count, marks, anchored_end
+                        )
+                        if found is not None:
+                            return found
+                    if count >= maximum or not self._match_one(pc + 4, pos + count):
+                        return None
+                    count += 1
+            return None
+
+        states = self._repeat_states(
+            pc + 4, stop, pos, marks, minimum, maximum, greedy
+        )
+        try:
+            for at, seen_marks in states:
+                found = self._search_state(following, at, seen_marks, anchored_end)
+                if found is not None:
+                    return found
+                if possessive:
+                    return None
+        finally:
+            states.close()
+        return None
+
     def _in_charset(self, pc, pos, in_op):
         code = self.code
         char = self.char(pos)
-        text = self.text_char(pos)
+        text = None
         negate = False
         matched = False
         while True:
@@ -329,15 +607,18 @@ class _Engine:
                 if self._charset_char(char, code[pc + 1], in_op):
                     matched = True
                 pc += 2
-            elif op in (_RANGE, _RANGE_UNI_IGNORE):
+            elif op == _RANGE or op == _RANGE_UNI_IGNORE:
                 lo, hi = code[pc + 1], code[pc + 2]
                 if in_op == _IN_UNI_IGNORE:
-                    if unicode_tolower(char) in range(lo, hi + 1) or char in range(lo, hi + 1):
+                    lowered = unicode_tolower(char)
+                    if (lo <= lowered <= hi) or (lo <= char <= hi):
                         matched = True
                 elif lo <= char <= hi:
                     matched = True
                 pc += 3
             elif op == _CATEGORY:
+                if text is None:
+                    text = self.text_char(pos)
                 if _category_matches(code[pc + 1], text, char):
                     matched = True
                 pc += 2
@@ -368,13 +649,12 @@ class _Engine:
     def _charset_char(self, char, wanted, in_op):
         if in_op == _IN_UNI_IGNORE:
             return unicode_tolower(char) == unicode_tolower(wanted) or char == wanted
-        if in_op in (_IN_IGNORE, _IN_LOC_IGNORE):
+        if in_op == _IN_IGNORE or in_op == _IN_LOC_IGNORE:
             return ascii_tolower(char) == ascii_tolower(wanted)
         return char == wanted
 
     def _at_matches(self, at, pos):
-        string = self.string
-        if at in (0, 2):
+        if at == 0 or at == 2:
             return pos == 0
         if at == 1:
             return pos == 0 or self.char(pos - 1) == 10
@@ -388,7 +668,7 @@ class _Engine:
         before = pos > 0 and _is_word(self.text_char(pos - 1))
         after = pos < self.end and _is_word(self.text_char(pos))
         boundary = before != after
-        return not boundary if at in (4, 9, 11) else boundary
+        return not boundary if (at == 4 or at == 9 or at == 11) else boundary
 
 
 def compile(pattern, flags, code, ngroups, groupindex, indexgroup):
@@ -430,6 +710,26 @@ _SINGLE_CHAR_OPS = (
 )
 
 
+def _is_single_char_op(op):
+    return (
+        op == _LITERAL
+        or op == _NOT_LITERAL
+        or op == _ANY
+        or op == _ANY_ALL
+        or op == _IN
+        or op == _IN_IGNORE
+        or op == _IN_UNI_IGNORE
+        or op == _IN_LOC_IGNORE
+        or op == _CATEGORY
+        or op == _LITERAL_IGNORE
+        or op == _LITERAL_LOC_IGNORE
+        or op == _LITERAL_UNI_IGNORE
+        or op == _NOT_LITERAL_IGNORE
+        or op == _NOT_LITERAL_LOC_IGNORE
+        or op == _NOT_LITERAL_UNI_IGNORE
+    )
+
+
 class Pattern:
     def __init__(self, pattern, flags, code, ngroups, groupindex, indexgroup):
         self.pattern = pattern
@@ -446,10 +746,15 @@ class Pattern:
         self._first_op = op
         self._single_char_only = False
         self._branch_pcs = None
-        if op in _SINGLE_CHAR_OPS:
-            if op in (_ANY, _ANY_ALL):
+        if _is_single_char_op(op):
+            if op == _ANY or op == _ANY_ALL:
                 next_pc = pc + 1
-            elif op in (_IN, _IN_IGNORE, _IN_UNI_IGNORE, _IN_LOC_IGNORE):
+            elif (
+                op == _IN
+                or op == _IN_IGNORE
+                or op == _IN_UNI_IGNORE
+                or op == _IN_LOC_IGNORE
+            ):
                 next_pc = pc + 1 + code[pc + 1]
             else:
                 next_pc = pc + 2
@@ -472,18 +777,22 @@ class Pattern:
                 self._branch_pcs = tuple(arms)
 
     def _engine(self, string, endpos):
-        end = len(string) if endpos is None else min(endpos, len(string))
+        length = len(string)
+        end = length if (endpos is None or endpos > length) else (0 if endpos < 0 else endpos)
         engine = _Engine(self._code, string, end)
         engine.groups = self.groups
-        engine._marks_template = [-1] * (2 * self.groups)
         return engine
 
     def _pc_can_start_at(self, engine, pc, pos):
         code = self._code
         op = code[pc] if pc < len(code) else _FAILURE
-        if op in _SINGLE_CHAR_OPS:
+        if _is_single_char_op(op):
             return engine._match_one(pc, pos)
-        if op in (_REPEAT_ONE, _MIN_REPEAT_ONE, _POSSESSIVE_REPEAT_ONE):
+        if (
+            op == _REPEAT_ONE
+            or op == _MIN_REPEAT_ONE
+            or op == _POSSESSIVE_REPEAT_ONE
+        ):
             if code[pc + 2] >= 1:
                 return engine._match_one(pc + 4, pos)
             return True
@@ -492,10 +801,14 @@ class Pattern:
         return True
 
     def _can_start_at(self, engine, pos):
-        if self._branch_pcs is not None:
-            for arm_pc in self._branch_pcs:
-                if self._pc_can_start_at(engine, arm_pc, pos):
+        branch_pcs = self._branch_pcs
+        if branch_pcs is not None:
+            i = 0
+            n = len(branch_pcs)
+            while i < n:
+                if self._pc_can_start_at(engine, branch_pcs[i], pos):
                     return True
+                i += 1
             return False
         return self._pc_can_start_at(engine, self._first_pc, pos)
 
@@ -507,33 +820,29 @@ class Pattern:
                 return None
             return Match(self, engine.string, [pos, pos + 1], pos, engine.end)
         marks = [-1] * (2 * self.groups)
-        states = engine.run(self._start_pc if False else 0, pos, marks)
-        try:
-            for stop, found in states:
-                if anchored_end and stop != engine.end:
-                    continue
-                return Match(self, engine.string, [pos, stop, *found], pos, engine.end)
-        finally:
-            states.close()
-        return None
+        found = engine._search_state(0, pos, marks, anchored_end)
+        if found is None:
+            return None
+        stop, found_marks = found
+        return Match(self, engine.string, [pos, stop, *found_marks], pos, engine.end)
 
     def _match_at(self, string, pos, endpos, anchored_end=False):
         engine = self._engine(string, endpos)
         return self._match_at_engine(engine, pos, anchored_end)
 
     def match(self, string, pos=0, endpos=None):
-        pos = max(0, pos)
+        pos = 0 if pos < 0 else pos
         return self._match_at(string, pos, endpos)
 
     def fullmatch(self, string, pos=0, endpos=None):
-        return self._match_at(string, max(0, pos), endpos, anchored_end=True)
+        pos = 0 if pos < 0 else pos
+        return self._match_at(string, pos, endpos, anchored_end=True)
 
-    def search(self, string, pos=0, endpos=None):
-        engine = self._engine(string, endpos)
+    def _search_engine(self, engine, start):
         engine_end = engine.end
-        start = max(0, pos)
         anchored_start = (
-            self._first_op == _AT and self._code[self._first_pc + 1] in (0, 1)
+            self._first_op == _AT
+            and (self._code[self._first_pc + 1] == 0 or self._code[self._first_pc + 1] == 1)
         )
         while start <= engine_end:
             found = self._match_at_engine(engine, start)
@@ -544,11 +853,17 @@ class Pattern:
             start += 1
         return None
 
+    def search(self, string, pos=0, endpos=None):
+        engine = self._engine(string, endpos)
+        start = 0 if pos < 0 else pos
+        return self._search_engine(engine, start)
+
     def finditer(self, string, pos=0, endpos=None):
-        start = max(0, pos)
-        limit = len(string) if endpos is None else min(endpos, len(string))
+        engine = self._engine(string, endpos)
+        start = 0 if pos < 0 else pos
+        limit = engine.end
         while start <= limit:
-            found = self.search(string, start, endpos)
+            found = self._search_engine(engine, start)
             if found is None:
                 return
             yield found
@@ -557,36 +872,60 @@ class Pattern:
 
     def findall(self, string, pos=0, endpos=None):
         result = []
-        for found in self.finditer(string, pos, endpos):
-            if self.groups == 1:
+        engine = self._engine(string, endpos)
+        start = 0 if pos < 0 else pos
+        limit = engine.end
+        groups = self.groups
+        while start <= limit:
+            found = self._search_engine(engine, start)
+            if found is None:
+                break
+            if groups == 1:
                 result.append(found.group())
-            elif self.groups == 2:
+            elif groups == 2:
                 result.append(found.group(1))
             else:
                 result.append(found.groups())
+            begin, stop = found.span()
+            start = stop if stop > begin else stop + 1
         return result
 
     def split(self, string, maxsplit=0):
         result = []
         last = 0
         count = 0
-        for found in self.finditer(string):
+        engine = self._engine(string, None)
+        start = 0
+        limit = engine.end
+        groups = self.groups
+        while start <= limit:
             if maxsplit and count >= maxsplit:
+                break
+            found = self._search_engine(engine, start)
+            if found is None:
                 break
             begin, stop = found.span()
             result.append(string[last:begin])
-            for group in range(1, self.groups):
+            group = 1
+            while group < groups:
                 result.append(found.group(group))
+                group += 1
             last = stop
             count += 1
+            start = stop if stop > begin else stop + 1
         result.append(string[last:])
         return result
 
     def subn(self, repl, string, count=0):
+        engine = self._engine(string, None)
+        limit = engine.end
+        found = self._search_engine(engine, 0)
+        if found is None or (count and count < 0):
+            return (string[:] if isinstance(string, (str, bytes)) else _join_like(string, [string])), 0
         result = []
         last = 0
         made = 0
-        for found in self.finditer(string):
+        while found is not None:
             if count and made >= count:
                 break
             begin, stop = found.span()
@@ -594,8 +933,12 @@ class Pattern:
             result.append(self._replacement(repl, found))
             last = stop
             made += 1
+            start = stop if stop > begin else stop + 1
+            if start > limit or (count and made >= count):
+                break
+            found = self._search_engine(engine, start)
         result.append(string[last:])
-        joined = string[:0].join(result) if False else _join_like(string, result)
+        joined = _join_like(string, result)
         return joined, made
 
     def sub(self, repl, string, count=0):
@@ -693,16 +1036,22 @@ class Match:
         self.pos = pos
         self.endpos = endpos
         self.lastindex = None
-        for group in range(pattern.groups - 1, 0, -1):
+        group = pattern.groups - 1
+        while group > 0:
             if marks[2 * group] >= 0:
                 self.lastindex = group
                 break
+            group -= 1
         self.lastgroup = None
         if self.lastindex is not None:
-            for name, index in pattern.groupindex.items():
-                if index == self.lastindex:
-                    self.lastgroup = name
-                    break
+            indexgroup = pattern._indexgroup
+            if indexgroup and self.lastindex < len(indexgroup):
+                self.lastgroup = indexgroup[self.lastindex]
+            elif pattern.groupindex:
+                for name, index in pattern.groupindex.items():
+                    if index == self.lastindex:
+                        self.lastgroup = name
+                        break
 
     def span(self, group=0):
         return self.start(group), self.end(group)
@@ -717,26 +1066,46 @@ class Match:
             group = self.re.groupindex[group]
         return self._marks[2 * group + 1]
 
+    def _group_one(self, group):
+        if isinstance(group, str):
+            group = self.re.groupindex[group]
+        start = self._marks[2 * group]
+        if start < 0:
+            return None
+        return self.string[start : self._marks[2 * group + 1]]
+
     def group(self, *groups):
-        if not groups:
-            groups = (0,)
+        n = len(groups)
+        if n == 0:
+            return self._group_one(0)
+        if n == 1:
+            return self._group_one(groups[0])
         values = []
-        for group in groups:
-            if isinstance(group, str):
-                group = self.re.groupindex[group]
-            start, stop = self._marks[2 * group], self._marks[2 * group + 1]
-            values.append(None if start < 0 else self.string[start:stop])
-        return values[0] if len(values) == 1 else tuple(values)
+        i = 0
+        while i < n:
+            values.append(self._group_one(groups[i]))
+            i += 1
+        return tuple(values)
 
     def groups(self, default=None):
-        return tuple(
-            self.group(group) if self._marks[2 * group] >= 0 else default
-            for group in range(1, self.re.groups)
-        )
+        values = []
+        marks = self._marks
+        string = self.string
+        group = 1
+        limit = self.re.groups
+        while group < limit:
+            start = marks[2 * group]
+            values.append(
+                default if start < 0 else string[start : marks[2 * group + 1]]
+            )
+            group += 1
+        return tuple(values)
 
     def groupdict(self, default=None):
+        if not self.re.groupindex:
+            return {}
         return {
-            name: (self.group(index) if self._marks[2 * index] >= 0 else default)
+            name: (self._group_one(index) if self._marks[2 * index] >= 0 else default)
             for name, index in self.re.groupindex.items()
         }
 
@@ -744,7 +1113,7 @@ class Match:
         return self.re._replacement(template_text, self)
 
     def __getitem__(self, group):
-        return self.group(group)
+        return self._group_one(group)
 
     def __repr__(self):
         return "<re.Match object; span=" + repr(self.span()) + ", match=" + repr(self.group()) + ">"

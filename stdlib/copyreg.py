@@ -61,10 +61,12 @@ def _reduce_ex(self, proto):
     assert proto < 2
     cls = self.__class__
     for base in cls.__mro__:
+        if base is object:
+            break
         if hasattr(base, '__flags__') and not base.__flags__ & _HEAPTYPE:
             break
         new = base.__new__
-        if isinstance(new, _new_type) and new.__self__ is base:
+        if isinstance(new, _new_type) and getattr(new, '__self__', None) is base:
             break
     else:
         base = object # not really reachable

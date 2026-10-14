@@ -2,16 +2,22 @@
 
 import os
 import subprocess
-import sys
 
 import pytest
 
 from mule.compiler import build
+from test.python_host import python_host
 
 
 @pytest.mark.parametrize(
     "source",
     [
+        "import math\nmath.factorial(-1)\n",
+        "import posix\nposix.fstat(-1)\n",
+        "import _csv\n_csv.reader(None)\n",
+        "float.hex('1')\n",
+        "float('nan').as_integer_ratio()\n",
+        "float('inf').as_integer_ratio()\n",
         """def stream():
     raise LookupError('original')
     yield None
@@ -38,7 +44,7 @@ def test_builtin_tracebacks_match_python_verbatim(tmp_path, source):
     path.write_text(source)
     environment = {**os.environ, "PYTHON_COLORS": "0"}
     oracle = subprocess.run(
-        [sys.executable, path],
+        [python_host(), path],
         env=environment,
         capture_output=True,
         timeout=10,

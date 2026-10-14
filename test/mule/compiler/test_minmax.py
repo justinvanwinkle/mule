@@ -1,16 +1,16 @@
 """Compiled min/max reductions preserve Python iteration and key behavior."""
 
 import subprocess
-import sys
 
 import pytest
 
 from test.mule.compiler.test_native import run_native
+from test.python_host import python_host
 
 
 def assert_matches_python(tmp_path, source):
     reference = subprocess.run(
-        [sys.executable, "-c", source],
+        [python_host(), "-c", source],
         capture_output=True,
         text=True,
         check=True,

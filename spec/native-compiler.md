@@ -44,6 +44,24 @@ in the calling thread's Linux CPU affinity mask. Linux sysfs
 siblings count once, including when only some siblings are allowed. An explicit
 `Graph(workers=...)` overrides automatic sizing. Missing or empty topology is
 reported as a toolchain error rather than guessed from the logical CPU count.
+A one-worker graph drains the same ready-step queue on the calling thread;
+larger graphs use the worker pool. Both schedulers preserve dependency
+notifications, dynamic graph expansion, cache validation and error propagation.
+Configuring a graph allocates no worker threads. Its `worker_count` records
+configured parallelism; the pool starts when work becomes runnable. A source-only
+or empty graph therefore requires no thread stack. Startup happens before queued
+build actions are released, and partial startup failure joins the threads already
+started before propagating the error. The initial backlog is retained for retry.
+SBCL `src/cold/compile-cold-sbcl.lisp`, `parallel-make-host-2`, creates subprocesses
+inside the actual file-compilation traversal, rather than while configuring its
+job limit. Mule's existing thread-based build scheduler follows that demand
+boundary. This saves idle OS threads and their reserved compiler stacks; submitted
+parallel work still requires real thread support and uses the configured count.
+SBCL `src/compiler/main.lisp`, `compile-file`, calls `sub-compile-file` on the
+calling thread. Mule's serial scheduler follows that execution boundary while
+retaining its additional artifact dependency graph. It avoids thread startup
+and extra stack allocation for an explicitly serial build; it does not emulate
+OS threads or enable the native runtime's unimplemented thread creation.
 This sizes Mule's existing build scheduler; it does not change compiler stages
 or the linker's separate thread setting. SBCL's `make-host-2.sh` and
 `make-host-2.lisp` invoke the cold compiler through
@@ -51,6 +69,51 @@ or the linker's separate thread setting. SBCL's `make-host-2.sh` and
 affinity/sysfs query is a Linux host-build adaptation to bound independent Mule
 build steps by available physical cores; it changes resource use, not generated
 program semantics.
+
+IR1 graph cleanup runs dominator and loop analysis before backend selection,
+following SBCL `src/compiler/main.lisp`, `compile-component`, and
+`src/compiler/loop.lisp`, `find-dominators` and `loop-analyze`. Component
+blocks record their immediate dominator and innermost loop; loop regions record
+natural or irreducible heads, tails, nesting, depth, and exits. Natural,
+irreducible, and outer-region membership is dispatched through loop classes.
+Python lists and object-owned segment sets replace SBCL's linked block lists
+and scratch flag, retaining its graph walks and nesting rules.
+
+Mule's loop graph includes explicit exceptional edges, following the existing
+DFO adaptation. A terminal exception block has no normal successor in Mule IR,
+whereas SBCL models component exits through its tail and nonlocal-exit machinery.
+For dominance and loop membership, a finite sink therefore has an analysis-only
+edge to the dummy component tail. This records that error unwinding leaves the
+component and ensures the block belongs to a region; it emits no control transfer
+or runtime instruction. Cyclic paths without exits retain their real loop edges.
+
+Native thread creation remains unimplemented. Before compiled Python callbacks
+can run on additional OS threads, the runtime must distinguish shared interpreter
+state (builtin classes, module registry, code metadata, heap membership) from
+per-thread state (pending exceptions, handler stacks, active frames, constructor
+forwarding, coroutine state). Current thread-local copies of interpreter state
+cannot initialize a new worker correctly.
+
+The required SBCL machinery is explicit: `src/runtime/thread.c`,
+`init_new_thread`, registers each native thread with GC before language code
+runs; `src/code/target-thread.lisp`, `start-thread`, establishes language TLS
+and invokes the compiled trampoline. `src/compiler/ir2tran.lisp` inserts
+safepoints at function environment entry and loop headers when the policy
+requires them; `src/compiler/x86-64/c-call.lisp` records foreign-call transitions.
+Mule requires the corresponding IR2 operations and native thread/root registry,
+including collection coordination while a thread blocks in an OS service.
+
+Mule's explicit reference-counted ownership additionally requires synchronized
+reference transfer and safe load/retain or replace/release of shared global and
+container slots. Atomic counts alone do not protect mutable container storage or
+prevent a loaded pointer from being freed before it is retained. Direct LLVM
+field and global accesses must retain their existing ownership guarantees when
+shared, with synchronization selected through compiler proofs and physical
+storage protocols. Compiled Python remains responsible for thread callbacks,
+argument validation, exceptions, joins, lock ownership, and thread-local
+attribute behavior. These are prerequisites for real threaded execution, not
+available thread features. Native thread-start APIs currently raise
+`RuntimeError` before creating a worker.
 
 SBCL `src/code/toplevel.lisp`, `toplevel-init`, also stops option processing
 at `--script` and leaves the remaining arguments in `*posix-argv*` for user code;
@@ -847,6 +910,14 @@ local-variable mappings and full function introspection remain incomplete. Funct
 use Mule's native callable ABI. The runtime has a recursion depth guard. Module
 startup does not yet implement Python's command-line argument or import/module
 metadata protocols. Error cleanup preserves the first pending runtime error.
+
+Cycle tracking's object set and its cached per-object flag update
+together, including when class conversion adds owned pointers to previously
+untracked scalar or tuple storage. SBCL `src/runtime/gencgc.c` maintains dirty
+card metadata when pointer-bearing storage changes; Mule's reference-counted
+collector needs object membership rather than generational cards at this
+boundary. Consistent membership ensures final release removes every tracked
+object before freeing its storage.
 
 Heap ownership uses reference counting supplemented by explicit manual
 `gc.collect()` cycle passes. User finalizers and automatic collection scheduling

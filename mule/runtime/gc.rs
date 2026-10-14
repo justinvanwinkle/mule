@@ -11,9 +11,13 @@ thread_local! {
     static COLLECTING: Cell<bool> = const { Cell::new(false) };
 }
 
-pub fn track(value: Value) { TRACKED.with_borrow_mut(|values| { values.insert(value as usize); }); }
-pub fn untrack(value: Value) { TRACKED.with_borrow_mut(|values| { values.remove(&(value as usize)); }); }
-pub fn unreachable(value: Value) -> bool { DEAD.with_borrow(|values| values.contains(&(value as usize))) }
+pub fn track(value: Value) {
+    unsafe { (*value).tracked = true; }
+    TRACKED.with_borrow_mut(|values| { values.insert(value as usize); });
+}
+pub fn untrack(value: Value) { TRACKED.with_borrow_mut(|values| { if !values.is_empty() { values.remove(&(value as usize)); } }); }
+pub fn is_tracked(value: Value) -> bool { TRACKED.with_borrow(|values| !values.is_empty() && values.contains(&(value as usize))) }
+pub fn unreachable(value: Value) -> bool { DEAD.with_borrow(|values| !values.is_empty() && values.contains(&(value as usize))) }
 
 fn snapshot() -> Vec<Value> { TRACKED.with_borrow(|values| values.iter().map(|value| *value as Value).collect()) }
 
@@ -37,10 +41,13 @@ unsafe extern "C" fn collect(_: Value, args: Value) -> Value {
         let indices: HashMap<usize, usize> = values.iter().enumerate().map(|(index, value)| (*value as usize, index)).collect();
         let mut counts: Vec<usize> = values.iter().map(|value| (**value).references).collect();
         let edges: Vec<Vec<usize>> = values.iter().map(|value| (**value).data.owned_values().iter().filter_map(|child| indices.get(&(*child as usize)).copied()).collect()).collect();
-        for children in &edges {
+        for (owner, children) in edges.iter().enumerate() {
             for child in children {
                 // Each enumerated edge owns one count, including repeated aliases.
-                assert!(counts[*child] > 0, "owned heap edges exceed reference count");
+                assert!(counts[*child] > 0,
+                    "owned heap edges exceed reference count: target={:p} type={:?} refs={} owner={:p} type={:?}",
+                    values[*child], object::type_name(values[*child]), (*values[*child]).references,
+                    values[owner], object::type_name(values[owner]));
                 counts[*child] -= 1;
             }
         }
@@ -59,6 +66,7 @@ unsafe extern "C" fn collect(_: Value, args: Value) -> Value {
         for value in &dead { crate::weakref::clear(*value); }
         let mut storage = Vec::with_capacity(dead.len());
         for value in &dead {
+            (**value).tracked = false;
             untrack(*value);
             storage.push((*value, std::mem::replace(&mut (**value).data, Data::None)));
         }
@@ -90,7 +98,7 @@ unsafe extern "C" fn referents(_: Value, args: Value) -> Value {
 unsafe extern "C" fn tracked(_: Value, args: Value) -> Value {
     unsafe {
         let Some([value]) = operands(args) else { return null_mut(); };
-        object::bool_value(TRACKED.with_borrow(|set| set.contains(&(value as usize))))
+        object::bool_value(!value.is_null() && !object::is_fixnum(value) && (*value).tracked)
     }
 }
 

@@ -1,16 +1,16 @@
 """Compare decimal percent formatting and numeric remainder with Python."""
 
 import subprocess
-import sys
 
 import pytest
 
 from test.mule.compiler.test_native import run_native
+from test.python_host import python_host
 
 
 def assert_matches_python(tmp_path, source):
     reference = subprocess.run(
-        [sys.executable, "-c", source],
+        [python_host(), "-c", source],
         check=False,
         capture_output=True,
         text=True,

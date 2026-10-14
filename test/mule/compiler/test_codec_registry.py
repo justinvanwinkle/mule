@@ -75,3 +75,76 @@ for data in (b'\xc2', b'\xe2\x82', b'\xf0\x9f\x92', b'\xe0\x80', b'\xed\xa0', b'
             print('invalid', final)
 """,
     )
+
+
+@pytest.mark.integration
+def test_registered_text_methods_bom_state_buffers_and_callback_contracts(tmp_path):
+    compare(
+        tmp_path,
+        r"""
+import codecs
+import warnings
+for encoding in ('utf-8-sig', 'UTF_8_SIG'):
+    encoded = 'snow 雪'.encode(encoding)
+    print(encoding, encoded, encoded.decode(encoding),
+          bytearray(encoded).decode(encoding), str(encoded, encoding))
+for data in (b'plain', b'\xef\xbb\xbftext', b'\xef\xbb\xbf\xef\xbb\xbftext'):
+    print(repr(data.decode('utf-8-sig')))
+decoder = codecs.getincrementaldecoder('utf-8-sig')()
+for chunk in (b'\xef', b'\xbb', b'\xbf\xe9', b'\x9b', b'\xaa'):
+    print(repr(decoder.decode(chunk)), decoder.getstate())
+print(repr(decoder.decode(b'', final=True)))
+encoder = codecs.getincrementalencoder('utf-8-sig')()
+print(encoder.encode('a'), encoder.encode('b'), encoder.getstate())
+encoder.reset()
+print(encoder.encode('c'))
+saved = []
+def encode(*args):
+    print('encoder arguments', len(args))
+    return b'encoded', len(args[0])
+def decode(*args):
+    print('decoder arguments', len(args), type(args[0]).__name__)
+    saved.append(args[0])
+    return 'decoded', len(args[0])
+def search(name):
+    return codecs.CodecInfo(encode, decode, name=name) if name == 'text_custom' else None
+codecs.register(search)
+print('value'.encode('text-custom'))
+print('value'.encode('text-custom', 'strict'))
+class Data(bytes):
+    def __getitem__(self, key): raise AssertionError('slice override')
+    def __bytes__(self): raise AssertionError('bytes override')
+print(bytes.decode(Data(b'data'), 'text-custom'))
+print(b'data'.decode('text-custom', 'strict'))
+print(str(b'data', 'text-custom'))
+print([view.tobytes() for view in saved])
+codecs.unregister(search)
+for encoding in ('base64_codec', 'rot_13'):
+    for value in ('value', b'value'):
+        try:
+            value.encode(encoding) if isinstance(value, str) else value.decode(encoding)
+        except LookupError as error:
+            print(str(error))
+def invalid(name):
+    if name == 'text_bad_result':
+        return codecs.CodecInfo(lambda v, e='strict': ('bad', len(v)),
+                               lambda v, e='strict': (b'bad', len(v)), name=name)
+    if name == 'text_bad_tuple':
+        return codecs.CodecInfo(lambda v, e='strict': 'bad',
+                               lambda v, e='strict': ('bad',), name=name)
+    if name == 'text_bytearray':
+        return codecs.CodecInfo(lambda v, e='strict': (bytearray(b'bytes'), len(v)),
+                               lambda v, e='strict': ('text', len(v)), name=name)
+codecs.register(invalid)
+for encoding in ('text_bad_result', 'text_bad_tuple'):
+    for value in ('value', b'value'):
+        try:
+            value.encode(encoding) if isinstance(value, str) else value.decode(encoding)
+        except TypeError as error:
+            print(str(error))
+with warnings.catch_warnings(record=True) as seen:
+    warnings.simplefilter('always')
+    print('text'.encode('text_bytearray'))
+print([str(item.message) for item in seen])
+""",
+    )

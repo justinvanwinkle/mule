@@ -1303,6 +1303,31 @@ class BufferedWriter(_BufferedIOMixin):
                 # We're full, so let's pre-flush the buffer.  (This may
                 # raise BlockingIOError with characters_written == 0.)
                 self._flush_unlocked()
+            if not self._write_buf and type(b) is bytes and len(b) > self.buffer_size:
+                total = len(b)
+                offset = 0
+                while offset < total:
+                    chunk = b if offset == 0 else b[offset:]
+                    try:
+                        n = self.raw.write(chunk)
+                    except BlockingIOError:
+                        raise RuntimeError("self.raw should implement RawIOBase: it "
+                                           "should not raise BlockingIOError")
+                    if n is None:
+                        rem = total - offset
+                        if rem > self.buffer_size:
+                            self._write_buf.extend(b[offset:offset + self.buffer_size])
+                            raise BlockingIOError(
+                                errno.EAGAIN,
+                                "write could not complete without blocking",
+                                offset + self.buffer_size,
+                            )
+                        self._write_buf.extend(chunk)
+                        return total
+                    if n < 0 or n > len(chunk):
+                        raise OSError("write() returned incorrect number of bytes")
+                    offset += n
+                return total
             before = len(self._write_buf)
             self._write_buf.extend(b)
             written = len(self._write_buf) - before
@@ -1345,7 +1370,10 @@ class BufferedWriter(_BufferedIOMixin):
                     "write could not complete without blocking", 0)
             if n > len(self._write_buf) or n < 0:
                 raise OSError("write() returned incorrect number of bytes")
-            del self._write_buf[:n]
+            if n == len(self._write_buf):
+                self._write_buf.clear()
+            else:
+                del self._write_buf[:n]
 
     def tell(self):
         return _BufferedIOMixin.tell(self) + len(self._write_buf)
@@ -1765,21 +1793,25 @@ class FileIO(RawIOBase):
                 except OSError:
                     pass
 
-        result = bytearray(bufsize)
+        chunks = []
         bytes_read = 0
         try:
-            while n := os.readinto(self._fd, memoryview(result)[bytes_read:]):
-                bytes_read += n
-                if bytes_read >= len(result):
-                    result.resize(_new_buffersize(bytes_read))
+            while True:
+                chunk = os.read(self._fd, bufsize)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                bytes_read += len(chunk)
+                bufsize = DEFAULT_BUFFER_SIZE
         except BlockingIOError:
             if not bytes_read:
                 return None
 
-        assert len(result) - bytes_read >= 1, \
-            "os.readinto buffer size 0 will result in erroneous EOF / returns 0"
-        result.resize(bytes_read)
-        return bytes(result)
+        if not chunks:
+            return b""
+        if len(chunks) == 1:
+            return chunks[0]
+        return b"".join(chunks)
 
     def readinto(self, buffer):
         """Same as RawIOBase.readinto()."""

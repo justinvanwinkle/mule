@@ -78,6 +78,7 @@ struct Tm {
 
 unsafe extern "C" {
     fn clock_gettime(clock: i32, spec: *mut Timespec) -> i32;
+    fn clock_getres(clock: i32, spec: *mut Timespec) -> i32;
     fn nanosleep(requested: *const Timespec, remaining: *mut Timespec) -> i32;
     fn localtime_r(time: *const i64, result: *mut Tm) -> *mut Tm;
     fn gmtime_r(time: *const i64, result: *mut Tm) -> *mut Tm;
@@ -121,6 +122,30 @@ time_clock_fn!(time_monotonic, 1);
 time_clock_fn!(time_wall, 0);
 time_clock_fn!(time_process, 2);
 time_clock_fn!(time_thread, 3);
+
+unsafe fn clock_record(args: Value, read: unsafe extern "C" fn(i32, *mut Timespec) -> i32) -> Value {
+    unsafe {
+        let Some([clock]) = operands::<1>(args) else { return null_mut() };
+        let Some(clock) = posix_int(clock).and_then(|clock| i32::try_from(clock).ok())
+            else { return fail("OverflowError", "clock identifier does not fit clockid_t") };
+        let mut spec = Timespec { seconds: 0, nanoseconds: 0 };
+        let status = read(clock, &mut spec);
+        let error = if status < 0 { std::io::Error::last_os_error().raw_os_error().unwrap_or(5) } else { 0 };
+        posix_tuple(&[
+            object::small(i64::from(error)),
+            posix_number(i128::from(spec.seconds)),
+            posix_number(i128::from(spec.nanoseconds)),
+        ])
+    }
+}
+
+unsafe extern "C" fn time_clock_parts(_: Value, args: Value) -> Value {
+    unsafe { clock_record(args, clock_gettime) }
+}
+
+unsafe extern "C" fn time_resolution_parts(_: Value, args: Value) -> Value {
+    unsafe { clock_record(args, clock_getres) }
+}
 
 unsafe extern "C" fn time_sleep(_: Value, args: Value) -> Value {
     unsafe {
@@ -208,7 +233,9 @@ pub unsafe extern "C" fn mule_time_module_init(globals: Value) -> Value {
         if object::has_error() {
             return null_mut();
         }
-        let exports: [(&str, Native); 7] = [
+        let exports: [(&str, Native); 9] = [
+            ("clock_parts", time_clock_parts),
+            ("resolution_parts", time_resolution_parts),
             ("monotonic", time_monotonic),
             ("wall", time_wall),
             ("process", time_process),
@@ -391,6 +418,50 @@ unsafe extern "C" fn read_byte(_: Value, args: Value) -> Value {
             return null_mut();
         };
         object::small(i64::from(bytes[index]))
+    }
+}
+
+unsafe extern "C" fn read_u64_le(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value, start]) = operands(args) else {
+            return null_mut();
+        };
+        let Some(source) = bytes_storage(value) else {
+            return null_mut();
+        };
+        if source.len() < 8 {
+            return fail("IndexError", "word read exceeds byte storage");
+        }
+        let Some(start) = storage_index(start, source.len() - 7) else {
+            return null_mut();
+        };
+        let word = u64::from_le_bytes(source[start..start + 8].try_into().unwrap());
+        numeric::integer_from_usize(word as usize)
+    }
+}
+
+unsafe extern "C" fn byte_copy(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value, start, length]) = operands(args) else {
+            return null_mut();
+        };
+        let Some(source) = bytes_storage(value) else {
+            return null_mut();
+        };
+        // Vec byte storage is bounded by isize::MAX, so the inclusive
+        // offset/count bounds fit usize even for an empty source.
+        let Some(start) = storage_index(start, source.len() + 1) else {
+            return null_mut();
+        };
+        let Some(length) = storage_index(length, source.len() - start + 1) else {
+            return null_mut();
+        };
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(length).is_err() {
+            return fail("MemoryError", "byte storage allocation failed");
+        }
+        bytes.extend_from_slice(&source[start..start + length]);
+        object::new_value(Data::Bytes(bytes, null_mut(), null_mut()))
     }
 }
 
@@ -733,15 +804,59 @@ unsafe extern "C" fn posix_stat(_: Value, args: Value) -> Value {
     }
 }
 
+#[repr(C)]
+struct DescriptorStat {
+    device: u64,
+    inode: u64,
+    links: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    padding: i32,
+    special_device: u64,
+    size: i64,
+    block_size: i64,
+    blocks: i64,
+    accessed: Timespec,
+    modified: Timespec,
+    changed: Timespec,
+    reserved: [i64; 3],
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<DescriptorStat>() == 144);
+    assert!(std::mem::offset_of!(DescriptorStat, mode) == 24);
+    assert!(std::mem::offset_of!(DescriptorStat, accessed) == 72);
+};
+
+unsafe extern "C" {
+    #[link_name = "fstat"]
+    fn descriptor_stat(fd: i32, result: *mut DescriptorStat) -> i32;
+}
+
 unsafe extern "C" fn posix_fstat(_: Value, args: Value) -> Value {
     unsafe {
         let Some([fd]) = operands::<1>(args) else { return null_mut() };
-        let Some(fd) = posix_int(fd) else { return fail("TypeError", "fd must be an integer") };
-        let file: std::mem::ManuallyDrop<std::fs::File> = std::mem::ManuallyDrop::new(unsafe { std::os::unix::io::FromRawFd::from_raw_fd(fd as i32) });
-        match file.metadata() {
-            Ok(metadata) => posix_stat_row(&metadata),
-            Err(error) => posix_error(&error),
+        let Some(fd) = posix_int(fd).and_then(|value| i32::try_from(value).ok())
+            else { return fail("OverflowError", "file descriptor does not fit C int") };
+        let mut metadata: DescriptorStat = std::mem::zeroed();
+        if descriptor_stat(fd, &mut metadata) < 0 {
+            let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(5);
+            return posix_tuple(&[object::small(i64::from(error)), object::none_value()]);
         }
+        let row = posix_tuple(&[
+            posix_number(i128::from(metadata.mode)),
+            posix_number(i128::from(metadata.inode)),
+            posix_number(i128::from(metadata.device)),
+            posix_number(i128::from(metadata.links)),
+            posix_number(i128::from(metadata.uid)),
+            posix_number(i128::from(metadata.gid)),
+            posix_number(i128::from(metadata.size)),
+            posix_number(i128::from(metadata.accessed.seconds) * 1_000_000_000 + i128::from(metadata.accessed.nanoseconds)),
+            posix_number(i128::from(metadata.modified.seconds) * 1_000_000_000 + i128::from(metadata.modified.nanoseconds)),
+            posix_number(i128::from(metadata.changed.seconds) * 1_000_000_000 + i128::from(metadata.changed.nanoseconds)),
+        ]);
+        posix_tuple(&[object::small(0), row])
     }
 }
 
@@ -815,6 +930,41 @@ unsafe extern "C" fn posix_fchmod(_: Value, args: Value) -> Value {
             return posix_error(&std::io::Error::last_os_error());
         }
         object::none_value()
+    }
+}
+
+unsafe extern "C" fn posix_utime_at(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([path, directory, at_sec, at_ns, mt_sec, mt_ns, flags]) = operands::<7>(args)
+            else { return null_mut() };
+        let default_directory = directory == object::none_value();
+        let (Some(directory), Some(flags)) = (if default_directory { Some(-100) } else { posix_int(directory) }, posix_int(flags))
+            else { return null_mut() };
+        let mut times = [Timespec { seconds: 0, nanoseconds: 0 }, Timespec { seconds: 0, nanoseconds: 0 }];
+        let pointer = if at_sec == object::none_value() {
+            std::ptr::null()
+        } else {
+            let (Some(a), Some(b), Some(c), Some(d)) =
+                (posix_int(at_sec), posix_int(at_ns), posix_int(mt_sec), posix_int(mt_ns))
+                else { return null_mut() };
+            times[0] = Timespec { seconds: a, nanoseconds: b };
+            times[1] = Timespec { seconds: c, nanoseconds: d };
+            times.as_ptr()
+        };
+        let filename = if path == object::none_value() { None } else {
+            let Some(bytes) = posix_path(path) else { return null_mut() };
+            match std::ffi::CString::new(bytes) {
+                Ok(name) => Some(name),
+                Err(_) => return fail("ValueError", "embedded null byte"),
+            }
+        };
+        let result = match filename.as_ref() {
+            Some(name) => utimensat(directory as i32, name.as_ptr(), pointer, flags as i32),
+            None if default_directory => utimensat(directory as i32, std::ptr::null(), pointer, flags as i32),
+            None => futimens(directory as i32, pointer),
+        };
+        let error = if result < 0 { std::io::Error::last_os_error().raw_os_error().unwrap_or(5) } else { 0 };
+        object::small(i64::from(error))
     }
 }
 
@@ -954,6 +1104,16 @@ unsafe extern "C" fn posix_symlink(_: Value, args: Value) -> Value {
         let (Some(source), Some(target)) = (posix_path(source), posix_path(target)) else { return null_mut() };
         match std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(&source), std::ffi::OsStr::from_bytes(&target)) {
             Ok(()) => object::none_value(),
+            Err(error) => posix_error(&error),
+        }
+    }
+}
+
+unsafe extern "C" fn posix_executable_path(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([]) = operands::<0>(args) else { return null_mut() };
+        match std::env::current_exe() {
+            Ok(path) => posix_bytes(path.as_os_str().as_encoded_bytes()),
             Err(error) => posix_error(&error),
         }
     }
@@ -1248,6 +1408,38 @@ unsafe extern "C" fn posix_sysconf(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn posix_sched_getaffinity(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([pid, size]) = operands::<2>(args) else { return null_mut() };
+        let Some(pid) = posix_int(pid).and_then(|pid| i32::try_from(pid).ok())
+            else { return fail("OverflowError", "process ID does not fit pid_t") };
+        let Some(size) = posix_int(size).and_then(|size| usize::try_from(size).ok())
+            else { return fail("ValueError", "invalid CPU mask size") };
+        if size == 0 || size % 8 != 0 { return fail("ValueError", "CPU mask size must be a positive multiple of eight") }
+        let mut mask = Vec::<u64>::new();
+        if mask.try_reserve_exact(size / 8).is_err() { return fail("MemoryError", "cannot allocate CPU affinity mask") }
+        mask.resize(size / 8, 0);
+        let result = sched_getaffinity(pid, size, mask.as_mut_ptr().cast());
+        let error = if result < 0 { std::io::Error::last_os_error().raw_os_error().unwrap_or(5) } else { 0 };
+        let bytes = if result < 0 { &[][..] } else { std::slice::from_raw_parts(mask.as_ptr().cast::<u8>(), size) };
+        let payload = posix_bytes(bytes);
+        posix_tuple(&[object::small(i64::from(error)), payload])
+    }
+}
+
+unsafe extern "C" fn posix_sched_setaffinity(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([pid, mask]) = operands::<2>(args) else { return null_mut() };
+        let Some(pid) = posix_int(pid).and_then(|pid| i32::try_from(pid).ok())
+            else { return fail("OverflowError", "process ID does not fit pid_t") };
+        if mask.is_null() || object::is_fixnum(mask) { return fail("TypeError", "CPU mask must be bytes") }
+        let Data::Bytes(mask, _, _) = &(*mask).data else { return fail("TypeError", "CPU mask must be bytes") };
+        let result = sched_setaffinity(pid, mask.len(), mask.as_ptr().cast());
+        let error = if result < 0 { std::io::Error::last_os_error().raw_os_error().unwrap_or(5) } else { 0 };
+        object::small(i64::from(error))
+    }
+}
+
 #[repr(C)]
 struct UtsName {
     sysname: [c_char; 65],
@@ -1268,6 +1460,8 @@ unsafe extern "C" {
     fn ftruncate(fd: i32, length: i64) -> i32;
     fn fchmod(fd: i32, mode: u32) -> i32;
     fn fchmodat(directory: i32, path: *const c_char, mode: u32, flags: i32) -> i32;
+    fn utimensat(directory: i32, path: *const c_char, times: *const Timespec, flags: i32) -> i32;
+    fn futimens(fd: i32, times: *const Timespec) -> i32;
     fn fcntl(fd: i32, command: i32, ...) -> i32;
     fn flock(fd: i32, operation: i32) -> i32;
     fn strerror(code: i32) -> *const c_char;
@@ -1288,6 +1482,8 @@ unsafe extern "C" {
     fn umask(mask: u32) -> u32;
     fn kill(pid: i32, signal: i32) -> i32;
     fn sysconf(name: i32) -> i64;
+    fn sched_getaffinity(pid: i32, size: usize, mask: *mut std::ffi::c_void) -> i32;
+    fn sched_setaffinity(pid: i32, size: usize, mask: *const std::ffi::c_void) -> i32;
     fn uname(info: *mut UtsName) -> i32;
 }
 
@@ -1300,7 +1496,9 @@ pub unsafe extern "C" fn mule_posix_module_init(globals: Value) -> Value {
         }
         use std::os::unix::ffi::OsStrExt;
         let _ = globals;
-        let exports: [(&str, Native); 47] = [
+        let exports: [(&str, Native); 51] = [
+            ("sched_getaffinity_mask", posix_sched_getaffinity),
+            ("sched_setaffinity_mask", posix_sched_setaffinity),
             ("getrlimit", posix_getrlimit),
             ("setrlimit", posix_setrlimit),
             ("prlimit", posix_prlimit),
@@ -1315,6 +1513,7 @@ pub unsafe extern "C" fn mule_posix_module_init(globals: Value) -> Value {
             ("cwd", posix_cwd),
             ("chdir", posix_chdir),
             ("chmod_at", posix_chmod_at),
+            ("utime_at", posix_utime_at),
             ("fchmod", posix_fchmod),
             ("listdir", posix_listdir),
             ("stat", posix_stat),
@@ -1326,6 +1525,7 @@ pub unsafe extern "C" fn mule_posix_module_init(globals: Value) -> Value {
             ("link", posix_link),
             ("symlink", posix_symlink),
             ("readlink", posix_readlink),
+            ("executable_path_bytes", posix_executable_path),
             ("access", posix_access),
             ("open_fd", posix_open),
             ("read", posix_read),
@@ -1398,11 +1598,13 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
         if !bound {
             return null_mut();
         }
-        let exports: [(&str, Native); 14] = [
+        let exports: [(&str, Native); 16] = [
             ("read_pointer", read_pointer),
             ("read_c_string", read_c_string),
             ("byte_length", byte_length),
             ("read_byte", read_byte),
+            ("read_u64_le", read_u64_le),
+            ("byte_copy", byte_copy),
             ("text_from_codepoints", text_from_codepoints),
             ("bytes_from_values", bytes_from_values),
             ("call_with", crate::arguments::call_with),

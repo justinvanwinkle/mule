@@ -9,6 +9,7 @@ copies, and concatenation of finished pieces.
 
 from _mule_native import bytes_from_values as _bytes_from_values
 from _mule_native import byte_length as _byte_length
+from _mule_native import byte_copy as _byte_copy
 from _mule_native import read_byte as _read_byte
 from _mule_native import text_from_codepoints as _from_codepoints
 from _descriptors import staticmethod
@@ -355,7 +356,7 @@ def _codec_name(encoding):
         or name == "cp819"
     ):
         return "latin-1"
-    raise LookupError(f"unknown encoding: {encoding}")
+    return None
 
 
 def _escaped_character(code):
@@ -395,7 +396,13 @@ def _append_ascii(values, text):
 def encode(text, encoding, errors):
     _require_text(encoding, "encode() argument 'encoding' must be str")
     codec = _codec_name(encoding)
+    supplied = errors is not _MISSING
+    if not supplied:
+        errors = "strict"
     _require_text(errors, "encode() argument 'errors' must be str")
+    if codec is None:
+        from _codecs import _encode_text
+        return _encode_text(text, encoding, errors, supplied)
     if codec in ("unicode-escape", "raw-unicode-escape"):
         return _unicode_escape_encode(text, codec == "raw-unicode-escape")
     if codec == "utf-8":
@@ -519,7 +526,13 @@ def _decode_error(codec, data, start, end, reason):
 def decode(data, encoding, errors):
     """Decode ``bytes`` storage with a built-in codec."""
     codec = _codec_name(encoding)
+    supplied = errors is not _MISSING
+    if not supplied:
+        errors = "strict"
     _require_text(errors, "decode() argument 'errors' must be str")
+    if codec is None:
+        from _codecs import _decode_text
+        return _decode_text(data, encoding, errors, supplied)
     if codec in ("unicode-escape", "raw-unicode-escape"):
         return _unicode_escape_decode(data, errors, True, codec == "raw-unicode-escape")[0]
     codes = []
@@ -684,7 +697,35 @@ def _unicode_escape_decode(data, errors='strict', final=False, raw=False):
             index = _escape_decode_error(codes, data, start, index, reason, errors, raw)
             continue
         if byte == 78:
-            raise NotImplementedError('named Unicode escape decoding is not implemented')
+            from unicodedata import lookup
+
+            reason = 'malformed \\N character escape'
+            if index == size and not final:
+                index = start
+                break
+            if index < size and _read_byte(data, index) == 123:
+                index += 1
+                name_start = index
+                while index < size and _read_byte(data, index) != 125:
+                    index += 1
+                if index == size and not final:
+                    index = start
+                    break
+                if index < size and index > name_start:
+                    name = _byte_copy(data, name_start, index - name_start)
+                    index += 1
+                    reason = 'unknown Unicode character name'
+                    try:
+                        character = lookup(name)
+                    except KeyError:
+                        character = ''
+                    # Lookup accepts named sequences; a source escape denotes
+                    # exactly one codepoint.
+                    if _text_length(character) == 1:
+                        codes.append(_text_codepoint(character, 0))
+                        continue
+            index = _escape_decode_error(codes, data, start, index, reason, errors, raw)
+            continue
         codes.extend((92, byte))
         if invalid is None:
             invalid = _from_codepoints([byte])
@@ -1033,8 +1074,6 @@ def str(object=_MISSING, encoding=_MISSING, errors=_MISSING):
         return _string_protocol(object)
     if encoding is _MISSING:
         encoding = "utf-8"
-    if errors is _MISSING:
-        errors = "strict"
     if object is _MISSING:
         return ""
     if _text_storage(object):
@@ -1225,7 +1264,7 @@ class TextStorage:
             raise TypeError("maketrans expected at least 1 argument, got 0")
         raise TypeError(f"maketrans expected at most 3 arguments, got {len(args)}")
 
-    def encode(self, encoding="utf-8", errors="strict"):
+    def encode(self, encoding="utf-8", errors=_MISSING):
         return encode(self, encoding, errors)
 
     def find(self, sub, start=None, end=None, /):

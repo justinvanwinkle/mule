@@ -26,9 +26,15 @@ from . import (
     print_protocol,
     sequence_protocol,
 )
-from .artifacts import Graph, Node, Step, ToolchainError, digest, tool_identity
+from .artifacts import (
+    Graph,
+    Node,
+    Step,
+    ToolchainError,
+    tool_identity,
+)
 from .codegen import ForeignFunction, Program, generate
-from .inputs import read_source
+from .inputs import file_digest, read_source
 from .ir1opt import constant_literal
 from .ir1util import class_method_definitions, known_calls
 from .main import compile_source
@@ -391,9 +397,7 @@ def build_runtime(
         str(library),
     ]
     if crate_type == "staticlib" and lto:
-        command.extend(
-            ["-C", "linker-plugin-lto", "-C", "lto=fat", "-C", "codegen-units=1"]
-        )
+        command.extend(["-C", "linker-plugin-lto"])
     result = subprocess.run(command, check=False, capture_output=True, text=True)
     if result.returncode:
         raise ToolchainError(
@@ -443,8 +447,12 @@ class Toolchain:
             "optimize": self.optimize,
         }
 
-    def compile_flags(self) -> list[str]:
-        return ["-O3", "-flto=full"] if self.optimize else ["-O0"]
+    def compile_flags(self, *, lto: bool = True) -> list[str]:
+        if not self.optimize:
+            return ["-O0"]
+        if lto:
+            return ["-O3", "-flto=full"]
+        return ["-O3"]
 
     def link_flags(self) -> list[str]:
         if self.optimize:
@@ -516,7 +524,7 @@ class Build:
                 self.graph,
                 "builtins",
                 inputs=[],
-                settings={"step": "builtins"},
+                settings={"step": "builtins", "stdlib": str(STDLIB.resolve())},
                 outputs=("unit.ll", "interface.json"),
                 action=action,
             ),
@@ -533,13 +541,14 @@ class Build:
 
     def object(self, unit: Step) -> Step:
         toolchain = self.toolchain
+        lto = unit.name in ("__main__", "main unit")
         name = f"{unit.name} object optimize={toolchain.optimize}"
 
         def action(inputs, directory):
             _run(
                 [
                     toolchain.clang,
-                    *toolchain.compile_flags(),
+                    *toolchain.compile_flags(lto=lto),
                     "-Wno-override-module",
                     "-c",
                     str(unit.path("unit.ll")),
@@ -555,7 +564,7 @@ class Build:
                 self.graph,
                 name,
                 inputs=[unit],
-                settings={"step": "object", **toolchain.clang_settings()},
+                settings={"step": "object", "lto": lto, **toolchain.clang_settings()},
                 outputs=("unit.o",),
                 action=action,
             ),
@@ -719,7 +728,7 @@ def _interface(path: Path, state: str) -> BuiltinsInterface:
 
 def load_interface(path: Path) -> BuiltinsInterface:
     """The builtins interface in ``path``, read once per content."""
-    return _interface(path, digest(path.read_bytes()))
+    return _interface(path, file_digest(path))
 
 
 def write_imports(path: Path, modules: list[CompiledModule]) -> None:

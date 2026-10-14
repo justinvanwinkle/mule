@@ -6,6 +6,75 @@ and pass. General unittest support remains incomplete.
 
 ## SBCL correspondence and required adaptations
 
+### Pattern helper dependencies
+
+IR1 match lowering resolves `_match` only when a pattern emits a sequence,
+mapping or class helper call. Literal, value, capture and wildcard patterns
+lower directly to comparisons and assignments, including their combinations
+with `as` and `or`, and do not link the helper module or its abstract-base-class
+dependencies. When helpers are needed, their import still precedes subject
+evaluation. SBCL `src/compiler/ir1tran.lisp`, `find-free-fun`, likewise creates
+function dependencies when conversion references them; Mule's Python pattern
+visitor determines which compiled helper references the generated AST needs.
+
+### Compiler source search paths
+
+Compiler module resolution combines the main source directory, `PYTHONPATH`,
+Mule's bootstrap and standard-library roots, and the active `sys.path`, preserving
+precedence and deduplicating resolved paths. This uses the same installation
+paths embedded in a native image rather than asking CPython's `sysconfig` for
+its ABI-specific build data. Runtime `sys.path` additions and its empty
+current-directory entry also participate. Host standard-library sources can be
+compiled when Mule has no replacement; execution still uses Mule's parser,
+compiler and runtime, never the host interpreter.
+
+SBCL `src/code/module.lisp`, `require`, consults explicit paths or its active
+`*module-provider-functions*` in order; `module-provide-contrib` uses the running
+image's installation root. Python's ordered `sys.path` replaces that provider
+list, with Mule's compiled standard-library roots inserted before host sources.
+This changes source discovery only and does not claim CPython build-variable
+or extension ABI compatibility.
+
+### File timestamp updates
+
+`os.replace` exposes the existing Linux atomic rename service for ordinary
+path-like source and destination arguments. SBCL's `sb-posix` `rename` likewise
+uses the OS rename operation. Directory descriptor variants remain explicitly
+unsupported, as they are for Mule's existing `os.rename` wrapper.
+
+`os.utime` accepts path-like values and descriptors, seconds or integer
+nanosecond pairs, directory-relative paths and symlink timestamp updates.
+Compiled Python validates arguments, normalizes negative timestamps and selects
+ordinary `OSError` subclasses from returned errno values. Rust supplies only
+`utimensat`/`futimens` calls with fixed native timespec storage. SBCL
+`contrib/sb-posix/interface.lisp`, `utime` and `utimes`, similarly prepare the
+time records in Lisp before invoking foreign OS services. Python's nanosecond,
+descriptor and directory/symlink options require the newer POSIX entry points.
+
+### Repeated file digest validation
+
+Within a compiler process, file digests are reused only while device, inode,
+size, nanosecond modification time and nanosecond change time remain identical.
+The file version is checked around reading and hashing; changes during that
+interval prevent memoization. Rewrites with restored modification times and
+atomic file replacements invalidate the recorded version. Missing paths and
+directory inventories retain their ordinary discovery behavior. Persistent
+artifact manifests still store SHA3 content digests, not timestamps.
+
+SBCL `src/compiler/main.lisp`, `make-file-source-info`, retains the source file's
+`file-write-date` alongside its identity and forms. Mule's persistent artifact
+cache additionally needs content digests; process-local file-version reuse
+avoids recomputing those digests for every build graph while retaining content
+checks on changed files. Linux's inode and nanosecond change metadata distinguish
+replacement and same-size writes even when modification time is restored.
+
+The builtins artifact also keys the resolved standard-library root. Its compiled
+protocols and interface contain source paths, so two checkouts with identical
+compiler files must validate and compile their own protocol sources. A cache
+entry from another checkout cannot establish that the current checkout's
+protocol edits are unchanged. This retains the source identity represented by
+SBCL's `make-file-source-info` while adapting it to shared native artifact caches.
+
 ### Dictionary allocation and weak proxies
 
 Mutable list allocation likewise produces empty storage in `list.__new__`;
@@ -189,6 +258,130 @@ interrupt state and safe language-handler invocation. The normal compiled
 `default_int_handler` raises `KeyboardInterrupt` when called directly; automatic
 SIGINT delivery is not yet installed. No new library is linked.
 
+### POSIX clock records
+
+Clock queries retain integer seconds and nanoseconds from the kernel until
+compiled Python constructs a nanosecond integer or floating seconds. The public
+`clock_gettime`, `clock_gettime_ns`, and `clock_getres` functions convert
+indexable clock identifiers to signed C ints and use the requested kernel clock;
+invalid identifiers raise ordinary errno-bearing exceptions. Named nanosecond
+clocks share this path and never round through floating point.
+Nanosecond results retain Python 3.14's signed 64-bit time range. The
+`clock_gettime*` argument adapters preserve its legacy conversion-error rewrite;
+`clock_getres` preserves ordinary index and signed-range conversion exceptions.
+
+SBCL `src/code/unix.lisp`, `clock-gettime`, returns separate integer seconds
+and nanoseconds from a physical timespec. Mule uses the same foreign-storage
+boundary; Rust returns errno and those two fields, and compiled Python owns
+argument conversion, time-unit arithmetic, and error construction. Python exposes
+arbitrary Linux clock identifiers and resolutions rather than SBCL's selected
+internal clock units. No clock-resolution constant replaces a kernel result.
+
+### Exact float hexadecimal rendering
+
+`float.hex()` separates binary64 storage access from Python rendering. SBCL
+`src/code/float.lisp`, `integer-decode-double-float`, extracts exponent,
+significand and sign using `double-float-bits`; Mule's physical
+`math_float_bits` export copies that same stored word into an unsigned Python
+integer. It does not call numeric conversion hooks or perform formatting.
+Compiled `_object.float.hex` owns descriptor validation, special-value names,
+signed zero, the thirteen hexadecimal fractional digits, and the signed
+binary exponent. Python requires a hexadecimal string rather than SBCL's
+multiple integer-decode values, and represents NaNs and infinities without
+raising the decoding condition. This adaptation preserves each finite stored
+value exactly and costs a word extraction plus bounded integer/text work,
+with no decimal conversion or foreign formatting routine.
+
+`float.as_integer_ratio()` follows SBCL `float.lisp`, `rational`: decode the
+integer significand and power of two, remove trailing zero bits while the
+exponent is negative, then shift either numerator or denominator. Python
+returns a coprime integer pair instead of a Lisp ratio object; its infinity
+and NaN exceptions are selected in compiled Python. `float.is_integer()` also
+uses the stored exponent and fraction, so signed zeros return true and
+nonfinite values return false without invoking subclass conversion hooks.
+
+### Descriptor metadata and builtin error frames
+
+`fstat` passes a signed file descriptor directly to libc and returns errno plus
+physical metadata fields. No Rust `File` or `OwnedFd` is constructed from a
+possibly invalid descriptor, and no descriptor ownership is acquired or released.
+SBCL `src/code/unix.lisp`, `unix-fstat`, uses its `fstat_wrapper` OS boundary;
+Mule declares the Linux x86-64 stat ABI in Rust instead of adding a C wrapper.
+The current generator runtime already requires x86-64. The fixed ABI layout is
+checked at compile time, and compiled `posix` constructs `stat_result` and
+ordinary errno-bearing exceptions. This preserves descriptor lifetime and
+kernel `EBADF` behavior without adding an extra validation/duplication syscall.
+
+The compiled `posix`, `_csv`, and math implementation modules use the explicit
+builtin-implementation traceback declaration. Python builtin APIs omit these
+implementation source frames; user callbacks remain visible. Factorial's
+negative-argument message matches Python 3.14.
+
+### Native executable identity
+
+`sys.executable` and `_base_executable` name the actual running ELF image,
+independently of the script/module/command spelling in `sys.argv[0]`. SBCL
+`src/runtime/linux-os.c`, `os_get_runtime_executable_path`, reads
+`/proc/self/exe` separately from `posix_argv`, and `src/code/common-os.lisp`,
+`os-cold-init-or-reinit`, initializes `*runtime-pathname*` separately from
+`*posix-argv*`. Mule follows that Linux OS boundary through
+`_posix.executable_path_bytes`; compiled `sys` decodes the byte pathname with
+UTF-8 and surrogateescape and snapshots it during module initialization. An
+OS lookup failure yields the empty string, matching Python's unavailable-path
+contract. Generated programs remain individual native images: the returned
+path restarts that program, rather than selecting a new source file to compile.
+
+### Registered text codecs
+
+String encoding and byte decoding retain their physical UTF-8, ASCII, Latin-1,
+and escape-codec paths; other names use the existing compiled codec registry.
+The selected entry must be a text codec, and its encoder/decoder tuple and
+result type are checked before returning. Decoder callbacks receive a
+memoryview over the physical bytes, preserving subclass-independent buffer
+access and callback retention of that view. UTF-8 signature handling uses the
+existing `encodings.utf_8_sig` module, including its incremental BOM state.
+Omitted error arguments remain omitted when invoking registered callbacks;
+an explicit error-handler name is passed as the callback's second argument.
+The existing UTF-16/32/7 primitive adapters still reject unsupported conversions;
+they cannot reenter their own registry entry through the text-method fallback.
+
+SBCL `src/code/octets.lisp`, `parse-external-format` and `octets-to-string`,
+selects registered external-format functions before invoking them over physical
+array data. Mule keeps lookup and conversion policy in compiled language code;
+Python adds codec search callbacks, the text-codec flag, callback result checks,
+and byte-buffer views. No native codec implementation or host evaluator is added.
+
+### Linux CPU affinity
+
+`posix.sched_getaffinity` and `sched_setaffinity` convert process IDs and CPU
+identifiers in compiled Python. The getter grows its physical bit mask when
+Linux reports `EINVAL`, then returns a Python set of enabled CPU identifiers.
+The setter consumes an arbitrary iterable, validates indexable CPU identifiers,
+and builds the mask before changing the calling thread's or selected process's
+affinity. Native services only allocate aligned mask storage, call libc, and
+return physical bytes and errno; compiled Python constructs `OSError` values.
+No fixed CPU-count limit or synthetic affinity replaces the kernel result.
+
+SBCL `contrib/sb-posix/macros.lisp`, `define-call-internally`, generates compiled
+argument conversion and syscall error handling around `alien-funcall`;
+`contrib/sb-posix/interface.lisp` uses this for process and descriptor services.
+SBCL does not expose affinity through that interface in this checkout. Mule
+adds Linux's dynamic mask services to preserve Python's public OS API, keeping
+mask iteration and validation in compiled language code. The packed mask avoids
+passing Python container policy into Rust and grows only as required by the
+kernel or a validated CPU identifier.
+
+The system module snapshots `PYTHON_CPU_COUNT` during initialization. A positive
+signed C-int value overrides `cpu_count` and `process_cpu_count`; absent or
+`default` values leave the real system/affinity query active. Later environment
+changes do not alter the startup setting. Invalid values raise a normal
+`ValueError` during compiled system-module initialization, rather than CPython's
+pre-interpreter fatal configuration diagnostic: standalone Mule has no CPython
+preinitialization phase. SBCL `src/code/toplevel.lisp` processes language options
+in compiled Lisp, separate from native runtime option parsing; this Python
+configuration likewise stays in compiled language code. The Mule command does
+not yet accept `-X cpu_count`.
+
 ### Heap class descriptor cleanup
 
 Explicit `types.MethodType(function, instance)` construction validates a
@@ -227,6 +420,40 @@ builtin implementation classes reject the operation. SBCL
 `src/pcl/defclass.lisp`'s `defclass` canonicalizes direct slots separately from
 inherited layout metadata; Python requires this additional namespace cleanup
 when decorators replace a class. Descriptor mutation remains compiled Python.
+
+### Unicode character names
+
+`unicodedata.lookup` searches generated Unicode 16 canonical names, formal
+aliases, and named sequences. ASCII case normalization and argument validation
+run in compiled Mule Python. Hexadecimal ideograph names use generated assigned
+ranges and reject noncanonical padding; Hangul names use the ordinary name
+table. The generator uses host UCD APIs only while producing checked-in data,
+plus the versioned Unicode Consortium alias and sequence files in
+`tools/unicode/`. Native programs never call the host Unicode implementation.
+
+SBCL `tools-for-build/ucd.lisp` builds character-name data; its
+`src/code/target-unicode.lisp`, `name-char`, uses generated perfect hashes and
+verifies names through the inverse character-name map. Mule uses sorted packed
+records and binary search instead: Python lookup also returns multicharacter
+named sequences, and the existing normalization data already uses sorted packed
+records. This adds logarithmic name comparisons rather than SBCL's constant
+hash lookup, while avoiding one heap object per stored name. Names and results
+remain immutable byte/codepoint data; Rust adds no Unicode algorithm.
+Python's accepted aliases, sequence results, and failure exceptions replace
+Common Lisp's base-character aliases and `U+` fallback.
+
+### Object reconstruction
+
+Object reconstruction for copy/deepcopy uses the pickle reduction protocol:
+allocate through `copyreg.__newobj__` or `__newobj_ex__`, then restore dictionary
+and slot state without invoking `__init__`. State and new-argument hooks remain
+compiled Python, with physical instance namespace reads provided by the runtime.
+SBCL `src/code/target-defstruct.lisp`, `copy-structure` and `%copy-instance-slots`,
+similarly allocate an instance before transferring its slots, independently of
+its constructor. Python adds memoized recursive copies, state hooks, reduction
+overrides and keyword arguments to `__new__`; those policies stay in compiled
+language code. This does not establish complete pickle coverage for every native
+storage family.
 
 ### Computed import dependencies
 
@@ -475,7 +702,9 @@ decoding interprets only `\\u` and `\\U`. Encoding walks physical text storage;
 no host codec or evaluator is called. SBCL's `enc-basic.lisp` external formats
 similarly keep decoding, partial-input handling, and error policy in compiled
 language code. Python's escape syntax and `(text, consumed)` interface are the
-concrete adaptations. Named `\\N{...}` escapes remain explicitly unsupported.
+concrete adaptations. Named `\\N{...}` escapes use the compiled Unicode name
+database, preserve incomplete input for incremental decoding, and reject named
+sequences because an escape denotes one codepoint.
 Malformed escapes use the shared `_codecs` error registry, including custom
 replacement and resume positions. Invalid ordinary and octal escapes issue one
 deprecation warning per successful call. The private warning backend can
@@ -673,6 +902,7 @@ Exports are positional-only physical operations:
 | read_byte(data, index) | Guard byte storage and bounds, then return an unsigned byte integer. |
 | text_from_codepoints(values) | Guard list/tuple integer storage and codepoint bounds, encode the existing text representation, and allocate owned text. |
 | math_number_kind(value) | Return physical kind 0 for other storage, 1 for integer/boolean storage, or 2 for binary64 storage. |
+| math_float_bits(value) | Return the exact unsigned binary64 storage word; reject non-float storage without conversion. |
 | math_to_double(value) | Convert builtin numeric storage to an owned binary64 value using the existing checked conversion. |
 | math_integer_value(value) | Validate/retain integer storage and normalize boolean storage to an integer. |
 | math_integer_bit_length(value) | Return the bit length of the stored integer magnitude. |
@@ -754,6 +984,13 @@ integer storage; Mule likewise keeps conversion and iteration in compiled
 language code over integer primitives. Python adds stream exhaustion, byte
 range errors and subclass construction; no iterator or conversion evaluator
 is added to Rust.
+Immutable bytes use a direct storage loop after the `__bytes__` hook, bypassing
+subclass indexing/iteration overrides as before. Little-endian input is visited
+from its high byte so both orders use shift-and-or accumulation; signed
+correction follows accumulation. SBCL `contrib/sb-md5/md5.lisp`, `fill-block-ub8`,
+similarly reads octet-vector storage directly while language code assembles
+words. Python's arbitrary length and subclass constructor remain compiled
+policy. This path avoids an intermediate generator and its per-byte resumes.
 
 Mule's sys.version identifies its language version, native build and LLVM
 backend. Compiled platform parses this format as implementation "Mule" and
@@ -817,6 +1054,20 @@ domain-separated rate block and squeezes as many bytes as requested, so they
 use a separate state class rather than MD5's length-trailer finalization.
 The Keccak team's specification summary supplies the permutation, constants
 and byte-oriented domain separators: https://keccak.team/keccak_specs_summary.html.
+The permutation retains its 25 lanes in local variables across all 24 rounds,
+with fixed theta, rho/pi and chi assignments and one final state writeback.
+SBCL `contrib/sb-md5/md5.lisp`, `update-md5-block` and `with-md5-round`, similarly
+load hash registers into locals and expand fixed round operations. Keccak's
+25-lane mapping and constants differ from MD5's four registers; the compiled
+language boundary remains the same. This removes repeated indexed container
+access without changing the sponge, word arithmetic or digest API.
+The sponge loads each input lane through a bounded eight-byte little-endian
+storage read. SBCL's `assemble-ub32` and `fill-block-ub8` similarly assemble
+fixed-width compression words from byte storage. Mule's native primitive only
+copies and boxes that physical word; lane XOR, permutation, padding and
+streaming remain compiled Python. This avoids creating a bytes slice and
+running the general integer-conversion protocol for each lane. Final padding
+is frozen once before those reads, retaining immutable physical input storage.
 
 BLAKE2b and BLAKE2s follow RFC 7693's compiled compression boundary, retaining
 the final block until digest so its final-block flag and byte counter are exact.

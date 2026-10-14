@@ -1,7 +1,7 @@
 """Exercise imported compiler annotation contracts through native execution."""
 
 import logging
-import runpy
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,6 +9,7 @@ import pytest
 from mule.compiler import emit_llvm
 from mule.compiler.main import compile_source as lower
 from test.mule.compiler.test_native import run_native
+from test.python_host import python_host
 
 SIGNED = tuple((f"int{bits}", bits) for bits in (8, 16, 32, 64, 128))
 UNSIGNED = tuple((f"uint{bits}", bits) for bits in (8, 16, 32, 64, 128))
@@ -384,32 +385,56 @@ def test_invalid_compiler_imports_and_directives_are_rejected(source):
         lower(source)
 
 
-def library_namespace():
-    return runpy.run_path(str(Path(__file__).parents[3] / "stdlib/mule.py"))
+def host_library_check(program):
+    path = Path(__file__).parents[3] / "stdlib/mule.py"
+    source = "import runpy\nlibrary = runpy.run_path(" + repr(str(path)) + ")\n"
+    result = subprocess.run(
+        [python_host(), "-c", source + program],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
 
 
 def test_host_library_exports_annotation_markers_and_identity_policy():
-    library = library_namespace()
     expected = {marker for marker, _ in SIGNED + UNSIGNED} | set(FLOATS) | {"optimize"}
-    assert set(library["__all__"]) == expected
-    for marker in expected - {"optimize"}:
-        assert library[marker].__name__ == marker
-
-    def identity(value):
-        return value
-
-    assert library["optimize"]()(identity) is identity
-    assert library["optimize"](speed=0, safety=3, debug=3)(identity) is identity
-    assert library["optimize"](speed=3, safety=0, debug=0)(identity)(42) == 42
+    host_library_check(
+        f"expected = {expected!r}\n"
+        + """
+assert set(library['__all__']) == expected
+for marker in expected - {'optimize'}:
+    assert library[marker].__name__ == marker
+def identity(value):
+    return value
+assert library['optimize']()(identity) is identity
+assert library['optimize'](speed=0, safety=3, debug=3)(identity) is identity
+assert library['optimize'](speed=3, safety=0, debug=0)(identity)(42) == 42
+"""
+    )
 
 
 @pytest.mark.parametrize("option", ("speed", "safety", "debug"))
 @pytest.mark.parametrize("level", (-1, 4))
 def test_host_policy_rejects_levels_outside_zero_to_three(option, level):
-    with pytest.raises(ValueError):
-        library_namespace()["optimize"](**{option: level})
+    assert (
+        host_library_check(
+            f"try:\n    library['optimize'](**{{{option!r}: {level!r}}})\n"
+            "except ValueError:\n    print('ValueError')\n"
+            "else:\n    raise AssertionError('invalid policy level accepted')\n"
+        )
+        == "ValueError\n"
+    )
 
 
 def test_host_policy_rejects_noninteger_level():
-    with pytest.raises(TypeError):
-        library_namespace()["optimize"](safety=1.0)
+    assert (
+        host_library_check(
+            "try:\n    library['optimize'](safety=1.0)\n"
+            "except TypeError:\n    print('TypeError')\n"
+            "else:\n    raise AssertionError('noninteger policy level accepted')\n"
+        )
+        == "TypeError\n"
+    )

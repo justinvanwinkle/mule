@@ -1,16 +1,16 @@
 """Compiled exception group behavior, compared with Python 3.14."""
 
 import subprocess
-import sys
 
 from test.mule.compiler.test_modules import execute
+from test.python_host import python_host
 
 
 def compare(tmp_path, source):
     path = tmp_path / "oracle.py"
     path.write_text(source)
     oracle = subprocess.run(
-        [sys.executable, path], capture_output=True, text=True, timeout=10, check=False
+        [python_host(), path], capture_output=True, text=True, timeout=10, check=False
     )
     assert oracle.returncode == 0, oracle.stderr
     native = execute(tmp_path, {}, source)

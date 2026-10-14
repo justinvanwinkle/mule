@@ -2440,6 +2440,36 @@ unsafe extern "C" fn instance_items(_: Value, args: Value) -> Value {
     }
 }
 
+/// Dynamic namespace entries, excluding fixed instance fields.
+unsafe extern "C" fn instance_extra_items(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([instance]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        if instance.is_null() || object::is_fixnum(instance) {
+            return fail("TypeError", "an instance with reference fields is required");
+        }
+        let Data::Instance { attributes, .. } = &(*instance).data else {
+            return fail("TypeError", "an instance with reference fields is required");
+        };
+        let mut pairs = Vec::new();
+        if !attributes.is_null() {
+            if let Data::Namespace(bindings) = &(**attributes).data {
+                for (name, value) in bindings.iter() {
+                    let key = text(name);
+                    pairs.push(object::mule_sequence_tuple(2, [key, value].as_ptr()));
+                    object::release(key);
+                }
+            }
+        }
+        let result = object::mule_sequence_tuple(pairs.len() as isize, pairs.as_ptr());
+        for pair in pairs {
+            object::release(pair);
+        }
+        result
+    }
+}
+
 /// A dictionary-owning storage subclass's namespace, owned. Reference-field
 /// instances use the existing compiled instance view and return None instead.
 unsafe extern "C" fn storage_dictionary(_: Value, args: Value) -> Value {
@@ -2912,7 +2942,7 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 59] = [
+        let exports: [(&str, object::Native); 60] = [
             ("delete_instance_field", delete_instance_field),
             ("class_lookup_default", class_lookup_default),
             ("code_metadata", code_metadata),
@@ -2931,6 +2961,7 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("set_function_annotations", set_function_annotations),
             ("register_not_implemented", register_not_implemented),
             ("instance_items", instance_items),
+            ("instance_extra_items", instance_extra_items),
             ("storage_dictionary", storage_dictionary),
             ("instance_set_binding", instance_set_binding),
             ("instance_delete_binding", instance_delete_binding),

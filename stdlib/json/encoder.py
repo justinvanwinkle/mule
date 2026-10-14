@@ -29,6 +29,8 @@ def py_encode_basestring(s):
     """Return a JSON representation of a Python string
 
     """
+    if s.isprintable() and s.find('\\') < 0 and s.find('"') < 0:
+        return '"' + s + '"'
     def replace(match):
         return ESCAPE_DCT[match.group(0)]
     return '"' + ESCAPE.sub(replace, s) + '"'
@@ -41,6 +43,8 @@ def py_encode_basestring_ascii(s):
     """Return an ASCII-only JSON representation of a Python string
 
     """
+    if s.isascii() and s.isprintable() and s.find('\\') < 0 and s.find('"') < 0:
+        return '"' + s + '"'
     def replace(match):
         s = match.group(0)
         try:

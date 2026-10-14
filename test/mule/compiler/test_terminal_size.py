@@ -5,11 +5,11 @@ import os
 import pty
 import struct
 import subprocess
-import sys
 import termios
 
 from mule.compiler import build
 from test.mule.compiler.test_exception_groups import compare
+from test.python_host import python_host
 
 
 def test_terminal_size_tuple_contract(tmp_path):
@@ -84,7 +84,7 @@ print('closed', os.isatty(read))
                 pass_fds=(slave,),
                 timeout=10,
             )
-            for command in ([sys.executable, str(path)], [str(executable)])
+            for command in ([python_host(), str(path)], [str(executable)])
         ]
     finally:
         os.close(slave)

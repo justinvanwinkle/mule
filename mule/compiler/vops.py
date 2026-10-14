@@ -145,6 +145,23 @@ class _BoxedConstant(ast.Visitor):
     def visit_Node(self, node):
         self.gen.pointer_result(self.result, self.gen.constant(node))
 
+    def visit_NoneLiteral(self, node):
+        self.gen.native_result(self.result, "@mule.none")
+
+    def visit_BooleanLiteral(self, node):
+        self.gen.native_result(
+            self.result, "@mule.true" if node.value else "@mule.false"
+        )
+
+    def visit_IntegerLiteral(self, node):
+        value = node.value
+        if -(1 << 62) <= value < (1 << 62):
+            self.gen.native_result(
+                self.result, self.gen.operation(self.gen.constant(node))
+            )
+            return
+        self.visit_Node(node)
+
     def visit_ComplexLiteral(self, node):
         # Float boxing is infallible. The compiled call consumes both owned
         # components on every path, including failed frame entry.
@@ -193,17 +210,10 @@ def load_local(gen, vop):
     if access.move:
         gen.line(f"store ptr null, ptr {source.tn.slot}")
     if access.bound:
-        present = gen.operation(f"icmp ne ptr {value}, null")
-        gen.line(f"call void @llvm.assume(i1 {present})")
-        gen.refine(result.tn, value)
-        if (
-            not access.move
-            and result.tn.sc.owned
-            and source.tn.sc.owned
-            and value not in gen.immortal_values
-        ):
-            value = gen.operation(f"call ptr @mule.fast.retain(ptr {value})")
-            gen.refine(result.tn, value)
+        gen.record_facts(source.tn, value)
+        gen.record_facts(result.tn, value)
+        if not access.move and result.tn.sc.owned and source.tn.sc.owned:
+            value = gen.retain(value)
         gen.publish(result, value)
         return
     helper = (
@@ -967,8 +977,79 @@ def structural_unpack(gen, vop):
     gen.refine(vop.results[0].tn, merged)
 
 
+@define_vop("protocol-getitem", translate=fndb.PROTOCOLS["getitem"], results=(OBJECT,))
+def protocol_getitem(gen, vop):
+    sequence = gen.take(vop.args[0])
+    index = gen.take(vop.args[1])
+    if gen.module.program.exports:
+        result = gen.sequence_call("getitem", [sequence, index])
+        gen.publish(vop.results[0], result)
+        gen.check_pointer(result)
+        gen.refine(vop.results[0].tn, result)
+        return
+    fast_result = gen.operation(
+        f"call ptr @mule_fast_getitem(ptr {sequence}, ptr {index})"
+    )
+    matched = gen.operation(f"icmp ne ptr {fast_result}, null")
+    fast = gen.fresh("getitem.fast")[1:]
+    slow = gen.fresh("getitem.slow")[1:]
+    done = gen.fresh("getitem.done")[1:]
+    gen.line(f"br i1 {matched}, label %{fast}, label %{slow}")
+    gen.lines.append(fast + ":")
+    gen.release(sequence)
+    gen.release(index)
+    gen.line(f"br label %{done}")
+    gen.lines.append(slow + ":")
+    slow_result = gen.sequence_call("getitem", [sequence, index])
+    checked = gen.check_pointer(slow_result)
+    gen.line(f"br label %{done}")
+    gen.lines.append(done + ":")
+    merged = gen.operation(
+        f"phi ptr [{fast_result}, %{fast}], [{slow_result}, %{checked}]"
+    )
+    gen.publish(vop.results[0], merged)
+    gen.refine(vop.results[0].tn, merged)
+
+
+@define_vop("protocol-setitem", translate=fndb.PROTOCOLS["setitem"], results=(OBJECT,))
+def protocol_setitem(gen, vop):
+    sequence = gen.take(vop.args[0])
+    index = gen.take(vop.args[1])
+    item = gen.take(vop.args[2])
+    if gen.module.program.exports:
+        result = gen.sequence_call("setitem", [sequence, index, item])
+        gen.publish(vop.results[0], result)
+        gen.check_pointer(result)
+        gen.refine(vop.results[0].tn, result)
+        return
+    matched = gen.operation(
+        f"call i32 @mule_fast_setitem(ptr {sequence}, ptr {index}, ptr {item})"
+    )
+    valid = gen.operation(f"icmp ne i32 {matched}, 0")
+    fast = gen.fresh("setitem.fast")[1:]
+    slow = gen.fresh("setitem.slow")[1:]
+    done = gen.fresh("setitem.done")[1:]
+    gen.line(f"br i1 {valid}, label %{fast}, label %{slow}")
+    gen.lines.append(fast + ":")
+    gen.release(sequence)
+    gen.release(index)
+    gen.release(item)
+    fast_result = gen.operation("call ptr @mule_retain(ptr @mule.none)")
+    gen.line(f"br label %{done}")
+    gen.lines.append(slow + ":")
+    slow_result = gen.sequence_call("setitem", [sequence, index, item])
+    checked = gen.check_pointer(slow_result)
+    gen.line(f"br label %{done}")
+    gen.lines.append(done + ":")
+    merged = gen.operation(
+        f"phi ptr [{fast_result}, %{fast}], [{slow_result}, %{checked}]"
+    )
+    gen.publish(vop.results[0], merged)
+    gen.refine(vop.results[0].tn, merged)
+
+
 for _name, _info in fndb.PROTOCOLS.items():
-    if _name != "unpack":
+    if _name not in ("unpack", "getitem", "setitem"):
         _define_protocol(_name, _info)
 
 
@@ -1533,7 +1614,7 @@ slow:
   ret ptr %result
 }
 
-define internal ptr @mule.global.live(ptr %cell, ptr %name) alwaysinline {
+define internal ptr @mule.global.live(ptr %cell, ptr %name) {
 entry:
   %own.slot = getelementptr inbounds {ptr, i64, ptr, ptr}, ptr %cell, i64 0, i32 1
   %own = load i64, ptr %own.slot
@@ -1797,7 +1878,7 @@ bounded:
 }"""
 
 
-def helpers() -> str:
+def helpers(*, bootstrap: bool = False) -> str:
     """Native guarded templates; LLVM removes unused templates after inlining."""
     return "\n\n".join(
         [

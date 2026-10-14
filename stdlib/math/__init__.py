@@ -1,5 +1,7 @@
 """Compiled real math operations and exact integer algorithms."""
 
+__mule_builtin_implementation__ = True
+
 from _mule_native import math_acos as _acos
 from _mule_native import math_cos as _cos
 from _mule_native import math_exp as _exp

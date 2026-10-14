@@ -15,10 +15,12 @@ and the entry is valid only while each still has the recorded state.
 
 A cache entry is written whole or not at all: a step builds into a private
 directory, records the digest of each output in its manifest, flushes it to
-disk and renames it into place. Reusing an entry rehashes every output against
-its manifest, so a corrupt, truncated or incomplete entry is rebuilt.
+disk and renames it into place. Reusing an entry validates every output digest
+against its manifest, rehashing changed file versions, so a corrupt, truncated
+or incomplete entry is rebuilt.
 
-Steps run on threads (the interpreter is free-threaded). Each input notifies
+Steps run on the caller for one worker, or on threads for larger pools
+(the interpreter is free-threaded). Each input notifies
 the steps that consume it when it resolves; a step starts once all of its
 inputs have resolved, so independent steps run in parallel.
 """
@@ -38,7 +40,7 @@ from contextlib import contextmanager
 from functools import cache, cached_property
 from pathlib import Path
 
-from .inputs import digest, recording, unchanged
+from .inputs import digest, file_digest, recording, unchanged
 
 MULE_PACKAGE = Path(__file__).resolve().parents[1]
 # Conversion recurses over the syntax tree; compile threads need room.
@@ -83,7 +85,7 @@ def physical_core_count(
 def mule_hash() -> str:
     """The digest of every file of the Mule package, by relative path."""
     files = {
-        str(path.relative_to(MULE_PACKAGE)): digest(path.read_bytes())
+        str(path.relative_to(MULE_PACKAGE)): file_digest(path)
         for path in sorted(MULE_PACKAGE.rglob("*"))
         if path.is_file() and "__pycache__" not in path.parts
     }
@@ -180,7 +182,7 @@ class File(Node):
     @cached_property
     def output_hash(self) -> str | None:
         try:
-            return digest(self.path.read_bytes())
+            return file_digest(self.path)
         except FileNotFoundError, NotADirectoryError, IsADirectoryError:
             return None
 
@@ -314,7 +316,7 @@ class Step(Node):
         outputs = {}
         for output in self.outputs:
             try:
-                outputs[output] = digest((entry / output).read_bytes())
+                outputs[output] = file_digest(entry / output)
             except FileNotFoundError:
                 return None
         if outputs != recorded:
@@ -332,9 +334,7 @@ class Step(Node):
         try:
             with recording() as discovered:
                 self.action(self.inputs, built)
-            outputs = {
-                output: digest((built / output).read_bytes()) for output in self.outputs
-            }
+            outputs = {output: file_digest(built / output) for output in self.outputs}
             manifest = {"outputs": outputs, "discovered": discovered}
             (built / MANIFEST).write_text(json.dumps(manifest))
             for path in built.iterdir():
@@ -362,6 +362,91 @@ class Step(Node):
             shutil.rmtree(discarded, ignore_errors=True)
 
 
+class _Scheduler:
+    def __init__(self, graph):
+        self.graph = graph
+
+    def prepare(self):
+        raise NotImplementedError("build scheduler must prepare its workers")
+
+    @property
+    def worker_count(self):
+        raise NotImplementedError(
+            "build scheduler must report its configured parallelism"
+        )
+
+    def wait(self):
+        raise NotImplementedError("build scheduler must resolve pending steps")
+
+    def close(self):
+        raise NotImplementedError("build scheduler must stop its workers")
+
+    def threads(self):
+        raise NotImplementedError("build scheduler must report its threads")
+
+
+class _SerialScheduler(_Scheduler):
+    def prepare(self):
+        pass
+
+    @property
+    def worker_count(self):
+        return 1
+
+    def wait(self):
+        self.graph._drain()
+
+    def close(self):
+        pass
+
+    def threads(self):
+        return ()
+
+
+class _ThreadedScheduler(_Scheduler):
+    def __init__(self, graph, workers):
+        super().__init__(graph)
+        self._count = workers
+        self._threads = []
+        self._start_lock = threading.Lock()
+
+    @property
+    def worker_count(self):
+        return self._count
+
+    def prepare(self):
+        with self._start_lock:
+            if self._threads:
+                return
+            previous = threading.stack_size(STEP_STACK_SIZE)
+            try:
+                for index in range(self._count):
+                    worker = threading.Thread(
+                        target=self.graph._work, name=f"mule-step-{index}", daemon=True
+                    )
+                    worker.start()
+                    self._threads.append(worker)
+            except BaseException:
+                self.graph._stop_workers(len(self._threads))
+                for worker in self._threads:
+                    worker.join()
+                self._threads.clear()
+                raise
+            finally:
+                threading.stack_size(previous)
+
+    def wait(self):
+        self.graph._wait()
+
+    def close(self):
+        self.graph._stop_workers(len(self._threads))
+        for worker in self._threads:
+            worker.join()
+
+    def threads(self):
+        return tuple(self._threads)
+
+
 class Graph:
     """Steps and files, each created once per name, executed as their inputs
     resolve."""
@@ -378,18 +463,19 @@ class Graph:
         # initial graph is complete.
         self._backlog: list[Step] | None = []
         workers = workers or physical_core_count()
-        previous = threading.stack_size(STEP_STACK_SIZE)
-        try:
-            self._workers = [
-                threading.Thread(
-                    target=self._work, name=f"mule-step-{index}", daemon=True
-                )
-                for index in range(workers)
-            ]
-            for worker in self._workers:
-                worker.start()
-        finally:
-            threading.stack_size(previous)
+        self._scheduler = (
+            _SerialScheduler(self)
+            if workers == 1
+            else _ThreadedScheduler(self, workers)
+        )
+
+    @property
+    def worker_count(self):
+        return self._scheduler.worker_count
+
+    @property
+    def _workers(self):
+        return self._scheduler.threads()
 
     def file(self, path: Path) -> File:
         return self._intern(self._files, str(path), lambda: File(self, path))
@@ -419,16 +505,33 @@ class Graph:
             if self._backlog is not None:
                 self._backlog.append(step)
                 return
+        self._scheduler.prepare()
         self._ready.put(step)
 
     def _work(self) -> None:
         while (step := self._ready.get()) is not None:
-            try:
-                step.execute()
-            # Graph.run raises a step's failure; dependents fail without running.
-            except Exception as error:  # noqa: BLE001
-                step.error = error
-            step.resolved()
+            self._execute(step)
+
+    def _execute(self, step: Step) -> None:
+        try:
+            step.execute()
+        # Graph.run raises a step's failure; dependents fail without running.
+        except Exception as error:  # noqa: BLE001
+            step.error = error
+        step.resolved()
+
+    def _drain(self) -> None:
+        while self._pending:
+            self._execute(self._ready.get_nowait())
+
+    def _wait(self) -> None:
+        with self.lock:
+            while self._pending:
+                self._idle.wait()
+
+    def _stop_workers(self, count: int) -> None:
+        for _ in range(count):
+            self._ready.put(None)
 
     def finished(self, node: Node) -> None:
         with self.lock:
@@ -439,21 +542,20 @@ class Graph:
         """Execute the graph, waiting until every node has resolved; raise
         the target's failure."""
         with self.lock:
+            pending = self._pending
+        if pending:
+            self._scheduler.prepare()
+        with self.lock:
             backlog, self._backlog = self._backlog or [], None
         for step in backlog:
             self._ready.put(step)
-        with self.lock:
-            while self._pending:
-                self._idle.wait()
+        self._scheduler.wait()
         if target.error is not None:
             raise target.error
         return target
 
     def close(self) -> None:
-        for _ in self._workers:
-            self._ready.put(None)
-        for worker in self._workers:
-            worker.join()
+        self._scheduler.close()
 
     def __enter__(self):
         return self

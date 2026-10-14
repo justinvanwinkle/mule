@@ -36,10 +36,32 @@ for unsupported families so the other operand's view protocol can answer.
 Byte joining validates contiguous buffer exports, copies their bytes with
 compiled traversal and inserts the separator between entries. Hexadecimal
 conversion is shared by bytes, bytearray and memoryview, including ASCII
-separators and grouping from either end. SBCL `src/code/seq.lisp`'s sequence
-traversals and `src/code/print.lisp`'s digit output provide the corresponding
-language/storage boundary; Python requires buffer export checks and its hex
-grouping rules. Rust continues to supply byte storage and lifetime services.
+separators and grouping from either end. Byte trimming (`strip`, `lstrip`,
+`rstrip`), prefix/suffix removal (`removeprefix`, `removesuffix`), splitting
+(`split`, `rsplit`, `splitlines`), partitioning (`partition`, `rpartition`),
+replacement (`replace`), and subsequence containment (`__contains__`) share
+compiled byte-span helpers across `bytes` and `bytearray` over physical byte
+storage (`_storage_read`/`_storage_length`) and `byte_copy`. SBCL
+`src/code/string.lisp` (`generic-string-trim`, `string-left-trim`,
+`string-right-trim`, `string-trim`), `src/code/seq.lisp` (`search`, `subseq`),
+and `src/code/print.lisp` (digit output) provide the corresponding
+language/storage boundary; Python requires contiguous bytes-like argument
+validation, ASCII whitespace defaults when `chars` or `sep` is `None`, `bytes`
+identity preservation for unchanged exact `bytes` instances, and fresh mutable
+`bytearray` results. Rust continues to supply byte storage and lifetime
+services.
+
+Contiguous memoryviews over immutable byte storage copy their bounded byte
+range through the native `byte_copy` primitive. Compiled Python checks release
+state and computes the offset and byte count from the view's format and stride;
+strided and mutable storage retain compiled traversal. SBCL
+`src/compiler/generic/vm-tran.lisp`, `%byte-blt`, similarly lowers contiguous
+storage movement to a physical memory copy. Python's `tobytes()` requires a
+fresh immutable result, so Mule's primitive also allocates that result. It
+performs no indexing hooks, format interpretation or buffer protocol policy.
+Contiguous immutable byte slices reuse this primitive after compiled slice
+normalization. Strided slices reuse the shared storage selection loop with the
+already normalized positions, so each bound's integer protocol runs once.
 
 Generic membership uses compiled `contains`/`not_contains` protocols. SBCL
 `src/code/seq.lisp`, `%find-position` and `find`, iterates sequences through
@@ -102,6 +124,19 @@ releasing expression temporaries at a handler transfer while preserving locals.
 Exceptional analysis must join states before and after a potentially failing
 operation; successful stores must not be assumed on an exceptional edge.
 Caught exceptions and handler state are ordinary owned Mule class instances.
+`KeyError` owns its report behavior: one argument is formatted with `repr`,
+while zero or multiple arguments retain `BaseException.__str__`. SBCL's
+`src/code/target-error.lisp` similarly installs reports on condition classes;
+the single-key quoting rule is Python's concrete exception-report adaptation.
+`divmod` uses class special-method lookup and descriptor binding, gives an
+overriding reflected method on a strict subclass priority, and reports its own
+unsupported-operands error after both methods decline. Numeric classes own
+their forward and reflected quotient/remainder operations. SBCL's
+`src/code/numbers.lisp` implements its quotient/remainder algorithms in compiled
+Lisp; Python's two-operand special-method negotiation is the added boundary.
+The tuple class exposes its physical `__len__` descriptor, including explicit
+receiver validation. Calls through that descriptor bypass subclass length
+overrides, as required when an OS argument protocol inspects a tuple result.
 Native primitive errors are converted to those instances at the catch boundary.
 SBCL `src/compiler/envanal.lisp`, `emit-cleanups` and `find-cleanup-points`,
 derive cleanup code from the dynamic environments at each control-flow edge.

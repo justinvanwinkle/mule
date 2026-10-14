@@ -3,6 +3,26 @@
 from test.mule.compiler.test_exception_groups import compare
 
 
+def test_storage_subclass_tracking_survives_final_release_and_collection(tmp_path):
+    compare(
+        tmp_path,
+        """
+import gc
+class Number(float): pass
+class Text(str): pass
+class Octets(bytes): pass
+class Items(tuple): pass
+for cls, source in ((Number, 1.5), (Text, 'text'), (Octets, b'bytes'), (Items, (1, 2))):
+    for iteration in range(20):
+        value = cls(source)
+        assert gc.is_tracked(value)
+        del value
+        gc.collect()
+    print(cls.__name__, 'collected')
+""",
+    )
+
+
 def test_unreachable_instance_container_closure_and_class_cycles(tmp_path):
     compare(
         tmp_path,

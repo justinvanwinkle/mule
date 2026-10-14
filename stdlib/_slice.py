@@ -9,6 +9,9 @@ selected positions. Sequence types use ``positions`` to read their elements.
 # Compiler-provided physical primitives are not host Python globals.
 # ruff: noqa: F821
 
+from _mule_native import type_of as _type_of
+from _object import int
+
 
 class slice:
     """Bounds selecting positions of a sequence: ``start:stop:step``."""
@@ -35,6 +38,8 @@ class slice:
 
 
 def _bound(value):
+    if _type_of(value) is int:
+        return value
     method = _index_method(value)
     if method is not None:
         value = method()

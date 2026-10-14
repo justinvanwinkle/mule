@@ -1,5 +1,8 @@
 """CSV dialects and streaming text protocols, compiled by Mule."""
 
+__mule_builtin_implementation__ = True
+
+
 QUOTE_MINIMAL = 0
 QUOTE_ALL = 1
 QUOTE_NONNUMERIC = 2

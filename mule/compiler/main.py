@@ -15,7 +15,7 @@ from mule import ast
 from mule.diagnostics import phase
 from mule.parser import parse
 
-from . import checkgen, ir1opt, locall
+from . import checkgen, ir1opt, locall, loop
 from .annotation_types import AnnotationLedger
 from .debug import check_ir1_consistency
 from .dfo import find_dfo, find_initial_dfo
@@ -74,8 +74,8 @@ def ir1_phases(compilation: Compilation) -> None:
         with phase("IR1 final graph cleanup", level=logging.DEBUG):
             for component in compilation.components:
                 join_blocks_if_possible(component)
-                if component.reanalyze:
-                    find_dfo(component)
+                find_dfo(component)
+                loop.analyze(component)
             check_ir1_consistency(compilation.components)
 
 

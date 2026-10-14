@@ -74,6 +74,11 @@ def py_scanstring(s, end, strict=True,
 
     Returns a tuple of the decoded string and the index of the character in s
     after the end quote."""
+    quote = s.find('"', end)
+    if quote >= 0 and s.find('\\', end, quote) < 0:
+        content = s[end:quote]
+        if not strict or content.isprintable():
+            return content, quote + 1
     chunks = []
     _append = chunks.append
     begin = end - 1
@@ -188,8 +193,11 @@ def JSONObject(s_and_end, strict, scan_once, object_hook, object_pairs_hook,
         try:
             nextchar = s[end]
             if nextchar in _ws:
-                end = _w(s, end + 1).end()
+                end += 1
                 nextchar = s[end]
+                if nextchar in _ws:
+                    end = _w(s, end + 1).end()
+                    nextchar = s[end]
         except IndexError:
             nextchar = ''
         end += 1
@@ -199,7 +207,16 @@ def JSONObject(s_and_end, strict, scan_once, object_hook, object_pairs_hook,
         elif nextchar != ',':
             raise JSONDecodeError("Expecting ',' delimiter", s, end - 1)
         comma_idx = end - 1
-        end = _w(s, end).end()
+        if s[end:end + 4] == '\n  "':
+            end += 4
+            continue
+        try:
+            if s[end] in _ws:
+                end += 1
+                if s[end] in _ws:
+                    end = _w(s, end + 1).end()
+        except IndexError:
+            pass
         nextchar = s[end:end + 1]
         end += 1
         if nextchar != '"':
@@ -234,6 +251,8 @@ def JSONArray(s_and_end, scan_once, _w=WHITESPACE.match, _ws=WHITESPACE_STR):
         _append(value)
         nextchar = s[end:end + 1]
         if nextchar in _ws:
+            if s[end:end + 2] == '\n]':
+                return values, end + 2
             end = _w(s, end + 1).end()
             nextchar = s[end:end + 1]
         end += 1
@@ -242,6 +261,11 @@ def JSONArray(s_and_end, scan_once, _w=WHITESPACE.match, _ws=WHITESPACE_STR):
         elif nextchar != ',':
             raise JSONDecodeError("Expecting ',' delimiter", s, end - 1)
         comma_idx = end - 1
+        if s[end:end + 3] == '\n  ':
+            end += 3
+            nextchar = s[end:end + 1]
+            if nextchar not in _ws and nextchar != ']':
+                continue
         try:
             if s[end] in _ws:
                 end += 1

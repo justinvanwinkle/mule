@@ -12,6 +12,7 @@ from _mule_native import text_from_codepoints as _text_from_codepoints
 from _mule_native import typed_value as _typed_value
 from _str import TextStorage, ascii, decode, format, ord, repr
 from _str import str as _make_str
+from _str import _MISSING as _CODEC_ERRORS_MISSING
 from _attributes import delattr, getattr, hasattr, setattr
 from _descriptors import classmethod, property, staticmethod, super
 from _generators import generator as _generator
@@ -26,6 +27,7 @@ from _dict import _tuple_hash, dict, frozenset, hash, set
 from _mule_native import bytes_from_values as _bytes_from_values
 from _mule_native import byte_length as _byte_length
 from _mule_native import read_byte as _read_byte
+from _mule_native import byte_copy as _byte_copy
 from _mule_native import call_with as _call_with
 from _mule_native import identity as _identity
 from _mule_native import is_class as _is_class
@@ -41,6 +43,11 @@ from _mule_native import type_of as _type_of
 from _slice import is_slice, positions, slice
 
 # ruff: noqa: F821
+
+list = _binding_missing()
+tuple = _binding_missing()
+StorageIterator = _binding_missing()
+Enumerate = _binding_missing()
 
 
 class BaseException:
@@ -126,7 +133,10 @@ class IndexError(LookupError):
 
 
 class KeyError(LookupError):
-    pass
+    def __str__(self):
+        if len(self.args) == 1:
+            return repr(self.args[0])
+        return BaseException.__str__(self)
 
 
 class ValueError(Exception):
@@ -567,6 +577,8 @@ def abs(value, /):
 
 
 def integer_index(value):
+    if _type_of(value) is int:
+        return value
     method = _index_method(value)
     if method is not None:
         value = method()
@@ -581,6 +593,8 @@ def chr(value, /):
 
 
 def getitem(value, index):
+    if _type_of(value) is list and is_slice(index):
+        return _selected(value, index)
     method = _getitem_method(value)
     if method is None:
         # Subscripting a class without a metaclass __getitem__ (PEP 560).
@@ -618,6 +632,13 @@ def sum(iterable, /, start=0):
     if _text_storage(start):
         raise TypeError("sum() can't sum strings [use ''.join(seq) instead]")
     total = start
+    if _type_of(iterable) is list or _type_of(iterable) is tuple:
+        index = 0
+        length = _storage_length(iterable)
+        while index < length:
+            total = total + _storage_read(iterable, index)
+            index += 1
+        return total
     for item in iterable:
         total = total + item
     return total
@@ -729,18 +750,30 @@ def _integer_kind(value):
     return isinstance(value, int)
 
 
+_DIVMOD_MISSING = object()
+
+
 def divmod(left, right, /):
-    method = getattr(type(left), "__divmod__", None)
-    if method is not None:
-        result = method(left, right)
+    left_owner, right_owner = _type_of(left), _type_of(right)
+    forward = _class_lookup_default(left_owner, '__divmod__', _DIVMOD_MISSING)
+    reflected = _class_lookup_default(right_owner, '__rdivmod__', _DIVMOD_MISSING)
+    right_first = (left_owner is not right_owner and reflected is not _DIVMOD_MISSING
+                   and _is_subclass(right_owner, left_owner)
+                   and reflected is not _class_lookup_default(left_owner, '__rdivmod__', _DIVMOD_MISSING))
+    if right_first:
+        result = _bind_special_attribute(reflected, right, right_owner)(left)
         if result is not NotImplemented:
             return result
-    method = getattr(type(right), "__rdivmod__", None)
-    if method is not None:
-        result = method(right, left)
+    if forward is not _DIVMOD_MISSING:
+        result = _bind_special_attribute(forward, left, left_owner)(right)
         if result is not NotImplemented:
             return result
-    return (left // right, left % right)
+    if not right_first and left_owner is not right_owner and reflected is not _DIVMOD_MISSING:
+        result = _bind_special_attribute(reflected, right, right_owner)(left)
+        if result is not NotImplemented:
+            return result
+    raise TypeError("unsupported operand type(s) for divmod(): '" + left_owner.__name__
+                    + "' and '" + right_owner.__name__ + "'")
 
 
 def round(number, ndigits=None):
@@ -979,7 +1012,11 @@ def make_interpolation(value, expression, conversion, format_spec):
 
 
 def make_slice(start, stop, step):
-    return slice(start, stop, step)
+    value = _allocate_instance(slice)
+    value.start = start
+    value.stop = stop
+    value.step = step
+    return value
 
 
 def build_dict(flat):
@@ -990,7 +1027,39 @@ def build_set(items):
     return _build_set(items)
 
 
+def _list_set_slice(target, index, value):
+    items = value if _type_of(value) is list and value is not target else list(value)
+    start, stop, step, count = positions(index, _storage_length(target))
+    if step == 1:
+        stop = stop if stop > start else start
+        items_length = _storage_length(items)
+        if stop - start == items_length:
+            offset = 0
+            while offset < items_length:
+                _storage_write(target, start + offset, _storage_read(items, offset))
+                offset += 1
+            return
+        _storage_delete(target, start, stop)
+        offset = 0
+        while offset < items_length:
+            _storage_insert(target, start + offset, _storage_read(items, offset))
+            offset += 1
+        return
+    if _storage_length(items) != count:
+        raise ValueError(
+            f"attempt to assign sequence of size {_storage_length(items)} "
+            f"to extended slice of size {count}"
+        )
+    offset = 0
+    while offset < count:
+        _storage_write(target, start + offset * step, _storage_read(items, offset))
+        offset += 1
+
+
 def setitem(value, index, item):
+    if _type_of(value) is list and is_slice(index):
+        _list_set_slice(value, index, item)
+        return
     method = _setitem_method(value)
     if method is None:
         raise TypeError("object does not support item assignment")
@@ -1047,6 +1116,10 @@ class StorageIterator(SequenceIterator):
 def _selected(sequence, bounds):
     """The elements a slice selects, in order, as a new list."""
     start, stop, step, count = positions(bounds, _storage_length(sequence))
+    return _selected_positions(sequence, start, step, count)
+
+
+def _selected_positions(sequence, start, step, count):
     result = []
     index = 0
     while index < count:
@@ -1251,24 +1324,7 @@ class ListStorage(_OrderedSequence):
         if not is_slice(index):
             _storage_write(self, storage_index(self, index), value)
             return
-        items = list(value)
-        start, stop, step, count = positions(index, _storage_length(self))
-        if step == 1:
-            _storage_delete(self, start, stop if stop > start else start)
-            offset = 0
-            while offset < _storage_length(items):
-                _storage_insert(self, start + offset, _storage_read(items, offset))
-                offset += 1
-            return
-        if _storage_length(items) != count:
-            raise ValueError(
-                f"attempt to assign sequence of size {_storage_length(items)} "
-                f"to extended slice of size {count}"
-            )
-        offset = 0
-        while offset < count:
-            _storage_write(self, start + offset * step, _storage_read(items, offset))
-            offset += 1
+        _list_set_slice(self, index, value)
 
     def __delitem__(self, index):
         if not is_slice(index):
@@ -1379,6 +1435,11 @@ class ListStorage(_OrderedSequence):
 class TupleStorage(_OrderedSequence):
     __slots__ = ()
 
+    def __len__(self):
+        if not _tuple_storage(self):
+            raise TypeError("descriptor '__len__' requires a 'tuple' object but received a '" + _type_name(self) + "'")
+        return _storage_length(self)
+
     def __hash__(self):
         return _tuple_hash(self)
 
@@ -1408,17 +1469,50 @@ class TupleStorage(_OrderedSequence):
 
 
 def _byte_sequence_values(value):
-    if _integer_storage_kind(value):
+    if _integer_storage_kind(value) or _index_method(value) is not None:
         return [_byte_value(value)]
     return _bytes_like_values(value)
 
 
 def _bytes_like_values(value):
-    if _integer_storage_kind(value) or _text_storage(value):
-        raise TypeError(
-            "a bytes-like object is required, not '" + _type_name(value) + "'"
-        )
-    return _byte_values(value, None, "strict")
+    if _is_instance(value, bytes):
+        length = _storage_length(value)
+        values = []
+        index = 0
+        while index < length:
+            _storage_append(values, _storage_read(value, index))
+            index += 1
+        return values
+    if _is_instance(value, bytearray):
+        source_values = value.values
+        length = _storage_length(source_values)
+        values = []
+        index = 0
+        while index < length:
+            _storage_append(values, _storage_read(source_values, index))
+            index += 1
+        return values
+    if _is_instance(value, memoryview):
+        if not value.c_contiguous:
+            raise BufferError("memoryview: underlying buffer is not C-contiguous")
+        return _bytes_like_values(value.tobytes())
+    raise TypeError(
+        "a bytes-like object is required, not '" + _type_name(value) + "'"
+    )
+
+
+def _byte_in_values(values, byte):
+    index = 0
+    length = _storage_length(values)
+    while index < length:
+        if _storage_read(values, index) == byte:
+            return True
+        index += 1
+    return False
+
+
+def _is_ascii_whitespace(byte):
+    return byte == 32 or (9 <= byte <= 13)
 
 
 def _bytes_translated(values, table, delete):
@@ -1432,7 +1526,7 @@ def _bytes_translated(values, table, delete):
     index = 0
     while index < _storage_length(values):
         value = _storage_read(values, index)
-        if _bytes_find(delete_values, value, 0, None) < 0:
+        if not _byte_in_values(delete_values, value):
             if table_values is not None:
                 value = _storage_read(table_values, value)
             _storage_append(result, value)
@@ -1485,9 +1579,7 @@ def _bytes_match(values, needle, position):
     return True
 
 
-def _bytes_find(values, sub, start, end):
-    needle = _byte_sequence_values(sub)
-    start, end = _bytes_bounds(_storage_length(values), start, end)
+def _bytes_find_values(values, needle, start, end):
     if _storage_length(needle) == 0:
         return start if start <= end else -1
     position = start
@@ -1499,9 +1591,7 @@ def _bytes_find(values, sub, start, end):
     return -1
 
 
-def _bytes_rfind(values, sub, start, end):
-    needle = _byte_sequence_values(sub)
-    start, end = _bytes_bounds(_storage_length(values), start, end)
+def _bytes_rfind_values(values, needle, start, end):
     if _storage_length(needle) == 0:
         return end if start <= end else -1
     position = end - _storage_length(needle)
@@ -1510,6 +1600,18 @@ def _bytes_rfind(values, sub, start, end):
             return position
         position -= 1
     return -1
+
+
+def _bytes_find(values, sub, start, end):
+    needle = _byte_sequence_values(sub)
+    start, end = _bytes_bounds(_storage_length(values), start, end)
+    return _bytes_find_values(values, needle, start, end)
+
+
+def _bytes_rfind(values, sub, start, end):
+    needle = _byte_sequence_values(sub)
+    start, end = _bytes_bounds(_storage_length(values), start, end)
+    return _bytes_rfind_values(values, needle, start, end)
 
 
 def _bytes_count(values, sub, start, end):
@@ -1556,6 +1658,233 @@ def _bytes_endswith(values, suffix, start, end):
     if end - start < _storage_length(needle):
         return False
     return _bytes_match(values, needle, end - _storage_length(needle))
+
+
+def _bytes_strip_bounds(values, chars, left, right):
+    chars_values = None if chars is None else _bytes_like_values(chars)
+    start = 0
+    end = _storage_length(values)
+    if left:
+        while start < end:
+            byte = _storage_read(values, start)
+            matched = (
+                _is_ascii_whitespace(byte)
+                if chars_values is None
+                else _byte_in_values(chars_values, byte)
+            )
+            if not matched:
+                break
+            start += 1
+    if right:
+        while end > start:
+            byte = _storage_read(values, end - 1)
+            matched = (
+                _is_ascii_whitespace(byte)
+                if chars_values is None
+                else _byte_in_values(chars_values, byte)
+            )
+            if not matched:
+                break
+            end -= 1
+    return start, end
+
+
+def _bytes_removeprefix_bounds(values, prefix):
+    needle = _bytes_like_values(prefix)
+    size = _storage_length(needle)
+    length = _storage_length(values)
+    if size <= length and _bytes_match(values, needle, 0):
+        return size, length
+    return 0, length
+
+
+def _bytes_removesuffix_bounds(values, suffix):
+    needle = _bytes_like_values(suffix)
+    size = _storage_length(needle)
+    length = _storage_length(values)
+    if size > 0 and size <= length and _bytes_match(values, needle, length - size):
+        return 0, length - size
+    return 0, length
+
+
+def _bytes_split_spans(values, sep, maxsplit, from_right):
+    maxsplit = integer_index(maxsplit)
+    length = _storage_length(values)
+    spans = []
+    if sep is None:
+        if not from_right:
+            index = 0
+            while maxsplit != 0:
+                while index < length and _is_ascii_whitespace(_storage_read(values, index)):
+                    index += 1
+                if index == length:
+                    return spans
+                start = index
+                index += 1
+                while index < length and not _is_ascii_whitespace(_storage_read(values, index)):
+                    index += 1
+                _storage_append(spans, (start, index))
+                maxsplit -= 1
+            while index < length and _is_ascii_whitespace(_storage_read(values, index)):
+                index += 1
+            if index != length:
+                _storage_append(spans, (index, length))
+            return spans
+        index = length - 1
+        while maxsplit != 0:
+            while index >= 0 and _is_ascii_whitespace(_storage_read(values, index)):
+                index -= 1
+            if index < 0:
+                _reverse_in_place(spans)
+                return spans
+            end = index + 1
+            index -= 1
+            while index >= 0 and not _is_ascii_whitespace(_storage_read(values, index)):
+                index -= 1
+            _storage_append(spans, (index + 1, end))
+            maxsplit -= 1
+        while index >= 0 and _is_ascii_whitespace(_storage_read(values, index)):
+            index -= 1
+        if index >= 0:
+            _storage_append(spans, (0, index + 1))
+        _reverse_in_place(spans)
+        return spans
+    needle = _bytes_like_values(sep)
+    size = _storage_length(needle)
+    if size == 0:
+        raise ValueError("empty separator")
+    if not from_right:
+        start = 0
+        position = _bytes_find_values(values, needle, 0, length)
+        while position >= 0 and maxsplit != 0:
+            _storage_append(spans, (start, position))
+            start = position + size
+            maxsplit -= 1
+            position = _bytes_find_values(values, needle, start, length)
+        _storage_append(spans, (start, length))
+        return spans
+    end = length
+    position = _bytes_rfind_values(values, needle, 0, end)
+    while position >= 0 and maxsplit != 0:
+        _storage_append(spans, (position + size, end))
+        end = position
+        maxsplit -= 1
+        position = _bytes_rfind_values(values, needle, 0, end)
+    _storage_append(spans, (0, end))
+    _reverse_in_place(spans)
+    return spans
+
+
+def _bytes_splitlines_spans(values, keepends):
+    keep = integer_index(keepends) != 0
+    spans = []
+    length = _storage_length(values)
+    index = 0
+    while index < length:
+        start = index
+        while index < length:
+            byte = _storage_read(values, index)
+            if byte == 10 or byte == 13:
+                break
+            index += 1
+        line_end = index
+        if index < length:
+            if (
+                _storage_read(values, index) == 13
+                and index + 1 < length
+                and _storage_read(values, index + 1) == 10
+            ):
+                index += 2
+            else:
+                index += 1
+            if keep:
+                line_end = index
+        _storage_append(spans, (start, line_end))
+    return spans
+
+
+def _bytes_replaced(values, old, new, count):
+    old_values = _bytes_like_values(old)
+    new_values = _bytes_like_values(new)
+    count = integer_index(count)
+    length = _storage_length(values)
+    if count < 0:
+        count = length + 1
+    if count == 0:
+        return None
+    old_size = _storage_length(old_values)
+    result = []
+    if old_size == 0:
+        if _storage_length(new_values) == 0:
+            return None
+        index = 0
+        while index < length and count > 0:
+            for item in new_values:
+                _storage_append(result, item)
+            _storage_append(result, _storage_read(values, index))
+            count -= 1
+            index += 1
+        if count > 0:
+            for item in new_values:
+                _storage_append(result, item)
+        while index < length:
+            _storage_append(result, _storage_read(values, index))
+            index += 1
+        return result
+    position = _bytes_find_values(values, old_values, 0, length)
+    if position < 0:
+        return None
+    start = 0
+    while position >= 0 and count > 0:
+        while start < position:
+            _storage_append(result, _storage_read(values, start))
+            start += 1
+        for item in new_values:
+            _storage_append(result, item)
+        start = position + old_size
+        count -= 1
+        position = _bytes_find_values(values, old_values, start, length)
+    while start < length:
+        _storage_append(result, _storage_read(values, start))
+        start += 1
+    return result
+
+
+def _bytes_joined_values(separator_values, iterable):
+    values = []
+    count = 0
+    for item in iterable:
+        try:
+            view = memoryview(item)
+        except TypeError:
+            raise TypeError(
+                "sequence item "
+                + str(count)
+                + ": expected a bytes-like object, "
+                + type(item).__name__
+                + " found"
+            ) from None
+        with view:
+            if not view.c_contiguous:
+                raise TypeError(
+                    "sequence item "
+                    + str(count)
+                    + ": expected a bytes-like object, "
+                    + type(item).__name__
+                    + " found"
+                )
+            data = view.tobytes()
+        if count:
+            position = 0
+            while position < _storage_length(separator_values):
+                _storage_append(values, _storage_read(separator_values, position))
+                position += 1
+        position = 0
+        while position < _storage_length(data):
+            _storage_append(values, _storage_read(data, position))
+            position += 1
+        count += 1
+    return values
 
 
 _HEX_MISSING = _binding_missing()
@@ -1641,6 +1970,11 @@ class BytesStorage:
             return self
         return _bytes_from_values(values)
 
+    def _slice_result(self, start, end):
+        if _type_of(self) is bytes and start == 0 and end == _storage_length(self):
+            return self
+        return _byte_copy(self, start, end - start)
+
     def ljust(self, width, fillchar=b" ", /):
         return BytesStorage._padding_result(self, _byte_padding(self, width, fillchar, 0, "ljust"))
 
@@ -1654,71 +1988,130 @@ class BytesStorage:
         return _hex_bytes(self, sep, bytes_per_sep)
 
     def join(self, iterable, /):
-        values = []
-        count = 0
-        for item in iterable:
-            try:
-                view = memoryview(item)
-            except TypeError:
-                raise TypeError('sequence item ' + str(count) + ': expected a bytes-like object, ' + type(item).__name__ + ' found') from None
-            with view:
-                if not view.c_contiguous:
-                    raise TypeError('sequence item ' + str(count) + ': expected a bytes-like object, ' + type(item).__name__ + ' found')
-                data = view.tobytes()
-            if count:
-                position = 0
-                while position < _storage_length(self):
-                    _storage_append(values, _storage_read(self, position))
-                    position += 1
-            position = 0
-            while position < _storage_length(data):
-                _storage_append(values, _storage_read(data, position))
-                position += 1
-            count += 1
-        return _bytes_from_values(values)
+        return _bytes_from_values(_bytes_joined_values(self, iterable))
 
     __slots__ = ()
 
     def __getitem__(self, index):
         if is_slice(index):
-            return _bytes_from_values(_selected(self, index))
+            start, stop, step, count = positions(index, _storage_length(self))
+            if step == 1:
+                return _byte_copy(self, start, count)
+            return _bytes_from_values(_selected_positions(self, start, step, count))
         return _storage_read(self, storage_index(self, index))
 
     def __iter__(self):
         return SequenceIterator(self)
 
-    def decode(self, encoding="utf-8", errors="strict"):
+    def __contains__(self, item, /):
+        return _bytes_find(self, item, 0, None) >= 0
+
+    def decode(self, encoding="utf-8", errors=_CODEC_ERRORS_MISSING):
         return decode(self, encoding, errors)
 
     def find(self, sub, start=0, end=None):
-        return _bytes_find(_make_list(self), sub, start, end)
+        return _bytes_find(self, sub, start, end)
 
     def rfind(self, sub, start=0, end=None):
-        return _bytes_rfind(_make_list(self), sub, start, end)
+        return _bytes_rfind(self, sub, start, end)
 
     def index(self, sub, start=0, end=None):
-        result = _bytes_find(_make_list(self), sub, start, end)
+        result = _bytes_find(self, sub, start, end)
         if result < 0:
             raise ValueError("subsection not found")
         return result
 
     def rindex(self, sub, start=0, end=None):
-        result = _bytes_rfind(_make_list(self), sub, start, end)
+        result = _bytes_rfind(self, sub, start, end)
         if result < 0:
             raise ValueError("subsection not found")
         return result
 
     def count(self, sub, start=0, end=None):
-        return _bytes_count(_make_list(self), sub, start, end)
+        return _bytes_count(self, sub, start, end)
 
     def startswith(self, prefix, start=0, end=None):
-        return _bytes_startswith(_make_list(self), prefix, start, end)
+        return _bytes_startswith(self, prefix, start, end)
 
     def endswith(self, suffix, start=0, end=None):
-        return _bytes_endswith(_make_list(self), suffix, start, end)
+        return _bytes_endswith(self, suffix, start, end)
+
+    def strip(self, chars=None, /):
+        start, end = _bytes_strip_bounds(self, chars, True, True)
+        return BytesStorage._slice_result(self, start, end)
+
+    def lstrip(self, chars=None, /):
+        start, end = _bytes_strip_bounds(self, chars, True, False)
+        return BytesStorage._slice_result(self, start, end)
+
+    def rstrip(self, chars=None, /):
+        start, end = _bytes_strip_bounds(self, chars, False, True)
+        return BytesStorage._slice_result(self, start, end)
+
+    def removeprefix(self, prefix, /):
+        start, end = _bytes_removeprefix_bounds(self, prefix)
+        return BytesStorage._slice_result(self, start, end)
+
+    def removesuffix(self, suffix, /):
+        start, end = _bytes_removesuffix_bounds(self, suffix)
+        return BytesStorage._slice_result(self, start, end)
+
+    def split(self, sep=None, maxsplit=-1):
+        return [
+            BytesStorage._slice_result(self, start, end)
+            for start, end in _bytes_split_spans(self, sep, maxsplit, False)
+        ]
+
+    def rsplit(self, sep=None, maxsplit=-1):
+        return [
+            BytesStorage._slice_result(self, start, end)
+            for start, end in _bytes_split_spans(self, sep, maxsplit, True)
+        ]
+
+    def splitlines(self, keepends=False):
+        return [
+            BytesStorage._slice_result(self, start, end)
+            for start, end in _bytes_splitlines_spans(self, keepends)
+        ]
+
+    def partition(self, sep, /):
+        needle = _bytes_like_values(sep)
+        size = _storage_length(needle)
+        if size == 0:
+            raise ValueError("empty separator")
+        length = _storage_length(self)
+        position = _bytes_find_values(self, needle, 0, length)
+        if position < 0:
+            return (BytesStorage._slice_result(self, 0, length), b"", b"")
+        return (
+            _byte_copy(self, 0, position),
+            sep,
+            _byte_copy(self, position + size, length - position - size),
+        )
+
+    def rpartition(self, sep, /):
+        needle = _bytes_like_values(sep)
+        size = _storage_length(needle)
+        if size == 0:
+            raise ValueError("empty separator")
+        length = _storage_length(self)
+        position = _bytes_rfind_values(self, needle, 0, length)
+        if position < 0:
+            return (b"", b"", BytesStorage._slice_result(self, 0, length))
+        return (
+            _byte_copy(self, 0, position),
+            sep,
+            _byte_copy(self, position + size, length - position - size),
+        )
+
+    def replace(self, old, new, count=-1, /):
+        replaced = _bytes_replaced(self, old, new, count)
+        if replaced is None:
+            return BytesStorage._slice_result(self, 0, _storage_length(self))
+        return _bytes_from_values(replaced)
 
     def translate(self, table, delete=b""):
-        return _bytes_from_values(_bytes_translated(_make_list(self), table, delete))
+        return _bytes_from_values(_bytes_translated(self, table, delete))
 
     @staticmethod
     def maketrans(frm, to):
@@ -1770,6 +2163,12 @@ def _optional_special(value, name):
 
 
 def _iterate(value, membership):
+    if _type_of(value) is list or _type_of(value) is tuple:
+        iterator = _allocate_instance(StorageIterator)
+        iterator.sequence = value
+        iterator.index = 0
+        iterator.exhausted = False
+        return iterator
     missing = _binding_missing()
     method = _optional_special(value, "__iter__")
     if method is not missing:
@@ -1815,6 +2214,23 @@ def not_contains(container, item):
 
 
 def next_item(value):
+    cls = _raised_class(value)
+    if cls is StorageIterator:
+        if value.exhausted:
+            raise StopIteration
+        index = value.index
+        sequence = value.sequence
+        if index >= _storage_length(sequence):
+            value.exhausted = True
+            raise StopIteration
+        item = _storage_read(sequence, index)
+        value.index = index + 1
+        return item
+    if cls is Enumerate:
+        item = next_item(value.iterator)
+        index = value.index
+        value.index = index + 1
+        return (index, item)
     method = _next_method(value)
     if method is None:
         raise TypeError("object is not an iterator")
@@ -1977,7 +2393,10 @@ def enumerate(*args):
     start = 0
     if count == 2:
         start = integer_index(_storage_read(args, 1))
-    return Enumerate(iterate(_storage_read(args, 0)), start)
+    iterator = _allocate_instance(Enumerate)
+    iterator.iterator = iterate(_storage_read(args, 0))
+    iterator.index = start
+    return iterator
 
 
 class CallableIterator:
@@ -2241,6 +2660,15 @@ from _mule_native import buffer_lease as _buffer_lease  # noqa: E402
 from _mule_native import buffer_exports as _buffer_exports  # noqa: E402
 
 
+def _byte_sublist(values, start, end):
+    result = []
+    index = start
+    while index < end:
+        _storage_append(result, _storage_read(values, index))
+        index += 1
+    return result
+
+
 class bytearray:
     """A mutable sequence of bytes, stored as a list of ints in range(256)."""
 
@@ -2251,6 +2679,9 @@ class bytearray:
 
     def hex(self, sep=_HEX_MISSING, bytes_per_sep=1):
         return _hex_bytes(self.values, sep, bytes_per_sep)
+
+    def join(self, iterable, /):
+        return bytearray(_bytes_joined_values(self.values, iterable))
 
     def ljust(self, width, fillchar=b" ", /):
         return bytearray(_byte_padding(self.values, width, fillchar, 0, "ljust"))
@@ -2324,6 +2755,9 @@ class bytearray:
     def __iter__(self):
         return SequenceIterator(self)
 
+    def __contains__(self, item, /):
+        return _bytes_find(self.values, item, 0, None) >= 0
+
     def __eq__(self, other):
         if _type_name(other) == "bytearray":
             return self.values == other.values
@@ -2376,7 +2810,7 @@ class bytearray:
     def reverse(self):
         self.values.reverse()
 
-    def decode(self, encoding="utf-8", errors="strict"):
+    def decode(self, encoding="utf-8", errors=_CODEC_ERRORS_MISSING):
         return decode(_bytes_from_values(self.values), encoding, errors)
 
     def find(self, sub, start=0, end=None):
@@ -2405,6 +2839,80 @@ class bytearray:
 
     def endswith(self, suffix, start=0, end=None):
         return _bytes_endswith(self.values, suffix, start, end)
+
+    def strip(self, chars=None, /):
+        start, end = _bytes_strip_bounds(self.values, chars, True, True)
+        return bytearray(_byte_sublist(self.values, start, end))
+
+    def lstrip(self, chars=None, /):
+        start, end = _bytes_strip_bounds(self.values, chars, True, False)
+        return bytearray(_byte_sublist(self.values, start, end))
+
+    def rstrip(self, chars=None, /):
+        start, end = _bytes_strip_bounds(self.values, chars, False, True)
+        return bytearray(_byte_sublist(self.values, start, end))
+
+    def removeprefix(self, prefix, /):
+        start, end = _bytes_removeprefix_bounds(self.values, prefix)
+        return bytearray(_byte_sublist(self.values, start, end))
+
+    def removesuffix(self, suffix, /):
+        start, end = _bytes_removesuffix_bounds(self.values, suffix)
+        return bytearray(_byte_sublist(self.values, start, end))
+
+    def split(self, sep=None, maxsplit=-1):
+        return [
+            bytearray(_byte_sublist(self.values, start, end))
+            for start, end in _bytes_split_spans(self.values, sep, maxsplit, False)
+        ]
+
+    def rsplit(self, sep=None, maxsplit=-1):
+        return [
+            bytearray(_byte_sublist(self.values, start, end))
+            for start, end in _bytes_split_spans(self.values, sep, maxsplit, True)
+        ]
+
+    def splitlines(self, keepends=False):
+        return [
+            bytearray(_byte_sublist(self.values, start, end))
+            for start, end in _bytes_splitlines_spans(self.values, keepends)
+        ]
+
+    def partition(self, sep, /):
+        needle = _bytes_like_values(sep)
+        size = _storage_length(needle)
+        if size == 0:
+            raise ValueError("empty separator")
+        length = _storage_length(self.values)
+        position = _bytes_find_values(self.values, needle, 0, length)
+        if position < 0:
+            return (bytearray(self.values), bytearray(), bytearray())
+        return (
+            bytearray(_byte_sublist(self.values, 0, position)),
+            bytearray(_byte_sublist(needle, 0, size)),
+            bytearray(_byte_sublist(self.values, position + size, length)),
+        )
+
+    def rpartition(self, sep, /):
+        needle = _bytes_like_values(sep)
+        size = _storage_length(needle)
+        if size == 0:
+            raise ValueError("empty separator")
+        length = _storage_length(self.values)
+        position = _bytes_rfind_values(self.values, needle, 0, length)
+        if position < 0:
+            return (bytearray(), bytearray(), bytearray(self.values))
+        return (
+            bytearray(_byte_sublist(self.values, 0, position)),
+            bytearray(_byte_sublist(needle, 0, size)),
+            bytearray(_byte_sublist(self.values, position + size, length)),
+        )
+
+    def replace(self, old, new, count=-1, /):
+        replaced = _bytes_replaced(self.values, old, new, count)
+        if replaced is None:
+            return bytearray(self.values)
+        return bytearray(replaced)
 
     def translate(self, table, delete=b""):
         return bytearray(_bytes_translated(self.values, table, delete))
@@ -2758,6 +3266,8 @@ class memoryview:
 
     def tobytes(self):
         self._check()
+        if _is_instance(self.source, bytes) and self.step == self._itemsize():
+            return _byte_copy(self.source, self.start, self.length * self._itemsize())
         values = []
         element = 0
         while element < self.length:

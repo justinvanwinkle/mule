@@ -3,13 +3,13 @@
 import os
 import re
 import subprocess
-import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 from mule import ast
 from mule.parser import parse
+from test.python_host import python_host
 
 CORPUS = Path(__file__).resolve().parents[2] / "corpus"
 
@@ -106,7 +106,7 @@ class Case:
         )
 
     def run_reference(self, directory):
-        return self.run([sys.executable, "-I", "-S", str(self.path)], directory)
+        return self.run([python_host(), "-I", "-S", str(self.path)], directory)
 
 
 def read_metadata(path):

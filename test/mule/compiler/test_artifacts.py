@@ -1,4 +1,5 @@
 import os
+import threading
 
 import pytest
 
@@ -50,13 +51,28 @@ def test_physical_core_count_empty_affinity_reports_error(tmp_path):
 
 
 def test_graph_default_workers_match_available_physical_cores():
+    cores = physical_core_count(os.sched_getaffinity(0))
     with Graph() as graph:
-        assert len(graph._workers) == physical_core_count(os.sched_getaffinity(0))
+        assert graph.worker_count == cores
+        assert graph._workers == ()
 
 
 def test_graph_explicit_workers_override_default():
     with Graph(workers=2) as graph:
-        assert len(graph._workers) == 2
+        assert graph.worker_count == 2
+        assert graph._workers == ()
+
+
+def test_empty_graph_does_not_start_threads(monkeypatch):
+    def forbidden_start(self):
+        raise AssertionError("empty graph started an OS thread")
+
+    monkeypatch.setattr(threading.Thread, "start", forbidden_start)
+    with Graph(workers=2) as graph:
+        source = graph.text("source", "contents")
+        assert graph.run(source) is source
+        assert graph.worker_count == 2
+        assert graph._workers == ()
 
 
 @pytest.fixture
@@ -89,6 +105,161 @@ def copy_action(runs):
         (directory / "copy.txt").write_text(inputs[0].text)
 
     return action
+
+
+def test_serial_graph_runs_dependency_chain_on_caller_without_starting_threads(
+    private_cache, monkeypatch
+):
+    def forbidden_start(self):
+        raise AssertionError("serial build started an OS thread")
+
+    monkeypatch.setattr(threading.Thread, "start", forbidden_start)
+    caller = threading.get_ident()
+    calls = []
+
+    def first_action(inputs, directory):
+        calls.append(("first", threading.get_ident()))
+        (directory / "first.txt").write_text(inputs[0].text)
+
+    def second_action(inputs, directory):
+        calls.append(("second", threading.get_ident()))
+        text = inputs[0].path("first.txt").read_text()
+        (directory / "second.txt").write_text(text.upper())
+
+    with Graph(1) as graph:
+        source = graph.text("source", "contents")
+        first = graph.step(
+            "first",
+            lambda: Step(
+                graph,
+                "first",
+                inputs=[source],
+                settings={},
+                outputs=("first.txt",),
+                action=first_action,
+            ),
+        )
+        second = graph.step(
+            "second",
+            lambda: Step(
+                graph,
+                "second",
+                inputs=[first],
+                settings={},
+                outputs=("second.txt",),
+                action=second_action,
+            ),
+        )
+        assert calls == []
+        assert graph._workers == ()
+        assert graph.run(second) is second
+        assert graph.run(second) is second
+    assert calls == [("first", caller), ("second", caller)]
+    assert second.path("second.txt").read_text() == "CONTENTS"
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_graph_propagates_dependency_failure_without_running_consumer(
+    private_cache, workers
+):
+    failure = RuntimeError("producer failed")
+    calls = []
+
+    def fail(inputs, directory):
+        raise failure
+
+    with Graph(workers) as graph:
+        first = graph.step(
+            "first",
+            lambda: Step(
+                graph,
+                "first",
+                inputs=[],
+                settings={},
+                outputs=(),
+                action=fail,
+            ),
+        )
+        second = graph.step(
+            "second",
+            lambda: Step(
+                graph,
+                "second",
+                inputs=[first],
+                settings={},
+                outputs=(),
+                action=lambda *args: calls.append(1),
+            ),
+        )
+        with pytest.raises(RuntimeError) as caught:
+            graph.run(second)
+    assert caught.value is failure
+    assert second.error is failure
+    assert calls == []
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_graph_discovery_adds_dependencies_before_consumer_can_start(
+    private_cache, workers
+):
+    calls = []
+
+    def produce(inputs, directory):
+        calls.append("produce")
+        (directory / "first.txt").write_text("first")
+
+    def expand(first):
+        calls.append("discover")
+        discovered = graph.step(
+            "discovered",
+            lambda: Step(
+                graph,
+                "discovered",
+                inputs=[first],
+                settings={},
+                outputs=("extra.txt",),
+                action=produce_extra,
+            ),
+        )
+        target.add_input(discovered)
+
+    def produce_extra(inputs, directory):
+        calls.append("extra")
+        (directory / "extra.txt").write_text(
+            inputs[0].path("first.txt").read_text() + " extra"
+        )
+
+    def consume(inputs, directory):
+        calls.append("consume")
+        (directory / "result.txt").write_text(inputs[1].path("extra.txt").read_text())
+
+    with Graph(workers) as graph:
+        first = graph.step(
+            "first",
+            lambda: Step(
+                graph,
+                "first",
+                inputs=[],
+                settings={},
+                outputs=("first.txt",),
+                action=produce,
+                discover=expand,
+            ),
+        )
+        target = graph.step(
+            "target",
+            lambda: Step(
+                graph,
+                "target",
+                inputs=[first],
+                settings={},
+                outputs=("result.txt",),
+                action=consume,
+            ),
+        )
+        graph.run(target)
+    assert calls == ["produce", "discover", "extra", "consume"]
+    assert target.path("result.txt").read_text() == "first extra"
 
 
 def truncate_output(entry):
@@ -139,3 +310,42 @@ def test_failed_action_leaves_no_cache_entry(private_cache):
     built = run_copy_step(copy_action(runs))
     assert len(runs) == 1
     assert built.path("copy.txt").read_text() == "contents"
+
+
+def test_partial_worker_startup_joins_started_workers_and_retains_backlog(
+    private_cache, monkeypatch
+):
+    original_start = threading.Thread.start
+    started = []
+
+    def fail_second(worker):
+        if worker.name == "mule-step-1":
+            raise RuntimeError("worker startup failed")
+        original_start(worker)
+        started.append(worker)
+
+    monkeypatch.setattr(threading.Thread, "start", fail_second)
+    runs = []
+    with Graph(workers=2) as graph:
+        source = graph.text("source", "contents")
+        step = graph.step(
+            "copy",
+            lambda: Step(
+                graph,
+                "copy",
+                inputs=[source],
+                settings={},
+                outputs=("copy.txt",),
+                action=copy_action(runs),
+            ),
+        )
+        with pytest.raises(RuntimeError, match="worker startup failed"):
+            graph.run(step)
+        assert runs == []
+        assert graph._workers == ()
+        assert all(not worker.is_alive() for worker in started)
+        monkeypatch.setattr(threading.Thread, "start", original_start)
+        assert graph.run(step) is step
+        assert len(graph._workers) == graph.worker_count == 2
+        assert len(runs) == 1
+    assert all(not worker.is_alive() for worker in graph._workers)

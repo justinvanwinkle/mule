@@ -3197,6 +3197,8 @@ class _MatchLowering:
         return ast.BooleanLiteral(value, span=self.span)
 
     def call(self, helper, *arguments):
+        if self.helpers is None:
+            self.helpers = self.temporary()
         return ast.Call(
             ast.Attribute(self.name(self.helpers), helper, span=self.span),
             [ast.CallArgument(argument, span=self.span) for argument in arguments],
@@ -3217,15 +3219,20 @@ class _MatchLowering:
         )
 
     def statements(self, node):
-        self.helpers = self.temporary()
         subject = self.temporary()
         result = [
-            ast.Import(
-                [ast.ImportItem("_match", self.helpers, span=self.span)], span=self.span
-            ),
             self.assign(subject, node.subject),
+            *self.cases(node.cases, 0, subject),
         ]
-        return result + self.cases(node.cases, 0, subject)
+        if self.helpers is not None:
+            result.insert(
+                0,
+                ast.Import(
+                    [ast.ImportItem("_match", self.helpers, span=self.span)],
+                    span=self.span,
+                ),
+            )
+        return result
 
     def cases(self, cases, position, subject):
         if position == len(cases):
@@ -4226,10 +4233,39 @@ class _AnnotationReference(ast.Visitor):
 
 # The module-level assignments that set a module's policy, and the quality
 # each sets. Python forbids assigning ``__debug__``.
+class _ModuleQuality:
+    def __init__(self, name):
+        self.name = name
+
+    def level(self, converter, expression):
+        return expression.accept(_PolicyLevel(converter))
+
+
+class _BuiltinImplementationQuality(_ModuleQuality):
+    def level(self, converter, expression):
+        return expression.accept(_BuiltinImplementationLevel(converter))
+
+
+class _BuiltinImplementationLevel(ast.Visitor):
+    def __init__(self, converter):
+        self.converter = converter
+
+    def visit_Node(self, node):
+        self.converter.error(
+            "builtin implementation markers must be boolean literals", node
+        )
+
+    def visit_BooleanLiteral(self, node):
+        return node.value
+
+
 MODULE_POLICY_NAMES = {
-    "__speed__": "speed",
-    "__safety__": "safety",
-    "__debug_level__": "debug",
+    "__speed__": _ModuleQuality("speed"),
+    "__safety__": _ModuleQuality("safety"),
+    "__debug_level__": _ModuleQuality("debug"),
+    "__mule_builtin_implementation__": _BuiltinImplementationQuality(
+        "builtin_implementation"
+    ),
 }
 
 
@@ -4249,7 +4285,8 @@ class _ModulePolicyAssignment(ast.Visitor):
             return None
         if len(qualities) != 1:
             self.converter.error("a module policy must be assigned on its own", node)
-        return qualities[0], node.value.accept(_PolicyLevel(self.converter))
+        quality = qualities[0]
+        return quality.name, quality.level(self.converter, node.value)
 
 
 class _PolicyName(ast.Visitor):

@@ -293,6 +293,65 @@ pub unsafe extern "C" fn mule_storage_write(
         null_mut()
     }
 }
+/// Fast path for `sequence[index]` when `sequence` is an exact builtin
+/// `list`, `tuple`, or `bytes` (`ty.is_null()`) and `index` is an in-bounds
+/// fixnum (non-negative or negative). Returns NULL without setting an error
+/// when the operands need the general compiled `getitem` protocol.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_fast_getitem(sequence: Value, index: Value) -> Value {
+    unsafe {
+        if !object::is_fixnum(index) || sequence.is_null() || object::is_fixnum(sequence) {
+            return null_mut();
+        }
+        let raw = object::fixnum(index);
+        match &(*sequence).data {
+            Data::List(values, ty, ..) | Data::Args(values, ty, ..) if ty.is_null() => {
+                let len = values.len() as i64;
+                let pos = if raw < 0 { raw + len } else { raw };
+                if pos >= 0 && pos < len {
+                    return object::retain(*values.get_unchecked(pos as usize));
+                }
+                null_mut()
+            }
+            Data::Bytes(values, ty, ..) if ty.is_null() => {
+                let len = values.len() as i64;
+                let pos = if raw < 0 { raw + len } else { raw };
+                if pos >= 0 && pos < len {
+                    return object::small(i64::from(*values.get_unchecked(pos as usize)));
+                }
+                null_mut()
+            }
+            _ => null_mut(),
+        }
+    }
+}
+/// Fast path for `sequence[index] = item` when `sequence` is an exact builtin
+/// `list` (`ty.is_null()`) and `index` is an in-bounds fixnum. Returns 1 when
+/// handled (retaining `item` and releasing the old element), or 0 when the
+/// operands need the general compiled `setitem` protocol.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_fast_setitem(sequence: Value, index: Value, item: Value) -> i32 {
+    unsafe {
+        if !object::is_fixnum(index) || sequence.is_null() || object::is_fixnum(sequence) {
+            return 0;
+        }
+        let raw = object::fixnum(index);
+        if let Data::List(values, ty, ..) = &mut (*sequence).data {
+            if ty.is_null() {
+                let len = values.len() as i64;
+                let pos = if raw < 0 { raw + len } else { raw };
+                if pos >= 0 && pos < len {
+                    let slot = values.get_unchecked_mut(pos as usize);
+                    let old = *slot;
+                    *slot = object::retain(item);
+                    object::release(old);
+                    return 1;
+                }
+            }
+        }
+        0
+    }
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_storage_append(value: Value, element: Value) -> Value {
     unsafe {

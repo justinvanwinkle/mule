@@ -5,6 +5,8 @@ and rows; the Python-level types (``stat_result``, ``uname_result``) and
 argument handling live here, following CPython's ``Modules/posixmodule.c``.
 """
 
+__mule_builtin_implementation__ = True
+
 from _posix import access as _access
 from _posix import chdir as _chdir
 from _posix import chmod_at as _chmod_at
@@ -36,6 +38,8 @@ from _posix import read as _read
 from _posix import readlink as _readlink
 from _posix import rename as _rename
 from _posix import rmdir as _rmdir
+from _posix import sched_getaffinity_mask as _sched_getaffinity_mask
+from _posix import sched_setaffinity_mask as _sched_setaffinity_mask
 from _posix import setenv_bytes as _setenv_bytes
 from _posix import stat as _stat
 from _posix import strerror_bytes as _strerror_bytes
@@ -46,6 +50,7 @@ from _posix import umask as _umask
 from _posix import uname_items as _uname_items
 from _posix import unlink as _unlink
 from _posix import unsetenv_bytes as _unsetenv_bytes
+from _posix import utime_at as _utime_at
 from _posix import write as _write
 from _mule_native import waitpid as _waitpid
 from _mule_native import get_inheritable as _get_inheritable
@@ -59,8 +64,8 @@ __all__ = [
     "cpu_count", "environ", "fstat", "fsync", "getcwd", "getegid", "geteuid", "getgid", "chmod", "fchmod",
     "getpid", "getppid", "getuid", "kill", "link", "listdir", "lseek",
     "lstat", "mkdir", "open", "pipe", "putenv", "read", "readlink", "scandir",
-    "remove", "rename", "rmdir", "stat", "stat_result", "strerror",
-    "symlink", "sysconf", "sysconf_names", "umask", "uname",
+    "remove", "rename", "replace", "rmdir", "stat", "stat_result", "strerror", "utime", "DirEntry",
+    "symlink", "sysconf", "sysconf_names", "umask", "uname", "sched_getaffinity", "sched_setaffinity",
     "uname_result", "unsetenv", "unlink", "urandom", "write", "terminal_size", "get_terminal_size",
     "waitpid", "waitstatus_to_exitcode", "WNOHANG", "WUNTRACED", "WCONTINUED",
     "WIFEXITED", "WIFSIGNALED", "WIFSTOPPED", "WIFCONTINUED", "WEXITSTATUS",
@@ -142,6 +147,56 @@ def isatty(fd, /):
 
 def set_inheritable(fd, inheritable, /):
     _set_inheritable(_native_fd(fd), bool(inheritable))
+
+
+def sched_getaffinity(pid, /):
+    from _object import _index_integer
+
+    pid = _native_fd(_index_integer(pid))
+    size = 8
+    while True:
+        error, mask = _sched_getaffinity_mask(pid, size)
+        if not error:
+            return {
+                index * 8 + bit
+                for index, byte in enumerate(mask)
+                for bit in range(8)
+                if byte & (1 << bit)
+            }
+        if error != 22:
+            raise OSError(error, strerror(error))
+        if size * 8 > ((1 << 31) - 1) // 2:
+            raise OverflowError('could not allocate a large enough CPU set')
+        size *= 2
+
+
+def sched_setaffinity(pid, mask, /):
+    from _object import _index_integer
+    from _mule_native import class_lookup_default
+
+    pid = _native_fd(_index_integer(pid))
+    bits = bytearray(8)
+    missing = object()
+    for cpu in mask:
+        if not isinstance(cpu, int) and class_lookup_default(type(cpu), '__index__', missing) is missing:
+            raise TypeError('expected an iterator of ints, but iterator yielded ' + repr(type(cpu)))
+        cpu = _index_integer(cpu)
+        if not -(1 << 63) <= cpu < (1 << 63):
+            raise OverflowError('Python int too large to convert to C long')
+        if cpu < 0:
+            raise ValueError('negative CPU number')
+        if cpu > (1 << 31) - 2:
+            raise OverflowError('CPU number too large')
+        byte, bit = divmod(cpu, 8)
+        if byte >= len(bits):
+            size = len(bits)
+            while byte >= size:
+                size *= 2
+            bits.extend(bytes(size - len(bits)))
+        bits[byte] |= 1 << bit
+    error = _sched_setaffinity_mask(pid, bytes(bits))
+    if error:
+        raise OSError(error, strerror(error))
 
 
 def WIFEXITED(status):
@@ -231,7 +286,8 @@ def _bytes(value):
     if isinstance(value, bytes):
         return value
     if isinstance(value, str):
-        return value.encode("utf-8", "surrogateescape")
+        from _str import TextStorage
+        return TextStorage.encode(value, "utf-8", "surrogateescape")
     raise TypeError("expected str or bytes, not " + type(value).__name__)
 
 
@@ -243,7 +299,7 @@ def _create_environ():
 
 
 environ = _create_environ()
-_have_functions = {"HAVE_FACCESSAT", "HAVE_LSTAT", "HAVE_FSTATAT", "HAVE_OPENAT", "HAVE_FCHMOD", "HAVE_FCHMODAT"}
+_have_functions = {"HAVE_FACCESSAT", "HAVE_LSTAT", "HAVE_FSTATAT", "HAVE_OPENAT", "HAVE_FCHMOD", "HAVE_FCHMODAT", "HAVE_UTIMENSAT", "HAVE_FUTIMENS"}
 
 
 def putenv(name, value):
@@ -510,8 +566,11 @@ def lstat(path, *, dir_fd=None):
     return stat_result(_stat(_path(path, 'lstat'), False))
 
 
-def fstat(fd):
-    return stat_result(_fstat(_native_fd(fd)))
+def fstat(fd, /):
+    error, row = _fstat(_native_fd(fd))
+    if error:
+        raise OSError(error, strerror(error))
+    return stat_result(row)
 
 
 def fchmod(fd, mode):
@@ -524,6 +583,86 @@ def chmod(path, mode, *, dir_fd=None, follow_symlinks=True):
     if not isinstance(path, (str, bytes)) and hasattr(type(path), "__index__"):
         return fchmod(path, mode)
     return _chmod_at(_path(path, "chmod", descriptors=True), mode, directory, follow_symlinks)
+
+
+_UTIME_MISSING = object()
+
+
+def _timestamp_seconds(value):
+    from _object import _index_integer
+    from _mule_native import math_to_double
+
+    if isinstance(value, float):
+        value = math_to_double(value)
+        if value != value:
+            raise ValueError('Invalid value NaN (not a number)')
+        if not -(1 << 63) <= value < (1 << 63):
+            raise OverflowError('timestamp out of range for platform time_t')
+        seconds = int(value)
+        if value < seconds:
+            seconds -= 1
+        nanos = int((value - seconds) * 1_000_000_000)
+        if nanos >= 1_000_000_000:
+            seconds += 1
+            nanos = 0
+    else:
+        try:
+            seconds = _index_integer(value)
+        except TypeError:
+            raise TypeError('argument must be int or float, not ' + type(value).__name__) from None
+        nanos = 0
+    if not -(1 << 63) <= seconds < (1 << 63):
+        raise OverflowError('timestamp out of range for platform time_t')
+    return seconds, nanos
+
+
+def _timestamp_nanoseconds(value):
+    from _object import _index_integer
+
+    parts = divmod(value, 1_000_000_000)
+    if not isinstance(parts, tuple) or tuple.__len__(parts) != 2:
+        raise TypeError(type(value).__name__ + '.__divmod__() must return a 2-tuple, not ' + type(parts).__name__)
+    seconds, nanos = tuple.__getitem__(parts, 0), tuple.__getitem__(parts, 1)
+    seconds, nanos = _index_integer(seconds), _index_integer(nanos)
+    if not -(1 << 63) <= seconds < (1 << 63):
+        raise OverflowError('timestamp out of range for platform time_t')
+    if not -(1 << 63) <= nanos < (1 << 63):
+        raise OverflowError('Python int too large to convert to C long')
+    return seconds, nanos
+
+
+def utime(path, times=None, *, ns=_UTIME_MISSING, dir_fd=None, follow_symlinks=True):
+    is_fd = not isinstance(path, (str, bytes)) and hasattr(type(path), '__index__')
+    filename = _native_fd(path) if is_fd else _path(path, 'utime', descriptors=True)
+    directory = -100 if dir_fd is None else _native_fd(dir_fd)
+    if ns is not _UTIME_MISSING and times is not None:
+        raise ValueError("utime: you may specify either 'times' or 'ns' but not both")
+    if ns is not _UTIME_MISSING:
+        if type(ns) is not tuple or len(ns) != 2:
+            raise TypeError("utime: 'ns' must be a tuple of two ints")
+        atime = _timestamp_nanoseconds(ns[0])
+        mtime = _timestamp_nanoseconds(ns[1])
+    elif times is not None:
+        if type(times) is not tuple or len(times) != 2:
+            raise TypeError("utime: 'times' must be either a tuple of two ints or None")
+        atime = _timestamp_seconds(times[0])
+        mtime = _timestamp_seconds(times[1])
+    else:
+        atime = mtime = (None, 0)
+    if is_fd:
+        if directory != -100:
+            raise ValueError("utime: can't specify dir_fd without matching path")
+        if filename != -1 and not follow_symlinks:
+            raise ValueError('utime: cannot use fd and follow_symlinks together')
+        # CPython's path converter reserves -1 as its absent-descriptor sentinel;
+        # that value consequently reaches the null-path OS call.
+        physical, directory = None, None if filename == -1 else filename
+    else:
+        physical = _bytes(filename)
+    status = _utime_at(physical, directory, atime[0], atime[1], mtime[0], mtime[1],
+                       0 if follow_symlinks else 0x100)
+    if status:
+        raise OSError(status, strerror(status), filename)
 
 
 def mkdir(path, mode=0o777, *, dir_fd=None):
@@ -555,6 +694,12 @@ def rename(source, target, *, src_dir_fd=None, dst_dir_fd=None):
     if src_dir_fd is not None or dst_dir_fd is not None:
         raise NotImplementedError("rename with dir_fd is not supported yet")
     return _rename(_path(source, 'rename'), _path(target, 'rename'))
+
+
+def replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+    if src_dir_fd is not None or dst_dir_fd is not None:
+        raise NotImplementedError("replace with dir_fd is not supported yet")
+    return _rename(_path(src, 'replace'), _path(dst, 'replace'))
 
 
 def link(source, target, *, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True):
@@ -612,6 +757,10 @@ def readinto(fd, buffer, /):
 
 def write(fd, data):
     fd = _native_fd(fd)
+    if type(data) is bytes:
+        return _write(fd, data)
+    if type(data) is bytearray:
+        return _write(fd, bytes(data))
     try:
         view = memoryview(data)
     except TypeError:
@@ -709,6 +858,10 @@ def sysconf(name):
 
 
 def cpu_count():
+    import sys
+    configured = sys._get_cpu_count_config()
+    if configured >= 0:
+        return configured
     try:
         return _sysconf_value(sysconf_names["SC_NPROCESSORS_ONLN"])
     except (OSError, ValueError):

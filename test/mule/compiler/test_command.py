@@ -2,13 +2,13 @@
 
 import os
 import subprocess
-import sys
 
 import pytest
 
 from mule.__main__ import Options, UsageError, parse
 from mule.compiler.inputs import recording, unchanged
 from mule.compiler.modules import compile_modules
+from test.python_host import python_host
 
 
 @pytest.mark.parametrize(
@@ -68,7 +68,7 @@ def mule(arguments, directory, **options):
     # because these tests concern running programs, not optimization.
     environment = {**os.environ, "XDG_CACHE_HOME": str(directory / "cache")}
     return subprocess.run(
-        [sys.executable, "-m", "mule", "-O0", *arguments],
+        [python_host(), "-m", "mule", "-O0", *arguments],
         cwd=directory,
         env=environment,
         capture_output=True,

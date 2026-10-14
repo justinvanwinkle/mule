@@ -7,12 +7,12 @@ the exact compile diagnostic or exact runtime output observed when recorded.
 
 import os
 import subprocess
-import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 from mule.compiler import build
+from test.python_host import python_host
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFORMANCE = ROOT / "conformance"
@@ -96,7 +96,7 @@ class Program:
 
     def run_reference(self, directory, hash_seed="0"):
         return self.run(
-            [sys.executable, "-I", "-S", str(self.path)], directory, hash_seed
+            [python_host(), "-I", "-S", str(self.path)], directory, hash_seed
         )
 
     def compile(self, executable):

@@ -1,11 +1,11 @@
 """Importlib discovers linked artifacts without opening or evaluating source."""
 
 import subprocess
-import sys
 
 import pytest
 
 from test.mule.compiler.test_modules import execute
+from test.python_host import python_host
 
 
 @pytest.mark.integration
@@ -41,7 +41,7 @@ except ModuleNotFoundError:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(contents)
     oracle = subprocess.run(
-        [sys.executable, str(tmp_path / "main.py")],
+        [python_host(), str(tmp_path / "main.py")],
         capture_output=True,
         text=True,
         check=False,
@@ -77,7 +77,7 @@ print(first.value, first is load('plugins.first'))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(contents)
     oracle = subprocess.run(
-        [sys.executable, str(tmp_path / "main.py")],
+        [python_host(), str(tmp_path / "main.py")],
         capture_output=True,
         text=True,
         check=False,
@@ -119,7 +119,7 @@ print(parent.__spec__.origin, parent.__file__, len(parent.__path__))
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(contents)
     oracle = subprocess.run(
-        [sys.executable, str(tmp_path / "main.py")],
+        [python_host(), str(tmp_path / "main.py")],
         capture_output=True,
         text=True,
         check=False,

@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from mule.compiler import build
+from test.python_host import python_host
 
 PROGRAMS = {
     "builtin_error.py": """def inner():
@@ -63,7 +64,7 @@ def test_tracebacks_match_python_314_verbatim(tmp_path, filename, debug_ranges):
     if not debug_ranges:
         environment["PYTHONNODEBUGRANGES"] = "1"
     oracle = subprocess.run(
-        [sys.executable, str(path)],
+        [python_host(), str(path)],
         cwd=tmp_path,
         env=environment,
         capture_output=True,

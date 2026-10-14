@@ -30,6 +30,7 @@ from _mule_native import generic_set_attribute as _generic_set_attribute
 from _mule_native import generic_delete_attribute as _generic_delete_attribute
 from _mule_native import identity_hash as _identity_hash
 from _mule_native import instance_items as _instance_items
+from _mule_native import instance_extra_items as _instance_extra_items
 from _mule_native import instance_set_binding as _instance_set_binding
 from _mule_native import instance_delete_binding as _instance_delete_binding
 from _mule_native import instance_field as _instance_field
@@ -44,6 +45,7 @@ from _mule_native import namespace_items as _namespace_items
 from _mule_native import namespace_binding as _namespace_binding
 from _mule_native import namespace_bind as _namespace_bind
 from _mule_native import namespace_unbind as _namespace_unbind
+from _mule_native import math_float_bits as _math_float_bits
 from _mule_native import math_float_format as _math_float_format
 from _mule_native import numeric_negate as _numeric_negate
 from _mule_native import numeric_invert as _numeric_invert
@@ -319,12 +321,19 @@ class object:
         _bind_attribute(setter, descriptor, descriptor_type)(self, value)
 
     def __reduce_ex__(self, protocol):
-        # The default recipe copyreg provides: call the class with no
-        # arguments to reconstruct. Pickle state is not supported yet.
-        return (_type_of(self), ())
+        from _pickle_support import reduce_ex
+
+        return reduce_ex(self, protocol)
 
     def __reduce__(self):
-        return self.__reduce_ex__(2)
+        from _pickle_support import reduce
+
+        return reduce(self, 0)
+
+    def __getstate__(self):
+        from _pickle_support import getstate
+
+        return getstate(self)
 
     def __delattr__(self, name):
         try:
@@ -1119,9 +1128,24 @@ class int(object):
         return quotient * scale
 
     def __divmod__(self, other):
+        if not _is_instance(self, int):
+            raise TypeError(f"descriptor '__divmod__' requires a 'int' object but received a '{_type_of(self).__name__}'")
         if not isinstance(other, int):
             return NotImplemented
-        return (self // other, self % other)
+        left, right = _convert_int(self), _convert_int(other)
+        if right == 0:
+            raise ZeroDivisionError('division by zero')
+        return (left // right, left % right)
+
+    def __rdivmod__(self, other):
+        if not _is_instance(self, int):
+            raise TypeError(f"descriptor '__rdivmod__' requires a 'int' object but received a '{_type_of(self).__name__}'")
+        if not isinstance(other, int):
+            return NotImplemented
+        left, right = _convert_int(other), _convert_int(self)
+        if right == 0:
+            raise ZeroDivisionError('division by zero')
+        return (left // right, left % right)
 
     def to_bytes(self, length=1, byteorder='big', *, signed=False):
         big_endian = _integer_byteorder(byteorder, "to_bytes")
@@ -1154,8 +1178,14 @@ class int(object):
         elif _is_instance(data, int) or _is_instance(data, str):
             raise TypeError(f"cannot convert '{_type_of(data).__name__}' object to bytes")
         if _is_instance(data, bytes):
-            source = data
-            data = (_read_byte(source, index) for index in range(_byte_length(source)))
+            count = _byte_length(data)
+            value = 0
+            for index in range(count):
+                position = index if big_endian else count - index - 1
+                value = (value << 8) | _read_byte(data, position)
+            if signed and count and _read_byte(data, 0 if big_endian else count - 1) & 0x80:
+                value -= 1 << (8 * count)
+            return cls(value)
         value = 0
         count, first, last = 0, 0, 0
         for item in data:
@@ -1264,8 +1294,67 @@ class float(object):
     def __float__(self):
         return self
 
-    def is_integer(self):
-        return self == _convert_int(self)
+    def hex(self, /):
+        if not _is_instance(self, float):
+            raise TypeError(f"descriptor 'hex' for 'float' objects doesn't apply to a '{_type_of(self).__name__}' object")
+        bits = _math_float_bits(self)
+        negative = bits >> 63
+        exponent = (bits >> 52) & 0x7ff
+        fraction = bits & ((1 << 52) - 1)
+        sign = "-" if negative else ""
+        if exponent == 0x7ff:
+            return "nan" if fraction else sign + "inf"
+        if exponent == 0 and fraction == 0:
+            return sign + "0x0.0p+0"
+        leading = "1" if exponent else "0"
+        power = exponent - 1023 if exponent else -1022
+        digits = ""
+        for shift in range(48, -1, -4):
+            digits += "0123456789abcdef"[(fraction >> shift) & 15]
+        return sign + "0x" + leading + "." + digits + "p" + ("+" if power >= 0 else "-") + str(abs(power))
+
+    def as_integer_ratio(self, /):
+        if not _is_instance(self, float):
+            raise TypeError(f"descriptor 'as_integer_ratio' for 'float' objects doesn't apply to a '{_type_of(self).__name__}' object")
+        bits = _math_float_bits(self)
+        exponent = (bits >> 52) & 0x7ff
+        numerator = bits & ((1 << 52) - 1)
+        if exponent == 0x7ff:
+            if numerator:
+                raise ValueError("cannot convert NaN to integer ratio")
+            raise OverflowError("cannot convert Infinity to integer ratio")
+        if exponent:
+            numerator |= 1 << 52
+            power = exponent - 1075
+        else:
+            power = -1074
+        if numerator == 0:
+            return 0, 1
+        while power < 0 and numerator & 1 == 0:
+            numerator >>= 1
+            power += 1
+        if bits >> 63:
+            numerator = -numerator
+        if power >= 0:
+            return numerator << power, 1
+        return numerator, 1 << -power
+
+    def is_integer(self, /):
+        if not _is_instance(self, float):
+            raise TypeError(f"descriptor 'is_integer' for 'float' objects doesn't apply to a '{_type_of(self).__name__}' object")
+        bits = _math_float_bits(self)
+        exponent = (bits >> 52) & 0x7ff
+        fraction = bits & ((1 << 52) - 1)
+        if exponent == 0x7ff:
+            return False
+        if exponent == 0:
+            return fraction == 0
+        power = exponent - 1023
+        if power < 0:
+            return False
+        if power >= 52:
+            return True
+        return fraction & ((1 << (52 - power)) - 1) == 0
 
     def __round__(self, ndigits=None):
         # Round half to even (CPython's float_round); with ndigits, the
@@ -1294,7 +1383,24 @@ class float(object):
         return whole + 1 if whole < self else whole
 
     def __divmod__(self, other):
-        return (self // other, self % other)
+        if not _is_instance(self, float):
+            raise TypeError(f"descriptor '__divmod__' requires a 'float' object but received a '{_type_of(self).__name__}'")
+        if not isinstance(other, (int, float)):
+            return NotImplemented
+        left, right = _convert_float(self), _convert_float(other)
+        if right == 0.0:
+            raise ZeroDivisionError('division by zero')
+        return (left // right, left % right)
+
+    def __rdivmod__(self, other):
+        if not _is_instance(self, float):
+            raise TypeError(f"descriptor '__rdivmod__' requires a 'float' object but received a '{_type_of(self).__name__}'")
+        if not isinstance(other, (int, float)):
+            return NotImplemented
+        left, right = _convert_float(other), _convert_float(self)
+        if right == 0.0:
+            raise ZeroDivisionError('division by zero')
+        return (left // right, left % right)
 
     def conjugate(self):
         return self

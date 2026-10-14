@@ -353,3 +353,23 @@ C++ structs, with matching widths, overflow contracts and safety assumptions,
 recording actual generated code and results. The requirement is
 comparable generated operations and measured performance; no performance claim
 follows merely from selecting `speed=3`.
+
+## Builtin implementation traceback visibility
+
+Compiled modules implementing Python builtin APIs may declare
+`__mule_builtin_implementation__ = True` in their module prologue. The literal
+boolean declaration is inherited by their function policies and remains an
+ordinary private binding at runtime. It suppresses only their own Python
+exception traceback entries; user callbacks retain their own policies and
+frames. Module initialization and all language code still compile through the
+normal stages. It does not enable bootstrap linking or weaken safety checks.
+
+SBCL `src/compiler/debug-dump.lisp` emits compiled function/location metadata
+under compiler debug policies, and `src/code/debug-int.lisp` reconstructs native
+frames from it. SBCL normally exposes its compiled Lisp implementation frames.
+Python builtin functions have no Python source frame, so Mule deliberately
+separates native debug metadata from Python traceback visibility. The explicit
+implementation declaration records that adaptation without recognizing library
+names or filtering source filenames. Native active-frame diagnostics retain the
+implementation frames; error edges omit only their Python traceback append.
+Ordinary source modules keep traceback entries even at debug level zero.

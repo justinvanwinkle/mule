@@ -1,7 +1,7 @@
 """Statically link Python modules, preserving separate runtime namespaces."""
 
 import os
-import sysconfig
+import sys
 import tomllib
 from collections import deque
 from dataclasses import dataclass
@@ -60,17 +60,16 @@ class CompiledModule:
 def search_path(first):
     """Module roots in the order Python's sys.path gives them: the script's
     directory (or the working directory), PYTHONPATH, the standard library, then
-    the host environment's site-packages. Mule's stdlib replaces CPython's, and
-    third-party packages are compiled from the same source CPython would import."""
+    the interpreter's configured source paths. Mule's stdlib takes precedence
+    over host standard-library sources. Runtime additions to sys.path participate
+    in resolution, including when the compiler itself runs under Mule."""
     extra = [
         Path(entry)
         for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep)
         if entry
     ]
-    site = dict.fromkeys(
-        Path(sysconfig.get_path(name)) for name in ("purelib", "platlib")
-    )
-    return (Path(first).resolve(), *extra, STDLIB / "bootstrap", STDLIB, *site)
+    roots = (Path(first), *extra, STDLIB / "bootstrap", STDLIB, *map(Path, sys.path))
+    return tuple(dict.fromkeys(root.resolve() for root in roots))
 
 
 def find_module(name, roots):
@@ -120,6 +119,10 @@ class ModuleCompiler:
     def configure_project(self):
         """Read explicit image dependencies from the nearest project file."""
         for directory in (self.roots[0], *self.roots[0].parents):
+            if directory != self.roots[0] and self.roots[0].relative_to(
+                directory
+            ).parts[0] in ("examples", "conformance", "corpus", "old"):
+                continue
             project = directory / "pyproject.toml"
             if not source_exists(project):
                 continue

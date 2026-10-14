@@ -6,6 +6,8 @@ ordering, blocked primary composition, and algorithmic Hangul processing.
 """
 
 from _str import TextStorage
+from _mule_native import byte_copy as _byte_copy
+from _mule_native import byte_length as _byte_length
 from _unicodedata_data import (
     category_code,
     combining_code,
@@ -35,6 +37,43 @@ def east_asian_width(chr, /):
 
 def combining(chr, /):
     return combining_code(_character(chr))
+
+
+def lookup(name, /):
+    from _unicode_names import ALGORITHMIC_RANGES, lookup_name
+
+    if isinstance(name, str):
+        key = TextStorage.encode(name, "utf-8")
+    elif isinstance(name, bytes):
+        key = _byte_copy(name, 0, _byte_length(name))
+    else:
+        kind = type(name).__name__
+        if isinstance(name, (bytearray, memoryview)):
+            raise TypeError(
+                "lookup() argument must be read-only bytes-like object, not " + kind
+            )
+        raise TypeError("a bytes-like object is required, not '" + kind + "'")
+    original = key
+    # Unicode character names use ASCII case-insensitive matching, not Unicode
+    # case folding (dotless i, for example, must not alias ASCII I).
+    key = bytes(c - 32 if 97 <= c <= 122 else c for c in key)
+    value = lookup_name(key)
+    if value is not None:
+        return value
+    for prefix, ranges in ALGORITHMIC_RANGES.items():
+        if key.startswith(prefix):
+            suffix = key[len(prefix) :]
+            if not suffix or any(c not in b"0123456789ABCDEF" for c in suffix):
+                break
+            code = int(suffix, 16)
+            if suffix != format(code, "X").encode("ascii"):
+                break
+            for first, last in ranges:
+                if first <= code <= last:
+                    return chr(code)
+            break
+    display = original.split(b"\x00", 1)[0].decode("utf-8", "replace")
+    raise KeyError("undefined character name '" + display + "'")
 
 
 def _ordered_append(codes, cp):

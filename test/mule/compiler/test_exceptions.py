@@ -1,6 +1,28 @@
 """Native exception transfers preserve locals, ownership, and handler state."""
 
+from test.mule.compiler.test_exception_groups import compare
 from test.mule.compiler.test_modules import execute
+
+
+def test_key_error_formats_single_argument_with_repr(tmp_path):
+    compare(
+        tmp_path,
+        """
+class Key:
+    def __str__(self): return 'string'
+    def __repr__(self): return '<key>'
+class Custom(KeyError): pass
+for cls in (KeyError, Custom):
+    for args in ((), ('missing',), (\"can't\",), (42,), (None,), ((1, 2),),
+                 ('one', 'two'), (Key(),)):
+        error = cls(*args)
+        print(str(error), repr(error), error.args)
+try:
+    {}['missing']
+except KeyError as error:
+    print(str(error), repr(error))
+""",
+    )
 
 
 def test_handlers_else_nested_reraise_and_binding_cleanup(tmp_path):

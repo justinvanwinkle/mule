@@ -159,13 +159,67 @@ def decode(value, encoding="utf-8", errors="strict"):
     return result[0]
 
 
+def _text_codec(encoding, operation):
+    info = lookup(encoding)
+    if not getattr(info, '_is_text_encoding', True):
+        raise LookupError(
+            repr(encoding) + ' is not a text encoding; use codecs.' + operation
+            + '() to handle arbitrary codecs'
+        )
+    return tuple.__getitem__(info, 0 if operation == 'encode' else 1)
+
+
+def _encode_text(value, encoding, errors, supplied):
+    encoder = _text_codec(encoding, 'encode')
+    result = encoder(value, errors) if supplied else encoder(value)
+    if not isinstance(result, tuple) or tuple.__len__(result) != 2:
+        raise TypeError('encoder must return a tuple (object, integer)')
+    output = tuple.__getitem__(result, 0)
+    if isinstance(output, bytes):
+        return output
+    if isinstance(output, bytearray):
+        import warnings
+        from _mule_native import instance_field, bytes_from_values
+        warnings.warn(
+            'encoder ' + encoding + ' returned bytearray instead of bytes; '
+            'use codecs.encode() to encode to arbitrary types',
+            RuntimeWarning,
+        )
+        return bytes_from_values(instance_field(output, 'values'))
+    raise TypeError(
+        repr(encoding) + ' encoder returned ' + repr(type(output).__name__)
+        + " instead of 'bytes'; use codecs.encode() to encode to arbitrary types"
+    )
+
+
+def _decode_text(value, encoding, errors, supplied):
+    decoder = _text_codec(encoding, 'decode')
+    view = memoryview(value)
+    result = decoder(view, errors) if supplied else decoder(view)
+    if not isinstance(result, tuple) or tuple.__len__(result) != 2:
+        raise TypeError('decoder must return a tuple (object,integer)')
+    output = tuple.__getitem__(result, 0)
+    if not isinstance(output, str):
+        raise TypeError(
+            repr(encoding) + ' decoder returned ' + repr(type(output).__name__)
+            + " instead of 'str'; use codecs.decode() to decode to arbitrary types"
+        )
+    return output
+
+
 def _encode_as(value, encoding, errors="strict"):
+    from _str import _codec_name
+    if _codec_name(encoding) is None:
+        raise LookupError(f"unknown encoding: {encoding}")
     if not isinstance(value, str):
         value = str(value)
     return value.encode(encoding, errors), len(value)
 
 
 def _decode_as(value, encoding, errors="strict"):
+    from _str import _codec_name
+    if _codec_name(encoding) is None:
+        raise LookupError(f"unknown encoding: {encoding}")
     data = bytes(value)
     return data.decode(encoding, errors), len(data)
 

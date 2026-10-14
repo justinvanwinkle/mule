@@ -8,6 +8,7 @@ pub type Value = *mut Object;
 pub type Native = unsafe extern "C" fn(Value, Value) -> Value;
 pub struct Object {
     pub references: usize,
+    pub tracked: bool,
     pub data: Data,
 }
 /// A global's storage: one per namespace and name, at an address that never
@@ -365,7 +366,12 @@ impl Data {
         match self {
             Self::BigInt(_, ty, attributes) | Self::Float(_, ty, attributes)
             | Self::Text(_, ty, attributes) | Self::Bytes(_, ty, attributes) => !ty.is_null() || !attributes.is_null(),
-            Self::Args(..) | Self::List(..) | Self::Namespace(_) | Self::Class(_) | Self::Instance { .. }
+            Self::Args(values, ty, attributes) => {
+                !ty.is_null()
+                    || !attributes.is_null()
+                    || values.iter().any(|&v| !v.is_null() && !is_fixnum(v) && unsafe { (*v).tracked })
+            }
+            Self::List(..) | Self::Namespace(_) | Self::Class(_) | Self::Instance { .. }
             | Self::NativeInstance { .. } | Self::BoundMethod { .. } | Self::WeakHandle { .. } | Self::BufferLease { .. }
             | Self::Traceback { .. } | Self::Frame { .. } | Self::Function { .. } => true,
             Self::None | Self::Bool(_) | Self::DescriptorLease(_) | Self::ForeignPointerVector { .. } | Self::ForeignCString { .. }
@@ -452,6 +458,7 @@ pub unsafe fn new_value(data: Data) -> Value {
     let tracked = data.cycle_candidate();
     let value = Box::into_raw(Box::new(Object {
         references: 1,
+        tracked,
         data,
     }));
     if tracked { crate::gc::track(value); }
@@ -484,8 +491,10 @@ pub unsafe fn release(value: Value) {
                 return;
             }
         }
-        crate::gc::untrack(value);
         let owned = Box::from_raw(value);
+        if owned.tracked {
+            crate::gc::untrack(value);
+        }
         release_data(value, owned.data);
     }
 }
@@ -522,6 +531,7 @@ unsafe impl Sync for ImmortalObject {}
 #[unsafe(export_name = "mule.undefined")]
 static UNDEFINED: ImmortalObject = ImmortalObject(Object {
     references: usize::MAX,
+    tracked: false,
     data: Data::Undefined,
 });
 pub fn undefined_value() -> Value {
@@ -533,16 +543,19 @@ pub fn is_undefined(value: Value) -> bool {
 #[unsafe(export_name = "mule.none")]
 static NONE: ImmortalObject = ImmortalObject(Object {
     references: usize::MAX,
+    tracked: false,
     data: Data::None,
 });
 #[unsafe(export_name = "mule.false")]
 static FALSE: ImmortalObject = ImmortalObject(Object {
     references: usize::MAX,
+    tracked: false,
     data: Data::Bool(false),
 });
 #[unsafe(export_name = "mule.true")]
 static TRUE: ImmortalObject = ImmortalObject(Object {
     references: usize::MAX,
+    tracked: false,
     data: Data::Bool(true),
 });
 pub unsafe fn none_value() -> Value {
@@ -822,6 +835,7 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
         // Native callbacks may retain individual arguments, never the argument view.
         let mut view = Object {
             references: usize::MAX,
+            tracked: false,
             data: Data::ArgumentView {
                 values: args.as_ptr(),
                 count: args.len(),
@@ -861,6 +875,7 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
                 }
                 let mut view = Object {
                     references: usize::MAX,
+                    tracked: false,
                     data: Data::ReceiverArgs {
                         receiver,
                         values: args.as_ptr(),

@@ -1,7 +1,6 @@
 """Computed imports reserve artifacts without running module bodies."""
 
 import subprocess
-import sys
 
 import pytest
 
@@ -9,6 +8,7 @@ from mule.compiler import build
 from mule.compiler.inputs import directory_entries, recording, unchanged
 from mule.compiler.main import compile_toplevel
 from mule.compiler.modules import ModuleCompiler
+from test.python_host import python_host
 
 
 def test_prefix_dependencies_include_only_immediate_modules(tmp_path):
@@ -148,7 +148,7 @@ print(importlib.import_module('literal').value)
 print(choose('alpha') is choose('alpha'))
 """)
     oracle = subprocess.run(
-        [sys.executable, source],
+        [python_host(), source],
         capture_output=True,
         text=True,
         check=False,

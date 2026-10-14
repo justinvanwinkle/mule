@@ -1,6 +1,99 @@
 """Writable reads and buffer export lifetime agree with Python 3.14."""
 
 from test.mule.compiler.test_exception_groups import compare
+from test.mule.compiler.test_modules import execute
+
+
+def test_physical_word_reads_are_unsigned_unaligned_and_bounded(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        """
+from _mule_native import read_u64_le
+class Raw(bytes):
+    def __len__(self): raise AssertionError('length override')
+    def __getitem__(self, index): raise AssertionError('index override')
+    def __iter__(self): raise AssertionError('iteration override')
+for data in (bytes(range(17)), b'\\xff' * 17, b'\\x00' * 17):
+    for start in (0, 1, 9):
+        print(read_u64_le(Raw(data), start))
+for data, start in ((b'', 0), (b'1234567', 0), (b'12345678', -1),
+                    (b'12345678', 1), (b'12345678', 1 << 100)):
+    try:
+        read_u64_le(data, start)
+    except IndexError:
+        print('bounds')
+for data, start in ((None, 0), ('12345678', 0), (bytearray(8), 0),
+                    (b'12345678', None), (b'12345678', 1.0)):
+    try:
+        read_u64_le(data, start)
+    except TypeError:
+        print('type')
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    expected = [
+        str(int.from_bytes(data[start : start + 8], "little"))
+        for data in (bytes(range(17)), b"\xff" * 17, b"\x00" * 17)
+        for start in (0, 1, 9)
+    ]
+    assert result.stdout.splitlines() == expected + ["bounds"] * 5 + ["type"] * 5
+
+
+def test_memoryview_copies_slices_casts_and_strides_without_buffer_hooks(tmp_path):
+    compare(
+        tmp_path,
+        """
+class Raw(bytes):
+    def __len__(self): raise AssertionError('length')
+    def __getitem__(self, key): raise AssertionError('index')
+    def __iter__(self): raise AssertionError('iteration')
+    def __bytes__(self): raise AssertionError('conversion')
+original = bytes(range(32))
+view = memoryview(Raw(original))
+for selected in (view, view[:], view[5:13], view[32:], view[::2], view[::-1],
+                 view.cast('H')[2:7], view.cast('I')[1:4], view.cast('Q')[:2],
+                 view.cast('f')[2:6], view.cast('d')[1:3]):
+    print(selected.tobytes().hex())
+    selected.release()
+try:
+    view.tobytes()
+except ValueError as error:
+    print(type(error).__name__, str(error))
+buffer = bytearray(original)
+mutable = memoryview(buffer)[3:11]
+copied = mutable.tobytes()
+buffer[3] = 255
+print(copied.hex(), mutable.tobytes().hex())
+mutable.release()
+""",
+    )
+
+
+def test_bytes_slices_normalize_each_integer_bound_once(tmp_path):
+    compare(
+        tmp_path,
+        """
+class Bound:
+    def __init__(self, name, value): self.name, self.value = name, value
+    def __index__(self):
+        print('bound', self.name)
+        return self.value
+class Raw(bytes):
+    def __len__(self): raise AssertionError('length')
+    def __getitem__(self, key): raise AssertionError('index')
+for data in (b'abcdefgh', Raw(b'abcdefgh')):
+    for start, stop, step in ((1, 7, 1), (1, 7, 2), (7, 1, -2), (5, 1, 1),
+                              (-100, 100, 1), (100, 200, 1), (0, 8, 0)):
+        bounds = slice(Bound('start', start), Bound('stop', stop), Bound('step', step))
+        try:
+            result = bytes.__getitem__(data, bounds)
+            print(type(result).__name__, result)
+        except ValueError as error:
+            print(type(error).__name__, str(error))
+print(b''[:], bytes.__getitem__(Raw(b''), slice(None)))
+""",
+    )
 
 
 def test_bytearray_resize_and_exported_views_preserve_storage(tmp_path):

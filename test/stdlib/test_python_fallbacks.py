@@ -3,6 +3,7 @@
 These checks do not claim Mule can compile the imported standard library yet.
 """
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,12 @@ from pathlib import Path
 import pytest
 
 STDLIB = Path(__file__).resolve().parents[2] / "stdlib"
+
+
+def _external_python_host() -> str:
+    if sys.implementation.name == "mule":
+        return shutil.which("python3") or "python3"
+    return sys.executable
 
 
 @pytest.mark.parametrize(
@@ -102,7 +109,7 @@ def test_python_algorithm(filename, program, output, tmp_path):
         "spec.loader.exec_module(module)\n"
     )
     result = subprocess.run(
-        [sys.executable, "-I", "-S", "-B", "-c", loader + program],
+        [_external_python_host(), "-I", "-S", "-B", "-c", loader + program],
         cwd=tmp_path,
         capture_output=True,
         text=True,

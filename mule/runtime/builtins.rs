@@ -388,6 +388,7 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
         object::bind(globals, "__builtins__", namespace());
         let mut args = Object {
             references: usize::MAX,
+            tracked: false,
             data: Data::Args(Vec::new(), std::ptr::null_mut(), std::ptr::null_mut()),
         };
         let entry = std::mem::transmute::<*mut c_void, Native>(native);

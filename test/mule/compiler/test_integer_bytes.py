@@ -48,3 +48,23 @@ for order in (None, 0, 'invalid'):
 """,
     )
     assert result.stderr == ""
+
+
+def test_integer_byte_buffers_cross_word_boundaries_and_preserve_signs(tmp_path):
+    compare(
+        tmp_path,
+        """
+class Raw(bytes):
+    def __len__(self): raise AssertionError('length')
+    def __getitem__(self, key): raise AssertionError('index')
+    def __iter__(self): raise AssertionError('iteration')
+for size in (0, 1, 7, 8, 9, 31, 128):
+    data = bytes((index * 37 + 129) & 255 for index in range(size))
+    for buffer in (data, bytes([0]) + data, bytes([255]) + data):
+        for order in ('little', 'big'):
+            for signed in (False, True):
+                value = int.from_bytes(Raw(buffer), order, signed=signed)
+                print(size, order, signed, value)
+                assert value.to_bytes(len(buffer), order, signed=signed) == buffer
+""",
+    )

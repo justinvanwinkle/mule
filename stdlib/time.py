@@ -4,6 +4,8 @@ Clock and calendar services come from the ``_time`` native module; the
 ``struct_time`` type and formatting are Python here.
 """
 
+__mule_builtin_implementation__ = True
+
 from _time import gmtime_parts as _gmtime_parts
 from _time import localtime_parts as _localtime_parts
 from _time import monotonic as _monotonic
@@ -11,6 +13,8 @@ from _time import process as _process
 from _time import sleep_for as _sleep_for
 from _time import thread as _thread
 from _time import wall as _wall
+from _time import clock_parts as _clock_parts
+from _time import resolution_parts as _resolution_parts
 from _time import zoneinfo as _zoneinfo
 
 CLOCK_MONOTONIC = 1
@@ -128,45 +132,76 @@ def thread_time():
 
 
 def time_ns():
-    return int(_wall() * 1000000000)
+    return _clock_nanoseconds(CLOCK_REALTIME)
 
 
 def monotonic_ns():
-    return int(_monotonic() * 1000000000)
+    return _clock_nanoseconds(CLOCK_MONOTONIC)
 
 
 def perf_counter_ns():
-    return int(_monotonic() * 1000000000)
+    return _clock_nanoseconds(CLOCK_MONOTONIC)
 
 
 def process_time_ns():
-    return int(_process() * 1000000000)
+    return _clock_nanoseconds(CLOCK_PROCESS_CPUTIME_ID)
 
 
 def thread_time_ns():
-    return int(_thread() * 1000000000)
+    return _clock_nanoseconds(CLOCK_THREAD_CPUTIME_ID)
+
+
+def _clock_identifier(value):
+    from _object import _index_integer
+    value = _index_integer(value)
+    if value < -(1 << 63) or value >= (1 << 63):
+        raise OverflowError('Python int too large to convert to C long')
+    if value < -(1 << 31):
+        raise OverflowError('signed integer is less than minimum')
+    if value >= (1 << 31):
+        raise OverflowError('signed integer is greater than maximum')
+    return value
+
+
+def _clocktime_identifier(value):
+    try:
+        return _clock_identifier(value)
+    except BaseException:
+        raise TypeError('clk_id should be integer, not ' + type(value).__name__) from None
+
+
+def _clock_record(query, clock_id):
+    error, seconds, nanoseconds = query(clock_id)
+    if error:
+        from _posix import strerror_bytes
+        raise OSError(error, strerror_bytes(error).decode('utf-8', 'surrogateescape'))
+    return seconds, nanoseconds
 
 
 def sleep(seconds):
     return _sleep_for(seconds)
 
 
-def clock_gettime(clock_id):
-    if clock_id == CLOCK_REALTIME:
-        return _wall()
-    if clock_id == CLOCK_PROCESS_CPUTIME_ID:
-        return _process()
-    if clock_id == CLOCK_THREAD_CPUTIME_ID:
-        return _thread()
-    return _monotonic()
+def clock_gettime(clock_id, /):
+    seconds, nanoseconds = _clock_record(_clock_parts, _clocktime_identifier(clock_id))
+    return seconds + nanoseconds * 1e-9
 
 
-def clock_gettime_ns(clock_id):
-    return int(clock_gettime(clock_id) * 1000000000)
+def clock_gettime_ns(clock_id, /):
+    return _clock_nanoseconds(_clocktime_identifier(clock_id))
 
 
-def clock_getres(clock_id):
-    return 1e-09
+def _clock_nanoseconds(clock_id):
+    seconds, nanoseconds = _clock_record(_clock_parts, clock_id)
+    value = seconds * 1_000_000_000 + nanoseconds
+    if not -(1 << 63) <= value < (1 << 63):
+        raise OverflowError('timestamp out of range for platform time_t')
+    return value
+
+
+def clock_getres(clock_id, /):
+    seconds, nanoseconds = _clock_record(_resolution_parts, _clock_identifier(clock_id))
+    return seconds + nanoseconds * 1e-9
 
 
 def gmtime(seconds=None):

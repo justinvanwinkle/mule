@@ -57,6 +57,19 @@ unsafe extern "C" fn to_double(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn float_bits(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else { return null_mut(); };
+        if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::Float(number, ..) = &(*value).data {
+                return numeric::integer_import_owned(crate::gmp::BigInt::from_u64(number.to_bits()));
+            }
+        }
+        object::error("TypeError", "binary64 storage is required");
+        null_mut()
+    }
+}
+
 unsafe extern "C" fn integer_value(_: Value, args: Value) -> Value {
     unsafe {
         let Some([value]) = operands(args) else {
@@ -316,13 +329,14 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, Native); 18] = [
+        let exports: [(&str, Native); 19] = [
             ("integer_decimal", integer_decimal),
             ("math_fabs", fabs),
             ("numeric_negate", negate),
             ("numeric_invert", invert),
             ("math_number_kind", number_kind),
             ("math_to_double", to_double),
+            ("math_float_bits", float_bits),
             ("math_integer_value", integer_value),
             ("math_integer_bit_length", integer_bit_length),
             ("math_special_method", special_method),

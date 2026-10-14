@@ -677,6 +677,10 @@ class FloatType(PrimitiveType):
     def join_real(self, left):
         return left.join_numeric(self)
 
+    @property
+    def is_heap_object(self):
+        return not self.may_be_unbound
+
     def accept(self, visitor):
         return visitor.visit_FloatType(self)
 
@@ -845,6 +849,10 @@ class NoneType(PrimitiveType):
 
 @dataclass(frozen=True, slots=True)
 class TextType(PrimitiveType):
+    @property
+    def is_heap_object(self):
+        return not self.may_be_unbound
+
     def accept(self, visitor):
         return visitor.visit_TextType(self)
 
@@ -888,6 +896,10 @@ class TextType(PrimitiveType):
 
 @dataclass(frozen=True, slots=True)
 class BytesType(PrimitiveType):
+    @property
+    def is_heap_object(self):
+        return not self.may_be_unbound
+
     def accept(self, visitor):
         return visitor.visit_BytesType(self)
 
@@ -934,6 +946,10 @@ class FunctionType(ValueType):
     def annotation_conflict(self, contract):
         return True
 
+    @property
+    def is_heap_object(self):
+        return not self.may_be_unbound
+
     def accept(self, visitor):
         return visitor.visit_FunctionType(self)
 
@@ -962,6 +978,10 @@ class TupleType(ValueType):
 
     def annotation_conflict(self, contract):
         return True
+
+    @property
+    def is_heap_object(self):
+        return not self.may_be_unbound
 
     def accept(self, visitor):
         return visitor.visit_TupleType(self)

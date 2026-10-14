@@ -2,7 +2,44 @@
 
 import unicodedata
 
+from test.mule.compiler.test_exception_groups import compare
 from test.mule.compiler.test_modules import execute
+
+
+def test_unicode_names_aliases_sequences_and_lookup_validation(tmp_path):
+    compare(
+        tmp_path,
+        """
+import unicodedata as u
+names = ['LATIN CAPITAL LETTER A', 'grinning face', 'NULL', 'LF',
+         'LATIN CAPITAL LETTER GHA', 'KEYCAP NUMBER SIGN',
+         'HANGUL SYLLABLE GA', 'HANGUL SYLLABLE HIH',
+         'CJK UNIFIED IDEOGRAPH-4E00', 'cjk unified ideograph-31350',
+         'CJK COMPATIBILITY IDEOGRAPH-2F800', 'TANGUT IDEOGRAPH-17000',
+         'NUSHU CHARACTER-1B170', 'KHITAN SMALL SCRIPT CHARACTER-18B00',
+         'EGYPTIAN HIEROGLYPH-13460', b'BELL', b'grinning face']
+for value in names:
+    print(repr(u.lookup(value)))
+for value in ['', 'INVALID', 'CJK UNIFIED IDEOGRAPH-04E00',
+              'CJK UNIFIED IDEOGRAPH-4E0', 'CJK UNIFIED IDEOGRAPH-110000',
+              'TANGUT IDEOGRAPH-187F8', 'grınnıng face',
+              'BELL\\x00x', b'BELL\\xff', None, 1, bytearray(b'BELL'),
+              memoryview(b'BELL')]:
+    try:
+        u.lookup(value)
+    except (KeyError, TypeError) as error:
+        print(type(error).__name__, str(error))
+class Name(str):
+    def encode(self, *args): raise RuntimeError('encode override')
+    def upper(self): raise RuntimeError('upper override')
+    def __iter__(self): raise RuntimeError('iteration override')
+class Octets(bytes):
+    def __getitem__(self, index): raise RuntimeError('index override')
+    def __iter__(self): raise RuntimeError('iteration override')
+    def upper(self): raise RuntimeError('upper override')
+print(u.lookup(Name('grinning face')), u.lookup(Octets(b'BELL')))
+""",
+    )
 
 
 def test_unicode_properties_and_normalization_match_host(tmp_path):
