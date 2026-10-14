@@ -160,6 +160,9 @@ class Representation:
     def python_float(self):
         raise NotNative
 
+    def python_real(self):
+        raise NotNative
+
     def field(self, name):
         raise NotNative
 
@@ -182,6 +185,9 @@ class Representation:
 
 
 class Int64(Representation):
+    def python_real(self):
+        return self
+
     def numeric(self):
         return self
 
@@ -202,6 +208,9 @@ class Int64(Representation):
 
 
 class Float64(Representation):
+    def python_real(self):
+        return self
+
     llvm_type = "double"
     zero = "0.0"
     primitive_type = FLOAT64
@@ -226,6 +235,9 @@ class Float64(Representation):
 
 
 class Boolean(Representation):
+    def python_real(self):
+        return self
+
     llvm_type = "i1"
     zero = "false"
     primitive_type = BOOLEAN_T
@@ -331,9 +343,13 @@ class _Contract:
         return FLOAT
 
     visit_PythonIntegerContract = visit_Contract
+    visit_PythonFloatContract = visit_Contract
 
 
 class _LocalContract(_Contract):
+    def visit_PythonFloatContract(self, contract):
+        return None
+
     def visit_PythonIntegerContract(self, contract):
         # Unbounded Python int is a semantic constraint, not a machine width.
         # Select storage from the local's definitions and arithmetic proofs.
@@ -346,6 +362,9 @@ class _AssertionContract(_Contract):
 
     def visit_PythonIntegerContract(self, contract):
         return self.representation.python_integer()
+
+    def visit_PythonFloatContract(self, contract):
+        return self.representation.python_real()
 
     def visit_FloatContract(self, contract):
         if contract.bits != 64:

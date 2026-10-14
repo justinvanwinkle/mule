@@ -340,6 +340,10 @@ def _codec_name(encoding):
         return "utf-8"
     if name == "ascii" or name == "us-ascii" or name == "646":
         return "ascii"
+    if name in ("unicode-escape", "unicodeescape"):
+        return "unicode-escape"
+    if name in ("raw-unicode-escape", "rawunicodeescape"):
+        return "raw-unicode-escape"
     if (
         name == "latin-1"
         or name == "latin1"
@@ -392,6 +396,8 @@ def encode(text, encoding, errors):
     _require_text(encoding, "encode() argument 'encoding' must be str")
     codec = _codec_name(encoding)
     _require_text(errors, "encode() argument 'errors' must be str")
+    if codec in ("unicode-escape", "raw-unicode-escape"):
+        return _unicode_escape_encode(text, codec == "raw-unicode-escape")
     if codec == "utf-8":
         limit = 0x10FFFF
     elif codec == "latin-1":
@@ -423,11 +429,7 @@ def encode(text, encoding, errors):
                 reason = "surrogates not allowed"
             else:
                 reason = f"ordinal not in range({limit + 1})"
-            character = _text_character(text, index)
-            raise UnicodeEncodeError(
-                f"'{codec}' codec can't encode character {character!r} "
-                f"in position {index}: {reason}"
-            )
+            raise UnicodeEncodeError(codec, text, index, index + 1, reason)
         else:
             raise LookupError(f"unknown error handler name '{errors}'")
         index += 1
@@ -511,17 +513,15 @@ def _utf8_sequence(data, index, size, surrogates):
 
 
 def _decode_error(codec, data, start, end, reason):
-    if end - start == 1:
-        where = f"byte 0x{_hex(_read_byte(data, start), 2)} in position {start}"
-    else:
-        where = f"bytes in position {start}-{end - 1}"
-    return UnicodeDecodeError(f"'{codec}' codec can't decode {where}: {reason}")
+    return UnicodeDecodeError(codec, data, start, end, reason)
 
 
 def decode(data, encoding, errors):
     """Decode ``bytes`` storage with a built-in codec."""
     codec = _codec_name(encoding)
     _require_text(errors, "decode() argument 'errors' must be str")
+    if codec in ("unicode-escape", "raw-unicode-escape"):
+        return _unicode_escape_decode(data, errors, True, codec == "raw-unicode-escape")[0]
     codes = []
     index = 0
     size = _byte_length(data)
@@ -574,6 +574,128 @@ def _decode_failure(codes, codec, data, start, end, reason, errors):
         else:
             raise LookupError(f"unknown error handler name '{errors}'")
         position += 1
+
+
+def _unicode_escape_encode(text, raw):
+    values = []
+    for index in range(_text_length(text)):
+        code = _text_codepoint(text, index)
+        if raw and code <= 0xFF or not raw and 32 <= code < 127 and code != 92:
+            values.append(code)
+        elif not raw and code == 92:
+            values.extend((92, 92))
+        elif not raw and code in (9, 10, 13):
+            values.extend((92, {9: 116, 10: 110, 13: 114}[code]))
+        else:
+            _append_ascii(values, _escaped_character(code))
+    return _bytes_from_values(values)
+
+
+def _escape_decode_error(codes, data, start, end, reason, errors, raw):
+    from _codecs import lookup_error
+
+    codec = 'rawunicodeescape' if raw else 'unicodeescape'
+    replacement, position = lookup_error(errors)(
+        _decode_error(codec, data, start, end, reason)
+    )
+    _require_text(replacement, 'decoding error handler must return str')
+    position = _index(position)
+    size = _byte_length(data)
+    if position < 0:
+        position += size
+    if not 0 <= position <= size:
+        raise IndexError('position ' + str(position) + ' from error handler out of bounds')
+    for index in range(_text_length(replacement)):
+        codes.append(_text_codepoint(replacement, index))
+    return position
+
+
+def _unicode_escape_decode(data, errors='strict', final=False, raw=False):
+    """Decode escape syntax, leaving an incomplete terminal escape unconsumed."""
+    _require_text(errors, "decode() argument 'errors' must be str")
+    codes, invalid = [], None
+    index, size = 0, _byte_length(data)
+    simple = {92: 92, 39: 39, 34: 34, 98: 8, 102: 12, 116: 9,
+              110: 10, 114: 13, 118: 11, 97: 7}
+    while index < size:
+        byte = _read_byte(data, index)
+        index += 1
+        if byte != 92:
+            codes.append(byte)
+            continue
+        start = index - 1
+        if index == size:
+            if not final:
+                index = start
+                break
+            if raw:
+                codes.append(92)
+                continue
+            index = _escape_decode_error(codes, data, start, index, '\\ at end of string', errors, raw)
+            continue
+        byte = _read_byte(data, index)
+        index += 1
+        if raw and byte not in (117, 85):
+            codes.extend((92, byte))
+            continue
+        if not raw and byte in simple:
+            codes.append(simple[byte])
+            continue
+        if not raw and byte == 10:
+            continue
+        if not raw and 48 <= byte <= 55:
+            code, digits = byte - 48, 1
+            while digits < 3 and index < size and 48 <= _read_byte(data, index) <= 55:
+                code = code * 8 + _read_byte(data, index) - 48
+                index += 1
+                digits += 1
+            codes.append(code)
+            if code > 255 and invalid is None:
+                invalid = _from_codepoints([_read_byte(data, position)
+                                            for position in range(start + 1, index)])
+            continue
+        if byte in (120, 117, 85):
+            width = {120: 2, 117: 4, 85: 8}[byte]
+            reason = {120: 'truncated \\xXX escape', 117: 'truncated \\uXXXX escape',
+                      85: 'truncated \\UXXXXXXXX escape'}[byte]
+            code, digits = 0, 0
+            while digits < width and index < size:
+                digit = _read_byte(data, index)
+                if 48 <= digit <= 57:
+                    digit -= 48
+                elif 65 <= digit <= 70:
+                    digit -= 55
+                elif 97 <= digit <= 102:
+                    digit -= 87
+                else:
+                    break
+                code = code * 16 + digit
+                index += 1
+                digits += 1
+            if digits < width:
+                if index == size and not final:
+                    index = start
+                    break
+            elif code > 0x10FFFF:
+                reason = '\\Uxxxxxxxx out of range' if raw else 'illegal Unicode character'
+            else:
+                codes.append(code)
+                continue
+            index = _escape_decode_error(codes, data, start, index, reason, errors, raw)
+            continue
+        if byte == 78:
+            raise NotImplementedError('named Unicode escape decoding is not implemented')
+        codes.extend((92, byte))
+        if invalid is None:
+            invalid = _from_codepoints([byte])
+    if invalid is not None:
+        from _py_warnings import warn
+
+        kind = 'octal escape' if _text_length(invalid) == 3 else 'escape'
+        warn('"\\' + invalid + '" is an invalid ' + kind +
+             ' sequence. Such sequences will not work in the future. ',
+             DeprecationWarning, stacklevel=2)
+    return _from_codepoints(codes), index
 
 
 def parse_specification(specification):

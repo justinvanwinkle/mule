@@ -31,6 +31,7 @@ pub mod sequences;
 pub mod signals;
 pub mod spawn;
 pub mod text;
+pub mod terminal;
 pub mod traceback;
 pub mod weakref;
 pub use sequences::*;

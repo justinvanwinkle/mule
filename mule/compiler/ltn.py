@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .ctype import UNKNOWN, ValueType
+from .ctype import UNKNOWN, ValueType, ValueTypeVisitor
 from .node import (
     CallKind,
     Cast,
@@ -78,7 +78,7 @@ def primitive_type_of(value_type: ValueType) -> PrimitiveType:
     return value_type.accept(_PrimitiveTypeOf())
 
 
-class _PrimitiveTypeOf:
+class _PrimitiveTypeOf(ValueTypeVisitor):
     def visit_ValueType(self, value_type: ValueType) -> PrimitiveType:
         return IMMORTAL_T if value_type.is_immortal else T
 
@@ -95,6 +95,12 @@ class _PrimitiveTypeOf:
 
     def visit_ImmortalType(self, value_type: ValueType) -> PrimitiveType:
         return IMMORTAL_T
+
+    visit_FloatType = visit_ValueType
+    visit_TextType = visit_ValueType
+    visit_BytesType = visit_ValueType
+    visit_FunctionType = visit_ValueType
+    visit_TupleType = visit_ValueType
 
 
 def ltn_analyze(lambda_: Lambda, context: EntryContext) -> None:

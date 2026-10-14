@@ -25,13 +25,13 @@ Python adaptations (``spec/python-changes.md``):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from mule import ast
 
 from . import fndb, vops
 from .ctype import UNKNOWN, TupleType
-from .ir1util import made_lambda
+from .ir1util import block_exception_target, made_lambda
 from .ltn import EntryContext, primitive_type_of
 from .node import (
     Bind,
@@ -67,10 +67,12 @@ from .vop import (
 @dataclass(frozen=True, slots=True)
 class LocalAccess:
     """Code generation data of a local read: the name for the unbound-local
-    error and whether the read is the last use (ownership moves)."""
+    error, whether the read is the last use (ownership moves), and whether
+    the variable is proven bound."""
 
     name: str
     move: bool
+    bound: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,8 +138,75 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
         component.blocks.append(ir2_block)
     for block in blocks:
         converter.convert_block(block)
+    _mark_last_local_reads(component)
     _clear_lvar_info(lambda_)
     return component
+
+
+def _mark_last_local_reads(component: IR2Component) -> None:
+    """Mark ``LOAD_LOCAL`` VOPs that are the final read of their local on all
+    normal and exception paths before the local is overwritten or the body exits."""
+    environment = component.environment
+    candidates = {
+        tn
+        for var, tn in environment.vars.items()
+        if not var.indirect and not var.expression_temporary
+    }
+    if not candidates:
+        return
+    normal_succs = {
+        block: [
+            component.ir2_blocks[succ]
+            for succ in block.block.succ
+            if succ in component.ir2_blocks
+        ]
+        for block in component.blocks
+    }
+    handlers = {
+        block: component.ir2_blocks.get(block_exception_target(block.block))
+        for block in component.blocks
+    }
+    live_in = {block: set() for block in component.blocks}
+    changed = True
+    while changed:
+        changed = False
+        for block in reversed(component.blocks):
+            live = set()
+            for succ in normal_succs[block]:
+                live |= live_in[succ]
+            handler = handlers[block]
+            handler_live = live_in[handler] if handler is not None else ()
+            for vop in reversed(block.vops):
+                if handler_live:
+                    live.update(handler_live)
+                for ref in vop.results:
+                    live.discard(ref.tn)
+                for ref in vop.args:
+                    if ref.tn in candidates:
+                        live.add(ref.tn)
+            if handler_live:
+                live.update(handler_live)
+            if live != live_in[block]:
+                live_in[block] = live
+                changed = True
+    for block in component.blocks:
+        live = set()
+        for succ in normal_succs[block]:
+            live |= live_in[succ]
+        handler = handlers[block]
+        handler_live = live_in[handler] if handler is not None else ()
+        for vop in reversed(block.vops):
+            if handler_live:
+                live.update(handler_live)
+            if vop.info is vops.LOAD_LOCAL:
+                tn = vop.args[0].tn
+                if tn in candidates and tn not in live and not vop.codegen_info.move:
+                    vop.codegen_info = replace(vop.codegen_info, move=True)
+            for ref in vop.results:
+                live.discard(ref.tn)
+            for ref in vop.args:
+                if ref.tn in candidates:
+                    live.add(ref.tn)
 
 
 def _clear_lvar_info(lambda_: Lambda) -> None:
@@ -244,12 +313,16 @@ class _LoadLeaf(LeafVisitor):
             )
         else:
             source = environment.copies.get(leaf) or converter.var_tn(leaf)
+            types = converter.component.context.types
+            bound = leaf in environment.copies or (
+                node in types and not types[node].may_be_unbound
+            )
             converter.emit(
                 vops.LOAD_LOCAL,
                 node,
                 args=(source,),
                 results=(result,),
-                info=LocalAccess(leaf.name, node.final),
+                info=LocalAccess(leaf.name, node.final, bound),
             )
         if discard:
             converter.emit_discard(node, result)
@@ -294,14 +367,16 @@ class _StoreVar(LeafVisitor):
             converter.emit_discard(node, result)
             return
         target = converter.var_tn(leaf)
+        release = converter.context.type_of(node).needs_release
         if node.value is None:
-            converter.emit(vops.UNBIND_LOCAL, node, results=(target,))
+            converter.emit(vops.UNBIND_LOCAL, node, results=(target,), info=release)
         else:
             converter.emit(
                 vops.MOVE,
                 node,
                 args=(converter.lvar_tn(node.value),),
                 results=(target,),
+                info=release,
             )
 
     def visit_GlobalVar(self, leaf: GlobalVar):
@@ -471,7 +546,7 @@ class _Converter(NodeVisitor):
                     node,
                     args=(self.var_tn(var),),
                     results=(value,),
-                    info=LocalAccess(var.name, True),
+                    info=LocalAccess(var.name, True, True),
                 )
                 result = self.temporary()
                 self.emit(
@@ -490,7 +565,7 @@ class _Converter(NodeVisitor):
             node,
             args=(self.environment.cells[var],),
             results=(loaded,),
-            info=LocalAccess(var.name, False),
+            info=LocalAccess(var.name, False, True),
         )
         return loaded
 
@@ -506,7 +581,7 @@ class _Converter(NodeVisitor):
             node,
             args=(source,),
             results=(loaded,),
-            info=LocalAccess(var.name, False),
+            info=LocalAccess(var.name, False, var in environment.copies),
         )
         return loaded
 

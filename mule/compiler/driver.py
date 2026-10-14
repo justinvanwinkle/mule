@@ -206,24 +206,27 @@ class _TextValue(ast.Visitor):
         return node.value
 
 
-class _ContainsOpenText(ast.Visitor):
-    """Whether a constant literal is or contains the text ``"open"``."""
+class _ContainsBuiltinText(ast.Visitor):
+    """Whether a constant literal is or contains one of the target builtin names."""
+
+    def __init__(self, names: tuple[str, ...]):
+        self._names = names
 
     def visit_Node(self, node):
         return False
 
     def visit_TextLiteral(self, node):
-        return node.value == "open"
+        return node.value in self._names
 
     def visit_Tuple(self, node):
         return any(element.accept(self) for element in node.elements)
 
 
-class _ReferencesOpen(NodeVisitor, LeafVisitor):
-    """Whether a node or leaf can reach the ``open`` builtin."""
+class _ReferencesGlobal(NodeVisitor, LeafVisitor):
+    """Whether a node or leaf references one of the named global bindings."""
 
-    def __init__(self):
-        self._text = _ContainsOpenText()
+    def __init__(self, *names: str):
+        self._names = names
 
     def visit_Node(self, node):
         return False
@@ -231,18 +234,26 @@ class _ReferencesOpen(NodeVisitor, LeafVisitor):
     def visit_Ref(self, node):
         return node.leaf.accept(self)
 
-    def visit_Combination(self, node):
-        return (
-            node.kind is CallKind.KNOWN
-            and linked(node.fun_info, node, "known function").name == "%getattr"
-            and linked(node.info, node, "attribute").name == "open"
-        )
-
     def visit_Leaf(self, leaf):
         return False
 
     def visit_GlobalVar(self, leaf):
-        return leaf.name == "open"
+        return leaf.name in self._names
+
+
+class _ReferencesBuiltin(_ReferencesGlobal):
+    """Whether a node or leaf can reach one of the named builtins."""
+
+    def __init__(self, *names: str):
+        super().__init__(*names)
+        self._text = _ContainsBuiltinText(names)
+
+    def visit_Combination(self, node):
+        return (
+            node.kind is CallKind.KNOWN
+            and linked(node.fun_info, node, "known function").name == "%getattr"
+            and linked(node.info, node, "attribute").name in self._names
+        )
 
     def visit_Constant(self, leaf):
         return leaf.value.accept(self._text)
@@ -307,15 +318,24 @@ def compile_unit(
         program.module_import = module.import_info()
     argument_protocol.bind_signatures(program.lambdas)
     program.layouts = native_protocol.prepare(program)
-    open_check = _ReferencesOpen()
-    if any(
-        node.accept(open_check)
+    nodes = [
+        node
         for lambda_ in program.lambdas
         if lambda_.component is not None
         for block in lambda_.component.blocks()
         for node in block.nodes()
-    ):
+    ]
+    open_check = _ReferencesBuiltin("open")
+    if any(node.accept(open_check) for node in nodes):
         compiler.resolve("io", None, None)
+    builtins_check = _ReferencesGlobal("builtins")
+    compile_global = _ReferencesGlobal("compile", "eval")
+    compile_attr = _ReferencesBuiltin("compile", "eval")
+    if any(node.accept(compile_global) for node in nodes) or (
+        any(node.accept(builtins_check) for node in nodes)
+        and any(node.accept(compile_attr) for node in nodes)
+    ):
+        compiler.resolve("ast", None, None)
     return program, [compiler.modules[name] for name in compiler.requested]
 
 

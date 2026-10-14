@@ -23,6 +23,35 @@ that work tightly with the python syntax (template engines for example).
 from _ast import *
 
 
+def _compile(
+    source,
+    filename,
+    mode,
+    flags=0,
+    dont_inherit=False,
+    optimize=-1,
+    *,
+    _feature_version=-1,
+):
+    from _ast_parse import compile as compile_owned
+
+    return compile_owned(
+        source,
+        filename,
+        mode,
+        flags,
+        dont_inherit,
+        optimize,
+        _feature_version=_feature_version,
+    )
+
+
+def _eval(expression, globals=None, locals=None):
+    from _ast_parse import evaluate as eval_owned
+
+    return eval_owned(expression, globals, locals)
+
+
 def parse(source, filename='<unknown>', mode='exec', *,
           type_comments=False, feature_version=None, optimize=-1):
     """
@@ -30,9 +59,21 @@ def parse(source, filename='<unknown>', mode='exec', *,
     Equivalent to compile(source, filename, mode, PyCF_ONLY_AST).
     Pass type_comments=True to get back type comments where the syntax allows.
     """
-    from _ast_parse import parse as parse_owned
-    return parse_owned(source, filename, mode, type_comments=type_comments,
-                       feature_version=feature_version, optimize=optimize)
+    flags = PyCF_ONLY_AST
+    if optimize > 0:
+        flags |= PyCF_OPTIMIZED_AST
+    if type_comments:
+        flags |= PyCF_TYPE_COMMENTS
+    if feature_version is None:
+        feature_version = -1
+    elif isinstance(feature_version, tuple):
+        major, minor = feature_version  # Should be a 2-tuple.
+        if major != 3:
+            raise ValueError(f"Unsupported major version: {major}")
+        feature_version = minor
+    # Else it should be an int giving the minor version for 3.x.
+    return compile(source, filename, mode, flags,
+                   _feature_version=feature_version, optimize=optimize)
 
 
 def literal_eval(node_or_string):

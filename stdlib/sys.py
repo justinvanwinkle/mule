@@ -18,6 +18,7 @@ from _mule_native import read_c_string as _read_c_string
 from _mule_native import read_pointer as _read_pointer
 from _mule_native import register_modules as _register_modules
 from _mule_native import write_fd as _write_fd
+from _posix import read as _read
 
 
 def _make_argv():
@@ -276,10 +277,70 @@ class _TextStream:
     def seekable(self):
         return False
 
+    def _decode_partial(self, data, final):
+        if self.encoding.lower().replace("-", "_") == "utf_8":
+            from _codecs import utf_8_decode
+
+            return utf_8_decode(bytes(data), self.errors, final)[0]
+        return bytes(data).decode(self.encoding, self.errors)
+
+    def read(self, size=-1):
+        if self._fd != 0:
+            raise OSError("not readable")
+        if size is None or size < 0:
+            return self.buffer.read().decode(self.encoding, self.errors)
+        if size == 0:
+            return ""
+        data = bytearray()
+        while True:
+            text = self._decode_partial(data, False)
+            if len(text) >= size:
+                return text[:size]
+            chunk = self.buffer.read(1)
+            if not chunk:
+                return self._decode_partial(data, True)
+            data.extend(chunk)
+
     def readline(self, size=-1):
         if self._fd != 0:
             raise OSError("not readable")
-        return input() + "\n"
+        if size is None or size < 0:
+            return self.buffer.readline().decode(self.encoding, self.errors)
+        if size == 0:
+            return ""
+        data = bytearray()
+        while True:
+            text = self._decode_partial(data, False)
+            if len(text) >= size:
+                return text[:size]
+            chunk = self.buffer.read(1)
+            if not chunk:
+                return self._decode_partial(data, True)
+            data.extend(chunk)
+            if chunk == b"\n":
+                return self._decode_partial(data, True)
+
+    def readlines(self, hint=-1):
+        lines = []
+        total = 0
+        while True:
+            line = self.readline()
+            if not line:
+                break
+            lines.append(line)
+            total += len(line)
+            if hint is not None and hint > 0 and total >= hint:
+                break
+        return lines
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        line = self.readline()
+        if not line:
+            raise StopIteration
+        return line
 
     def close(self):
         self.flush()
@@ -294,8 +355,65 @@ class _BinaryStream:
         self.name = name
         self.closed = False
 
+    def read(self, size=-1):
+        if self._fd != 0:
+            raise OSError("not readable")
+        if size is None or size < 0:
+            chunks = []
+            while True:
+                chunk = _read(self._fd, 65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return b"".join(chunks)
+        if size == 0:
+            return b""
+        return _read(self._fd, size)
+
+    def readline(self, size=-1):
+        if self._fd != 0:
+            raise OSError("not readable")
+        limit = -1 if size is None else size
+        chunks = []
+        total = 0
+        while limit < 0 or total < limit:
+            chunk = _read(self._fd, 1)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += 1
+            if chunk == b"\n":
+                break
+        return b"".join(chunks)
+
+    def readlines(self, hint=-1):
+        lines = []
+        total = 0
+        while True:
+            line = self.readline()
+            if not line:
+                break
+            lines.append(line)
+            total += len(line)
+            if hint is not None and hint > 0 and total >= hint:
+                break
+        return lines
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        line = self.readline()
+        if not line:
+            raise StopIteration
+        return line
+
     def write(self, data):
         return _write_fd(self._fd, bytes(data))
+
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
 
     def flush(self):
         _flush_fd(self._fd)
@@ -305,6 +423,18 @@ class _BinaryStream:
 
     def isatty(self):
         return _isatty(self._fd)
+
+    def readable(self):
+        return self._fd == 0
+
+    def writable(self):
+        return self._fd != 0
+
+    def seekable(self):
+        return False
+
+    def close(self):
+        self.flush()
 
 
 stdin = __stdin__ = _TextStream(0, "<stdin>", "r")

@@ -97,3 +97,25 @@ def test_compiled_sys_argv_supplies_a_workload_size(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "45\n"
+
+
+def test_stdin_reads_text_and_binary_streams(tmp_path):
+    source = tmp_path / "main.py"
+    source.write_text(
+        "import sys\n"
+        "print(sys.stdin.readable(), sys.stdout.writable())\n"
+        "print(repr(sys.stdin.readline()))\n"
+        "print(repr(sys.stdin.read(4)))\n"
+        "print(repr(sys.stdin.read()))\n"
+    )
+    executable = build(source, tmp_path / "program", optimize=False, workers=1)
+    result = subprocess.run(
+        [executable],
+        input="first line\ncafé rest\n",
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "True True\n'first line\\n'\n'café'\n' rest\\n'\n"

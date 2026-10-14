@@ -250,14 +250,22 @@ computed names still require an explicitly linked module. The scan may retain
 extra modules when a syntactically named import method is shadowed; this costs
 build time and image size but executes no additional module bodies.
 
-Projects can declare additional exact module names in the nearest
-`pyproject.toml` using `[tool.mule] include_modules = ["package.module"]`.
+Projects can declare additional exact module names or immediate package
+children in the nearest `pyproject.toml`, for example
+`[tool.mule] include_modules = ["package.module", "plugins.*"]`.
 The build reads this declaration as an input and links the named artifacts and
 their imports without executing them. The project directory becomes a module
 search root. This covers runtime-selected names that cannot be inferred from
 source, rather than recursively compiling every file in a project. Mule's
-declaration includes `test.conftest`, which pytest selects from a runtime path.
-This is the same precompiled-load boundary described above, with an explicit
+declaration includes the package-scoped test fixtures, which pytest selects
+from runtime paths. Compiler tests have an explicit package initializer, like
+the parser tests, so their fixture module has a distinct qualified import name.
+Package patterns reuse the existing immediate-child artifact scan and its
+directory-inventory cache inputs; they do not recursively bundle descendants.
+SBCL `src/code/target-load.lisp`, `load-stream-1`, distinguishes compiled-file
+loading from source loading. Mule keeps that compiled-artifact boundary here:
+the declaration determines image contents, while module bodies initialize only
+when imported. This is the same precompiled-load boundary described above, with an explicit
 build dependency while a resident compiler remains unavailable.
 
 Native startup also installs the image's configured search roots before
@@ -296,6 +304,14 @@ src/code/reader.lisp similarly traverses long input in a loop while keeping
 nested syntax separate from input length. Python's regex protocol additionally
 requires an explicit backtracking stack and capture-state preservation. This
 matching algorithm is compiled Mule Python and does not evaluate Python code.
+For the regex compiler's `REPEAT_ONE` variants, the body is proven to consume
+one character without capture marks. Mule scans those atoms in a loop and
+enumerates greedy or lazy tail positions directly, avoiding a coroutine per
+character. General repeated groups retain the explicit backtracking stack.
+The semantic boundary follows SBCL's `src/code/reader.lisp` token-scanning
+loops: nested syntax needs saved state, while successive independent characters
+stay in one activation. This changes allocation and call overhead, not capture
+or backtracking order; possessive repetition still tries only its maximal exit.
 
 Compiled `print` selects the current `sys.stdout` or an explicit stream,
 validates separators/endings, converts objects in order, writes each component
@@ -432,6 +448,14 @@ compiled service to a codec class preserves the unbound calling convention of
 CPython's builtin codec functions. The existing descriptor forwards the call
 and copies function metadata. This changes descriptor behavior without adding
 Rust call dispatch; exact builtin function type identity remains incomplete.
+The compiled `operator` services use the same nonbinding wrappers. A service
+stored as a class attribute, such as `glob._StringGlobber.concat_path`, receives
+only its explicit arguments when accessed through an instance. Callable
+getter classes retain their own normal class behavior. SBCL
+`src/code/simple-fun.lisp` keeps ordinary function calling separate from
+funcallable-instance metadata; Python additionally needs the descriptor rule
+distinguishing builtin services from source-defined functions. The adaptation
+uses the existing compiled `staticmethod` descriptor and adds no Rust dispatch.
 
 The UTF-8 decoder reports consumed bytes separately from decoded text and
 buffers incomplete terminal sequences when `final` is false. Continuation
@@ -443,7 +467,87 @@ SBCL `src/code/external-formats/enc-basic.lisp`'s
 from the end-of-input boundary; Mule exposes Python's `(text, consumed)` codec
 protocol instead of SBCL's stream refill protocol.
 
+The compiled text layer also implements `unicode_escape` and
+`raw_unicode_escape`: ordinary bytes map to Latin-1 codepoints; escape decoding
+handles hexadecimal Unicode values, surrogates, octal and simple escapes,
+and preserves incomplete terminal escapes for incremental decoding. Raw escape
+decoding interprets only `\\u` and `\\U`. Encoding walks physical text storage;
+no host codec or evaluator is called. SBCL's `enc-basic.lisp` external formats
+similarly keep decoding, partial-input handling, and error policy in compiled
+language code. Python's escape syntax and `(text, consumed)` interface are the
+concrete adaptations. Named `\\N{...}` escapes remain explicitly unsupported.
+Malformed escapes use the shared `_codecs` error registry, including custom
+replacement and resume positions. Invalid ordinary and octal escapes issue one
+deprecation warning per successful call. The private warning backend can
+initialize its own module state when a builtin warns before public `warnings`
+is imported; subsequent public initialization installs the usual mutable
+warning-module interface.
+
+`UnicodeEncodeError` and `UnicodeDecodeError` expose encoding, input, start,
+end, reason, their original argument tuple, and the codec-specific message.
+These remain ordinary compiled exception classes, following SBCL's
+`src/code/target-error.lisp` condition slots and report functions. Python's
+five-argument Unicode errors and byte/codepoint-specific messages require these
+class methods; Rust does not format or dispatch them.
+
 ### OS random bytes
+
+The compiled `fcntl` module exposes descriptor flags, integer and bounded
+byte-buffer `fcntl` arguments, `flock`, and `lockf` on Linux. Descriptor
+conversion, lock-mode policy, EINTR retries, and exception construction run in
+Python. `_posix` supplies the corresponding kernel calls and returns errno
+with the physical result. Byte arguments use a zero-initialized 1024-byte
+scratch buffer and return exactly the supplied length; unlike a native stack
+buffer with unspecified trailing contents, this does not expose uninitialized
+memory to a kernel command. Oversized inputs are rejected before the syscall.
+`ioctl` supports integer arguments and contiguous buffers. Immutable arguments
+are bounded to 1024 bytes; mutable buffers can be larger. The OS boundary uses
+an owned scratch buffer, and compiled Python copies successful mutable results
+back through a byte-format memoryview. Typed contiguous views therefore use
+their byte length and retain their original format and storage.
+SBCL `contrib/sb-posix/interface.lisp`, `fcntl-with-int-arg`,
+`fcntl-with-pointer-arg`, and its `flock` protocol class, likewise separate
+language-side argument conversion from native descriptor services. Mule uses
+Python's byte-buffer interface and Linux's `struct flock` ABI instead of SBCL's
+alien protocol object. No CPython code or headers are linked.
+
+Compiled `OSError` construction selects the standard errno-specific subclasses
+and retains errno, strerror, optional filenames, and blocking-write counts.
+Its class formats the corresponding `[Errno ...]` message. This extends the
+compiled condition-slot/report-function boundary described above; syscall
+wrappers can raise ordinary structured exceptions without Rust selecting their
+language-level class. Older native services that still report a preformatted
+single message do not yet supply structured errno fields.
+`posix.strerror` obtains the OS error message as bytes and decodes it in compiled
+Python, following SBCL `src/code/misc-aliens.lisp`'s `strerror` foreign-service
+wrapper. It no longer substitutes an unknown-error message for every errno.
+
+The compiled `resource` module provides Linux limits, `getrlimit`, `setrlimit`,
+`prlimit`, `getrusage`, and `getpagesize`. `_posix` exposes the kernel results
+as primitive integers and tuples. Python validates resource IDs, unsigned native
+limit values (with `-1` representing infinity) and two-element limit sequences,
+maps setting errors to the
+specified exceptions, and wraps usage rows in a tuple subclass with named
+properties. SBCL `src/code/unix.lisp`, `unix-getrusage`, similarly marshals the
+OS usage record at the foreign boundary. Mule returns Python's floating-point
+CPU seconds and `struct_rusage` interface instead of SBCL's microsecond multiple
+values. Windows limits and complete struct-sequence constructor/repr parity
+remain outside this Linux implementation.
+
+The Linux `termios` wrapper validates the seven-element attribute list and its
+control-character list, converts canonical-mode control characters to bytes
+and noncanonical `VMIN`/`VTIME` to integers, and exposes terminal actions and
+window-size operations. `pty.openpty` uses the new POSIX allocation service;
+both returned descriptors are noninheritable and remain caller-owned. Native
+services copy the Linux libc `termios` record and invoke OS functions, while
+Python owns errors, attribute policy and buffer conversion. SBCL
+`contrib/sb-posix/interface.lisp`, `termios`, `tcgetattr` and `tcsetattr`, uses
+the same foreign-record boundary with a language-owned protocol class. Mule
+adapts it to Python's list interface, and `src/code/unix.lisp`'s `unix-ioctl`
+provides the reference for descriptor/request/buffer services. Terminal ABI
+constants are checked-in data generated explicitly on 64-bit Linux by
+`tools/generate_terminal_constants.py`; no host Python API or CPython library
+is consulted by native programs.
 
 The compiled `posix.urandom` wrapper, also exported through `os`, applies the
 integer-index protocol and rejects negative lengths. Its `_posix.entropy_bytes`
@@ -529,9 +633,9 @@ continuation bytes, length, overlong sequences, surrogates, and the maximum
 codepoint, raising `UnicodeDecodeError` with encoding, data, offsets, and reason
 in its argument tuple. No bytes are replaced or ignored. Unlike Python's POSIX
 filesystem decoding, locale-derived encoding remains a gap for that entry.
-The current exception implementation also lacks the specialized properties and
-formatting of Python's `UnicodeDecodeError`. Text storage already permits lone
-surrogates. Native argv now uses the shared compiled bytes decoder with UTF-8
+The exception exposes specialized properties and formatting through its
+compiled class methods. Text storage already permits lone surrogates. Native
+argv now uses the shared compiled bytes decoder with UTF-8
 and surrogateescape, preserving undecodable POSIX argument bytes instead of
 raising during system-module initialization. Strict decoding is linear in byte
 length, collects codepoints
@@ -599,16 +703,28 @@ the unmodified Benchmarks Game programs compile or execute.
 
 ### Compiled initialization and imports
 
-The public ast parsing interface uses Mule's handwritten parser and owned
-syntax nodes, then a compiled visitor converts them to the Python AST interface
-classes in _ast. The compiler continues consuming its owned nodes directly.
-SBCL src/code/reader.lisp reads language forms and src/compiler/ir1tran.lisp
-converts those forms; Mule retains its own reader/frontend boundary. Python's
-public AST reflection requires this additional interface conversion, including
-load/store contexts and UTF-8 byte columns, without changing the owned tree's
-Unicode-character spans. No host parser, evaluator or CPython linkage is used.
-The standard Mule package exposes the same parser/AST implementation sources;
+The public `ast.parse` interface and the `compile` builtin use Mule's
+handwritten parser and owned syntax nodes, then a compiled visitor converts
+them to the Python AST interface classes in `_ast`. When `PyCF_ONLY_AST` is
+requested, `compile` returns that converted `_ast.AST` tree; otherwise it
+validates load/store/del target contexts and returns a `code` object retaining
+the validated `_ast.AST` node and mode. `compile` also accepts an already
+constructed `_ast.AST` tree (including synthetic trees with non-identifier
+`ast.Name` nodes used by test-runner expression matchers). The `eval` builtin
+evaluates expression-mode `code` objects or source strings through a compiled
+AST expression walker (`_ExpressionEvaluator`), following SBCL
+`src/code/eval.lisp`'s `simple-eval-in-lexenv` tree-walk evaluator for runtime
+forms before a resident native JIT is linked into standalone executables.
+The compiler continues consuming its owned nodes directly for all static modules
+and functions. No host parser, bytecode interpreter or CPython linkage is used.
+The standard `mule` package exposes the same parser/AST implementation sources;
 numeric annotation imports remain compiler declarations.
+
+Standard streams (`sys.stdin`, `sys.stdout`, `sys.stderr`) and their binary
+buffers support buffered `read`, `readline`, `readlines`, line iteration, and
+`write`/`writelines` in compiled Python over `_posix.read` and `_posix.write`,
+preserving incomplete multi-byte UTF-8 sequences across chunk reads via
+`_codecs.utf_8_decode(..., final=False)`.
 
 Imports from mule reserve recognized numeric contracts and optimize as lexical
 compiler declarations; other names remain ordinary runtime package imports.

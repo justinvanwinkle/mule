@@ -96,6 +96,37 @@ def test_project_dependencies_and_namespace_changes_are_cache_inputs(tmp_path):
     assert not unchanged(inputs)
 
 
+def test_project_package_pattern_links_only_immediate_artifacts(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.mule]\ninclude_modules = ["plugins.*"]\n'
+    )
+    package = tmp_path / "plugins"
+    package.mkdir()
+    (package / "alpha.py").write_text('raise AssertionError("not initialized")\n')
+    nested = package / "nested"
+    nested.mkdir()
+    (nested / "unused.py").write_text("")
+    with recording() as inputs:
+        compiler = ModuleCompiler(tmp_path / "main.py", roots=(tmp_path,))
+        compiler.configure_project()
+        compiler.include_patterns(compiler.project_modules)
+    assert compiler.project_modules == ("plugins.",)
+    assert {"plugins", "plugins.alpha", "plugins.nested"} == compiler.modules.keys()
+    assert unchanged(inputs)
+    (package / "beta.py").write_text("")
+    assert not unchanged(inputs)
+
+
+@pytest.mark.parametrize("name", ["*", "plugins.*.*", "plugins.", ".plugins.*"])
+def test_project_rejects_invalid_module_patterns(tmp_path, name):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.mule]\ninclude_modules = ["' + name + '"]\n'
+    )
+    compiler = ModuleCompiler(tmp_path / "main.py", roots=(tmp_path,))
+    with pytest.raises(ValueError, match="invalid module dependency"):
+        compiler.configure_project()
+
+
 @pytest.mark.integration
 def test_literal_and_prefixed_imports_load_after_sources_are_deleted(tmp_path):
     package = tmp_path / "plugins"

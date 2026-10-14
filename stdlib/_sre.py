@@ -128,7 +128,9 @@ class _Engine:
             elif op == _BRANCH:
                 at = pc + 1
                 while True:
-                    yield from self.run(at + 1, pos, marks, halt)
+                    arm = at + 1
+                    if code[arm] not in _SINGLE_CHAR_OPS or self._match_one(arm, pos):
+                        yield from self.run(arm, pos, marks, halt)
                     at = at + code[at]
                     if code[at] == _FAILURE:
                         break
@@ -230,10 +232,54 @@ class _Engine:
             greedy = code[stop] == _MAX_UNTIL
         possessive = op in (_POSSESSIVE_REPEAT, _POSSESSIVE_REPEAT_ONE)
 
+        if op in (_REPEAT_ONE, _MIN_REPEAT_ONE, _POSSESSIVE_REPEAT_ONE):
+            # re's compiler proves these bodies consume exactly one character
+            # and contain no capture marks. Keep repetition in this activation.
+            count = 0
+            while count < minimum:
+                if not self._match_one(pc + 4, pos + count):
+                    return
+                count += 1
+            if greedy:
+                while count < maximum and self._match_one(pc + 4, pos + count):
+                    count += 1
+                while count >= minimum:
+                    yield from self.run(following, pos + count, marks, halt)
+                    if possessive:
+                        return
+                    count -= 1
+            else:
+                while True:
+                    yield from self.run(following, pos + count, marks, halt)
+                    if count >= maximum or not self._match_one(pc + 4, pos + count):
+                        return
+                    count += 1
+            return
+
         for at, seen_marks in self._repeat_states(pc + 4, stop, pos, marks, minimum, maximum, greedy):
             yield from self.run(following, at, seen_marks, halt)
             if possessive:
                 return
+
+    def _match_one(self, pc, pos):
+        if pos >= self.end:
+            return False
+        code, op = self.code, self.code[pc]
+        if op in (_LITERAL, _NOT_LITERAL):
+            return (self.char(pos) == code[pc + 1]) == (op == _LITERAL)
+        if op in (_ANY, _ANY_ALL):
+            return op == _ANY_ALL or self.char(pos) != 10
+        if op in (_IN, _IN_IGNORE, _IN_UNI_IGNORE, _IN_LOC_IGNORE):
+            return self._in_charset(pc + 2, pos, op)
+        if op == _CATEGORY:
+            return _category_matches(code[pc + 1], self.text_char(pos), self.char(pos))
+        if op in (_LITERAL_IGNORE, _LITERAL_LOC_IGNORE, _LITERAL_UNI_IGNORE,
+                  _NOT_LITERAL_IGNORE, _NOT_LITERAL_LOC_IGNORE, _NOT_LITERAL_UNI_IGNORE):
+            negate = op in (_NOT_LITERAL_IGNORE, _NOT_LITERAL_LOC_IGNORE, _NOT_LITERAL_UNI_IGNORE)
+            char = self.char(pos)
+            char = unicode_tolower(char) if op in (_LITERAL_UNI_IGNORE, _NOT_LITERAL_UNI_IGNORE) else ascii_tolower(char)
+            return (char == code[pc + 1]) != negate
+        raise ValueError('unsupported single-character repeat opcode %r' % (op,))
 
     def _repeat_states(self, body, stop, pos, marks, minimum, maximum, greedy):
         # Keep depth-first branch order without consuming the Python call stack
@@ -365,6 +411,25 @@ def template(pattern, template_items):
     return apply
 
 
+_SINGLE_CHAR_OPS = (
+    _LITERAL,
+    _NOT_LITERAL,
+    _ANY,
+    _ANY_ALL,
+    _IN,
+    _IN_IGNORE,
+    _IN_UNI_IGNORE,
+    _IN_LOC_IGNORE,
+    _CATEGORY,
+    _LITERAL_IGNORE,
+    _LITERAL_LOC_IGNORE,
+    _LITERAL_UNI_IGNORE,
+    _NOT_LITERAL_IGNORE,
+    _NOT_LITERAL_LOC_IGNORE,
+    _NOT_LITERAL_UNI_IGNORE,
+)
+
+
 class Pattern:
     def __init__(self, pattern, flags, code, ngroups, groupindex, indexgroup):
         self.pattern = pattern
@@ -373,6 +438,38 @@ class Pattern:
         self.groups = ngroups + 1
         self.groupindex = groupindex
         self._indexgroup = indexgroup
+        pc = 1 + code[1] if code and code[0] == _INFO else 0
+        while pc < len(code) and code[pc] == _MARK:
+            pc += 2
+        self._first_pc = pc
+        op = code[pc] if pc < len(code) else _FAILURE
+        self._first_op = op
+        self._single_char_only = False
+        self._branch_pcs = None
+        if op in _SINGLE_CHAR_OPS:
+            if op in (_ANY, _ANY_ALL):
+                next_pc = pc + 1
+            elif op in (_IN, _IN_IGNORE, _IN_UNI_IGNORE, _IN_LOC_IGNORE):
+                next_pc = pc + 1 + code[pc + 1]
+            else:
+                next_pc = pc + 2
+            if (
+                self.groups == 1
+                and next_pc < len(code)
+                and code[next_pc] == _SUCCESS
+            ):
+                self._single_char_only = True
+        elif op == _BRANCH:
+            arms = []
+            at = pc + 1
+            while at < len(code) and code[at] != _FAILURE:
+                arm = at + 1
+                while arm < len(code) and code[arm] == _MARK:
+                    arm += 2
+                arms.append(arm)
+                at = at + code[at]
+            if arms:
+                self._branch_pcs = tuple(arms)
 
     def _engine(self, string, endpos):
         end = len(string) if endpos is None else min(endpos, len(string))
@@ -381,18 +478,48 @@ class Pattern:
         engine._marks_template = [-1] * (2 * self.groups)
         return engine
 
-    def _match_at(self, string, pos, endpos, anchored_end=False):
-        engine = self._engine(string, endpos)
+    def _pc_can_start_at(self, engine, pc, pos):
+        code = self._code
+        op = code[pc] if pc < len(code) else _FAILURE
+        if op in _SINGLE_CHAR_OPS:
+            return engine._match_one(pc, pos)
+        if op in (_REPEAT_ONE, _MIN_REPEAT_ONE, _POSSESSIVE_REPEAT_ONE):
+            if code[pc + 2] >= 1:
+                return engine._match_one(pc + 4, pos)
+            return True
+        if op == _AT:
+            return engine._at_matches(code[pc + 1], pos)
+        return True
+
+    def _can_start_at(self, engine, pos):
+        if self._branch_pcs is not None:
+            for arm_pc in self._branch_pcs:
+                if self._pc_can_start_at(engine, arm_pc, pos):
+                    return True
+            return False
+        return self._pc_can_start_at(engine, self._first_pc, pos)
+
+    def _match_at_engine(self, engine, pos, anchored_end=False):
+        if not self._can_start_at(engine, pos):
+            return None
+        if self._single_char_only:
+            if anchored_end and pos + 1 != engine.end:
+                return None
+            return Match(self, engine.string, [pos, pos + 1], pos, engine.end)
         marks = [-1] * (2 * self.groups)
-        states = engine.run(0, pos, marks)
+        states = engine.run(self._start_pc if False else 0, pos, marks)
         try:
             for stop, found in states:
                 if anchored_end and stop != engine.end:
                     continue
-                return Match(self, string, [pos, stop, *found], pos, engine.end)
+                return Match(self, engine.string, [pos, stop, *found], pos, engine.end)
         finally:
             states.close()
         return None
+
+    def _match_at(self, string, pos, endpos, anchored_end=False):
+        engine = self._engine(string, endpos)
+        return self._match_at_engine(engine, pos, anchored_end)
 
     def match(self, string, pos=0, endpos=None):
         pos = max(0, pos)
@@ -402,12 +529,18 @@ class Pattern:
         return self._match_at(string, max(0, pos), endpos, anchored_end=True)
 
     def search(self, string, pos=0, endpos=None):
-        engine_end = len(string) if endpos is None else min(endpos, len(string))
+        engine = self._engine(string, endpos)
+        engine_end = engine.end
         start = max(0, pos)
+        anchored_start = (
+            self._first_op == _AT and self._code[self._first_pc + 1] in (0, 1)
+        )
         while start <= engine_end:
-            found = self._match_at(string, start, endpos)
+            found = self._match_at_engine(engine, start)
             if found is not None:
                 return found
+            if anchored_start:
+                return None
             start += 1
         return None
 

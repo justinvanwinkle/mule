@@ -34,6 +34,38 @@ tree = ast.parse('café = 2\\n')
 print(ast.dump(tree, include_attributes=True))
 tree = ast.parse('@decorator\\ndef function(argument: int = 3):\\n pass\\n')
 print(ast.dump(tree, include_attributes=True))
+only_ast = compile('40 + 2', '<expr>', 'eval', ast.PyCF_ONLY_AST)
+print(ast.dump(only_ast))
+code_obj = compile('x * y + 2', '<calc>', 'eval')
+print(code_obj.co_name, code_obj.co_filename, code_obj.co_firstlineno)
+print(eval(code_obj, {'x': 6}, {'y': 7}))
+custom_expr = ast.Expression(
+    ast.BoolOp(
+        ast.And(),
+        [
+            ast.UnaryOp(ast.Not(), ast.Name('$integration', ast.Load())),
+            ast.Call(
+                ast.Name('$mark', ast.Load()),
+                [],
+                [ast.keyword('level', ast.Constant(2))],
+            ),
+        ],
+    )
+)
+ast.fix_missing_locations(custom_expr)
+compiled_custom = compile(custom_expr, '<pytest match expression>', 'eval')
+class Lookup:
+    def __getitem__(self, key):
+        if key == '$integration':
+            return False
+        if key == '$mark':
+            return lambda **kw: kw == {'level': 2}
+        raise KeyError(key)
+print(bool(eval(compiled_custom, {'__builtins__': {}}, Lookup())))
+try:
+    compile('1 +', '<bad>', 'eval')
+except SyntaxError as exc:
+    print(type(exc).__name__, exc.filename, exc.lineno)
 """,
     )
     assert result.stderr == ""

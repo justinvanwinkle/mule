@@ -36,14 +36,25 @@ from mule import ast
 from mule.diagnostics import phase
 
 from . import vops
-from .ctype import UNKNOWN, ValueType
+from .ctype import FIXNUM_MAX, FIXNUM_MIN, UNKNOWN, ValueType, ValueTypeVisitor
 from .ir1util import block_exception_target, class_method_definitions, known_calls
 from .ir2tran import ir2_convert
 from .ltn import EntryContext, ltn_analyze
 from .node import CodeInfo, FunctionalKind, Lambda, Signature, linked
 from .represent import select_native_plans, select_representations
 from .traceback_sites import SourceHighlights
-from .vop import BOOLEAN, CLASS, DESCRIPTOR, DOUBLE, IMMEDIATE, NULL, RANGE, SIGNED
+from .vop import (
+    BOOLEAN,
+    BOOLEAN_T,
+    CLASS,
+    DESCRIPTOR,
+    DOUBLE,
+    IMMEDIATE,
+    NONE_T,
+    NULL,
+    RANGE,
+    SIGNED,
+)
 
 if TYPE_CHECKING:
     from .ir1tran import ImportInfo
@@ -136,8 +147,9 @@ declare ptr @mule_call_resolved(ptr, ptr, i64, ptr)
 declare i32 @mule_check_args(ptr, i32)
 declare i32 @mule_assert_integer(ptr, ptr, ptr, ptr)
 declare i32 @mule_assert_float(ptr, ptr)
+declare i32 @mule_assert_real(ptr, ptr)
 declare ptr @mule_arg(ptr, i32)
-declare ptr @mule_retain(ptr)
+declare ptr @mule_retain(ptr returned)
 declare void @mule_release(ptr)
 declare i32 @mule_enter_frame()
 declare void @mule_leave_frame()
@@ -1426,7 +1438,7 @@ def _value_tns_live_in(component, candidates) -> dict:
     return live
 
 
-class _ArgumentGuard:
+class _ArgumentGuard(ValueTypeVisitor):
     """Emit the entry check selected by the parameter fact's own behavior."""
 
     def __init__(self, gen, value: str):
@@ -1483,6 +1495,68 @@ class _ArgumentGuard:
         return self.gen.operation(f"or i1 {boolean}, {none}")
 
 
+class _TypeAssumption(ValueTypeVisitor):
+    """Emit the LLVM assumption selected by a derived value type."""
+
+    def __init__(self, gen, value: str):
+        self.gen = gen
+        self.value = value
+
+    def visit_ValueType(self, fact: ValueType) -> str | None:
+        return None
+
+    def visit_IntegerType(self, fact: ValueType) -> str | None:
+        if not fact.is_fixnum:
+            return None
+        operation = self.gen.operation
+        if fact.minimum == fact.maximum:
+            encoded = ((fact.minimum << 1) | 1) & ((1 << 64) - 1)
+            return operation(
+                f"icmp eq ptr {self.value}, inttoptr (i64 {encoded} to ptr)"
+            )
+        bits = operation(f"ptrtoint ptr {self.value} to i64")
+        tag = operation(f"and i64 {bits}, 1")
+        valid = operation(f"icmp ne i64 {tag}, 0")
+        if fact.minimum > FIXNUM_MIN or fact.maximum < FIXNUM_MAX:
+            decoded = operation(f"ashr i64 {bits}, 1")
+            if fact.minimum > FIXNUM_MIN:
+                lower = operation(f"icmp sge i64 {decoded}, {fact.minimum}")
+                valid = operation(f"and i1 {valid}, {lower}")
+            if fact.maximum < FIXNUM_MAX:
+                upper = operation(f"icmp sle i64 {decoded}, {fact.maximum}")
+                valid = operation(f"and i1 {valid}, {upper}")
+        return valid
+
+    def visit_NoneType(self, fact: ValueType) -> str | None:
+        if not fact.is_immortal:
+            return None
+        return self.gen.operation(f"icmp eq ptr {self.value}, @mule.none")
+
+    def visit_BooleanType(self, fact: ValueType) -> str | None:
+        if not fact.is_immortal:
+            return None
+        return _ArgumentGuard(self.gen, self.value).visit_BooleanType(fact)
+
+    def visit_ImmortalType(self, fact: ValueType) -> str | None:
+        if not fact.is_immortal:
+            return None
+        return _ArgumentGuard(self.gen, self.value).visit_ImmortalType(fact)
+
+    def heap_object(self, fact: ValueType) -> str | None:
+        if fact.may_be_unbound:
+            return None
+        operation = self.gen.operation
+        bits = operation(f"ptrtoint ptr {self.value} to i64")
+        tag = operation(f"and i64 {bits}, 1")
+        return operation(f"icmp eq i64 {tag}, 0")
+
+    visit_FloatType = heap_object
+    visit_TextType = heap_object
+    visit_BytesType = heap_object
+    visit_FunctionType = heap_object
+    visit_TupleType = heap_object
+
+
 def _block_local_last_vop(tn, positions):
     """The last vop using a temporary that is written once and read only by
     later vops of the writer's block, or None when it needs a slot."""
@@ -1528,6 +1602,7 @@ class FunctionGenerator:
         else:
             self.body = module.bodies[self.lambda_]
         self.local_slots: dict[str, str] = {}
+        self.local_tns_by_name: dict[str, object] = {}
         self.value_tns = []
         self.local_tns = []
         self.range_tns = []
@@ -1572,12 +1647,14 @@ class FunctionGenerator:
                 tn.slot = f"%local.{len(self.local_tns) - 1}"
                 if tn.leaf is not None:
                     self.local_slots[tn.leaf.name] = tn.slot
+                    self.local_tns_by_name[tn.leaf.name] = tn
         self.landings: dict[tuple[str, tuple[str, ...], bool, bool], str] = {}
         # Each landing's predecessor blocks and the source line failing there.
         self.landing_sites: dict[str, dict[str, tuple[int, str]]] = {}
         self.vop = None
         self.entry_end = 0
         self.uses_out = False
+        self.uses_reuse = False
         self.owner_slots: dict[object, str] = {}
         if self.raw:
             self.owner_slots = {
@@ -1628,6 +1705,9 @@ class FunctionGenerator:
         # report errors through their error flag.
         if self.raw:
             return base
+        # Builtin algorithms have no Python source frame in the exception chain.
+        # Their live activations remain available to native debug diagnostics.
+        record_traceback = record_traceback and not self.module.program.bootstrap
         owned = tuple(value for value in self.live.values() if value != failed_value)
         key = (base, owned, record_traceback, explicit_raise)
         label = self.landings.get(key)
@@ -1746,13 +1826,13 @@ class FunctionGenerator:
             self.line(f"store ptr null, ptr {tn.slot}")
         return value
 
-    def store(self, ref, value: str) -> None:
+    def store(self, ref, value: str, *, release: bool = True) -> None:
         tn = ref.tn
         if tn in self.registers:
             self.define(tn, value)
             return
         if tn.sc in OBJECT:
-            self.publish(ref, value)
+            self.publish(ref, value, release=release)
             return
         self.line(f"store {tn.sc.llvm_type} {value}, ptr {tn.slot}")
 
@@ -1772,17 +1852,26 @@ class FunctionGenerator:
         self.uses_out = True
         return "%out"
 
-    def publish(self, ref, value: str) -> None:
+    def reuse_slot(self) -> str:
+        """An entry-block slot holding an inplace operation's local value for
+        the slow-path reference-count check, without escaping the local slot."""
+        self.uses_reuse = True
+        return "%reuse.slot"
+
+    def publish(self, ref, value: str, *, release: bool = True) -> None:
         tn = ref.tn
         if tn in self.registers:
             self.define(tn, value)
             return
-        old = self.operation(f"load ptr, ptr {tn.slot}")
-        self.line(f"store ptr {value}, ptr {tn.slot}")
-        self.mark_immortal(tn, old)
-        self.mark_immortal(tn, value)
-        if tn.sc.owned:
+        if tn.sc.owned and release:
+            old = self.operation(f"load ptr, ptr {tn.slot}")
+            self.line(f"store ptr {value}, ptr {tn.slot}")
+            self.mark_immortal(tn, old)
+            self.mark_immortal(tn, value)
             self.release(old)
+            return
+        self.line(f"store ptr {value}, ptr {tn.slot}")
+        self.mark_immortal(tn, value)
 
     def release(self, value: str) -> None:
         if value in self.immortal_values:
@@ -1795,25 +1884,15 @@ class FunctionGenerator:
         self.refine_type(tn.type or UNKNOWN, value)
 
     def refine_type(self, fact: ValueType, value: str, *, nullable=False) -> None:
-        if fact.is_fixnum:
-            bits = self.operation(f"ptrtoint ptr {value} to i64")
-            tagged = None
-            if self.context.id is None:
-                tag = self.operation(f"and i64 {bits}, 1")
-                tagged = self.operation(f"icmp ne i64 {tag}, 0")
-            decoded = self.operation(f"ashr i64 {bits}, 1")
-            lower = self.operation(f"icmp sge i64 {decoded}, {fact.minimum}")
-            upper = self.operation(f"icmp sle i64 {decoded}, {fact.maximum}")
-            bounded = self.operation(f"and i1 {lower}, {upper}")
-            valid = (
-                self.operation(f"and i1 {tagged}, {bounded}")
-                if tagged is not None
-                else bounded
-            )
-            if nullable:
-                missing = self.operation(f"icmp eq ptr {value}, null")
-                valid = self.operation(f"or i1 {missing}, {valid}")
-            self.line(f"call void @llvm.assume(i1 {valid})")
+        if not nullable and (fact.is_fixnum or fact.is_immortal):
+            self.immortal_values.add(value)
+        valid = fact.accept(_TypeAssumption(self, value))
+        if valid is None:
+            return
+        if nullable:
+            missing = self.operation(f"icmp eq ptr {value}, null")
+            valid = self.operation(f"or i1 {missing}, {valid}")
+        self.line(f"call void @llvm.assume(i1 {valid})")
 
     def pointer_result(self, ref, operation: str, consumed=()) -> None:
         value = self.operation(operation)
@@ -1834,6 +1913,9 @@ class FunctionGenerator:
 
     def local_slot(self, name: str) -> str:
         return self.local_slots[name]
+
+    def local_owned(self, name: str) -> bool:
+        return self.local_tns_by_name[name].sc.owned
 
     def dependency(self, var) -> str:
         return self.dependencies[var]
@@ -1869,12 +1951,16 @@ class FunctionGenerator:
             return self.operation(f"fcmp une double {value}, 0.0")
         if sc is NULL:
             return "false"
+        if tn.primitive_type is NONE_T:
+            self.release(value)
+            return "false"
+        if tn.primitive_type is BOOLEAN_T:
+            self.release(value)
+            return self.operation(f"icmp eq ptr {value}, @mule.true")
         if (tn.type or UNKNOWN).is_fixnum:
-            bits = self.operation(f"ptrtoint ptr {value} to i64")
-            nonzero = self.operation(f"icmp ne i64 {bits}, 1")
-            truth = self.operation(f"zext i1 {nonzero} to i32")
-        else:
-            truth = self.operation(f"call i32 @mule.fast.truth(ptr {value})")
+            self.release(value)
+            return self.operation(f"icmp ne ptr {value}, inttoptr (i64 1 to ptr)")
+        truth = self.operation(f"call i32 @mule.fast.truth(ptr {value})")
         self.release(value)
         self.check_status(truth)
         return self.operation(f"icmp ne i32 {truth}, 0")
@@ -1885,8 +1971,7 @@ class FunctionGenerator:
         if sc is SIGNED:
             return self.operation(f"call ptr @mule_box_i64(i64 {value})")
         if sc is BOOLEAN:
-            wide = self.operation(f"zext i1 {value} to i32")
-            return self.operation(f"call ptr @mule_bool(i32 {wide})")
+            return self.operation(f"select i1 {value}, ptr @mule.true, ptr @mule.false")
         if sc is NULL:
             return "@mule.none"
         if sc is DOUBLE:
@@ -2204,6 +2289,17 @@ class FunctionGenerator:
         ]
         if len(supplied_arguments) != len(order):
             contexts = []
+        else:
+            contexts = [
+                context
+                for context in contexts
+                if all(
+                    source.may_dispatch_fit(expected)
+                    for (source, _), expected in zip(
+                        supplied_arguments, context.parameters, strict=True
+                    )
+                )
+            ]
         for context in contexts:
             guards = [
                 self.argument_guard(value, expected)
@@ -2284,6 +2380,8 @@ class FunctionGenerator:
         for tn in self.range_tns:
             self.line(f"{tn.slot} = alloca [3 x i64]")
             self.line(f"store [3 x i64] zeroinitializer, ptr {tn.slot}")
+        if self.range_tns:
+            self.line("%range.buffer = alloca [3 x i64]")
         self.line(f"%argv = alloca [{max(1, self.max_args)} x ptr]")
         self.entry_end = len(self.lines)
         if lambda_ is self.module.program.entry and self.context.id is None:
@@ -2353,6 +2451,8 @@ class FunctionGenerator:
                     self.release(value)
             if self.live:
                 raise ValueError(f"{block!r} ends owning {list(self.live)!r}")
+        if self.uses_reuse:
+            self.lines.insert(self.entry_end, "  %reuse.slot = alloca ptr")
         if self.uses_out:
             self.lines.insert(self.entry_end, "  %out = alloca ptr")
 

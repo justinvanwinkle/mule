@@ -102,16 +102,20 @@ impl ClassLayout {
     }
 
     /// The special method the runtime invokes implicitly for `name`, or NULL
-    /// when the class only inherits `object`'s definition. `object`'s methods
-    /// implement exactly the runtime's built-in behavior, which then applies
-    /// without a call.
+    /// when an inherited object default has an equivalent bootstrap primitive.
+    /// Inequality must retain its compiled default when equality is overridden:
+    /// it delegates to that descriptor rather than comparing identities.
     pub fn special(&self, name: &str) -> Value {
         let Some((owner, _, index)) = self.find(name) else {
             return std::ptr::null_mut();
         };
         let object = builtin_type(Builtin::Object);
         if !object.is_null() && std::ptr::eq(owner, unsafe { layout_of_class(object) }.unwrap()) {
-            return std::ptr::null_mut();
+            let overridden_equality = self.find("__eq__")
+                .is_some_and(|(equality_owner, _, _)| !std::ptr::eq(equality_owner, owner));
+            if name != "__ne__" || !overridden_equality {
+                return std::ptr::null_mut();
+            }
         }
         owner.attributes[index].1
     }
@@ -2047,6 +2051,15 @@ unsafe extern "C" fn bound_method(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn bind_instance_attribute(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value, instance, owner]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        bind_class_attribute(value, instance, owner)
+    }
+}
+
 unsafe extern "C" fn bound_method_receiver(_: Value, args: Value) -> Value {
     unsafe {
         let Some([value]) = operands(args) else {
@@ -2899,7 +2912,7 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 58] = [
+        let exports: [(&str, object::Native); 59] = [
             ("delete_instance_field", delete_instance_field),
             ("class_lookup_default", class_lookup_default),
             ("code_metadata", code_metadata),
@@ -2953,6 +2966,7 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("class_lookup", class_lookup),
             ("class_lookup_or_null", class_lookup_or_null),
             ("bind_attribute", bind_attribute),
+            ("bind_instance_attribute", bind_instance_attribute),
             ("bound_method", bound_method),
             ("bound_method_receiver", bound_method_receiver),
             ("instance_field", instance_field),

@@ -1,4 +1,4 @@
-"""Float annotations select unboxed binary64 storage in native entries."""
+"""Explicit float64 contracts select unboxed binary64 storage in native entries."""
 
 import re
 
@@ -9,8 +9,8 @@ from test.mule.compiler.test_native import run_native
 
 HEADER = "from mule import float64, int64, optimize\n@optimize(speed=3, safety=3)\n"
 SCALE = (
-    HEADER + "def scale(x: float, y: float) -> float:\n"
-    " total: float = x * 2.5 + y\n"
+    HEADER + "def scale(x: float64, y: float64) -> float64:\n"
+    " total: float64 = x * 2.5 + y\n"
     " if total < 0.0:\n  total = -total\n"
     " return total / 2.0\n"
 )
@@ -53,7 +53,7 @@ def test_float_native_entry_matches_python_arithmetic(tmp_path, call, expected):
 
 def test_mixed_integer_and_float_operands_convert_before_operating(tmp_path):
     source = (
-        HEADER + "def mix(count: int64, weight: float) -> float:\n"
+        HEADER + "def mix(count: int64, weight: float64) -> float64:\n"
         " if count > weight:\n  return count * weight - 1\n"
         " return weight + count\n"
         "print(mix(3, 0.5), mix(2, 7.25), mix(-9007199254740993, 1.5))\n"
@@ -68,7 +68,7 @@ def test_mixed_integer_and_float_operands_convert_before_operating(tmp_path):
 def test_float_division_by_zero_raises_in_native_entry(tmp_path):
     result = run_native(
         tmp_path,
-        HEADER + "def ratio(a: float, b: float) -> float:\n return a / b\n"
+        HEADER + "def ratio(a: float64, b: float64) -> float64:\n return a / b\n"
         "print(ratio(1.0, 4.0))\nprint(ratio(1.0, 0.0))\n",
     )
     assert result.returncode == 1
@@ -79,7 +79,7 @@ def test_float_division_by_zero_raises_in_native_entry(tmp_path):
 def test_float_entry_rejects_integer_argument_with_type_error(tmp_path):
     result = run_native(
         tmp_path,
-        HEADER + "def half(x: float) -> float:\n return x / 2\n"
+        HEADER + "def half(x: float64) -> float64:\n return x / 2\n"
         "print(half(3.0))\nprint(half(3))\n",
     )
     assert result.returncode == 1

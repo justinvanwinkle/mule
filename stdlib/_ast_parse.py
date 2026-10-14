@@ -39,47 +39,46 @@ _COMPARISON = {
 class _Locations:
     def __init__(self, source, filename):
         self.lines = source.split("\n")
-        self.definitions = {"def": [], "class": []}
-        previous = None
-        for token in lex(source, filename):
-            if token.kind == "NAME" and token.text in self.definitions:
-                position = token.start
-                start = position
-                if (
-                    token.text == "def"
-                    and previous is not None
-                    and previous.text == "async"
-                ):
-                    start = previous.start
-                self.definitions[token.text].append(
-                    ((position.line, position.column), start)
-                )
-            previous = token
+        self.ascii = source.isascii()
 
     def column(self, position):
-        return len(self.lines[position.line - 1][: position.column].encode("utf-8"))
+        if self.ascii:
+            return position.column
+        line = self.lines[position.line - 1]
+        if line.isascii():
+            return position.column
+        return len(line[: position.column].encode("utf-8"))
 
     def set(self, node, result, start=None, end=None):
         if "lineno" in result._attributes:
             start = node.span.start if start is None else start
             end = node.span.end if end is None else end
-            result.lineno, result.col_offset = start.line, self.column(start)
-            result.end_lineno, result.end_col_offset = end.line, self.column(end)
+            if self.ascii:
+                result.lineno, result.col_offset = start.line, start.column
+                result.end_lineno, result.end_col_offset = end.line, end.column
+            else:
+                result.lineno, result.col_offset = start.line, self.column(start)
+                result.end_lineno, result.end_col_offset = end.line, self.column(end)
         return result
 
     def definition_start(self, node, keyword):
-        definitions = self.definitions[keyword]
-        key = (node.span.start.line, node.span.start.column)
-        low, high = 0, len(definitions)
-        while low < high:
-            middle = (low + high) // 2
-            if definitions[middle][0] < key:
-                low = middle + 1
-            else:
-                high = middle
-        if low == len(definitions):
-            raise RuntimeError("parsed definition has no definition token")
-        return definitions[low][1]
+        if not node.decorators:
+            return node.span.start
+        prefixes = ("async ", "async\t", "def ", "def\t") if keyword == "def" else (
+            "class ",
+            "class\t",
+            "class(",
+            "class[",
+            "class:",
+        )
+        line_no = node.decorators[-1].span.end.line + 1
+        while line_no <= len(self.lines):
+            line = self.lines[line_no - 1]
+            stripped = line.lstrip()
+            if stripped.startswith(prefixes):
+                return syntax.Position(line_no, len(line) - len(stripped))
+            line_no += 1
+        raise RuntimeError("parsed definition has no definition token")
 
 
 class _SimpleName(syntax.Visitor):
@@ -662,9 +661,62 @@ class _TemplatePart(_Convert):
         )
 
 
+_EXPECTED_ROOT = {
+    "exec": (api.Module, "Module"),
+    "eval": (api.Expression, "Expression"),
+    "single": (api.Interactive, "Interactive"),
+}
+_KNOWN_FLAGS = (
+    0x0010
+    | 0x0100
+    | 0x0200
+    | api.PyCF_ONLY_AST
+    | 0x0800
+    | api.PyCF_TYPE_COMMENTS
+    | api.PyCF_ALLOW_TOP_LEVEL_AWAIT
+    | 0x4000
+    | api.PyCF_OPTIMIZED_AST
+    | 0x1FE0000
+)
+
+
+def _normalize_filename(filename):
+    if not isinstance(filename, (str, bytes)):
+        fspath = getattr(type(filename), "__fspath__", None)
+        if fspath is None:
+            raise TypeError(
+                f"compile() expected string, bytes or os.PathLike object, not {type(filename).__name__}"
+            )
+        filename = fspath(filename)
+        if not isinstance(filename, (str, bytes)):
+            raise TypeError(
+                f"expected __fspath__() to return str or bytes, not {type(filename).__name__}"
+            )
+    if isinstance(filename, bytes):
+        return filename.decode("utf-8", "surrogateescape")
+    return filename
+
+
+def _validate_ast(tree, mode):
+    expected = _EXPECTED_ROOT.get(mode)
+    if expected is None:
+        raise ValueError("compile() mode must be 'exec', 'eval' or 'single'")
+    root_type, root_name = expected
+    if not isinstance(tree, root_type):
+        raise TypeError(f"expected {root_name} node, got {type(tree).__name__}")
+    if mode == "eval" and not isinstance(tree.body, api.expr):
+        raise TypeError(f"expected expr node, got {type(tree.body).__name__}")
+    return tree
+
+
 def parse(
     source, filename, mode, *, type_comments=False, feature_version=None, optimize=-1
 ):
+    filename = _normalize_filename(filename)
+    if not isinstance(mode, str):
+        raise TypeError(f"compile() arg 3 must be str, not {type(mode).__name__}")
+    if mode not in _EXPECTED_ROOT:
+        raise ValueError("compile() mode must be 'exec', 'eval' or 'single'")
     if feature_version is not None:
         version = (
             feature_version[1]
@@ -679,10 +731,340 @@ def parse(
             )
     if optimize not in (-1, 0):
         raise NotImplementedError("optimized runtime AST parsing is not implemented")
-    if isinstance(source, bytes):
-        source = source.decode("utf-8-sig")
+    if isinstance(source, api.AST):
+        return _validate_ast(source, mode)
+    if isinstance(source, (bytes, bytearray, memoryview)):
+        source = bytes(source).decode("utf-8-sig")
     if not isinstance(source, str):
         raise TypeError("compile() arg 1 must be a string, bytes or AST object")
     source = source.replace("\r\n", "\n").replace("\r", "\n")
     tree = _parse(source, filename=filename, mode=mode, type_comments=type_comments)
     return tree.accept(_Convert(_Locations(source, filename)))
+
+
+def compile(
+    source,
+    filename,
+    mode,
+    flags=0,
+    dont_inherit=False,
+    optimize=-1,
+    *,
+    _feature_version=-1,
+):
+    from _object import code
+
+    filename = _normalize_filename(filename)
+    if not isinstance(mode, str):
+        raise TypeError(f"compile() arg 3 must be str, not {type(mode).__name__}")
+    if mode not in _EXPECTED_ROOT:
+        raise ValueError("compile() mode must be 'exec', 'eval' or 'single'")
+    if not isinstance(flags, int):
+        raise TypeError(
+            f"'{type(flags).__name__}' object cannot be interpreted as an integer"
+        )
+    if flags & ~_KNOWN_FLAGS:
+        raise ValueError("compile(): unrecognised flags")
+    if not isinstance(optimize, int):
+        raise TypeError(
+            f"'{type(optimize).__name__}' object cannot be interpreted as an integer"
+        )
+    if optimize not in (-1, 0, 1, 2):
+        raise ValueError("compile(): invalid optimize value")
+    if flags & (api.PyCF_OPTIMIZED_AST ^ api.PyCF_ONLY_AST):
+        ast_optimize = 1 if optimize <= 0 else optimize
+    elif flags & api.PyCF_ONLY_AST:
+        ast_optimize = optimize
+    else:
+        ast_optimize = -1
+    tree = parse(
+        source,
+        filename,
+        mode,
+        type_comments=bool(flags & api.PyCF_TYPE_COMMENTS),
+        feature_version=_feature_version,
+        optimize=ast_optimize,
+    )
+    if flags & api.PyCF_ONLY_AST:
+        return tree
+    firstlineno = 0
+    if mode == "eval":
+        firstlineno = getattr(tree.body, "lineno", 1)
+    elif getattr(tree, "body", None):
+        firstlineno = getattr(tree.body[0], "lineno", 1)
+    return code(
+        "<module>",
+        filename,
+        "<module>",
+        firstlineno,
+        flags=flags & 0x1FE0010,
+        ast=tree,
+        mode=mode,
+    )
+
+
+class _ExpressionEvaluator:
+    """Evaluate simple compiled expression forms, following SBCL
+    ``src/code/eval.lisp``'s ``simple-eval-in-lexenv``."""
+
+    def __init__(self, globals_ns, locals_ns):
+        self.globals = globals_ns
+        self.locals = locals_ns
+
+    def eval(self, node):
+        method = getattr(self, "visit_" + type(node).__name__, None)
+        if method is None:
+            raise NotImplementedError(
+                f"runtime evaluation of {type(node).__name__} is not implemented"
+            )
+        return method(node)
+
+    def _elements(self, elts):
+        items = []
+        for elt in elts:
+            if type(elt) is api.Starred:
+                items.extend(self.eval(elt.value))
+            else:
+                items.append(self.eval(elt))
+        return items
+
+    def visit_Expression(self, node):
+        return self.eval(node.body)
+
+    def visit_Constant(self, node):
+        return node.value
+
+    def visit_Name(self, node):
+        if not isinstance(node.ctx, api.Load):
+            raise ValueError("expression must have Load context")
+        name = node.id
+        if self.locals is not None:
+            try:
+                return self.locals[name]
+            except KeyError:
+                pass
+        if self.locals is None or self.locals is not self.globals:
+            try:
+                return self.globals[name]
+            except KeyError:
+                pass
+        builtins_ns = self.globals.get("__builtins__")
+        if builtins_ns is not None:
+            if hasattr(type(builtins_ns), "__getitem__"):
+                try:
+                    return builtins_ns[name]
+                except KeyError:
+                    pass
+            else:
+                try:
+                    return getattr(builtins_ns, name)
+                except AttributeError:
+                    pass
+        raise NameError(f"name {name!r} is not defined")
+
+    def visit_UnaryOp(self, node):
+        operand = self.eval(node.operand)
+        op = type(node.op)
+        if op is api.Not:
+            return not operand
+        if op is api.UAdd:
+            return +operand
+        if op is api.USub:
+            return -operand
+        if op is api.Invert:
+            return ~operand
+        raise NotImplementedError(f"unsupported unary operator {op.__name__}")
+
+    def visit_BoolOp(self, node):
+        op = type(node.op)
+        if op is api.And:
+            result = True
+            for value in node.values:
+                result = self.eval(value)
+                if not result:
+                    return result
+            return result
+        if op is api.Or:
+            result = False
+            for value in node.values:
+                result = self.eval(value)
+                if result:
+                    return result
+            return result
+        raise NotImplementedError(f"unsupported boolean operator {op.__name__}")
+
+    def visit_BinOp(self, node):
+        left = self.eval(node.left)
+        right = self.eval(node.right)
+        op = type(node.op)
+        if op is api.Add:
+            return left + right
+        if op is api.Sub:
+            return left - right
+        if op is api.Mult:
+            return left * right
+        if op is api.Div:
+            return left / right
+        if op is api.FloorDiv:
+            return left // right
+        if op is api.Mod:
+            return left % right
+        if op is api.Pow:
+            return left**right
+        if op is api.LShift:
+            return left << right
+        if op is api.RShift:
+            return left >> right
+        if op is api.BitOr:
+            return left | right
+        if op is api.BitXor:
+            return left ^ right
+        if op is api.BitAnd:
+            return left & right
+        if op is api.MatMult:
+            return left @ right
+        raise NotImplementedError(f"unsupported binary operator {op.__name__}")
+
+    def visit_Compare(self, node):
+        left = self.eval(node.left)
+        for op_node, comparator in zip(node.ops, node.comparators):
+            right = self.eval(comparator)
+            op = type(op_node)
+            if op is api.Eq:
+                matched = left == right
+            elif op is api.NotEq:
+                matched = left != right
+            elif op is api.Lt:
+                matched = left < right
+            elif op is api.LtE:
+                matched = left <= right
+            elif op is api.Gt:
+                matched = left > right
+            elif op is api.GtE:
+                matched = left >= right
+            elif op is api.Is:
+                matched = left is right
+            elif op is api.IsNot:
+                matched = left is not right
+            elif op is api.In:
+                matched = left in right
+            elif op is api.NotIn:
+                matched = left not in right
+            else:
+                raise NotImplementedError(
+                    f"unsupported comparison operator {op.__name__}"
+                )
+            if not matched:
+                return False
+            left = right
+        return True
+
+    def visit_IfExp(self, node):
+        return self.eval(node.body) if self.eval(node.test) else self.eval(node.orelse)
+
+    def visit_Attribute(self, node):
+        if not isinstance(node.ctx, api.Load):
+            raise ValueError("expression must have Load context")
+        return getattr(self.eval(node.value), node.attr)
+
+    def visit_Subscript(self, node):
+        if not isinstance(node.ctx, api.Load):
+            raise ValueError("expression must have Load context")
+        return self.eval(node.value)[self.eval(node.slice)]
+
+    def visit_Slice(self, node):
+        lower = None if node.lower is None else self.eval(node.lower)
+        upper = None if node.upper is None else self.eval(node.upper)
+        step = None if node.step is None else self.eval(node.step)
+        return slice(lower, upper, step)
+
+    def visit_Tuple(self, node):
+        if not isinstance(node.ctx, api.Load):
+            raise ValueError("expression must have Load context")
+        return tuple(self._elements(node.elts))
+
+    def visit_List(self, node):
+        if not isinstance(node.ctx, api.Load):
+            raise ValueError("expression must have Load context")
+        return self._elements(node.elts)
+
+    def visit_Set(self, node):
+        return set(self._elements(node.elts))
+
+    def visit_Dict(self, node):
+        result = {}
+        for key_node, value_node in zip(node.keys, node.values):
+            if key_node is None:
+                result.update(self.eval(value_node))
+            else:
+                result[self.eval(key_node)] = self.eval(value_node)
+        return result
+
+    def visit_FormattedValue(self, node):
+        value = self.eval(node.value)
+        if node.conversion == 115:
+            value = str(value)
+        elif node.conversion == 114:
+            value = repr(value)
+        elif node.conversion == 97:
+            value = ascii(value)
+        spec = "" if node.format_spec is None else self.eval(node.format_spec)
+        return format(value, spec)
+
+    def visit_JoinedStr(self, node):
+        return "".join(str(self.eval(part)) for part in node.values)
+
+    def visit_Call(self, node):
+        func = self.eval(node.func)
+        args = self._elements(node.args)
+        kwargs = {}
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                mapping = self.eval(keyword.value)
+                for key in mapping:
+                    if key in kwargs:
+                        raise TypeError(
+                            f"{func}() got multiple values for keyword argument {key!r}"
+                        )
+                    kwargs[key] = mapping[key]
+            else:
+                if keyword.arg in kwargs:
+                    raise TypeError(
+                        f"{func}() got multiple values for keyword argument {keyword.arg!r}"
+                    )
+                kwargs[keyword.arg] = self.eval(keyword.value)
+        return func(*args, **kwargs)
+
+
+def evaluate(expression, globals_ns=None, locals_ns=None):
+    from _object import _GlobalsDict, _InstanceDict, code
+
+    if globals_ns is None:
+        import sys
+
+        globals_ns = sys._getframe(2).f_globals
+    elif not isinstance(globals_ns, (dict, _GlobalsDict, _InstanceDict)):
+        raise TypeError(
+            f"eval() globals must be a dict, not {type(globals_ns).__name__}"
+        )
+    if "__builtins__" not in globals_ns:
+        import builtins
+
+        globals_ns["__builtins__"] = builtins.__dict__
+    if locals_ns is None:
+        locals_ns = globals_ns
+    elif not hasattr(type(locals_ns), "__getitem__"):
+        raise TypeError(
+            f"locals must be a mapping or None, not {type(locals_ns).__name__}"
+        )
+    if isinstance(expression, (bytes, bytearray, memoryview)):
+        expression = bytes(expression).decode("utf-8-sig")
+    if isinstance(expression, str):
+        expression = compile(expression.lstrip(" \t"), "<string>", "eval")
+    elif not isinstance(expression, code):
+        raise TypeError("eval() arg 1 must be a string, bytes or code object")
+    if expression._mode != "eval" or expression._ast is None:
+        raise NotImplementedError(
+            "runtime evaluation of non-expression code objects is not implemented"
+        )
+    return _ExpressionEvaluator(globals_ns, locals_ns).eval(expression._ast)

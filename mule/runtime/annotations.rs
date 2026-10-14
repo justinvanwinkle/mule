@@ -108,3 +108,16 @@ pub unsafe extern "C" fn mule_assert_float(value: Value, name: *const c_char) ->
         failed(unsafe { annotation_name(name) })
     }
 }
+
+/// Validate the physical union used by Python's float annotation. No conversion
+/// occurs, so arbitrary-precision integers and boolean identities are retained.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_assert_real(value: Value, name: *const c_char) -> i32 {
+    if !value.is_null() && (object::is_fixnum(value)
+        || matches!(unsafe { &(*value).data }, Data::BigInt(..) | Data::Bool(..) | Data::Float(..)))
+    {
+        0
+    } else {
+        failed(unsafe { annotation_name(name) })
+    }
+}

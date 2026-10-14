@@ -16,7 +16,7 @@ per process, so their values are not part of the language contract.
 """
 
 from _descriptors import classmethod
-from _mule_native import bind_attribute as _bind_attribute
+from _mule_native import bind_instance_attribute as _bind_attribute
 from _mule_native import class_lookup as _class_lookup
 from _mule_native import class_of as _class_of
 from _mule_native import identity_hash as _identity_hash
@@ -64,7 +64,8 @@ def _integer_hash(value):
 
 def _tuple_hash(value):
     accumulator = _PRIME_5
-    for item in value:
+    for index in range(_storage_length(value)):
+        item = _storage_read(value, index)
         lane = hash(item) & _WORD
         accumulator = (accumulator + lane * _PRIME_2) & _WORD
         accumulator = ((accumulator << 31) | (accumulator >> 33)) & _WORD

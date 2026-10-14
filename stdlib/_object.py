@@ -12,7 +12,7 @@ any other compiled builtin defines a class, so those classes derive from
 
 from _mule_native import allocate_instance as _new_instance
 from _mule_native import default_construct as _default_construct
-from _mule_native import bind_attribute as _bind_attribute
+from _mule_native import bind_instance_attribute as _bind_attribute
 from _mule_native import bound_method as _bound_method
 from _mule_native import bound_method_receiver as _bound_method_receiver
 from _mule_native import bound_method_function as _bound_method_function
@@ -367,7 +367,9 @@ class object:
         return True if self is other else NotImplemented
 
     def __ne__(self, other):
-        result = _type_of(self).__eq__(self, other)
+        owner = _type_of(self)
+        method = _class_lookup(owner, '__eq__')
+        result = _bind_attribute(method, self, owner)(other)
         return result if result is NotImplemented else not result
 
     def __lt__(self, other):
@@ -1311,11 +1313,14 @@ class code(object):
 
     def __init__(self, name, filename, qualname=None, firstlineno=0,
                  argcount=0, posonly=0, kwonly=0, flags=0, varnames=(),
-                 cellvars=(), freevars=(), positional_defaults=0, keyword_defaults=()):
+                 cellvars=(), freevars=(), positional_defaults=0, keyword_defaults=(),
+                 ast=None, mode=None):
         self._metadata = (name, filename, name if qualname is None else qualname,
                           firstlineno, argcount, posonly, kwonly, flags, varnames,
                           cellvars, freevars, positional_defaults, keyword_defaults)
         self._native_origin = None
+        self._ast = ast
+        self._mode = mode
 
     @property
     def co_nlocals(self):
@@ -1345,7 +1350,7 @@ class code(object):
             elif not isinstance(value, tuple):
                 raise TypeError(f"replace() argument '{name}' must be tuple, not {type(value).__name__}")
             metadata[index] = value
-        result = code(*metadata)
+        result = code(*metadata, ast=self._ast, mode=self._mode)
         result._native_origin = self if self._native_origin is None else self._native_origin
         return result
 

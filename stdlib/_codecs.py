@@ -33,9 +33,11 @@ def _replace_errors(exc):
 
 
 def _backslashreplace_errors(exc):
+    from _str import _escaped_character
+
     if isinstance(exc, UnicodeEncodeError):
-        return "".join("\\x%02x" % ord(c) for c in exc.object[exc.start:exc.end]), exc.end
-    return "\ufffd", exc.end
+        return "".join(_escaped_character(ord(c)) for c in exc.object[exc.start:exc.end]), exc.end
+    return "".join("\\x%02x" % byte for byte in exc.object[exc.start:exc.end]), exc.end
 
 
 def _xmlcharrefreplace_errors(exc):
@@ -47,6 +49,10 @@ def _namereplace_errors(exc):
 
 
 def _surrogateescape_errors(exc):
+    if isinstance(exc, UnicodeDecodeError):
+        values = exc.object[exc.start:exc.end]
+        if all(byte >= 128 for byte in values):
+            return ''.join(chr(byte + 0xDC00) for byte in values), exc.end
     raise exc
 
 
@@ -338,8 +344,10 @@ def unicode_escape_encode(value, errors="strict"):
 
 
 def unicode_escape_decode(value, errors="strict", final=False):
+    from _str import _unicode_escape_decode
+
     data = bytes(value)
-    return data.decode("unicode_escape", errors), len(data)
+    return _unicode_escape_decode(data, errors, final)
 
 
 def raw_unicode_escape_encode(value, errors="strict"):
@@ -347,8 +355,10 @@ def raw_unicode_escape_encode(value, errors="strict"):
 
 
 def raw_unicode_escape_decode(value, errors="strict", final=False):
+    from _str import _unicode_escape_decode
+
     data = bytes(value)
-    return data.decode("raw_unicode_escape", errors), len(data)
+    return _unicode_escape_decode(data, errors, final, True)
 
 
 def escape_encode(value, errors="strict"):

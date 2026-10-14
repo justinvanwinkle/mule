@@ -638,10 +638,48 @@ def _init_fn(fields, std_fields, kw_only_fields, frozen, has_post_init,
                 raise TypeError(f'non-default argument {f.name!r} '
                                 f'follows default argument {seen_default.name!r}')
 
-    std_params = [f for f in std_fields if f.init]
-    kw_params = [f for f in kw_only_fields if f.init]
+    std_params = tuple(f for f in std_fields if f.init)
+    kw_params = tuple(f for f in kw_only_fields if f.init)
+    has_initvars = any(f._field_type is _FIELD_INITVAR for f in fields)
+    non_init_fields = tuple(
+        f
+        for f in fields
+        if not f.init
+        and f._field_type is not _FIELD_INITVAR
+        and (f.default_factory is not MISSING or (slots and f.default is not MISSING))
+    )
+    object_setattr = object.__setattr__
 
     def __init__(self, *args, **kwargs):
+        if not kwargs and not kw_params and not has_initvars and len(args) <= len(std_params):
+            setter = object_setattr if frozen else setattr
+            index = 0
+            while index < len(args):
+                setter(self, std_params[index].name, args[index])
+                index += 1
+            while index < len(std_params):
+                f = std_params[index]
+                if f.default is not MISSING:
+                    value = f.default
+                elif f.default_factory is not MISSING:
+                    value = f.default_factory()
+                else:
+                    raise TypeError(
+                        f"{type(self).__name__}.__init__() missing 1 required "
+                        f"positional argument: '{f.name}'"
+                    )
+                setter(self, f.name, value)
+                index += 1
+            for f in non_init_fields:
+                value = (
+                    f.default_factory()
+                    if f.default_factory is not MISSING
+                    else f.default
+                )
+                setter(self, f.name, value)
+            if has_post_init:
+                getattr(self, _POST_INIT_NAME)()
+            return
         cls_name = type(self).__name__
         if len(args) > len(std_params):
             raise TypeError(
@@ -696,7 +734,7 @@ def _init_fn(fields, std_fields, kw_only_fields, frozen, has_post_init,
                 # The class attribute holds the default, if any.
                 continue
             if frozen:
-                object.__setattr__(self, f.name, value)
+                object_setattr(self, f.name, value)
             else:
                 setattr(self, f.name, value)
         if has_post_init:

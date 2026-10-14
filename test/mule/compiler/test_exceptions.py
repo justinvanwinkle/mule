@@ -209,7 +209,7 @@ class Manager:
         print('enter', self.name)
         return self.name
     def __exit__(self, kind, value, traceback):
-        print('exit', self.name, kind is None, value is None, traceback)
+        print('exit', self.name, kind is None, value is None, traceback is None)
         return self.suppress
 with Manager('plain', False) as value:
     print('body', value)
@@ -231,11 +231,11 @@ with Manager('outer', False), Manager('inner', False):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "enter plain\nbody plain\nexit plain True True None\n"
-        "enter swallow\nexit swallow False False None\nafter swallow\n"
-        "enter raise\nexit raise False False None\ncaught escapes\n"
-        "enter return\nexit return True True None\nearly\n"
-        "enter outer\nenter inner\nnested body\nexit inner True True None\nexit outer True True None\n"
+        "enter plain\nbody plain\nexit plain True True True\n"
+        "enter swallow\nexit swallow False False False\nafter swallow\n"
+        "enter raise\nexit raise False False False\ncaught escapes\n"
+        "enter return\nexit return True True True\nearly\n"
+        "enter outer\nenter inner\nnested body\nexit inner True True True\nexit outer True True True\n"
     )
 
 

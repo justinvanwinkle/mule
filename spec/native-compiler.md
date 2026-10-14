@@ -180,8 +180,9 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
   `continue`, and exception paths; a transfer inside it replaces a pending
   exception. `with` statements look up `__exit__` then call `__enter__`, call
   `__exit__(None, None, None)` on every normal exit, pass the raised exception
-  class and instance (traceback `None`) on error, and suppress it when the
-  result is true.
+  class, instance, and original traceback on error, and suppress it when the
+  result is true. The raised exception is active during the error-path
+  `__exit__` call; all exits restore the enclosing handled exception.
 - Exception chaining: `raise X from Y` sets `__cause__` and
   `__suppress_context__`; an exception raised while another is being handled
   records it as `__context__`. `BaseException` instances carry `__cause__`,
@@ -381,6 +382,19 @@ existing class-attribute binder for that concrete semantic adaptation, keeping
 descriptor algorithms in compiled Python. The plain-function path introduces
 no bound-method allocation; descriptor calls have their normal binding cost.
 
+The explicit instance-binding primitive retains `None` as a real receiver;
+class access has a separate entry that uses `None` as its descriptor sentinel.
+This follows SBCL `src/pcl/slots-boot.lisp`,
+`make-optimized-structure-slot-value-using-class-method-function`, in passing the
+receiver independently of dispatch metadata. Python's descriptor sentinel needs
+these distinct entries so `object.__ne__` can bind `None.__eq__` correctly. The
+native primitive only constructs the existing bound receiver; equality and its
+inversion remain compiled Python algorithms.
+The special-method table preserves inherited `object.__ne__` when the class has
+an overriding equality entry. Classes whose equality still uses a bootstrap
+storage comparison retain its paired inequality primitive, including the
+unordered floating-point NaN case; an identity default would change that result.
+
 ## Annotation contracts
 
 ### Builtin Python annotations and SBCL correspondence
@@ -393,6 +407,20 @@ Function/module/class annotations are deferred, following Python 3.14; local
 annotations are not evaluated. Functions with annotations have a compiled
 `__annotate__` thunk. The function class lazily evaluates and caches
 `__annotations__`; supported contract expressions additionally guide analysis.
+
+Builtin `float` annotations accept Python integers, including booleans, as
+required by the [typing specification's numeric rule](https://typing.python.org/en/latest/spec/special-types.html#special-cases-for-float-and-complex).
+They preserve the actual object and integer precision; they do not coerce the
+value to binary64. Their compiler fact represents the real-number union, while
+explicit `mule.float32`/`mule.float64` contracts retain their floating category.
+SBCL `src/code/type.lisp`, `%type-union2` and `type-union2`, represents union
+membership independently of machine storage; `src/compiler/checkgen.lisp`,
+`cast-check-types`, compares inferred and asserted sets before generating checks.
+Mule follows that split with an owned real-number fact and double-dispatched
+membership and joins. Python's integer acceptance is the concrete adaptation;
+a broad real fact does not establish an unboxed floating representation.
+Raw arithmetic still requires concrete integer or floating proofs, and checked
+boxed entries validate physical numeric storage without replacing the value.
 
 ### Function annotation thunks
 

@@ -127,17 +127,21 @@ class ModuleCompiler:
                 tomllib.loads(read_source(project)).get("tool", {}).get("mule", {})
             )
             names = settings.get("include_modules", [])
+            patterns = []
             try:
                 for name in names:
-                    if not name or not all(
-                        part.isidentifier() for part in name.split(".")
+                    package = name.endswith(".*")
+                    prefix = name.removesuffix(".*") if package else name
+                    if not prefix or not all(
+                        part.isidentifier() for part in prefix.split(".")
                     ):
                         raise ValueError(f"invalid module dependency {name!r}")
+                    patterns.append(prefix + "." if package else prefix)
             except (AttributeError, TypeError) as error:
                 raise ValueError(
-                    "tool.mule.include_modules must contain module names"
+                    "tool.mule.include_modules must contain module names or package.* patterns"
                 ) from error
-            self.project_modules = tuple(names)
+            self.project_modules = tuple(patterns)
             if self.project_modules and directory not in self.roots:
                 self.roots = (self.roots[0], directory, *self.roots[1:])
             return

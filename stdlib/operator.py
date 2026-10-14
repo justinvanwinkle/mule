@@ -420,6 +420,13 @@ def ixor(a, b):
 
 # All of these "__func__ = func" assignments have to happen after importing
 # from _operator to make sure they're set to the right function
+# CPython's operator services are builtin callables without function binding.
+# Their compiled implementations retain that behavior when stored on a class.
+for _service_name in __all__:
+    if _service_name not in ('attrgetter', 'itemgetter', 'methodcaller'):
+        globals()[_service_name] = staticmethod(globals()[_service_name])
+del _service_name
+
 __lt__ = lt
 __le__ = le
 __eq__ = eq

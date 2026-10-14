@@ -15,6 +15,59 @@ FIXNUM_MIN = -(2**62)
 FIXNUM_MAX = 2**62 - 1
 
 
+class ValueTypeVisitor:
+    """A value type selects its visitor method directly; unhandled kinds fall
+    back to their parent class's method, ending at ``visit_ValueType``."""
+
+    def visit_ValueType(self, fact):
+        return None
+
+    def visit_UnknownType(self, fact):
+        return self.visit_ValueType(fact)
+
+    def visit_PrimitiveType(self, fact):
+        return self.visit_ValueType(fact)
+
+    def visit_IntegerType(self, fact):
+        return self.visit_PrimitiveType(fact)
+
+    def visit_PythonIntegerType(self, fact):
+        return self.visit_PrimitiveType(fact)
+
+    def visit_BooleanType(self, fact):
+        return self.visit_IntegerType(fact)
+
+    def visit_FloatType(self, fact):
+        return self.visit_PrimitiveType(fact)
+
+    def visit_RealType(self, fact):
+        return self.visit_ValueType(fact)
+
+    def visit_ImmortalType(self, fact):
+        return self.visit_ValueType(fact)
+
+    def visit_NoneType(self, fact):
+        return self.visit_PrimitiveType(fact)
+
+    def visit_TextType(self, fact):
+        return self.visit_PrimitiveType(fact)
+
+    def visit_BytesType(self, fact):
+        return self.visit_PrimitiveType(fact)
+
+    def visit_FunctionType(self, fact):
+        return self.visit_ValueType(fact)
+
+    def visit_TupleType(self, fact):
+        return self.visit_ValueType(fact)
+
+    def visit_BottomType(self, fact):
+        return self.visit_ValueType(fact)
+
+    def visit_UnboundType(self, fact):
+        return self.visit_ValueType(fact)
+
+
 @dataclass(frozen=True, slots=True)
 class ValueType:
     may_be_unbound: bool = field(default=False, kw_only=True)
@@ -34,6 +87,14 @@ class ValueType:
     @property
     def is_immortal(self):
         return False
+
+    @property
+    def is_heap_object(self):
+        return False
+
+    @property
+    def needs_release(self):
+        return True
 
     @property
     def may_run_user_code(self):
@@ -75,6 +136,9 @@ class ValueType:
         return self.join_unknown(left)
 
     def join_float(self, left):
+        return self.join_unknown(left)
+
+    def join_real(self, left):
         return self.join_unknown(left)
 
     def join_none(self, left):
@@ -119,6 +183,15 @@ class ValueType:
     def binary_float(self, operator, left):
         return UNKNOWN
 
+    def binary_text(self, operator, left):
+        return UNKNOWN
+
+    def binary_bytes(self, operator, left):
+        return UNKNOWN
+
+    def binary_tuple(self, operator, left):
+        return UNKNOWN
+
     def unary(self, operator):
         return BOOLEAN if operator == ast.UnaryOperator.NOT else UNKNOWN
 
@@ -153,8 +226,14 @@ class ValueType:
     def dispatch_fits(self, expected):
         return expected.accepts_dispatch(self)
 
+    def may_dispatch_fit(self, expected):
+        return expected.accepts_possible_dispatch(self)
+
     def accepts_dispatch(self, actual):
         return False
+
+    def accepts_possible_dispatch(self, actual):
+        return self.accepts_dispatch(actual)
 
     def accepts(self, actual):
         return actual.fits_unknown(self)
@@ -171,19 +250,34 @@ class ValueType:
     def fits_integer(self, expected):
         return False
 
+    def fits_possible_integer(self, expected):
+        return False
+
     def fits_python_integer(self, expected):
         return False
 
     def fits_boolean(self, expected):
         return False
 
+    def fits_possible_boolean(self, expected):
+        return False
+
     def fits_float(self, expected):
+        return False
+
+    def fits_real(self, expected):
         return False
 
     def fits_none(self, expected):
         return False
 
+    def fits_possible_none(self, expected):
+        return False
+
     def fits_immortal(self, expected):
+        return False
+
+    def fits_possible_immortal(self, expected):
         return False
 
     def fits_text(self, expected):
@@ -198,6 +292,9 @@ class ValueType:
     def fits_tuple(self, expected):
         return False
 
+    def fits_possible_tuple(self, expected):
+        return False
+
     def proves_tuple_index(self, index):
         """Whether every value of this type is a bound tuple with an element
         at ``index``."""
@@ -208,6 +305,21 @@ class ValueType:
 class UnknownType(ValueType):
     def accepts_dispatch(self, actual):
         return True
+
+    def fits_possible_integer(self, expected):
+        return not self.may_be_unbound
+
+    def fits_possible_boolean(self, expected):
+        return not self.may_be_unbound
+
+    def fits_possible_none(self, expected):
+        return not self.may_be_unbound
+
+    def fits_possible_immortal(self, expected):
+        return not self.may_be_unbound
+
+    def fits_possible_tuple(self, expected):
+        return not self.may_be_unbound
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +350,12 @@ class IntegerType(PrimitiveType):
     minimum: int | None = None
     maximum: int | None = None
 
+    def fits_real(self, expected):
+        return not self.may_be_unbound
+
+    def join_real(self, left):
+        return left.join_numeric(self)
+
     def annotation_conflict(self, contract):
         return contract.integer_conflict(self)
 
@@ -256,6 +374,14 @@ class IntegerType(PrimitiveType):
         return (
             not self.may_be_unbound
             and self.minimum is not None
+            and self.maximum is not None
+            and FIXNUM_MIN <= self.minimum <= self.maximum <= FIXNUM_MAX
+        )
+
+    @property
+    def needs_release(self):
+        return not (
+            self.minimum is not None
             and self.maximum is not None
             and FIXNUM_MIN <= self.minimum <= self.maximum <= FIXNUM_MAX
         )
@@ -301,6 +427,22 @@ class IntegerType(PrimitiveType):
 
     def binary_float(self, operator, left):
         return _float_binary(operator, left, self)
+
+    def binary_text(self, operator, left):
+        if not left.may_be_unbound and operator in {
+            ast.BinaryOperator.MULTIPLY,
+            ast.BinaryOperator.MODULO,
+        }:
+            return TextType()
+        return UNKNOWN
+
+    def binary_bytes(self, operator, left):
+        if not left.may_be_unbound and operator in {
+            ast.BinaryOperator.MULTIPLY,
+            ast.BinaryOperator.MODULO,
+        }:
+            return BytesType()
+        return UNKNOWN
 
     def unary(self, operator):
         if operator == ast.UnaryOperator.NOT:
@@ -370,8 +512,14 @@ class IntegerType(PrimitiveType):
     def accepts_dispatch(self, actual):
         return self.is_fixnum and actual.fits_integer(self)
 
+    def accepts_possible_dispatch(self, actual):
+        return self.is_fixnum and actual.fits_possible_integer(self)
+
     def fits_integer(self, expected):
         return _bounds_fit(self, expected)
+
+    def fits_possible_integer(self, expected):
+        return _bounds_overlap(self, expected)
 
     def fits_python_integer(self, expected):
         return not self.may_be_unbound
@@ -381,11 +529,26 @@ class IntegerType(PrimitiveType):
 class PythonIntegerType(PrimitiveType):
     """An unbounded Python int may be a boolean singleton or an integer value."""
 
+    def fits_real(self, expected):
+        return not self.may_be_unbound
+
+    def join_real(self, left):
+        return left.join_numeric(self)
+
     def accepts(self, actual):
         return actual.fits_python_integer(self)
 
     def fits_python_integer(self, expected):
         return not self.may_be_unbound
+
+    def fits_possible_integer(self, expected):
+        return True
+
+    def fits_possible_boolean(self, expected):
+        return True
+
+    def fits_possible_immortal(self, expected):
+        return True
 
     def annotation_conflict(self, contract):
         return contract.integer_conflict(self)
@@ -414,6 +577,10 @@ class BooleanType(IntegerType):
     @property
     def is_immortal(self):
         return not self.may_be_unbound
+
+    @property
+    def needs_release(self):
+        return False
 
     def accept(self, visitor):
         return visitor.visit_BooleanType(self)
@@ -480,18 +647,39 @@ class BooleanType(IntegerType):
     def fits_integer(self, expected):
         return False
 
+    def fits_possible_integer(self, expected):
+        return False
+
     def accepts_dispatch(self, actual):
         return actual.fits_boolean(self)
+
+    def accepts_possible_dispatch(self, actual):
+        return actual.fits_possible_boolean(self)
 
     def fits_boolean(self, expected):
         return _bounds_fit(self, expected)
 
+    def fits_possible_boolean(self, expected):
+        return _bounds_overlap(self, expected)
+
     def fits_immortal(self, expected):
         return self.is_immortal
+
+    def fits_possible_immortal(self, expected):
+        return True
 
 
 @dataclass(frozen=True, slots=True)
 class FloatType(PrimitiveType):
+    def fits_real(self, expected):
+        return not self.may_be_unbound
+
+    def join_real(self, left):
+        return left.join_numeric(self)
+
+    def accept(self, visitor):
+        return visitor.visit_FloatType(self)
+
     def join(self, other):
         return other.join_float(self)
 
@@ -525,6 +713,36 @@ class FloatType(PrimitiveType):
 
 
 @dataclass(frozen=True, slots=True)
+class RealType(ValueType):
+    """Python float annotations admit integers without changing their objects."""
+
+    def accept(self, visitor):
+        return visitor.visit_RealType(self)
+
+    def accepts(self, actual):
+        return actual.fits_real(self)
+
+    def fits_real(self, expected):
+        return not self.may_be_unbound
+
+    def annotation_conflict(self, contract):
+        # Either integer or floating members may satisfy a numeric contract.
+        return False
+
+    def join(self, other):
+        return other.join_real(self)
+
+    def join_numeric(self, left):
+        return RealType(may_be_unbound=self.may_be_unbound or left.may_be_unbound)
+
+    join_real = join_numeric
+    join_integer = join_numeric
+    join_boolean = join_numeric
+    join_python_integer = join_numeric
+    join_float = join_numeric
+
+
+@dataclass(frozen=True, slots=True)
 class ImmortalType(ValueType):
     def annotation_conflict(self, contract):
         return True
@@ -532,6 +750,10 @@ class ImmortalType(ValueType):
     @property
     def is_immortal(self):
         return not self.may_be_unbound
+
+    @property
+    def needs_release(self):
+        return False
 
     @property
     def may_run_user_code(self):
@@ -558,8 +780,20 @@ class ImmortalType(ValueType):
     def accepts_dispatch(self, actual):
         return actual.fits_immortal(self)
 
+    def accepts_possible_dispatch(self, actual):
+        return actual.fits_possible_immortal(self)
+
     def fits_immortal(self, expected):
         return self.is_immortal
+
+    def fits_possible_boolean(self, expected):
+        return True
+
+    def fits_possible_none(self, expected):
+        return True
+
+    def fits_possible_immortal(self, expected):
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -567,6 +801,10 @@ class NoneType(PrimitiveType):
     @property
     def is_immortal(self):
         return not self.may_be_unbound
+
+    @property
+    def needs_release(self):
+        return False
 
     def accept(self, visitor):
         return visitor.visit_NoneType(self)
@@ -589,20 +827,57 @@ class NoneType(PrimitiveType):
     def accepts_dispatch(self, actual):
         return actual.fits_none(self)
 
+    def accepts_possible_dispatch(self, actual):
+        return actual.fits_possible_none(self)
+
     def fits_none(self, expected):
         return not self.may_be_unbound
+
+    def fits_possible_none(self, expected):
+        return True
 
     def fits_immortal(self, expected):
         return self.is_immortal
 
+    def fits_possible_immortal(self, expected):
+        return True
+
 
 @dataclass(frozen=True, slots=True)
 class TextType(PrimitiveType):
+    def accept(self, visitor):
+        return visitor.visit_TextType(self)
+
     def join(self, other):
         return other.join_text(self)
 
     def join_text(self, left):
         return TextType(may_be_unbound=self.may_be_unbound or left.may_be_unbound)
+
+    def binary(self, operator, right):
+        if self.may_be_unbound:
+            return right.binary_unknown(operator, self)
+        if operator == ast.BinaryOperator.MODULO and not right.may_be_unbound:
+            return TextType()
+        return right.binary_text(operator, self)
+
+    def binary_text(self, operator, left):
+        if not left.may_be_unbound and operator in {
+            ast.BinaryOperator.ADD,
+            ast.BinaryOperator.MODULO,
+        }:
+            return TextType()
+        return UNKNOWN
+
+    def binary_integer(self, operator, left):
+        if not left.may_be_unbound and operator == ast.BinaryOperator.MULTIPLY:
+            return TextType()
+        return UNKNOWN
+
+    def binary_boolean(self, operator, left):
+        if not left.may_be_unbound and operator == ast.BinaryOperator.MULTIPLY:
+            return TextType()
+        return UNKNOWN
 
     def accepts(self, actual):
         return actual.fits_text(self)
@@ -613,11 +888,39 @@ class TextType(PrimitiveType):
 
 @dataclass(frozen=True, slots=True)
 class BytesType(PrimitiveType):
+    def accept(self, visitor):
+        return visitor.visit_BytesType(self)
+
     def join(self, other):
         return other.join_bytes(self)
 
     def join_bytes(self, left):
         return BytesType(may_be_unbound=self.may_be_unbound or left.may_be_unbound)
+
+    def binary(self, operator, right):
+        if self.may_be_unbound:
+            return right.binary_unknown(operator, self)
+        if operator == ast.BinaryOperator.MODULO and not right.may_be_unbound:
+            return BytesType()
+        return right.binary_bytes(operator, self)
+
+    def binary_bytes(self, operator, left):
+        if not left.may_be_unbound and operator in {
+            ast.BinaryOperator.ADD,
+            ast.BinaryOperator.MODULO,
+        }:
+            return BytesType()
+        return UNKNOWN
+
+    def binary_integer(self, operator, left):
+        if not left.may_be_unbound and operator == ast.BinaryOperator.MULTIPLY:
+            return BytesType()
+        return UNKNOWN
+
+    def binary_boolean(self, operator, left):
+        if not left.may_be_unbound and operator == ast.BinaryOperator.MULTIPLY:
+            return BytesType()
+        return UNKNOWN
 
     def accepts(self, actual):
         return actual.fits_bytes(self)
@@ -630,6 +933,9 @@ class BytesType(PrimitiveType):
 class FunctionType(ValueType):
     def annotation_conflict(self, contract):
         return True
+
+    def accept(self, visitor):
+        return visitor.visit_FunctionType(self)
 
     def join(self, other):
         return other.join_function(self)
@@ -657,6 +963,9 @@ class TupleType(ValueType):
     def annotation_conflict(self, contract):
         return True
 
+    def accept(self, visitor):
+        return visitor.visit_TupleType(self)
+
     def join(self, other):
         return other.join_tuple(self)
 
@@ -666,15 +975,38 @@ class TupleType(ValueType):
             may_be_unbound=self.may_be_unbound or left.may_be_unbound,
         )
 
+    def binary(self, operator, right):
+        if self.may_be_unbound:
+            return right.binary_unknown(operator, self)
+        return right.binary_tuple(operator, self)
+
+    def binary_tuple(self, operator, left):
+        if not left.may_be_unbound and operator == ast.BinaryOperator.ADD:
+            arity = (
+                left.arity + self.arity
+                if left.arity is not None and self.arity is not None
+                else None
+            )
+            return TupleType(arity)
+        return UNKNOWN
+
     def accepts(self, actual):
         return actual.fits_tuple(self)
 
     def accepts_dispatch(self, actual):
         return actual.fits_tuple(self)
 
+    def accepts_possible_dispatch(self, actual):
+        return actual.fits_possible_tuple(self)
+
     def fits_tuple(self, expected):
         return not self.may_be_unbound and (
             expected.arity is None or self.arity == expected.arity
+        )
+
+    def fits_possible_tuple(self, expected):
+        return (
+            expected.arity is None or self.arity is None or self.arity == expected.arity
         )
 
     def proves_tuple_index(self, index):
@@ -683,6 +1015,10 @@ class TupleType(ValueType):
 
 @dataclass(frozen=True, slots=True)
 class BottomType(ValueType):
+    @property
+    def needs_release(self):
+        return False
+
     def accepts(self, actual):
         return False
 
@@ -699,6 +1035,7 @@ class BottomType(ValueType):
     join_boolean = join_unknown
     join_python_integer = join_unknown
     join_float = join_unknown
+    join_real = join_unknown
     join_none = join_unknown
     join_immortal = join_unknown
     join_text = join_unknown
@@ -728,6 +1065,9 @@ class BottomType(ValueType):
     binary_integer = binary_unknown
     binary_boolean = binary_unknown
     binary_float = binary_unknown
+    binary_text = binary_unknown
+    binary_bytes = binary_unknown
+    binary_tuple = binary_unknown
 
     def unary(self, operator):
         return BOOLEAN if operator == ast.UnaryOperator.NOT else self
@@ -739,6 +1079,10 @@ class BottomType(ValueType):
 @dataclass(frozen=True, slots=True)
 class UnboundType(ValueType):
     may_be_unbound: bool = field(default=True, kw_only=True)
+
+    @property
+    def needs_release(self):
+        return False
 
     def accepts(self, actual):
         return False
@@ -756,6 +1100,7 @@ class UnboundType(ValueType):
     join_boolean = join_unknown
     join_python_integer = join_unknown
     join_float = join_unknown
+    join_real = join_unknown
     join_none = join_unknown
     join_immortal = join_unknown
     join_text = join_unknown
@@ -770,6 +1115,7 @@ INTEGER = IntegerType()
 PYTHON_INTEGER = PythonIntegerType()
 BOOLEAN = BooleanType()
 FLOAT = FloatType()
+REAL = RealType()
 BOTTOM = BottomType()
 UNBOUND = UnboundType()
 
@@ -787,6 +1133,18 @@ def _bounds_fit(actual, expected):
             or actual.maximum is not None
             and actual.maximum <= expected.maximum
         )
+    )
+
+
+def _bounds_overlap(actual, expected):
+    return (
+        expected.minimum is None
+        or actual.maximum is None
+        or actual.maximum >= expected.minimum
+    ) and (
+        expected.maximum is None
+        or actual.minimum is None
+        or actual.minimum <= expected.maximum
     )
 
 

@@ -443,6 +443,11 @@ def _next_external_frame(frame, skip_file_prefixes):
 def warn(message, category=None, stacklevel=1, source=None,
          *, skip_file_prefixes=()):
     """Issue a warning, or maybe ignore it or raise an exception."""
+    # Builtin protocols can warn before the public warnings module is imported.
+    if _wm is None:
+        _set_module(sys.modules[__name__])
+        _processoptions(sys.warnoptions)
+        _setup_defaults()
     # Check if message is already a Warning object
     if isinstance(message, Warning):
         category = message.__class__

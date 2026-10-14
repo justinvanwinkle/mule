@@ -7,7 +7,7 @@ through visitors.
 
 from dataclasses import dataclass
 
-from .ctype import FLOAT, PYTHON_INTEGER, IntegerType, ValueType
+from .ctype import FLOAT, PYTHON_INTEGER, REAL, IntegerType, ValueType
 
 
 class AnnotationLedger:
@@ -123,6 +123,19 @@ class PythonIntegerContract(Contract):
 
 
 class PythonFloatContract(FloatContract):
+    @property
+    def fact(self):
+        return REAL
+
+    def accept(self, visitor):
+        return visitor.visit_PythonFloatContract(self)
+
+    def integer_conflict(self, actual):
+        return False
+
+    def boolean_conflict(self, actual):
+        return False
+
     @property
     def display_name(self):
         return self.name

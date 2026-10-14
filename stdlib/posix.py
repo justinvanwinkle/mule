@@ -30,6 +30,7 @@ from _posix import listdir as _listdir
 from _posix import lseek as _lseek
 from _posix import mkdir as _mkdir
 from _posix import open_fd as _open_fd
+from _posix import openpty as _openpty
 from _posix import pipe as _pipe
 from _posix import read as _read
 from _posix import readlink as _readlink
@@ -37,6 +38,7 @@ from _posix import rename as _rename
 from _posix import rmdir as _rmdir
 from _posix import setenv_bytes as _setenv_bytes
 from _posix import stat as _stat
+from _posix import strerror_bytes as _strerror_bytes
 from _posix import symlink as _symlink
 from _posix import sysconf_value as _sysconf_value
 from _posix import terminal_size as _terminal_dimensions
@@ -52,7 +54,7 @@ from _mule_native import isatty as _isatty
 
 __all__ = [
     "F_OK", "R_OK", "W_OK", "X_OK", "O_RDONLY", "O_WRONLY", "O_RDWR",
-    "O_APPEND", "O_CREAT", "O_EXCL", "O_TRUNC", "SEEK_SET", "SEEK_CUR",
+    "O_APPEND", "O_CREAT", "O_EXCL", "O_TRUNC", "SEEK_SET", "SEEK_CUR", "openpty",
     "SEEK_END", "_exit", "access", "chdir", "close", "dup", "dup2",
     "cpu_count", "environ", "fstat", "fsync", "getcwd", "getegid", "geteuid", "getgid", "chmod", "fchmod",
     "getpid", "getppid", "getuid", "kill", "link", "listdir", "lseek",
@@ -429,6 +431,9 @@ class DirEntry:
     def path(self):
         return self._path
 
+    def __fspath__(self):
+        return self._path
+
     def __repr__(self):
         return "<DirEntry '" + self._name + "'>"
 
@@ -442,6 +447,9 @@ class DirEntry:
 
     def is_symlink(self):
         return (lstat(self._path).st_mode & 0o170000) == 0o120000
+
+    def is_junction(self):
+        return False
 
     def stat(self, *, follow_symlinks=True):
         return stat(self._path) if follow_symlinks else lstat(self._path)
@@ -708,7 +716,14 @@ def cpu_count():
 
 
 def strerror(code):
-    return "Unknown error " + str(code)
+    return _strerror_bytes(_native_fd(code)).decode('utf-8', 'surrogateescape')
+
+
+def openpty():
+    code, result = _openpty()
+    if code:
+        raise OSError(code, strerror(code))
+    return result
 
 
 def _exit(code):

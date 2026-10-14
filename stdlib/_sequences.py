@@ -22,8 +22,10 @@ from _generators import await_value as _await_value
 from _generators import coroutine as _coroutine
 from _dict import build_dict as _build_dict
 from _dict import build_set as _build_set
-from _dict import dict, frozenset, hash, set
+from _dict import _tuple_hash, dict, frozenset, hash, set
 from _mule_native import bytes_from_values as _bytes_from_values
+from _mule_native import byte_length as _byte_length
+from _mule_native import read_byte as _read_byte
 from _mule_native import call_with as _call_with
 from _mule_native import identity as _identity
 from _mule_native import is_class as _is_class
@@ -34,7 +36,7 @@ from _mule_native import new_namespace as _new_namespace
 from _mule_native import is_instance as _is_instance
 from _mule_native import overriding_new as _overriding_new
 from _mule_native import class_lookup_default as _class_lookup_default
-from _mule_native import bind_attribute as _bind_special_attribute
+from _mule_native import bind_instance_attribute as _bind_special_attribute
 from _mule_native import type_of as _type_of
 from _slice import is_slice, positions, slice
 
@@ -189,7 +191,43 @@ class AttributeError(Exception):
 
 
 class OSError(Exception):
-    pass
+    def __new__(cls, *args):
+        if cls is OSError and 2 <= len(args) <= 5 and isinstance(args[0], int):
+            cls = {
+                1: PermissionError, 2: FileNotFoundError, 3: ProcessLookupError,
+                4: InterruptedError, 10: ChildProcessError, 11: BlockingIOError,
+                13: PermissionError, 17: FileExistsError, 20: NotADirectoryError,
+                21: IsADirectoryError, 32: BrokenPipeError, 103: ConnectionAbortedError,
+                104: ConnectionResetError, 108: BrokenPipeError, 110: TimeoutError,
+                111: ConnectionRefusedError, 114: BlockingIOError, 115: BlockingIOError,
+            }.get(_integer_storage(args[0]), cls)
+        return _allocate_instance(cls)
+
+    def __init__(self, *args):
+        BaseException.__init__(self, *args)
+        self.errno = self.strerror = self.filename = self.filename2 = None
+        self._os_error = 2 <= len(args) <= 5
+        if self._os_error:
+            self.errno, self.strerror = args[:2]
+            if len(args) >= 3:
+                if isinstance(self, BlockingIOError):
+                    if isinstance(args[2], int):
+                        self.characters_written = integer_index(args[2])
+                elif args[2] is not None:
+                    self.filename = args[2]
+                    self.args = args[:2]
+                    if len(args) == 5:
+                        self.filename2 = args[4]
+
+    def __str__(self):
+        if not self._os_error:
+            return BaseException.__str__(self)
+        result = '[Errno ' + str(self.errno) + '] ' + str(self.strerror)
+        if self.filename is not None:
+            result += ': ' + repr(self.filename)
+            if self.filename2 is not None:
+                result += ' -> ' + repr(self.filename2)
+        return result
 
 
 class EOFError(Exception):
@@ -205,11 +243,61 @@ class UnicodeError(ValueError):
 
 
 class UnicodeEncodeError(UnicodeError):
-    pass
+    def __init__(self, encoding, object, start, end, reason, /):
+        if not isinstance(encoding, str):
+            raise TypeError('argument 1 must be str, not ' + type(encoding).__name__)
+        if not isinstance(object, str):
+            raise TypeError('argument 2 must be str, not ' + type(object).__name__)
+        _unicode_error_init(self, encoding, object, start, end, reason)
+
+    def __str__(self):
+        if self.end == self.start + 1 and 0 <= self.start < TextStorage.__len__(self.object):
+            code = ord(TextStorage.__getitem__(self.object, self.start))
+            if code <= 0xFF:
+                character = '\\x' + format(code, '02x')
+            elif code <= 0xFFFF:
+                character = '\\u' + format(code, '04x')
+            else:
+                character = '\\U' + format(code, '08x')
+            where = "character '" + character + "' in position " + str(self.start)
+        else:
+            where = 'characters in position ' + str(self.start) + '-' + str(self.end - 1)
+        return "'" + self.encoding + "' codec can't encode " + where + ': ' + self.reason
 
 
 class UnicodeDecodeError(UnicodeError):
-    pass
+    def __init__(self, encoding, object, start, end, reason, /):
+        if not isinstance(encoding, str):
+            raise TypeError('argument 1 must be str, not ' + type(encoding).__name__)
+        original = object
+        if not isinstance(object, bytes):
+            object = memoryview(object).tobytes()
+        _unicode_error_init(self, encoding, original, start, end, reason)
+        self.object = object
+
+    def __str__(self):
+        if self.end == self.start + 1 and 0 <= self.start < _byte_length(self.object):
+            where = 'byte 0x' + format(_read_byte(self.object, self.start), '02x')
+            where += ' in position ' + str(self.start)
+        else:
+            where = 'bytes in position ' + str(self.start) + '-' + str(self.end - 1)
+        return "'" + self.encoding + "' codec can't decode " + where + ': ' + self.reason
+
+
+def _unicode_error_init(error, encoding, object, start, end, reason):
+    if not isinstance(encoding, str):
+        raise TypeError('argument 1 must be str, not ' + type(encoding).__name__)
+    error.args = encoding, object, start, end, reason
+    error.encoding = encoding
+    error.object = object
+    error.start = integer_index(start)
+    error.end = integer_index(end)
+    for value in (error.start, error.end):
+        if value < -(1 << 63) or value >= 1 << 63:
+            raise OverflowError('Python int too large to convert to C ssize_t')
+    if not isinstance(reason, str):
+        raise TypeError('argument 5 must be str, not ' + type(reason).__name__)
+    error.reason = reason
 
 
 class SystemExit(BaseException):
@@ -1291,6 +1379,9 @@ class ListStorage(_OrderedSequence):
 class TupleStorage(_OrderedSequence):
     __slots__ = ()
 
+    def __hash__(self):
+        return _tuple_hash(self)
+
     def __repr__(self):
         return _sequence_representation(self, "(", ")", True)
 
@@ -2089,6 +2180,9 @@ class bytes(BytesStorage):
             values = [_storage_read(source, index) for index in range(_storage_length(source))]
             value = _bytes_from_values(values)
             return _typed_value(value, cls) if cls is not bytes else value
+        if _is_instance(source, bytearray):
+            value = _bytes_from_values(source.values)
+            return _typed_value(value, cls) if cls is not bytes else value
         values = [_byte_value(item, "bytes must be in range(0, 256)") for item in source]
         value = _bytes_from_values(values)
         return _typed_value(value, cls) if cls is not bytes else value
@@ -2110,6 +2204,23 @@ def _byte_values(source, encoding, errors):
         if encoding is None:
             raise TypeError("string argument without an encoding")
         source = source.encode(encoding, errors)
+    if _is_instance(source, bytes):
+        length = _storage_length(source)
+        values = []
+        index = 0
+        while index < length:
+            _storage_append(values, _storage_read(source, index))
+            index += 1
+        return values
+    if _is_instance(source, bytearray):
+        source_values = source.values
+        length = _storage_length(source_values)
+        values = []
+        index = 0
+        while index < length:
+            _storage_append(values, _storage_read(source_values, index))
+            index += 1
+        return values
     if _integer_storage_kind(source):
         count = _integer_storage(source)
         if count < 0:
@@ -2577,6 +2688,24 @@ class memoryview:
     def __setitem__(self, index, value):
         self._check()
         if is_slice(index):
+            if self._itemsize() == 1 and _is_instance(value, bytes):
+                if self.readonly:
+                    raise TypeError("cannot modify read-only memory")
+                start, stop, step, count = positions(index, self.length)
+                if _storage_length(value) != count:
+                    raise ValueError("memoryview assignment: lvalue and rvalue have different structures")
+                target_values = self.source.values
+                base_start = self.start
+                base_step = self.step
+                at = 0
+                while at < count:
+                    _storage_write(
+                        target_values,
+                        base_start + (start + at * step) * base_step,
+                        _storage_read(value, at),
+                    )
+                    at += 1
+                return
             if self._itemsize() != 1:
                 values = _make_list(value)
             else:
@@ -2673,9 +2802,40 @@ def open(file, mode='r', buffering=-1, encoding=None, errors=None, newline=None,
     return _io.open(file, mode, buffering, encoding, errors, newline, closefd, opener)
 
 
+def compile(
+    source,
+    filename,
+    mode,
+    flags=0,
+    dont_inherit=False,
+    optimize=-1,
+    *,
+    _feature_version=-1,
+):
+    import ast as _ast
+
+    return _ast._compile(
+        source,
+        filename,
+        mode,
+        flags,
+        dont_inherit,
+        optimize,
+        _feature_version=_feature_version,
+    )
+
+
+def eval(expression, globals=None, locals=None, /):
+    import ast as _ast
+
+    return _ast._eval(expression, globals, locals)
+
+
 _install_storage(list, tuple, str, bytes)
 
 _install_builtin("open", open)
+_install_builtin("compile", compile)
+_install_builtin("eval", eval)
 _install_builtin("__import__", __import__)
 _install_builtin("range", range)
 _install_builtin("enumerate", enumerate)
@@ -2840,12 +3000,8 @@ _install_builtin("Ellipsis", Ellipsis)
 
 
 def context_exit(exit_method, value):
-    """Report a pending exception to a context manager's ``__exit__``.
-
-    The caller suppresses the exception when the result is true. Mule has no
-    traceback objects yet, so the third argument is None.
-    """
-    return exit_method(_raised_class(value), value, None)
+    """Report the caught exception and its original traceback to ``__exit__``."""
+    return exit_method(_raised_class(value), value, value.__traceback__)
 
 
 class cell:

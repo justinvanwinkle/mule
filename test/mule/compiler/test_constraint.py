@@ -17,7 +17,9 @@ from mule.compiler.ctype import (
     IntegerType,
     NoneType,
     TextType,
+    TupleType,
 )
+from mule.compiler.driver import emit_llvm
 from mule.compiler.main import Compilation, compile_source
 from mule.compiler.node import (
     CallKind,
@@ -578,3 +580,133 @@ def test_semantic_containment_and_dispatch_proofs(
 def test_nonvalue_expectations_cannot_prove_a_call_argument(actual, expected):
     assert not actual.fits(expected)
     assert not actual.dispatch_fits(expected)
+
+
+def test_post_widening_narrowing_recovers_bounded_loop_interval():
+    compilation = lower(
+        "def sum_loop():\n"
+        " i = 0\n"
+        " total = 0\n"
+        " while i < 10:\n"
+        "  total = total + i\n"
+        "  i = i + 1\n"
+        " return total\n"
+    )
+    fn = function(compilation, 1)
+    add_i = [
+        node
+        for node in binaries(fn)
+        if any(
+            isinstance(use, Ref)
+            and isinstance(use.leaf, LambdaVar)
+            and use.leaf.name == "i"
+            for arg in node.args
+            for use in arg.uses
+        )
+    ]
+    assert add_i
+    for node in add_i:
+        for arg in node.args:
+            use = arg.use()
+            if (
+                isinstance(use, Ref)
+                and isinstance(use.leaf, LambdaVar)
+                and use.leaf.name == "i"
+            ):
+                assert fact(compilation, fn, use) == IntegerType(0, 9)
+
+
+def test_dynamic_range_arguments_propagate_bounds_into_loop_variable():
+    compilation = lower(
+        "def count(flag):\n"
+        " n = 8 if flag else 12\n"
+        " acc = 0\n"
+        " for i in range(2, n):\n"
+        "  acc = acc + i\n"
+        " return acc\n"
+    )
+    fn = function(compilation, 1)
+    advance = [
+        node
+        for node in nodes(fn)
+        if isinstance(node, Combination)
+        and node.fun_info is not None
+        and node.fun_info.name == "%range_advance"
+    ]
+    assert len(advance) == 1
+    assert fact(compilation, fn, advance[0]) == IntegerType(2, 11)
+
+
+def test_local_set_records_previous_binding_type_for_release_elision():
+    compilation = lower("def rebind():\n x = 1\n x = 'hello'\n x = 2\n return x\n")
+    fn = function(compilation, 1)
+    assignments = [
+        node
+        for node in nodes(fn)
+        if isinstance(node, Set)
+        and isinstance(node.var, LambdaVar)
+        and node.var.name == "x"
+    ]
+    assert [fact(compilation, fn, node) for node in assignments] == [
+        UNBOUND,
+        IntegerType(1, 1),
+        TextType(),
+    ]
+    assert not UNBOUND.needs_release
+    assert not IntegerType(1, 1).needs_release
+    assert TextType().needs_release
+
+
+def test_nonnumeric_binary_operations_preserve_sequence_and_text_types():
+    compilation = lower(
+        "def build(a, b):\n"
+        " s = 'x' + 'y'\n"
+        " r = s * 3\n"
+        " raw = b'a' + b'b'\n"
+        " t = (a, b) + (s,)\n"
+        " return r, raw, t\n"
+    )
+    fn = function(compilation, 1)
+    assert fact(compilation, fn, stored_value(fn, "s").use()) == TextType()
+    assert fact(compilation, fn, stored_value(fn, "r").use()) == TextType()
+    assert fact(compilation, fn, stored_value(fn, "raw").use()) == BytesType()
+    assert fact(compilation, fn, stored_value(fn, "t").use()) == TupleType(3)
+
+
+@pytest.mark.parametrize(
+    ("actual", "expected", "possible"),
+    [
+        (UNKNOWN, IntegerType(0, 10), True),
+        (IntegerType(5, 15), IntegerType(0, 10), True),
+        (IntegerType(11, 20), IntegerType(0, 10), False),
+        (TextType(), IntegerType(0, 10), False),
+        (BytesType(), IntegerType(0, 10), False),
+        (TupleType(2), IntegerType(0, 10), False),
+        (BooleanType(), IntegerType(0, 10), False),
+        (TupleType(2), TupleType(2), True),
+        (TupleType(3), TupleType(2), False),
+    ],
+)
+def test_may_dispatch_fit_filters_impossible_specializations(
+    actual, expected, possible
+):
+    assert actual.may_dispatch_fit(expected) is possible
+
+
+def test_nonnumeric_codegen_elides_impossible_spec_dispatch_and_retains():
+    ir = emit_llvm(
+        "def format_pair(pair, prefix):\n"
+        " a, b = pair\n"
+        " if prefix:\n"
+        "  return f'{prefix}:{a}-{b}'\n"
+        " return (a, b)\n"
+        "def run():\n"
+        " p = ('left', 'right')\n"
+        " out = format_pair(p, 'tag')\n"
+        " return out\n"
+    )
+    run_body = ir.split('define internal ptr @"mule_fn_2.body"(')[1].split("\n}")[0]
+    assert '@"mule_fn_1.spec.' not in run_body
+    assert '@"mule_fn_1.body"(' in run_body
+    assert "@mule.fast.local(" not in run_body
+    assert "@mule.fast.local.move(" not in run_body

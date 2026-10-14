@@ -4,10 +4,10 @@ import re
 import subprocess
 
 import pytest
-from test_native import run_native
-from test_runtime import runtime_probe as runtime_probe  # noqa: PLC0414 - pytest fixture export
 
 from mule.compiler import build
+from test.mule.compiler.test_native import run_native
+from test.mule.compiler.test_runtime import runtime_probe as runtime_probe  # noqa: PLC0414 - pytest fixture export
 
 
 @pytest.mark.parametrize(

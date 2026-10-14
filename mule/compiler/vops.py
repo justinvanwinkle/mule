@@ -192,6 +192,20 @@ def load_local(gen, vop):
     value = gen.load(source)
     if access.move:
         gen.line(f"store ptr null, ptr {source.tn.slot}")
+    if access.bound:
+        present = gen.operation(f"icmp ne ptr {value}, null")
+        gen.line(f"call void @llvm.assume(i1 {present})")
+        gen.refine(result.tn, value)
+        if (
+            not access.move
+            and result.tn.sc.owned
+            and source.tn.sc.owned
+            and value not in gen.immortal_values
+        ):
+            value = gen.operation(f"call ptr @mule.fast.retain(ptr {value})")
+            gen.refine(result.tn, value)
+        gen.publish(result, value)
+        return
     helper = (
         "local.move"
         if access.move or not result.tn.sc.owned or not source.tn.sc.owned
@@ -216,7 +230,7 @@ def load_global(gen, vop):
 @define_vop("move", args=(None,), results=(None,))
 def move(gen, vop):
     value = gen.take(vop.args[0])
-    gen.store(vop.results[0], value)
+    gen.store(vop.results[0], value, release=vop.codegen_info is not False)
 
 
 @define_vop("move-argument", results=(None,))
@@ -234,10 +248,12 @@ def load_closure(gen, vop):
 @define_vop("unbind-local", results=(None,))
 def unbind_local(gen, vop):
     target = vop.results[0]
-    value = gen.load(target)
-    gen.line(f"store ptr null, ptr {target.tn.slot}")
-    if target.tn.sc.owned:
+    if target.tn.sc.owned and vop.codegen_info is not False:
+        value = gen.load(target)
+        gen.line(f"store ptr null, ptr {target.tn.slot}")
         gen.release(value)
+    else:
+        gen.line(f"store ptr null, ptr {target.tn.slot}")
 
 
 @define_vop("store-global", args=(None,))
@@ -303,6 +319,13 @@ class _ContractAssertion:
         name = self.gen.module.text(contract.display_name)
         status = self.gen.operation(
             f"call i32 @mule_assert_float(ptr {self.value}, ptr {name})"
+        )
+        self.gen.check_status(status)
+
+    def visit_PythonFloatContract(self, contract):
+        name = self.gen.module.text(contract.display_name)
+        status = self.gen.operation(
+            f"call i32 @mule_assert_real(ptr {self.value}, ptr {name})"
         )
         self.gen.check_status(status)
 
@@ -391,18 +414,27 @@ def _binary_generic(gen, vop, opcode, *, inplace):
         return
     prefix = "fixnum" if fixnums else "fast"
     reuse = "null"
+    reuse_slot = "null"
     info = vop.codegen_info
-    if inplace and info is not None and info.reuse_local is not None:
-        reuse = gen.local_slot(info.reuse_local)
+    if (
+        inplace
+        and not fixnums
+        and opcode in (0, 1, 2)
+        and info is not None
+        and info.reuse_local is not None
+        and gen.local_owned(info.reuse_local)
+    ):
+        reuse = gen.operation(f"load ptr, ptr {gen.local_slot(info.reuse_local)}")
+        reuse_slot = gen.reuse_slot()
     if opcode in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12):
         operation = (
             f"call ptr @mule.{prefix}.binary.{opcode}(ptr {lhs}, ptr {rhs}, "
-            f"i32 {int(inplace)}, ptr {reuse})"
+            f"i32 {int(inplace)}, ptr {reuse}, ptr {reuse_slot})"
         )
     else:
         operation = (
             f"call ptr @mule_binary_reuse(i32 {opcode}, ptr {lhs}, ptr {rhs}, "
-            f"i32 {int(inplace)}, ptr {reuse})"
+            f"i32 {int(inplace)}, ptr null)"
         )
     gen.pointer_result(result, operation, (lhs, rhs))
 
@@ -599,6 +631,7 @@ def call_resolved(gen, vop):
     gen.publish(vop.results[0], value)
     gen.release(function)
     gen.check_pointer(value)
+    gen.refine(vop.results[0].tn, value)
 
 
 @define_vop(
@@ -787,7 +820,9 @@ def has_binding(gen, vop):
     )
     gen.release(module)
     gen.check_status(status)
-    gen.pointer_result(vop.results[0], f"call ptr @mule_bool(i32 {status})")
+    bound = gen.operation(f"icmp ne i32 {status}, 0")
+    result = gen.operation(f"select i1 {bound}, ptr @mule.true, ptr @mule.false")
+    gen.native_result(vop.results[0], result)
 
 
 @define_vop("current-globals", translate=fndb.CURRENT_GLOBALS, results=(OBJECT,))
@@ -838,6 +873,7 @@ def format_(gen, vop):
     )
     gen.publish(result, formatted)
     gen.check_pointer(formatted)
+    gen.refine(result.tn, formatted)
 
 
 @define_vop("range-prepare", translate=fndb.RANGE_PREPARE, results=(OBJECT,))
@@ -846,9 +882,15 @@ def range_prepare(gen, vop):
     state = vop.args[2].tn.slot
     # No callable-identity guard: `range` is a class, and the storage check
     # only accepts iterators of the protocol's own RangeIterator class.
-    stored = gen.operation(f"call i32 @mule_range_storage(ptr {iterator}, ptr {state})")
-    result = gen.operation(f"call ptr @mule_bool(i32 {stored})")
+    stored = gen.operation(
+        f"call i32 @mule_range_storage(ptr {iterator}, ptr %range.buffer)"
+    )
+    words = gen.operation("load [3 x i64], ptr %range.buffer")
+    gen.line(f"store [3 x i64] {words}, ptr {state}")
+    accepted = gen.operation(f"icmp ne i32 {stored}, 0")
+    result = gen.operation(f"select i1 {accepted}, ptr @mule.true, ptr @mule.false")
     gen.publish(vop.results[0], result)
+    gen.refine(vop.results[0].tn, result)
     gen.release(callee)
     gen.release(iterator)
 
@@ -868,8 +910,9 @@ def range_available(gen, vop):
     below = gen.operation(f"icmp slt i64 {current}, {stop}")
     above = gen.operation(f"icmp sgt i64 {current}, {stop}")
     available = gen.operation(f"select i1 {forward}, i1 {below}, i1 {above}")
-    wide = gen.operation(f"zext i1 {available} to i32")
-    gen.publish(vop.results[0], gen.operation(f"call ptr @mule_bool(i32 {wide})"))
+    result = gen.operation(f"select i1 {available}, ptr @mule.true, ptr @mule.false")
+    gen.publish(vop.results[0], result)
+    gen.refine(vop.results[0].tn, result)
 
 
 @define_vop("range-advance", translate=fndb.RANGE_ADVANCE, results=(OBJECT,))
@@ -892,6 +935,7 @@ def _define_protocol(name, info):
         result = gen.sequence_call(name, arguments)
         gen.publish(vop.results[0], result)
         gen.check_pointer(result)
+        gen.refine(vop.results[0].tn, result)
 
 
 @define_vop("structural-unpack", translate=fndb.PROTOCOLS["unpack"], results=(OBJECT,))
@@ -899,6 +943,7 @@ def structural_unpack(gen, vop):
     value, count = [gen.take(argument) for argument in vop.args]
     if vop.codegen_info.proved:
         gen.publish(vop.results[0], value)
+        gen.refine(vop.results[0].tn, value)
         gen.release(count)
         return
     matched = gen.operation(
@@ -917,10 +962,9 @@ def structural_unpack(gen, vop):
     unpacked = gen.check_pointer(result)
     gen.line(f"br label %{done}")
     gen.lines.append(done + ":")
-    gen.publish(
-        vop.results[0],
-        gen.operation(f"phi ptr [{value}, %{fast}], [{result}, %{unpacked}]"),
-    )
+    merged = gen.operation(f"phi ptr [{value}, %{fast}], [{result}, %{unpacked}]")
+    gen.publish(vop.results[0], merged)
+    gen.refine(vop.results[0].tn, merged)
 
 
 for _name, _info in fndb.PROTOCOLS.items():
@@ -947,6 +991,7 @@ def unpack_ref(gen, vop):
     gen.release(position)
     if not access.proved:
         gen.check_pointer(result)
+    gen.refine(vop.results[0].tn, result)
 
 
 @define_vop("catch-exception", translate=fndb.CATCH_EXCEPTION, results=(OBJECT,))
@@ -1023,6 +1068,7 @@ def primitive(name, info, emit, *, consumes_arguments=False):
             for value in values:
                 gen.release(value)
         gen.check_pointer(result)
+        gen.refine(vop.results[0].tn, result)
 
     return generator
 
@@ -1072,7 +1118,7 @@ def compiled_call(name):
 
 def numeric_modulo(gen, vop, values):
     return gen.operation(
-        f"call ptr @mule.fast.binary.5(ptr {values[0]}, ptr {values[1]}, i32 0, ptr null)"
+        f"call ptr @mule.fast.binary.5(ptr {values[0]}, ptr {values[1]}, i32 0, ptr null, ptr null)"
     )
 
 
@@ -1402,10 +1448,10 @@ def raw_construct(gen, vop):
 INTRINSICS = """declare {i64, i1} @llvm.sadd.with.overflow.i64(i64, i64)
 declare {i64, i1} @llvm.ssub.with.overflow.i64(i64, i64)
 declare {i64, i1} @llvm.smul.with.overflow.i64(i64, i64)
-@mule.true = external global i8
-@mule.false = external global i8
-@mule.none = external global i8
-@mule.undefined = external global i8
+@mule.true = external global i8, align 8
+@mule.false = external global i8, align 8
+@mule.none = external global i8, align 8
+@mule.undefined = external global i8, align 8
 """
 
 
@@ -1415,7 +1461,7 @@ def _ownership() -> str:
         result = "ptr" if name == "retain" else "void"
         returned = "ret ptr %value" if name == "retain" else "ret void"
         call = (
-            "%owned = call ptr @mule_retain(ptr %value)\n  ret ptr %owned"
+            "call ptr @mule_retain(ptr %value)\n  ret ptr %value"
             if name == "retain"
             else "call void @mule_release(ptr %value)\n  ret void"
         )
@@ -1613,7 +1659,20 @@ shift:
 fixnums:
 """
     )
-    return f"""define internal ptr @mule.{prefix}.binary.{op}(ptr %left, ptr %right, i32 %inplace, ptr %reuse) alwaysinline {{
+    slow = (
+        f"""  %has.slot = icmp ne ptr %reuse.slot, null
+  br i1 %has.slot, label %slow.store, label %slow.call
+slow.store:
+  store ptr %reuse, ptr %reuse.slot
+  br label %slow.call
+slow.call:
+  %fallback = call ptr @mule_binary_reuse(i32 {op}, ptr %left, ptr %right, i32 %inplace, ptr %reuse.slot)
+  ret ptr %fallback"""
+        if op in (0, 1, 2) and not fixnums
+        else f"""  %fallback = call ptr @mule_binary_reuse(i32 {op}, ptr %left, ptr %right, i32 %inplace, ptr null)
+  ret ptr %fallback"""
+    )
+    return f"""define internal ptr @mule.{prefix}.binary.{op}(ptr %left, ptr %right, i32 %inplace, ptr %reuse, ptr %reuse.slot) alwaysinline {{
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
@@ -1624,8 +1683,7 @@ entry:
 encode:
 {_ENCODE}
 slow:
-  %fallback = call ptr @mule_binary_reuse(i32 {op}, ptr %left, ptr %right, i32 %inplace, ptr %reuse)
-  ret ptr %fallback
+{slow}
 }}"""
 
 

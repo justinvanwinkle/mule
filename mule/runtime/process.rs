@@ -50,6 +50,18 @@ struct Timespec {
 
 #[repr(C)]
 #[derive(Default)]
+struct ResourceLimits { soft: u64, hard: u64 }
+
+#[repr(C)]
+#[derive(Default)]
+struct Timeval { seconds: i64, microseconds: i64 }
+
+#[repr(C)]
+#[derive(Default)]
+struct ResourceUsage { user: Timeval, system: Timeval, counts: [i64; 14] }
+
+#[repr(C)]
+#[derive(Default)]
 struct Tm {
     sec: i32,
     min: i32,
@@ -806,6 +818,125 @@ unsafe extern "C" fn posix_fchmod(_: Value, args: Value) -> Value {
     }
 }
 
+// Descriptor-control services return errno and the physical result; compiled
+// fcntl policy selects exception classes and retry behavior.
+unsafe fn descriptor_control_result(value: i32, payload: Value) -> Value {
+    unsafe {
+        let error = if value < 0 {
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(5)
+        } else { 0 };
+        posix_tuple(&[object::small(i64::from(error)), payload])
+    }
+}
+
+unsafe extern "C" fn posix_flock(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([fd, operation]) = operands::<2>(args) else { return null_mut() };
+        let (Some(fd), Some(operation)) = (posix_int(fd), posix_int(operation)) else { return null_mut() };
+        descriptor_control_result(flock(fd as i32, operation as i32), object::none_value())
+    }
+}
+
+unsafe extern "C" fn posix_strerror(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([code]) = operands::<1>(args) else { return null_mut() };
+        let Some(code) = posix_int(code) else { return null_mut() };
+        let message = strerror(code as i32);
+        if message.is_null() { object::error("ValueError", "strerror() argument out of range"); return null_mut(); }
+        posix_bytes(CStr::from_ptr(message).to_bytes())
+    }
+}
+
+unsafe fn resource_limits_result(status: i32, limits: ResourceLimits) -> Value {
+    unsafe {
+        let error = if status < 0 { std::io::Error::last_os_error().raw_os_error().unwrap_or(5) } else { 0 };
+        let payload = if status < 0 { object::none_value() } else {
+            let soft = if limits.soft == u64::MAX { -1 } else { i128::from(limits.soft) };
+            let hard = if limits.hard == u64::MAX { -1 } else { i128::from(limits.hard) };
+            posix_tuple(&[posix_number(soft), posix_number(hard)])
+        };
+        posix_tuple(&[object::small(i64::from(error)), payload])
+    }
+}
+
+unsafe extern "C" fn posix_getrlimit(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([resource]) = operands::<1>(args) else { return null_mut() };
+        let Some(resource) = posix_int(resource) else { return null_mut() };
+        let mut limits = ResourceLimits::default();
+        let status = getrlimit(resource as i32, &mut limits);
+        resource_limits_result(status, limits)
+    }
+}
+
+unsafe extern "C" fn posix_setrlimit(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([resource, soft, hard]) = operands::<3>(args) else { return null_mut() };
+        let (Some(resource), Some(soft), Some(hard)) = (posix_int(resource), posix_int(soft), posix_int(hard)) else { return null_mut() };
+        let limits = ResourceLimits { soft: soft as u64, hard: hard as u64 };
+        descriptor_control_result(setrlimit(resource as i32, &limits), object::none_value())
+    }
+}
+
+unsafe extern "C" fn posix_prlimit(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([pid, resource, soft, hard, change]) = operands::<5>(args) else { return null_mut() };
+        let (Some(pid), Some(resource), Some(soft), Some(hard), Some(change)) = (posix_int(pid), posix_int(resource), posix_int(soft), posix_int(hard), posix_int(change)) else { return null_mut() };
+        let proposed = ResourceLimits { soft: soft as u64, hard: hard as u64 };
+        let mut previous = ResourceLimits::default();
+        let status = prlimit(pid as i32, resource as i32, if change == 0 { std::ptr::null() } else { &proposed }, &mut previous);
+        resource_limits_result(status, previous)
+    }
+}
+
+unsafe extern "C" fn posix_getrusage(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([who]) = operands::<1>(args) else { return null_mut() };
+        let Some(who) = posix_int(who) else { return null_mut() };
+        let mut usage = ResourceUsage::default();
+        if getrusage(who as i32, &mut usage) < 0 { return descriptor_control_result(-1, object::none_value()); }
+        let mut values = Vec::with_capacity(16);
+        for time in [usage.user, usage.system] {
+            values.push(object::new_value(Data::Float(time.seconds as f64 + time.microseconds as f64 * 0.000001, null_mut(), null_mut())));
+        }
+        for count in usage.counts { values.push(posix_number(i128::from(count))); }
+        let payload = posix_tuple(&values);
+        posix_tuple(&[object::small(0), payload])
+    }
+}
+
+unsafe extern "C" fn posix_getpagesize(_: Value, args: Value) -> Value {
+    unsafe {
+        if operands::<0>(args).is_none() { return null_mut(); }
+        object::small(i64::from(getpagesize()))
+    }
+}
+
+unsafe extern "C" fn posix_fcntl_int(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([fd, command, argument]) = operands::<3>(args) else { return null_mut() };
+        let (Some(fd), Some(command), Some(argument)) = (posix_int(fd), posix_int(command), posix_int(argument)) else { return null_mut() };
+        let value = fcntl(fd as i32, command as i32, argument as i32);
+        descriptor_control_result(value, object::small(i64::from(value)))
+    }
+}
+
+unsafe extern "C" fn posix_fcntl_buffer(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([fd, command, argument]) = operands::<3>(args) else { return null_mut() };
+        let (Some(fd), Some(command)) = (posix_int(fd), posix_int(command)) else { return null_mut() };
+        if argument.is_null() || object::is_fixnum(argument) { object::error("TypeError", "native fcntl requires byte storage"); return null_mut(); }
+        let Data::Bytes(data, ..) = &(*argument).data else { object::error("TypeError", "native fcntl requires byte storage"); return null_mut(); };
+        if data.len() > 1024 { object::error("ValueError", "fcntl argument 3 is too long"); return null_mut(); }
+        let mut buffer = [0u8; 1024];
+        buffer[..data.len()].copy_from_slice(data);
+        let value = fcntl(fd as i32, command as i32, buffer.as_mut_ptr());
+        // Capture errno before allocating the output buffer.
+        let error = if value < 0 { std::io::Error::last_os_error().raw_os_error().unwrap_or(5) } else { 0 };
+        posix_tuple(&[object::small(i64::from(error)), posix_bytes(&buffer[..data.len()])])
+    }
+}
+
 unsafe extern "C" fn posix_link(_: Value, args: Value) -> Value {
     unsafe {
         let Some([source, target]) = operands::<2>(args) else { return null_mut() };
@@ -1137,6 +1268,14 @@ unsafe extern "C" {
     fn ftruncate(fd: i32, length: i64) -> i32;
     fn fchmod(fd: i32, mode: u32) -> i32;
     fn fchmodat(directory: i32, path: *const c_char, mode: u32, flags: i32) -> i32;
+    fn fcntl(fd: i32, command: i32, ...) -> i32;
+    fn flock(fd: i32, operation: i32) -> i32;
+    fn strerror(code: i32) -> *const c_char;
+    fn getrlimit(resource: i32, limits: *mut ResourceLimits) -> i32;
+    fn setrlimit(resource: i32, limits: *const ResourceLimits) -> i32;
+    fn prlimit(pid: i32, resource: i32, proposed: *const ResourceLimits, previous: *mut ResourceLimits) -> i32;
+    fn getrusage(who: i32, usage: *mut ResourceUsage) -> i32;
+    fn getpagesize() -> i32;
     fn dup(fd: i32) -> i32;
     fn dup2(fd: i32, fd2: i32) -> i32;
     fn pipe(fds: *mut i32) -> i32;
@@ -1161,7 +1300,16 @@ pub unsafe extern "C" fn mule_posix_module_init(globals: Value) -> Value {
         }
         use std::os::unix::ffi::OsStrExt;
         let _ = globals;
-        let exports: [(&str, Native); 38] = [
+        let exports: [(&str, Native); 47] = [
+            ("getrlimit", posix_getrlimit),
+            ("setrlimit", posix_setrlimit),
+            ("prlimit", posix_prlimit),
+            ("getrusage", posix_getrusage),
+            ("getpagesize", posix_getpagesize),
+            ("strerror_bytes", posix_strerror),
+            ("flock", posix_flock),
+            ("fcntl_int", posix_fcntl_int),
+            ("fcntl_buffer", posix_fcntl_buffer),
             ("ftruncate", posix_ftruncate),
             ("terminal_size", posix_terminal_size),
             ("cwd", posix_cwd),
@@ -1217,6 +1365,7 @@ pub unsafe extern "C" fn mule_posix_module_init(globals: Value) -> Value {
         let bound = object::bind(globals, "sysconf_value", sysconf_function);
         object::release(sysconf_function);
         if !bound { return null_mut(); }
+        if !crate::terminal::populate(globals) { return null_mut(); }
         object::none_value()
     }
 }

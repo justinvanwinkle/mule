@@ -27,6 +27,7 @@ from mule import ast
 from .ctype import (
     BOTTOM,
     FLOAT,
+    PYTHON_INTEGER,
     UNBOUND,
     UNKNOWN,
     BooleanType,
@@ -228,13 +229,15 @@ class _Propagation(NodeVisitor):
     def visit_Set(self, node: Set):
         key = _key(node.var)
         if key not in self.state:
-            return
+            return None
+        old = self.state[key]
         if node.value is None:
             self.assign(key, UNBOUND_FACT)
         else:
             self.assign(key, self.fact_of(node.value))
         # Origins are locals, so this changes nothing for a global.
         self.forget_origin(node.var)
+        return old
 
     def visit_Cast(self, node: Cast):
         value = self.type_of(node.value)
@@ -326,10 +329,36 @@ class _Propagation(NodeVisitor):
             return Fact(BooleanType())
         if name == "%range_advance":
             state = linked(node.info, node, "info")
-            return Fact(IntegerType(state.minimum, state.maximum))
+            return Fact(self.range_type(state))
         if info.result:
             return Fact()
         return None
+
+    def range_type(self, state) -> IntegerType:
+        minimum, maximum = state.minimum, state.maximum
+        arguments = [self.type_of(arg) for arg in state.arguments]
+        if arguments and all(arg.fits(PYTHON_INTEGER) for arg in arguments):
+            if len(arguments) == 1:
+                stop = arguments[0]
+                minimum = max(minimum, 0)
+                if stop.maximum is not None:
+                    maximum = min(maximum, stop.maximum - 1)
+            else:
+                start, stop = arguments[0], arguments[1]
+                step = arguments[2] if len(arguments) == 3 else IntegerType(1, 1)
+                if step.minimum is not None and step.minimum > 0:
+                    if start.minimum is not None:
+                        minimum = max(minimum, start.minimum)
+                    if stop.maximum is not None:
+                        maximum = min(maximum, stop.maximum - 1)
+                elif step.maximum is not None and step.maximum < 0:
+                    if stop.minimum is not None:
+                        minimum = max(minimum, stop.minimum + 1)
+                    if start.maximum is not None:
+                        maximum = min(maximum, start.maximum)
+        if minimum > maximum:
+            return IntegerType(state.minimum, state.maximum)
+        return IntegerType(minimum, maximum)
 
     def visit_If(self, node: If):
         if self.type_of(node.test).may_run_user_code:
@@ -469,8 +498,28 @@ class _Walk:
 
     def run(self) -> Body:
         incoming, edge_states = {}, {}
+        if self.propagate(incoming, edge_states, widening=True):
+            self.propagate(incoming, edge_states, widening=False)
+        returned = BOTTOM
+        call_sites = _CallSites(self.facts)
+        for block in incoming:
+            for node in block.nodes():
+                node.accept(call_sites)
+        if self.lambda_.return_ is not None:
+            for use in self.lambda_.return_.result.uses:
+                if use.block in incoming:
+                    returned = returned.join(self.facts.get(use, NO_FACT).type)
+        return Body(self.facts, returned, tuple(call_sites.calls))
+
+    def propagate(self, incoming, edge_states, *, widening: bool) -> bool:
         visits = defaultdict(int)
-        pending, queued = deque([self.entry]), {self.entry}
+        did_widen = False
+        initial = (
+            [self.entry]
+            if widening
+            else [block for block in self.blocks if block in incoming]
+        )
+        pending, queued = deque(initial), set(initial)
 
         def schedule(block):
             if block not in queued:
@@ -493,18 +542,32 @@ class _Walk:
             for parent in parents[1:]:
                 state, _ = join_states(state, parent)
             previous = incoming.get(block)
-            if previous is None:
-                changed = True
-            else:
-                state, changed = join_states(previous, state)
-            if changed:
-                visits[block] += 1
-                if block in self.headers and block in incoming and visits[block] > 3:
-                    state = {
-                        key: widen_fact(incoming[block][key], state[key])
-                        for key in state
-                    }
-                incoming[block] = state
+            if widening:
+                if previous is None:
+                    changed = True
+                else:
+                    state, changed = join_states(previous, state)
+                if changed:
+                    visits[block] += 1
+                    if (
+                        block in self.headers
+                        and block in incoming
+                        and visits[block] > 3
+                    ):
+                        widened = {
+                            key: widen_fact(incoming[block][key], state[key])
+                            for key in state
+                        }
+                        if widened != state:
+                            did_widen = True
+                            state = widened
+                    incoming[block] = state
+            elif state != previous:
+                if visits[block] < 2:
+                    visits[block] += 1
+                    incoming[block] = state
+                else:
+                    state = previous
             # The visitor updates its state in place.
             state = dict(state)
             handler = block_exception_target(block)
@@ -515,10 +578,15 @@ class _Walk:
                 fact = node.accept(visitor)
                 if fact is not None:
                     previous = self.facts.get(node, NO_FACT)
-                    # join_fact returns ``previous`` itself when nothing changed.
-                    joined = join_fact(previous, fact)
-                    if joined is not previous:
-                        self.facts[node] = joined
+                    if widening:
+                        # join_fact returns ``previous`` itself when nothing changed.
+                        updated = join_fact(previous, fact)
+                        changed = updated is not previous
+                    else:
+                        updated = fact
+                        changed = updated != previous
+                    if changed:
+                        self.facts[node] = updated
                         for consumer in self.consumers[node]:
                             schedule(consumer)
                 if handler is not None:
@@ -534,16 +602,7 @@ class _Walk:
                 if edge_states.get(key) != edge:
                     edge_states[key] = edge
                     schedule(target)
-        returned = BOTTOM
-        call_sites = _CallSites(self.facts)
-        for block in incoming:
-            for node in block.nodes():
-                node.accept(call_sites)
-        if self.lambda_.return_ is not None:
-            for use in self.lambda_.return_.result.uses:
-                if use.block in incoming:
-                    returned = returned.join(self.facts.get(use, NO_FACT).type)
-        return Body(self.facts, returned, tuple(call_sites.calls))
+        return did_widen
 
     def constrain_edge(self, block, target, visitor, edge):
         """Narrow an integer local on a branch edge tested against a constant."""
@@ -629,6 +688,8 @@ class _Operands(NodeVisitor):
         return () if node.value is None else (node.value,)
 
     def visit_Combination(self, node):
+        if node.fun_info is not None and node.fun_info.name == "%range_advance":
+            return (node.fun, *node.args, *linked(node.info, node, "info").arguments)
         return (node.fun, *node.args)
 
     def visit_Return(self, node):

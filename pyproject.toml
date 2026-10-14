@@ -37,7 +37,11 @@ pythonpath = ["."]
 # Loaded by pytest from a path selected at runtime.
 include_modules = [
     "test.conftest",
-    "test.corpus.test_cases",
+    "test.corpus.*",
+    "test.conformance.*",
+    "test.mule.compiler.*",
+    "test.mule.parser.*",
+    "test.stdlib.*",
     "xdist.plugin",
     "xdist.looponfail",
 ]

@@ -73,6 +73,27 @@ negative indices and mutable list lengths require different language rules from
 Common Lisp vectors. Storage guards are not source-language type tags: builtin
 storage uses shared class method tables, just as user instances do.
 
+Tuple storage exposes its compiled hash as `tuple.__hash__`, so class-level
+hashability queries agree with `hash(tuple_value)`. The combination reads
+physical tuple elements and recursively calls the language hash operation;
+subclass iteration, indexing, and length overrides do not affect those reads.
+SBCL `src/code/target-sxhash.lisp`, `sxhash` and `sxhash-recurse`, likewise
+combine hashes over owned structure storage. Mule uses Python's tuple
+xxHash-style combination and 64-bit signed result instead of SBCL's bounded
+depth and fixnum hash, preserving Python's tuple hash values and element errors.
+
+The root object's default inequality binds the class's equality descriptor
+through the special-method lookup path, then negates its result unless it is
+`NotImplemented`. Ordinary lookup of `type(value).__eq__` can instead select a
+metaclass method and incorrectly compare identities. This uses the existing
+compiled descriptor boundary, following SBCL `src/pcl/slots-boot.lisp`'s
+compiled method-function selection; Python's `object_richcompare` equality
+delegation and `NotImplemented` continuation are its concrete language rules.
+The existing native class-table shortcut also stops suppressing the compiled
+`object.__ne__` entry: its behavior depends on the receiver's equality method,
+so native identity inequality is not an equivalent default. The language
+algorithm stays in Python; the physical method table retains its callable.
+
 SBCL `src/compiler/ir2tran.lisp`, `ir2-convert-throw` and `emit-nlx-start`, records
 nonlocal targets and cleanup/dynamic state explicitly. Mule uses explicit IR
 exception successors and native return/error edges rather than SBCL's assembly
@@ -82,6 +103,19 @@ Exceptional analysis must join states before and after a potentially failing
 operation; successful stores must not be assumed on an exceptional edge.
 Caught exceptions and handler state are ordinary owned Mule class instances.
 Native primitive errors are converted to those instances at the catch boundary.
+SBCL `src/compiler/envanal.lisp`, `emit-cleanups` and `find-cleanup-points`,
+derive cleanup code from the dynamic environments at each control-flow edge.
+Mule likewise keeps an empty exception suite's exit inside its handler cleanup
+until environment analysis inserts the handler pop. Even an `except: pass`
+must restore the enclosing handled exception before subsequent statements;
+creating its filler exit in the enclosing environment would erase that edge.
+The error-path `__exit__` call likewise runs inside an explicit handler-body
+cleanup and receives the caught exception's traceback. SBCL's
+`src/compiler/ir1-translators.lisp`, `unwind-protect`, preserves the transfer
+while running cleanup code and then resumes it. Python additionally exposes
+the handled exception through `sys.exception()` during `__exit__`, so Mule
+pushes that instance for the call and pops it on suppression, propagation,
+or a replacement error. This uses the existing cleanup-edge machinery.
 The uncaught-error boundary uses the same conversion after protocol initialization;
 builtin errors are reported through their compiled exception classes and `__str__`.
 Exception hierarchy matching runs in compiled Python using actual class ancestry;
@@ -100,6 +134,21 @@ boundary. This avoids walking already-unwound LLVM activations; frame allocation
 is restricted to failing paths. Tracebacks expose code, line, globals and caller
 links; captured local-variable mappings and complete traceback compatibility
 remain gaps.
+
+SBCL `src/code/debug.lisp`, `print-backtrace` and `print-frame-call`, reports
+compiled implementation frames as part of its debugger backtrace. Python's
+observable exception traceback omits builtin implementation calls: a failure
+inside a generator consumed by `list` includes the calling source frame and
+the generator, without a `list` constructor frame. Mule therefore omits source
+traceback records for the compiled builtins unit, including its private
+argument, descriptor, and generator helpers. This is a concrete Python
+adaptation rather than removing debug metadata: live-frame registration and
+fatal-signal diagnostics still retain those activations. User functions and
+ordinary separately compiled library modules continue to record source frames.
+Cleanup edges and owned-reference releases are unchanged; the omission avoids
+allocating artificial builtin traceback entries on failure paths. Separately
+compiled replacements for other C-backed APIs still need their own transparency
+classification for complete parity.
 
 SBCL `src/compiler/ir1-translators.lisp`'s `unwind-protect` translator resumes
 the saved `(next, start, count)` transfer through `%unwind` after cleanup;

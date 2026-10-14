@@ -217,6 +217,7 @@ class RangeState:
 
     minimum: int
     maximum: int
+    arguments: tuple = ()
 
 
 class Namespace:
@@ -2443,9 +2444,10 @@ class _Statements(ast.Visitor):
                     current = Ctran()
                     function.store(ctran, current, handler.binding, raised, handler)
                 frontier = function.convert_body(current, handler.body)
-            if frontier is not None:
-                # Environment analysis emits the handler-leaving code on this edge.
-                function.jump(frontier, done)
+                if frontier is not None:
+                    # An empty suite still needs an exit in the active cleanup,
+                    # so environment analysis can emit the handler-leaving code.
+                    function.jump(frontier, done)
             current = linked(unwind.start, unwind, "start")
             if handler.binding is not None:
                 ctran = Ctran()
@@ -2564,19 +2566,35 @@ class _Statements(ast.Visitor):
         exception = function.temporary()
         following = Ctran()
         function.set_var(ctran, following, exception, caught, item)
-        ctran, method = Ctran(), Lvar()
-        function.ref(following, ctran, method, exit_method, item)
-        following, raised = Ctran(), Lvar()
-        function.ref(ctran, following, raised, exception, item)
-        ctran, suppressed = Ctran(), Lvar()
-        function.protocol(
-            following, ctran, suppressed, "context_exit", (method, raised), item
+        ctran, raised = Ctran(), Lvar()
+        function.ref(following, ctran, raised, exception, item)
+        entered = Ctran()
+        function.known(ctran, entered, None, fndb.ENTER_HANDLER, (raised,), item)
+        unwind = function.block()
+        active = Cleanup(
+            CleanupKind.HANDLER_BODY,
+            target=unwind,
+            parent=outer,
         )
-        reraise = function.block()
-        function.if_node(ctran, suppressed, done, reraise, item)
-        ctran, value = Ctran(), Lvar()
-        function.ref(reraise.start, ctran, value, exception, item, final=True)
-        self.terminal(ctran, fndb.RESUME_EXCEPTION, (value,), item)
+        with function.with_cleanup(active):
+            body = function.block()
+            function.jump(entered, body)
+            ctran, method = Ctran(), Lvar()
+            function.ref(body.start, ctran, method, exit_method, item)
+            following, raised = Ctran(), Lvar()
+            function.ref(ctran, following, raised, exception, item)
+            ctran, suppressed = Ctran(), Lvar()
+            function.protocol(
+                following, ctran, suppressed, "context_exit", (method, raised), item
+            )
+            reraise = function.block()
+            function.if_node(ctran, suppressed, done, reraise, item)
+            ctran, value = Ctran(), Lvar()
+            function.ref(reraise.start, ctran, value, exception, item, final=True)
+            self.terminal(ctran, fndb.RESUME_EXCEPTION, (value,), item)
+        ctran = Ctran()
+        function.known(unwind.start, ctran, None, fndb.LEAVE_HANDLER, (), item)
+        self.terminal(ctran, fndb.UNWIND, (), item)
         function.flow(linked(done.start, done, "start"), next_)
 
     def visit_For(self, node):
@@ -2620,7 +2638,7 @@ class _Statements(ast.Visitor):
         function.set_var(ctran, current, iterator, iterated, node)
         generic, range_done = function.block(), function.block()
         if callee is not None:
-            state = RangeState(*_range_interval(candidate))
+            state = RangeState(*_range_interval(candidate), tuple(arguments))
             range_test, range_body = function.block(), function.block()
             ctran, loaded = Ctran(), Lvar()
             function.ref(current, ctran, loaded, callee, candidate, final=True)
