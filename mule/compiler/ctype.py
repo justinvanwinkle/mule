@@ -41,7 +41,7 @@ class ValueTypeVisitor:
         return self.visit_PrimitiveType(fact)
 
     def visit_RealType(self, fact):
-        return self.visit_ValueType(fact)
+        return self.visit_PrimitiveType(fact)
 
     def visit_ImmortalType(self, fact):
         return self.visit_ValueType(fact)
@@ -181,6 +181,9 @@ class ValueType:
         return UNKNOWN
 
     def binary_float(self, operator, left):
+        return UNKNOWN
+
+    def binary_real(self, operator, left):
         return UNKNOWN
 
     def binary_text(self, operator, left):
@@ -403,6 +406,12 @@ class IntegerType(PrimitiveType):
             may_be_unbound=left.may_be_unbound or self.may_be_unbound,
         )
 
+    def join_boolean(self, left):
+        return _join_python_integer(left, self)
+
+    def join_python_integer(self, left):
+        return _join_python_integer(left, self)
+
     def widen(self, new):
         return new.widen_integer(self)
 
@@ -427,6 +436,9 @@ class IntegerType(PrimitiveType):
 
     def binary_float(self, operator, left):
         return _float_binary(operator, left, self)
+
+    def binary_real(self, operator, left):
+        return _real_binary(operator, left, self)
 
     def binary_text(self, operator, left):
         if not left.may_be_unbound and operator in {
@@ -522,44 +534,61 @@ class IntegerType(PrimitiveType):
         return _bounds_overlap(self, expected)
 
     def fits_python_integer(self, expected):
-        return not self.may_be_unbound
+        return _bounds_fit(self, expected)
 
 
 @dataclass(frozen=True, slots=True)
-class PythonIntegerType(PrimitiveType):
+class PythonIntegerType(IntegerType):
     """An unbounded Python int may be a boolean singleton or an integer value."""
 
-    def fits_real(self, expected):
-        return not self.may_be_unbound
+    @property
+    def is_fixnum(self):
+        return False
 
-    def join_real(self, left):
-        return left.join_numeric(self)
+    def accept(self, visitor):
+        return visitor.visit_PythonIntegerType(self)
 
     def accepts(self, actual):
         return actual.fits_python_integer(self)
 
-    def fits_python_integer(self, expected):
-        return not self.may_be_unbound
+    def accepts_dispatch(self, actual):
+        return False
 
-    def fits_possible_integer(self, expected):
-        return True
+    def accepts_possible_dispatch(self, actual):
+        return False
+
+    def fits_integer(self, expected):
+        return False
 
     def fits_possible_boolean(self, expected):
-        return True
+        return _bounds_overlap(self, expected)
 
     def fits_possible_immortal(self, expected):
-        return True
-
-    def annotation_conflict(self, contract):
-        return contract.integer_conflict(self)
+        return _bounds_overlap(self, BOOLEAN)
 
     def join(self, other):
         return other.join_python_integer(self)
 
     def join_python_integer(self, left):
-        return PythonIntegerType(
-            may_be_unbound=self.may_be_unbound or left.may_be_unbound
-        )
+        return _join_python_integer(left, self)
+
+    join_integer = join_python_integer
+    join_boolean = join_python_integer
+
+    def narrow(self, operator, bound, truth):
+        narrowed = super().narrow(operator, bound, truth)
+        if (narrowed.minimum is not None and narrowed.minimum > 1) or (
+            narrowed.maximum is not None and narrowed.maximum < 0
+        ):
+            return IntegerType(
+                narrowed.minimum,
+                narrowed.maximum,
+                may_be_unbound=narrowed.may_be_unbound,
+            )
+        return narrowed
+
+    def exact_integer(self):
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -589,7 +618,10 @@ class BooleanType(IntegerType):
         return other.join_boolean(self)
 
     def join_integer(self, left):
-        return ValueType.join_integer(self, left)
+        return _join_python_integer(left, self)
+
+    def join_python_integer(self, left):
+        return _join_python_integer(left, self)
 
     def join_boolean(self, left):
         return BooleanType(
@@ -704,6 +736,9 @@ class FloatType(PrimitiveType):
     def binary_float(self, operator, left):
         return _float_binary(operator, left, self)
 
+    def binary_real(self, operator, left):
+        return _float_binary(operator, left, self)
+
     def unary(self, operator):
         if operator == ast.UnaryOperator.NOT:
             return BOOLEAN
@@ -717,7 +752,7 @@ class FloatType(PrimitiveType):
 
 
 @dataclass(frozen=True, slots=True)
-class RealType(ValueType):
+class RealType(PrimitiveType):
     """Python float annotations admit integers without changing their objects."""
 
     def accept(self, visitor):
@@ -744,6 +779,30 @@ class RealType(ValueType):
     join_boolean = join_numeric
     join_python_integer = join_numeric
     join_float = join_numeric
+
+    def binary(self, operator, right):
+        if self.may_be_unbound:
+            return right.binary_unknown(operator, self)
+        return right.binary_real(operator, self)
+
+    def binary_integer(self, operator, left):
+        return _real_binary(operator, left, self)
+
+    def binary_boolean(self, operator, left):
+        return _real_binary(operator, left, self)
+
+    def binary_float(self, operator, left):
+        return _float_binary(operator, left, self)
+
+    def binary_real(self, operator, left):
+        return _real_binary(operator, left, self)
+
+    def unary(self, operator):
+        if operator == ast.UnaryOperator.NOT:
+            return BOOLEAN
+        if self.may_be_unbound or operator == ast.UnaryOperator.INVERT:
+            return UNKNOWN
+        return REAL
 
 
 @dataclass(frozen=True, slots=True)
@@ -1085,6 +1144,7 @@ class BottomType(ValueType):
     binary_integer = binary_unknown
     binary_boolean = binary_unknown
     binary_float = binary_unknown
+    binary_real = binary_unknown
     binary_text = binary_unknown
     binary_bytes = binary_unknown
     binary_tuple = binary_unknown
@@ -1172,6 +1232,18 @@ def _join_immortal(left, right):
     return ImmortalType(may_be_unbound=left.may_be_unbound or right.may_be_unbound)
 
 
+def _join_python_integer(left, right):
+    return PythonIntegerType(
+        min(left.minimum, right.minimum)
+        if left.minimum is not None and right.minimum is not None
+        else None,
+        max(left.maximum, right.maximum)
+        if left.maximum is not None and right.maximum is not None
+        else None,
+        may_be_unbound=left.may_be_unbound or right.may_be_unbound,
+    )
+
+
 def _float_binary(operator, left, right):
     if left.may_be_unbound or right.may_be_unbound:
         return UNKNOWN
@@ -1185,6 +1257,22 @@ def _float_binary(operator, left, right):
         ast.BinaryOperator.POWER,
     }:
         return FLOAT
+    return UNKNOWN
+
+
+def _real_binary(operator, left, right):
+    if left.may_be_unbound or right.may_be_unbound:
+        return UNKNOWN
+    if operator == ast.BinaryOperator.DIVIDE:
+        return FLOAT
+    if operator in {
+        ast.BinaryOperator.ADD,
+        ast.BinaryOperator.SUBTRACT,
+        ast.BinaryOperator.MULTIPLY,
+        ast.BinaryOperator.FLOOR_DIVIDE,
+        ast.BinaryOperator.MODULO,
+    }:
+        return REAL
     return UNKNOWN
 
 

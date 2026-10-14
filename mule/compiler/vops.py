@@ -21,7 +21,7 @@ import struct
 from mule import ast
 
 from . import fndb
-from .ctype import FLOAT, PYTHON_INTEGER, UNKNOWN
+from .ctype import REAL, UNKNOWN
 from .vmdef import define_vop
 from .vop import (
     BOOLEAN,
@@ -362,12 +362,16 @@ class _ContractAssertion:
 
     def visit_PythonIntegerContract(self, contract):
         gen = self.gen
+        bits = gen.operation(f"ptrtoint ptr {self.value} to i64")
+        tag = gen.operation(f"and i64 {bits}, 1")
+        fixnum = gen.operation(f"icmp ne i64 {tag}, 0")
         true = gen.operation(f"icmp eq ptr {self.value}, @mule.true")
         false = gen.operation(f"icmp eq ptr {self.value}, @mule.false")
         boolean = gen.operation(f"or i1 {true}, {false}")
+        immediate = gen.operation(f"or i1 {fixnum}, {boolean}")
         integer = gen.fresh("integer.check")[1:]
         done = gen.fresh("integer.checked")[1:]
-        gen.line(f"br i1 {boolean}, label %{done}, label %{integer}")
+        gen.line(f"br i1 {immediate}, label %{done}, label %{integer}")
         gen.lines.append(integer + ":")
         status = gen.operation(
             f"call i32 @mule_assert_integer(ptr {self.value}, ptr null, "
@@ -430,7 +434,7 @@ def _binary_generic(gen, vop, opcode, *, inplace):
     left, right = vop.args
     lhs, rhs = gen.take(left), gen.take(right)
     left_type = left.tn.type or UNKNOWN
-    if opcode == 5 and not (left_type.fits(PYTHON_INTEGER) or left_type.fits(FLOAT)):
+    if opcode == 5 and not left_type.fits(REAL):
         value = gen.compiled_call_named("mule_format_modulo", (lhs, rhs))
         gen.publish(result, value)
         gen.check_pointer(value)
@@ -584,9 +588,7 @@ def _define_unary(operator, opcode):
             )
             gen.native_result(result, boolean, (value,))
             return
-        if opcode < 3 and not (
-            operand_type.fits(PYTHON_INTEGER) or operand_type.fits(FLOAT)
-        ):
+        if opcode < 3 and not operand_type.fits(REAL):
             tagged = gen.operation(f"ptrtoint ptr {value} to i64")
             tag = gen.operation(f"and i64 {tagged}, 1")
             integer = gen.operation(f"icmp ne i64 {tag}, 0")

@@ -9,6 +9,8 @@ from mule.compiler.ctype import (
     BOTTOM,
     FLOAT,
     INTEGER,
+    PYTHON_INTEGER,
+    REAL,
     UNBOUND,
     UNKNOWN,
     BooleanType,
@@ -16,6 +18,7 @@ from mule.compiler.ctype import (
     ImmortalType,
     IntegerType,
     NoneType,
+    PythonIntegerType,
     TextType,
     TupleType,
 )
@@ -710,3 +713,69 @@ def test_nonnumeric_codegen_elides_impossible_spec_dispatch_and_retains():
     assert '@"mule_fn_1.body"(' in run_body
     assert "@mule.fast.local(" not in run_body
     assert "@mule.fast.local.move(" not in run_body
+
+
+def test_python_integer_annotation_propagates_arithmetic_and_masks():
+    compilation = lower(
+        "def compute(x: int, y: int):\n"
+        " s = x + y\n"
+        " q = x / y\n"
+        " m = (x & 255) + (y & 255)\n"
+        " f = x + 1.5\n"
+        " t = 'a' * x\n"
+        " b = x * b'a'\n"
+        " n = -x\n"
+        " return s, q, m, f, t, b, n\n"
+    )
+    fn = function(compilation, 1)
+    assert fact(compilation, fn, stored_value(fn, "s").use()) == INTEGER
+    assert fact(compilation, fn, stored_value(fn, "q").use()) == FLOAT
+    masked = fact(compilation, fn, stored_value(fn, "m").use())
+    assert masked == IntegerType(0, 510)
+    assert masked.is_fixnum
+    assert fact(compilation, fn, stored_value(fn, "f").use()) == FLOAT
+    assert fact(compilation, fn, stored_value(fn, "t").use()) == TextType()
+    assert fact(compilation, fn, stored_value(fn, "b").use()) == BytesType()
+    assert fact(compilation, fn, stored_value(fn, "n").use()) == INTEGER
+
+
+def test_boolean_and_integer_join_preserves_bounds_on_python_integer():
+    compilation, fn = joined("True", 10)
+    result = last_fact(compilation, fn, loads)
+    assert result == PythonIntegerType(1, 10)
+    assert not result.is_fixnum
+    assert not result.needs_release
+    assert result.fits(PYTHON_INTEGER)
+
+
+def test_python_integer_branch_narrowing_recovers_fixnum_outside_boolean_domain():
+    compilation = lower(
+        "def narrow_int(x: int):\n"
+        " if x > 1:\n"
+        "  if x < 100:\n"
+        "   y = x\n"
+        "   return y\n"
+        " return 0\n"
+    )
+    fn = function(compilation, 1)
+    narrowed = fact(compilation, fn, stored_value(fn, "y").use())
+    assert narrowed == IntegerType(2, 99)
+    assert narrowed.is_fixnum
+
+
+def test_real_annotation_propagates_numeric_and_float_operations():
+    compilation = lower(
+        "def compute(x: float, y: float):\n"
+        " s = x + y\n"
+        " q = x / y\n"
+        " f = x + 1.0\n"
+        " n = -x\n"
+        " c = x < y\n"
+        " return s, q, f, n, c\n"
+    )
+    fn = function(compilation, 1)
+    assert fact(compilation, fn, stored_value(fn, "s").use()) == REAL
+    assert fact(compilation, fn, stored_value(fn, "q").use()) == FLOAT
+    assert fact(compilation, fn, stored_value(fn, "f").use()) == FLOAT
+    assert fact(compilation, fn, stored_value(fn, "n").use()) == REAL
+    assert fact(compilation, fn, stored_value(fn, "c").use()) == BooleanType()

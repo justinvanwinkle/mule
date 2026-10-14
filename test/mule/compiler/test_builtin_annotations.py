@@ -327,3 +327,18 @@ def test_ir_retains_annotation_expressions_separately_from_contracts():
     ]
     assert definitions[0].annotation_expressions[0][0] == "field"
     assert definitions[0].annotation_expressions[0][1].left.identifier == "Custom"
+
+
+def test_builtin_int_annotation_specializes_arithmetic_and_elides_return_check():
+    llvm = emit_llvm(
+        "from mule import optimize\n"
+        "@optimize(safety=3)\n"
+        "def compute(x: int, y: int) -> int:\n"
+        " masked = (x & 255) + (y & 255)\n"
+        " return -(masked % y)\n"
+    )
+    body = llvm.split('define internal ptr @"mule_fn_1.body"(')[1].split("\n}")[0]
+    assert body.count("call i32 @mule_assert_integer(") == 2
+    assert "mule_format_modulo" not in body
+    assert "unary.protocol" not in body
+    assert " = add i64 " in body
