@@ -52,7 +52,7 @@ pub unsafe fn clear(referent: Value) {
             } = &mut (**handle).data
             {
                 *referent = null_mut();
-                if !callback.is_null() && !owner.is_null() {
+                if !callback.is_null() && !owner.is_null() && !crate::gc::unreachable(*owner) {
                     pending.push((object::retain(*owner), object::retain(*callback)));
                 }
             }
@@ -77,21 +77,13 @@ pub unsafe fn clear(referent: Value) {
     }
 }
 
-/// Heap values that can be weakly referenced: compiled class instances,
-/// classes, functions and bound methods, as with CPython's `tp_weaklistoffset`.
+/// Whether a value has independently owned heap storage that a handle may
+/// borrow. The compiled reference constructor owns language-level eligibility.
 unsafe fn referenceable(value: Value) -> bool {
     unsafe {
         !value.is_null()
             && !object::is_fixnum(value)
             && (*value).references != usize::MAX
-            && matches!(
-                &(*value).data,
-                Data::Instance { .. }
-                    | Data::NativeInstance { .. }
-                    | Data::Class(_)
-                    | Data::Function { .. }
-                    | Data::BoundMethod { .. }
-            )
     }
 }
 

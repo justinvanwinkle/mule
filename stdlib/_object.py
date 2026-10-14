@@ -11,6 +11,7 @@ any other compiled builtin defines a class, so those classes derive from
 """
 
 from _mule_native import allocate_instance as _new_instance
+from _mule_native import default_construct as _default_construct
 from _mule_native import bind_attribute as _bind_attribute
 from _mule_native import bound_method as _bound_method
 from _mule_native import bound_method_receiver as _bound_method_receiver
@@ -19,6 +20,7 @@ from _mule_native import class_base as _class_base
 from _mule_native import class_bases as _class_bases
 from _mule_native import class_subclasses as _class_subclasses
 from _mule_native import class_lookup as _class_lookup
+from _mule_native import class_lookup_default as _class_lookup_default
 from _mule_native import class_mro as _class_mro
 from _mule_native import class_name as _class_name
 from _mule_native import class_own_names as _class_own_names
@@ -30,6 +32,9 @@ from _mule_native import identity_hash as _identity_hash
 from _mule_native import instance_items as _instance_items
 from _mule_native import instance_set_binding as _instance_set_binding
 from _mule_native import instance_delete_binding as _instance_delete_binding
+from _mule_native import instance_field as _instance_field
+from _mule_native import set_instance_field as _set_instance_field
+from _mule_native import delete_instance_field as _delete_instance_field
 from _mule_native import storage_dictionary as _storage_dictionary
 from _mule_native import is_class as _is_class
 from _mule_native import is_instance as _is_instance
@@ -42,6 +47,7 @@ from _mule_native import namespace_unbind as _namespace_unbind
 from _mule_native import math_float_format as _math_float_format
 from _mule_native import numeric_negate as _numeric_negate
 from _mule_native import numeric_invert as _numeric_invert
+from _mule_native import integer_decimal as _integer_decimal
 from _mule_native import math_fabs as _math_fabs
 from _mule_native import register_type as _register_type
 from _mule_native import traceback_field as _traceback_field
@@ -61,12 +67,57 @@ from _mule_native import function_annotate as _function_annotate
 from _mule_native import function_annotations as _function_annotations
 from _mule_native import set_function_annotate as _set_function_annotate
 from _mule_native import set_function_annotations as _set_function_annotations
+from _mule_native import byte_length as _byte_length
+from _mule_native import read_byte as _read_byte
 
 # The runtime's conversion functions, captured before the classes below
 # take over their builtin names.
 _convert_int = int
 _convert_float = float
 _convert_bool = bool
+
+
+def _bytes_special(value):
+    """Apply __bytes__ once, distinguishing absence from a non-callable value."""
+    missing = _binding_missing()
+    owner = _type_of(value)
+    method = _class_lookup_default(owner, "__bytes__", missing)
+    if method is missing:
+        return False, None
+    try:
+        method = _bind_attribute(method, value, owner)
+    except AttributeError:
+        return False, None
+    result = method()
+    if not _is_instance(result, bytes):
+        raise TypeError(f"__bytes__ returned non-bytes (type {_type_of(result).__name__})")
+    return True, result
+
+
+def _index_integer(value):
+    if _is_instance(value, int):
+        return _convert_int(value)
+    owner = _type_of(value)
+    missing = _binding_missing()
+    method = _class_lookup_default(owner, "__index__", missing)
+    if method is missing:
+        raise TypeError(f"'{owner.__name__}' object cannot be interpreted as an integer")
+    result = _bind_attribute(method, value, owner)()
+    if not _is_instance(result, int):
+        raise TypeError(f"__index__ returned non-int (type {_type_of(result).__name__})")
+    return _convert_int(result)
+
+
+def _integer_byteorder(value, operation):
+    if not _is_instance(value, str):
+        name = "None" if value is None else _type_of(value).__name__
+        raise TypeError(f"{operation}() argument 'byteorder' must be str, not {name}")
+    order = str.encode(value, "utf-8")
+    if order == b"little":
+        return False
+    if order == b"big":
+        return True
+    raise ValueError("byteorder must be either 'little' or 'big'")
 
 
 def _format_number(value, kind, format_spec):
@@ -346,9 +397,39 @@ def _overrides(cls, name):
     return _class_lookup(cls, name) is not _class_lookup(object, name)
 
 
+_slot_descriptors_ready = False
+
+
+def _declared_slots(name, namespace):
+    slots = namespace.get('__slots__', ())
+    if isinstance(slots, str):
+        slots = (slots,)
+    result = []
+    for slot in slots:
+        if not isinstance(slot, str):
+            raise TypeError("__slots__ items must be strings, not '" + type(slot).__name__ + "'")
+        if not slot.isidentifier():
+            raise TypeError('__slots__ must be identifiers')
+        if slot in ('__dict__', '__weakref__'):
+            continue
+        if slot in namespace:
+            raise ValueError("'" + slot + "' in __slots__ conflicts with class variable")
+        if slot.startswith('__') and not slot.endswith('__'):
+            prefix = name.lstrip('_')
+            if prefix:
+                slot = '_' + prefix + slot
+        result.append(slot)
+    return result
+
+
 class type(object):
     """The class of classes: ``type(value)`` is a value's class, and
     ``type(name, bases, namespace)`` creates a class."""
+
+    def __call__(cls, *args, **kwargs):
+        if not _is_class(cls):
+            raise TypeError('type.__call__ requires a class')
+        return _default_construct(cls, tuple(args), tuple(kwargs), tuple(kwargs.values()))
 
     def __new__(metaclass, *args, **keywords):
         if len(args) == 1 and metaclass is type and not keywords:
@@ -378,12 +459,15 @@ class type(object):
             for entry in entries:
                 resolved.append(entry)
         bases = tuple(resolved)
-        fields = ()
+        slots = _declared_slots(name, namespace) if '__slots__' in namespace else []
+        fields = list(namespace.get('__mule_fields__', ()))
+        for slot in slots:
+            if slot not in fields:
+                fields.append(slot)
         names, values = [], []
         for key in namespace:
             value = namespace[key]
             if key == "__mule_fields__":
-                fields = value
                 continue
             # These hooks are implicit class methods (CPython's type_new).
             if key in ("__init_subclass__", "__class_getitem__") and _is_instance(
@@ -424,8 +508,12 @@ class type(object):
             bases,
             tuple(names),
             tuple(values),
-            fields,
+            tuple(fields),
         )
+        if _slot_descriptors_ready:
+            for slot in slots:
+                accessor = _SlotAccessor(slot)
+                setattr(cls, slot, member_descriptor(cls, slot, property(accessor.get, accessor.set, accessor.delete)))
         index = 0
         while index < len(names):
             hook = getattr(_type_of(values[index]), "__set_name__", None)
@@ -497,7 +585,7 @@ object.__class__ = property(_type_of)
 type.__name__ = property(_class_name, _set_class_name)
 type.__base__ = property(_class_base)
 type.__bases__ = property(_bases)
-type.__mro__ = property(lambda cls: tuple(cls.mro()))
+type.__mro__ = property(_class_mro)
 type.__dict__ = property(_namespace)
 
 
@@ -548,6 +636,9 @@ class _InstanceDict(object):
             if name == key:
                 return value
         return default
+
+    def _get_value(self, key, default):
+        return self.get(key, default)
 
     def setdefault(self, key, default=None):
         if key in self:
@@ -650,6 +741,16 @@ class _GlobalsDict(object):
             if name == key:
                 return value
         return default
+
+    def _get_value(self, key, default):
+        return self.get(key, default)
+
+    def setdefault(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            self[key] = default
+            return default
 
     def pop(self, key, *default):
         for name, value in _namespace_items(self._namespace):
@@ -942,6 +1043,11 @@ def _make_complex(cls, real, imag):
 
 
 class int(object):
+    def __repr__(self):
+        if not _is_instance(self, int):
+            raise TypeError(f"descriptor '__repr__' requires a 'int' object but received a '{_type_of(self).__name__}'")
+        return _integer_decimal(self)
+
     def __pos__(self):
         return _convert_int(self)
 
@@ -965,6 +1071,18 @@ class int(object):
                 args = (bytes.decode(value, "latin-1"),) + args[1:]
             elif isinstance(value, bytearray):
                 args = (bytearray.decode(value, "latin-1"),) + args[1:]
+        if len(args) == 1:
+            source = args[0]
+            owner = _type_of(source)
+            try:
+                method = _class_lookup(owner, "__int__")
+            except AttributeError:
+                pass
+            else:
+                value = _bind_attribute(method, source, owner)()
+                if not _is_instance(value, int):
+                    raise TypeError(f"__int__ returned non-int (type {_type_of(value).__name__})")
+                args = (value,)
         value = _convert_int(*args)
         if cls is not int and cls is not bool:
             return _typed_value(value, cls)
@@ -976,10 +1094,14 @@ class int(object):
         return _format_number(self, "int", format_spec)
 
     def __index__(self):
-        return self
+        if not _is_instance(self, int):
+            raise TypeError(f"descriptor '__index__' requires a 'int' object but received a '{_type_of(self).__name__}'")
+        return _convert_int(self)
 
     def __int__(self):
-        return self
+        if not _is_instance(self, int):
+            raise TypeError(f"descriptor '__int__' requires a 'int' object but received a '{_type_of(self).__name__}'")
+        return _convert_int(self)
 
     def __float__(self):
         return _convert_float(self)
@@ -999,33 +1121,53 @@ class int(object):
             return NotImplemented
         return (self // other, self % other)
 
-    def to_bytes(self, length=1, byteorder='little', *, signed=False):
+    def to_bytes(self, length=1, byteorder='big', *, signed=False):
+        big_endian = _integer_byteorder(byteorder, "to_bytes")
+        value = _convert_int(self)
+        length = _index_integer(length)
         if length < 0:
             raise ValueError("length argument must be non-negative")
-        value = self
         if value < 0:
             if not signed:
                 raise OverflowError("can't convert negative int to unsigned")
+            if length and value < -(1 << (8 * length - 1)):
+                raise OverflowError("int too big to convert")
             value += 1 << (8 * length)
             if value < 0:
-                raise OverflowError("int too large to convert")
-        elif value >= (1 << (8 * length)):
-            raise OverflowError("int too large to convert")
+                raise OverflowError("int too big to convert")
+        elif value >= (1 << (8 * length - (1 if signed and length else 0))):
+            raise OverflowError("int too big to convert")
         result = bytearray(length)
         for index in range(length):
-            shift = 8 * index if byteorder == 'little' else 8 * (length - 1 - index)
+            shift = 8 * (length - 1 - index) if big_endian else 8 * index
             result[index] = (value >> shift) & 0xFF
         return bytes(result)
 
     @classmethod
-    def from_bytes(cls, data, byteorder='little', *, signed=False):
+    def from_bytes(cls, data, byteorder='big', *, signed=False):
+        big_endian = _integer_byteorder(byteorder, "from_bytes")
+        converted, result = _bytes_special(data)
+        if converted:
+            data = result
+        elif _is_instance(data, int) or _is_instance(data, str):
+            raise TypeError(f"cannot convert '{_type_of(data).__name__}' object to bytes")
+        if _is_instance(data, bytes):
+            source = data
+            data = (_read_byte(source, index) for index in range(_byte_length(source)))
         value = 0
-        for index in range(len(data)):
-            shift = 8 * index if byteorder == 'little' else 8 * (len(data) - 1 - index)
-            value |= data[index] << shift
-        if signed and len(data) and (data[0] if byteorder == 'big' else data[len(data) - 1]) & 0x80:
-            value -= 1 << (8 * len(data))
-        return value
+        count, first, last = 0, 0, 0
+        for item in data:
+            item = _index_integer(item)
+            if not 0 <= item <= 255:
+                raise ValueError("bytes must be in range(0, 256)")
+            if not count:
+                first = item
+            last = item
+            value = value * 256 + item if big_endian else value | (item << (8 * count))
+            count += 1
+        if signed and count and (first if big_endian else last) & 0x80:
+            value -= 1 << (8 * count)
+        return cls(value)
 
     def __trunc__(self):
         return self
@@ -1076,8 +1218,26 @@ class bool(int):
     def __new__(cls, *args):
         return _convert_bool(*args)
 
+    def __repr__(self):
+        if not _is_instance(self, bool):
+            raise TypeError(f"descriptor '__repr__' requires a 'bool' object but received a '{_type_of(self).__name__}'")
+        return "True" if self else "False"
+
+
+_FLOAT_INFINITY = _convert_float('inf')
+
 
 class float(object):
+    def __int__(self):
+        if not _is_instance(self, float):
+            raise TypeError(f"descriptor '__int__' requires a 'float' object but received a '{_type_of(self).__name__}'")
+        value = _convert_float(self)
+        if value != value:
+            raise ValueError('cannot convert float NaN to integer')
+        if value == _FLOAT_INFINITY or value == -_FLOAT_INFINITY:
+            raise OverflowError('cannot convert float infinity to integer')
+        return _convert_int(value)
+
     def __pos__(self):
         return _convert_float(self)
 
@@ -1155,10 +1315,39 @@ class code(object):
         self._metadata = (name, filename, name if qualname is None else qualname,
                           firstlineno, argcount, posonly, kwonly, flags, varnames,
                           cellvars, freevars, positional_defaults, keyword_defaults)
+        self._native_origin = None
 
     @property
     def co_nlocals(self):
         return len(self.co_varnames)
+
+    def replace(self, /, **changes):
+        fields = (
+            "co_name", "co_filename", "co_qualname", "co_firstlineno",
+            "co_argcount", "co_posonlyargcount", "co_kwonlyargcount", "co_flags",
+            "co_varnames", "co_cellvars", "co_freevars",
+        )
+        metadata = list(self._metadata)
+        for name, value in changes.items():
+            if name not in fields:
+                raise TypeError(f"replace() got an unexpected keyword argument '{name}'")
+            index = fields.index(name)
+            if 3 <= index <= 7:
+                if not isinstance(value, int):
+                    raise TypeError(f"'{type(value).__name__}' object cannot be interpreted as an integer")
+                if value < 0:
+                    raise ValueError(f"{name} must be a positive integer")
+                if value >= 1 << 31:
+                    raise OverflowError("Python int too large to convert to C int")
+            elif index <= 2:
+                if not isinstance(value, str):
+                    raise TypeError(f"replace() argument '{name}' must be str, not {type(value).__name__}")
+            elif not isinstance(value, tuple):
+                raise TypeError(f"replace() argument '{name}' must be tuple, not {type(value).__name__}")
+            metadata[index] = value
+        result = code(*metadata)
+        result._native_origin = self if self._native_origin is None else self._native_origin
+        return result
 
 
 def _code_field(index):
@@ -1200,15 +1389,30 @@ class function(object):
     # to name the descriptor types.
     @property
     def __globals__(self):
-        return {}
+        return _generic_get_attribute(self, "__globals__")
 
     @property
     def __closure__(self):
-        return None
+        return _generic_get_attribute(self, "__closure__")
 
     @property
     def __code__(self):
         return _code_for(self)
+
+    @__code__.setter
+    def __code__(self, value):
+        if not isinstance(value, code):
+            raise TypeError("__code__ must be set to a code object")
+        original = _code_for(self)
+        if value is not original and value._native_origin is not original:
+            raise NotImplementedError("transplanting native function code is not implemented")
+        for index, (before, after) in enumerate(zip(original._metadata, value._metadata)):
+            if index == 7:
+                if (before ^ after) & ~0x100:
+                    raise NotImplementedError("changing native execution flags is not implemented")
+            elif before != after:
+                raise NotImplementedError("changing native code layout or debug metadata is not implemented")
+        _namespace_bind(_function_attributes(self), "__code__", value)
 
     @property
     def __defaults__(self):
@@ -1292,6 +1496,83 @@ class function(object):
         return _bound_method(self, instance)
 
 
+_builtin_type_cache = None
+
+
+def _builtin_types():
+    global _builtin_type_cache
+    if _builtin_type_cache is None:
+        import builtins
+        _builtin_type_cache = tuple(
+            owner for value in vars(builtins).values() if isinstance(value, type)
+            for owner in value.__mro__
+        )
+    return _builtin_type_cache
+
+
+class getset_descriptor(property):
+    """A builtin attribute's named accessor, distinct from user properties."""
+
+    def __init__(self, owner, name, accessor):
+        property.__init__(self, accessor.fget, accessor.fset, accessor.fdel, accessor.__doc__)
+        self.__objclass__ = owner
+        self.__name__ = name
+        self.__qualname__ = owner.__qualname__ + "." + name
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        self._check(instance)
+        return property.__get__(self, instance, owner)
+
+    def __set__(self, instance, value):
+        self._check(instance)
+        return property.__set__(self, instance, value)
+
+    def __delete__(self, instance):
+        self._check(instance)
+        return property.__delete__(self, instance)
+
+    def _check(self, instance):
+        if not _is_instance(instance, self.__objclass__):
+            raise TypeError(f"descriptor '{self.__name__}' for '{self.__objclass__.__name__}' objects doesn't apply to a '{_type_of(instance).__name__}' object")
+
+
+class member_descriptor(getset_descriptor):
+    """A builtin object's exposed stored field."""
+
+
+class _SlotAccessor:
+    def __init__(self, name):
+        self.name = name
+
+    def get(self, instance):
+        return _instance_field(instance, self.name)
+
+    def set(self, instance, value):
+        _set_instance_field(instance, self.name, value)
+
+    def delete(self, instance):
+        _delete_instance_field(instance, self.name)
+
+
+def _install_builtin_descriptors():
+    global _slot_descriptors_ready
+    _slot_descriptors_ready = True
+    from _descriptors import _enable_metadata
+    _enable_metadata()
+    for owner, names in (
+        (object, ("__class__", "__dict__")),
+        (type, ("__name__", "__base__", "__bases__", "__mro__", "__dict__", "__annotations__")),
+        (function, ("__code__", "__defaults__", "__kwdefaults__", "__annotations__", "__annotate__", "__dict__")),
+    ):
+        for name in names:
+            setattr(owner, name, getset_descriptor(owner, name, _class_lookup(owner, name)))
+    for owner, names in ((function, ("__globals__", "__closure__")), (method, ("__self__", "__func__"))):
+        for name in names:
+            setattr(owner, name, member_descriptor(owner, name, _class_lookup(owner, name)))
+
+
 class builtin_function_or_method(object):
     """The class of functions the runtime implements natively."""
 
@@ -1303,6 +1584,16 @@ class builtin_function_or_method(object):
 
 class method(object):
     """A function bound to the instance it was read from."""
+
+    def __new__(cls, function, instance, /):
+        if not callable(function):
+            raise TypeError('first argument must be callable')
+        if instance is None:
+            raise TypeError('instance must not be None')
+        return _bound_method(function, instance)
+
+    def __init__(self, function, instance, /):
+        pass
 
     @property
     def __self__(self):
@@ -1389,7 +1680,7 @@ class frame(object):
 
     @property
     def f_globals(self):
-        return _traceback_field(self, 2)
+        return _GlobalsDict(_traceback_field(self, 2))
 
     @property
     def f_back(self):

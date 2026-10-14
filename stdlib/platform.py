@@ -1190,6 +1190,17 @@ def _sys_version(sys_version=None):
             builddate = ''
         compiler = sys.platform
 
+    elif "Mule" in sys_version:
+        mule_sys_version_parser = re.compile(
+            r'([\w.+]+)\s*\((Mule[^)]*)\)(?:\s*\[([^\]]+)\])?')
+        match = mule_sys_version_parser.match(sys_version)
+        if match is None:
+            raise ValueError("failed to parse Mule sys.version: %s" % repr(sys_version))
+        version, buildno, compiler = match.groups()
+        name = "Mule"
+        builddate = ''
+        compiler = compiler or ''
+
     elif "PyPy" in sys_version:
         # PyPy
         pypy_sys_version_parser = re.compile(

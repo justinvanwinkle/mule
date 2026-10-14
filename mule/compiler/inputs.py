@@ -20,10 +20,19 @@ def digest(data: bytes) -> str:
     return hashlib.sha3_256(data).hexdigest()
 
 
+def _directory_inventory(path):
+    entries = sorted((entry.name, entry.is_dir()) for entry in path.iterdir())
+    data = "\0".join(name + ("/" if directory else "") for name, directory in entries)
+    return [name for name, _ in entries], "directory:" + digest(data.encode())
+
+
 def file_state(path):
-    """The SHA3-256 digest of a regular file's bytes, or None when it is absent."""
+    """A file digest, directory inventory digest, or None when absent."""
+    path = Path(path)
+    if path.is_dir():
+        return _directory_inventory(path)[1]
     try:
-        data = Path(path).read_bytes()
+        data = path.read_bytes()
     except FileNotFoundError, NotADirectoryError, IsADirectoryError:
         return None
     return digest(data)
@@ -51,6 +60,22 @@ def source_exists(path):
     if _recording.get() is not None:
         _record(path, file_state(path))
     return True
+
+
+def directory_entries(path):
+    """Record an immediate package inventory, including future module additions."""
+    path = Path(path)
+    entries, state = _directory_inventory(path)
+    _record(path, state)
+    return entries
+
+
+def directory_exists(path):
+    """Record a namespace-package directory probe, including absent paths."""
+    path = Path(path)
+    exists = path.is_dir()
+    _record(path, file_state(path))
+    return exists
 
 
 @contextmanager

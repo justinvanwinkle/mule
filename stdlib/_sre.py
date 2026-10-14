@@ -222,7 +222,7 @@ class _Engine:
         code = self.code
         op = code[pc]
         stop = pc + 1 + code[pc + 1]
-        following = stop + 1 if op == _REPEAT else stop
+        following = stop + 1 if op in (_REPEAT, _POSSESSIVE_REPEAT) else stop
         minimum, maximum = code[pc + 2], code[pc + 3]
         greedy = op not in (_MIN_REPEAT_ONE,)
         # For a general REPEAT the tail is MAX_UNTIL or MIN_UNTIL.
@@ -230,34 +230,41 @@ class _Engine:
             greedy = code[stop] == _MAX_UNTIL
         possessive = op in (_POSSESSIVE_REPEAT, _POSSESSIVE_REPEAT_ONE)
 
-        def repeated(at, seen_marks, count):
-            exits = []
-
-            def search(current, current_marks, n):
-                if n >= minimum:
-                    exits.append((current, current_marks))
-                if n < maximum:
-                    for nxt, nm in self.run(pc + 4, current, current_marks, stop):
-                        if nxt == current and nm == current_marks:
-                            continue
-                        search(nxt, nm, n + 1)
-
-            search(at, seen_marks, count)
-            return exits
-
-        exits = repeated(pos, marks, 0)
-        if not greedy:
-            exits.reverse()
-        if possessive:
-            exits = exits[-1:] if greedy and exits else exits[:1]
-            for at, seen_marks in exits:
-                yield from self.run(following, at, seen_marks, halt)
-            return
-        # Greedy enumeration collected fewest-first; present most-first.
-        if greedy:
-            exits.reverse()
-        for at, seen_marks in exits:
+        for at, seen_marks in self._repeat_states(pc + 4, stop, pos, marks, minimum, maximum, greedy):
             yield from self.run(following, at, seen_marks, halt)
+            if possessive:
+                return
+
+    def _repeat_states(self, body, stop, pos, marks, minimum, maximum, greedy):
+        # Keep depth-first branch order without consuming the Python call stack
+        # once per matched character. Greedy exits follow their children; lazy
+        # exits precede them. A stalled iteration can still satisfy a minimum.
+        stack = [(pos, marks, 0, None, False)]
+        try:
+            while stack:
+                current, seen_marks, count, iterator, stalled = stack[-1]
+                if iterator is None:
+                    if not greedy and count >= minimum:
+                        yield current, seen_marks
+                    if count >= maximum or stalled and count >= minimum:
+                        stack.pop()
+                        if greedy and count >= minimum:
+                            yield current, seen_marks
+                        continue
+                    iterator = iter(self.run(body, current, seen_marks, stop))
+                    stack[-1] = current, seen_marks, count, iterator, stalled
+                try:
+                    nxt, next_marks = next(iterator)
+                except StopIteration:
+                    stack.pop()
+                    if greedy and count >= minimum:
+                        yield current, seen_marks
+                    continue
+                stack.append((nxt, next_marks, count + 1, None, nxt == current))
+        finally:
+            for _, _, _, iterator, _ in stack:
+                if iterator is not None:
+                    iterator.close()
 
     def _in_charset(self, pc, pos, in_op):
         code = self.code
@@ -377,10 +384,14 @@ class Pattern:
     def _match_at(self, string, pos, endpos, anchored_end=False):
         engine = self._engine(string, endpos)
         marks = [-1] * (2 * self.groups)
-        for stop, found in engine.run(0, pos, marks):
-            if anchored_end and stop != engine.end:
-                continue
-            return Match(self, string, [pos, stop, *found], pos, engine.end)
+        states = engine.run(0, pos, marks)
+        try:
+            for stop, found in states:
+                if anchored_end and stop != engine.end:
+                    continue
+                return Match(self, string, [pos, stop, *found], pos, engine.end)
+        finally:
+            states.close()
         return None
 
     def match(self, string, pos=0, endpos=None):

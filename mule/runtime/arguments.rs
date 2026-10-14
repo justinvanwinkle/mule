@@ -89,6 +89,13 @@ unsafe fn call_buffers(
                 receiver: bound,
                 method,
             } => {
+                if !receiver.is_null() {
+                    // Nested bindings retain both receiver prefixes in order.
+                    let mut prefixed = Vec::with_capacity(values.len() + 1);
+                    prefixed.push(receiver);
+                    prefixed.extend_from_slice(values);
+                    return call_buffers(*method, *bound, &prefixed, names, keyword_values);
+                }
                 return call_buffers(*method, *bound, values, names, keyword_values);
             }
             // An unbound global read without a check (safety zero).
@@ -104,7 +111,7 @@ unsafe fn call_buffers(
                     return std::ptr::null_mut();
                 }
                 let result =
-                    call_buffers(method, std::ptr::null_mut(), values, names, keyword_values);
+                    call_buffers(method, receiver, values, names, keyword_values);
                 object::release(method);
                 return result;
             }
@@ -261,13 +268,6 @@ pub unsafe extern "C" fn mule_allocate_instance(class: Value) -> Value {
         if layout.native.is_some() {
             return crate::native_storage::mule_native_new(class);
         }
-        if !crate::classes::overriding_new(class).is_null() {
-            object::error(
-                "TypeError",
-                "keyword arguments to a class defining __new__ are not supported yet",
-            );
-            return std::ptr::null_mut();
-        }
         let mut fields = Vec::new();
         if fields.try_reserve_exact(layout.fields.len()).is_err() {
             object::error("MemoryError", "instance slot allocation failed");
@@ -422,6 +422,39 @@ pub unsafe extern "C" fn mule_binding_keyword_value(view: Value, offset: Value) 
 /// expansion (`f(*args, **kwargs)`) assembles them.
 pub(crate) unsafe extern "C" fn call_with(_: Value, args: Value) -> Value {
     unsafe {
+        with_call_buffers(args, |class, positional, names, values| {
+            mule_call_keywords(class, std::ptr::null_mut(), positional.len() as isize, positional.as_ptr(), values.len() as isize, names.as_ptr(), values.as_ptr())
+        })
+    }
+}
+
+/// Invoke the compiled default constructor without redispatching a metaclass.
+pub(crate) unsafe extern "C" fn default_construct(_: Value, args: Value) -> Value {
+    unsafe {
+        with_call_buffers(args, |class, positional, names, values| {
+            let mut view = Object {
+                references: usize::MAX,
+                data: Data::KeywordArgs {
+                    receiver: std::ptr::null_mut(),
+                    values: positional.as_ptr(), count: positional.len(),
+                    names: names.as_ptr(), keyword_values: values.as_ptr(),
+                    keyword_count: values.len(), defaults: std::ptr::null_mut(),
+                    closure: std::ptr::null_mut(),
+                },
+            };
+            CONSTRUCTOR.with(|current| match current.get() {
+                Some(entry) => entry(class, &mut view),
+                None => {
+                    object::error("SystemError", "compiled constructor is unavailable");
+                    std::ptr::null_mut()
+                }
+            })
+        })
+    }
+}
+
+unsafe fn with_call_buffers(args: Value, invoke: impl FnOnce(Value, &[Value], &[*const c_char], &[Value]) -> Value) -> Value {
+    unsafe {
         if object::has_error() {
             return std::ptr::null_mut();
         }
@@ -462,14 +495,6 @@ pub(crate) unsafe extern "C" fn call_with(_: Value, args: Value) -> Value {
             owned_names.push(text);
         }
         let pointers: Vec<*const c_char> = owned_names.iter().map(|name| name.as_ptr()).collect();
-        mule_call_keywords(
-            callable,
-            std::ptr::null_mut(),
-            positional.len() as isize,
-            positional.as_ptr(),
-            values.len() as isize,
-            pointers.as_ptr(),
-            values.as_ptr(),
-        )
+        invoke(callable, positional, &pointers, values)
     }
 }

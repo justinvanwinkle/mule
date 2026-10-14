@@ -20,6 +20,7 @@ from .annotation_types import AnnotationLedger
 from .debug import check_ir1_consistency
 from .dfo import find_dfo, find_initial_dfo
 from .envanal import environment_analyze
+from .import_dependencies import discover as import_dependencies
 from .ir1tran import (
     Converter,
     _AnnotationShadows,
@@ -27,7 +28,7 @@ from .ir1tran import (
     _ImportBindings,
 )
 from .ir1tran_lambda import convert_module, lambda_blocks
-from .ir1util import join_blocks_if_possible, substitute_lvar, unlink_node
+from .ir1util import join_blocks_if_possible, substitute_lvar_uses, unlink_node
 from .node import Cast, Component, Lambda, NodeVisitor, linked
 
 
@@ -136,12 +137,11 @@ class _RemoveIgnoredCast(NodeVisitor):
 
 
 def _remove_cast(node: Cast) -> None:
-    """Splice an assertion out: its consumer reads the asserted value."""
+    """Retarget input producers to the merged result, as SBCL delete-filter."""
     value, result = linked(node.value, node, "asserted value"), node.lvar
     node.value = None
     value.dest = None
-    if result is not None and result.dest is not None:
-        substitute_lvar(value, result)
+    substitute_lvar_uses(result, value)
     unlink_node(node)
 
 
@@ -190,6 +190,8 @@ def compile_toplevel(
 ) -> Compilation:
     with phase("parse %s", filename, level=logging.DEBUG):
         tree = parse(source, filename).accept(_ParsedModule(filename))
+    if imports is not None:
+        imports.include_patterns(import_dependencies(tree))
     with phase("IR1 conversion %s", filename, level=logging.DEBUG):
         initial = Component("initial")
         converter = Converter(

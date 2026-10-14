@@ -548,10 +548,11 @@ A bare declaration leaves the variable unbound until assigned. Repeated identica
 declarations are allowed; conflicting declarations are errors.
 
 Integer contracts constrain values to their signed or unsigned range and exclude
-booleans. They are not wrapping conversions: assigning a known out-of-range
-result is a compilation error. Known nonnumeric values, invalid return values,
-and proven call arguments contradicting a contract also cause source-positioned
-compilation errors. Annotations propagate trusted facts into the existing
+booleans. They are not wrapping conversions. Proven contradictions produce a
+source-positioned warning and remove the affected optional annotation and all
+its assertions; every original value-flow branch remains intact. Fixed native
+field contracts define physical storage and still reject contradictions.
+Uncontradicted annotations propagate trusted facts into the existing
 analysis and native operation selection. Eligible signed `int64` functions and
 native class methods have raw `i64` internal entries and locals. Native fields
 retain all 64 bits without GMP storage. Generic interfaces box full-width values
@@ -743,7 +744,8 @@ Unannotated arithmetic remains arbitrary precision unless its range is proven
 to fit. A fixed-width result contract permits raw arithmetic: positive safety
 checks overflow, while safety zero treats overflow as a violated trusted
 contract. Bitwise operations on raw signed `int64` operands preserve that range.
-Known annotation contradictions remain compilation errors at all safety levels.
+Known contradictions in optional annotations are warned and ignored at all
+safety levels; fixed native field storage contracts remain compilation errors.
 
 Class globals remain mutable. A scalar caller predicts a compiled layout,
 validates its actual module binding before entering the raw region, and falls
@@ -818,11 +820,13 @@ use Mule's native callable ABI. The runtime has a recursion depth guard. Module
 startup does not yet implement Python's command-line argument or import/module
 metadata protocols. Error cleanup preserves the first pending runtime error.
 
-Heap ownership currently uses reference counting without cycle collection or
-user finalizers. Function objects borrow the module environment, which remains
+Heap ownership uses reference counting supplemented by explicit manual
+`gc.collect()` cycle passes. User finalizers and automatic collection scheduling
+remain unavailable. Function objects borrow the module environment, which remains
 alive throughout execution. Instance fields and saved bound methods participate
-in reference counting. Self references and other cycles are not collected unless
-the program breaks them. Dynamic type construction is limited to empty bases
+in reference counting. Cycles through opaque suspended coroutine stacks remain
+conservatively rooted. See `compiled-modules.md` for the collection boundary.
+Dynamic type construction is limited to empty bases
 and static special methods; general dynamic inheritance and descriptors are not
 available.
 Unicode representation formatting and float formatting have basic implementations,

@@ -1,0 +1,108 @@
+//! Nonmoving manual cycle reclamation over explicit owned heap references.
+
+use crate::object::{self, Data, Value};
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
+use std::ptr::null_mut;
+
+thread_local! {
+    static TRACKED: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    static DEAD: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    static COLLECTING: Cell<bool> = const { Cell::new(false) };
+}
+
+pub fn track(value: Value) { TRACKED.with_borrow_mut(|values| { values.insert(value as usize); }); }
+pub fn untrack(value: Value) { TRACKED.with_borrow_mut(|values| { values.remove(&(value as usize)); }); }
+pub fn unreachable(value: Value) -> bool { DEAD.with_borrow(|values| values.contains(&(value as usize))) }
+
+fn snapshot() -> Vec<Value> { TRACKED.with_borrow(|values| values.iter().map(|value| *value as Value).collect()) }
+
+unsafe fn operands<const N: usize>(args: Value) -> Option<[Value; N]> {
+    unsafe {
+        if object::has_error() { return None; }
+        if object::argument_count(args)? != N || crate::arguments::keyword_count(args) != 0 {
+            object::error("TypeError", "invalid collection primitive argument count"); return None;
+        }
+        let mut values = [null_mut(); N];
+        for (index, value) in values.iter_mut().enumerate() { *value = object::argument(args, index)?; }
+        Some(values)
+    }
+}
+
+unsafe extern "C" fn collect(_: Value, args: Value) -> Value {
+    unsafe {
+        if operands::<0>(args).is_none() { return null_mut(); }
+        if COLLECTING.with(|state| state.replace(true)) { return object::small(0); }
+        let values = snapshot();
+        let indices: HashMap<usize, usize> = values.iter().enumerate().map(|(index, value)| (*value as usize, index)).collect();
+        let mut counts: Vec<usize> = values.iter().map(|value| (**value).references).collect();
+        let edges: Vec<Vec<usize>> = values.iter().map(|value| (**value).data.owned_values().iter().filter_map(|child| indices.get(&(*child as usize)).copied()).collect()).collect();
+        for children in &edges {
+            for child in children {
+                // Each enumerated edge owns one count, including repeated aliases.
+                assert!(counts[*child] > 0, "owned heap edges exceed reference count");
+                counts[*child] -= 1;
+            }
+        }
+        let mut live = vec![false; values.len()];
+        let mut pending: Vec<usize> = counts.iter().enumerate().filter_map(|(index, count)| (*count > 0).then_some(index)).collect();
+        while let Some(index) = pending.pop() {
+            if live[index] { continue; }
+            live[index] = true;
+            pending.extend(&edges[index]);
+        }
+        let dead: Vec<Value> = values.iter().enumerate().filter_map(|(index, value)| (!live[index]).then_some(*value)).collect();
+        DEAD.with_borrow_mut(|set| set.extend(dead.iter().map(|value| *value as usize)));
+        for value in &dead { object::retain(*value); }
+        // Clear weak targets before releasing any cycle edge. Callbacks owned
+        // by unreachable reference objects must not run during their collection.
+        for value in &dead { crate::weakref::clear(*value); }
+        let mut storage = Vec::with_capacity(dead.len());
+        for value in &dead {
+            untrack(*value);
+            storage.push((*value, std::mem::replace(&mut (**value).data, Data::None)));
+        }
+        for (value, data) in storage { object::release_data(value, data); }
+        for value in &dead { object::release(*value); }
+        DEAD.with_borrow_mut(HashSet::clear);
+        COLLECTING.with(|state| state.set(false));
+        object::small(dead.len() as i64)
+    }
+}
+
+unsafe extern "C" fn objects(_: Value, args: Value) -> Value {
+    unsafe {
+        if operands::<0>(args).is_none() { return null_mut(); }
+        let values = snapshot();
+        object::mule_sequence_list(values.len() as isize, values.as_ptr())
+    }
+}
+
+unsafe extern "C" fn referents(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else { return null_mut(); };
+        let values = if value.is_null() || object::is_fixnum(value) { Vec::new() } else { (*value).data.owned_values() };
+        let values: Vec<Value> = values.into_iter().filter(|value| !value.is_null()).collect();
+        object::mule_sequence_list(values.len() as isize, values.as_ptr())
+    }
+}
+
+unsafe extern "C" fn tracked(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else { return null_mut(); };
+        object::bool_value(TRACKED.with_borrow(|set| set.contains(&(value as usize))))
+    }
+}
+
+pub unsafe fn populate(globals: Value) -> bool {
+    unsafe {
+        let exports: [(&str, object::Native); 4] = [("gc_collect", collect), ("gc_objects", objects), ("gc_referents", referents), ("gc_tracked", tracked)];
+        for (name, entry) in exports {
+            let function = object::function(null_mut(), entry, name);
+            let bound = object::bind(globals, name, function);
+            object::release(function);
+            if !bound { return false; }
+        }
+        true
+    }
+}

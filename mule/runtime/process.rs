@@ -556,11 +556,14 @@ unsafe extern "C" fn isatty_fd(_: Value, args: Value) -> Value {
         let Some([fd]) = operands(args) else {
             return null_mut();
         };
-        if !object::is_fixnum(fd) {
-            object::error("TypeError", "a file descriptor must be an integer");
+        let Some(fd) = crate::numeric::integer_export(fd) else {
             return null_mut();
-        }
-        object::bool_value(isatty(object::fixnum(fd) as i32) == 1)
+        };
+        let Some(fd) = fd.to_i64().and_then(|fd| i32::try_from(fd).ok()) else {
+            object::error("OverflowError", "Python int too large to convert to C int");
+            return null_mut();
+        };
+        object::bool_value(isatty(fd) == 1)
     }
 }
 
@@ -775,6 +778,34 @@ unsafe extern "C" fn posix_rename(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn posix_chmod_at(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([path, mode, directory, follow]) = operands::<4>(args) else { return null_mut() };
+        let (Some(path), Some(mode), Some(directory), Some(follow)) =
+            (posix_path(path), posix_int(mode), posix_int(directory), object::truth(follow))
+            else { return null_mut() };
+        let path = match std::ffi::CString::new(path) {
+            Ok(path) => path,
+            Err(_) => return fail("ValueError", "embedded null byte"),
+        };
+        if fchmodat(directory as i32, path.as_ptr(), mode as u32, if follow { 0 } else { 0x100 }) < 0 {
+            return posix_error(&std::io::Error::last_os_error());
+        }
+        object::none_value()
+    }
+}
+
+unsafe extern "C" fn posix_fchmod(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([fd, mode]) = operands::<2>(args) else { return null_mut() };
+        let (Some(fd), Some(mode)) = (posix_int(fd), posix_int(mode)) else { return null_mut() };
+        if fchmod(fd as i32, mode as u32) < 0 {
+            return posix_error(&std::io::Error::last_os_error());
+        }
+        object::none_value()
+    }
+}
+
 unsafe extern "C" fn posix_link(_: Value, args: Value) -> Value {
     unsafe {
         let Some([source, target]) = operands::<2>(args) else { return null_mut() };
@@ -881,6 +912,21 @@ unsafe extern "C" fn posix_fsync(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn posix_ftruncate(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([fd, length]) = operands::<2>(args) else { return null_mut(); };
+        let (Some(fd), Some(length)) = (posix_int(fd), posix_int(length)) else {
+            return fail("OverflowError", "file truncation arguments exceed native integer range");
+        };
+        loop {
+            if ftruncate(fd as i32, length) == 0 { return object::none_value(); }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(4) { continue; }
+            return posix_error(&error);
+        }
+    }
+}
+
 unsafe extern "C" fn posix_dup(_: Value, args: Value) -> Value {
     unsafe {
         let Some([fd]) = operands::<1>(args) else { return null_mut() };
@@ -904,8 +950,25 @@ unsafe extern "C" fn posix_pipe(_: Value, args: Value) -> Value {
     unsafe {
         if operands::<0>(args).is_none() { return null_mut(); }
         let mut fds = [0i32; 2];
-        if unsafe { pipe(fds.as_mut_ptr()) } < 0 { return posix_error(&std::io::Error::last_os_error()); }
+        if unsafe { pipe2(fds.as_mut_ptr(), 0x80000) } < 0 { return posix_error(&std::io::Error::last_os_error()); }
         posix_tuple(&[object::small(i64::from(fds[0])), object::small(i64::from(fds[1]))])
+    }
+}
+
+unsafe extern "C" {
+    fn ioctl(fd: i32, request: u64, ...) -> i32;
+}
+
+unsafe extern "C" fn posix_terminal_size(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([fd]) = operands::<1>(args) else { return null_mut(); };
+        let Some(fd) = posix_int(fd) else { return fail("TypeError", "fd must be an integer"); };
+        let Ok(fd) = i32::try_from(fd) else { return fail("OverflowError", "Python int too large to convert to C int"); };
+        let mut dimensions = [0u16; 4];
+        if ioctl(fd, 0x5413, dimensions.as_mut_ptr()) < 0 {
+            return posix_error(&std::io::Error::last_os_error());
+        }
+        posix_tuple(&[object::small(i64::from(dimensions[1])), object::small(i64::from(dimensions[0]))])
     }
 }
 
@@ -1071,9 +1134,13 @@ unsafe extern "C" {
     fn close(fd: i32) -> i32;
     fn lseek(fd: i32, offset: i64, whence: i32) -> i64;
     fn fsync(fd: i32) -> i32;
+    fn ftruncate(fd: i32, length: i64) -> i32;
+    fn fchmod(fd: i32, mode: u32) -> i32;
+    fn fchmodat(directory: i32, path: *const c_char, mode: u32, flags: i32) -> i32;
     fn dup(fd: i32) -> i32;
     fn dup2(fd: i32, fd2: i32) -> i32;
     fn pipe(fds: *mut i32) -> i32;
+    fn pipe2(fds: *mut i32, flags: i32) -> i32;
     fn getppid() -> i32;
     fn getuid() -> u32;
     fn geteuid() -> u32;
@@ -1094,9 +1161,13 @@ pub unsafe extern "C" fn mule_posix_module_init(globals: Value) -> Value {
         }
         use std::os::unix::ffi::OsStrExt;
         let _ = globals;
-        let exports: [(&str, Native); 34] = [
+        let exports: [(&str, Native); 38] = [
+            ("ftruncate", posix_ftruncate),
+            ("terminal_size", posix_terminal_size),
             ("cwd", posix_cwd),
             ("chdir", posix_chdir),
+            ("chmod_at", posix_chmod_at),
+            ("fchmod", posix_fchmod),
             ("listdir", posix_listdir),
             ("stat", posix_stat),
             ("fstat", posix_fstat),
@@ -1178,7 +1249,7 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
         if !bound {
             return null_mut();
         }
-        let exports: [(&str, Native); 13] = [
+        let exports: [(&str, Native); 14] = [
             ("read_pointer", read_pointer),
             ("read_c_string", read_c_string),
             ("byte_length", byte_length),
@@ -1186,6 +1257,7 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
             ("text_from_codepoints", text_from_codepoints),
             ("bytes_from_values", bytes_from_values),
             ("call_with", crate::arguments::call_with),
+            ("default_construct", crate::arguments::default_construct),
             ("write_fd", write_fd),
             ("flush_fd", flush_fd),
             ("isatty", isatty_fd),
@@ -1205,6 +1277,14 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
             || !crate::classes::populate(globals)
             || !crate::hashing::populate(globals)
             || !crate::weakref::populate(globals)
+            || !crate::imports::populate(globals)
+            || !crate::signals::populate(globals)
+            || !crate::spawn::populate(globals)
+            || !crate::multiplex::populate(globals)
+            || !crate::networking::populate(globals)
+            || !crate::gc::populate(globals)
+            || !crate::buffers::populate(globals)
+            || !crate::faults::populate(globals)
             || !crate::coroutine::populate(globals)
         {
             return null_mut();

@@ -99,11 +99,34 @@ def test_print_returns_none_with_custom_ending(tmp_path):
 
 
 @pytest.mark.parametrize("keyword", ["sep=':'", "file=None", "flush=True"])
-def test_print_other_keywords_remain_unsupported(tmp_path, keyword):
-    result = run_native(
+def test_print_standard_keywords_match_python(tmp_path, keyword):
+    assert_print_matches_python(
         tmp_path,
-        f"try:\n print('unexpected output', {keyword})\n"
-        "except TypeError:\n print('caught')\n",
+        f"print('first', 'second', {keyword})\n",
     )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "caught\n"
+
+
+def test_print_custom_stream_and_rebound_stdout_match_python(tmp_path):
+    assert_print_matches_python(
+        tmp_path,
+        """
+import sys
+class Stream:
+    def __init__(self):
+        self.events = []
+    def write(self, text):
+        self.events.append(('write', text))
+    def flush(self):
+        self.events.append(('flush',))
+stream = Stream()
+print('first', 42, sep='|', end='!', file=stream, flush=True)
+print(stream.events)
+original = sys.stdout
+sys.stdout = stream
+print('rebound', sep=None, end=None)
+sys.stdout = None
+print('ignored', sep=42, end=42)
+sys.stdout = original
+print(stream.events)
+""",
+    )

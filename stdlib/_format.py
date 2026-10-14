@@ -7,6 +7,11 @@ compiler. Method selection and Python fallback rules execute as compiled Python.
 # Compiler-provided physical primitives are not host Python globals.
 # ruff: noqa: F821
 
+from _mule_native import class_lookup_default as _class_lookup_default
+from _mule_native import type_of as _type_of
+
+_MAPPING_MISSING = object()
+
 
 def string(value):
     method = _str_method(value)
@@ -52,10 +57,11 @@ def decimal_integer(value):
 
 
 def percent_decimal(pattern, values):
-    mapping = values if _type_name(values) == "dict" else None
-    if mapping is None and not _storage_compatible(values, ()):
+    original = values
+    mapping = None
+    if not _storage_compatible(values, ()):
         values = (values,)
-    count = 0 if mapping is not None else _storage_length(values)
+    count = _storage_length(values)
     consumed = 0
     index = 0
     size = _text_length(pattern)
@@ -132,7 +138,9 @@ def percent_decimal(pattern, values):
                     precision = -1
             else:
                 while index < size and "0" <= _text_character(pattern, index) <= "9":
-                    precision = precision * 10 + "0123456789".index(_text_character(pattern, index))
+                    precision = precision * 10 + "0123456789".index(
+                        _text_character(pattern, index)
+                    )
                     index += 1
         if index == size:
             raise ValueError("incomplete format")
@@ -141,12 +149,12 @@ def percent_decimal(pattern, values):
         if conversion not in "diouxXeEfFgGcrsa":
             raise ValueError("unsupported percent format conversion")
         if key is not None:
-            if mapping is None:
+            if not _mapping_operand(original):
                 raise TypeError("format requires a mapping")
+            mapping = original
             value = mapping[key]
+            consumed = count
         else:
-            if mapping is not None:
-                raise TypeError("not enough arguments for format string")
             if consumed == count:
                 raise TypeError("not enough arguments for format string")
             value = _storage_read(values, consumed)
@@ -251,9 +259,18 @@ def percent_decimal(pattern, values):
             else:
                 text = padding + text
         result += text
-    if mapping is None and consumed != count:
+    if consumed != count and not _mapping_operand(original):
         raise TypeError("not all arguments converted during string formatting")
     return result
+
+
+def _mapping_operand(value):
+    return (
+        not _text_storage(value)
+        and not _storage_compatible(value, ())
+        and _class_lookup_default(_type_of(value), "__getitem__", _MAPPING_MISSING)
+        is not _MAPPING_MISSING
+    )
 
 
 def modulo(left, right):

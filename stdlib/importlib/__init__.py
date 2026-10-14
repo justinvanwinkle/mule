@@ -21,6 +21,9 @@ _bootstrap._bootstrap_external = _bootstrap_external
 _pack_uint32 = _bootstrap_external._pack_uint32
 _unpack_uint32 = _bootstrap_external._unpack_uint32
 
+from _compiled_importer import CompiledFinder as _CompiledFinder
+sys.meta_path.insert(0, _CompiledFinder)
+
 # Fully bootstrapped at this point, import whatever you like, circular
 # dependencies and startup overhead minimisation permitting :)
 

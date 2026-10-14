@@ -16,6 +16,7 @@ def compare(tmp_path, source):
     native = execute(tmp_path, {}, source)
     assert native.returncode == 0, native.stderr
     assert native.stdout == oracle.stdout
+    return native
 
 
 def test_construction_selection_snapshots_aliases_and_validation(tmp_path):

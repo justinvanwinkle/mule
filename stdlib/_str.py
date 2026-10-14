@@ -54,7 +54,8 @@ def _index(value):
 
 def _require_text(value, message):
     if not _text_storage(value):
-        raise TypeError(f"{message}, not {_type_name(value)}")
+        kind = "None" if value is None else _type_name(value)
+        raise TypeError(f"{message}, not {kind}")
 
 
 def _bounds(length, start, end):
@@ -388,6 +389,7 @@ def _append_ascii(values, text):
 
 
 def encode(text, encoding, errors):
+    _require_text(encoding, "encode() argument 'encoding' must be str")
     codec = _codec_name(encoding)
     _require_text(errors, "encode() argument 'errors' must be str")
     if codec == "utf-8":
@@ -1064,29 +1066,42 @@ class TextStorage:
     def maketrans(*args):
         if len(args) == 1:
             source = args[0]
+            # Python's one-argument form requires an exact dict.
+            if type(source) is not dict:
+                raise TypeError("if you give only one argument to maketrans it must be a dict")
             table = {}
             for key in source:
                 value = source[key]
                 if _text_storage(key):
-                    if len(key) != 1:
-                        raise ValueError("string keys in translate table must be of length 1")
+                    if _text_length(key) != 1:
+                        raise ValueError("string keys in translatetable must be of length 1")
                     key = ord(key)
-                table[key] = ord(value) if _text_storage(value) else value
+                elif not isinstance(key, int):
+                    raise TypeError("keys in translate table mustbe strings or integers")
+                table[key] = value
             return table
         if len(args) == 2 or len(args) == 3:
             chars, values = args[0], args[1]
-            if len(chars) != len(values):
+            for index in range(len(args) - 1, 0, -1):
+                _require_text(args[index], f"maketrans() argument {index + 1} must be str")
+            if not _text_storage(chars):
+                raise TypeError("first maketrans argument must be a string if there is a second argument")
+            if _text_length(chars) != _text_length(values):
                 raise ValueError("the first two maketrans arguments must have equal length")
             table = {}
             index = 0
-            while index < len(chars):
-                table[ord(chars[index])] = ord(values[index])
+            while index < _text_length(chars):
+                table[_text_codepoint(chars, index)] = _text_codepoint(values, index)
                 index += 1
             if len(args) == 3:
-                for char in args[2]:
-                    table[ord(char)] = None
+                index = 0
+                while index < _text_length(args[2]):
+                    table[_text_codepoint(args[2], index)] = None
+                    index += 1
             return table
-        raise TypeError("maketrans expected 1 to 3 arguments")
+        if len(args) == 0:
+            raise TypeError("maketrans expected at least 1 argument, got 0")
+        raise TypeError(f"maketrans expected at most 3 arguments, got {len(args)}")
 
     def encode(self, encoding="utf-8", errors="strict"):
         return encode(self, encoding, errors)

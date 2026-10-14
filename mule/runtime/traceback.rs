@@ -29,6 +29,7 @@ pub struct CodeInfo {
     pub qualname: *const c_char,
     pub filename: *const c_char,
     pub firstlineno: i32,
+    pub fault_label: *const c_char,
 }
 
 impl CodeInfo {
@@ -118,15 +119,46 @@ pub fn clear_code_cache() {
 pub extern "C" fn mule_frame_push(code: *const CodeInfo, globals: Value) {
     unsafe { object::retain(globals) };
     FRAMES.with_borrow_mut(|frames| frames.push((code, globals)));
+    crate::faults::push(code);
 }
 
 /// Leave the innermost compiled function activation.
 #[unsafe(no_mangle)]
 pub extern "C" fn mule_frame_pop() {
     let popped = FRAMES.with_borrow_mut(|frames| frames.pop());
+    crate::faults::pop();
     if let Some((_, globals)) = popped {
         unsafe { object::release(globals) };
     }
+}
+
+/// Move suspended activations into the currently running stack, preserving the
+/// ownership of their retained globals. The returned boundary belongs to the
+/// resumer; yielded activations move back out at that boundary.
+pub fn enter_coroutine_frames(frames: &mut Vec<(*const CodeInfo, Value)>) -> usize {
+    let boundary = FRAMES.with_borrow_mut(|active| {
+        let boundary = active.len();
+        active.append(frames);
+        boundary
+    });
+    refresh_fault_frames();
+    boundary
+}
+
+pub fn leave_coroutine_frames(boundary: usize) -> Vec<(*const CodeInfo, Value)> {
+    let suspended = FRAMES.with_borrow_mut(|active| active.split_off(boundary));
+    refresh_fault_frames();
+    suspended
+}
+
+pub fn refresh_fault_frames() {
+    if crate::faults::enabled() {
+        FRAMES.with_borrow(|frames| crate::faults::replace(frames.iter().map(|(code, _)| *code)));
+    }
+}
+
+pub fn fault_codes() -> Vec<*const CodeInfo> {
+    FRAMES.with_borrow(|frames| frames.iter().map(|(code, _)| *code).collect())
 }
 
 /// A frame value for the activation `depth` steps out from the innermost

@@ -108,6 +108,8 @@ pub struct Coroutine {
     transfer: Value,
     /// The coroutine's own native frames, outside the resumer's depth.
     depth: usize,
+    frames: Vec<(*const crate::traceback::CodeInfo, Value)>,
+    handlers: Vec<Value>,
     parent: *mut Coroutine,
 }
 
@@ -151,6 +153,8 @@ impl Coroutine {
                 arguments: object::retain(arguments),
                 transfer: null_mut(),
                 depth: 0,
+                frames: Vec::new(),
+                handlers: Vec::new(),
                 parent: null_mut(),
             });
             // The initial frame mule_context_switch restores: control words,
@@ -196,8 +200,12 @@ impl Coroutine {
             self.state = RUNNING;
             self.parent = CURRENT.with(|current| current.replace(self));
             let base = object::frame_depth();
+            let frame_boundary = crate::traceback::enter_coroutine_frames(&mut self.frames);
+            let handler_boundary = crate::sequences::enter_coroutine_handlers(&mut self.handlers);
             object::set_frame_depth(base + self.depth);
             mule_context_switch(&mut self.resumer, self.context);
+            self.handlers = crate::sequences::leave_coroutine_handlers(handler_boundary);
+            self.frames = crate::traceback::leave_coroutine_frames(frame_boundary);
             self.depth = object::frame_depth() - base;
             object::set_frame_depth(base);
             CURRENT.with(|current| current.set(self.parent));
@@ -238,6 +246,12 @@ impl Drop for Coroutine {
             object::release(self.transfer);
             object::release(self.function);
             object::release(self.arguments);
+            for (_, globals) in self.frames.drain(..) {
+                object::release(globals);
+            }
+            for exception in self.handlers.drain(..) {
+                object::release(exception);
+            }
             munmap(self.stack.cast(), STACK_SIZE);
         }
     }
@@ -341,6 +355,11 @@ unsafe extern "C" fn coroutine_throw(_: Value, args: Value) -> Value {
         let Some(coroutine) = coroutine(handle) else {
             return null_mut();
         };
+        if coroutine.state == RUNNING {
+            object::error("ValueError", "generator already executing");
+            return null_mut();
+        }
+        crate::traceback::resume(exception);
         crate::sequences::restore_pending(object::retain(exception));
         coroutine.resume(null_mut())
     }

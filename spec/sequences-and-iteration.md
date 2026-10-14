@@ -1,5 +1,57 @@
 # Sequences, iteration, and exception edges
 
+Byte padding methods share compiled storage traversal and fill validation;
+bytes results are immutable and bytearray results are fresh mutable values.
+SBCL src/code/seq.lisp implements sequence filling and concatenation in Lisp
+over storage primitives. Mule retains that boundary, adapting Python's padding
+direction, center rounding and one-byte fill validation in compiled Python.
+
+List and tuple representations execute in compiled Python and dispatch each
+element through its representation protocol, including builtin subclasses.
+SBCL's src/code/print.lisp, output-object and check-for-circularity, likewise
+runs recursive object output in compiled Lisp. Python requires recursion markers
+rather than Lisp's print-circle labels: the compiled sequence formatter tracks
+active container identities and removes them on both success and error.
+Physical reads bypass subclass item and iteration overrides, as Python's
+builtin container representations do.
+
+Builtin list and tuple iteration reads physical sequence storage independently
+of subclass `__getitem__` overrides. Custom objects that provide only indexing
+still use the language-level indexing iterator. Storage iterators observe list
+growth before exhaustion and remain exhausted afterward. SBCL
+`src/code/seq.lisp`, `%map-to-list-arity-1` and `%map-for-effect`, likewise uses
+sequence-specific traversal; Python adds explicit iterator objects with
+permanent exhaustion. The iterator algorithm remains compiled Mule Python.
+
+Dictionary key and item views provide shared set operations and comparisons,
+including reflected operators with iterable operands; values views retain
+sequence behavior. Operations return ordinary sets and membership continues to
+observe the live dictionary. Item membership accepts two-element tuples;
+intersection can reject nonmatching unhashable entries without first hashing
+the entire view. SBCL `src/code/list.lisp`, `set-difference` and `intersection`,
+similarly implements membership-based selection in compiled language code.
+Python adds live views and reflected operators. Set slots return NotImplemented
+for unsupported families so the other operand's view protocol can answer.
+
+Byte joining validates contiguous buffer exports, copies their bytes with
+compiled traversal and inserts the separator between entries. Hexadecimal
+conversion is shared by bytes, bytearray and memoryview, including ASCII
+separators and grouping from either end. SBCL `src/code/seq.lisp`'s sequence
+traversals and `src/code/print.lisp`'s digit output provide the corresponding
+language/storage boundary; Python requires buffer export checks and its hex
+grouping rules. Rust continues to supply byte storage and lifetime services.
+
+Generic membership uses compiled `contains`/`not_contains` protocols. SBCL
+`src/code/seq.lisp`, `%find-position` and `find`, iterates sequences through
+compiled tests, specializing known vectors. Python additionally tries the class's
+`__contains__` first, otherwise obtains an iterator (including indexed sequence
+fallback) and tests identity before equality. Only iterator exhaustion terminates
+the search; equality/truth exceptions propagate. Explicit `__contains__ = None`
+disables membership. Optional class-table lookup takes an explicit missing-value
+sentinel, distinguishing an absent method from a stored None. Python 3.14 treats
+`AttributeError` during special-method descriptor binding as absence; other
+descriptor errors and exceptions raised by invoking the bound method propagate.
+
 Status: implemented the initial sequence, iteration, and exception slice.
 
 ## SBCL sources and adaptations
@@ -237,6 +289,22 @@ rich-comparison, `NotImplemented` handling and lexicographic list/tuple ordering
 remain limitations of the shared comparison implementation, not implemented by
 these reductions. Call-site argument expansion remains unsupported.
 
+Throwing an existing exception into a suspended generator resumes its saved
+traceback before installing the pending error. The suspended yield therefore
+prepends its frame without discarding the original failure chain. SBCL
+`src/compiler/ir2tran.lisp`'s `ir2-convert-throw` separates transfer state from
+the destination; Python additionally requires the exception's owned traceback
+to accompany that transfer. Reentrant generator throws reject the running state
+before installing the requested exception.
+
+List and tuple comparison methods now return `NotImplemented` for incompatible
+storage families, allowing the shared comparison boundary to invoke the other
+operand's reflected method. Compatible sequences retain compiled lexicographic
+element comparison. SBCL `src/code/pred.lisp`'s `equalp` similarly separates
+compatible sequence contents from other representations, but Python's reflected
+methods require deferral instead of Lisp's immediate false result. General
+subclass precedence in rich comparisons remains incomplete.
+
 ## Guarded range loop specialization
 
 Following `build-sequence-iterator` and `dotimes`, a direct call spelled
@@ -304,8 +372,8 @@ and booleans use the signed-step bounds and `(value - start) % step == 0`, witho
 enumerating elements or computing a machine-sized length. Other operands use
 range iteration with identity/equality matching, preserving custom equality and
 propagating comparison errors; membership never coerces operands with `__index__`.
-General iterable containment fallback for classes without `__contains__` remains
-a separate gap in the existing Rust comparison boundary.
+General iterable containment fallback for classes without `__contains__` runs
+through the compiled membership protocol described above.
 
 SBCL `src/code/seq.lisp`, `%find-position`, keeps sequence search in compiled Lisp;
 `src/compiler/seqtran.lisp`, `build-sequence-iterator`, selects representation-aware

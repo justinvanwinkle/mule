@@ -1,5 +1,16 @@
 # Function argument binding
 
+Explicit `type.__call__` uses the shared compiled constructor to invoke
+`__new__` and, for a returned instance of the requested class, `__init__`.
+Calling that base implementation bypasses a custom metaclass call hook, while
+ordinary class invocation still selects the hook. SBCL `src/pcl/ctor.lisp`,
+`constructor-function-form`, `fallback-generator` and `fast-make-instance`,
+similarly distinguishes custom construction from allocation/initialization
+through the default constructor. Python requires `type.__call__` to remain
+available to explicit and `super()` calls. The native adapter only packs
+borrowed positional/keyword buffers and invokes the existing compiled entry;
+it does not implement another constructor algorithm.
+
 Status: implemented for the subset below.
 
 ## SBCL reference and required adaptations

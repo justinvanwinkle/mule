@@ -22,15 +22,34 @@ from _mule_native import is_subclass as _is_subclass
 from _mule_native import type_of as _type_of
 
 
+_metadata_ready = False
+
+
+def _enable_metadata():
+    global _metadata_ready
+    _metadata_ready = True
+
+
 class staticmethod:
     """A function stored in a class and returned without binding."""
 
     def __init__(self, function):
         self.__func__ = function
         self.__wrapped__ = function
+        if _metadata_ready:
+            for name in ('__module__', '__name__', '__qualname__', '__doc__', '__annotations__'):
+                try:
+                    value = getattr(function, name)
+                except AttributeError:
+                    continue
+                setattr(self, name, value)
 
     def __get__(self, instance, owner=None):
         return self.__func__
+
+
+    def __call__(self, *args, **kwargs):
+        return self.__func__(*args, **kwargs)
 
 
 class classmethod:
@@ -53,6 +72,12 @@ class property:
         self.fget = fget
         self.fset = fset
         self.fdel = fdel
+        self._doc_from_getter = doc is None and fget is not None
+        if self._doc_from_getter:
+            try:
+                doc = fget.__doc__
+            except AttributeError:
+                pass
         self.__doc__ = doc
 
     def __get__(self, instance, owner=None):
@@ -73,13 +98,16 @@ class property:
         self.fdel(instance)
 
     def getter(self, fget):
-        return _class_of(self)(fget, self.fset, self.fdel, self.__doc__)
+        doc = None if self._doc_from_getter else self.__doc__
+        return _class_of(self)(fget, self.fset, self.fdel, doc)
 
     def setter(self, fset):
-        return _class_of(self)(self.fget, fset, self.fdel, self.__doc__)
+        doc = None if self._doc_from_getter else self.__doc__
+        return _class_of(self)(self.fget, fset, self.fdel, doc)
 
     def deleter(self, fdel):
-        return _class_of(self)(self.fget, self.fset, fdel, self.__doc__)
+        doc = None if self._doc_from_getter else self.__doc__
+        return _class_of(self)(self.fget, self.fset, fdel, doc)
 
 
 class super:

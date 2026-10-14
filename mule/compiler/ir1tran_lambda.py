@@ -17,6 +17,8 @@ from .ir1tran import (
     FunctionConverter,
     UnsupportedSyntax,
     _ContainsYield,
+    _Docstring,
+    _documentation,
     module_policy,
 )
 from .ir1util import (
@@ -274,10 +276,21 @@ def convert_module(converter: Converter, tree: ast.Module) -> Lambda:
     entry.entry_fun = entry
     entry.code = CodeInfo("<module>", "<module>", converter.filename, 1)
     converter.functions.append(entry)
+    statements = tree.statements
+    docstring = ast.NoneLiteral(None, span=tree.span)
+    if statements and statements[0].accept(_Docstring()):
+        docstring = _documentation(statements)
+        statements = statements[1:]
+    statements = [
+        ast.Assignment(
+            [ast.Name("__doc__", span=docstring.span)], docstring, span=docstring.span
+        ),
+        *statements,
+    ]
     function = FunctionConverter(
-        converter, entry, tree.statements, is_module=True, origin=tree
+        converter, entry, statements, is_module=True, origin=tree
     )
-    convert_lambda_body(function, tree.statements, None, tree)
+    convert_lambda_body(function, statements, None, tree)
     return entry
 
 

@@ -92,6 +92,10 @@ def stores(lambda_):
     return [node for node in nodes(lambda_) if isinstance(node, Set)]
 
 
+def stored_value(lambda_, name):
+    return next(node.value for node in stores(lambda_) if node.var.name == name)
+
+
 def constants(lambda_):
     return [
         node.leaf.value
@@ -164,7 +168,7 @@ def test_constant_representation_is_proven(literal, expected, fixnum, immortal):
     compilation = lower(f"x = {literal}\n")
     entry = function(compilation, 0)
     # A negative literal is a unary operation on a constant; test the stored value.
-    facts = operand_fact(compilation, entry, stores(entry)[0].value)
+    facts = operand_fact(compilation, entry, stored_value(entry, "x"))
     assert facts == expected
     assert facts.is_fixnum is fixnum
     assert facts.is_immortal is immortal
@@ -197,7 +201,7 @@ def test_literal_arithmetic_is_folded_to_a_constant():
     entry = function(compilation, 0)
     assert binaries(entry) == []
     assert compares(entry) == []
-    values = constants(entry)
+    values = [stored_value(entry, name).use().leaf.value for name in ("x", "y")]
     assert isinstance(values[0], ast.IntegerLiteral) and values[0].value == 7
     assert isinstance(values[1], ast.BooleanLiteral) and values[1].value is True
 
@@ -540,7 +544,7 @@ def test_constant_branch_removes_the_dead_arm():
     compilation = lower("if True:\n w = 1\nelse:\n w = 0\n")
     entry = function(compilation, 0)
     assert branches(entry) == []
-    assert [literal.value for literal in constants(entry)][:1] == [1]
+    assert stored_value(entry, "w").use().leaf.value.value == 1
 
 
 @pytest.mark.parametrize(

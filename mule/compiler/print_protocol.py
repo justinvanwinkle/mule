@@ -3,15 +3,21 @@
 from pathlib import Path
 
 from .inputs import read_source
-from .protocols import add_lambdas, compile_protocol
+from .modules import ModuleCompiler
+from .protocols import PRIMITIVES, add_lambdas, compile_protocol
 
 
 def prepare(program):
     """Compile the print protocol. Builtins remain available through the
     namespace even without a direct load, so it is always compiled."""
     path = Path(__file__).resolve().parents[2] / "stdlib/_print.py"
+    imports = ModuleCompiler(str(path), prefix="mule_print_", primitives=PRIMITIVES)
     compilation = compile_protocol(
-        read_source(path), str(path), prefix="mule_print_", namespace="$mule.print"
+        read_source(path),
+        str(path),
+        prefix="mule_print_",
+        namespace="$mule.print",
+        imports=imports,
     )
     add_lambdas(program, compilation.lambdas, compilation.facts)
     return compilation.entry

@@ -2011,6 +2011,16 @@ unsafe extern "C" fn class_lookup_or_null(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn class_lookup_default(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class, attribute, default]) = operands(args) else { return std::ptr::null_mut(); };
+        let Some(layout) = class_layout(class) else { return std::ptr::null_mut(); };
+        let Some(attribute) = text_argument(attribute) else { return std::ptr::null_mut(); };
+        let value = layout.method(&attribute);
+        object::retain(if value.is_null() { default } else { value })
+    }
+}
+
 unsafe extern "C" fn bind_attribute(_: Value, args: Value) -> Value {
     unsafe {
         let Some([value, instance, owner]) = operands(args) else {
@@ -2694,6 +2704,25 @@ unsafe extern "C" fn set_instance_field(_: Value, args: Value) -> Value {
     }
 }
 
+/// Clear one named reference slot without hooks or descriptor dispatch.
+unsafe extern "C" fn delete_instance_field(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([instance, attribute]) = operands(args) else { return std::ptr::null_mut(); };
+        let Some(attribute) = text_argument(attribute) else { return std::ptr::null_mut(); };
+        if let Some((layout, true, _)) = layout(instance) {
+            if let (Some(index), Data::Instance { fields, .. }) = (layout.field_lookup.get(&attribute), &mut (*instance).data) {
+                let old = std::mem::replace(&mut fields[*index], std::ptr::null_mut());
+                if !old.is_null() {
+                    object::release(old);
+                    return object::none_value();
+                }
+            }
+            return missing(Some(layout), true, &attribute);
+        }
+        fail("TypeError", "an instance with reference fields is required")
+    }
+}
+
 /// `object.__getattribute__(obj, name)`.
 unsafe extern "C" fn generic_get_attribute(_: Value, args: Value) -> Value {
     unsafe {
@@ -2788,6 +2817,7 @@ unsafe extern "C" fn typed_value(_: Value, args: Value) -> Value {
             | Data::Args(_, ty, _) => {
                 object::release(*ty);
                 *ty = object::retain(class);
+                crate::gc::track(value);
                 object::retain(value)
             }
             _ => {
@@ -2869,7 +2899,9 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 56] = [
+        let exports: [(&str, object::Native); 58] = [
+            ("delete_instance_field", delete_instance_field),
+            ("class_lookup_default", class_lookup_default),
             ("code_metadata", code_metadata),
             ("code_cache", code_cache),
             ("set_code_cache", set_code_cache),

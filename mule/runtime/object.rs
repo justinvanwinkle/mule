@@ -151,6 +151,7 @@ impl Namespace {
                 Some(index) => {
                     let entry = &mut self.entries[index];
                     if !entry.boxed {
+                        if entry.cell == cell { return Ok(()); }
                         return Err(format!("global '{name}' is linked by two units"));
                     }
                     let previous = Box::from_raw(entry.cell);
@@ -287,6 +288,9 @@ pub enum Data {
         callback: Value,
         owner: Value,
     },
+    /// An exported buffer's physical lifetime guard, owning its backing object.
+    BufferLease { owner: Value },
+    DescriptorLease(Option<std::fs::File>),
     /// A generator's suspended execution on its own native stack.
     Coroutine(Box<crate::coroutine::Coroutine>),
     /// What an unbound global's cell holds. Code checking for unbound names
@@ -311,6 +315,64 @@ pub enum Data {
         /// The calling frame, or NULL until the exception reaches it.
         back: Value,
     },
+}
+
+impl Data {
+    /// Physical ownership edges only: borrowed globals, class MRO links,
+    /// argument buffers and weak targets are deliberately excluded.
+    pub fn owned_values(&self) -> Vec<Value> {
+        let mut values = Vec::new();
+        self.visit_owned_values(|value| values.push(value));
+        values
+    }
+
+    pub fn visit_owned_values(&self, mut visit: impl FnMut(Value)) {
+        match self {
+            Self::Args(values, ty, attributes) | Self::List(values, ty, attributes) => {
+                visit(*ty); visit(*attributes);
+                for value in values { visit(*value); }
+            }
+            Self::BigInt(_, ty, attributes) | Self::Float(_, ty, attributes)
+            | Self::Text(_, ty, attributes) | Self::Bytes(_, ty, attributes) => { visit(*ty); visit(*attributes); }
+            Self::Namespace(namespace) => {
+                for entry in &namespace.entries { visit(unsafe { (*entry.cell).value }); }
+            }
+            Self::Class(layout) => {
+                for base in &layout.bases { visit(*base); }
+                visit(layout.metaclass);
+                for (_, value) in &layout.attributes { visit(*value); }
+            }
+            Self::Instance { ty, fields, attributes } => {
+                visit(*ty); visit(*attributes);
+                for field in fields { visit(*field); }
+            }
+            Self::NativeInstance { ty, .. } => visit(*ty),
+            Self::BoundMethod { receiver, method } => { visit(*receiver); visit(*method); }
+            Self::WeakHandle { callback, .. } => visit(*callback),
+            Self::BufferLease { owner } => visit(*owner),
+            Self::Traceback { frame, next, .. } => { visit(*frame); visit(*next); }
+            Self::Frame { globals, back, .. } => { visit(*globals); visit(*back); }
+            Self::Function { defaults, closure, attributes, annotate, annotations, positional_defaults, keyword_defaults, .. } => {
+                for value in [*defaults, *closure, *attributes, *annotate, *annotations, *positional_defaults, *keyword_defaults] { visit(value); }
+            }
+            Self::None | Self::Bool(_) | Self::DescriptorLease(_) | Self::ForeignPointerVector { .. } | Self::ForeignCString { .. }
+            | Self::ArgumentView { .. } | Self::ReceiverArgs { .. } | Self::KeywordArgs { .. }
+            | Self::Coroutine(_) | Self::Undefined => (),
+        }
+    }
+
+    pub fn cycle_candidate(&self) -> bool {
+        match self {
+            Self::BigInt(_, ty, attributes) | Self::Float(_, ty, attributes)
+            | Self::Text(_, ty, attributes) | Self::Bytes(_, ty, attributes) => !ty.is_null() || !attributes.is_null(),
+            Self::Args(..) | Self::List(..) | Self::Namespace(_) | Self::Class(_) | Self::Instance { .. }
+            | Self::NativeInstance { .. } | Self::BoundMethod { .. } | Self::WeakHandle { .. } | Self::BufferLease { .. }
+            | Self::Traceback { .. } | Self::Frame { .. } | Self::Function { .. } => true,
+            Self::None | Self::Bool(_) | Self::DescriptorLease(_) | Self::ForeignPointerVector { .. } | Self::ForeignCString { .. }
+            | Self::ArgumentView { .. } | Self::ReceiverArgs { .. } | Self::KeywordArgs { .. }
+            | Self::Coroutine(_) | Self::Undefined => false,
+        }
+    }
 }
 thread_local! {
     static ERROR: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
@@ -387,10 +449,13 @@ pub unsafe fn fixnum(value: Value) -> i64 {
     (value as isize >> 1) as i64
 }
 pub unsafe fn new_value(data: Data) -> Value {
-    Box::into_raw(Box::new(Object {
+    let tracked = data.cycle_candidate();
+    let value = Box::into_raw(Box::new(Object {
         references: 1,
         data,
-    }))
+    }));
+    if tracked { crate::gc::track(value); }
+    value
 }
 pub unsafe fn retain(value: Value) -> Value {
     unsafe {
@@ -419,95 +484,32 @@ pub unsafe fn release(value: Value) {
                 return;
             }
         }
-        if let Data::Namespace(namespace) = &mut (*value).data {
-            // Unbind before releasing: a finalizer a release runs may still
-            // read this namespace's cells.
-            for released in namespace.clear() {
-                release(released);
-            }
-        }
-        // Box owns strings/vectors/GMP values. Their contained raw value references
-        // are released before the Rust fields are dropped.
-        let object = Box::from_raw(value);
-        match &object.data {
-            Data::Args(values, ty, attributes) | Data::List(values, ty, attributes) => {
-                release(*ty);
-                release(*attributes);
-                for value in values {
-                    release(*value);
-                }
-            }
-            Data::Bytes(_, ty, attributes) => {
-                release(*ty);
-                release(*attributes);
-            }
-            Data::Namespace(_) => (),
-            Data::BigInt(_, ty, attributes) | Data::Float(_, ty, attributes) | Data::Text(_, ty, attributes) => {
-                release(*ty);
-                release(*attributes);
-            }
-            Data::Traceback { frame, next, .. } => {
-                release(*frame);
-                release(*next);
-            }
-            Data::Frame { globals, back, .. } => {
-                release(*globals);
-                release(*back);
+        crate::gc::untrack(value);
+        let owned = Box::from_raw(value);
+        release_data(value, owned.data);
+    }
+}
+
+/// Drop detached physical storage using the same ownership enumeration as GC.
+pub unsafe fn release_data(value: Value, mut data: Data) {
+    unsafe {
+        match &mut data {
+            Data::Namespace(namespace) => {
+                for child in namespace.clear() { release(child); }
+                return;
             }
             Data::Class(layout) => {
                 for base in &layout.bases {
-                    if let Data::Class(parent) = &mut (**base).data {
-                        parent.remove_subclass(value);
-                    }
-                    release(*base);
-                }
-                release(layout.metaclass);
-                for (_, method) in &layout.attributes {
-                    release(*method);
+                    if let Data::Class(parent) = &mut (**base).data { parent.remove_subclass(value); }
                 }
             }
-            Data::Instance {
-                ty,
-                fields,
-                attributes,
-            } => {
-                release(*ty);
-                release(*attributes);
-                for field in fields {
-                    release(*field);
-                }
-            }
-            Data::NativeInstance { ty, .. } => release(*ty),
-            Data::BoundMethod { receiver, method } => {
-                release(*receiver);
-                release(*method);
-            }
-            Data::WeakHandle {
-                referent, callback, ..
-            } => {
+            Data::WeakHandle { referent, .. } => {
                 crate::weakref::unregister(*referent, value);
-                release(*callback);
             }
-            Data::Function {
-                defaults,
-                closure,
-                attributes,
-                annotate,
-                annotations,
-                positional_defaults,
-                keyword_defaults,
-                ..
-            } => {
-                release(*defaults);
-                release(*closure);
-                release(*attributes);
-                release(*annotate);
-                release(*annotations);
-                release(*positional_defaults);
-                release(*keyword_defaults);
-            }
-            _ => (), // Function globals are borrowed from the executing module.
+            Data::BufferLease { owner } => crate::buffers::release(*owner),
+            _ => (),
         }
+        data.visit_owned_values(|child| release(child));
     }
 }
 /// This private wrapper is used only for frozen None/Bool/Undefined objects. These variants
@@ -1481,6 +1483,8 @@ pub unsafe fn formatted_value(
             }
             Data::BoundMethod { .. } => b"<bound native method>".to_vec(),
             Data::WeakHandle { .. } => b"<weak handle>".to_vec(),
+            Data::BufferLease { .. } => b"<buffer lifetime guard>".to_vec(),
+            Data::DescriptorLease(_) => b"<descriptor lifetime guard>".to_vec(),
             Data::Coroutine(_) => b"<coroutine>".to_vec(),
             Data::Undefined => b"<undefined>".to_vec(),
             Data::Traceback { .. } => b"<traceback object>".to_vec(),
@@ -1710,6 +1714,13 @@ pub unsafe extern "C" fn mule_function_matches(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_namespace() -> Value {
     unsafe { namespace() }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_namespace_bind(namespace: Value, name: *const c_char, value: Value) -> i32 {
+    unsafe {
+        let Some(name) = name_from_c(name) else { return -1; };
+        if bind(namespace, name, value) { 0 } else { -1 }
+    }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_namespace_bound(namespace: Value, name: *const c_char) -> i32 {
@@ -1945,6 +1956,8 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
                 Data::Function { .. } => "function",
                 Data::BoundMethod { .. } => "method",
                 Data::WeakHandle { .. } => "weak handle",
+                Data::BufferLease { .. } => "buffer lifetime guard",
+                Data::DescriptorLease(_) => "descriptor lifetime guard",
                 Data::Coroutine(_) => "coroutine",
                 Data::Undefined => "undefined",
                 Data::Traceback { .. } => "traceback",

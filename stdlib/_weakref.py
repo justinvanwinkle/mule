@@ -17,6 +17,30 @@ from _mule_native import set_instance_field as _set_instance_field
 from _mule_native import weak_handle as _weak_handle
 from _mule_native import weak_owners as _weak_owners
 from _mule_native import weak_target as _weak_target
+from _object import _builtin_types, builtin_function_or_method, code, function, method
+
+
+# Native builtin layouts do not acquire weak-reference support merely because
+# their implementation classes are written in Python. User subclasses follow
+# their own slot declarations, including inherited weak-reference slots.
+_builtin_classes = _builtin_types()
+
+
+def _referenceable(ob):
+    if isinstance(ob, (type, function, builtin_function_or_method, method, code, set, frozenset)):
+        return True
+    if isinstance(ob, (int, tuple, bytes)):
+        return False
+    for owner in type(ob).__mro__:
+        if owner in _builtin_classes:
+            continue
+        namespace = vars(owner)
+        if "__slots__" not in namespace:
+            return True
+        slots = namespace["__slots__"]
+        if slots == "__weakref__" or not isinstance(slots, str) and "__weakref__" in slots:
+            return True
+    return False
 
 
 class ref:
@@ -25,6 +49,8 @@ class ref:
     __slots__ = ("_handle", "_hash", "__callback__")
 
     def __new__(cls, ob, callback=None):
+        if not _referenceable(ob):
+            raise TypeError(f"cannot create weak reference to '{type(ob).__name__}' object")
         self = _allocate_instance(cls)
         self._handle = _weak_handle(ob, callback, self)
         self._hash = None
@@ -79,6 +105,8 @@ class ProxyType:
     __slots__ = ("_handle", "__callback__")
 
     def __new__(cls, ob, callback=None):
+        if not _referenceable(ob):
+            raise TypeError(f"cannot create weak reference to '{type(ob).__name__}' object")
         self = _allocate_instance(cls)
         _set_instance_field(self, "_handle", _weak_handle(ob, callback, self))
         _set_instance_field(self, "__callback__", callback)
@@ -107,7 +135,7 @@ class CallableProxyType(ProxyType):
 
 
 def proxy(ob, callback=None, /):
-    if _get_attribute(_class_of(ob), "__call__") is not None:
+    if callable(ob):
         return CallableProxyType(ob, callback)
     return ProxyType(ob, callback)
 

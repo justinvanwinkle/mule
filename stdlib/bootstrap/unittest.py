@@ -1,13 +1,20 @@
 """Initial compiled assertion API; discovery belongs to the native test harness.
 
 The vendored Python 3.15 unittest implementation remains in stdlib/unittest/.
-This bootstrap provides only the assertion methods supported below. General
-unittest loading, fixtures, skips, decorators and exception contexts need further
+This bootstrap provides the assertion methods and SkipTest exception below. General
+unittest loading, fixtures, skip accounting, decorators and exception contexts need further
 compiler/runtime support; they must not be treated as executed tests.
 """
 
 
+class SkipTest(Exception):
+    """Signal that a test cannot run; runners decide how to account for it."""
+
+
 class TestCase:
+    def skipTest(self, reason):
+        raise SkipTest(reason)
+
     def assertEqual(self, first, second):
         assert first == second, repr(first) + " != " + repr(second)
 

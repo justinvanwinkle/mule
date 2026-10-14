@@ -297,13 +297,27 @@ unsafe extern "C" fn float_format(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn integer_decimal(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else { return null_mut(); };
+        let text = if object::is_fixnum(value) {
+            object::fixnum(value).to_string()
+        } else {
+            let Some(value) = numeric::integer_export(value) else { return null_mut(); };
+            value.to_decimal()
+        };
+        object::new_value(Data::Text(crate::text::Text::from_rust_str(&text), null_mut(), null_mut()))
+    }
+}
+
 /// Bind physical operations into the existing compiler-owned native namespace.
 pub unsafe fn populate(globals: Value) -> bool {
     unsafe {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, Native); 17] = [
+        let exports: [(&str, Native); 18] = [
+            ("integer_decimal", integer_decimal),
             ("math_fabs", fabs),
             ("numeric_negate", negate),
             ("numeric_invert", invert),

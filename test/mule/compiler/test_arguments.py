@@ -294,7 +294,7 @@ try:
 except TypeError:
     print('rest')
 try:
-    print(sep=' ')
+    print(unsupported_keyword=' ')
 except TypeError:
     print('unsupported builtin keyword')
 """,

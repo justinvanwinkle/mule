@@ -84,7 +84,6 @@ pub unsafe fn initialize(native: *mut std::ffi::c_void) -> bool {
 }
 pub unsafe fn finish() {
     unsafe {
-        crate::traceback::clear_code_cache();
         clear_pending();
         ACTIVE.with_borrow_mut(|values| {
             for value in values.drain(..) {
@@ -541,6 +540,20 @@ pub unsafe extern "C" fn mule_leave_handler() {
             }
         }
     });
+}
+
+/// Handlers inside a suspended coroutine belong to that coroutine, rather
+/// than the thread's resumer. Caller handlers remain underneath while active.
+pub fn enter_coroutine_handlers(handlers: &mut Vec<Value>) -> usize {
+    ACTIVE.with_borrow_mut(|active| {
+        let boundary = active.len();
+        active.append(handlers);
+        boundary
+    })
+}
+
+pub fn leave_coroutine_handlers(boundary: usize) -> Vec<Value> {
+    ACTIVE.with_borrow_mut(|active| active.split_off(boundary))
 }
 /// The exception being handled by the innermost active handler, or None.
 #[unsafe(no_mangle)]

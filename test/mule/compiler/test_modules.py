@@ -22,6 +22,17 @@ def execute(tmp_path, sources, main):
     )
 
 
+def test_mule_package_runtime_members_coexist_with_numeric_directives(tmp_path):
+    result = execute(
+        tmp_path,
+        {"mule/__init__.py": "", "mule/ast.py": "answer = 42\n"},
+        "from mule import int32, ast as trees\n"
+        "value: int32 = trees.answer\nprint(value)\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "42\n"
+
+
 def test_imported_globals_are_isolated_mutable_and_initialized_once(tmp_path):
     result = execute(
         tmp_path,
@@ -241,6 +252,49 @@ def test_packages_and_from_imports_use_the_same_module_objects(tmp_path):
     assert result.stdout == "package init\nTrue True 42 package.child\n"
 
 
+def test_source_package_metadata_precedes_its_body(tmp_path):
+    result = execute(
+        tmp_path,
+        {
+            "package/__init__.py": "print(__package__, len(__path__), __path__[0].endswith('/package'))\n",
+            "package/child.py": "print(__package__, __spec__ is None, __loader__ is None)\n",
+            "plain.py": "print(__package__ == '', '__path__' in globals())\n",
+        },
+        "import package.child\nimport plain\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "package 1 True\npackage True True\nTrue False\n"
+
+
+def test_module_docstrings_are_initialized_before_the_body(tmp_path):
+    result = execute(
+        tmp_path,
+        {
+            "documented.py": "'''Module documentation.'''\nprint(__doc__)\n__doc__ = 'changed'\n",
+            "plain.py": "print(__doc__ is None)\n'later expression is not a docstring'\n",
+        },
+        "'''Main documentation.'''\nprint(__doc__)\nimport documented\nimport plain\nprint(documented.__doc__, plain.__doc__)\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        result.stdout
+        == "Main documentation.\nModule documentation.\nTrue\nchanged None\n"
+    )
+
+
+def test_import_returns_a_modules_registry_replacement(tmp_path):
+    result = execute(
+        tmp_path,
+        {
+            "original.py": "print('original init')\nimport sys\nimport replacement\nsecret = 7\ndef saved():\n return secret\nreplacement.saved = saved\nsys.modules[__name__] = replacement\n",
+            "replacement.py": "value = 42\n",
+        },
+        "import original\nimport original as again\nimport replacement\nimport sys\nprint(original is replacement, again is replacement, sys.modules['original'] is replacement)\nprint(original.value, original.saved())\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "original init\nTrue True True\n42 7\n"
+
+
 @pytest.mark.parametrize("failure", [False, True])
 def test_assertions_evaluate_the_message_only_on_failure(tmp_path, failure):
     result = execute(
@@ -287,3 +341,18 @@ def test_imports_inside_functions_are_local_and_lazy(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "before import\ndependency init\n42 7\n"
+
+
+def test_namespace_packages_have_paths_and_resolve_relative_imports(tmp_path):
+    result = execute(
+        tmp_path,
+        {
+            "namespace/first.py": "from .second import value\n",
+            "namespace/second.py": "value = 42\n",
+        },
+        "import namespace.first\nprint(namespace.first.value)\n"
+        "print(namespace.__name__, namespace.__package__, namespace.__file__)\n"
+        "print(namespace.__path__ == [namespace.first.__file__.rpartition('/')[0]])\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "42\nnamespace namespace None\nTrue\n"

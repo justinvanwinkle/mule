@@ -65,6 +65,7 @@ declare void @mule_traceback_here(ptr, i32, ptr, ptr, i32, ptr)
 declare void @mule_frame_push(ptr, ptr)
 declare void @mule_frame_pop()
 declare ptr @mule_namespace()
+declare i32 @mule_namespace_bind(ptr, ptr, ptr)
 declare i32 @mule_namespace_bound(ptr, ptr)
 declare i32 @mule_assertion_failure(ptr)
 declare ptr @mule_sequence_list(i64, ptr)
@@ -183,6 +184,8 @@ declare ptr @mule_builtins_module()
 declare ptr @mule_import_missing(ptr)
 declare void @mule_module_loaded(ptr, ptr)
 declare void @mule_module_failed(ptr)
+declare void @mule_register_compiled_module(ptr, ptr, ptr, ptr, ptr, ptr, i64)
+declare void @mule_set_image_search_path(ptr, i64)
 declare void @mule_set_attribute_lookup(ptr)
 declare ptr @mule_attribute_lookup_once(ptr, ptr)
 declare ptr @mule_builtins_module_init(ptr)
@@ -226,6 +229,7 @@ class Program:
     entry: Lambda | None
     facts: dict
     print_entry: Function | None = None
+    format_entry: Function | None = None
     protocol_entry: Function | None = None
     sequence_functions: dict[str, Function] = field(default_factory=dict)
     argument_constructor: Function | None = None
@@ -249,6 +253,7 @@ class Program:
     # A module unit's own import: its initializer belongs to this unit and
     # initializes the unit before running the module body.
     module_import: ImportInfo | None = None
+    search_paths: tuple[str, ...] = ()
 
 
 # Every protocol (``$mule.*`` compilation namespaces) runs under the one
@@ -423,6 +428,11 @@ class ModuleGenerator:
         self.global_cells: dict[str, dict[str, str]] = {}
         self.code_descriptors: set[str] = set()
         self.source_highlights = SourceHighlights()
+        self.closed_variables = {}
+        for child in lambdas:
+            if child.environment is not None:
+                for var in child.environment.closure:
+                    self.closed_variables.setdefault(var.home, set()).add(var)
         self.linked_namespaces: set[str] = set()
         # Names whose reads omit the unbound check because the builtins
         # define them, by namespace, and the namespaces code binds names in.
@@ -627,11 +637,16 @@ class ModuleGenerator:
         symbol = _suffixed(_symbol(lambda_.name), ".code")
         if symbol not in self.code_descriptors:
             code = self.code(lambda_)
+            diagnostic = (
+                (f'  File "{code.filename}", line {code.firstlineno}, in {code.name}\n')
+                .encode("ascii", "backslashreplace")
+                .decode("ascii")
+            )
             self.code_descriptors.add(symbol)
             self.auxiliary.append(
-                f"{symbol} = private constant {{ptr, ptr, ptr, i32}} "
+                f"{symbol} = private constant {{ptr, ptr, ptr, i32, ptr}} "
                 f"{{ptr {self.text(code.name)}, ptr {self.text(code.qualname)}, "
-                f"ptr {self.text(code.filename)}, i32 {code.firstlineno}}}"
+                f"ptr {self.text(code.filename)}, i32 {code.firstlineno}, ptr {self.text(diagnostic)}}}"
             )
         return symbol
 
@@ -641,6 +656,7 @@ class ModuleGenerator:
         signature = lambda_.signature
         parameters = lambda_.parameters
         kinds = signature.kinds
+        closed = self.closed_variables.get(lambda_, set())
         positional_kinds = (
             ast.ParameterKind.POSITIONAL_ONLY,
             ast.ParameterKind.POSITIONAL_OR_KEYWORD,
@@ -664,7 +680,7 @@ class ModuleGenerator:
             for var in lambda_.locals
             if var.name not in parameters
             and not var.name.startswith("$")
-            and not var.indirect
+            and var not in closed
         ]
         flags = code.flags
         if ast.ParameterKind.VAR_POSITIONAL in kinds:
@@ -684,14 +700,23 @@ class ModuleGenerator:
                 ast.IntegerLiteral(flags),
                 texts(names),
                 texts(
-                    var.name
-                    for var in lambda_.locals
-                    if var.indirect and not var.name.startswith("$")
+                    [
+                        name
+                        for name in parameters
+                        if any(var.name == name for var in closed)
+                    ]
+                    + sorted(
+                        var.name
+                        for var in closed
+                        if var.name not in parameters and not var.name.startswith("$")
+                    )
                 ),
                 texts(
-                    var.name
-                    for var in lambda_.environment.closure
-                    if not var.name.startswith("$")
+                    sorted(
+                        var.name
+                        for var in lambda_.environment.closure
+                        if not var.name.startswith("$")
+                    )
                 )
                 if lambda_.environment
                 else texts(()),
@@ -891,6 +916,7 @@ class ModuleGenerator:
             for layout in self.layouts.values()
         )
         self.auxiliary.append(self.unit_lifecycle(owned_imports))
+        self.auxiliary.extend(self.import_registration(owned_imports))
         if program.entry is not None:
             self.auxiliary.extend(self.executable_entry())
         self.auxiliary.extend(self.global_linkage())
@@ -936,6 +962,38 @@ class ModuleGenerator:
                 if not self.owns_import(info):
                     lines.append(f"declare ptr {self.import_symbol(info)}()")
         return "\n".join(lines)
+
+    def import_registration(self, imports) -> list[str]:
+        artifacts = [info for info in imports if not info.missing]
+        if not artifacts:
+            return []
+        entry = _symbol(f"mule.unit:{self.program.unit}.register.imports")
+        calls = []
+        for info in artifacts:
+            filename = "null" if info.filename is None else self.text(info.filename)
+            locations = "null"
+            if info.package_paths:
+                locations = _symbol(f"mule.import.paths:{info.module_name}")
+                self.auxiliary.append(
+                    f"{locations} = private constant [{len(info.package_paths)} x ptr] ["
+                    + ", ".join(f"ptr {self.text(path)}" for path in info.package_paths)
+                    + "]"
+                )
+            calls.append(
+                f"  call void @mule_register_compiled_module(ptr {self.text(info.module_name)}, "
+                f"ptr {self.import_symbol(info)}, ptr {self.import_create_symbol(info)}, "
+                f"ptr {self.import_execute_symbol(info)}, ptr {filename}, "
+                f"ptr {locations}, i64 {len(info.package_paths)})"
+            )
+        return [
+            (
+                "@llvm.global_ctors = appending global [1 x { i32, ptr, ptr }] "
+                f"[{{ i32, ptr, ptr }} {{ i32 65535, ptr {entry}, ptr null }}]"
+            ),
+            f"define internal void {entry}() {{\nentry:\n"
+            + "\n".join(calls)
+            + "\n  ret void\n}",
+        ]
 
     def attribute_lookup_adapter(self) -> str | None:
         """Borrowed native arguments enter the owned compiled lookup protocol."""
@@ -1019,6 +1077,14 @@ class ModuleGenerator:
         the sequence and print protocols, then this unit, whose cells copy
         the builtins those protocols install."""
         program = self.program
+        paths = "null"
+        if program.search_paths:
+            paths = "@mule.image.search.paths"
+            self.auxiliary.append(
+                f"{paths} = private constant [{len(program.search_paths)} x ptr] ["
+                + ", ".join(f"ptr {self.text(path)}" for path in program.search_paths)
+                + "]"
+            )
         units = [*program.dependencies, program.unit]
         definitions = [
             f"declare ptr {unit_initializer(unit)}()\ndeclare void {unit_finalizer(unit)}()"
@@ -1042,7 +1108,16 @@ class ModuleGenerator:
             "  call void @mule_release(ptr %sequence)\n"
             "  br i1 %failed, label %failure, label %print\n"
             "print:\n"
-            f"  %result = call ptr {self.functions[linked(program.print_entry, program, 'print entry')]}(ptr %globals, ptr %args)\n"
+            + (
+                f"  %format = call ptr {self.functions[linked(program.format_entry, program, 'format entry')]}(ptr %globals, ptr %args)\n"
+                "  %format.failed = icmp eq ptr %format, null\n"
+                "  call void @mule_release(ptr %format)\n"
+                "  br i1 %format.failed, label %failure, label %format.ready\n"
+                "format.ready:\n"
+                if program.format_entry is not None
+                else ""
+            )
+            + f"  %result = call ptr {self.functions[linked(program.print_entry, program, 'print entry')]}(ptr %globals, ptr %args)\n"
             "  %print.failed = icmp eq ptr %result, null\n"
             "  br i1 %print.failed, label %failure, label %unit\n"
             "unit:\n"
@@ -1077,6 +1152,7 @@ class ModuleGenerator:
             "define i32 @main(i32 %argc, ptr %argv) {\n"
             "entry:\n"
             "  call void @mule_set_process_arguments(i32 %argc, ptr %argv)\n"
+            + f"  call void @mule_set_image_search_path(ptr {paths}, i64 {len(program.search_paths)})\n"
             + (
                 "  call void @mule_set_argument_constructor(ptr @mule.arguments.construct)\n"
                 if program.argument_constructor is not None
@@ -1128,6 +1204,12 @@ class ModuleGenerator:
     def import_cache(self, info) -> str:
         return _symbol(f"mule.import.cache:{info.module_name}")
 
+    def import_create_symbol(self, info) -> str:
+        return _symbol(f"mule.import.create:{info.module_name}")
+
+    def import_execute_symbol(self, info) -> str:
+        return _symbol(f"mule.import.execute:{info.module_name}")
+
     def missing_import_initializer(self, info, linkage: str = "internal") -> str:
         symbol = self.import_symbol(info)
         return "\n".join(
@@ -1152,38 +1234,52 @@ class ModuleGenerator:
         linkage = "linkonce_odr " if info.native else ""
         cache = self.import_cache(info)
         self.auxiliary.append(f"{cache} = {linkage or 'internal '}global ptr null")
-        lines = [
+        legacy = [
             f"define {linkage}ptr {symbol}() {{",
             "entry:",
             f"  %cached = load ptr, ptr {cache}",
             "  %ready = icmp ne ptr %cached, null",
             "  br i1 %ready, label %existing, label %initialize",
             "existing:",
-            "  %owned = call ptr @mule_retain(ptr %cached)",
+            f"  %owned = call ptr @mule_import_missing(ptr {self.text(info.module_name)})",
             "  ret ptr %owned",
             "initialize:",
+            f"  %globals = call ptr {self.import_create_symbol(info)}()",
+            "  %bad.globals = icmp eq ptr %globals, null",
+            "  br i1 %bad.globals, label %failed, label %created",
+            "created:",
+            f"  call void @mule_module_loaded(ptr {self.text(info.module_name)}, ptr %globals)",
+            f"  %result = call ptr {self.import_execute_symbol(info)}(ptr %globals)",
+            "  call void @mule_release(ptr %globals)",
+            "  %bad.result = icmp eq ptr %result, null",
+            "  call void @mule_release(ptr %result)",
+            "  br i1 %bad.result, label %failed, label %finished",
+            "finished:",
+            f"  %module = call ptr @mule_import_missing(ptr {self.text(info.module_name)})",
+            "  ret ptr %module",
+            "failed:",
+            f"  call void @mule_module_failed(ptr {self.text(info.module_name)})",
+            "  ret ptr null",
+            "}",
+        ]
+        lines = [
+            f"define {linkage}ptr {self.import_create_symbol(info)}() {{",
+            "entry:",
             *self.unit_startup(info),
             # The builtins module is the namespace builtin lookups consult.
             "  %globals = call ptr @mule_builtins_module()"
             if info.module_name == "builtins"
             else "  %globals = call ptr @mule_namespace()",
-            f"  store ptr %globals, ptr {cache}",
         ]
         if info.native:
             self.shared_namespaces.add(info.module_name)
-        # Before the module body or any of its functions run.
-        lines += self.link(info.module_name, "%globals", "unregistered.failure", 0)
-        fields = [("__name__", info.module_name)]
+        fields = [("__name__", info.module_name), ("__package__", info.package_name)]
         if info.filename is not None:
             fields.append(("__file__", info.filename))
-        # The module is in sys.modules while its body runs, as in CPython.
-        lines.append(
-            f"  call void @mule_module_loaded(ptr {self.text(info.module_name)}, ptr %globals)"
-        )
         for field_name, value in fields:
             literal = self.literal_data(value.encode())
             label = field_name.strip("_")
-            store = self.store_global(info.module_name, field_name, f"%{label}")
+            store = f"call i32 @mule_namespace_bind(ptr %globals, ptr {self.text(field_name)}, ptr %{label})"
             lines.extend(
                 [
                     f"  %{label} = call ptr @mule_literal_text(ptr {literal}, i64 {len(value.encode())})",
@@ -1194,6 +1290,70 @@ class ModuleGenerator:
                     f"after.{label}:",
                 ]
             )
+        lines.append("  %metadata.none = call ptr @mule_none()")
+        absent_fields = ["__spec__", "__loader__"]
+        if info.namespace_paths:
+            absent_fields.append("__file__")
+        for field_name in absent_fields:
+            store = f"call i32 @mule_namespace_bind(ptr %globals, ptr {self.text(field_name)}, ptr %metadata.none)"
+            label = field_name.strip("_")
+            lines.extend(
+                [
+                    f"  %status.{label} = {store}",
+                    f"  %bad.{label} = icmp slt i32 %status.{label}, 0",
+                    f"  br i1 %bad.{label}, label %failed, label %after.{label}",
+                    f"after.{label}:",
+                ]
+            )
+        if info.package_paths:
+            count = len(info.package_paths)
+            store = f"call i32 @mule_namespace_bind(ptr %globals, ptr {self.text('__path__')}, ptr %path)"
+            lines.append(f"  %directory.slots = alloca [{count} x ptr]")
+            for index, path in enumerate(info.package_paths):
+                directory = path.encode()
+                literal = self.literal_data(directory)
+                lines.extend(
+                    [
+                        f"  %directory.{index} = call ptr @mule_literal_text(ptr {literal}, i64 {len(directory)})",
+                        f"  %directory.slot.{index} = getelementptr [{count} x ptr], ptr %directory.slots, i32 0, i32 {index}",
+                        f"  store ptr %directory.{index}, ptr %directory.slot.{index}",
+                    ]
+                )
+            lines.extend(
+                [
+                    f"  %path = call ptr @mule_sequence_list(i64 {count}, ptr %directory.slots)",
+                    *(
+                        f"  call void @mule_release(ptr %directory.{index})"
+                        for index in range(count)
+                    ),
+                    f"  %status.path = {store}",
+                    "  call void @mule_release(ptr %path)",
+                    "  %bad.path = icmp slt i32 %status.path, 0",
+                    "  br i1 %bad.path, label %failed, label %after.path",
+                    "after.path:",
+                ]
+            )
+        # Creation has no body effects or sys.modules registration. Importlib
+        # can set the spec and insert the module before executing native code.
+        lines.extend(
+            [
+                "  ret ptr %globals",
+                "failed:",
+                "  call void @mule_release(ptr %globals)",
+                "  ret ptr null",
+                "}",
+            ]
+        )
+        create = "\n".join(lines)
+        lines = [
+            f"define {linkage}ptr {self.import_execute_symbol(info)}(ptr %globals) {{",
+            "entry:",
+            f"  %previous = load ptr, ptr {cache}",
+            "  %owned.globals = call ptr @mule_retain(ptr %globals)",
+            f"  store ptr %owned.globals, ptr {cache}",
+            "  call void @mule_release(ptr %previous)",
+        ]
+        lines += self.link(info.module_name, "%globals", "unregistered.failure", 0)
         if info.native:
             lines.append(f"  %result = call ptr @{info.initializer}(ptr %globals)")
         else:
@@ -1216,7 +1376,6 @@ class ModuleGenerator:
                 "  %module = call ptr @mule_retain(ptr %globals)",
                 "  ret ptr %module",
                 "failed:",
-                f"  call void @mule_module_failed(ptr {self.text(info.module_name)})",
                 "  br label %unregistered.failure",
                 "unregistered.failure:",
                 f"  store ptr null, ptr {cache}",
@@ -1225,7 +1384,7 @@ class ModuleGenerator:
                 "}",
             ]
         )
-        return "\n".join(lines)
+        return "\n\n".join(("\n".join(legacy), create, "\n".join(lines)))
 
 
 def _value_tns_live_in(component, candidates) -> dict:

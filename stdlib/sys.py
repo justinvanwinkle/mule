@@ -7,13 +7,13 @@ Mule does not have (frames, tracing, audit hooks with effects) are present
 with their documented "absent" results where CPython defines one.
 """
 
-from _mule_codecs import utf8_decode as _decode_argv
 from _mule_native import active_exception as _active_exception
 from _mule_native import argc as _argc
 from _mule_native import argv as _argv
 from _mule_native import current_frame as _current_frame
 from _mule_native import flush_fd as _flush_fd
 from _mule_native import isatty as _isatty
+from _mule_native import image_search_path as _image_search_path
 from _mule_native import read_c_string as _read_c_string
 from _mule_native import read_pointer as _read_pointer
 from _mule_native import register_modules as _register_modules
@@ -27,7 +27,7 @@ def _make_argv():
         pointer = _read_pointer(_argv, index)
         if pointer is None:
             raise SystemError("NULL pointer inside native argument vector")
-        arguments.append(_decode_argv(_read_c_string(pointer)))
+        arguments.append(_read_c_string(pointer).decode('utf-8', 'surrogateescape'))
         index += 1
     return arguments
 
@@ -57,7 +57,7 @@ abiflags = ""
 float_repr_style = "short"
 warnoptions = []
 _xoptions = {}
-path = []
+path = list(_image_search_path())
 meta_path = []
 path_hooks = []
 path_importer_cache = {}
@@ -122,7 +122,7 @@ class _VersionInfo(_StructSequence):
 
 version_info = _VersionInfo(3, 14, 0, "final", 0)
 hexversion = 0x030E00F0
-version = "3.14.0 (Mule native build)"
+version = "3.14.0 (Mule native build) [LLVM]"
 
 
 class _Implementation:
@@ -242,7 +242,7 @@ class _TextStream:
         self.name = name
         self.mode = mode
         self.encoding = "utf-8"
-        self.errors = "strict" if fd == 0 else "backslashreplace" if fd == 2 else "strict"
+        self.errors = "backslashreplace" if fd == 2 else "surrogateescape"
         self.closed = False
         self.newlines = None
         self.line_buffering = fd != 0
@@ -456,6 +456,17 @@ def excepthook(kind, value, traceback, /):
 
 def unraisablehook(unraisable, /):
     stderr.write(f"Exception ignored in: {unraisable.object!r}\n")
+
+
+def _clear_type_descriptors(cls, /):
+    from _object import _builtin_types
+    if not isinstance(cls, type):
+        raise TypeError("_clear_type_descriptors() argument must be type, not " + type(cls).__name__)
+    if cls in _builtin_types():
+        raise TypeError("argument is immutable")
+    for name in ('__dict__', '__weakref__'):
+        if name in vars(cls):
+            delattr(cls, name)
 
 
 __displayhook__ = displayhook

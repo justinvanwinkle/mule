@@ -15,7 +15,7 @@ __all__ = [
     "utf_16_le_encode", "utf_32_be_decode", "utf_32_be_encode",
     "utf_32_decode", "utf_32_encode", "utf_32_ex_decode", "utf_32_le_decode",
     "utf_32_le_encode", "utf_7_decode", "utf_7_encode", "utf_8_decode",
-    "utf_8_encode",
+    "utf_8_encode", "unregister",
 ]
 
 def _strict_errors(exc):
@@ -55,6 +55,9 @@ def _surrogatepass_errors(exc):
 
 
 _search_functions = []
+_codec_cache = {}
+_initialized = False
+_initializing = False
 _error_handlers = {
     "strict": _strict_errors,
     "ignore": _ignore_errors,
@@ -67,16 +70,62 @@ _error_handlers = {
 }
 
 
-def register(search_function):
+def _initialize():
+    global _initialized, _initializing
+    if _initialized or _initializing:
+        return
+    _initializing = True
+    try:
+        import encodings
+        _initialized = True
+    finally:
+        _initializing = False
+
+
+def register(search_function, /):
+    if not callable(search_function):
+        raise TypeError('argument must be callable')
+    _initialize()
     _search_functions.append(search_function)
 
 
-def unregister(search_function):
+def unregister(search_function, /):
     if search_function in _search_functions:
         _search_functions.remove(search_function)
+        _codec_cache.clear()
 
 
-def lookup(encoding):
+def _normalize_encoding(encoding):
+    pieces = []
+    separator = False
+    for character in encoding:
+        if character == '\x00':
+            raise ValueError('embedded null character')
+        if character == '.' or character.isascii() and character.isalnum():
+            if separator and pieces:
+                pieces.append('_')
+            pieces.append(character.lower())
+            separator = False
+        else:
+            separator = True
+    return ''.join(pieces)
+
+
+def lookup(encoding, /):
+    if not isinstance(encoding, str):
+        raise TypeError('lookup() argument must be str, not ' + type(encoding).__name__)
+    normalized = _normalize_encoding(encoding)
+    _initialize()
+    cached = _codec_cache.get(normalized)
+    if cached is not None:
+        return cached
+    for search in tuple(_search_functions):
+        result = search(normalized)
+        if result is not None:
+            if not isinstance(result, tuple) or len(result) != 4:
+                raise TypeError('codec search functions must return 4-tuples')
+            _codec_cache[normalized] = result
+            return result
     raise LookupError(f"unknown encoding: {encoding}")
 
 
@@ -91,22 +140,17 @@ def lookup_error(name):
 
 
 def encode(value, encoding="utf-8", errors="strict"):
-    if isinstance(value, str):
-        result = value.encode(encoding, errors)
-        return result, len(value)
-    if isinstance(value, (bytes, bytearray)):
-        if encoding in ("utf-8", "utf8", "u8", "utf", "utf_8"):
-            return bytes(value), len(value)
-        result = bytes(value).decode(encoding, errors).encode(encoding, errors)
-        return result, len(value)
-    raise TypeError("encode() argument must be str or bytes")
+    result = lookup(encoding)[0](value, errors)
+    if not isinstance(result, tuple) or len(result) != 2:
+        raise TypeError('encoder must return a tuple (object, integer)')
+    return result[0]
 
 
 def decode(value, encoding="utf-8", errors="strict"):
-    if isinstance(value, str):
-        return value, len(value)
-    result = bytes(value).decode(encoding, errors)
-    return result, len(value)
+    result = lookup(encoding)[1](value, errors)
+    if not isinstance(result, tuple) or len(result) != 2:
+        raise TypeError('decoder must return a tuple (object, integer)')
+    return result[0]
 
 
 def _encode_as(value, encoding, errors="strict"):
@@ -125,7 +169,20 @@ def utf_8_encode(value, errors="strict"):
 
 
 def utf_8_decode(value, errors="strict", final=False):
-    return _decode_as(value, "utf-8", errors)
+    from _str import _utf8_sequence
+    data = bytes(value)
+    size = len(data)
+    consumed = size
+    if not final and size:
+        start = size - 1
+        while start > 0 and size - start < 4 and 0x80 <= data[start] <= 0xBF:
+            start -= 1
+        # An incomplete surrogate sequence is buffered until it is complete;
+        # decoding below still applies the requested error policy.
+        code, length = _utf8_sequence(data, start, size, True)
+        if code == -2:
+            consumed = start
+    return data[:consumed].decode('utf-8', errors), consumed
 
 
 def ascii_encode(value, errors="strict"):
@@ -307,3 +364,10 @@ def escape_decode(value, errors="strict", final=False):
 def readbuffer_encode(value, errors="strict"):
     data = bytes(value)
     return data, len(data)
+
+
+# These public codec services emulate builtin functions: storing one on a
+# codec class must not add an instance argument. Their algorithms remain Python.
+for _builtin_name in __all__:
+    globals()[_builtin_name] = staticmethod(globals()[_builtin_name])
+del _builtin_name

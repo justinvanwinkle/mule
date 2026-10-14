@@ -430,6 +430,7 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
         } else {
             0
         };
+        crate::traceback::clear_code_cache();
         BUILTINS.with(|storage| object::release(storage.replace(std::ptr::null_mut())));
         object::release(MODULES.with(|slot| slot.replace(std::ptr::null_mut())));
         let early = EARLY_MODULES.with_borrow_mut(std::mem::take);

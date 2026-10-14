@@ -32,6 +32,7 @@ Python adaptations beyond those listed in ``node.py``:
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import NoReturn
 
 from mule import ast
@@ -100,6 +101,7 @@ class FunctionInfo:
     public_name: str
     default_contracts: tuple
     location: tuple | None
+    docstring: ast.Expression | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +178,27 @@ class ImportInfo:
     filename: str | None
     native: bool = False
     missing: bool = False
+    namespace_paths: tuple[str, ...] = ()
+
+    @property
+    def package_paths(self):
+        if self.namespace_paths:
+            return self.namespace_paths
+        if self.package_directory is not None:
+            return (self.package_directory,)
+        return ()
+
+    @property
+    def package_name(self):
+        if self.package_paths:
+            return self.module_name
+        return self.module_name.rpartition(".")[0]
+
+    @property
+    def package_directory(self):
+        if self.filename is not None and Path(self.filename).name == "__init__.py":
+            return str(Path(self.filename).parent)
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1167,13 +1190,7 @@ class FunctionConverter:
                 fndb.IMPORT,
                 (),
                 node,
-                ImportInfo(
-                    qualified,
-                    descriptor.entry,
-                    str(descriptor.path) if descriptor.path is not None else None,
-                    descriptor.native,
-                    descriptor.missing,
-                ),
+                descriptor.import_info(),
             )
             current = ctran
             if parent is not None:
@@ -1300,7 +1317,10 @@ class FunctionConverter:
             (fun, *defaults),
             definition,
             FunctionInfo(
-                public_name, default_contracts, self.converter.location(definition)
+                public_name,
+                default_contracts,
+                self.converter.location(definition),
+                _documentation(definition.body),
             ),
         )
         if annotate is None:
@@ -2147,9 +2167,17 @@ class _Statements(ast.Visitor):
         for item in node.items:
             function.converter.constant_binding(item.alias or item.name, item)
         start, next_, _ = self.frame
-        if node.level == 0 and node.module in ("mule", "__future__"):
+        if node.level == 0 and node.module == "__future__":
             function._import_directive(node)
             return
+        if node.level == 0 and node.module == "mule":
+            directives = [item for item in node.items if item.name in _EXPORT_BINDINGS]
+            runtime = [item for item in node.items if item.name not in _EXPORT_BINDINGS]
+            if directives:
+                function._import_directive(replace(node, items=directives))
+            if not runtime:
+                return
+            node = replace(node, items=runtime)
         wildcard = any(item.name == "*" for item in node.items)
         if wildcard and (not function.is_module or function.class_scopes):
             function.error("import * only allowed at module level", node)
@@ -2821,8 +2849,8 @@ class _Statements(ast.Visitor):
         native = _native_class_body(function, node, policy)
         body = node.body
         docstring = None
-        if body and body[0].accept(_ClassDocstring()):
-            docstring, body = body[0].expression, body[1:]
+        if body and body[0].accept(_Docstring()):
+            docstring, body = _documentation(body), body[1:]
 
         # Decorators, then the bases and keywords in source order, are
         # evaluated before the namespace is prepared and the body runs.
@@ -2881,12 +2909,14 @@ class _Statements(ast.Visitor):
             identity if native is not None else None,
             function.qualified(node.name),
         )
-        # The body sees __module__ and __qualname__ first, and __doc__.
+        # Only an actual leading docstring enters the class-body namespace.
+        # type.__new__ supplies None later, after checking slot conflicts.
         initial = (
             ("__module__", ast.Name("__name__", span=node.span)),
             ("__qualname__", ast.TextLiteral(scope.qualname, span=node.span)),
-            ("__doc__", docstring or ast.NoneLiteral(None, span=node.span)),
         )
+        if docstring is not None:
+            initial += (("__doc__", docstring),)
         for name, expression in initial:
             if name == "__module__":
                 ctran, value = Ctran(), Lvar()
@@ -3104,7 +3134,7 @@ class _Statements(ast.Visitor):
             span=span,
         )
         body = list(node.body)
-        offset = 1 if body and body[0].accept(_ClassDocstring()) else 0
+        offset = 1 if body and body[0].accept(_Docstring()) else 0
         body.insert(
             offset,
             ast.Assignment(
@@ -3699,7 +3729,7 @@ def _native_class_body(function, node, policy):
         return None
     body = _ClassBody(function)
     for index, statement in enumerate(node.body):
-        if index == 0 and statement.accept(_ClassDocstring()):
+        if index == 0 and statement.accept(_Docstring()):
             continue
         statement.accept(body)
     if not body.fields or not body.native_eligible:
@@ -4133,11 +4163,7 @@ class _ImportBindings(ast.Visitor):
         for item in node.items:
             binding = _EXPORT_BINDINGS.get(item.name)
             if binding is None:
-                self.converter.error(
-                    f"unknown Mule compiler export '{item.name}'",
-                    item,
-                    unsupported=True,
-                )
+                continue
             self.bind(item.alias or item.name, binding, item)
 
 
@@ -4252,7 +4278,7 @@ def module_policy(converter, statements):
                 converter.error(f"duplicate module policy for {quality}", statement)
             changes[quality] = level
             continue
-        docstring = index == 0 and statement.accept(_ClassDocstring())
+        docstring = index == 0 and statement.accept(_Docstring())
         if not docstring and not statement.accept(_ModulePrologue()):
             prologue = False
     return replace(OptimizationPolicy(), **changes)
@@ -4548,7 +4574,36 @@ class _CallTarget(ast.Visitor):
         )
 
 
-class _ClassDocstring(ast.Visitor):
+def _documentation(statements):
+    return statements[0].accept(_Documentation()) if statements else None
+
+
+class _Documentation(ast.Visitor):
+    """Python 3.14's compile-time doc indentation, without changing the AST."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_ExpressionStatement(self, node):
+        return node.expression.accept(self)
+
+    def visit_TextLiteral(self, node):
+        lines = node.value.expandtabs().split("\n")
+        margin = min(
+            (
+                len(line) - len(line.lstrip(" "))
+                for line in lines[1:]
+                if line.strip(" ")
+            ),
+            default=0,
+        )
+        cleaned = "\n".join(
+            [lines[0].lstrip(" "), *(line[margin:] for line in lines[1:])]
+        )
+        return ast.TextLiteral(cleaned, span=node.span)
+
+
+class _Docstring(ast.Visitor):
     def visit_Node(self, node):
         return False
 

@@ -508,6 +508,14 @@ def _define_compare(operator, opcode):
         result = vop.results[0]
         left, right = vop.args
         lhs, rhs = gen.take(left), gen.take(right)
+        if opcode in (8, 9):
+            value = gen.sequence_call(
+                "contains" if opcode == 8 else "not_contains", [rhs, lhs]
+            )
+            gen.publish(result, value)
+            gen.check_pointer(value)
+            gen.refine(result.tn, value)
+            return
         if (
             opcode < 6
             and (left.tn.type or UNKNOWN).is_fixnum
@@ -639,8 +647,19 @@ def make_function(gen, vop):
     metadata = gen.operation(gen.constant(module.code_metadata(target)))
     gen.check_pointer(metadata)
     function = gen.load(result)
-    gen.line(f"call void @mule_set_function_metadata(ptr {function}, ptr {module.code_descriptor(target)}, ptr {metadata})")
+    gen.line(
+        f"call void @mule_set_function_metadata(ptr {function}, ptr {module.code_descriptor(target)}, ptr {metadata})"
+    )
     gen.release(metadata)
+    if info.docstring is not None:
+        docstring = gen.operation(gen.constant(info.docstring))
+        gen.check_pointer(docstring)
+        status = gen.operation(
+            f"call i32 @mule_set_attr_cached(ptr {function}, "
+            f"ptr {module.text('__doc__')}, ptr {docstring}, ptr null)"
+        )
+        gen.release(docstring)
+        gen.check_status(status)
 
 
 @define_vop("make-class", translate=fndb.MAKE_CLASS, results=(OBJECT,))

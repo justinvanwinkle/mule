@@ -30,10 +30,9 @@ from .artifacts import Graph, Node, Step, ToolchainError, digest, tool_identity
 from .codegen import ForeignFunction, Program, generate
 from .inputs import read_source
 from .ir1opt import constant_literal
-from .ir1tran import ImportInfo
 from .ir1util import class_method_definitions, known_calls
 from .main import compile_source
-from .modules import CompiledModule, ModuleCompiler, search_path
+from .modules import STDLIB, CompiledModule, ModuleCompiler, search_path
 from .node import CallKind, FunctionalKind, LeafVisitor, NodeVisitor, Signature, linked
 
 __all__ = [
@@ -116,6 +115,7 @@ class BuiltinsInterface:
                 native=entry["native"],
                 missing=entry["missing"],
                 prefix=entry["prefix"],
+                namespace_paths=tuple(entry["namespace_paths"]),
             )
             for name, entry in data["modules"].items()
         }
@@ -139,7 +139,7 @@ def compile_builtins() -> tuple[Program, dict[str, CompiledModule]]:
     )
     unit.argument_constructor, unit.argument_binder = argument_protocol.prepare(unit)
     unit.layouts = native_protocol.prepare(unit)
-    format_protocol.prepare(unit)
+    unit.format_entry = format_protocol.prepare(unit)
     return unit, modules
 
 
@@ -165,6 +165,7 @@ def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
         {key: lambda_.name for key, lambda_ in unit.sequence_functions.items()},
         {
             "print": name(unit.print_entry),
+            "format": name(unit.format_entry),
             "protocol": name(unit.protocol_entry),
             "argument_constructor": name(unit.argument_constructor),
             "argument_binder": name(unit.argument_binder),
@@ -261,6 +262,7 @@ def compile_unit(
     module it imports resolved, in request order."""
     compiler = import_resolver(filename, interface, module, roots, package)
     if module is None:
+        compiler.include_patterns(compiler.project_modules)
         compilation = compile_source(source, filename, imports=compiler)
         unit_name = "__main__"
     else:
@@ -285,6 +287,7 @@ def compile_unit(
         compilation.entry if module is None else None,
         compilation.facts,
         print_entry=entry("print"),
+        format_entry=entry("format"),
         protocol_entry=entry("protocol"),
         sequence_functions={
             key: functions[name] for key, name in interface.sequence_functions.items()
@@ -298,11 +301,10 @@ def compile_unit(
         },
         unit=unit_name,
         dependencies=["builtins"],
+        search_paths=tuple(str(root) for root in compiler.roots),
     )
     if module is not None:
-        program.module_import = ImportInfo(
-            module.name, module.entry, str(module.path), False, False
-        )
+        program.module_import = module.import_info()
     argument_protocol.bind_signatures(program.lambdas)
     program.layouts = native_protocol.prepare(program)
     open_check = _ReferencesOpen()
@@ -327,6 +329,7 @@ def import_resolver(
     """Resolves a unit's imports as its compilation does: the builtins unit's
     modules are already compiled, and a module unit knows its own package."""
     compiler = ModuleCompiler(filename, roots=roots, package=package)
+    compiler.configure_project()
     compiler.modules.update(interface.modules)
     if module is not None:
         compiler.modules[module.name] = module
@@ -545,8 +548,6 @@ class Build:
         the link."""
         builtins = self.builtins()
         path = descriptor.path
-        if path is None:
-            raise ValueError(f"module {descriptor.name} has no source file")
         name = f"module {descriptor.name} {path}"
         validated: dict[Path, ModuleCompiler] = {}
 
@@ -564,7 +565,7 @@ class Build:
 
         def action(inputs, directory):
             program, imported = compile_unit(
-                read_source(path),
+                descriptor.source(),
                 str(path),
                 self.interface(),
                 module=descriptor,
@@ -582,8 +583,17 @@ class Build:
             lambda: Step(
                 self.graph,
                 name,
-                inputs=[self.graph.file(path), builtins],
-                settings={"step": "module", "name": descriptor.name},
+                inputs=[
+                    self.graph.file(path)
+                    if path is not None
+                    else self.graph.text(name, ""),
+                    builtins,
+                ],
+                settings={
+                    "step": "module",
+                    "name": descriptor.name,
+                    "namespace_paths": descriptor.namespace_paths,
+                },
                 outputs=("unit.ll", "imports.json"),
                 action=action,
                 discover=lambda step: self.discover(
@@ -675,6 +685,10 @@ class Build:
                 action=action,
             ),
         )
+        # Standard streams are system-module state even when the source does
+        # not import sys explicitly. Protocol imports use this same image unit.
+        system = ModuleCompiler("<system>", roots=(STDLIB,)).resolve("sys", None, None)
+        self.link.add_input(self.object(self.module(system, (STDLIB,), None)))
         return self.link
 
 
@@ -692,25 +706,32 @@ def write_imports(path: Path, modules: list[CompiledModule]) -> None:
     """Record how each import resolved: the unit's output depends on whether a
     module is native, missing, or compiled, not on where it was found."""
     path.write_text(
-        json.dumps([[module.name, module.native, module.missing] for module in modules])
+        json.dumps(
+            [
+                [module.name, module.native, module.missing, module.namespace_paths]
+                for module in modules
+            ]
+        )
     )
 
 
 def resolve_recorded(
     resolver: ModuleCompiler, path: Path
-) -> list[tuple[CompiledModule, bool, bool]]:
+) -> list[tuple[CompiledModule, bool, bool, tuple[str, ...]]]:
     """Resolve the recorded imports again, in their recorded order; return
     each current resolution with its recorded native and missing flags."""
     return [
-        (resolver.resolve(name, None, None), native, missing)
-        for name, native, missing in json.loads(path.read_text())
+        (resolver.resolve(name, None, None), native, missing, tuple(locations))
+        for name, native, missing, locations in json.loads(path.read_text())
     ]
 
 
 def resolves_as_recorded(resolver: ModuleCompiler, path: Path) -> bool:
     return all(
-        module.native == native and module.missing == missing
-        for module, native, missing in resolve_recorded(resolver, path)
+        module.native == native
+        and module.missing == missing
+        and module.namespace_paths == locations
+        for module, native, missing, locations in resolve_recorded(resolver, path)
     )
 
 

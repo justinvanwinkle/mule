@@ -134,6 +134,24 @@ def test_contradicted_annotation_is_ignored_at_run_time(tmp_path, body, expected
 
 
 @pytest.mark.parametrize(
+    "body",
+    (
+        "if value == 0:\n  return 0\n if value == 1:\n  return 'text'\n",
+        "match value:\n  case 0: return 0\n  case 1: return 'text'\n",
+    ),
+)
+def test_ignored_return_annotation_preserves_all_joined_branches(tmp_path, body):
+    result = run_native(
+        tmp_path,
+        "def choose(value) -> int:\n "
+        + body
+        + "for value in (0, 1, 2):\n print(choose(value))\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "0\ntext\nNone\n"
+
+
+@pytest.mark.parametrize(
     ("declaration_before_writer", "write_line"), [(True, 5), (False, 4)]
 )
 def test_module_annotation_warns_about_wrong_global_write_in_either_definition_order(

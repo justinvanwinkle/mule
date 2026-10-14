@@ -198,7 +198,10 @@ Settled departures from SBCL's design, with their reasons:
   through their error flag and record no entries.
 - **Memory management** stays reference counting, which the
   [C extension interface](cpython-interface.md#ownership-allocation-and-collection)
-  requires. Cycle collection remains later work; no tracing collector.
+  requires. A manual cycle pass derives external roots from owned reference
+  counts and enumerates physical pointer fields without moving objects.
+  Automatic generational scheduling and coroutine stack scanning remain later
+  work; see `compiled-modules.md` for the SBCL comparison and adaptation.
 - **Optimization scope** is semantic IR1 optimization only: type derivation,
   constraints, known-function transforms, local calls, effect-based flushing,
   check generation, and representation selection. SBCL's machine-level phases
@@ -448,6 +451,13 @@ or modify exception state cannot be declared pure by default.
 See [LLVM's language reference][llvm-ir].
 
 ## Output, loading, and observability
+
+Removing an ignored annotation cast follows SBCL src/compiler/ir1util.lisp,
+delete-filter and substitute-lvar-uses: move the cast input's producers into
+its output lvar, preserving the other producers that join there. Replacing the
+output's consumer with one branch's input loses values from the other branches,
+so return joins must keep the original merged lvar. Mule implements the same
+producer-retargeting graph surgery and reruns type and local-call analysis.
 
 Replace the FASL protocol with native code plus runtime constants, module
 initialization, compatibility metadata, and source information. Module code

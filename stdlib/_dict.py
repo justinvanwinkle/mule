@@ -21,6 +21,7 @@ from _mule_native import class_lookup as _class_lookup
 from _mule_native import class_of as _class_of
 from _mule_native import identity_hash as _identity_hash
 from _mule_native import is_class as _is_class
+from _mule_native import is_subclass as _is_subclass
 from _mule_native import math_number_kind as _math_number_kind
 from _mule_native import storage_hash as _storage_hash
 
@@ -68,7 +69,7 @@ def _tuple_hash(value):
         accumulator = (accumulator + lane * _PRIME_2) & _WORD
         accumulator = ((accumulator << 31) | (accumulator >> 33)) & _WORD
         accumulator = (accumulator * _PRIME_1) & _WORD
-    accumulator = (accumulator + (len(value) ^ (_PRIME_5 ^ 3527539))) & _WORD
+    accumulator = (accumulator + (_storage_length(value) ^ (_PRIME_5 ^ 3527539))) & _WORD
     if accumulator == _WORD:
         return 1546275796
     return _signed(accumulator)
@@ -121,7 +122,7 @@ class _Table:
     def _find(self, key, code):
         """The index-table slot for ``key`` and its entry, or -1 for none."""
         indices = self._indices
-        mask = len(indices) - 1
+        mask = _storage_length(indices) - 1
         perturb = code & _WORD
         slot = perturb & mask
         while True:
@@ -139,16 +140,20 @@ class _Table:
         slot, entry = self._find(key, hash(key))
         return entry
 
+    def _get_value(self, key, default):
+        entry = self._lookup(key)
+        return self._values[entry] if entry >= 0 else default
+
     def _insert(self, key, value):
         code = hash(key)
         slot, entry = self._find(key, code)
         if entry >= 0:
             self._values[entry] = value
             return
-        if (len(self._keys) + 1) * 3 > len(self._indices) * 2:
+        if (_storage_length(self._keys) + 1) * 3 > _storage_length(self._indices) * 2:
             self._resize(self._used + 1)
             slot, entry = self._find(key, code)
-        self._indices[slot] = len(self._keys)
+        self._indices[slot] = _storage_length(self._keys)
         self._hashes.append(code)
         self._keys.append(key)
         self._values.append(value)
@@ -171,7 +176,7 @@ class _Table:
         while size * 2 < minimum * 3:
             size *= 2
         hashes, keys, values = [], [], []
-        for index in range(len(self._keys)):
+        for index in range(_storage_length(self._keys)):
             key = self._keys[index]
             if key is not _DELETED:
                 hashes.append(self._hashes[index])
@@ -227,7 +232,7 @@ class _TableIterator:
                 ("dictionary" if self.kind else "set") + " changed size during iteration"
             )
         keys = table._keys
-        while self.index < len(keys):
+        while self.index < _storage_length(keys):
             index = self.index
             self.index = index + 1
             key = keys[index]
@@ -245,13 +250,17 @@ def _representation(open, items, close):
 
 
 class dict(_Table):
+    def __new__(cls, /, *args, **kwargs):
+        if not _is_class(cls) or not _is_subclass(cls, dict):
+            raise TypeError("dict.__new__() requires a subtype of dict")
+        return _empty_table(cls)
+
     def __mule_annotation_mapping__(self):
         return self
 
     """Mapping with insertion-ordered keys."""
 
     def __init__(self, /, *args, **kwargs):
-        self._clear_table()
         if len(args) > 1:
             raise TypeError(f"dict expected at most 1 argument, got {len(args)}")
         if args:
@@ -336,8 +345,7 @@ class dict(_Table):
         return self
 
     def get(self, key, default=None):
-        entry = self._lookup(key)
-        return self._values[entry] if entry >= 0 else default
+        return self._get_value(key, default)
 
     def setdefault(self, key, default=None):
         entry = self._lookup(key)
@@ -435,7 +443,74 @@ class _DictView:
         return result
 
 
-class dict_keys(_DictView):
+class _SetView(_DictView):
+    """Set behavior of key and item views; values views remain sequences."""
+
+    def __or__(self, other):
+        return set(self).union(other)
+
+    def __ror__(self, other):
+        return set(other).union(self)
+
+    def __and__(self, other):
+        result = set()
+        for item in other:
+            if item in self:
+                result.add(item)
+        return result
+
+    def __rand__(self, other):
+        return self.__and__(other)
+
+    def __sub__(self, other):
+        return set(self).difference(other)
+
+    def __rsub__(self, other):
+        return set(other).difference(self)
+
+    def __xor__(self, other):
+        return set(self).symmetric_difference(other)
+
+    def __rxor__(self, other):
+        return self.__xor__(other)
+
+    def _comparable(self, other):
+        return _is_set(other) or isinstance(other, _SetView)
+
+    def __eq__(self, other):
+        if not self._comparable(other):
+            return NotImplemented
+        return len(self) == len(other) and self.__le__(other)
+
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        return NotImplemented if result is NotImplemented else not result
+
+    def __le__(self, other):
+        if not self._comparable(other):
+            return NotImplemented
+        return len(self) <= len(other) and all(item in other for item in self)
+
+    def __lt__(self, other):
+        if not self._comparable(other):
+            return NotImplemented
+        return len(self) < len(other) and self.__le__(other)
+
+    def __ge__(self, other):
+        if not self._comparable(other):
+            return NotImplemented
+        return len(self) >= len(other) and all(item in self for item in other)
+
+    def __gt__(self, other):
+        if not self._comparable(other):
+            return NotImplemented
+        return len(self) > len(other) and self.__ge__(other)
+
+    def isdisjoint(self, other):
+        return not any(item in self for item in other)
+
+
+class dict_keys(_SetView):
     def __iter__(self):
         return _TableIterator(self.mapping, 1)
 
@@ -454,12 +529,14 @@ class dict_values(_DictView):
         return _representation("dict_values([", self._entries(), "])")
 
 
-class dict_items(_DictView):
+class dict_items(_SetView):
     def __iter__(self):
         return _TableIterator(self.mapping, 3)
 
     def __contains__(self, item):
-        key, value = item
+        if not _tuple_storage(item) or len(item) != 2:
+            return False
+        key, value = _storage_read(item, 0), _storage_read(item, 1)
         entry = self.mapping._lookup(key)
         if entry < 0:
             return False
@@ -500,42 +577,51 @@ class _SetBase(_Table):
 
     def __eq__(self, other):
         if not _is_set(other):
-            return False
+            return NotImplemented
         return self._used == other._used and self.issubset(other)
 
     def __ne__(self, other):
-        return not self.__eq__(other)
+        result = self.__eq__(other)
+        return NotImplemented if result is NotImplemented else not result
 
     def __le__(self, other):
-        _require_set(other)
+        if not _is_set(other):
+            return NotImplemented
         return self.issubset(other)
 
     def __lt__(self, other):
-        _require_set(other)
+        if not _is_set(other):
+            return NotImplemented
         return self._used < other._used and self.issubset(other)
 
     def __ge__(self, other):
-        _require_set(other)
+        if not _is_set(other):
+            return NotImplemented
         return self.issuperset(other)
 
     def __gt__(self, other):
-        _require_set(other)
+        if not _is_set(other):
+            return NotImplemented
         return self._used > other._used and self.issuperset(other)
 
     def __or__(self, other):
-        _require_set(other)
+        if not _is_set(other):
+            return NotImplemented
         return self.union(other)
 
     def __and__(self, other):
-        _require_set(other)
+        if not _is_set(other):
+            return NotImplemented
         return self.intersection(other)
 
     def __sub__(self, other):
-        _require_set(other)
+        if not _is_set(other):
+            return NotImplemented
         return self.difference(other)
 
     def __xor__(self, other):
-        _require_set(other)
+        if not _is_set(other):
+            return NotImplemented
         return self.symmetric_difference(other)
 
     def issubset(self, other):
@@ -717,17 +803,21 @@ class frozenset(_SetBase):
         return _signed(accumulator)
 
 
-def _empty_dict():
-    result = _allocate_instance(dict)
-    result._clear_table()
+def _empty_table(cls):
+    result = _allocate_instance(cls)
+    _Table._clear_table(result)
     return result
+
+
+def _empty_dict():
+    return _empty_table(dict)
 
 
 def build_dict(flat):
     """A dict display's keys and values, evaluated left to right as pairs."""
     result = _empty_dict()
     index = 0
-    while index < len(flat):
+    while index < _storage_length(flat):
         result._insert(flat[index], flat[index + 1])
         index += 2
     return result

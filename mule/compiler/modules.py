@@ -2,11 +2,12 @@
 
 import os
 import sysconfig
+import tomllib
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
-from .inputs import read_source, source_exists
+from .inputs import directory_entries, directory_exists, read_source, source_exists
 from .main import compile_source
 
 STDLIB = Path(__file__).resolve().parents[2] / "stdlib"
@@ -29,6 +30,31 @@ class CompiledModule:
     missing: bool = False
     # The symbol prefix of a compiled source module.
     prefix: str = ""
+    # Namespace packages have no source body and may span several search roots.
+    namespace_paths: tuple[str, ...] = ()
+
+    @property
+    def package_paths(self):
+        if self.namespace_paths:
+            return self.namespace_paths
+        if self.path is not None and self.path.name == "__init__.py":
+            return (str(self.path.parent),)
+        return ()
+
+    def source(self):
+        return "" if self.path is None else read_source(self.path)
+
+    def import_info(self):
+        from .ir1tran import ImportInfo
+
+        return ImportInfo(
+            self.name,
+            self.entry,
+            None if self.path is None else str(self.path),
+            self.native,
+            self.missing,
+            self.namespace_paths,
+        )
 
 
 def search_path(first):
@@ -89,45 +115,74 @@ class ModuleCompiler:
         self.pending: deque[CompiledModule] = deque()
         # Every module name resolved, in first-request order.
         self.requested: dict[str, None] = {}
+        self.project_modules = ()
+
+    def configure_project(self):
+        """Read explicit image dependencies from the nearest project file."""
+        for directory in (self.roots[0], *self.roots[0].parents):
+            project = directory / "pyproject.toml"
+            if not source_exists(project):
+                continue
+            settings = (
+                tomllib.loads(read_source(project)).get("tool", {}).get("mule", {})
+            )
+            names = settings.get("include_modules", [])
+            try:
+                for name in names:
+                    if not name or not all(
+                        part.isidentifier() for part in name.split(".")
+                    ):
+                        raise ValueError(f"invalid module dependency {name!r}")
+            except (AttributeError, TypeError) as error:
+                raise ValueError(
+                    "tool.mule.include_modules must contain module names"
+                ) from error
+            self.project_modules = tuple(names)
+            if self.project_modules and directory not in self.roots:
+                self.roots = (self.roots[0], directory, *self.roots[1:])
+            return
 
     def path_for(self, name):
+        return self.location_for(name)[0]
+
+    def location_for(self, name):
         if name in NATIVE_MODULES or name == "__main__":
-            return None
+            return None, ()
         # The system module and its private decoder precede source-local modules.
         if name in ("sys", "_mule_codecs"):
             path = STDLIB / f"{name}.py"
-            return path if source_exists(path) else None
+            return (path, ()) if source_exists(path) else (None, ())
         relative = Path(*name.split("."))
         parent, _, child = name.rpartition(".")
         if parent in self.modules:
             package = self.modules[parent]
-            if package.path is None or package.path.name != "__init__.py":
-                return None
-            roots = (package.path.parent,)
+            if not package.package_paths:
+                return None, ()
+            roots = tuple(Path(path) for path in package.package_paths)
             relative = Path(child)
         else:
             roots = self.roots
-        return next(
-            (
-                candidate
-                for root in roots
-                for candidate in (
-                    root / relative / "__init__.py",
-                    root / relative.with_suffix(".py"),
-                )
-                if source_exists(candidate)
-            ),
-            None,
-        )
+        namespace_paths = []
+        for root in roots:
+            for candidate in (
+                root / relative / "__init__.py",
+                root / relative.with_suffix(".py"),
+            ):
+                if source_exists(candidate):
+                    return candidate, ()
+            directory = root / relative
+            if directory_exists(directory):
+                namespace_paths.append(str(directory))
+        return None, tuple(namespace_paths)
 
     def package_of(self, namespace):
         """The package relative imports in a module resolve against, or None."""
         if namespace == "__main__":
             return self.main_package or None
         descriptor = self.modules.get(namespace)
-        if descriptor is None or descriptor.path is None:
+        if descriptor is None:
             return None
-        if descriptor.path.name == "__init__.py":
+        if descriptor.package_paths:
             return descriptor.name
         return descriptor.name.rpartition(".")[0]
 
@@ -156,8 +211,8 @@ class ModuleCompiler:
             descriptor = CompiledModule(name, None, NATIVE_MODULES[name], native=True)
             self.modules[name] = descriptor
             return descriptor
-        path = self.path_for(name)
-        if path is None:
+        path, namespace_paths = self.location_for(name)
+        if path is None and not namespace_paths:
             descriptor = CompiledModule(name, None, "", missing=True)
             self.modules[name] = descriptor
             return descriptor
@@ -167,19 +222,49 @@ class ModuleCompiler:
         protocol_module = self.primitives is None or name.startswith("_")
         unit_prefix = self.prefix if protocol_module else ""
         prefix = f"{unit_prefix}mule_import_{name}:"
-        descriptor = CompiledModule(name, path, prefix + "mule_module", prefix=prefix)
+        descriptor = CompiledModule(
+            name,
+            path,
+            prefix + "mule_module",
+            prefix=prefix,
+            namespace_paths=namespace_paths,
+        )
         # Reserve identity before conversion so circular imports share one cache.
         self.modules[name] = descriptor
         if protocol_module:
             self.pending.append(descriptor)
         return descriptor
 
+    def include_patterns(self, patterns):
+        for pattern in patterns:
+            name = pattern.removesuffix(".")
+            if not name or not all(part.isidentifier() for part in name.split(".")):
+                continue
+            parts = name.split(".")
+            for end in range(1, len(parts) + 1):
+                descriptor = self.resolve(".".join(parts[:end]), None, None)
+            if not pattern.endswith(".") or not descriptor.package_paths:
+                continue
+            for location in descriptor.package_paths:
+                directory = Path(location)
+                for entry in directory_entries(directory):
+                    path = directory / entry
+                    child = path.stem if path.suffix == ".py" else path.name
+                    if child == "__init__" or not child.isidentifier():
+                        continue
+                    if path.is_file() and path.suffix != ".py":
+                        continue
+                    candidate = name + "." + child
+                    file, locations = self.location_for(candidate)
+                    if file is not None or locations:
+                        self.resolve(candidate, None, None)
+
     def compile_pending(self):
         """Compile every module imported so far, and those they import."""
         while self.pending:
             descriptor = self.pending.popleft()
             compilation = compile_source(
-                read_source(descriptor.path),
+                descriptor.source(),
                 str(descriptor.path),
                 imports=self,
                 prefix=descriptor.prefix,

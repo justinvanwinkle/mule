@@ -372,7 +372,17 @@ def substitute_lvar(new: Lvar, old: Lvar) -> None:
     if dest is None:
         raise IR1Error(f"{old!r} has no destination to substitute in")
     dest.accept(_SubstituteOperand(new, old))
+    old.dest = None
     new.dest = dest
+    reoptimize_lvar(new)
+
+
+def substitute_lvar_uses(new: Lvar | None, old: Lvar) -> None:
+    """Move OLD's producers into NEW, preserving NEW's other branch uses."""
+    for producer in list(old.uses):
+        delete_lvar_use(producer)
+        if new is not None:
+            add_lvar_use(producer, new)
     reoptimize_lvar(new)
 
 

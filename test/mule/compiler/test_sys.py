@@ -58,13 +58,15 @@ def test_argv_contains_native_arguments_and_shared_mutable_module_state(
     )
 
 
-def test_argv_rejects_undecodable_bytes_without_lossy_replacement(argv_program):
+def test_argv_preserves_undecodable_posix_bytes(argv_program):
     result = subprocess.run(
         [bytes(argv_program), b"\xff"], check=False, capture_output=True, timeout=10
     )
-    assert result.returncode != 0
-    assert result.stdout == b""
-    assert b"UnicodeDecodeError" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        b"sys True True\n2\n" + bytes(argv_program) + b"\n\xff\nadded\nreplaced added\n"
+    )
+    assert result.stderr == b""
 
 
 def test_native_operations_require_an_explicit_import(tmp_path):
