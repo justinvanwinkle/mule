@@ -890,16 +890,20 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                         let _registration = threads::Registration::enter();
                         ready_send.send(()).unwrap();
                         loop {
-                            threads::mule_safepoint();
+                            if threads::SAFEPOINT_REQUESTED.load(Ordering::Acquire) {
+                                threads::mule_safepoint();
+                            }
                             if finish.load(Ordering::Acquire) { break; }
                         }
                         done_send.send(()).unwrap();
                     });
                     ready.recv().unwrap();
                     threads::with_world_stopped(|| {
+                        assert!(threads::SAFEPOINT_REQUESTED.load(Ordering::Acquire));
                         finish.store(true, Ordering::Release);
                         assert!(matches!(done.try_recv(), Err(mpsc::TryRecvError::Empty)));
                     });
+                    assert!(!threads::SAFEPOINT_REQUESTED.load(Ordering::Acquire));
                     done.recv_timeout(Duration::from_secs(10)).unwrap();
                 });
                 println!("native safepoint=ok");

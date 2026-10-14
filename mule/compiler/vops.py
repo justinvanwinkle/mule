@@ -25,6 +25,7 @@ from .ctype import FLOAT, PYTHON_INTEGER, UNKNOWN
 from .vmdef import define_vop
 from .vop import (
     BOOLEAN,
+    BOXED_FLOAT,
     CLASS,
     DESCRIPTOR,
     DOUBLE,
@@ -127,10 +128,25 @@ def decimal(value: int) -> str:
 
 @define_vop("insert-safepoint")
 def insert_safepoint(gen, vop):
+    requested = gen.operation(
+        "load atomic i8, ptr @mule_safepoint_requested acquire, align 1"
+    )
+    pending = gen.operation(f"icmp ne i8 {requested}, 0")
+    park, ready = (
+        gen.fresh(name)[1:] for name in ("safepoint.park", "safepoint.ready")
+    )
+    gen.line(f"br i1 {pending}, label %{park}, label %{ready}")
+    gen.lines.append(park + ":")
     gen.line("call void @mule_safepoint()")
+    gen.line(f"br label %{ready}")
+    gen.lines.append(ready + ":")
 
 
-@define_vop("constant", args=(), results=(None,))
+@define_vop(
+    "constant",
+    args=(),
+    results=((DESCRIPTOR, IMMEDIATE, SIGNED, BOOLEAN, NULL, DOUBLE),),
+)
 def constant(gen, vop):
     result = vop.results[0]
     literal = vop.codegen_info
@@ -476,6 +492,64 @@ def _define_binary(operator, opcode):
 
 for _operator, _opcode in BINARY_OPCODES.items():
     _define_binary(_operator, _opcode)
+
+
+def _boxed_float_binary(operator, opcode):
+    @define_vop(
+        f"boxed-float-{operator.name.lower()}",
+        translate=fndb.BINARY[operator],
+        also_translate=(fndb.INPLACE_BINARY[operator],),
+        args=((DESCRIPTOR, DOUBLE), (DESCRIPTOR, DOUBLE)),
+        results=((DESCRIPTOR, DOUBLE),),
+        arg_types=((BOXED_FLOAT,), (BOXED_FLOAT,)),
+        result_types=((BOXED_FLOAT,),),
+        cost=-1,
+    )
+    def generator(gen, vop):
+        # Retain the operand slots through checked extraction: an error must
+        # leave both objects available to the shared ownership cleanup.
+        operands = []
+        for operand in vop.args:
+            if operand.tn.sc is DOUBLE:
+                operands.append(gen.load(operand))
+                continue
+            slot = gen.float_scratch()
+            status = gen.operation(
+                f"call i32 @mule_unbox_f64(ptr {gen.load(operand)}, ptr {slot})"
+            )
+            gen.check_status(status)
+            operands.append(gen.operation(f"load double, ptr {slot}"))
+        value = gen.float_arithmetic(opcode, *operands, check_zero=True)
+        left, right = (gen.take(operand) for operand in vop.args)
+        consumed = [
+            value
+            for operand, value in zip(vop.args, (left, right))
+            if operand.tn.sc is DESCRIPTOR
+        ]
+        if vop.results[0].tn.sc is DOUBLE:
+            gen.store(vop.results[0], value)
+            for operand in consumed:
+                gen.release(operand)
+            return
+        info = vop.codegen_info
+        if (
+            info is not None
+            and info.reuse_local is not None
+            and gen.local_owned(info.reuse_local)
+            and vop.args[0].tn.sc is DESCRIPTOR
+        ):
+            local = gen.operation(f"load ptr, ptr {gen.local_slot(info.reuse_local)}")
+            operation = (
+                f"call ptr @mule_box_f64_move(double {value}, ptr {left}, ptr {local})"
+            )
+            consumed = [right] if vop.args[1].tn.sc is DESCRIPTOR else []
+        else:
+            operation = f"call ptr @mule_box_f64(double {value})"
+        gen.pointer_result(vop.results[0], operation, consumed)
+
+
+for _operator, _opcode in _RAW_FLOAT_BINARY.items():
+    _boxed_float_binary(_operator, _opcode)
 
 
 def _define_unary(operator, opcode):
@@ -966,18 +1040,34 @@ def structural_unpack(gen, vop):
     )
     valid = gen.operation(f"icmp ne i32 {matched}, 0")
     fast = gen.fresh("unpack.tuple")[1:]
+    list_check = gen.fresh("unpack.list.check")[1:]
+    list_fast = gen.fresh("unpack.list")[1:]
     slow = gen.fresh("unpack.iterable")[1:]
     done = gen.fresh("unpack.done")[1:]
-    gen.line(f"br i1 {valid}, label %{fast}, label %{slow}")
+    gen.line(f"br i1 {valid}, label %{fast}, label %{list_check}")
     gen.lines.append(fast + ":")
     gen.release(count)
+    gen.line(f"br label %{done}")
+    gen.lines.append(list_check + ":")
+    matched_list = gen.operation(
+        f"call i32 @mule_list_shape_matches(ptr {value}, i64 {vop.codegen_info.arity})"
+    )
+    valid_list = gen.operation(f"icmp ne i32 {matched_list}, 0")
+    gen.line(f"br i1 {valid_list}, label %{list_fast}, label %{slow}")
+    gen.lines.append(list_fast + ":")
+    snapshot = gen.operation(f"call ptr @mule_storage_tuple(ptr {value})")
+    gen.release(value)
+    gen.release(count)
+    list_ready = gen.check_pointer(snapshot)
     gen.line(f"br label %{done}")
     gen.lines.append(slow + ":")
     result = gen.sequence_call("unpack", [value, count])
     unpacked = gen.check_pointer(result)
     gen.line(f"br label %{done}")
     gen.lines.append(done + ":")
-    merged = gen.operation(f"phi ptr [{value}, %{fast}], [{result}, %{unpacked}]")
+    merged = gen.operation(
+        f"phi ptr [{value}, %{fast}], [{snapshot}, %{list_ready}], [{result}, %{unpacked}]"
+    )
     gen.publish(vop.results[0], merged)
     gen.refine(vop.results[0].tn, merged)
 
@@ -1930,7 +2020,7 @@ class LiteralEmitter(ast.Visitor):
         return f"call ptr @mule_literal_int(ptr {self.module.text(decimal(value))})"
 
     def visit_FloatLiteral(self, node: ast.FloatLiteral) -> str:
-        return f"call ptr @mule_literal_float(double {double_constant(node.value)})"
+        return f"call ptr {self.module.constant_float(node)}()"
 
     def visit_TextLiteral(self, node: ast.TextLiteral) -> str:
         encoded = node.value.encode("utf-8", "surrogatepass")

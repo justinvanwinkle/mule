@@ -75,6 +75,7 @@ declare i32 @mule_link_globals(ptr, i64, ptr, ptr, i32)
 declare void @mule_traceback_here(ptr, i32, ptr, ptr, i32, ptr)
 declare void @mule_frame_push(ptr, ptr)
 declare void @mule_frame_pop()
+@mule_safepoint_requested = external global i8
 declare void @mule_safepoint()
 declare ptr @mule_namespace()
 declare i32 @mule_namespace_bind(ptr, ptr, ptr)
@@ -137,6 +138,7 @@ declare i32 @mule_unbox_i64(ptr, ptr)
 declare ptr @mule_box_i64(i64)
 declare i32 @mule_unbox_f64(ptr, ptr)
 declare ptr @mule_box_f64(double)
+declare ptr @mule_box_f64_move(double, ptr, ptr)
 declare i32 @mule_native_zero_division()
 declare i32 @mule_native_type_error()
 declare i32 @mule_native_initializer_error()
@@ -176,6 +178,7 @@ declare ptr @mule_storage_delete(ptr, ptr, ptr)
 declare ptr @mule_storage_tuple(ptr)
 declare ptr @mule_tuple_storage(ptr)
 declare i32 @mule_tuple_shape_matches(ptr, i64)
+declare i32 @mule_list_shape_matches(ptr, i64)
 declare nonnull ptr @mule_tuple_slot(ptr, i64)
 declare ptr @mule_storage_compatible(ptr, ptr)
 declare ptr @mule_integer_storage(ptr)
@@ -439,6 +442,7 @@ class ModuleGenerator:
         )
         self.data: dict[bytes, str] = {}
         self.tuple_constants: dict[tuple, TupleConstant] = {}
+        self.float_constants: dict[bytes, tuple[str, str]] = {}
         self.auxiliary: list[str] = []
         # Each runtime namespace's static cells (the runtime's ``GlobalCell``),
         # by name, linked once per namespace.
@@ -778,6 +782,39 @@ class ModuleGenerator:
     def text(self, value: str) -> str:
         return self.literal_data(value.encode("utf-8"))
 
+    def constant_float(self, literal: ast.FloatLiteral) -> str:
+        """A unit-owned immutable float, pooled by its exact binary64 bits."""
+        key = struct.pack(">d", literal.value)
+        existing = self.float_constants.get(key)
+        if existing is not None:
+            return existing[1]
+        index = len(self.float_constants)
+        slot = f"@mule.literal.float.slot.{index}"
+        entry = f"@mule.literal.float.{index}"
+        self.float_constants[key] = slot, entry
+        self.auxiliary.extend(
+            [
+                f"{slot} = internal global ptr null",
+                (
+                    f"define internal ptr {entry}() {{\n"
+                    "entry:\n"
+                    f"  %cached = load ptr, ptr {slot}\n"
+                    "  %present = icmp ne ptr %cached, null\n"
+                    "  br i1 %present, label %ready, label %build\n"
+                    "build:\n"
+                    f"  %built = call ptr @mule_literal_float(double {vops.double_constant(literal.value)})\n"
+                    f"  store ptr %built, ptr {slot}\n"
+                    "  br label %ready\n"
+                    "ready:\n"
+                    "  %value = phi ptr [%cached, %entry], [%built, %build]\n"
+                    "  %owned = call ptr @mule_retain(ptr %value)\n"
+                    "  ret ptr %owned\n"
+                    "}"
+                ),
+            ]
+        )
+        return entry
+
     def constant_tuple(self, literal: ast.Tuple) -> str:
         """Register dependencies before their parent, sharing only typed values."""
         key = literal.accept(_ConstantKey())
@@ -1034,7 +1071,7 @@ class ModuleGenerator:
 
     def unit_lifecycle(self, owned_imports) -> str:
         """The unit's initializer, which links its protocol cells, and its
-        finalizer, which releases its tuple constants and the modules it owns."""
+        finalizer, which releases its constants and the modules it owns."""
         linkage = "" if self.program.exports else "internal "
         # Protocol code runs under the protocol globals whoever calls it,
         # and the unit initializer runs after they exist. Only the unit with
@@ -1062,16 +1099,23 @@ class ModuleGenerator:
             + ("link.failed:\n  ret ptr null\n" if links else "")
             + "}"
         )
-        releases = [
-            (f"%import.{index}", self.import_cache(info))
-            for index, info in enumerate(owned_imports)
-            if not info.missing
-        ] + [
-            (f"%literal.root.{index}", constant.slot)
-            for index, constant in reversed(
-                list(enumerate(self.tuple_constants.values()))
-            )
-        ]
+        releases = (
+            [
+                (f"%import.{index}", self.import_cache(info))
+                for index, info in enumerate(owned_imports)
+                if not info.missing
+            ]
+            + [
+                (f"%literal.root.{index}", constant.slot)
+                for index, constant in reversed(
+                    list(enumerate(self.tuple_constants.values()))
+                )
+            ]
+            + [
+                (f"%float.root.{index}", slot)
+                for index, (slot, _) in enumerate(self.float_constants.values())
+            ]
+        )
         finalize = (
             f"define {linkage}void {unit_finalizer(self.program.unit)}() noinline optnone {{\n"
             "entry:\n"
@@ -1628,6 +1672,7 @@ class FunctionGenerator:
         self.entry_end = 0
         self.uses_out = False
         self.uses_reuse = False
+        self.uses_float_scratch = False
         self.owner_slots: dict[object, str] = {}
         if self.raw:
             self.owner_slots = {
@@ -1836,6 +1881,11 @@ class FunctionGenerator:
         self.uses_reuse = True
         return "%reuse.slot"
 
+    def float_scratch(self) -> str:
+        """One entry-block payload extraction slot, reused after each load."""
+        self.uses_float_scratch = True
+        return "%float.scratch"
+
     def publish(self, ref, value: str, *, release: bool = True) -> None:
         tn = ref.tn
         if tn in self.registers:
@@ -1989,14 +2039,18 @@ class FunctionGenerator:
             return self.operation(f"sitofp i64 {value} to double")
         return value
 
-    def float_arithmetic(self, opcode: str, left: str, right: str) -> str:
-        if opcode == "fdiv" and self.lambda_.policy.safety:
+    def float_arithmetic(
+        self, opcode: str, left: str, right: str, *, check_zero=None
+    ) -> str:
+        if check_zero is None:
+            check_zero = bool(self.lambda_.policy.safety)
+        if opcode == "fdiv" and check_zero:
             zero = self.operation(f"fcmp oeq double {right}, 0.0")
             failed, continuation = self.fresh("zero")[1:], self.fresh("nonzero")[1:]
             self.line(f"br i1 {zero}, label %{failed}, label %{continuation}")
             self.lines.append(failed + ":")
             self.line("call i32 @mule_native_zero_division()")
-            self.line(f"br label %{self.failure_target('error')}")
+            self.line(f"br label %{self.failure_target()}")
             self.lines.append(continuation + ":")
         return self.operation(f"{opcode} double {left}, {right}")
 
@@ -2470,6 +2524,8 @@ class FunctionGenerator:
             self.lines.insert(self.entry_end, "  %reuse.slot = alloca ptr")
         if self.uses_out:
             self.lines.insert(self.entry_end, "  %out = alloca ptr")
+        if self.uses_float_scratch:
+            self.lines.insert(self.entry_end, "  %float.scratch = alloca double")
 
     def emit_raw(self) -> str:
         """Native entry: borrowed raw slots and scalars, ownership only at edges."""

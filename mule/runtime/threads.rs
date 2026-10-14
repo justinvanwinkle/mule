@@ -12,6 +12,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread::{self, ThreadId};
 
+/// The compiled poll reads this byte with acquire ordering. The coordinator
+/// publishes/releases collection requests through this same atomic object.
+#[unsafe(export_name = "mule_safepoint_requested")]
+pub static SAFEPOINT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
     Running,
@@ -28,15 +33,19 @@ struct Registry {
 struct Coordinator {
     registry: Mutex<Registry>,
     changed: Condvar,
-    requested: AtomicBool,
+    requested: &'static AtomicBool,
 }
 
 impl Coordinator {
     fn new() -> Self {
+        Self::with_request_flag(&SAFEPOINT_REQUESTED)
+    }
+
+    fn with_request_flag(requested: &'static AtomicBool) -> Self {
         Self {
             registry: Mutex::new(Registry::default()),
             changed: Condvar::new(),
-            requested: AtomicBool::new(false),
+            requested,
         }
     }
 
@@ -257,7 +266,16 @@ mod tests {
     use std::time::Duration;
 
     fn isolated() -> &'static Coordinator {
-        Box::leak(Box::new(Coordinator::new()))
+        Box::leak(Box::new(Coordinator::with_request_flag(
+            Box::leak(Box::new(AtomicBool::new(false))),
+        )))
+    }
+
+    #[test]
+    fn compiled_poll_uses_the_coordinators_same_byte_sized_atomic() {
+        assert_eq!(std::mem::size_of::<AtomicBool>(), 1);
+        assert_eq!(std::mem::align_of::<AtomicBool>(), 1);
+        assert!(std::ptr::eq(coordinator().requested, &SAFEPOINT_REQUESTED));
     }
 
     #[test]

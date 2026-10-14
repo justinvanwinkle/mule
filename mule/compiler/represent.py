@@ -115,7 +115,9 @@ def select_tn_representation(tn, *, raw=False):
     for sc in candidates:
         cost = 0
         for ref in (*tn.reads, *tn.writes):
-            restriction = _restriction(ref)
+            restriction = tn.primitive_type.operand_restriction(
+                _restriction(ref), raw=raw
+            )
             if restriction is not None and sc not in restriction:
                 cost += 1
         if best_cost is None or cost < best_cost:

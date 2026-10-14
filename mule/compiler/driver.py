@@ -397,7 +397,7 @@ def build_runtime(
         str(library),
     ]
     if crate_type == "staticlib" and lto:
-        command.extend(["-C", "linker-plugin-lto"])
+        command.extend(["-C", "linker-plugin-lto", "-C", "lto=fat"])
     result = subprocess.run(command, check=False, capture_output=True, text=True)
     if result.returncode:
         raise ToolchainError(
@@ -541,7 +541,7 @@ class Build:
 
     def object(self, unit: Step) -> Step:
         toolchain = self.toolchain
-        lto = unit.name in ("__main__", "main unit")
+        lto = toolchain.optimize
         name = f"{unit.name} object optimize={toolchain.optimize}"
 
         def action(inputs, directory):

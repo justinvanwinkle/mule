@@ -2239,7 +2239,7 @@ def next_item(value):
 
 def unpack(value, count):
     count = _integer_storage(count)
-    if _tuple_storage(value):
+    if _type_of(value) is tuple:
         length = _storage_length(value)
         if length < count:
             raise ValueError("not enough values to unpack")

@@ -38,6 +38,7 @@ from .node import (
 from .vmdef import operand_restriction_ok, primitive_type_ok, templates_for
 from .vop import (
     BOOLEAN_T,
+    BOXED_FLOAT,
     FIXNUM,
     IMMORTAL_T,
     NONE_T,
@@ -96,7 +97,9 @@ class _PrimitiveTypeOf(ValueTypeVisitor):
     def visit_ImmortalType(self, value_type: ValueType) -> PrimitiveType:
         return IMMORTAL_T
 
-    visit_FloatType = visit_ValueType
+    def visit_FloatType(self, value_type: ValueType) -> PrimitiveType:
+        return T if value_type.may_be_unbound else BOXED_FLOAT
+
     visit_TextType = visit_ValueType
     visit_BytesType = visit_ValueType
     visit_FunctionType = visit_ValueType

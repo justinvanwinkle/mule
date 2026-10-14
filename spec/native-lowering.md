@@ -28,6 +28,91 @@ Rust supplies low-level primitives; the existing language-level Rust runtime is
 bootstrap debt. GMP supplies arbitrary-precision arithmetic. No additional
 library is introduced.
 
+## Proven floats in object entries
+
+LTN distinguishes a proven, bound Python float from an unknown descriptor and
+selects binary64 addition, subtraction, multiplication, and division templates
+for pairs of these values, including augmented assignment. This follows
+`src/compiler/x86-64/float.lisp`'s `double-float-op` templates and its `frob`
+definitions for `+`, `-`, `*`, and `/`, and `src/compiler/ltn.lisp`'s
+`find-template-for-ltn-policy`.
+
+The Python adaptation keeps observable operands and results as owned descriptors:
+Python exposes float identity and aliases even in an otherwise numeric function.
+Each template extracts the physical binary64 payload through the existing
+checked primitive, emits LLVM arithmetic without fast-math flags, and boxes the
+result at a descriptor boundary. Division checks both signs of zero, including
+at safety zero, and follows the active exception handler with ownership cleanup.
+Unknown values and Python `float` annotations (which also admit integers) remain
+eligible for normal protocol dispatch rather than assuming an exact float.
+Subclass arithmetic in that pre-existing generic path has a separate known
+compatibility gap; these templates do not extend its coverage.
+
+Float literals in object entries are cached as unit-owned constants, following
+`src/compiler/ir2tran.lisp`'s `constant-tn` and `emit-constant`: repeated references
+load an existing constant rather than allocate a float on every execution of a
+loop. The cache key includes all binary64 bits, so positive and negative zero
+remain distinct. Each use receives an owned reference; unit shutdown releases
+the constant root after cached tuples. Unlike SBCL's image constant space, Mule
+initializes these native object roots on first use and releases them explicitly,
+as it already does for tuple constants. Python permits sharing immutable float
+constants; observable arithmetic results still receive result boxes. This removes
+literal allocation without unboxing observable locals or changing float aliases.
+
+For an augmented assignment immediately stored back into its owned local, the
+boxed float template may reuse the old physical float box. The existing IR1/IR2
+`reuse_local` proof identifies the two owning references (local and operand);
+the physical primitive additionally checks that the candidate is an ordinary
+float with exactly two references, or an exclusive operand moved out of its
+local by the existing last-read analysis. Extra aliases, subclasses, and nonlocal
+assignments allocate a fresh box. Extraction and zero-divisor checks precede
+mutation, so a failed operation leaves the local unchanged.
+
+This differs from SBCL's `src/compiler/x86-64/float.lisp` `double-float-op` and
+`move-from-double` VOPs: SBCL normally keeps arithmetic in non-descriptor registers and
+allocates boxes when crossing a descriptor boundary. Mule's object entries still
+keep observable Python locals boxed. Mule's explicit owned-reference model
+permits a proof of exclusive ownership that SBCL's tracing collector does not
+provide through reference counts; when that proof holds, reusing a physical box
+cannot change an observable alias. The Rust
+primitive only validates physical ownership, stores a binary64 payload, and
+transfers the consumed operand reference into the result on reuse. Otherwise it
+allocates the result and releases that operand. This avoids an atomic retain
+followed immediately by a release of the same box; alias counts and the local's
+separate ownership remain intact. Arithmetic and specialization remain in the compiler.
+The optimization saves allocation, without relaxing arithmetic checks or relying
+on annotations to discard observable aliases.
+
+Representation selection also keeps a proven float arithmetic intermediate in
+the `double` storage class when every producer/consumer template permits that
+representation. This follows `src/compiler/represent.lisp`'s
+`select-tn-representation` cost comparison: descriptor boundaries outweigh a
+preference for machine storage. In object entries, unspecified operand
+restrictions on these float TNs require descriptors, because general coercion
+VOP insertion (`coerce-vop-operands` in SBCL) is still incomplete. Moves into
+locals, calls, identity operations, returns, and literal materialization
+therefore stay boxed. A multiply consumed directly by addition can remain a
+double, avoiding its temporary allocation. Arithmetic order is preserved;
+LLVM receives separate operations without fast-math or reassociation flags.
+The constant VOP explicitly admits machine scalar results. A float literal used
+only by these arithmetic templates therefore becomes an exact LLVM double
+constant, as SBCL's float VOPs load `fp-immediate` constants. Literal uses that
+cross object boundaries still load the pooled object and preserve its identity.
+
+## Fixed-length sequence unpacking
+
+SBCL `src/compiler/seqtran.lisp` transforms `elt` and `%setelt` into storage-specific
+operations for proven arrays or lists. Mule's existing structural-unpack VOP
+likewise guards a fixed-size exact tuple before using physical slots. It now
+also guards an exact builtin list of the required length and creates an owned
+tuple snapshot through the existing physical storage primitive. Snapshotting
+before any target assignment preserves Python's prefetch order if a target's
+setter mutates the source list. Wrong lengths and
+custom iterables use the compiled Python unpack algorithm. Tuple/list subclasses
+also use that algorithm, so overriding `__iter__` remains observable. The Rust
+addition only checks physical kind, subtype storage, and length; it implements
+neither iteration nor language-level unpacking errors.
+
 ## Analysis and representation facts
 
 AST and IR1 nodes select visitor methods through their own `accept` methods.

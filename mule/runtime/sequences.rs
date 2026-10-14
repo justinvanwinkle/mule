@@ -199,8 +199,20 @@ unsafe fn index(value: Value) -> Option<usize> {
 pub unsafe extern "C" fn mule_tuple_shape_matches(value: Value, arity: usize) -> i32 {
     unsafe {
         if !value.is_null() && !object::is_fixnum(value) {
-            if let Data::Args(values, ..) = &(*value).data {
-                return i32::from(values.len() == arity);
+            if let Data::Args(values, class, ..) = &(*value).data {
+                return i32::from(class.is_null() && values.len() == arity);
+            }
+        }
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_list_shape_matches(value: Value, arity: usize) -> i32 {
+    unsafe {
+        if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::List(values, class, ..) = &(*value).data {
+                return i32::from(class.is_null() && values.len() == arity);
             }
         }
         0

@@ -99,3 +99,78 @@ entry:
     assert "<main>:" in assembly
     assert "\tcall" not in assembly
     assert "ret" in assembly
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("optimize", (False, True))
+def test_lto_exposes_imported_unit_bodies_to_the_native_optimizer(tmp_path, optimize):
+    from mule.compiler.artifacts import Graph, Step
+    from mule.compiler.driver import Build, Toolchain, lto_linker
+
+    library = """define i64 @mule_test_increment(i64 %value) {
+entry:
+  %answer = add i64 %value, 2
+  ret i64 %answer
+}
+"""
+    main = """declare i64 @mule_test_increment(i64)
+define i32 @main() {
+entry:
+  %value = call i64 @mule_test_increment(i64 40)
+  %wrong = icmp ne i64 %value, 42
+  %status = zext i1 %wrong to i32
+  ret i32 %status
+}
+"""
+    toolchain = Toolchain(optimize=optimize)
+    with Graph(1) as graph:
+        builder = Build(graph, toolchain)
+        objects = []
+        for name, llvm in (("library", library), ("__main__", main)):
+            source = graph.text(name + " source", llvm)
+
+            def write_unit(inputs, directory):
+                (directory / "unit.ll").write_text(inputs[0].text)
+
+            unit = graph.step(
+                name,
+                lambda name=name, source=source: Step(
+                    graph,
+                    name,
+                    inputs=[source],
+                    settings={"step": "lto probe"},
+                    outputs=("unit.ll",),
+                    action=write_unit,
+                ),
+            )
+            object_file = builder.object(unit)
+            graph.run(object_file)
+            objects.append(str(object_file.path("unit.o")))
+    executable = tmp_path / "cross-unit-probe"
+    subprocess.run(
+        [
+            toolchain.clang,
+            *toolchain.link_flags(),
+            f"--ld-path={lto_linker(toolchain.rustc)}",
+            *objects,
+            "-o",
+            str(executable),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    result = subprocess.run([executable], check=False, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assembly = subprocess.run(
+        ["objdump", "-d", "--disassemble=main", executable],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "<main>:" in assembly
+    if optimize:
+        assert "mule_test_increment" not in assembly
+        assert "\tcall" not in assembly
+    else:
+        assert "mule_test_increment" in assembly

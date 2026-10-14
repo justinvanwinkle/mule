@@ -82,12 +82,19 @@ class PrimitiveType:
     scs: tuple[StorageClass, ...]
     # Representation-selection data: the native class layout for instances.
     layout: object = field(default=None, compare=False)
+    # Object entries without coercion VOPs must respect these implicit boundaries.
+    object_boundary_scs: tuple[StorageClass, ...] | None = None
 
     def __repr__(self):
         return f"<PrimitiveType {self.name}>"
 
     def admits(self, sc: StorageClass) -> bool:
         return sc in self.scs
+
+    def operand_restriction(self, restriction, *, raw):
+        if restriction is None and not raw:
+            return self.object_boundary_scs
+        return restriction
 
 
 # Any Python object.
@@ -104,6 +111,10 @@ IMMORTAL_T = PrimitiveType("immortal", (IMMEDIATE,))
 SIGNED64 = PrimitiveType("signed64", (SIGNED, DESCRIPTOR))
 # A binary64 float (``float``/``float64`` contracts): raw, or a boxed object.
 FLOAT64 = PrimitiveType("float64", (DOUBLE, DESCRIPTOR))
+# A proven Python float whose object identity and ownership are preserved.
+BOXED_FLOAT = PrimitiveType(
+    "boxed-float", (DOUBLE, DESCRIPTOR), object_boundary_scs=(DESCRIPTOR,)
+)
 # Loop state.
 RANGE_T = PrimitiveType("range-state", (RANGE,))
 # A native class object: owned, or borrowed once its layout is guarded.

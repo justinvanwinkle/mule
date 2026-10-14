@@ -25,6 +25,8 @@ frontend coverage does not establish complete Python compatibility.
   templates, representation selection, guarded calls, and their SBCL source references.
 - [Optimization policies](optimization-policies.md): target class restrictions,
   native struct representation, safety checks, and debug levels.
+- [Compiled program performance](performance.md): runtime comparisons,
+  diagnostic workloads, and measured optimization progress.
 - [Dependency policy](dependencies.md): prohibited CPython linking and library approvals.
 - [SBCL compiler](sbcl-compiler.md): source-backed baseline architecture.
 - [Python and LLVM changes](python-changes.md): retained analysis and required adaptations.

@@ -123,8 +123,15 @@ transition trampoline (`handle_safepoint_violation`). Mule instead makes that
 transition through an ordinary native ABI call, preserving LLVM's owned slots
 and Rust call frames without redirecting an asynchronously interrupted Rust
 frame. Mule's nonmoving, explicitly owned heap keeps parked roots live without
-relocating them. The fast poll takes no mutex; it still adds a native call and atomic read to entries and
-loop headers. This is collection coordination infrastructure, not a complete
+relocating them. Following `src/compiler/x86-64/macros.lisp`'s `emit-safepoint`,
+the common poll is now emitted in the compiled body: an acquire byte load from
+the physical runtime's exported request flag and a branch. Only a pending
+request calls the native parking handshake. The flag is the same atomic used
+by the process coordinator; no second state or speculative omission of polls
+is introduced. This retains the existing cooperative adaptation instead of
+SBCL's protected-page trap, while removing call prologues and coordinator
+initialization checks from each inactive poll. Polls remain at the same entry
+and loop positions. This is collection coordination infrastructure, not a complete
 collector: root enumeration and foreign-call guards around actual blocking
 services remain required before enabling workers. Physical heap membership is
 shared under a mutex, and cycle collection holds the stop-the-world guard while
@@ -240,7 +247,11 @@ Rust's code generation also uses LLVM. No C runtime source is compiled.
 
 The native build uses full cross-language LLVM LTO: rustc produces a
 bitcode static library with `-C linker-plugin-lto -C lto=fat`, and Clang compiles
-Mule IR with `-flto=full`. The LLD shipped with the selected Rust toolchain links
+every Mule IR unit with `-flto=full`, including builtins and imported modules.
+Compiling a library unit directly to machine code hides its compiled Python
+protocols from link-time optimization, so optimized builds retain those units
+as bitcode until the final link. Unoptimized builds still emit native objects.
+The LLD shipped with the selected Rust toolchain links
 and optimizes both at level 3. Using that linker avoids reading newer Rust LLVM
 bitcode with an older system linker. Native runtime-probe `rlib` builds continue
 to use rustc's ordinary Rust library format.

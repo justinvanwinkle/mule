@@ -1,0 +1,155 @@
+"""Proven floats use native arithmetic without changing Python object semantics."""
+
+import pytest
+
+from mule.compiler import emit_llvm
+from mule.compiler.ctype import FLOAT, REAL, UNKNOWN, FloatType
+from mule.compiler.ltn import primitive_type_of
+from mule.compiler.vop import BOXED_FLOAT, T
+from test.mule.compiler.test_exception_groups import compare
+from test.mule.compiler.test_native import run_native
+
+
+def test_only_bound_concrete_float_facts_select_float_templates():
+    assert primitive_type_of(FLOAT) is BOXED_FLOAT
+    for fact in (REAL, UNKNOWN, FloatType(may_be_unbound=True)):
+        assert primitive_type_of(fact) is T
+
+
+@pytest.mark.parametrize(
+    "operator, opcode", [("+", "fadd"), ("-", "fsub"), ("*", "fmul"), ("/", "fdiv")]
+)
+def test_inferred_floats_emit_native_arithmetic_in_object_entry(operator, opcode):
+    llvm = emit_llvm(
+        f"def run(n):\n value = 0.5\n for index in range(n):\n"
+        f"  value = value {operator} 1.5\n return value\nprint(run(10))\n"
+    )
+    body = llvm.split('define internal ptr @"mule_fn_1.body"(')[1].split("\n}")[0]
+    assert f"{opcode} double" in body
+    assert "call i32 @mule_unbox_f64" in body
+    assert "call ptr @mule_box_f64" in body
+    assert body.count("alloca double") == 1
+    assert "alloca double" not in body.split("br label", 1)[1]
+
+
+def test_augmented_float_assignment_selects_guarded_box_reuse():
+    llvm = emit_llvm(
+        "def run(n):\n value = 0.5\n for i in range(n):\n  value += 1.5\n return value\n"
+    )
+    assert "call ptr @mule_box_f64_move" in llvm
+
+
+def test_arithmetic_intermediate_stays_double_until_the_local_store():
+    llvm = emit_llvm(
+        "def run(n):\n total = 0.0\n value = 0.5\n for i in range(n):\n  total += value * 0.125\n return total\n"
+    )
+    body = llvm.split('define internal ptr @"mule_fn_1.body"(')[1].split("\n}")[0]
+    for multiply in body.split("fmul double")[1:]:
+        before_add = multiply.split("fadd double", 1)[0]
+        assert "@mule_box_f64" not in before_add
+        assert "@mule_unbox_f64" in before_add  # The other operand remains an object.
+
+
+def test_arithmetic_literal_is_loaded_without_a_box_or_reference_updates():
+    llvm = emit_llvm(
+        "def run(n):\n value = 0.5\n for i in range(n):\n  value += 1.5\n return value\n"
+    )
+    assert "fadd double" in llvm
+    assert "0x3FF8000000000000" in llvm
+    assert "call ptr @mule_literal_float(double 0x3FF8000000000000)" not in llvm
+
+
+def test_inferred_float_arithmetic_preserves_aliases_and_special_values(tmp_path):
+    compare(
+        tmp_path,
+        """
+def run(n):
+    value = 0.5
+    original = value
+    for index in range(n):
+        value += 0.5
+    print(value, original, value is original)
+    print((1e308 * 2.0).hex(), (-0.0 * 1.5).hex())
+    print((1e308 - -1e308).hex())
+    for zero in (0.0, -0.0):
+        try:
+            value /= zero
+        except ZeroDivisionError:
+            print('zero division', value)
+run(0)
+run(3)
+class Custom:
+    def __add__(self, other):
+        return 'custom add'
+def add(value):
+    return value + 1.5
+print(add(Custom()), add(2.0), add(2))
+def doubled(n):
+    value = 1.5
+    for index in range(n):
+        previous = value
+        value += value
+        print(previous, value, previous is value)
+doubled(3)
+def escaped(n):
+    value = 0.5
+    for index in range(n):
+        middle = value * 0.125
+        alias = middle
+        print(middle is alias, middle.hex())
+        value = middle + 0.5
+escaped(3)
+""",
+    )
+
+
+def test_unknown_arguments_keep_protocol_dispatch():
+    llvm = emit_llvm("def add(value):\n return value + 1.5\n")
+    body = llvm.split('define internal ptr @"mule_fn_1.body"(')[1].split("\n}")[0]
+    assert "call i32 @mule_unbox_f64" not in body
+
+
+def test_float_literal_pool_preserves_bits_and_releases_unit_roots(tmp_path):
+    source = """
+def values():
+    return (0.0, -0.0, 0.5, 0.5)
+for value in values():
+    print(value.hex())
+print(values() == values())
+"""
+    llvm = emit_llvm(source)
+    assert "@mule.literal.float.slot.0 = internal global ptr null" in llvm
+    assert "call void @mule_release(ptr %float.root.0)" in llvm
+    compare(tmp_path, source)
+
+
+def test_float_pool_keys_distinguish_both_signs_of_zero():
+    from mule import ast
+    from mule.compiler import compile_program
+    from mule.compiler.codegen import ModuleGenerator
+
+    module = ModuleGenerator(compile_program(""))
+    positive = module.constant_float(ast.FloatLiteral(value=0.0))
+    negative = module.constant_float(ast.FloatLiteral(value=-0.0))
+    assert positive != negative
+    assert module.constant_float(ast.FloatLiteral(value=0.0)) == positive
+    assert module.constant_float(ast.FloatLiteral(value=-0.0)) == negative
+
+
+def test_object_float_division_keeps_python_error_at_safety_zero(tmp_path):
+    result = run_native(
+        tmp_path,
+        """
+from mule import optimize
+@optimize(speed=3, safety=0)
+def run():
+    value = 1.5
+    try:
+        value /= -0.0
+    except ZeroDivisionError:
+        print('zero division', value)
+run()
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "zero division 1.5\n"

@@ -1,0 +1,64 @@
+"""Storage unpacking preserves iteration overrides and prefetches before stores."""
+
+from mule.compiler import emit_llvm
+from test.mule.compiler.test_exception_groups import compare
+
+
+def test_unknown_sequence_unpack_checks_storage_before_iteration():
+    llvm = emit_llvm("def unpack(value):\n a, b = value\n return a + b\n")
+    assert "call i32 @mule_list_shape_matches" in llvm
+    assert "call ptr @mule_storage_tuple" in llvm
+
+
+def test_unpack_subclasses_and_wrong_lengths_use_iteration(tmp_path):
+    compare(
+        tmp_path,
+        """
+class CustomTuple(tuple):
+    def __iter__(self):
+        return iter((8, 9))
+class CustomList(list):
+    def __iter__(self):
+        return iter((10, 11))
+for value in ((1, 2), [3, 4], CustomTuple((5, 6)), CustomList([5, 6]), [], [1], [1, 2, 3]):
+    try:
+        a, b = value
+        print(a, b)
+    except ValueError:
+        print('wrong length')
+class Traced:
+    def __iter__(self):
+        for value in (1, 2, 3):
+            print('yield', value)
+            yield value
+try:
+    a, b = Traced()
+except ValueError:
+    print('checked extra value')
+""",
+    )
+
+
+def test_list_unpack_prefetches_before_target_setter_mutates_source(tmp_path):
+    compare(
+        tmp_path,
+        """
+values = [1, 2]
+class Sink:
+    def __init__(self):
+        self._first = 0
+    @property
+    def first(self):
+        return self._first
+    @first.setter
+    def first(self, value):
+        values.clear()
+        self._first = value
+sink = Sink()
+sink.first, b = values
+print(sink.first, b, values)
+source = [[1, 2], [3, 4]]
+(a, b), (c, d) = source
+print(a, b, c, d)
+""",
+    )

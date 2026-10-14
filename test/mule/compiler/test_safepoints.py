@@ -47,3 +47,11 @@ def test_straight_line_function_has_entry_poll_and_no_extra_polls():
     llvm = emit_llvm("def identity(value):\n return value\n", "identity.py")
     # Module body and the function's general compiled body each poll once.
     assert llvm.count("call void @mule_safepoint()") == 2
+    assert (
+        llvm.count("load atomic i8, ptr @mule_safepoint_requested acquire, align 1")
+        == 2
+    )
+    for poll in llvm.split("load atomic i8, ptr @mule_safepoint_requested")[1:]:
+        before_call = poll.split("call void @mule_safepoint()", 1)[0]
+        assert "icmp ne i8" in before_call
+        assert "br i1" in before_call

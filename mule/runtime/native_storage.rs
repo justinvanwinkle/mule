@@ -181,6 +181,91 @@ pub unsafe extern "C" fn mule_box_f64(value: f64) -> Value {
     unsafe { object::new_value(Data::Float(value, std::ptr::null_mut(), std::ptr::null_mut())) }
 }
 
+/// Publish a binary64 result, reusing an exclusive operand or the two references
+/// proven by the compiler to be an owned local and its arithmetic operand.
+/// The operand is consumed on every path; the local argument is borrowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_box_f64_move(value: f64, operand: Value, local: Value) -> Value {
+    if object::has_error() {
+        unsafe { object::release(operand) };
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        if !operand.is_null() && !object::is_fixnum(operand) {
+            let references = (*operand).reference_count();
+            let exclusive = references == 1 || references == 2 && operand == local;
+            if let Data::Float(payload, class, attributes) = &mut (*operand).data {
+                if exclusive && class.is_null() && attributes.is_null() {
+                    *payload = value;
+                    return operand;
+                }
+            }
+        }
+        let result = mule_box_f64(value);
+        object::release(operand);
+        result
+    }
+}
+
+#[cfg(test)]
+mod float_box_tests {
+    use super::*;
+
+    #[test]
+    fn an_exclusive_moved_operand_reuses_its_box() {
+        unsafe {
+            let operand = mule_box_f64(1.5);
+            let result = mule_box_f64_move(2.0, operand, std::ptr::null_mut());
+            assert_eq!(result, operand);
+            assert_eq!((*result).reference_count(), 1);
+            object::release(result);
+        }
+    }
+
+    #[test]
+    fn proven_local_and_operand_reuse_the_box_with_owned_result() {
+        unsafe {
+            let local = mule_box_f64(1.5);
+            let operand = object::retain(local);
+            let result = mule_box_f64_move(-0.0, operand, local);
+            assert_eq!(result, local);
+            assert_eq!((*result).reference_count(), 2);
+            let Data::Float(payload, ..) = &(*result).data else { panic!("missing payload"); };
+            assert_eq!(payload.to_bits(), (-0.0_f64).to_bits());
+            object::release(local);
+            object::release(result);
+        }
+    }
+
+    #[test]
+    fn an_extra_alias_preserves_the_old_payload() {
+        unsafe {
+            let local = mule_box_f64(1.5);
+            let operand = object::retain(local);
+            let alias = object::retain(local);
+            let result = mule_box_f64_move(2.0, operand, local);
+            assert_ne!(result, local);
+            let Data::Float(payload, ..) = &(*alias).data else { panic!("missing payload"); };
+            assert_eq!(*payload, 1.5);
+            object::release(alias);
+            object::release(local);
+            object::release(result);
+        }
+    }
+
+    #[test]
+    fn two_references_without_the_local_proof_do_not_reuse() {
+        unsafe {
+            let original = mule_box_f64(1.5);
+            let operand = object::retain(original);
+            let result = mule_box_f64_move(2.0, operand, std::ptr::null_mut());
+            assert_ne!(result, original);
+            object::release(original);
+            object::release(result);
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mule_native_zero_division() -> i32 {
     object::error("ZeroDivisionError", "float division by zero");
