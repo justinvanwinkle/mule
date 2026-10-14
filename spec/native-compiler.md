@@ -22,8 +22,10 @@ or Python installation paths. Program source files are read as UTF-8.
 `mule script.py args`, `mule -m module args` (a package runs its `__main__`
 submodule), `mule -c command args` and `mule - args`. Options end at the program;
 the remaining arguments become `sys.argv[1:]`, and `sys.argv[0]` is the script as
-given, the module's absolute file path, `-c` or `-`. Only those options and `-h`
-are accepted, and there is no interactive mode. Imports search the script's
+given, the module's absolute file path, `-c` or `-`. `-B` is accepted as a no-op
+before the program: Mule never writes Python bytecode caches. Help (`-h`),
+native optimization (`-O0`, `-O3`), and verbosity (`-v`, `-vv`) options are also
+accepted; there is no interactive mode. Imports search the script's
 directory (or the working directory for `-m`, `-c` and `-`), `PYTHONPATH`,
 Mule's `stdlib/`, then the host environment's site-packages, in `sys.path` order.
 Third-party packages compile from the same sources CPython would import.

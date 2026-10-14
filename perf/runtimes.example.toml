@@ -1,0 +1,20 @@
+# Run from the repository root:
+# uv run python -m perf.suite.perfutils run --config perf/runtimes.example.toml
+# Replace commands/cwd to compare other CPython installations or Mule checkouts.
+# Paths in cwd are relative to this config. Command paths are relative to cwd.
+baseline = "cpython"
+
+[[runtime]]
+name = "cpython"
+cwd = ".."
+command = ["{python}", "{source}"]
+version_command = ["{python}", "--version"]
+
+[[runtime]]
+name = "mule-o3"
+cwd = ".."
+command = ["{binary}"]
+build = ["{python}", "-m", "mule.compiler", "{source}", "-o", "{binary}", "-O", "3"]
+
+# A different Mule checkout should use its own compiler-host Python executable,
+# e.g. /absolute/path/to/other-checkout/.venv/bin/python, and that checkout's cwd.

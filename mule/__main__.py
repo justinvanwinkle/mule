@@ -47,6 +47,11 @@ def help_parser():
         help="run library module as a script (terminates option list)",
     )
     parser.add_argument(
+        "-B",
+        action="store_true",
+        help="do not write bytecode caches (already the default; accepted for compatibility)",
+    )
+    parser.add_argument(
         "-O",
         metavar="LEVEL",
         choices=("0", "3"),
@@ -89,6 +94,8 @@ def parse(argv, *, options=None):
     while index < len(argv):
         argument = argv[index]
         index += 1
+        if argument == "-B":
+            continue
         if argument.startswith("-v") and set(argument[1:]) == {"v"}:
             options.verbosity += len(argument) - 1
             continue

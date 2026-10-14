@@ -6,6 +6,14 @@ that target.
 
 ## Reproducible comparisons
 
+The new [standalone performance suite](../perf/README.md) lives in `perf/suite/`.
+Its standard-library-only harness runs as `python -m perf.suite.perfutils`, with
+configurable interpreter/build commands, three annotation variants per case,
+separate kernel/preparation/process timings, correctness validation, and offline
+HTML/SVG reports. The initial cases cover integer traversal, graph shortest
+paths, access-log aggregation, and in-process HTTP parsing/routing. Socket/server
+load tests and memory measurement are not implemented in this first set.
+
 `tools/bench_native.py` builds programs at LLVM and Rust optimization level 3
 with full LTO, checks their stdout against CPython 3.14, then alternates direct
 native and Python executions. Compilation is measured separately and excluded
