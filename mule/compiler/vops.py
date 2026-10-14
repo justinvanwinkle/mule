@@ -125,6 +125,11 @@ def decimal(value: int) -> str:
 # known calls.
 
 
+@define_vop("insert-safepoint")
+def insert_safepoint(gen, vop):
+    gen.line("call void @mule_safepoint()")
+
+
 @define_vop("constant", args=(), results=(None,))
 def constant(gen, vop):
     result = vop.results[0]
@@ -1951,6 +1956,7 @@ class LiteralEmitter(ast.Visitor):
         return f"call ptr {self.module.constant_tuple(node)}()"
 
 
+INSERT_SAFEPOINT = insert_safepoint
 CONSTANT = constant
 LOAD_LOCAL = load_local
 LOAD_GLOBAL = load_global
@@ -1975,6 +1981,7 @@ __all__ = [
     "CONSTANT",
     "DISCARD",
     "FULL_CALL",
+    "INSERT_SAFEPOINT",
     "JUMP",
     "LOAD_CLOSURE",
     "LOAD_GLOBAL",

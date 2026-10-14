@@ -7,17 +7,23 @@ rules, and the main thread's identity is constant. Starting another thread
 raises RuntimeError, because generated programs do not create OS threads yet.
 """
 
+__mule_builtin_implementation__ = True
+
+from _mule_native import thread_ident as _ident
+from _mule_native import thread_native_id as _native_id
+from _mule_native import main_thread_ident as _main_ident
+
 error = RuntimeError
 TIMEOUT_MAX = 9223372036.0
-_MAIN_THREAD = 1
+_MAIN_THREAD = _main_ident()
 
 
 def get_ident():
-    return _MAIN_THREAD
+    return _ident()
 
 
 def get_native_id():
-    return _MAIN_THREAD
+    return _native_id()
 
 
 def _get_main_thread_ident():

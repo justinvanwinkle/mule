@@ -83,7 +83,7 @@ unsafe fn referenceable(value: Value) -> bool {
     unsafe {
         !value.is_null()
             && !object::is_fixnum(value)
-            && (*value).references != usize::MAX
+            && (*value).reference_count() != usize::MAX
     }
 }
 

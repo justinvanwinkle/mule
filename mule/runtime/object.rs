@@ -7,7 +7,7 @@ use std::ffi::{CStr, c_char, c_void};
 pub type Value = *mut Object;
 pub type Native = unsafe extern "C" fn(Value, Value) -> Value;
 pub struct Object {
-    pub references: usize,
+    pub references: std::sync::atomic::AtomicUsize,
     pub tracked: bool,
     pub data: Data,
 }
@@ -457,39 +457,50 @@ pub unsafe fn fixnum(value: Value) -> i64 {
 pub unsafe fn new_value(data: Data) -> Value {
     let tracked = data.cycle_candidate();
     let value = Box::into_raw(Box::new(Object {
-        references: 1,
+        references: std::sync::atomic::AtomicUsize::new(1),
         tracked,
         data,
     }));
     if tracked { crate::gc::track(value); }
     value
 }
+impl Object {
+    pub fn reference_count(&self) -> usize {
+        self.references.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn remove_reference(&self) -> bool {
+        use std::sync::atomic::{Ordering, fence};
+        let previous = self.references.fetch_sub(1, Ordering::Release);
+        assert!(previous > 0, "release of an unowned heap value");
+        if previous != 1 { return false; }
+        fence(Ordering::Acquire);
+        true
+    }
+}
+
 pub unsafe fn retain(value: Value) -> Value {
     unsafe {
-        if !value.is_null() && !is_fixnum(value) && (*value).references != usize::MAX {
-            (*value).references += 1;
+        if !value.is_null() && !is_fixnum(value) && (*value).reference_count() != usize::MAX {
+            let previous = (*value).references.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            assert!(previous > 0 && previous < isize::MAX as usize,
+                    "invalid or overflowing heap reference count");
         }
         value
     }
 }
 pub unsafe fn release(value: Value) {
     unsafe {
-        if value.is_null() || is_fixnum(value) || (*value).references == usize::MAX {
+        if value.is_null() || is_fixnum(value) || (*value).reference_count() == usize::MAX {
             return;
         }
-        (*value).references -= 1;
-        if (*value).references != 0 {
-            return;
-        }
+        if !(*value).remove_reference() { return; }
         if crate::weakref::has_references(value) {
             // Callbacks see the referent already cleared; they may resurrect
             // nothing, because no reference to it remains reachable.
-            (*value).references = 1;
+            (*value).references.store(1, std::sync::atomic::Ordering::Relaxed);
             crate::weakref::clear(value);
-            (*value).references -= 1;
-            if (*value).references != 0 {
-                return;
-            }
+            if !(*value).remove_reference() { return; }
         }
         let owned = Box::from_raw(value);
         if owned.tracked {
@@ -530,7 +541,7 @@ unsafe impl Sync for ImmortalObject {}
 
 #[unsafe(export_name = "mule.undefined")]
 static UNDEFINED: ImmortalObject = ImmortalObject(Object {
-    references: usize::MAX,
+    references: std::sync::atomic::AtomicUsize::new(usize::MAX),
     tracked: false,
     data: Data::Undefined,
 });
@@ -542,19 +553,19 @@ pub fn is_undefined(value: Value) -> bool {
 }
 #[unsafe(export_name = "mule.none")]
 static NONE: ImmortalObject = ImmortalObject(Object {
-    references: usize::MAX,
+    references: std::sync::atomic::AtomicUsize::new(usize::MAX),
     tracked: false,
     data: Data::None,
 });
 #[unsafe(export_name = "mule.false")]
 static FALSE: ImmortalObject = ImmortalObject(Object {
-    references: usize::MAX,
+    references: std::sync::atomic::AtomicUsize::new(usize::MAX),
     tracked: false,
     data: Data::Bool(false),
 });
 #[unsafe(export_name = "mule.true")]
 static TRUE: ImmortalObject = ImmortalObject(Object {
-    references: usize::MAX,
+    references: std::sync::atomic::AtomicUsize::new(usize::MAX),
     tracked: false,
     data: Data::Bool(true),
 });
@@ -834,7 +845,7 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
         // This stack object borrows the argument slice without allocating a vector.
         // Native callbacks may retain individual arguments, never the argument view.
         let mut view = Object {
-            references: usize::MAX,
+            references: std::sync::atomic::AtomicUsize::new(usize::MAX),
             tracked: false,
             data: Data::ArgumentView {
                 values: args.as_ptr(),
@@ -874,7 +885,7 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
                     return std::ptr::null_mut();
                 }
                 let mut view = Object {
-                    references: usize::MAX,
+                    references: std::sync::atomic::AtomicUsize::new(usize::MAX),
                     tracked: false,
                     data: Data::ReceiverArgs {
                         receiver,
@@ -2436,4 +2447,58 @@ pub unsafe extern "C" fn mule_arg(args: Value, index: i32) -> Value {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_run(native: *mut c_void) -> i32 {
     unsafe { builtins::run(native) }
+}
+
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_owned_reference_transfers_preserve_parent_lifetime() {
+        unsafe {
+            let value = new_value(Data::Text(Text::from_rust_str("rooted"), std::ptr::null_mut(), std::ptr::null_mut()));
+            let address = value as usize;
+            // Parent ownership protects the address throughout every child.
+            // No language callbacks or mutable heap storage are shared.
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    scope.spawn(move || {
+                        for _ in 0..50_000 {
+                            let owned = retain(address as Value);
+                            release(owned);
+                        }
+                    });
+                }
+            });
+            assert_eq!((*value).reference_count(), 1);
+            let Data::Text(text, ..) = &(*value).data else { panic!("lost rooted storage"); };
+            assert_eq!(text.to_rust_string().as_deref(), Some("rooted"));
+            release(value);
+        }
+    }
+
+    #[test]
+    fn tagged_and_immortal_values_keep_their_ownership_rules() {
+        unsafe {
+            let immediate = small(42);
+            assert_eq!(retain(immediate), immediate);
+            release(immediate);
+            let immortal = none_value();
+            assert_eq!(retain(immortal), immortal);
+            release(immortal);
+            assert_eq!((*immortal).reference_count(), usize::MAX);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "release of an unowned heap value")]
+    fn zero_count_release_is_a_lifetime_violation() {
+        let value = Object {
+            references: std::sync::atomic::AtomicUsize::new(0),
+            tracked: false,
+            data: Data::None,
+        };
+        value.remove_reference();
+    }
 }

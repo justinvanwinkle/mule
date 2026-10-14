@@ -3,10 +3,10 @@
 
 use crate::object::{self, Data, Value};
 use crate::text::Text;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void};
 use std::ptr::null_mut;
+use std::sync::{Mutex, OnceLock};
 
 type Entry = unsafe extern "C" fn() -> Value;
 type Execute = unsafe extern "C" fn(Value) -> Value;
@@ -20,17 +20,30 @@ struct Artifact {
     paths: Vec<String>,
 }
 
-thread_local! {
-    static ENTRIES: RefCell<HashMap<String, Artifact>> = RefCell::new(HashMap::new());
-    static SEARCH_PATH: RefCell<Vec<String>> = RefCell::new(Vec::new());
+#[derive(Default)]
+struct Image {
+    entries: HashMap<String, Artifact>,
+    search_path: Vec<String>,
+}
+
+fn image() -> &'static Mutex<Image> {
+    static IMAGE: OnceLock<Mutex<Image>> = OnceLock::new();
+    IMAGE.get_or_init(|| Mutex::new(Image::default()))
+}
+
+fn registered_artifact(name: &str) -> Option<Artifact> {
+    image().lock().expect("compiled image registry poisoned").entries.get(name).cloned()
+}
+
+fn registered_search_path() -> Vec<String> {
+    image().lock().expect("compiled image registry poisoned").search_path.clone()
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_set_image_search_path(paths: *const *const c_char, count: i64) {
     unsafe {
-        SEARCH_PATH.with_borrow_mut(|stored| {
-            *stored = (0..count as usize).filter_map(|index| object::name_from_c(*paths.add(index)).map(str::to_owned)).collect();
-        });
+        let stored = (0..count as usize).filter_map(|index| object::name_from_c(*paths.add(index)).map(str::to_owned)).collect();
+        image().lock().expect("compiled image registry poisoned").search_path = stored;
     }
 }
 
@@ -40,12 +53,11 @@ unsafe extern "C" fn image_search_path(_: Value, args: Value) -> Value {
             object::error("TypeError", "image_search_path takes no arguments");
             return null_mut();
         }
-        SEARCH_PATH.with_borrow(|paths| {
-            let values: Vec<Value> = paths.iter().map(|path| object::new_value(Data::Text(Text::from_rust_str(path), null_mut(), null_mut()))).collect();
-            let result = object::mule_sequence_tuple(values.len() as isize, values.as_ptr());
-            for value in values { object::release(value); }
-            result
-        })
+        let paths = registered_search_path();
+        let values: Vec<Value> = paths.iter().map(|path| object::new_value(Data::Text(Text::from_rust_str(path), null_mut(), null_mut()))).collect();
+        let result = object::mule_sequence_tuple(values.len() as isize, values.as_ptr());
+        for value in values { object::release(value); }
+        result
     }
 }
 
@@ -64,7 +76,7 @@ pub unsafe extern "C" fn mule_register_compiled_module(
             filename: if filename.is_null() { None } else { object::name_from_c(filename).map(str::to_owned) },
             paths: (0..count as usize).filter_map(|index| object::name_from_c(*paths.add(index)).map(str::to_owned)).collect(),
         };
-        ENTRIES.with_borrow_mut(|entries| { entries.insert(name.into(), artifact); });
+        image().lock().expect("compiled image registry poisoned").entries.insert(name.into(), artifact);
     }
 }
 
@@ -85,7 +97,7 @@ unsafe fn artifact(args: Value, count: usize) -> Option<Option<Artifact>> {
             object::error("TypeError", "compiled module name must be text");
             return None;
         };
-        Some(ENTRIES.with_borrow(|entries| entries.get(&name).cloned()))
+        Some(registered_artifact(&name))
     }
 }
 
@@ -156,5 +168,46 @@ pub unsafe fn populate(globals: Value) -> bool {
             if !bound { return false; }
         }
         true
+    }
+}
+
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    unsafe extern "C" fn entry() -> Value { null_mut() }
+    unsafe extern "C" fn execute(_: Value) -> Value { null_mut() }
+
+    #[test]
+    fn compiled_image_metadata_is_shared_and_snapshots_are_independent() {
+        let paths = [c"/native/package".as_ptr()];
+        let entry_address = entry as Entry as usize;
+        let execute_address = execute as Execute as usize;
+        unsafe {
+            mule_register_compiled_module(c"registry_test.module".as_ptr(), entry_address as *mut c_void,
+                entry_address as *mut c_void, execute_address as *mut c_void, c"/native/module.py".as_ptr(), paths.as_ptr(), 1);
+            mule_set_image_search_path(paths.as_ptr(), 1);
+        }
+        // Only physical code pointers and owned host strings cross threads.
+        // This invokes neither a compiled module nor any language callback.
+        std::thread::spawn(move || {
+            let mut artifact = registered_artifact("registry_test.module").expect("image entry missing on worker");
+            assert_eq!(artifact.entry as usize, entry_address);
+            assert_eq!(artifact.create as usize, entry_address);
+            assert_eq!(artifact.execute as usize, execute_address);
+            assert_eq!(artifact.filename.as_deref(), Some("/native/module.py"));
+            assert_eq!(artifact.paths, ["/native/package"]);
+            assert_eq!(registered_search_path(), ["/native/package"]);
+            artifact.paths.clear();
+            artifact.filename.as_mut().unwrap().clear();
+            let mut paths = registered_search_path();
+            paths.clear();
+        }).join().unwrap();
+        let artifact = registered_artifact("registry_test.module").unwrap();
+        assert_eq!(artifact.paths, ["/native/package"]);
+        assert_eq!(artifact.filename.as_deref(), Some("/native/module.py"));
+        assert_eq!(registered_search_path(), ["/native/package"]);
+        assert!(registered_artifact("registry_test.absent").is_none());
     }
 }

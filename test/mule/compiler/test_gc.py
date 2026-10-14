@@ -3,6 +3,30 @@
 from test.mule.compiler.test_exception_groups import compare
 
 
+def test_weak_callback_can_query_heap_during_cycle_collection(tmp_path):
+    compare(
+        tmp_path,
+        """
+import gc
+import weakref
+gc.disable()
+gc.collect()
+class Node:
+    pass
+events = []
+def callback(ref):
+    events.append((ref() is None, len(gc.get_objects()) > 0, gc.collect() == 0))
+def make():
+    node = Node()
+    node.link = node
+    return weakref.ref(node, callback)
+ref = make()
+gc.collect()
+print(ref() is None, events)
+""",
+    )
+
+
 def test_storage_subclass_tracking_survives_final_release_and_collection(tmp_path):
     compare(
         tmp_path,

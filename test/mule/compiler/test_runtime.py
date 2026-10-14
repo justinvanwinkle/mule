@@ -9,6 +9,27 @@ import pytest
 from mule.compiler.driver import build_runtime
 
 
+def test_runtime_internal_invariants(tmp_path):
+    rustc = shutil.which("rustc")
+    assert rustc is not None, "native runtime tests require rustc"
+    source = Path(__file__).resolve().parents[3] / "mule/runtime/lib.rs"
+    executable = tmp_path / "runtime-invariants"
+    compiled = subprocess.run(
+        [rustc, "--edition=2024", "--test", "-Copt-level=3", source, "-o", executable],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    assert compiled.returncode == 0, compiled.stderr
+    result = subprocess.run(
+        [executable], check=False, capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "test result: ok." in result.stdout
+    assert "; 0 failed;" in result.stdout
+
+
 @pytest.fixture(scope="module")
 def runtime_probe(tmp_path_factory):
     rustc = shutil.which("rustc")
@@ -55,6 +76,8 @@ def runtime_probe(tmp_path_factory):
         ("function_metadata", "definitions=10000\n'first'\n'second'\n42\n42\n4\n"),
         ("builtin_call", "15\n"),
         ("truth", "0 1\n"),
+        ("native_safepoint_handshake", "native safepoint=ok\n"),
+        ("shared_heap_registry", "shared heap=ok\n"),
         ("class_ownership", "classes=ok\n"),
         ("dynamic_tagged_attributes", "dynamic=ok\n"),
         ("tuple_slots", "'owned child'\n"),

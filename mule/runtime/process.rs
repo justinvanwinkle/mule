@@ -1634,6 +1634,7 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
             || !crate::multiplex::populate(globals)
             || !crate::networking::populate(globals)
             || !crate::gc::populate(globals)
+            || !crate::thread_identity::populate(globals)
             || !crate::buffers::populate(globals)
             || !crate::faults::populate(globals)
             || !crate::coroutine::populate(globals)
@@ -1749,9 +1750,9 @@ mod tests {
             for tuple in [false, true] {
                 let values = codes.map(object::small).to_vec();
                 let sequence = object::new_value(if tuple {
-                    Data::Args(values, ..)
+                    Data::Args(values, null_mut(), null_mut())
                 } else {
-                    Data::List(values, ..)
+                    Data::List(values, null_mut(), null_mut())
                 });
                 let result = invoke(module, "text_from_codepoints", &[sequence]);
                 let Data::Text(text, ..) = &(*result).data else {

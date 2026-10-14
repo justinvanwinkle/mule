@@ -482,7 +482,7 @@ pub unsafe fn try_binary_reuse(
         if !object::is_fixnum(right) && !matches!(&(*right).data, Data::BigInt(..)) {
             return None;
         }
-        let references = (*left).references;
+        let references = (*left).reference_count();
         if references != 1 && !(references == 2 && !slot.is_null() && *slot == left) {
             return None;
         }

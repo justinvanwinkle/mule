@@ -87,9 +87,74 @@ edge to the dummy component tail. This records that error unwinding leaves the
 component and ensures the block belongs to a region; it emits no control transfer
 or runtime instruction. Cyclic paths without exits retain their real loop edges.
 
+Heap ownership counters use atomic updates as one prerequisite for shared
+native-thread lifetime management. A retain uses a relaxed increment while
+already owning or protecting the value; release uses a release decrement and
+an acquire fence before final destruction. Immortal values retain their
+unchanged sentinel, and invalid zero-count/overflow transfers abort rather than
+wrap silently. Weak-reference callback pinning uses the same counter operations.
+GC count snapshots and numeric exclusive-reference checks read through the
+counter accessor.
+
+SBCL `src/runtime/thread.c`, `init_new_thread`, coordinates registration with
+GC before publishing a native worker, and `unregister_thread` uses compare-and-swap to publish
+remembered sets. SBCL traces its heap rather than using reference
+counts. Mule's existing explicit ownership model therefore needs atomic lifetime
+updates in addition to that registry/safepoint machinery. Atomic read-modify-write
+operations add synchronization cost to heap retains/releases; tagged values and
+immortal values still avoid them. This change alone does not enable language
+callbacks on additional threads: shared slot transfer, container access, builtin
+registry sharing and foreign-service integration remain required. A numeric count snapshot
+also does not replace the compiler's unshared-slot/operand ownership proof.
+
+IR2 now emits an `insert-safepoint` VOP after each function's binding prologue
+and at natural/strange loop headers, following SBCL `ir2-convert-bind` and
+`ir2-convert`. Polls remain present at every optimization and debug level.
+The native main entry registers its mutator before initializing compiled
+protocols and unregisters after releasing its roots. The physical thread registry
+supports cooperative collection requests, parked mutators, and foreign-service
+guards whose return waits for collection to finish. New registrations wait for
+an active collector before publishing the mutator.
+
+SBCL `src/runtime/safepoint.c` uses protected-page traps and GC phases. Mule's
+LLVM backend uses an atomic request flag followed by a mutex/condition-variable
+handshake. SBCL's trap handler redirects the saved machine context to its GC
+transition trampoline (`handle_safepoint_violation`). Mule instead makes that
+transition through an ordinary native ABI call, preserving LLVM's owned slots
+and Rust call frames without redirecting an asynchronously interrupted Rust
+frame. Mule's nonmoving, explicitly owned heap keeps parked roots live without
+relocating them. The fast poll takes no mutex; it still adds a native call and atomic read to entries and
+loop headers. This is collection coordination infrastructure, not a complete
+collector: root enumeration and foreign-call guards around actual blocking
+services remain required before enabling workers. Physical heap membership is
+shared under a mutex, and cycle collection holds the stop-the-world guard while
+snapshotting counts and releasing unreachable edges. No registry mutex is held
+while invoking weak-reference callbacks. Pending exception and reentrant-GC
+state remain per-thread.
+
+Compiled image entries and initial search metadata are also shared across native
+threads. The physical registry stores native initialization/create/execute
+pointers and owned strings under one mutex. Readers clone the metadata and
+release the mutex before allocating language values or entering compiled
+module code. SBCL `src/runtime/coreparse.c`, `load_core_file` and
+`process_directory`, likewise install code spaces and image entry addresses
+for the process, rather than creating a separate image for each mutator.
+Mule's module-index table adapts this to linked compilation units; finder,
+loader, and import-lock behavior remains in compiled Python. This shares image
+metadata, not initialized module objects or builtin class registries.
+
+Thread identity primitives query POSIX `pthread_self` and Linux `gettid`.
+Compiled `_thread` exposes those distinct identities instead of a constant
+placeholder. Native main startup records its POSIX identity before compiled
+protocol initialization, so the main-thread snapshot does not depend on which
+thread first imports `_thread`. SBCL `src/runtime/thread.c`,
+`ASSOCIATE_OS_THREAD`, likewise records `pthread_self` in each native thread.
+Identity queries create no workers and do not change the current single-thread
+lock implementation or unsupported thread-start boundary.
+
 Native thread creation remains unimplemented. Before compiled Python callbacks
 can run on additional OS threads, the runtime must distinguish shared interpreter
-state (builtin classes, module registry, code metadata, heap membership) from
+state (builtin classes, module registry, code metadata) from
 per-thread state (pending exceptions, handler stacks, active frames, constructor
 forwarding, coroutine state). Current thread-local copies of interpreter state
 cannot initialize a new worker correctly.
@@ -100,8 +165,9 @@ runs; `src/code/target-thread.lisp`, `start-thread`, establishes language TLS
 and invokes the compiled trampoline. `src/compiler/ir2tran.lisp` inserts
 safepoints at function environment entry and loop headers when the policy
 requires them; `src/compiler/x86-64/c-call.lisp` records foreign-call transitions.
-Mule requires the corresponding IR2 operations and native thread/root registry,
-including collection coordination while a thread blocks in an OS service.
+Mule's entry/loop polls and mutator registry implement the initial coordination
+stages. Collection coordination while a thread blocks in an OS service and
+registration of all foreign language entries remain required.
 
 Mule's explicit reference-counted ownership additionally requires synchronized
 reference transfer and safe load/retain or replace/release of shared global and

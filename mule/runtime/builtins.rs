@@ -373,6 +373,8 @@ pub unsafe fn run(native: *mut c_void) -> i32 {
     unsafe { run_protocols(native, std::ptr::null_mut()) }
 }
 pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 {
+    crate::thread_identity::initialize_main_identity();
+    let _registration = crate::threads::Registration::enter();
     unsafe {
         object::clear_error();
         if native.is_null() {
@@ -387,7 +389,7 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
         object::release(name);
         object::bind(globals, "__builtins__", namespace());
         let mut args = Object {
-            references: usize::MAX,
+            references: std::sync::atomic::AtomicUsize::new(usize::MAX),
             tracked: false,
             data: Data::Args(Vec::new(), std::ptr::null_mut(), std::ptr::null_mut()),
         };

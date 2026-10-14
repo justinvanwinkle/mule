@@ -70,14 +70,14 @@ unsafe fn specialized_abi(globals: Value) {
             assert_eq!(mule_retain(value), address);
             release(value);
             release(value);
-            assert_eq!((*value).references, usize::MAX);
+            assert_eq!((*value).reference_count(), usize::MAX);
         }
         assert_eq!(mule_retain(small(42)), small(42));
         let owned = text("retained");
         assert_eq!(mule_retain(owned), owned);
-        assert_eq!((*owned).references, 2);
+        assert_eq!((*owned).reference_count(), 2);
         release(owned);
-        assert_eq!((*owned).references, 1);
+        assert_eq!((*owned).reference_count(), 1);
         release(owned);
 
         let callable = function(globals, record_frame, c"frame");
@@ -140,9 +140,9 @@ unsafe fn bigint_reuse() {
         let left = integer(decimal);
         let result = mule_binary_reuse(2, left, small(-2), 0, ptr::null_mut());
         assert_eq!(result, left);
-        assert_eq!((*left).references, 2);
+        assert_eq!((*left).reference_count(), 2);
         release(left);
-        assert_eq!((*result).references, 1);
+        assert_eq!((*result).reference_count(), 1);
         check(result, "-2535301200456458802993406410752");
         release(result);
 
@@ -152,11 +152,11 @@ unsafe fn bigint_reuse() {
         let left = retain(slot);
         let result = mule_binary_reuse(0, left, small(7), 0, &mut slot);
         assert_eq!(result, left);
-        assert_eq!((*result).references, 3);
+        assert_eq!((*result).reference_count(), 3);
         release(left);
         release(slot);
         slot = result;
-        assert_eq!((*slot).references, 1);
+        assert_eq!((*slot).reference_count(), 1);
         check(slot, "1267650600228229401496703205383");
         release(slot);
 
@@ -213,7 +213,7 @@ unsafe fn bigint_reuse() {
         let left = integer("4611686018427387904");
         let result = mule_binary_reuse(1, left, small(1), 0, ptr::null_mut());
         assert_eq!(result, small(4611686018427387903));
-        assert_eq!((*left).references, 1);
+        assert_eq!((*left).reference_count(), 1);
         release(left);
 
         let left = integer(decimal);
@@ -441,7 +441,7 @@ unsafe fn class_ownership(globals: Value) {
             small(50)
         );
         let bound = mule_get_attr(instance, c"add".as_ptr());
-        assert_eq!((*instance).references, 2);
+        assert_eq!((*instance).reference_count(), 2);
         assert_eq!(mule_call(bound, 1, argument.as_ptr()), small(50));
 
         let old_callback = function(globals, double_value, c"old_callback");
@@ -477,15 +477,15 @@ unsafe fn class_ownership(globals: Value) {
             mule_set_attr_cached(instance, c"value".as_ptr(), owned, &mut cache),
             0
         );
-        assert_eq!((*owned).references, 2);
+        assert_eq!((*owned).reference_count(), 2);
         let saved = mule_get_attr_cached(instance, c"value".as_ptr(), &mut cache);
         assert_eq!(saved, owned);
-        assert_eq!((*owned).references, 3);
+        assert_eq!((*owned).reference_count(), 3);
         assert_eq!(
             mule_set_attr_cached(instance, c"value".as_ptr(), small(42), &mut cache),
             0
         );
-        assert_eq!((*owned).references, 2);
+        assert_eq!((*owned).reference_count(), 2);
         release(saved);
         release(owned);
 
@@ -594,11 +594,11 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 let values = [retain(child), retain(child)];
                 let tuple = mule_sequence_tuple_owned(2, values.as_ptr());
                 assert!(!tuple.is_null());
-                assert_eq!((*child).references, 3);
+                assert_eq!((*child).reference_count(), 3);
                 let extracted = mule_tuple_slot(tuple, 1);
                 release(tuple);
                 release(child);
-                assert_eq!((*extracted).references, 1);
+                assert_eq!((*extracted).reference_count(), 1);
                 if !show(extracted) {
                     return ptr::null_mut();
                 }
@@ -613,7 +613,7 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 assert!(!pending_tuple.is_null());
                 assert_eq!(error_kind(), "ValueError");
                 release(pending_tuple);
-                assert_eq!((*held).references, 1);
+                assert_eq!((*held).reference_count(), 1);
                 clear_error();
                 release(held);
                 assert!(mule_sequence_tuple_owned(-1, ptr::null()).is_null());
@@ -876,6 +876,71 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 if !show(result) {
                     return ptr::null_mut();
                 }
+            }
+            "native_safepoint_handshake" => {
+                use mule_runtime::threads;
+                use std::sync::{atomic::AtomicBool, mpsc};
+                use std::time::Duration;
+                let finish = AtomicBool::new(false);
+                let (ready_send, ready) = mpsc::channel();
+                let (done_send, done) = mpsc::channel();
+                std::thread::scope(|scope| {
+                    let finish = &finish;
+                    scope.spawn(move || {
+                        let _registration = threads::Registration::enter();
+                        ready_send.send(()).unwrap();
+                        loop {
+                            threads::mule_safepoint();
+                            if finish.load(Ordering::Acquire) { break; }
+                        }
+                        done_send.send(()).unwrap();
+                    });
+                    ready.recv().unwrap();
+                    threads::with_world_stopped(|| {
+                        finish.store(true, Ordering::Release);
+                        assert!(matches!(done.try_recv(), Err(mpsc::TryRecvError::Empty)));
+                    });
+                    done.recv_timeout(Duration::from_secs(10)).unwrap();
+                });
+                println!("native safepoint=ok");
+            }
+            "shared_heap_registry" => {
+                use mule_runtime::{gc, object, threads};
+                use std::sync::mpsc;
+                let (ready_send, ready) = mpsc::channel();
+                let (finish_send, finish) = mpsc::channel();
+                std::thread::scope(|scope| {
+                    scope.spawn(move || {
+                        let mut registration = threads::Registration::enter();
+                        let live = object::new_value(Data::List(Vec::new(), ptr::null_mut(), ptr::null_mut()));
+                        let cycle = object::new_value(Data::List(Vec::new(), ptr::null_mut(), ptr::null_mut()));
+                        let Data::List(values, ..) = &mut (*cycle).data else { unreachable!() };
+                        values.push(retain(cycle));
+                        release(cycle);
+                        let foreign = registration.foreign();
+                        ready_send.send((live as usize, cycle as usize)).unwrap();
+                        finish.recv().unwrap();
+                        drop(foreign);
+                        release(live);
+                    });
+                    let (live, cycle) = ready.recv().unwrap();
+                    let live = retain(live as Value);
+                    assert!(gc::is_tracked(live));
+                    assert!(gc::is_tracked(cycle as Value));
+                    let module = mule_namespace();
+                    assert!(gc::populate(module));
+                    let collect = object::lookup(module, "gc_collect");
+                    let result = mule_call(collect, 0, ptr::null());
+                    assert_eq!(result, small(1));
+                    release(result);
+                    assert!(!gc::is_tracked(cycle as Value));
+                    assert!(gc::is_tracked(live));
+                    assert_eq!((*live).reference_count(), 2);
+                    release(module);
+                    finish_send.send(()).unwrap();
+                    release(live);
+                });
+                println!("shared heap=ok");
             }
             "truth" => {
                 let zero = integer("0");

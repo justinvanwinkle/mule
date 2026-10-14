@@ -507,6 +507,10 @@ class _Converter(NodeVisitor):
 
     def convert_block(self, block) -> None:
         self.current = self.component.ir2_blocks[block]
+        # SBCL ir2-convert: Bind emits its own entry poll, while the loop
+        # analysis identifies natural and strange loop heads here.
+        if block.loop is not None and block.loop.is_header(block):
+            self.emit(vops.INSERT_SAFEPOINT, block.start.next)
         for node in block.nodes():
             node.accept(self)
         self.convert_transfer(block)
@@ -556,6 +560,8 @@ class _Converter(NodeVisitor):
                     results=(result,),
                 )
                 self.emit_discard(node, result)
+
+        self.emit(vops.INSERT_SAFEPOINT, node)
 
     def cell(self, node, var):
         """Load the cell object of a captured-and-assigned variable."""
