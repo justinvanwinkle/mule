@@ -3,6 +3,47 @@
 from test.mule.compiler.test_exception_groups import compare
 
 
+def test_assertion_traceback_survives_hook_relays_after_handler_exit(tmp_path):
+    result = compare(
+        tmp_path,
+        """
+def fail():
+    assert False
+def hook():
+    try:
+        yield
+    except BaseException as error:
+        raise error
+def run():
+    wrappers = [hook(), hook()]
+    for wrapper in wrappers:
+        next(wrapper)
+    exception = None
+    previous = None
+    try:
+        fail()
+    except BaseException as error:
+        exception = error
+        previous = error.__traceback__
+    finally:
+        for wrapper in reversed(wrappers):
+            try:
+                wrapper.throw(exception)
+            except BaseException as error:
+                exception = error
+    traceback = exception.__traceback__
+    found_previous, found_fail = False, False
+    while traceback is not None:
+        found_previous = found_previous or traceback is previous
+        found_fail = found_fail or traceback.tb_frame.f_code.co_name == 'fail'
+        traceback = traceback.tb_next
+    print(type(exception).__name__, found_previous, found_fail)
+run()
+""",
+    )
+    assert result.stderr == ""
+
+
 def test_suspended_handler_state_is_private_and_close_preserves_generator_exit(
     tmp_path,
 ):
