@@ -30,21 +30,9 @@ def parse(source, filename='<unknown>', mode='exec', *,
     Equivalent to compile(source, filename, mode, PyCF_ONLY_AST).
     Pass type_comments=True to get back type comments where the syntax allows.
     """
-    flags = PyCF_ONLY_AST
-    if optimize > 0:
-        flags |= PyCF_OPTIMIZED_AST
-    if type_comments:
-        flags |= PyCF_TYPE_COMMENTS
-    if feature_version is None:
-        feature_version = -1
-    elif isinstance(feature_version, tuple):
-        major, minor = feature_version  # Should be a 2-tuple.
-        if major != 3:
-            raise ValueError(f"Unsupported major version: {major}")
-        feature_version = minor
-    # Else it should be an int giving the minor version for 3.x.
-    return compile(source, filename, mode, flags,
-                   _feature_version=feature_version, optimize=optimize)
+    from _ast_parse import parse as parse_owned
+    return parse_owned(source, filename, mode, type_comments=type_comments,
+                       feature_version=feature_version, optimize=optimize)
 
 
 def literal_eval(node_or_string):

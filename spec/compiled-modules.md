@@ -599,6 +599,17 @@ the unmodified Benchmarks Game programs compile or execute.
 
 ### Compiled initialization and imports
 
+The public ast parsing interface uses Mule's handwritten parser and owned
+syntax nodes, then a compiled visitor converts them to the Python AST interface
+classes in _ast. The compiler continues consuming its owned nodes directly.
+SBCL src/code/reader.lisp reads language forms and src/compiler/ir1tran.lisp
+converts those forms; Mule retains its own reader/frontend boundary. Python's
+public AST reflection requires this additional interface conversion, including
+load/store contexts and UTF-8 byte columns, without changing the owned tree's
+Unicode-character spans. No host parser, evaluator or CPython linkage is used.
+The standard Mule package exposes the same parser/AST implementation sources;
+numeric annotation imports remain compiler declarations.
+
 Imports from mule reserve recognized numeric contracts and optimize as lexical
 compiler declarations; other names remain ordinary runtime package imports.
 Mixed imports preserve each path independently. SBCL src/compiler/ir1tran.lisp
