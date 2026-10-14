@@ -69,6 +69,12 @@ def test_python_optimization_count_is_capped_at_two():
     assert parse(["-OOOO", "script.py"]).options.optimize == 2
 
 
+def test_repeated_parser_debug_and_quiet_options_remain_boolean():
+    options = parse(["-ddqq", "script.py"]).options
+    assert options.debug == 1
+    assert options.quiet == 1
+
+
 @pytest.mark.parametrize(
     ("option", "field"),
     [
@@ -129,6 +135,7 @@ def test_repeated_version_requests_are_retained(argv):
         ["--compile-extra"],
         ["-B", "--compile", "a.py"],
         ["--check-hash-based-pycs", "invalid"],
+        ["--check-hash-based-pycs=never"],
         ["--hel"],
     ],
 )

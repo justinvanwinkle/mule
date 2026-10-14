@@ -37,6 +37,7 @@ class _Option:
     flags: tuple[str, ...]
     settings: dict
     takes_value: bool = False
+    allow_long_equals: bool = True
 
     def install(self, parser):
         parser.add_argument(*self.flags, **self.settings)
@@ -71,7 +72,13 @@ _PYTHON_OPTIONS = (
     ),
     _Option(
         ("-d",),
-        dict(dest="debug", action="count", default=0, help="enable parser debugging"),
+        dict(
+            dest="debug",
+            action="store_const",
+            const=1,
+            default=0,
+            help="enable parser debugging",
+        ),
     ),
     _Option(
         ("-E",),
@@ -163,7 +170,8 @@ _PYTHON_OPTIONS = (
         ("-q",),
         dict(
             dest="quiet",
-            action="count",
+            action="store_const",
+            const=1,
             default=0,
             help="suppress the interactive startup banner",
         ),
@@ -244,7 +252,8 @@ _PYTHON_OPTIONS = (
             metavar="policy",
             help="hash-based bytecode cache validation policy",
         ),
-        True,
+        takes_value=True,
+        allow_long_equals=False,
     ),
 )
 
@@ -389,7 +398,10 @@ class _PythonArguments:
             if argument.startswith("--"):
                 flag, separator, attached = argument.partition("=")
                 option = self.options.get(flag)
-                if option is None or (separator and not option.takes_value):
+                if option is None or (
+                    separator
+                    and (not option.takes_value or not option.allow_long_equals)
+                ):
                     self.parser.error(f"unrecognized argument: {argument}")
                 selected = self.option(flag, option, attached if separator else None)
                 if selected is not None:
