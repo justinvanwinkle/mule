@@ -221,29 +221,29 @@ def test_known_fixnum_kernel_executes_machine_arithmetic(tmp_path):
             "objdump",
             "-d",
             "--no-show-raw-insn",
-            "--disassemble=mule_fn_1.fn",
+            "--disassemble=mule_fn_kernel.fn",
             executable,
         ],
         text=True,
         capture_output=True,
         check=True,
     ).stdout
-    assert "<mule_fn_1.fn>:" in assembly
+    assert "<mule_fn_kernel.fn>:" in assembly
     # LLVM may keep the shared owned-argument body behind a thin ABI wrapper.
-    if "<mule_fn_1.body>" in assembly:
+    if "<mule_fn_kernel.body>" in assembly:
         body = subprocess.run(
             [
                 "objdump",
                 "-d",
                 "--no-show-raw-insn",
-                "--disassemble=mule_fn_1.body",
+                "--disassemble=mule_fn_kernel.body",
                 executable,
             ],
             text=True,
             capture_output=True,
             check=True,
         ).stdout
-        assert "<mule_fn_1.body>:" in body
+        assert "<mule_fn_kernel.body>:" in body
         assembly += body
     assert re.search(r"\b(?:add|lea)[a-z]*\s", assembly), assembly
     for dispatcher in ("mule_binary", "mule_unary", "mule_compare"):
@@ -456,7 +456,7 @@ def test_bounded_parameter_body_uses_primitive_arithmetic(tmp_path):
         assert result.stdout == expected
         assert result.stderr == ""
     bodies = re.findall(
-        r'define[^\n]*@"(mule_fn_1\.spec\.\d+)"\([^\n]*\)[^\n]*\{\n(.*?)\n\}',
+        r'define[^\n]*@"(mule_fn_chain\.spec\.\d+)"\([^\n]*\)[^\n]*\{\n(.*?)\n\}',
         llvm.read_text(),
         re.DOTALL,
     )

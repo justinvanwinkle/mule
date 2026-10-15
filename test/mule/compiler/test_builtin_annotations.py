@@ -337,7 +337,7 @@ def test_builtin_int_annotation_specializes_arithmetic_and_elides_return_check()
         " masked = (x & 255) + (y & 255)\n"
         " return -(masked % y)\n"
     )
-    body = llvm.split('define internal ptr @"mule_fn_1.body"(')[1].split("\n}")[0]
+    body = llvm.split('define internal ptr @"mule_fn_compute.body"(')[1].split("\n}")[0]
     assert body.count("call i32 @mule_assert_integer(") == 2
     assert "mule_format_modulo" not in body
     assert "unary.protocol" not in body

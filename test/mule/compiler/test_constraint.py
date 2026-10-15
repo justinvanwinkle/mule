@@ -451,7 +451,7 @@ def test_module_definition_is_not_a_fact_at_another_function_entry():
     compilation = lower("def target():\n return 7\ndef wrapper():\n return target()\n")
     wrapper = function(compilation, 2)
     call = calls(wrapper)[0]
-    assert target(compilation, wrapper, call) == "mule_fn_1"
+    assert target(compilation, wrapper, call) == "mule_fn_target"
     assert return_type(compilation, wrapper) == UNKNOWN
 
 
@@ -708,9 +708,9 @@ def test_nonnumeric_codegen_elides_impossible_spec_dispatch_and_retains():
         " out = format_pair(p, 'tag')\n"
         " return out\n"
     )
-    run_body = ir.split('define internal ptr @"mule_fn_2.body"(')[1].split("\n}")[0]
-    assert '@"mule_fn_1.spec.' not in run_body
-    assert '@"mule_fn_1.body"(' in run_body
+    run_body = ir.split('define internal ptr @"mule_fn_run.body"(')[1].split("\n}")[0]
+    assert '@"mule_fn_format_pair.spec.' not in run_body
+    assert '@"mule_fn_format_pair.body"(' in run_body
     assert "@mule.fast.local(" not in run_body
     assert "@mule.fast.local.move(" not in run_body
 
