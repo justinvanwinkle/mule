@@ -2,6 +2,7 @@
 
 import os
 import sys
+import tomllib
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -113,6 +114,40 @@ class ModuleCompiler:
         self.pending: deque[CompiledModule] = deque()
         # Every module name resolved, in first-request order.
         self.requested: dict[str, None] = {}
+        self.project_modules = ()
+
+    def configure_project(self):
+        """Read explicit image dependencies from the nearest project file."""
+        for directory in (self.roots[0], *self.roots[0].parents):
+            if directory != self.roots[0] and self.roots[0].relative_to(
+                directory
+            ).parts[0] in ("examples", "conformance", "corpus", "old", "perf"):
+                continue
+            project = directory / "pyproject.toml"
+            if not source_exists(project):
+                continue
+            settings = (
+                tomllib.loads(read_source(project)).get("tool", {}).get("mule", {})
+            )
+            names = settings.get("include_modules", [])
+            patterns = []
+            try:
+                for name in names:
+                    package = name.endswith(".*")
+                    prefix = name.removesuffix(".*") if package else name
+                    if not prefix or not all(
+                        part.isidentifier() for part in prefix.split(".")
+                    ):
+                        raise ValueError(f"invalid module dependency {name!r}")
+                    patterns.append(prefix + "." if package else prefix)
+            except (AttributeError, TypeError) as error:
+                raise ValueError(
+                    "tool.mule.include_modules must contain module names or package.* patterns"
+                ) from error
+            self.project_modules = tuple(patterns)
+            if self.project_modules and directory not in self.roots:
+                self.roots = (self.roots[0], directory, *self.roots[1:])
+            return
 
     def path_for(self, name):
         return self.location_for(name)[0]

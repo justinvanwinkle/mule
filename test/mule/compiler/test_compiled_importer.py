@@ -87,3 +87,45 @@ print(first.value, first is load('plugins.first'))
     native = execute(tmp_path, sources, source)
     assert native.returncode == 0, native.stderr
     assert native.stdout == oracle.stdout
+
+
+@pytest.mark.integration
+def test_declared_namespace_module_supports_separate_creation_execution_and_reload(
+    tmp_path,
+):
+    sources = {
+        "pyproject.toml": '[tool.mule]\ninclude_modules = ["plugins.chosen"]\n',
+        "plugins/chosen.py": "print('body')\ncount = globals().get('count', 0) + 1\ndef current():\n return count\n",
+        "plugins/unselected.py": "raise AssertionError('unselected body ran')\n",
+    }
+    source = """
+import importlib
+import importlib.util
+import sys
+name = '.'.join(['plugins', 'chosen'])
+spec = importlib.util.find_spec(name)
+module = importlib.util.module_from_spec(spec)
+print(module.__name__, 'count' in module.__dict__, name in sys.modules)
+print(module.__spec__ is spec, module.__file__ == spec.origin)
+sys.modules[name] = module
+spec.loader.exec_module(module)
+print(module.current(), importlib.import_module(name) is module)
+print(importlib.reload(module) is module, module.current())
+parent = sys.modules['plugins']
+print(parent.__spec__.origin, parent.__file__, len(parent.__path__))
+"""
+    for name, contents in {**sources, "main.py": source}.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents)
+    oracle = subprocess.run(
+        [python_host(), str(tmp_path / "main.py")],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert oracle.returncode == 0, oracle.stderr
+    native = execute(tmp_path, sources, source)
+    assert native.returncode == 0, native.stderr
+    assert native.stdout == oracle.stdout

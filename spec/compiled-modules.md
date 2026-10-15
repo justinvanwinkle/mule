@@ -477,21 +477,30 @@ computed names still require an explicitly linked module. The scan may retain
 extra modules when a syntactically named import method is shadowed; this costs
 build time and image size but executes no additional module bodies.
 
-Image contents follow imports alone: the modules a program imports, those they
-import, and literal `importlib` and `__import__` names the scan above finds. No
-project file or directory membership adds modules. A name selected only at run
-time from a path, such as a pytest `conftest.py` or an installed entry point,
-is not linked unless some compiled source imports it, and importing it then
-raises `ModuleNotFoundError`. SBCL `src/code/target-load.lisp`, `load-stream-1`,
-distinguishes compiled-file loading from source loading. Mule keeps that
-compiled-artifact boundary here: imports determine image contents, while module
-bodies initialize only when imported.
+Projects can declare additional exact module names or immediate package
+children in the nearest `pyproject.toml`, for example
+`[tool.mule] include_modules = ["package.module", "plugins.*"]`.
+The build reads this declaration as an input and links the named artifacts and
+their imports without executing them. The project directory becomes a module
+search root. This covers runtime-selected names that cannot be inferred from
+source, rather than recursively compiling every file in a project. Mule's
+declaration includes the package-scoped test fixtures, which pytest selects
+from runtime paths. Compiler tests have an explicit package initializer, like
+the parser tests, so their fixture module has a distinct qualified import name.
+Package patterns reuse the existing immediate-child artifact scan and its
+directory-inventory cache inputs; they do not recursively bundle descendants.
+SBCL `src/code/target-load.lisp`, `load-stream-1`, distinguishes compiled-file
+loading from source loading. Mule keeps that compiled-artifact boundary here:
+the declaration determines image contents, while module bodies initialize only
+when imported. This is the same precompiled-load boundary described above, with an explicit
+build dependency while a resident compiler remains unavailable.
 
 Native startup also installs the image's configured search roots before
 compiled `sys` initializes its mutable `path` list. The compiled finder delegates
 distribution discovery to `importlib.metadata.MetadataPathFinder`, so installed
 entry-point metadata can be read along those paths. Loading an entry point
-still requires its module to be linked by an import. SBCL `src/code/toplevel.lisp` similarly
+still requires its module to be linked; Mule's project declaration includes the
+two installed xdist entry modules. SBCL `src/code/toplevel.lisp` similarly
 exposes startup facts through language-owned state such as `*posix-argv*`.
 Python additionally requires module roots for import and distribution discovery;
 Rust retains only the image's immutable strings and builds their physical tuple.

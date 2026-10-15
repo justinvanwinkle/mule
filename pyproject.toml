@@ -33,6 +33,19 @@ markers = [
 testpaths = ["test"]
 pythonpath = ["."]
 
+[tool.mule]
+# Loaded by pytest from a path selected at runtime.
+include_modules = [
+    "test.conftest",
+    "test.corpus.*",
+    "test.conformance.*",
+    "test.mule.compiler.*",
+    "test.mule.parser.*",
+    "test.stdlib.*",
+    "xdist.plugin",
+    "xdist.looponfail",
+]
+
 [tool.ruff]
 target-version = "py314"
 # Conformance and corpus programs exercise unusual Python on purpose.
