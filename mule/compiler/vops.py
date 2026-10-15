@@ -1037,15 +1037,8 @@ def range_advance(gen, vop):
 def sequence_available(gen, vop):
     iterator = gen.load(vop.args[0])
     out = gen.out_pointer()
-    if gen.module.program.exports:
-        owned = gen.operation(f"call ptr @mule.fast.retain(ptr {iterator})")
-        item = gen.sequence_call("next_item", [owned])
-        gen.line(f"store ptr {item}, ptr {out}")
-        failed = gen.operation(f"icmp eq ptr {item}, null")
-        status = gen.operation(f"select i1 {failed}, i32 -1, i32 1")
-    else:
-        helper = gen.module.next_item_helper()
-        status = gen.operation(f"call i32 {helper}(ptr {iterator}, ptr {out})")
+    helper = gen.module.next_item_helper()
+    status = gen.operation(f"call i32 {helper}(ptr {iterator}, ptr {out})")
     gen.check_status(status)
     available = gen.operation(f"icmp ne i32 {status}, 0")
     result = gen.operation(f"select i1 {available}, ptr @mule.true, ptr @mule.false")
@@ -1095,11 +1088,8 @@ def structural_unpack(gen, vop):
 def protocol_getitem(gen, vop):
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])
-    if gen.module.program.exports:
-        result = gen.sequence_call("getitem", [sequence, index])
-    else:
-        helper = gen.module.getitem_helper()
-        result = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {index})")
+    helper = gen.module.getitem_helper()
+    result = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {index})")
     gen.publish(vop.results[0], result)
     gen.check_pointer(result)
     gen.refine(vop.results[0].tn, result)
@@ -1110,13 +1100,10 @@ def protocol_setitem(gen, vop):
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])
     item = gen.take(vop.args[2])
-    if gen.module.program.exports:
-        result = gen.sequence_call("setitem", [sequence, index, item])
-    else:
-        helper = gen.module.setitem_helper()
-        result = gen.operation(
-            f"call ptr {helper}(ptr {sequence}, ptr {index}, ptr {item})"
-        )
+    helper = gen.module.setitem_helper()
+    result = gen.operation(
+        f"call ptr {helper}(ptr {sequence}, ptr {index}, ptr {item})"
+    )
     gen.publish(vop.results[0], result)
     gen.check_pointer(result)
     gen.refine(vop.results[0].tn, result)

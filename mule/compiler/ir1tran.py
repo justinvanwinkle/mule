@@ -425,6 +425,35 @@ class Converter:
         )
 
 
+class _IsGlobalVar(LeafVisitor):
+    def visit_Leaf(self, leaf):
+        return False
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        return True
+
+
+class _IsLiteral(ast.Visitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_Literal(self, node):
+        return True
+
+    visit_IntegerLiteral = visit_Literal
+    visit_FloatLiteral = visit_Literal
+    visit_ComplexLiteral = visit_Literal
+    visit_BooleanLiteral = visit_Literal
+    visit_NoneLiteral = visit_Literal
+    visit_TextLiteral = visit_Literal
+    visit_BytesLiteral = visit_Literal
+    visit_EllipsisLiteral = visit_Literal
+
+
+_IS_GLOBAL_VAR = _IsGlobalVar()
+_IS_LITERAL = _IsLiteral()
+
+
 class FunctionConverter:
     """Converts one function body (or the module body) into one Lambda."""
 
@@ -639,7 +668,7 @@ class FunctionConverter:
             return self.variable(name).accept(load)
         var = self.variable(name)
         literal = self.converter.module_name_literal
-        if literal is not None and isinstance(var, GlobalVar) and name == "__name__":
+        if literal is not None and name == "__name__" and var.accept(_IS_GLOBAL_VAR):
             return self.constant(
                 start, next_, result, replace(literal, span=source.span)
             )
@@ -1130,7 +1159,27 @@ class FunctionConverter:
         """``f(a, *b, k=c, **d)``: the callee, then every argument in source
         order, collected into a positional list and a keyword dict that the
         compiled ``call_expanded`` protocol passes to the callee. Duplicate
-        keywords from ``**`` mappings raise TypeError there, as in CPython."""
+        keywords from ``**`` mappings raise TypeError there, as in CPython.
+
+        Without keyword arguments no dict is built, and a lone ``f(*b)``
+        passes ``b`` itself to ``call_expanded_positional``, which reads an
+        exact tuple as the argument tuple without copying it."""
+        positional_only = all(
+            argument.kind in (ast.ArgumentKind.POSITIONAL, ast.ArgumentKind.STARRED)
+            for argument in node.arguments
+        )
+        if positional_only and len(node.arguments) == 1:
+            ctran, callee = self.value(start, node.function)
+            following, arguments = self.value(ctran, node.arguments[0].value)
+            self.protocol(
+                following,
+                next_,
+                result,
+                "call_expanded_positional",
+                (callee, arguments),
+                node,
+            )
+            return
         callee, positional, keywords = (self.temporary() for _ in range(3))
         current = start
         for var, expression in (
@@ -1138,6 +1187,8 @@ class FunctionConverter:
             (positional, ast.List([], span=node.span)),
             (keywords, ast.Dict([], span=node.span)),
         ):
+            if var is keywords and positional_only:
+                continue
             ctran, value = self.value(current, expression)
             current = Ctran()
             self.set_var(ctran, current, var, value, node)
@@ -1174,12 +1225,15 @@ class FunctionConverter:
             )
             current = following
         operands = []
-        for var in (callee, positional, keywords):
+        for var in (
+            (callee, positional) if positional_only else (callee, positional, keywords)
+        ):
             ctran, value = Ctran(), Lvar()
             self.ref(current, ctran, value, var, node, final=True)
             current = ctran
             operands.append(value)
-        self.protocol(current, next_, result, "call_expanded", tuple(operands), node)
+        name = "call_expanded_positional" if positional_only else "call_expanded"
+        self.protocol(current, next_, result, name, tuple(operands), node)
 
     def import_module(self, start, name, node) -> tuple[Ctran, Lvar]:
         imports = self.converter.imports
@@ -2266,7 +2320,7 @@ class _Statements(ast.Visitor):
         # A literal statement, such as a docstring, has no effect: Python's
         # compiler discards it, and converting it would build and release
         # the value on every execution.
-        if isinstance(node.expression, ast.Literal):
+        if node.expression.accept(_IS_LITERAL):
             return
         start, next_, _ = self.frame
         self.function.convert(start, next_, None, node.expression)

@@ -65,6 +65,90 @@ pub struct ClassLayout {
     /// whose `__slots__` omit `__dict__` all the way up their bases.
     dict_allowed: bool,
     pub(crate) native: Option<NativeLayout>,
+    specials: SpecialTable,
+}
+
+macro_rules! specials {
+    ($($variant:ident => $name:literal),* $(,)?) => {
+        /// Special methods the runtime and compiled protocols resolve
+        /// implicitly, each with a fixed slot in every class's dispatch table.
+        #[derive(Clone, Copy)]
+        #[repr(usize)]
+        pub enum Special { $($variant),* }
+        const SPECIAL_NAMES: &[&str] = &[$($name),*];
+        impl Special {
+            pub fn from_name(name: &str) -> Option<Special> {
+                match name {
+                    $($name => Some(Special::$variant),)*
+                    _ => None,
+                }
+            }
+            pub fn name(self) -> &'static str {
+                SPECIAL_NAMES[self as usize]
+            }
+        }
+    };
+}
+
+specials! {
+    New => "__new__", Init => "__init__", InitSubclass => "__init_subclass__",
+    Del => "__del__", Call => "__call__",
+    GetAttribute => "__getattribute__", GetAttr => "__getattr__",
+    SetAttr => "__setattr__", DelAttr => "__delattr__",
+    Get => "__get__", Set => "__set__", Delete => "__delete__", SetName => "__set_name__",
+    Str => "__str__", Repr => "__repr__", Format => "__format__", Bytes => "__bytes__",
+    Hash => "__hash__", Bool => "__bool__", Len => "__len__",
+    Eq => "__eq__", Ne => "__ne__", Lt => "__lt__", Le => "__le__", Gt => "__gt__", Ge => "__ge__",
+    GetItem => "__getitem__", SetItem => "__setitem__", DelItem => "__delitem__",
+    Contains => "__contains__", Missing => "__missing__",
+    Iter => "__iter__", Next => "__next__", Reversed => "__reversed__",
+    Enter => "__enter__", Exit => "__exit__",
+    Aiter => "__aiter__", Anext => "__anext__", Aenter => "__aenter__", Aexit => "__aexit__",
+    Await => "__await__",
+    Int => "__int__", Float => "__float__", Index => "__index__", Complex => "__complex__",
+    Round => "__round__", Trunc => "__trunc__", Floor => "__floor__", Ceil => "__ceil__",
+    Neg => "__neg__", Pos => "__pos__", Abs => "__abs__", Invert => "__invert__",
+    Add => "__add__", Sub => "__sub__", Mul => "__mul__", MatMul => "__matmul__",
+    TrueDiv => "__truediv__", FloorDiv => "__floordiv__", Mod => "__mod__",
+    DivMod => "__divmod__", Pow => "__pow__", LShift => "__lshift__", RShift => "__rshift__",
+    And => "__and__", Xor => "__xor__", Or => "__or__",
+    RAdd => "__radd__", RSub => "__rsub__", RMul => "__rmul__", RMatMul => "__rmatmul__",
+    RTrueDiv => "__rtruediv__", RFloorDiv => "__rfloordiv__", RMod => "__rmod__",
+    RDivMod => "__rdivmod__", RPow => "__rpow__", RLShift => "__rlshift__", RRShift => "__rrshift__",
+    RAnd => "__rand__", RXor => "__rxor__", ROr => "__ror__",
+    IAdd => "__iadd__", ISub => "__isub__", IMul => "__imul__", IMatMul => "__imatmul__",
+    ITrueDiv => "__itruediv__", IFloorDiv => "__ifloordiv__", IMod => "__imod__",
+    IPow => "__ipow__", ILShift => "__ilshift__", IRShift => "__irshift__",
+    IAnd => "__iand__", IXor => "__ixor__", IOr => "__ior__",
+    InstanceCheck => "__instancecheck__", SubclassCheck => "__subclasscheck__",
+    ClassGetItem => "__class_getitem__", LengthHint => "__length_hint__",
+    Dir => "__dir__", Reduce => "__reduce__", ReduceEx => "__reduce_ex__",
+    GetState => "__getstate__", SetState => "__setstate__",
+    Copy => "__copy__", DeepCopy => "__deepcopy__", Fspath => "__fspath__",
+    Sizeof => "__sizeof__", Buffer => "__buffer__", ReleaseBuffer => "__release_buffer__",
+    MuleExitStatus => "__mule_exit_status__", MuleProcessStatus => "__mule_process_status__",
+}
+const SPECIAL_COUNT: usize = SPECIAL_NAMES.len();
+/// Marks a table entry that has not been resolved in the current epoch.
+/// It is never a valid `Value`: heap values are aligned and NULL means absent.
+const UNRESOLVED: Value = 1 as Value;
+
+/// A class's resolved `special` results, valid for one attribute epoch. Any
+/// class attribute assignment advances the epoch, and the next lookup resets
+/// the table and resolves entries again on demand. Entries borrow the
+/// defining class's attribute, exactly as `ClassLayout::special` returns it.
+struct SpecialTable {
+    epoch: Cell<usize>,
+    entries: [Cell<Value>; SPECIAL_COUNT],
+}
+
+impl SpecialTable {
+    fn new() -> SpecialTable {
+        SpecialTable {
+            epoch: Cell::new(0),
+            entries: std::array::from_fn(|_| Cell::new(UNRESOLVED)),
+        }
+    }
 }
 
 impl ClassLayout {
@@ -106,14 +190,40 @@ impl ClassLayout {
     /// Inequality must retain its compiled default when equality is overridden:
     /// it delegates to that descriptor rather than comparing identities.
     pub fn special(&self, name: &str) -> Value {
+        match Special::from_name(name) {
+            Some(special) => self.special_slot(special),
+            None => self.resolve_special(name),
+        }
+    }
+
+    /// `special` through the class's fixed-slot table: a resolved entry is an
+    /// index load instead of a hashed walk of the method-resolution order.
+    pub fn special_slot(&self, special: Special) -> Value {
+        let epoch = ATTRIBUTE_EPOCH.load(Ordering::Relaxed);
+        let table = &self.specials;
+        if table.epoch.get() != epoch {
+            for entry in &table.entries {
+                entry.set(UNRESOLVED);
+            }
+            table.epoch.set(epoch);
+        }
+        let entry = &table.entries[special as usize];
+        let value = entry.get();
+        if value != UNRESOLVED {
+            return value;
+        }
+        let value = self.resolve_special(special.name());
+        entry.set(value);
+        value
+    }
+
+    fn resolve_special(&self, name: &str) -> Value {
         let Some((owner, _, index)) = self.find(name) else {
             return std::ptr::null_mut();
         };
         let object = builtin_type(Builtin::Object);
         if !object.is_null() && std::ptr::eq(owner, unsafe { layout_of_class(object) }.unwrap()) {
-            let overridden_equality = self.find("__eq__")
-                .is_some_and(|(equality_owner, _, _)| !std::ptr::eq(equality_owner, owner));
-            if name != "__ne__" || !overridden_equality {
+            if name != "__ne__" || self.special_slot(Special::Eq).is_null() {
                 return std::ptr::null_mut();
             }
         }
@@ -276,8 +386,8 @@ unsafe fn layout_of_class<'a>(class: Value) -> Option<&'a ClassLayout> {
 
 /// A hook such as `__getattribute__` or `__setattr__`, unless the class only
 /// inherits `object`'s default, which is the built-in behavior itself.
-fn hook(layout: &ClassLayout, name: &str) -> Value {
-    layout.special(name)
+fn hook(layout: &ClassLayout, name: Special) -> Value {
+    layout.special_slot(name)
 }
 
 unsafe fn base_layout<'a>(layout: &ClassLayout) -> Option<&'a ClassLayout> {
@@ -441,7 +551,7 @@ unsafe fn direct_class(bases: &[Value], namespace: Value, keywords: Value) -> bo
                 return false;
             };
             if class_of_value(*base) != builtin_type(Builtin::Type)
-                || !hook(layout, "__init_subclass__").is_null()
+                || !hook(layout, Special::InitSubclass).is_null()
             {
                 return false;
             }
@@ -536,7 +646,7 @@ unsafe fn instance_layout<'a>(value: Value) -> Option<&'a ClassLayout> {
 unsafe fn is_data_descriptor(value: Value) -> bool {
     unsafe {
         instance_layout(value).is_some_and(|layout| {
-            layout.find("__set__").is_some() || layout.find("__delete__").is_some()
+            !layout.special_slot(Special::Set).is_null() || !layout.special_slot(Special::Delete).is_null()
         })
     }
 }
@@ -550,7 +660,7 @@ unsafe fn attribute_kind(value: Value) -> usize {
             return METHOD;
         }
         match instance_layout(value) {
-            Some(layout) if layout.find("__get__").is_some() => {
+            Some(layout) if !layout.special_slot(Special::Get).is_null() => {
                 if is_data_descriptor(value) {
                     DATA_DESCRIPTOR
                 } else {
@@ -778,8 +888,8 @@ unsafe fn resolve(
             if instance {
                 let encoded = match cached(layout, cache) {
                     Some(encoded) => Some(encoded),
-                    None if hook(layout, "__getattribute__").is_null()
-                        && hook(layout, "__getattr__").is_null() =>
+                    None if hook(layout, Special::GetAttribute).is_null()
+                        && hook(layout, Special::GetAttr).is_null() =>
                     {
                         name(attribute).and_then(|attr| encoded(layout, attr, cache))
                     }
@@ -808,8 +918,8 @@ unsafe fn resolve(
             if let Some(layout) = layout_of_class(owner) {
                 let encoded = match cached(layout, cache) {
                     Some(encoded) => Some(encoded),
-                    None if hook(layout, "__getattribute__").is_null()
-                        && hook(layout, "__getattr__").is_null() =>
+                    None if hook(layout, Special::GetAttribute).is_null()
+                        && hook(layout, Special::GetAttr).is_null() =>
                     {
                         name(attribute).and_then(|attr| encoded(layout, attr, cache))
                     }
@@ -878,7 +988,7 @@ unsafe fn resolve_with(
                 };
                 return resolve_on_class(receiver, layout, attribute);
             }
-            let getter = if hooks { hook(layout, "__getattribute__") } else { std::ptr::null_mut() };
+            let getter = if hooks { hook(layout, Special::GetAttribute) } else { std::ptr::null_mut() };
             if !getter.is_null() {
                 return call_hook(getter, receiver, owner, attribute);
             }
@@ -903,7 +1013,7 @@ unsafe fn resolve_with(
             } else if let Some(value) = dict_attribute(receiver, attribute) {
                 return value;
             }
-            let fallback = if fallbacks { hook(layout, "__getattr__") } else { std::ptr::null_mut() };
+            let fallback = if fallbacks { hook(layout, Special::GetAttr) } else { std::ptr::null_mut() };
             if !fallback.is_null() {
                 return call_hook(fallback, receiver, owner, attribute);
             }
@@ -915,7 +1025,7 @@ unsafe fn resolve_with(
         if hooks {
             let owner = class_of_value(receiver);
             if let Some(layout) = layout_of_class(owner) {
-                let getter = hook(layout, "__getattribute__");
+                let getter = hook(layout, Special::GetAttribute);
                 if !getter.is_null() {
                     return call_hook(getter, receiver, owner, attribute);
                 }
@@ -1043,7 +1153,7 @@ pub unsafe fn metaclass_call(class: Value) -> Value {
             return std::ptr::null_mut();
         }
         match layout_of_class(metaclass) {
-            Some(meta) => hook(meta, "__call__"),
+            Some(meta) => hook(meta, Special::Call),
             None => std::ptr::null_mut(),
         }
     }
@@ -1061,7 +1171,7 @@ pub unsafe fn construct(class: Value, args: &[Value]) -> Value {
         if let Some(native) = &layout.native {
             return (native.constructor)(native.globals, class, args.len() as isize, args.as_ptr());
         }
-        let creator = hook(layout, "__new__");
+        let creator = hook(layout, Special::New);
         let instance = if creator.is_null() {
             let Some(instance) = allocate(class, layout) else {
                 return std::ptr::null_mut();
@@ -1088,7 +1198,7 @@ pub unsafe fn construct(class: Value, args: &[Value]) -> Value {
             }
             instance
         };
-        let initializer = hook(layout, "__init__");
+        let initializer = hook(layout, Special::Init);
         if !initializer.is_null() {
             let result = call_attribute(initializer, instance, class, args);
             if result.is_null() {
@@ -1425,6 +1535,7 @@ unsafe fn create_class_with(
             attribute_lookup,
             dict_allowed,
             native,
+            specials: SpecialTable::new(),
         })));
         for base in &bases {
             let Data::Class(layout) = &mut (**base).data else { unreachable!() };
@@ -1693,7 +1804,7 @@ unsafe fn set_attribute_with(
             let setter = if !hooks {
                 std::ptr::null_mut()
             } else if matches!(&(*receiver).data, Data::Instance { .. } | Data::NativeInstance { .. }) {
-                hook(layout, "__setattr__")
+                hook(layout, Special::SetAttr)
             } else {
                 layout.method("__setattr__")
             };
@@ -2745,7 +2856,7 @@ unsafe extern "C" fn namespace_unbind(_: Value, args: Value) -> Value {
 pub unsafe fn overriding_new(class: Value) -> Value {
     unsafe {
         match layout_of_class(class) {
-            Some(layout) => hook(layout, "__new__"),
+            Some(layout) => hook(layout, Special::New),
             None => std::ptr::null_mut(),
         }
     }

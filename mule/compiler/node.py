@@ -356,9 +356,56 @@ class Enclose(Node):
         return visitor.visit_Enclose(self)
 
 
+_NODE_VISITOR_FALLBACKS = (
+    ("visit_ValuedNode", "visit_Node"),
+    ("visit_Ref", "visit_ValuedNode"),
+    ("visit_If", "visit_Node"),
+    ("visit_Set", "visit_ValuedNode"),
+    ("visit_Combination", "visit_ValuedNode"),
+    ("visit_Bind", "visit_Node"),
+    ("visit_Return", "visit_Node"),
+    ("visit_Cast", "visit_ValuedNode"),
+    ("visit_Entry", "visit_Node"),
+    ("visit_Exit", "visit_ValuedNode"),
+    ("visit_Enclose", "visit_Node"),
+)
+
+_LEAF_VISITOR_FALLBACKS = (
+    ("visit_Constant", "visit_Leaf"),
+    ("visit_KnownFunction", "visit_Leaf"),
+    ("visit_BasicVar", "visit_Leaf"),
+    ("visit_GlobalVar", "visit_BasicVar"),
+    ("visit_LambdaVar", "visit_BasicVar"),
+    ("visit_Functional", "visit_Leaf"),
+    ("visit_Lambda", "visit_Functional"),
+    ("visit_OptionalDispatch", "visit_Functional"),
+)
+
+
+def _bind_visitor_fallbacks(cls, fallbacks) -> None:
+    if "_explicit_visits" not in cls.__dict__:
+        cls._explicit_visits = frozenset(
+            name for name in cls.__dict__ if name.startswith("visit_")
+        )
+    mro = [c for c in cls.__mro__ if "_explicit_visits" in c.__dict__]
+    for child, parent in fallbacks:
+        for c in mro:
+            if child in c._explicit_visits:
+                setattr(cls, child, c.__dict__[child])
+                break
+        else:
+            setattr(cls, child, getattr(cls, parent))
+
+
 class NodeVisitor:
     """A node selects its visitor method directly; unhandled kinds fall back
     to their parent class's method, ending at ``visit_Node``."""
+
+    _explicit_visits: frozenset[str] = frozenset()
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        _bind_visitor_fallbacks(cls, _NODE_VISITOR_FALLBACKS)
 
     def visit_Node(self, node):
         return None
@@ -400,6 +447,12 @@ class NodeVisitor:
 class LeafVisitor:
     """A leaf selects its visitor method directly; unhandled kinds fall back
     to their parent class's method, ending at ``visit_Leaf``."""
+
+    _explicit_visits: frozenset[str] = frozenset()
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        _bind_visitor_fallbacks(cls, _LEAF_VISITOR_FALLBACKS)
 
     def visit_Leaf(self, leaf):
         return None

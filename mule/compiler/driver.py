@@ -363,6 +363,19 @@ def compile_unit(
     return program, linked_imports(compilation, compiler)
 
 
+class _ImportedModule(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if node.fun_info is not None and node.fun_info.name == "%import":
+            return node.info.module_name
+        return None
+
+
+_IMPORTED_MODULE = _ImportedModule()
+
+
 def linked_imports(compilation, compiler: ModuleCompiler) -> list[CompiledModule]:
     """The modules a unit links: those whose import statements survive IR1
     optimization, which deletes imports in branches proven dead, such as an
@@ -373,12 +386,9 @@ def linked_imports(compilation, compiler: ModuleCompiler) -> list[CompiledModule
     for lambda_ in compilation.lambdas:
         for block in lambda_blocks(lambda_):
             for node in block.nodes():
-                if (
-                    isinstance(node, Combination)
-                    and node.fun_info is not None
-                    and node.fun_info.name == "%import"
-                ):
-                    imported.add(node.info.module_name)
+                module_name = node.accept(_IMPORTED_MODULE)
+                if module_name is not None:
+                    imported.add(module_name)
     return [compiler.modules[name] for name in compiler.requested if name in imported]
 
 

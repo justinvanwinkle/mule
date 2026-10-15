@@ -117,6 +117,8 @@ def select_tn_representation(tn, *, reads=(), writes=(), raw=False):
     candidates = tn.primitive_type.scs
     if raw and any(sc.raw for sc in candidates):
         candidates = [sc for sc in candidates if sc.raw]
+    if len(candidates) == 1 or (not reads and not writes):
+        return candidates[0]
     best, best_cost = None, None
     for sc in candidates:
         cost = 0
@@ -126,6 +128,8 @@ def select_tn_representation(tn, *, reads=(), writes=(), raw=False):
             )
             if restriction is not None and sc not in restriction:
                 cost += 1
+        if cost == 0:
+            return sc
         if best_cost is None or cost < best_cost:
             best, best_cost = sc, cost
     return best
@@ -694,6 +698,8 @@ class _AssignLocal(LeafVisitor):
 def class_bindings(lambdas, layouts) -> dict[str, str]:
     """Global names bound to a native class definition anywhere in the
     program, keyed to the class identity."""
+    if not layouts:
+        return {}
     collector = _ClassBindings(layouts)
     for lambda_ in lambdas:
         for block in lambda_.component.blocks():
@@ -702,42 +708,32 @@ def class_bindings(lambdas, layouts) -> dict[str, str]:
     return collector.bindings
 
 
-class _ClassBindings(NodeVisitor):
+class _ClassBindings(NodeVisitor, LeafVisitor):
+    """Record global assignments whose single producer makes a native class."""
+
     def __init__(self, layouts):
         self.layouts = layouts
         self.bindings: dict[str, str] = {}
+        self.node: Set | None = None
 
     def visit_Set(self, node: Set):
-        node.var.accept(_GlobalClassBinding(self, node))
-
-
-class _GlobalClassBinding(LeafVisitor):
-    """Record a global assignment whose single producer makes a native
-    class; other variables bind nothing."""
-
-    def __init__(self, collector: _ClassBindings, node: Set):
-        self.collector = collector
         self.node = node
+        node.var.accept(self)
+        self.node = None
 
     def visit_GlobalVar(self, leaf: GlobalVar):
-        value = self.node.value
+        node = linked(self.node, self, "assignment")
+        value = node.value
         if value is None or len(value.uses) != 1:
             return
-        class_id = value.uses[0].accept(_NativeClassDefinition(self.collector.layouts))
+        class_id = value.uses[0].accept(self)
         if class_id is not None:
-            self.collector.bindings.setdefault(leaf.name, class_id)
-
-
-class _NativeClassDefinition(NodeVisitor):
-    """The identity of the native class a producer makes, or None when it
-    makes none."""
-
-    def __init__(self, layouts):
-        self.layouts = layouts
+            self.bindings.setdefault(leaf.name, class_id)
 
     def visit_Combination(self, node: Combination):
         if (
-            node.kind is not CallKind.KNOWN
+            self.node is None
+            or node.kind is not CallKind.KNOWN
             or linked(node.fun_info, node, "known function").name != "%make_class"
         ):
             return None

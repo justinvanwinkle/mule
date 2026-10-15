@@ -240,11 +240,15 @@ def compile_toplevel(
     # has settled the cleanup structure. Python's cleanup regions are fixed at
     # conversion, and the phases must see the cleanup code, so it runs first.
     with phase("environment analysis %s", filename, level=logging.DEBUG):
+        initial_component_count = len(compilation.components)
         environment_analyze(compilation)
-        for component in components:
+        reanalyzed = len(compilation.components) != initial_component_count
+        for component in compilation.components:
             if component.reanalyze:
                 find_dfo(component)
-        check_ir1_consistency(components)
+                reanalyzed = True
+        if reanalyzed:
+            check_ir1_consistency(compilation.components)
     return compilation
 
 

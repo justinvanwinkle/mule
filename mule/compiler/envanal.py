@@ -119,11 +119,14 @@ def find_cleanup_points(component: Component, converters) -> None:
     created blocks are examined too. The edges that connect an inserted chain
     are recorded as handled so the chain is never cleaned up again.
     """
+    blocks = list(component.blocks())
+    if not any(block_end_cleanup(block) is not None for block in blocks):
+        return
     handled: set[tuple[int, int]] = set()
-    known_blocks = {id(block) for block in component.blocks()}
+    known_blocks = {id(block) for block in blocks}
     pending = [
         (block1, block2)
-        for block1 in component.blocks()
+        for block1 in blocks
         for block2 in block1.succ
         if block2.start is not None
     ]

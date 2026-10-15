@@ -58,10 +58,12 @@ class BaseException:
     _suppress_context = False
 
     def __init__(self, *args):
+        # Direct stores of the values the properties below accept: a raise
+        # must not pay for descriptor dispatch and validation on each of them.
         self.args = args
-        self.__cause__ = None
-        self.__context__ = None
-        self.__suppress_context__ = False
+        self._cause = None
+        self._context = None
+        self._suppress_context = False
 
     @property
     def __cause__(self):
@@ -845,8 +847,31 @@ def append_argument(positional, value):
 
 
 def extend_arguments(positional, iterable):
+    owner = _type_of(iterable)
+    if owner is tuple or owner is list:
+        # Exact element storage is copied by index: the iteration protocol
+        # would end with a StopIteration that costs an exception object.
+        count = _storage_length(iterable)
+        index = 0
+        while index < count:
+            _storage_append(positional, _storage_read(iterable, index))
+            index += 1
+        return
     for value in iterable:
         _storage_append(positional, value)
+
+
+def _argument_tuple(iterable):
+    """The positional arguments ``f(*iterable)`` passes, as the tuple the
+    call primitive reads. An exact tuple is already that tuple."""
+    owner = _type_of(iterable)
+    if owner is tuple:
+        return iterable
+    if owner is list:
+        return _storage_tuple(iterable)
+    items = []
+    extend_arguments(items, iterable)
+    return _storage_tuple(items)
 
 
 def add_keyword(keywords, name, value):
@@ -875,6 +900,12 @@ def dict_merge(mapping, other):
         raise TypeError(f"'{_type_name(other)}' object is not a mapping")
     for key in keys():
         mapping[key] = other[key]
+
+
+def call_expanded_positional(function, arguments):
+    """``f(*arguments)`` without keyword arguments: no keyword mapping is
+    built, and a tuple of arguments is passed through as it is."""
+    return _call_with(function, _argument_tuple(arguments), (), ())
 
 
 def call_expanded(function, positional, keywords):
@@ -2485,16 +2516,33 @@ def list_from_arguments(args):
 _missing_default = _binding_missing()
 
 
+def _better(candidate_key, best_key, greatest):
+    if greatest:
+        return candidate_key > best_key
+    return candidate_key < best_key
+
+
 def _extreme(args, key, default, greatest):
     count = _storage_length(args)
     if count == 0:
         raise TypeError("min/max expected at least one argument")
-    if count == 1:
-        iterator = iterate(_storage_read(args, 0))
-    else:
+    if count > 1:
         if default is not _missing_default:
             raise TypeError("default is only valid with one iterable argument")
-        iterator = iterate(args)
+        # Positional candidates are read from the argument tuple by index:
+        # iterating it would end with a StopIteration exception object.
+        best = _storage_read(args, 0)
+        best_key = best if key is None else key(best)
+        index = 1
+        while index < count:
+            candidate = _storage_read(args, index)
+            candidate_key = candidate if key is None else key(candidate)
+            if _better(candidate_key, best_key, greatest):
+                best = candidate
+                best_key = candidate_key
+            index += 1
+        return best
+    iterator = iterate(_storage_read(args, 0))
     try:
         best = next_item(iterator)
     except StopIteration:
@@ -2512,11 +2560,7 @@ def _extreme(args, key, default, greatest):
         candidate_key = candidate
         if key is not None:
             candidate_key = key(candidate)
-        if greatest:
-            better = candidate_key > best_key
-        else:
-            better = candidate_key < best_key
-        if better:
+        if _better(candidate_key, best_key, greatest):
             best = candidate
             best_key = candidate_key
 

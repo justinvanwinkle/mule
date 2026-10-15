@@ -1448,8 +1448,117 @@ def walk(node: Node) -> Iterator[Node]:
         yield from walk(child)
 
 
+_AST_STATEMENT_VISITS = (
+    "visit_ExpressionStatement",
+    "visit_Assignment",
+    "visit_AnnotatedAssignment",
+    "visit_AugmentedAssignment",
+    "visit_Delete",
+    "visit_Import",
+    "visit_ImportFrom",
+    "visit_If",
+    "visit_While",
+    "visit_For",
+    "visit_With",
+    "visit_Try",
+    "visit_FunctionDefinition",
+    "visit_ClassDefinition",
+    "visit_TypeAlias",
+    "visit_Pass",
+    "visit_Break",
+    "visit_Continue",
+    "visit_Return",
+    "visit_Raise",
+    "visit_Assert",
+    "visit_Global",
+    "visit_Nonlocal",
+    "visit_Match",
+)
+
+_AST_NODE_VISITS = (
+    "visit_Statement",
+    "visit_TypeIgnore",
+    "visit_Module",
+    "visit_ExpressionInput",
+    "visit_InteractiveInput",
+    "visit_Name",
+    "visit_Literal",
+    "visit_IntegerLiteral",
+    "visit_FloatLiteral",
+    "visit_ComplexLiteral",
+    "visit_BooleanLiteral",
+    "visit_NoneLiteral",
+    "visit_TextLiteral",
+    "visit_BytesLiteral",
+    "visit_EllipsisLiteral",
+    "visit_Binary",
+    "visit_Unary",
+    "visit_Boolean",
+    "visit_Comparison",
+    "visit_Conditional",
+    "visit_Parameter",
+    "visit_Lambda",
+    "visit_NamedExpression",
+    "visit_Yield",
+    "visit_Await",
+    "visit_Attribute",
+    "visit_CallArgument",
+    "visit_Call",
+    "visit_Subscript",
+    "visit_Slice",
+    "visit_Unpack",
+    "visit_Tuple",
+    "visit_List",
+    "visit_Set",
+    "visit_DictEntry",
+    "visit_Dict",
+    "visit_ComprehensionClause",
+    "visit_Comprehension",
+    "visit_Interpolation",
+    "visit_FormattedString",
+    "visit_TemplateString",
+    "visit_ImportItem",
+    "visit_WithItem",
+    "visit_ExceptionHandler",
+    "visit_TypeParameter",
+    "visit_CapturePattern",
+    "visit_LiteralPattern",
+    "visit_ValuePattern",
+    "visit_SequencePattern",
+    "visit_StarPattern",
+    "visit_PatternEntry",
+    "visit_MappingPattern",
+    "visit_KeywordPattern",
+    "visit_ClassPattern",
+    "visit_OrPattern",
+    "visit_AsPattern",
+    "visit_MatchCase",
+)
+
+_AST_VISITOR_FALLBACKS = (
+    *((name, "visit_Node") for name in _AST_NODE_VISITS),
+    *((name, "visit_Statement") for name in _AST_STATEMENT_VISITS),
+)
+
+
 class Visitor:
     """Explicit node dispatch; subclasses override the syntax they handle."""
+
+    _explicit_visits: frozenset[str] = frozenset()
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls._explicit_visits = frozenset(
+            name for name in cls.__dict__ if name.startswith("visit_")
+        )
+        mro = [c for c in cls.__mro__ if "_explicit_visits" in c.__dict__]
+        for child, parent in _AST_VISITOR_FALLBACKS:
+            for c in mro:
+                if child in c._explicit_visits:
+                    setattr(cls, child, c.__dict__[child])
+                    break
+            else:
+                setattr(cls, child, getattr(cls, parent))
 
     def visit_Node(self, node: Node):
         return None

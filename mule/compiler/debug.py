@@ -168,7 +168,8 @@ class _Checker(NodeVisitor, LeafVisitor):
                 barf(f"PREV in {node!r} should be {ctran!r}")
             lvar = node.value_lvar
             if lvar is not None:
-                if node not in lvar.uses:
+                uses = lvar.uses
+                if not uses or (uses[0] is not node and node not in uses):
                     barf(f"{node!r} is not used by its LVAR {lvar!r}")
                 if lvar.dest is None:
                     barf(f"{lvar!r} does not have a dest")
@@ -204,11 +205,10 @@ class _Checker(NodeVisitor, LeafVisitor):
                 )
         if last is None:
             barf(f"{block!r} has no LAST")
-        self._successor_checker.block = block
-        try:
-            last.accept(self._successor_checker)
-        finally:
-            self._successor_checker.block = None
+        checker = self._successor_checker
+        checker.block = block
+        last.accept(checker)
+        checker.block = None
 
     def check_dest(self, lvar, node) -> None:
         seen_blocks = self.seen_blocks
@@ -225,20 +225,21 @@ class _Checker(NodeVisitor, LeafVisitor):
     def visit_Ref(self, node):
         leaf = node.leaf
         refs = leaf.refs
-        if len(refs) > 8:
-            ref_set = self.leaf_refs.get(leaf)
-            if ref_set is None:
-                ref_set = set(refs)
-                self.leaf_refs[leaf] = ref_set
-            if node not in ref_set:
-                barf(f"{node!r} is not in the refs of {leaf!r}")
-        elif node not in refs:
+        if not refs:
             barf(f"{node!r} is not in the refs of {leaf!r}")
+        elif refs[0] is not node:
+            if len(refs) > 8:
+                ref_set = self.leaf_refs.get(leaf)
+                if ref_set is None:
+                    ref_set = set(refs)
+                    self.leaf_refs[leaf] = ref_set
+                if node not in ref_set:
+                    barf(f"{node!r} is not in the refs of {leaf!r}")
+            elif node not in refs:
+                barf(f"{node!r} is not in the refs of {leaf!r}")
         self._current_ref = node
-        try:
-            leaf.accept(self)
-        finally:
-            self._current_ref = None
+        leaf.accept(self)
+        self._current_ref = None
 
     def visit_Lambda(self, leaf):
         self.check_fun_reached(leaf, self._current_ref)
@@ -259,15 +260,18 @@ class _Checker(NodeVisitor, LeafVisitor):
             self.check_dest(node.value, node)
         var = node.var
         sets = var.sets
-        if len(sets) > 8:
-            set_set = self.var_sets.get(var)
-            if set_set is None:
-                set_set = set(sets)
-                self.var_sets[var] = set_set
-            if node not in set_set:
-                barf(f"{node!r} is not in the sets of {var!r}")
-        elif node not in sets:
+        if not sets:
             barf(f"{node!r} is not in the sets of {var!r}")
+        elif sets[0] is not node:
+            if len(sets) > 8:
+                set_set = self.var_sets.get(var)
+                if set_set is None:
+                    set_set = set(sets)
+                    self.var_sets[var] = set_set
+                if node not in set_set:
+                    barf(f"{node!r} is not in the sets of {var!r}")
+            elif node not in sets:
+                barf(f"{node!r} is not in the sets of {var!r}")
 
     def visit_Cast(self, node):
         self.check_dest(node.value, node)

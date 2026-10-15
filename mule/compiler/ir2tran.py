@@ -251,6 +251,7 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
         component.blocks.append(ir2_block)
     for block in blocks:
         converter.convert_block(block)
+    converter.close()
     _mark_last_local_reads(component)
     _mark_borrowed_local_reads(component)
     _clear_lvar_info(lambda_)
@@ -263,7 +264,7 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
     reads = component.reads
     writes = component.writes
     for block in component.blocks:
-        positions = {vop: index for index, vop in enumerate(block.vops)}
+        positions: dict[VOP, int] | None = None
         for index, vop in enumerate(block.vops):
             if vop.info is not vops.LOAD_LOCAL:
                 continue
@@ -281,6 +282,8 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
                 or len(result_reads) != 1
             ):
                 continue
+            if positions is None:
+                positions = {step: pos for pos, step in enumerate(block.vops)}
             reader, reader_ref = result_reads[0]
             reader_index = positions.get(reader)
             if reader_index is None or reader_index <= index:
@@ -325,42 +328,67 @@ def _mark_last_local_reads(component: IR2Component) -> None:
     }
     if not candidates:
         return
+    blocks = component.blocks
+    if (
+        len(blocks) == 1
+        and not blocks[0].block.succ
+        and block_exception_target(blocks[0].block) is None
+    ):
+        live = set()
+        for vop in reversed(blocks[0].vops):
+            if vop.info is vops.LOAD_LOCAL:
+                tn = vop.args[0].tn
+                if tn in candidates and tn not in live and not vop.codegen_info.move:
+                    vop.codegen_info = replace(vop.codegen_info, move=True)
+            for ref in vop.results:
+                live.discard(ref.tn)
+            for ref in vop.args:
+                if ref.tn in candidates:
+                    live.add(ref.tn)
+        return
+    ir2_blocks = component.ir2_blocks
     normal_succs = {
-        block: [
-            component.ir2_blocks[succ]
-            for succ in block.block.succ
-            if succ in component.ir2_blocks
-        ]
-        for block in component.blocks
+        block: [ir2_blocks[succ] for succ in block.block.succ if succ in ir2_blocks]
+        for block in blocks
     }
     handlers = {
-        block: component.ir2_blocks.get(block_exception_target(block.block))
-        for block in component.blocks
+        block: ir2_blocks.get(block_exception_target(block.block)) for block in blocks
     }
-    live_in = {block: set() for block in component.blocks}
+    block_gen: dict[IR2Block, set] = {}
+    block_kill: dict[IR2Block, set] = {}
+    for block in blocks:
+        gen = set()
+        kill = set()
+        for vop in reversed(block.vops):
+            for ref in vop.results:
+                tn = ref.tn
+                if tn in candidates:
+                    gen.discard(tn)
+                    kill.add(tn)
+            for ref in vop.args:
+                tn = ref.tn
+                if tn in candidates:
+                    gen.add(tn)
+        block_gen[block] = gen
+        block_kill[block] = kill
+    live_in = {block: set() for block in blocks}
     changed = True
     while changed:
         changed = False
-        for block in reversed(component.blocks):
+        for block in reversed(blocks):
             live = set()
             for succ in normal_succs[block]:
                 live |= live_in[succ]
+            if live:
+                live.difference_update(block_kill[block])
+            live |= block_gen[block]
             handler = handlers[block]
-            handler_live = live_in[handler] if handler is not None else ()
-            for vop in reversed(block.vops):
-                if handler_live:
-                    live.update(handler_live)
-                for ref in vop.results:
-                    live.discard(ref.tn)
-                for ref in vop.args:
-                    if ref.tn in candidates:
-                        live.add(ref.tn)
-            if handler_live:
-                live.update(handler_live)
+            if handler is not None:
+                live |= live_in[handler]
             if live != live_in[block]:
                 live_in[block] = live
                 changed = True
-    for block in component.blocks:
+    for block in blocks:
         live = set()
         for succ in normal_succs[block]:
             live |= live_in[succ]
@@ -383,10 +411,9 @@ def _mark_last_local_reads(component: IR2Component) -> None:
 def _clear_lvar_info(lambda_: Lambda) -> None:
     """LTN annotations belong to one conversion; the next context annotates
     afresh with its own primitive types."""
-    clear = _ClearLvarInfo()
     for block in linked(lambda_.component, lambda_, "component").blocks():
         for node in block.nodes():
-            node.accept(clear)
+            node.accept(_CLEAR_LVAR_INFO)
 
 
 class _ClearLvarInfo(NodeVisitor):
@@ -412,7 +439,7 @@ class _ConstantIndex(NodeVisitor, LeafVisitor):
         return self.visit_Node(leaf)
 
     def visit_Constant(self, leaf: Constant):
-        return leaf.value.accept(_IntegerIndex())
+        return leaf.value.accept(_INTEGER_INDEX)
 
 
 class _IntegerIndex(ast.Visitor):
@@ -445,9 +472,9 @@ class _ProvedSlotRead(NodeVisitor):
 class _LoadLeaf(LeafVisitor):
     """Convert a ``Ref`` by the kind of leaf it references."""
 
-    def __init__(self, converter: _Converter, node: Ref):
+    def __init__(self, converter: _Converter):
         self.converter = converter
-        self.node = node
+        self.node: Ref | None = None
 
     def visit_Leaf(self, leaf):
         raise TypeError(f"no IR2 conversion for a reference to {leaf!r}")
@@ -465,7 +492,8 @@ class _LoadLeaf(LeafVisitor):
         self.load(vops.LOAD_GLOBAL, info=leaf)
 
     def visit_LambdaVar(self, leaf: LambdaVar):
-        converter, node = self.converter, self.node
+        converter = self.converter
+        node = linked(self.node, self, "reference node")
         if converter.borrows_unpack_capture(node, leaf):
             # The capture dominates this infallible slot read and remains owned
             # until the assignment's explicit discard or exception transfer.
@@ -499,7 +527,8 @@ class _LoadLeaf(LeafVisitor):
             converter.emit_discard(node, result)
 
     def load(self, template, info):
-        converter, node = self.converter, self.node
+        converter = self.converter
+        node = linked(self.node, self, "reference node")
         result, discard = converter.result_tn(node)
         converter.emit(template, node, results=(result,), info=info)
         if discard:
@@ -509,15 +538,16 @@ class _LoadLeaf(LeafVisitor):
 class _StoreVar(LeafVisitor):
     """Convert a ``Set`` by the kind of variable it assigns."""
 
-    def __init__(self, converter: _Converter, node: Set):
+    def __init__(self, converter: _Converter):
         self.converter = converter
-        self.node = node
+        self.node: Set | None = None
 
     def visit_Leaf(self, leaf):
         raise TypeError(f"no IR2 conversion for an assignment to {leaf!r}")
 
     def visit_LambdaVar(self, leaf: LambdaVar):
-        converter, node = self.converter, self.node
+        converter = self.converter
+        node = linked(self.node, self, "assignment node")
         if leaf in converter.environment.cells:
             cell = converter.cell(node, leaf)
             result = converter.temporary()
@@ -551,7 +581,8 @@ class _StoreVar(LeafVisitor):
             )
 
     def visit_GlobalVar(self, leaf: GlobalVar):
-        converter, node = self.converter, self.node
+        converter = self.converter
+        node = linked(self.node, self, "assignment node")
         if node.value is None:
             converter.emit(vops.UNBIND_GLOBAL, node, info=leaf)
         else:
@@ -591,6 +622,12 @@ class _ExactListAppendCall(NodeVisitor):
         )
 
 
+_CLEAR_LVAR_INFO = _ClearLvarInfo()
+_INTEGER_INDEX = _IntegerIndex()
+_CONSTANT_INDEX = _ConstantIndex()
+_EXACT_LIST_APPEND_CALL = _ExactListAppendCall()
+
+
 class _Converter(NodeVisitor):
     def __init__(self, component: IR2Component):
         self.component = component
@@ -598,6 +635,12 @@ class _Converter(NodeVisitor):
         self.context = component.context
         self.lambda_ = component.lambda_
         self.current: IR2Block | None = None
+        self._load_leaf: _LoadLeaf | None = _LoadLeaf(self)
+        self._store_var: _StoreVar | None = _StoreVar(self)
+
+    def close(self) -> None:
+        self._load_leaf = None
+        self._store_var = None
 
     # TNs
 
@@ -779,7 +822,9 @@ class _Converter(NodeVisitor):
         return loaded
 
     def visit_Ref(self, node: Ref):
-        node.leaf.accept(_LoadLeaf(self, node))
+        self._load_leaf.node = node
+        node.leaf.accept(self._load_leaf)
+        self._load_leaf.node = None
 
     def borrows_unpack_capture(self, node: Ref, leaf: LambdaVar):
         if not (
@@ -795,10 +840,12 @@ class _Converter(NodeVisitor):
 
     @staticmethod
     def constant_index(lvar):
-        return lvar.use().accept(_ConstantIndex())
+        return lvar.use().accept(_CONSTANT_INDEX)
 
     def visit_Set(self, node: Set):
-        node.var.accept(_StoreVar(self, node))
+        self._store_var.node = node
+        node.var.accept(self._store_var)
+        self._store_var.node = None
 
     def visit_Cast(self, node: Cast):
         result, discard = self.result_tn(node)
@@ -934,7 +981,7 @@ class _Converter(NodeVisitor):
             receiver.is_exact_list
             and info.name == "append"
             and call is not None
-            and call.accept(_ExactListAppendCall())
+            and call.accept(_EXACT_LIST_APPEND_CALL)
         )
 
     def convert_resolve_method(self, node: Combination):

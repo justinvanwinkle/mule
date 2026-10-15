@@ -582,6 +582,37 @@ class LambdaGraph:
     global_names: tuple
     indirect: tuple
     volatile_keys: tuple
+    call_nodes: tuple
+
+
+class _GraphScan(NodeVisitor, LeafVisitor):
+    """Collects global variable names and full/guarded call sites for a lambda."""
+
+    def __init__(self):
+        self.global_names: set[str] = set()
+        self.call_nodes: list[tuple[object, Combination]] = []
+        self.block = None
+
+    def reset(self) -> None:
+        self.global_names.clear()
+        self.call_nodes.clear()
+        self.block = None
+
+    def visit_Ref(self, node):
+        node.leaf.accept(self)
+
+    def visit_Set(self, node):
+        node.var.accept(self)
+
+    def visit_GlobalVar(self, leaf):
+        self.global_names.add(leaf.name)
+
+    def visit_Combination(self, node):
+        if node.kind in (CallKind.FULL, CallKind.GUARDED) and not node.info.keywords:
+            self.call_nodes.append((self.block, node))
+
+
+_GRAPH_SCAN = _GraphScan()
 
 
 def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
@@ -592,8 +623,10 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
     successors = {block: tuple(_successors(block, handlers[block])) for block in blocks}
     predecessors_sets = defaultdict(set)
     consumers = {}
-    global_names_set = set()
+    scan = _GRAPH_SCAN
+    scan.reset()
     for block in blocks:
+        scan.block = block
         for target in successors[block]:
             predecessors_sets[target].add(block)
         for node in block_nodes[block]:
@@ -602,11 +635,12 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
                 dest_block = lvar.dest.block
                 if dest_block is not block:
                     consumers[node] = dest_block
-            for leaf in _global_leaves(node):
-                global_names_set.add(leaf.name)
+            node.accept(scan)
     predecessors = {block: tuple(predecessors_sets[block]) for block in blocks}
     headers = _loop_headers(entry, successors)
-    global_names = tuple(global_names_set)
+    global_names = tuple(scan.global_names)
+    call_nodes = tuple(scan.call_nodes)
+    scan.reset()
     indirect = tuple(var for var in lambda_.locals if var.indirect)
     volatile_keys = (
         *((_GLOBAL, name) for name in global_names),
@@ -624,6 +658,7 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
         global_names=global_names,
         indirect=indirect,
         volatile_keys=volatile_keys,
+        call_nodes=call_nodes,
     )
 
 
@@ -691,16 +726,20 @@ class _Walk:
             self.propagate(incoming, edge_states, widening=False)
         self.resolve_call = None
         returned = BOTTOM
-        call_sites = _CallSites(self.facts)
-        block_nodes = self.block_nodes
-        for block in incoming:
-            for node in block_nodes[block]:
-                node.accept(call_sites)
+        facts = self.facts
+        calls = tuple(
+            CallSite(
+                facts.get(node.fun.use(), NO_FACT).target,
+                tuple(facts.get(arg.use(), NO_FACT).type for arg in node.args),
+            )
+            for block, node in self.graph.call_nodes
+            if block in incoming
+        )
         if self.lambda_.return_ is not None:
             for use in self.lambda_.return_.result.uses:
                 if use.block in incoming:
-                    returned = returned.join(self.facts.get(use, NO_FACT).type)
-        return Body(self.facts, returned, tuple(call_sites.calls))
+                    returned = returned.join(facts.get(use, NO_FACT).type)
+        return Body(facts, returned, calls)
 
     def propagate(self, incoming, edge_states, *, widening: bool) -> bool:
         visits = defaultdict(int)
@@ -818,25 +857,6 @@ class _Walk:
         return state
 
 
-class _CallSites(NodeVisitor):
-    """Full calls without keywords, as the callee and argument facts that
-    local-call analysis summarizes."""
-
-    def __init__(self, facts: dict[object, Fact]):
-        self.facts = facts
-        self.calls: list[CallSite] = []
-
-    def visit_Combination(self, node):
-        if node.kind not in (CallKind.FULL, CallKind.GUARDED) or node.info.keywords:
-            return
-        self.calls.append(
-            CallSite(
-                self.facts.get(node.fun.use(), NO_FACT).target,
-                tuple(self.facts.get(arg.use(), NO_FACT).type for arg in node.args),
-            )
-        )
-
-
 class _ConstrainEdge(NodeVisitor):
     """Only a two-way branch narrows its edges."""
 
@@ -897,38 +917,6 @@ class _ConstrainComparison(NodeVisitor):
         return edge
 
 
-class _Operands(NodeVisitor):
-    def visit_Node(self, node):
-        return ()
-
-    def visit_If(self, node):
-        return (node.test,)
-
-    def visit_Set(self, node):
-        return () if node.value is None else (node.value,)
-
-    def visit_Combination(self, node):
-        if node.fun_info is not None and node.fun_info.name == "%range_advance":
-            return (node.fun, *node.args, *linked(node.info, node, "info").arguments)
-        return (node.fun, *node.args)
-
-    def visit_Return(self, node):
-        return (node.result,)
-
-    def visit_Cast(self, node):
-        return (node.value,)
-
-    def visit_Exit(self, node):
-        return () if node.value is None else (node.value,)
-
-
-_OPERANDS = _Operands()
-
-
-def _operands(node):
-    return node.accept(_OPERANDS)
-
-
 def _successors(block, handler):
     """Normal successors inside the component plus the error destination."""
     for successor in block.succ:
@@ -936,32 +924,6 @@ def _successors(block, handler):
             yield successor
     if handler is not None:
         yield handler
-
-
-class _GlobalLeaves(NodeVisitor, LeafVisitor):
-    """The module globals a node reads or writes."""
-
-    def visit_Node(self, node):
-        return ()
-
-    def visit_Ref(self, node):
-        return node.leaf.accept(self)
-
-    def visit_Set(self, node):
-        return node.var.accept(self)
-
-    def visit_Leaf(self, leaf):
-        return ()
-
-    def visit_GlobalVar(self, leaf):
-        return (leaf,)
-
-
-_GLOBAL_LEAVES = _GlobalLeaves()
-
-
-def _global_leaves(node):
-    return node.accept(_GLOBAL_LEAVES)
 
 
 def propagate(

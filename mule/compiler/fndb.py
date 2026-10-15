@@ -98,6 +98,7 @@ PROTOCOLS = {
         "add_keyword",
         "merge_keywords",
         "call_expanded",
+        "call_expanded_positional",
         "tuple_from_list",
         "dict_merge",
         "build_template",

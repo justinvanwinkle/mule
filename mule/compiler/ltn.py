@@ -76,7 +76,9 @@ class EntryContext:
 def primitive_type_of(value_type: ValueType) -> PrimitiveType:
     """The primitive type of values described by a derived value type
     (``primitive-type`` of a ctype)."""
-    return value_type.accept(_PrimitiveTypeOf())
+    if value_type is UNKNOWN:
+        return T
+    return value_type.accept(_PRIMITIVE_TYPE_OF)
 
 
 class _PrimitiveTypeOf(ValueTypeVisitor):
@@ -106,6 +108,9 @@ class _PrimitiveTypeOf(ValueTypeVisitor):
     visit_TupleType = visit_ValueType
 
 
+_PRIMITIVE_TYPE_OF = _PrimitiveTypeOf()
+
+
 def ltn_analyze(lambda_: Lambda, context: EntryContext) -> None:
     """Annotate every lvar of ``lambda_`` and select templates for its known
     calls under ``context``."""
@@ -115,35 +120,10 @@ def ltn_analyze(lambda_: Lambda, context: EntryContext) -> None:
             node.accept(visitor)
 
 
-class _AnnotateReference(LeafVisitor):
-    def __init__(self, annotate: _Annotate, ref: Ref):
-        self.annotate = annotate
-        self.ref = ref
-
-    def visit_Leaf(self, leaf):
-        raise TypeError(f"no IR2 delivery for a reference to {leaf!r}")
-
-    # The callee of a known call and the lambda of ``%make_function`` are
-    # compile-time operands, never materialized values.
-    def visit_KnownFunction(self, leaf):
-        self.annotate.annotate_delayed(self.ref.lvar)
-
-    def visit_Lambda(self, leaf):
-        self.annotate.annotate_delayed(self.ref.lvar)
-
-    def visit_Constant(self, leaf):
-        self.annotate.annotate_1_value_lvar(self.ref.lvar)
-
-    def visit_LambdaVar(self, leaf):
-        self.annotate.annotate_1_value_lvar(self.ref.lvar)
-
-    def visit_GlobalVar(self, leaf):
-        self.annotate.annotate_1_value_lvar(self.ref.lvar)
-
-
-class _Annotate(NodeVisitor):
+class _Annotate(NodeVisitor, LeafVisitor):
     def __init__(self, context: EntryContext):
         self.context = context
+        self.lvar = None
 
     def lvar_ptype(self, lvar) -> PrimitiveType:
         plan = self.context.plan
@@ -165,8 +145,30 @@ class _Annotate(NodeVisitor):
         if lvar is not None and lvar.info is None:
             lvar.info = IR2Lvar(IR2LvarKind.DELAYED, T)
 
+    def visit_Leaf(self, leaf):
+        raise TypeError(f"no IR2 delivery for a reference to {leaf!r}")
+
+    # The callee of a known call and the lambda of ``%make_function`` are
+    # compile-time operands, never materialized values.
+    def visit_KnownFunction(self, leaf):
+        self.annotate_delayed(self.lvar)
+
+    def visit_Lambda(self, leaf):
+        self.annotate_delayed(self.lvar)
+
+    def visit_Constant(self, leaf):
+        self.annotate_1_value_lvar(self.lvar)
+
+    def visit_LambdaVar(self, leaf):
+        self.annotate_1_value_lvar(self.lvar)
+
+    def visit_GlobalVar(self, leaf):
+        self.annotate_1_value_lvar(self.lvar)
+
     def visit_Ref(self, node: Ref):
-        node.leaf.accept(_AnnotateReference(self, node))
+        self.lvar = node.lvar
+        node.leaf.accept(self)
+        self.lvar = None
 
     def visit_Set(self, node: Set):
         self.annotate_1_value_lvar(node.lvar)
@@ -181,10 +183,10 @@ class _Annotate(NodeVisitor):
         self.annotate_1_value_lvar(node.result)
 
     def visit_Combination(self, node: Combination):
-        if node.kind is CallKind.KNOWN:
-            node.template = find_template_for_ltn_policy(node, self.context, self)
         if node.lvar is not None:
             self.annotate_1_value_lvar(node.lvar)
+        if node.kind is CallKind.KNOWN:
+            node.template = find_template_for_ltn_policy(node, self.context, self)
 
 
 def find_template_for_ltn_policy(call: Combination, context, annotate) -> object:
@@ -193,11 +195,18 @@ def find_template_for_ltn_policy(call: Combination, context, annotate) -> object
     fun_info = linked(call.fun_info, call, "fun_info")
     candidates = templates_for(fun_info)
     operands = [
-        annotate.lvar_ptype(arg)
+        arg.info.primitive_type if arg.info is not None else annotate.lvar_ptype(arg)
         for arg in call.args
         if arg.info is None or arg.info.kind is not IR2LvarKind.DELAYED
     ]
-    result = annotate.lvar_ptype(call.lvar) if call.lvar is not None else None
+    lvar = call.lvar
+    result = (
+        None
+        if lvar is None
+        else lvar.info.primitive_type
+        if lvar.info is not None
+        else annotate.lvar_ptype(lvar)
+    )
     policy = call.lexenv.policy
     raw = context.plan is not None
     for template in candidates:

@@ -31,6 +31,7 @@ import logging
 import re
 import struct
 from dataclasses import dataclass, field
+from functools import cache
 from typing import TYPE_CHECKING
 
 from mule import ast
@@ -38,10 +39,18 @@ from mule.diagnostics import phase
 
 from . import vops
 from .ctype import FIXNUM_MAX, FIXNUM_MIN, UNKNOWN, ValueType, ValueTypeVisitor
-from .ir1util import block_exception_target, class_method_definitions, known_calls
+from .ir1util import block_exception_target, made_function
 from .ir2tran import ir2_convert
 from .ltn import EntryContext, ltn_analyze
-from .node import CodeInfo, FunctionalKind, Lambda, Signature, linked
+from .node import (
+    CallKind,
+    CodeInfo,
+    FunctionalKind,
+    Lambda,
+    NodeVisitor,
+    Signature,
+    linked,
+)
 from .represent import select_native_plans, select_representations
 from .traceback_sites import SourceHighlights
 from .vop import (
@@ -236,6 +245,29 @@ _DECLARATION_LINES = tuple(
     for line in DECLARATIONS.splitlines()
     if (entry := _declaration_symbol(line)) is not None
 )
+
+
+@cache
+def _parsed_helpers(
+    bootstrap: bool,
+) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
+    intrinsics_lines: list[tuple[str, str]] = []
+    helper_defs: list[tuple[str, str]] = []
+    current_symbol = None
+    current_lines: list[str] = []
+    for line in vops.helpers(bootstrap=bootstrap).splitlines():
+        if current_symbol is not None:
+            current_lines.append(line)
+            if line == "}":
+                helper_defs.append((current_symbol, "\n".join(current_lines)))
+                current_symbol = None
+                current_lines = []
+        elif line.startswith("define "):
+            current_symbol = line.split("(")[0].split()[-1]
+            current_lines = [line]
+        elif (entry := _declaration_symbol(line)) is not None:
+            intrinsics_lines.append(entry)
+    return tuple(intrinsics_lines), tuple(helper_defs)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -434,6 +466,9 @@ class _ConstantKey(ast.Visitor):
         return "tuple", tuple(element.accept(self) for element in node.elements)
 
 
+_CONSTANT_KEY = _ConstantKey()
+
+
 class _NestedTuples(ast.Visitor):
     """Registers the tuple constants nested in a tuple constant first."""
 
@@ -442,6 +477,37 @@ class _NestedTuples(ast.Visitor):
 
     def visit_Tuple(self, node):
         self.module.constant_tuple(node)
+
+
+class _ModuleCollector(NodeVisitor):
+    """Collects native method predictions and imported modules in first-use order."""
+
+    def __init__(self, method_targets: dict[str, Function], imports: dict[str, object]):
+        self.method_targets = method_targets
+        self.imports = imports
+        self.classes: dict[str, dict[str, Lambda]] = {}
+
+    def collect(self, lambda_: Lambda) -> None:
+        self.classes.clear()
+        for block in linked(lambda_.component, lambda_, "component").blocks():
+            for node in block.nodes():
+                node.accept(self)
+        for methods in self.classes.values():
+            for method_name, target in methods.items():
+                self.method_targets.setdefault(method_name, target)
+
+    def visit_Combination(self, node):
+        if node.kind is not CallKind.KNOWN:
+            return
+        name = linked(node.fun_info, node, "known function").name
+        if name == "%class_store":
+            value = node.args[1]
+            target = made_function(value.uses[0]) if len(value.uses) == 1 else None
+            if target is not None:
+                self.classes.setdefault(node.info.identity, {})[node.info.name] = target
+        elif name == "%import":
+            info = linked(node.info, node, "import")
+            self.imports.setdefault(info.module_name, info)
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,6 +522,7 @@ class ModuleGenerator:
         self.program = program
         lambdas = program.lambdas
         self.owned = set(lambdas)
+        self.owned_names = {lambda_.name for lambda_ in lambdas}
         self.facts = {**program.external_facts, **program.facts}
         # Other units' functions this unit refers to, by symbol name.
         self.foreign: dict[str, tuple[str, Function]] = {}
@@ -502,8 +569,9 @@ class ModuleGenerator:
         self.imports: dict[str, object] = {}
         if program.module_import is not None:
             self.imports[program.module_import.module_name] = program.module_import
+        collector = _ModuleCollector(self.method_targets, self.imports)
         for lambda_ in lambdas:
-            self._collect(lambda_)
+            collector.collect(lambda_)
         # Other units' methods are predictions too, after this unit's own.
         for method_name, target in program.external_methods.items():
             self.method_targets.setdefault(method_name, target)
@@ -522,19 +590,6 @@ class ModuleGenerator:
             if context.id == context_id:
                 return index
         raise KeyError((lambda_.name, context_id))
-
-    def _collect_methods(self, lambda_: Lambda) -> None:
-        """Native method predictions; calls still check callable identity."""
-        for methods in class_method_definitions(lambda_).values():
-            for method_name, target in methods.items():
-                self.method_targets.setdefault(method_name, target)
-
-    def _collect(self, lambda_: Lambda) -> None:
-        """Method predictions and the imported modules in first-use order."""
-        self._collect_methods(lambda_)
-        for call in known_calls(lambda_, "%import"):
-            info = linked(call.info, call, "import")
-            self.imports.setdefault(info.module_name, info)
 
     def variants_of(self, lambda_: Lambda):
         facts = self.facts.get(lambda_)
@@ -562,11 +617,7 @@ class ModuleGenerator:
         return _symbol(f"mule.import:{info.module_name}")
 
     def owns_import(self, info) -> bool:
-        return (
-            info.native
-            or info.missing
-            or info.initializer in {lambda_.name for lambda_ in self.owned}
-        )
+        return info.native or info.missing or info.initializer in self.owned_names
 
     def cell(self, namespace: str, name: str) -> str:
         """The static cell (the runtime's ``GlobalCell``) of global ``name``
@@ -857,7 +908,7 @@ class ModuleGenerator:
 
     def constant_tuple(self, literal: ast.Tuple) -> str:
         """Register dependencies before their parent, sharing only typed values."""
-        key = literal.accept(_ConstantKey())
+        key = literal.accept(_CONSTANT_KEY)
         existing = self.tuple_constants.get(key)
         if existing is not None:
             return existing.entry
@@ -867,7 +918,8 @@ class ModuleGenerator:
         index = len(self.tuple_constants)
         slot = f"@mule.literal.slot.{index}"
         elements = literal.elements
-        operations = [element.accept(vops.LiteralEmitter(self)) for element in elements]
+        emitter = vops.LiteralEmitter(self)
+        operations = [element.accept(emitter) for element in elements]
         self.auxiliary.append(f"{slot} = internal global ptr null")
         if not elements:
             entry = f"call ptr @mule.cached.tuple(ptr {slot}, i64 0, ptr null)"
@@ -1514,22 +1566,7 @@ class ModuleGenerator:
             if section
         ]
         body_text = "\n\n".join(body_sections)
-        intrinsics_lines: list[tuple[str, str]] = []
-        helper_defs = []
-        current_symbol = None
-        current_lines: list[str] = []
-        for line in vops.helpers(bootstrap=program.bootstrap).splitlines():
-            if current_symbol is not None:
-                current_lines.append(line)
-                if line == "}":
-                    helper_defs.append((current_symbol, "\n".join(current_lines)))
-                    current_symbol = None
-                    current_lines = []
-            elif line.startswith("define "):
-                current_symbol = line.split("(")[0].split()[-1]
-                current_lines = [line]
-            elif (entry := _declaration_symbol(line)) is not None:
-                intrinsics_lines.append(entry)
+        intrinsics_lines, helper_defs = _parsed_helpers(program.bootstrap)
         referenced = set(_MULE_SYMBOL_RE.findall(body_text))
         for llvm_sym in (
             "@llvm.assume",
@@ -2199,6 +2236,7 @@ class FunctionGenerator:
 
     def __init__(self, module: ModuleGenerator, component):
         self.module = module
+        self._literal_emitter = vops.LiteralEmitter(module)
         self.component = component
         self.lambda_ = component.lambda_
         self.context = component.context
@@ -2537,6 +2575,8 @@ class FunctionGenerator:
                 self.immortal_values.add(value)
             elif fact.is_heap_object:
                 self.heap_values.add(value)
+        if not fact.is_fixnum:
+            return
         valid = fact.accept(_TypeAssumption(self, value))
         if valid is None:
             return
@@ -2590,7 +2630,7 @@ class FunctionGenerator:
         return self.operation(f"inttoptr i64 {tagged} to ptr")
 
     def constant(self, literal) -> str:
-        return literal.accept(vops.LiteralEmitter(self.module))
+        return literal.accept(self._literal_emitter)
 
     def truth(self, tn, value: str) -> str:
         """An ``i1`` for the truth of a value in ``tn``'s representation."""

@@ -751,12 +751,14 @@ class _Combinations(NodeVisitor):
         return node
 
 
+_COMBINATIONS = _Combinations()
+
+
 def combinations(lambda_: Lambda) -> Iterator[Combination]:
     """The calls in ``lambda_``'s component, in block order."""
-    visitor = _Combinations()
     for block in linked(lambda_.component, lambda_, "component").blocks():
         for node in block.nodes():
-            call = node.accept(visitor)
+            call = node.accept(_COMBINATIONS)
             if call is not None:
                 yield call
 
