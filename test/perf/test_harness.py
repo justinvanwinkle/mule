@@ -168,7 +168,7 @@ def test_history_records_runs_and_tabulates_the_candidate_trend(tmp_path):
     assert [run["results"][1]["kernel_ms"] for run in runs] == [50.0, 20.0]
     assert runs[0]["runtimes"][1]["commit"] == "0123456789abcdef"
     lines = history.table(runs)
-    assert lines[0].startswith("runtime mule:")
+    assert "mule" in lines[2] and "mule" in lines[3]
     assert "integer_accumulation" in lines[1]
     assert "012345678 " in lines[2] and "50 ms 0.2x" in lines[2]
     assert "012345678+" in lines[3] and "20 ms 0.5x" in lines[3]

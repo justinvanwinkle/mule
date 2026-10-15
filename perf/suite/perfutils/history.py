@@ -82,37 +82,41 @@ def _revision(run, runtime_name):
     return runtime["commit"][:9] + ("+" if dirty else "")
 
 
+def _candidate(run):
+    """The runtime a run compares against its baseline: the first one that is
+    not the baseline, so a renamed runtime still lines up across runs."""
+    return next(
+        (
+            runtime["name"]
+            for runtime in run["runtimes"]
+            if runtime["name"] != run["baseline"]
+        ),
+        run["baseline"],
+    )
+
+
 def table(runs, runtime_name=None, cases=None, limit=None):
     """Lines of a text table: one row per run, one column per scenario, each
-    cell the kernel median and speedup of ``runtime_name`` (default: the first
-    runtime that is not the baseline) against the run's baseline."""
+    cell the kernel median and speedup of ``runtime_name`` (default: each
+    run's first runtime that is not the baseline) against the run's baseline."""
     if limit is not None:
         runs = runs[-limit:]
     if not runs:
         return ["no history"]
-    if runtime_name is None:
-        latest = runs[-1]
-        runtime_name = next(
-            (
-                runtime["name"]
-                for runtime in latest["runtimes"]
-                if runtime["name"] != latest["baseline"]
-            ),
-            latest["baseline"],
-        )
     if cases is None:
         cases = []
         for run in runs:
             for result in run["results"]:
                 if result["case"] not in cases:
                     cases.append(result["case"])
-    header = ["run (UTC)", "revision", "samples", *cases]
+    header = ["run (UTC)", "runtime", "revision", "samples", *cases]
     rows = []
     for run in runs:
+        selected = runtime_name or _candidate(run)
         results = {
             result["case"]: result
             for result in run["results"]
-            if result["runtime"] == runtime_name
+            if result["runtime"] == selected
         }
         cells = []
         for case in cases:
@@ -128,14 +132,15 @@ def table(runs, runtime_name=None, cases=None, limit=None):
         rows.append(
             [
                 run["created_utc"],
-                _revision(run, runtime_name),
+                selected,
+                _revision(run, selected),
                 str(run["options"]["samples"]),
                 *cells,
             ]
         )
     widths = [max(len(row[i]) for row in [header, *rows]) for i in range(len(header))]
     lines = [
-        f"runtime {runtime_name}: kernel median and speedup against the baseline",
+        "kernel median and speedup of the runtime against the run's baseline",
         "  ".join(
             cell.ljust(width) for cell, width in zip(header, widths, strict=True)
         ),
