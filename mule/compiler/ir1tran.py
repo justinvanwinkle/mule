@@ -984,16 +984,15 @@ class FunctionConverter:
 
     def comparison_condition(self, start, node, true: Block, false: Block):
         previous = self.temporary()
-        ctran, value = self.value(start, node.left)
-        following = Ctran()
-        self.set_var(ctran, following, previous, value, node.left)
-        current = following
+        current, left = self.value(start, node.left)
         for index, (operator, comparator) in enumerate(
             zip(node.operators, node.comparators)
         ):
-            ctran, left = Ctran(), Lvar()
-            self.ref(current, ctran, left, previous, node, final=True)
-            current, right = self.value(ctran, comparator)
+            if index > 0:
+                ctran, left = Ctran(), Lvar()
+                self.ref(current, ctran, left, previous, node, final=True)
+                current = ctran
+            current, right = self.value(current, comparator)
             last = index == len(node.operators) - 1
             if not last:
                 ctran = Ctran()
@@ -1029,16 +1028,16 @@ class FunctionConverter:
             return
         previous, outcome = self.temporary(), self.temporary()
         join = self.block()
-        ctran, value = self.value(start, node.left)
-        current = Ctran()
-        self.set_var(ctran, current, previous, value, node.left)
+        current, left = self.value(start, node.left)
         for index, (operator, comparator) in enumerate(
             zip(node.operators, node.comparators)
         ):
             last = index == len(node.operators) - 1
-            ctran, left = Ctran(), Lvar()
-            self.ref(current, ctran, left, previous, node, final=True)
-            current, right = self.value(ctran, comparator)
+            if index > 0:
+                ctran, left = Ctran(), Lvar()
+                self.ref(current, ctran, left, previous, node, final=True)
+                current = ctran
+            current, right = self.value(current, comparator)
             if not last:
                 ctran = Ctran()
                 self.set_var(current, ctran, previous, right, comparator)
@@ -1053,22 +1052,16 @@ class FunctionConverter:
                 break
             current = Ctran()
             self.set_var(ctran, current, outcome, compared, node)
-            next_block = self.block()
+            next_block, failed = self.block(), self.block()
             ctran, test = Ctran(), Lvar()
             self.ref(current, ctran, test, outcome, node)
-            self.if_node(ctran, test, next_block, join, node)
+            self.if_node(ctran, test, next_block, failed, node)
+            ctran = Ctran()
+            self.discard(failed.start, ctran, previous.name, node)
+            self.jump(ctran, join)
             current = Ctran()
             self.discard(next_block.start, current, outcome.name, node)
-        # A short-circuit can leave the middle operand in the temporary. Its
-        # release is conditional because the successful final comparison moved
-        # it. Assigning None releases either state without reading an unbound slot.
-        ctran, none = Ctran(), Lvar()
-        self.constant(join.start, ctran, none, ast.NoneLiteral(None))
-        following = Ctran()
-        self.set_var(ctran, following, previous, none, node)
-        ctran = Ctran()
-        self.discard(following, ctran, previous.name, node)
-        self.ref(ctran, next_, result, outcome, node, final=True)
+        self.ref(join.start, next_, result, outcome, node, final=True)
 
     def call(self, start, next_, result, node: ast.Call):
         keywords = set()

@@ -443,6 +443,7 @@ class ModuleGenerator:
         self.data: dict[bytes, str] = {}
         self.tuple_constants: dict[tuple, TupleConstant] = {}
         self.float_constants: dict[bytes, tuple[str, str]] = {}
+        self.protocol_helpers: dict[str, str] = {}
         self.auxiliary: list[str] = []
         # Each runtime namespace's static cells (the runtime's ``GlobalCell``),
         # by name, linked once per namespace.
@@ -840,8 +841,7 @@ class ModuleGenerator:
     def tuple_constant_builder(self, constant: TupleConstant) -> str:
         """Construct the cached tuple on first use; main releases initialized roots."""
         elements = constant.literal.elements
-        count = max(1, len(elements))
-        current_label = "build"
+        operations = [element.accept(vops.LiteralEmitter(self)) for element in elements]
         lines = [
             f"define internal ptr {constant.entry}() noinline optnone {{",
             "entry:",
@@ -849,56 +849,171 @@ class ModuleGenerator:
             "  %present = icmp ne ptr %cached, null",
             "  br i1 %present, label %ready, label %build",
             "build:",
-            f"  %argv = alloca [{count} x ptr]",
-            f"  store [{count} x ptr] zeroinitializer, ptr %argv",
         ]
-        for position, element in enumerate(elements):
-            value = f"%value.{position}"
-            address = f"%arg.{position}"
-            operation = element.accept(vops.LiteralEmitter(self))
-            lines.extend(
-                [
-                    f"  {value} = {operation}",
-                    f"  {address} = getelementptr [{count} x ptr], ptr %argv, i64 0, i64 {position}",
-                    f"  store ptr {value}, ptr {address}",
-                ]
+        if not elements:
+            lines.append(
+                "  %tuple = call ptr @mule_sequence_tuple_owned(i64 0, ptr null)"
             )
-            if operation.startswith("call "):
-                current_label = f"after.{position}"
+        elif not any(operation.startswith("call ") for operation in operations):
+            items = f"@mule.literal.items.{len(self.auxiliary)}"
+            encoded = ", ".join(
+                f"ptr inttoptr ({operation.removeprefix('inttoptr ')})"
+                if operation.startswith("inttoptr ")
+                else f"ptr {operation.split(',')[1].strip().removeprefix('ptr ')}"
+                for operation in operations
+            )
+            self.auxiliary.append(
+                f"{items} = private unnamed_addr constant [{len(elements)} x ptr] [{encoded}]"
+            )
+            lines.append(
+                f"  %tuple = call ptr @mule_sequence_tuple_owned(i64 {len(elements)}, ptr {items})"
+            )
+        else:
+            count = len(elements)
+            lines.append(f"  %argv = alloca [{count} x ptr]")
+            for position, operation in enumerate(operations):
+                value = f"%value.{position}"
+                address = f"%arg.{position}"
                 lines.extend(
                     [
-                        f"  %bad.{position} = icmp eq ptr {value}, null",
-                        f"  br i1 %bad.{position}, label %failure, label %{current_label}",
-                        f"{current_label}:",
+                        f"  {value} = {operation}",
+                        f"  {address} = getelementptr [{count} x ptr], ptr %argv, i64 0, i64 {position}",
+                        f"  store ptr {value}, ptr {address}",
                     ]
                 )
+            lines.append(
+                f"  %tuple = call ptr @mule_sequence_tuple_owned(i64 {count}, ptr %argv)"
+            )
         lines.extend(
             [
-                f"  %tuple = call ptr @mule_sequence_tuple_owned(i64 {len(elements)}, ptr %argv)",
                 f"  store ptr %tuple, ptr {constant.slot}",
                 "  %tuple.bad = icmp eq ptr %tuple, null",
                 "  br i1 %tuple.bad, label %failed.tuple, label %ready",
                 "ready:",
-                f"  %result = phi ptr [%cached, %entry], [%tuple, %{current_label}]",
+                "  %result = phi ptr [%cached, %entry], [%tuple, %build]",
                 "  %owned = call ptr @mule_retain(ptr %result)",
                 "  ret ptr %owned",
                 "failed.tuple:",
                 "  ret ptr null",
-                "failure:",
+                "}",
             ]
         )
-        for position in range(len(elements)):
-            address = f"%failed.arg.{position}"
-            value = f"%failed.value.{position}"
-            lines.extend(
-                [
-                    f"  {address} = getelementptr [{count} x ptr], ptr %argv, i64 0, i64 {position}",
-                    f"  {value} = load ptr, ptr {address}",
-                    f"  call void @mule.fast.release(ptr {value})",
-                ]
-            )
-        lines.extend(["  ret ptr null", "}"])
         return "\n".join(lines)
+
+    def protocol_helper(self, name: str, arity: int) -> str:
+        existing = self.protocol_helpers.get(name)
+        if existing is not None:
+            return existing
+        symbol = _symbol(f"mule.protocol.{name}")
+        self.protocol_helpers[name] = symbol
+        body = self.bodies[self.sequence_functions[name]]
+        params = ", ".join(f"ptr %arg.{i}" for i in range(arity))
+        operands = ", ".join(
+            ["ptr %globals", *(f"ptr %arg.{i}" for i in range(arity))]
+        )
+        releases = "\n".join(
+            f"  call void @mule.fast.release(ptr %arg.{i})" for i in range(arity)
+        )
+        self.auxiliary.append(
+            f"define internal ptr {symbol}({params}) {{\n"
+            "entry:\n"
+            "  %globals = call ptr @mule_protocol_globals()\n"
+            "  %status = call i32 @mule_enter_frame()\n"
+            "  %bad = icmp slt i32 %status, 0\n"
+            "  br i1 %bad, label %failed, label %entered\n"
+            "failed:\n"
+            + (releases + "\n" if releases else "")
+            + "  ret ptr null\n"
+            "entered:\n"
+            f"  %result = call ptr {body}({operands})\n"
+            "  call void @mule_leave_frame()\n"
+            "  ret ptr %result\n"
+            "}"
+        )
+        return symbol
+
+    def getitem_helper(self) -> str:
+        existing = self.protocol_helpers.get("$getitem.fast")
+        if existing is not None:
+            return existing
+        symbol = "@mule.fast.getitem"
+        self.protocol_helpers["$getitem.fast"] = symbol
+        slow = self.protocol_helper("getitem", 2)
+        self.auxiliary.append(
+            f"define internal ptr {symbol}(ptr %sequence, ptr %index) {{\n"
+            "entry:\n"
+            "  %fast = call ptr @mule_fast_getitem(ptr %sequence, ptr %index)\n"
+            "  %matched = icmp ne ptr %fast, null\n"
+            "  br i1 %matched, label %hit, label %slow\n"
+            "hit:\n"
+            "  call void @mule.fast.release(ptr %sequence)\n"
+            "  call void @mule.fast.release(ptr %index)\n"
+            "  ret ptr %fast\n"
+            "slow:\n"
+            f"  %result = call ptr {slow}(ptr %sequence, ptr %index)\n"
+            "  ret ptr %result\n"
+            "}"
+        )
+        return symbol
+
+    def setitem_helper(self) -> str:
+        existing = self.protocol_helpers.get("$setitem.fast")
+        if existing is not None:
+            return existing
+        symbol = "@mule.fast.setitem"
+        self.protocol_helpers["$setitem.fast"] = symbol
+        slow = self.protocol_helper("setitem", 3)
+        self.auxiliary.append(
+            f"define internal ptr {symbol}(ptr %sequence, ptr %index, ptr %item) {{\n"
+            "entry:\n"
+            "  %matched = call i32 @mule_fast_setitem(ptr %sequence, ptr %index, ptr %item)\n"
+            "  %valid = icmp ne i32 %matched, 0\n"
+            "  br i1 %valid, label %hit, label %slow\n"
+            "hit:\n"
+            "  call void @mule.fast.release(ptr %sequence)\n"
+            "  call void @mule.fast.release(ptr %index)\n"
+            "  call void @mule.fast.release(ptr %item)\n"
+            "  %none = call ptr @mule_retain(ptr @mule.none)\n"
+            "  ret ptr %none\n"
+            "slow:\n"
+            f"  %result = call ptr {slow}(ptr %sequence, ptr %index, ptr %item)\n"
+            "  ret ptr %result\n"
+            "}"
+        )
+        return symbol
+
+    def unpack_helper(self, arity: int) -> str:
+        key = f"$unpack.{arity}"
+        existing = self.protocol_helpers.get(key)
+        if existing is not None:
+            return existing
+        symbol = f"@mule.fast.unpack.{arity}"
+        self.protocol_helpers[key] = symbol
+        slow = self.protocol_helper("unpack", 2)
+        self.auxiliary.append(
+            f"define internal ptr {symbol}(ptr %value, ptr %count) {{\n"
+            "entry:\n"
+            f"  %matched = call i32 @mule_tuple_shape_matches(ptr %value, i64 {arity})\n"
+            "  %valid = icmp ne i32 %matched, 0\n"
+            "  br i1 %valid, label %tuple, label %list.check\n"
+            "tuple:\n"
+            "  call void @mule.fast.release(ptr %count)\n"
+            "  ret ptr %value\n"
+            "list.check:\n"
+            f"  %matched.list = call i32 @mule_list_shape_matches(ptr %value, i64 {arity})\n"
+            "  %valid.list = icmp ne i32 %matched.list, 0\n"
+            "  br i1 %valid.list, label %list, label %iterable\n"
+            "list:\n"
+            "  %snapshot = call ptr @mule_storage_tuple(ptr %value)\n"
+            "  call void @mule.fast.release(ptr %value)\n"
+            "  call void @mule.fast.release(ptr %count)\n"
+            "  ret ptr %snapshot\n"
+            "iterable:\n"
+            f"  %result = call ptr {slow}(ptr %value, ptr %count)\n"
+            "  ret ptr %result\n"
+            "}"
+        )
+        return symbol
 
     def contexts(self, lambda_: Lambda):
         """The general entry context and the guarded variants."""
@@ -979,15 +1094,59 @@ class ModuleGenerator:
                 f"{name} = private unnamed_addr constant "
                 f'[{len(value) + 1} x i8] c"{escaped}"'
             )
+        foreign_decls = self.foreign_declarations()
+        body_sections = [
+            section
+            for section in (foreign_decls, *globals_, *self.auxiliary, *functions)
+            if section
+        ]
+        body_text = "\n\n".join(body_sections)
+        intrinsics_lines = []
+        helper_defs = []
+        current_symbol = None
+        current_lines: list[str] = []
+        for line in vops.helpers(bootstrap=program.bootstrap).splitlines():
+            if current_symbol is not None:
+                current_lines.append(line)
+                if line == "}":
+                    helper_defs.append((current_symbol, "\n".join(current_lines)))
+                    current_symbol = None
+                    current_lines = []
+            elif line.startswith("define "):
+                current_symbol = line.split("(")[0].split()[-1]
+                current_lines = [line]
+            elif line.strip():
+                intrinsics_lines.append(line)
+        kept_helpers: list[str] = []
+        kept_symbols: set[str] = set()
+        search_text = body_text
+        changed = True
+        while changed:
+            changed = False
+            for symbol, chunk in helper_defs:
+                if symbol not in kept_symbols and f"{symbol}(" in search_text:
+                    kept_symbols.add(symbol)
+                    kept_helpers.append(chunk)
+                    search_text += "\n" + chunk
+                    changed = True
+        kept_decls = []
+        for line in [*DECLARATIONS.splitlines(), *intrinsics_lines]:
+            stripped = line.strip()
+            if not stripped or stripped.startswith(";"):
+                continue
+            symbol = (
+                stripped.split()[0]
+                if stripped.startswith("@")
+                else stripped.split("(")[0].split()[-1]
+            )
+            if symbol in search_text:
+                kept_decls.append(line)
         return (
             "\n\n".join(
                 [
-                    DECLARATIONS,
-                    self.foreign_declarations(),
-                    vops.helpers(bootstrap=program.bootstrap),
-                    *globals_,
-                    *self.auxiliary,
-                    *functions,
+                    "\n".join(kept_decls),
+                    *kept_helpers,
+                    *body_sections,
                 ]
             )
             + "\n"
@@ -2121,10 +2280,9 @@ class FunctionGenerator:
         return self.operation(f"phi ptr [null, %{failed}], [{result}, %{entered}]")
 
     def sequence_call(self, name: str, values) -> str:
-        globals_value = self.operation("call ptr @mule_protocol_globals()")
-        return self.compiled_call(
-            self.module.sequence_functions[name], values, globals_value
-        )
+        helper = self.module.protocol_helper(name, len(values))
+        operands = ", ".join(f"ptr {value}" for value in values)
+        return self.operation(f"call ptr {helper}({operands})")
 
     def tuple_of(self, result, refs) -> str | None:
         """Build an owned tuple of the given operands, or None when empty.

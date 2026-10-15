@@ -67,12 +67,75 @@ from .vop import (
 @dataclass(frozen=True, slots=True)
 class LocalAccess:
     """Code generation data of a local read: the name for the unbound-local
-    error, whether the read is the last use (ownership moves), and whether
-    the variable is proven bound."""
+    error, whether the read is the last use (ownership moves), whether
+    the variable is proven bound, and whether the consumer borrows the slot."""
 
     name: str
     move: bool
     bound: bool = False
+    borrow: bool = False
+
+
+_BORROWING_VOPS = frozenset(
+    {
+        "getattr",
+        "setattr",
+        "resolve-method",
+        "branch",
+        "store-global",
+        "build-list",
+        "unpack-ref",
+        "has-binding",
+        "class-store",
+        "class-delete",
+        "enter-handler",
+        "assertion-failure",
+        "unary-not",
+        "compare-equal",
+        "compare-not_equal",
+        "compare-less",
+        "compare-less_equal",
+        "compare-greater",
+        "compare-greater_equal",
+        "compare-is",
+        "compare-is_not",
+        "binary-divide",
+        "binary-floor_divide",
+        "binary-power",
+        "binary-left_shift",
+        "binary-right_shift",
+        "binary-bit_and",
+        "binary-bit_xor",
+        "binary-bit_or",
+        "inplace-divide",
+        "inplace-floor_divide",
+        "inplace-power",
+        "inplace-left_shift",
+        "inplace-right_shift",
+        "inplace-bit_and",
+        "inplace-bit_xor",
+        "inplace-bit_or",
+    }
+)
+_RIGHT_BORROWING_VOPS = frozenset(
+    {
+        "binary-add",
+        "binary-subtract",
+        "binary-multiply",
+        "inplace-add",
+        "inplace-subtract",
+        "inplace-multiply",
+    }
+)
+
+
+def _borrows_operand(vop: VOP, ref: TNRef) -> bool:
+    name = vop.info.name
+    if name in _BORROWING_VOPS:
+        return True
+    if name in _RIGHT_BORROWING_VOPS and len(vop.args) == 2 and ref is vop.args[1]:
+        return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,8 +202,44 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
     for block in blocks:
         converter.convert_block(block)
     _mark_last_local_reads(component)
+    _mark_borrowed_local_reads(component)
     _clear_lvar_info(lambda_)
     return component
+
+
+def _mark_borrowed_local_reads(component: IR2Component) -> None:
+    """Mark bound ``LOAD_LOCAL`` VOPs whose single block-local consumer only
+    borrows the value while the local slot still retains it."""
+    for block in component.blocks:
+        positions = {vop: index for index, vop in enumerate(block.vops)}
+        for index, vop in enumerate(block.vops):
+            if vop.info is not vops.LOAD_LOCAL:
+                continue
+            access = vop.codegen_info
+            if not access.bound or access.move:
+                continue
+            source = vop.args[0].tn
+            result = vop.results[0].tn
+            if len(result.writes) != 1 or len(result.reads) != 1:
+                continue
+            reader_ref = result.reads[0]
+            reader = reader_ref.vop
+            reader_index = positions.get(reader)
+            if reader_index is None or reader_index <= index:
+                continue
+            if not _borrows_operand(reader, reader_ref):
+                continue
+            if any(
+                step.info.name not in ("constant", "load-local")
+                or (
+                    step.info is vops.LOAD_LOCAL
+                    and step.args[0].tn is source
+                    and step.codegen_info.move
+                )
+                for step in block.vops[index + 1 : reader_index]
+            ):
+                continue
+            vop.codegen_info = replace(access, borrow=True)
 
 
 def _mark_last_local_reads(component: IR2Component) -> None:
@@ -541,7 +640,13 @@ class _Converter(NodeVisitor):
             self.emit(
                 templates_for(fndb.PROTOCOLS["cell_new"])[0], node, results=(cell,)
             )
-            self.emit(vops.MOVE, node, args=(cell,), results=(environment.cells[var],))
+            self.emit(
+                vops.MOVE,
+                node,
+                args=(cell,),
+                results=(environment.cells[var],),
+                info=False,
+            )
             if var in self.lambda_.vars:
                 # A captured parameter's cell starts out holding its argument.
                 value = self.temporary()

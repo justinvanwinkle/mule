@@ -1658,6 +1658,9 @@ pub unsafe extern "C" fn mule_literal_bytes(data: *const c_char, length: isize) 
 }
 unsafe fn literal_bytes(data: *const c_char, length: isize, text: bool) -> Value {
     unsafe {
+        if has_error() {
+            return std::ptr::null_mut();
+        }
         if length < 0 || (data.is_null() && length != 0) {
             error("OverflowError", "invalid string buffer");
             return std::ptr::null_mut();
@@ -1833,16 +1836,27 @@ pub unsafe extern "C" fn mule_sequence_tuple_owned(
             return std::ptr::null_mut();
         }
         let count = count as usize;
+        let slice = if count == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(values, count)
+        };
+        if slice.iter().any(|value| value.is_null()) || has_error() {
+            for &value in slice {
+                release(value);
+            }
+            return std::ptr::null_mut();
+        }
         let mut result = Vec::new();
         if result.try_reserve_exact(count).is_err() {
-            for index in 0..count {
-                release(*values.add(index));
+            for &value in slice {
+                release(value);
             }
             error("MemoryError", "sequence allocation failed");
             return std::ptr::null_mut();
         }
         if count != 0 {
-            result.extend_from_slice(std::slice::from_raw_parts(values, count));
+            result.extend_from_slice(slice);
         }
         new_value(Data::Args(result, std::ptr::null_mut(), std::ptr::null_mut()))
     }

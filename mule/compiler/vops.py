@@ -231,9 +231,16 @@ def load_local(gen, vop):
     if access.move:
         gen.line(f"store ptr null, ptr {source.tn.slot}")
     if access.bound:
+        if access.borrow:
+            gen.immortal_values.add(value)
         gen.record_facts(source.tn, value)
         gen.record_facts(result.tn, value)
-        if not access.move and result.tn.sc.owned and source.tn.sc.owned:
+        if (
+            not access.move
+            and not access.borrow
+            and result.tn.sc.owned
+            and source.tn.sc.owned
+        ):
             value = gen.retain(value)
         gen.publish(result, value)
         return
@@ -266,14 +273,16 @@ def move(gen, vop):
 
 @define_vop("move-argument", results=(None,))
 def move_argument(gen, vop):
-    gen.store(vop.results[0], gen.parameter(vop.codegen_info))
+    gen.store(vop.results[0], gen.parameter(vop.codegen_info), release=False)
 
 
 @define_vop("load-closure", results=(None,))
 def load_closure(gen, vop):
-    gen.pointer_result(
-        vop.results[0], f"call ptr @mule_arg(ptr %closure, i32 {vop.codegen_info})"
-    )
+    result = vop.results[0]
+    value = gen.operation(f"call ptr @mule_arg(ptr %closure, i32 {vop.codegen_info})")
+    gen.publish(result, value, release=False)
+    gen.check_pointer(value)
+    gen.refine(result.tn, value)
 
 
 @define_vop("unbind-local", results=(None,))
@@ -1037,41 +1046,8 @@ def structural_unpack(gen, vop):
         gen.refine(vop.results[0].tn, value)
         gen.release(count)
         return
-    matched = gen.operation(
-        f"call i32 @mule_tuple_shape_matches(ptr {value}, i64 {vop.codegen_info.arity})"
-    )
-    valid = gen.operation(f"icmp ne i32 {matched}, 0")
-    fast = gen.fresh("unpack.tuple")[1:]
-    list_check = gen.fresh("unpack.list.check")[1:]
-    list_fast = gen.fresh("unpack.list")[1:]
-    slow = gen.fresh("unpack.iterable")[1:]
-    done = gen.fresh("unpack.done")[1:]
-    gen.line(f"br i1 {valid}, label %{fast}, label %{list_check}")
-    gen.lines.append(fast + ":")
-    gen.release(count)
-    gen.line(f"br label %{done}")
-    gen.lines.append(list_check + ":")
-    matched_list = gen.operation(
-        f"call i32 @mule_list_shape_matches(ptr {value}, i64 {vop.codegen_info.arity})"
-    )
-    valid_list = gen.operation(f"icmp ne i32 {matched_list}, 0")
-    gen.line(f"br i1 {valid_list}, label %{list_fast}, label %{slow}")
-    gen.lines.append(list_fast + ":")
-    snapshot = gen.operation(f"call ptr @mule_storage_tuple(ptr {value})")
-    gen.release(value)
-    gen.release(count)
-    list_ready = gen.check_pointer(snapshot)
-    gen.line(f"br label %{done}")
-    gen.lines.append(slow + ":")
-    result = gen.sequence_call("unpack", [value, count])
-    unpacked = gen.check_pointer(result)
-    gen.line(f"br label %{done}")
-    gen.lines.append(done + ":")
-    merged = gen.operation(
-        f"phi ptr [{value}, %{fast}], [{snapshot}, %{list_ready}], [{result}, %{unpacked}]"
-    )
-    gen.publish(vop.results[0], merged)
-    gen.refine(vop.results[0].tn, merged)
+    helper = gen.module.unpack_helper(vop.codegen_info.arity)
+    gen.pointer_result(vop.results[0], f"call ptr {helper}(ptr {value}, ptr {count})")
 
 
 @define_vop("protocol-getitem", translate=fndb.PROTOCOLS["getitem"], results=(OBJECT,))
@@ -1080,32 +1056,12 @@ def protocol_getitem(gen, vop):
     index = gen.take(vop.args[1])
     if gen.module.program.exports:
         result = gen.sequence_call("getitem", [sequence, index])
-        gen.publish(vop.results[0], result)
-        gen.check_pointer(result)
-        gen.refine(vop.results[0].tn, result)
-        return
-    fast_result = gen.operation(
-        f"call ptr @mule_fast_getitem(ptr {sequence}, ptr {index})"
-    )
-    matched = gen.operation(f"icmp ne ptr {fast_result}, null")
-    fast = gen.fresh("getitem.fast")[1:]
-    slow = gen.fresh("getitem.slow")[1:]
-    done = gen.fresh("getitem.done")[1:]
-    gen.line(f"br i1 {matched}, label %{fast}, label %{slow}")
-    gen.lines.append(fast + ":")
-    gen.release(sequence)
-    gen.release(index)
-    gen.line(f"br label %{done}")
-    gen.lines.append(slow + ":")
-    slow_result = gen.sequence_call("getitem", [sequence, index])
-    checked = gen.check_pointer(slow_result)
-    gen.line(f"br label %{done}")
-    gen.lines.append(done + ":")
-    merged = gen.operation(
-        f"phi ptr [{fast_result}, %{fast}], [{slow_result}, %{checked}]"
-    )
-    gen.publish(vop.results[0], merged)
-    gen.refine(vop.results[0].tn, merged)
+    else:
+        helper = gen.module.getitem_helper()
+        result = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {index})")
+    gen.publish(vop.results[0], result)
+    gen.check_pointer(result)
+    gen.refine(vop.results[0].tn, result)
 
 
 @define_vop("protocol-setitem", translate=fndb.PROTOCOLS["setitem"], results=(OBJECT,))
@@ -1115,34 +1071,14 @@ def protocol_setitem(gen, vop):
     item = gen.take(vop.args[2])
     if gen.module.program.exports:
         result = gen.sequence_call("setitem", [sequence, index, item])
-        gen.publish(vop.results[0], result)
-        gen.check_pointer(result)
-        gen.refine(vop.results[0].tn, result)
-        return
-    matched = gen.operation(
-        f"call i32 @mule_fast_setitem(ptr {sequence}, ptr {index}, ptr {item})"
-    )
-    valid = gen.operation(f"icmp ne i32 {matched}, 0")
-    fast = gen.fresh("setitem.fast")[1:]
-    slow = gen.fresh("setitem.slow")[1:]
-    done = gen.fresh("setitem.done")[1:]
-    gen.line(f"br i1 {valid}, label %{fast}, label %{slow}")
-    gen.lines.append(fast + ":")
-    gen.release(sequence)
-    gen.release(index)
-    gen.release(item)
-    fast_result = gen.operation("call ptr @mule_retain(ptr @mule.none)")
-    gen.line(f"br label %{done}")
-    gen.lines.append(slow + ":")
-    slow_result = gen.sequence_call("setitem", [sequence, index, item])
-    checked = gen.check_pointer(slow_result)
-    gen.line(f"br label %{done}")
-    gen.lines.append(done + ":")
-    merged = gen.operation(
-        f"phi ptr [{fast_result}, %{fast}], [{slow_result}, %{checked}]"
-    )
-    gen.publish(vop.results[0], merged)
-    gen.refine(vop.results[0].tn, merged)
+    else:
+        helper = gen.module.setitem_helper()
+        result = gen.operation(
+            f"call ptr {helper}(ptr {sequence}, ptr {index}, ptr {item})"
+        )
+    gen.publish(vop.results[0], result)
+    gen.check_pointer(result)
+    gen.refine(vop.results[0].tn, result)
 
 
 for _name, _info in fndb.PROTOCOLS.items():
@@ -1854,8 +1790,7 @@ slow.call:
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
-{guard}
-  %a = ashr i64 %left.bits, 1
+{guard}  %a = ashr i64 %left.bits, 1
   %b = ashr i64 %right.bits, 1
 {operation}
 encode:
@@ -1902,8 +1837,7 @@ fixnum:
     return f"""define internal ptr @mule.{prefix}.unary.{op}(ptr %operand) {{
 entry:
   %bits = ptrtoint ptr %operand to i64
-{guard}
-  %decoded = ashr i64 %bits, 1
+{guard}  %decoded = ashr i64 %bits, 1
 {operation}
 slow:
   %fallback = call ptr @mule_unary(i32 {op}, ptr %operand)
