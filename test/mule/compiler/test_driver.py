@@ -182,3 +182,92 @@ entry:
         assert "\tcall" not in assembly
     elif not lto or optimize == 0:
         assert "mule_test_increment" in assembly
+
+
+def test_partition_count_bounds_partitions_by_size_and_cores():
+    from mule.compiler.driver import PARTITION_BYTES, partition_count
+
+    assert partition_count(PARTITION_BYTES - 1, 16) == 1
+    assert partition_count(3 * PARTITION_BYTES, 16) == 3
+    assert partition_count(40 * PARTITION_BYTES, 16) == 16
+    assert partition_count(40 * PARTITION_BYTES, 1) == 1
+
+
+@pytest.mark.integration
+def test_partitioned_objects_keep_linkonce_and_local_definitions(tmp_path):
+    """Units large enough to compile as several objects keep a linkonce
+    definition for the partitions that reference it after the partition
+    holding it has inlined its own uses, and a local helper that several
+    partitions use stays local to its unit, so two units may define it."""
+    from mule.compiler.artifacts import Graph, Step
+    from mule.compiler.driver import PARTITION_BYTES, Build, Toolchain, lto_linker
+
+    def unit_text(prefix: str, entry: str) -> str:
+        padding = []
+        index = 0
+        while sum(map(len, padding)) < 3 * PARTITION_BYTES:
+            padding.append(
+                f"define i64 @{prefix}_pad{index}(i64 %value) {{\n"
+                f'entry:\n  %shared = call i64 @"mule.test.shared"(i64 %value)\n'
+                f'  %local = call i64 @"mule.test.local"(i64 %shared)\n'
+                f"  %answer = add i64 %local, {index}\n  ret i64 %answer\n}}\n"
+            )
+            index += 1
+        return (
+            'define linkonce_odr i64 @"mule.test.shared"(i64 %value) {\n'
+            "entry:\n  %answer = add i64 %value, 1\n  ret i64 %answer\n}\n"
+            'define internal i64 @"mule.test.local"(i64 %value) {\n'
+            "entry:\n  %answer = add i64 %value, 1\n  ret i64 %answer\n}\n"
+            + entry
+            + "".join(padding)
+        )
+
+    units = {
+        "library": unit_text("mule_test_library", ""),
+        "__main__": unit_text(
+            "mule_test_main",
+            "declare i64 @mule_test_library_pad0(i64)\n"
+            "define i32 @main() {\n"
+            "entry:\n  %value = call i64 @mule_test_library_pad0(i64 40)\n"
+            "  %wrong = icmp ne i64 %value, 42\n  %status = zext i1 %wrong to i32\n"
+            "  ret i32 %status\n}\n",
+        ),
+    }
+    toolchain = Toolchain(optimize=1)
+    objects = []
+    with Graph(1) as graph:
+        builder = Build(graph, toolchain)
+        for name, text in units.items():
+            source = graph.text(name + " source", text)
+            unit = graph.step(
+                name,
+                lambda name=name, source=source: Step(
+                    graph,
+                    name,
+                    inputs=[source],
+                    settings={"step": "partition probe"},
+                    outputs=("unit.ll",),
+                    action=lambda inputs, directory: (directory / "unit.ll").write_text(
+                        inputs[0].text
+                    ),
+                ),
+            )
+            object_file = builder.object(unit)
+            graph.run(object_file)
+            objects.append(str(object_file.path("unit.o")))
+    executable = tmp_path / "partitioned-probe"
+    subprocess.run(
+        [
+            toolchain.clang,
+            *toolchain.link_flags(),
+            f"--ld-path={lto_linker(toolchain.rustc)}",
+            *objects,
+            "-o",
+            str(executable),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    result = subprocess.run([executable], check=False, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr

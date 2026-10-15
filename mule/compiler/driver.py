@@ -13,6 +13,7 @@ import shutil
 import struct
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from functools import cache
 from pathlib import Path
@@ -31,6 +32,7 @@ from .artifacts import (
     Node,
     Step,
     ToolchainError,
+    physical_core_count,
     tool_identity,
 )
 from .codegen import ForeignFunction, Program, generate
@@ -52,6 +54,13 @@ __all__ = [
 ]
 
 LINK_LIBRARIES = ("-lgmp", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl")
+
+# LLVM text per object-file partition. The builtins unit is tens of megabytes
+# and clang compiles one module on one core, so a large unit is split into
+# partitions compiled in parallel, as rustc does with codegen units. Small
+# units stay whole: the split and the relocatable link cost more than they
+# would save, and splitting forgoes inlining across partitions.
+PARTITION_BYTES = 2 * 2**20
 
 
 @dataclass(slots=True)
@@ -441,6 +450,20 @@ class Toolchain:
         if shutil.which(self.clang) is None:
             raise ToolchainError(f"LLVM Clang compiler '{self.clang}' was not found")
 
+    def llvm_tool(self, name: str) -> str:
+        """The LLVM tool ``name`` of the same installation as clang, so clang
+        reads the bitcode llvm-split writes."""
+        clang = shutil.which(self.clang)
+        if clang is None:
+            raise ToolchainError(f"LLVM Clang compiler '{self.clang}' was not found")
+        sibling = Path(clang).resolve().parent / name
+        if sibling.is_file():
+            return str(sibling)
+        found = shutil.which(name)
+        if found is None:
+            raise ToolchainError(f"LLVM's {name} was not found beside clang")
+        return found
+
     def clang_settings(self) -> dict:
         return {
             "clang": tool_identity(
@@ -477,6 +500,12 @@ def _run(command: list[str], failure: str) -> None:
     result = subprocess.run(command, check=False, capture_output=True, text=True)
     if result.returncode:
         raise ToolchainError(f"{failure}:\n{result.stderr.strip()}")
+
+
+def partition_count(size: int, cores: int) -> int:
+    """How many objects a unit of ``size`` bytes of LLVM text compiles as:
+    one per ``PARTITION_BYTES``, at most one per core, at least one."""
+    return max(1, min(cores, size // PARTITION_BYTES))
 
 
 class Build:
@@ -551,19 +580,84 @@ class Build:
         lto = toolchain.lto
         name = f"{unit.name} object optimize={toolchain.optimize} lto={lto}"
 
-        def action(inputs, directory):
+        # Partitioning produces native objects, so an LTO build, whose
+        # objects are bitcode for the link to optimize, compiles whole.
+        cores = 1 if lto else physical_core_count()
+
+        def compile_llvm(source: Path, output: Path) -> None:
             _run(
                 [
                     toolchain.clang,
                     *toolchain.compile_flags(),
                     "-Wno-override-module",
                     "-c",
-                    str(unit.path("unit.ll")),
+                    str(source),
                     "-o",
+                    str(output),
+                ],
+                "LLVM compilation/linking failed",
+            )
+
+        def action(inputs, directory):
+            source = unit.path("unit.ll")
+            partitions = partition_count(source.stat().st_size, cores)
+            if partitions == 1:
+                compile_llvm(source, directory / "unit.o")
+                return
+            parts = directory / "parts"
+            parts.mkdir()
+            # A linkonce_odr definition may be dropped from a partition that
+            # does not use it, and other partitions then find no definition
+            # at the link. weak_odr keeps it, with the same one-definition
+            # merge at the final link.
+            whole = parts / "unit.ll"
+            whole.write_text(source.read_text().replace(" linkonce_odr ", " weak_odr "))
+            _run(
+                [
+                    toolchain.llvm_tool("llvm-split"),
+                    "-j",
+                    str(partitions),
+                    "-o",
+                    str(parts / "part"),
+                    str(whole),
+                ],
+                "LLVM compilation/linking failed",
+            )
+
+            def compile_part(index: int) -> Path:
+                # llvm-split writes bitcode without an extension; clang
+                # needs the extension to compile rather than link it.
+                bitcode = parts / f"part{index}.bc"
+                os.rename(parts / f"part{index}", bitcode)
+                compile_llvm(bitcode, bitcode.with_suffix(".o"))
+                return bitcode.with_suffix(".o")
+
+            with ThreadPoolExecutor(partitions) as pool:
+                objects = list(pool.map(compile_part, range(partitions)))
+            _run(
+                [
+                    str(lto_linker(toolchain.rustc)),
+                    "-r",
+                    "-o",
+                    str(parts / "unit.o"),
+                    *map(str, objects),
+                ],
+                "LLVM compilation/linking failed",
+            )
+            # llvm-split externalizes a unit-local symbol that another
+            # partition uses as a hidden global. Mule emits no hidden symbols
+            # of its own, so making every hidden symbol local again restores
+            # the unit's interface: every unit defines the same local helpers.
+            _run(
+                [
+                    toolchain.llvm_tool("llvm-objcopy"),
+                    "--localize-hidden",
+                    str(parts / "unit.o"),
                     str(directory / "unit.o"),
                 ],
                 "LLVM compilation/linking failed",
             )
+            shutil.rmtree(parts)
 
         step = self.graph.step(
             name,
@@ -571,7 +665,12 @@ class Build:
                 self.graph,
                 name,
                 inputs=[unit],
-                settings={"step": "object", "lto": lto, **toolchain.clang_settings()},
+                settings={
+                    "step": "object",
+                    "lto": lto,
+                    "cores": cores,
+                    **toolchain.clang_settings(),
+                },
                 outputs=("unit.o",),
                 action=action,
             ),
