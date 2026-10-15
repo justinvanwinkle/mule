@@ -423,7 +423,6 @@ def full_call(gen, vop):
     function = gen.take(vop.args[0])
     arguments = vop.args[1:]
     values = [gen.take(argument) for argument in arguments]
-    gen.argv(values)
     value = gen.call(site, function, arguments, values)
     gen.publish(result, value)
     gen.release(function)
@@ -726,7 +725,6 @@ def call_resolved(gen, vop):
     function = gen.take(method)
     receiver = gen.take(bound)
     values = [gen.take(argument) for argument in arguments]
-    gen.argv(values)
     value = gen.call_method(vop.codegen_info, function, receiver, values)
     gen.publish(vop.results[0], value)
     gen.release(function)
@@ -934,8 +932,9 @@ def current_globals(gen, vop):
 def _sequence(gen, vop, primitive):
     values = [gen.take(element) for element in vop.args]
     gen.argv(values)
+    buf = "%argv" if values else "null"
     gen.pointer_result(
-        vop.results[0], f"call ptr @{primitive}(i64 {len(values)}, ptr %argv)", values
+        vop.results[0], f"call ptr @{primitive}(i64 {len(values)}, ptr {buf})", values
     )
 
 
@@ -948,9 +947,10 @@ def build_list(gen, vop):
 def build_tuple(gen, vop):
     values = [gen.take(element) for element in vop.args]
     gen.argv(values)
+    buf = "%argv" if values else "null"
     gen.pointer_result(
         vop.results[0],
-        f"call ptr @mule_sequence_tuple_owned(i64 {len(values)}, ptr %argv)",
+        f"call ptr @mule_sequence_tuple_owned(i64 {len(values)}, ptr {buf})",
     )
 
 
@@ -1909,12 +1909,47 @@ bounded:
 }"""
 
 
+LITERAL_HELPERS = """define internal ptr @mule.cached.float(ptr %slot, double %value) {
+entry:
+  %cached = load ptr, ptr %slot
+  %present = icmp ne ptr %cached, null
+  br i1 %present, label %ready, label %build
+build:
+  %built = call ptr @mule_literal_float(double %value)
+  store ptr %built, ptr %slot
+  br label %ready
+ready:
+  %result = phi ptr [%cached, %entry], [%built, %build]
+  %owned = call ptr @mule_retain(ptr %result)
+  ret ptr %owned
+}
+
+define internal ptr @mule.cached.tuple(ptr %slot, i64 %count, ptr %items) {
+entry:
+  %cached = load ptr, ptr %slot
+  %present = icmp ne ptr %cached, null
+  br i1 %present, label %ready, label %build
+build:
+  %tuple = call ptr @mule_sequence_tuple_owned(i64 %count, ptr %items)
+  store ptr %tuple, ptr %slot
+  %bad = icmp eq ptr %tuple, null
+  br i1 %bad, label %failed, label %ready
+ready:
+  %result = phi ptr [%cached, %entry], [%tuple, %build]
+  %owned = call ptr @mule_retain(ptr %result)
+  ret ptr %owned
+failed:
+  ret ptr null
+}"""
+
+
 def helpers(*, bootstrap: bool = False) -> str:
     """Native guarded templates; LLVM removes unused templates after inlining."""
     return "\n\n".join(
         [
             INTRINSICS,
             MIXED_COMPARE,
+            LITERAL_HELPERS,
             _ownership(),
             _truth(),
             *(_binary_helper(op) for op in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12)),
@@ -1956,7 +1991,7 @@ class LiteralEmitter(ast.Visitor):
         return f"call ptr @mule_literal_int(ptr {self.module.text(decimal(value))})"
 
     def visit_FloatLiteral(self, node: ast.FloatLiteral) -> str:
-        return f"call ptr {self.module.constant_float(node)}()"
+        return self.module.constant_float(node)
 
     def visit_TextLiteral(self, node: ast.TextLiteral) -> str:
         encoded = node.value.encode("utf-8", "surrogatepass")
@@ -1979,7 +2014,7 @@ class LiteralEmitter(ast.Visitor):
         return self.visit_Literal(node)
 
     def visit_Tuple(self, node: ast.Tuple) -> str:
-        return f"call ptr {self.module.constant_tuple(node)}()"
+        return self.module.constant_tuple(node)
 
 
 INSERT_SAFEPOINT = insert_safepoint

@@ -1841,9 +1841,12 @@ pub unsafe extern "C" fn mule_sequence_tuple_owned(
         } else {
             std::slice::from_raw_parts(values, count)
         };
-        if slice.iter().any(|value| value.is_null()) || has_error() {
+        if slice.iter().any(|value| value.is_null()) {
             for &value in slice {
                 release(value);
+            }
+            if !has_error() {
+                error("SystemError", "NULL sequence element");
             }
             return std::ptr::null_mut();
         }

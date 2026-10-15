@@ -360,12 +360,16 @@ def test_complete_keyword_calls_and_captured_defaults_have_direct_entries():
     llvm = emit_llvm(
         "def combine(a=1, *, b=2):\n    return a + b\nprint(combine(b=4, a=3), combine())\n"
     )
-    # These are calls in the user module body, before generated binding entries.
-    module_body = llvm.split('define internal ptr @"mule_module.body"(')[1]
-    module_body = module_body.split("\n}\n", 1)[0]
-    assert "call ptr @mule_function_default(" in module_body
-    assert 'call ptr @"mule_fn_combine.body"(' in module_body
-    assert "call ptr @mule_call_keywords(" in module_body  # Identity-guard fallback.
+    # These are calls in the user module body and its direct-call helpers,
+    # before generated binding entries.
+    before_wrappers = llvm.split('define internal ptr @"mule_fn_combine.fn"(')[0]
+    module_body = before_wrappers.split('define internal ptr @"mule_module.body"(')[1]
+    assert 'call ptr @"mule.direct.mule_fn_combine.' in module_body
+    assert "call ptr @mule_function_default(" in before_wrappers
+    assert 'call ptr @"mule_fn_combine.body"(' in before_wrappers
+    assert (
+        "call ptr @mule_call_keywords(" in before_wrappers
+    )  # Identity-guard fallback.
 
 
 def test_native_call_selection_preserves_keyword_only_restrictions(tmp_path):

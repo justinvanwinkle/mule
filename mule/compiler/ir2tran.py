@@ -129,13 +129,30 @@ _RIGHT_BORROWING_VOPS = frozenset(
 )
 
 
+_NON_BORROWING_PRIMITIVES = frozenset(
+    {
+        "primitive-_string_protocol",
+        "primitive-_decimal_protocol",
+        "primitive-_percent_decimal_protocol",
+        "primitive-_format_value_protocol",
+        "primitive-_representation_protocol",
+        "primitive-_hex_protocol",
+        "primitive-_initialize",
+        "primitive-_read_int64",
+        "primitive-_write_int64",
+    }
+)
+
+
 def _borrows_operand(vop: VOP, ref: TNRef) -> bool:
     name = vop.info.name
     if name in _BORROWING_VOPS:
         return True
     if name in _RIGHT_BORROWING_VOPS and len(vop.args) == 2 and ref is vop.args[1]:
         return True
-    return False
+    if name == "full-call" and vop.args and ref is vop.args[0]:
+        return True
+    return name.startswith("primitive-") and name not in _NON_BORROWING_PRIMITIVES
 
 
 @dataclass(frozen=True, slots=True)

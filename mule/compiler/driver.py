@@ -279,7 +279,6 @@ def compile_unit(
     module it imports resolved, in request order."""
     compiler = import_resolver(filename, interface, module, roots, package)
     if module is None:
-        compiler.include_patterns(compiler.project_modules)
         compilation = compile_source(source, filename, imports=compiler)
         unit_name = "__main__"
     else:
@@ -355,7 +354,6 @@ def import_resolver(
     """Resolves a unit's imports as its compilation does: the builtins unit's
     modules are already compiled, and a module unit knows its own package."""
     compiler = ModuleCompiler(filename, roots=roots, package=package)
-    compiler.configure_project()
     compiler.modules.update(interface.modules)
     if module is not None:
         compiler.modules[module.name] = module

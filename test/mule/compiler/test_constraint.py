@@ -709,8 +709,12 @@ def test_nonnumeric_codegen_elides_impossible_spec_dispatch_and_retains():
         " return out\n"
     )
     run_body = ir.split('define internal ptr @"mule_fn_run.body"(')[1].split("\n}")[0]
-    assert '@"mule_fn_format_pair.spec.' not in run_body
-    assert '@"mule_fn_format_pair.body"(' in run_body
+    direct_helper = ir.split('define internal ptr @"mule.direct.mule_fn_format_pair.')[
+        1
+    ].split("\n}")[0]
+    assert '@"mule.direct.mule_fn_format_pair.' in run_body
+    assert '@"mule_fn_format_pair.spec.' not in direct_helper
+    assert '@"mule_fn_format_pair.body"(' in direct_helper
     assert "@mule.fast.local(" not in run_body
     assert "@mule.fast.local.move(" not in run_body
 
