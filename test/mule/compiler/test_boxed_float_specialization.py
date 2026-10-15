@@ -24,7 +24,7 @@ def test_inferred_floats_emit_native_arithmetic_in_object_entry(operator, opcode
         f"def run(n):\n value = 0.5\n for index in range(n):\n"
         f"  value = value {operator} 1.5\n return value\nprint(run(10))\n"
     )
-    body = llvm.split('define internal ptr @"mule_fn_1.body"(')[1].split("\n}")[0]
+    body = llvm.split('define internal ptr @"mule_fn_run.body"(')[1].split("\n}")[0]
     assert f"{opcode} double" in body
     assert "call i32 @mule_unbox_f64" in body
     assert "call ptr @mule_box_f64" in body
@@ -43,7 +43,7 @@ def test_arithmetic_intermediate_stays_double_until_the_local_store():
     llvm = emit_llvm(
         "def run(n):\n total = 0.0\n value = 0.5\n for i in range(n):\n  total += value * 0.125\n return total\n"
     )
-    body = llvm.split('define internal ptr @"mule_fn_1.body"(')[1].split("\n}")[0]
+    body = llvm.split('define internal ptr @"mule_fn_run.body"(')[1].split("\n}")[0]
     for multiply in body.split("fmul double")[1:]:
         before_add = multiply.split("fadd double", 1)[0]
         assert "@mule_box_f64" not in before_add
@@ -105,7 +105,7 @@ escaped(3)
 
 def test_unknown_arguments_keep_protocol_dispatch():
     llvm = emit_llvm("def add(value):\n return value + 1.5\n")
-    body = llvm.split('define internal ptr @"mule_fn_1.body"(')[1].split("\n}")[0]
+    body = llvm.split('define internal ptr @"mule_fn_add.body"(')[1].split("\n}")[0]
     assert "call i32 @mule_unbox_f64" not in body
 
 

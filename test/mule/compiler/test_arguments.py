@@ -364,7 +364,7 @@ def test_complete_keyword_calls_and_captured_defaults_have_direct_entries():
     module_body = llvm.split('define internal ptr @"mule_module.body"(')[1]
     module_body = module_body.split("\n}\n", 1)[0]
     assert "call ptr @mule_function_default(" in module_body
-    assert 'call ptr @"mule_fn_1.body"(' in module_body
+    assert 'call ptr @"mule_fn_combine.body"(' in module_body
     assert "call ptr @mule_call_keywords(" in module_body  # Identity-guard fallback.
 
 
@@ -407,9 +407,9 @@ def test_generated_external_binder_calls_body_without_argument_tuple():
     llvm = emit_llvm("def f(a, b=2):\n    return a + b\nf(a=1)\n")
     entries = llvm.split("\ndefine ")[1:]
     binder = next(
-        entry for entry in entries if entry.startswith('ptr @"mule_fn_1.fn"(')
+        entry for entry in entries if entry.startswith('ptr @"mule_fn_f.fn"(')
     )
-    assert 'call ptr @"mule_fn_1.body"(' in binder
+    assert 'call ptr @"mule_fn_f.body"(' in binder
     assert "call ptr @mule_sequence_tuple(" not in binder
 
 

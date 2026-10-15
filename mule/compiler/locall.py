@@ -26,10 +26,128 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from .annotation_types import AnnotationLedger
-from .constraint import Body, Fact, join_fact, propagate, widen_fact
+from .constraint import (
+    _BINARY_OPERATORS,
+    _COMPARISON_OPERATORS,
+    _UNARY_OPERATORS,
+    Body,
+    Fact,
+    join_fact,
+    propagate,
+    widen_fact,
+)
 from .ctype import BOTTOM, FIXNUM_MAX, FIXNUM_MIN, UNKNOWN, IntegerType, ValueType
 from .ir1util import made_function
 from .node import CallKind, Lambda, LeafVisitor, NodeVisitor, Set, linked
+
+_NUMERIC_KNOWN = (
+    frozenset(_BINARY_OPERATORS)
+    | (frozenset(_UNARY_OPERATORS) - {"%unary_not"})
+    | (
+        frozenset(_COMPARISON_OPERATORS)
+        - {"%compare_is", "%compare_is_not", "%compare_in", "%compare_not_in"}
+    )
+    | {"%range_prepare", "%range_advance", "%make_slice"}
+)
+_NON_INTEGER_FIRST_OPERAND = frozenset(
+    {
+        "%getattr",
+        "%setattr",
+        "%delattr",
+        "%resolve_method",
+        "%getitem",
+        "%setitem",
+        "%delitem",
+        "%iterate",
+        "%for_next",
+        "%unpack",
+    }
+)
+_INDEX_SECOND_OPERAND = frozenset({"%getitem", "%setitem", "%delitem"})
+
+
+class _ParameterUse(NodeVisitor, LeafVisitor):
+    """Classifies how one parameter (and local copies of it) is used."""
+
+    def __init__(self, parameter):
+        self.copies = {parameter}
+        self.queue = [parameter]
+        self.numeric = False
+        self.disqualified = False
+        self.current = None
+
+    def analyze(self) -> bool:
+        while self.queue and not self.disqualified:
+            var = self.queue.pop()
+            for ref in var.refs:
+                if ref.dest is not None and ref.lvar is not None:
+                    self.current = ref.lvar
+                    ref.dest.accept(self)
+        return self.numeric and not self.disqualified
+
+    def visit_Set(self, node):
+        if node.value is self.current:
+            node.var.accept(self)
+
+    def visit_LambdaVar(self, leaf):
+        if leaf not in self.copies:
+            self.copies.add(leaf)
+            self.queue.append(leaf)
+
+    def visit_Combination(self, node):
+        lvar = self.current
+        if node.fun is lvar:
+            self.disqualified = True
+            return
+        info = node.fun_info
+        if info is None:
+            return
+        name = info.name
+        if node.args and node.args[0] is lvar and name in _NON_INTEGER_FIRST_OPERAND:
+            self.disqualified = True
+            return
+        if (
+            len(node.args) > 1
+            and node.args[1] is lvar
+            and name in {"%compare_in", "%compare_not_in"}
+        ):
+            self.disqualified = True
+            return
+        if name in _NUMERIC_KNOWN or (
+            len(node.args) > 1
+            and node.args[1] is lvar
+            and name in _INDEX_SECOND_OPERAND
+        ):
+            self.numeric = True
+
+
+class _HasCombinationImprovement(NodeVisitor):
+    """Whether ``candidate`` narrowed any combination's type over ``general``."""
+
+    def __init__(
+        self, general: dict[object, ValueType], candidate: dict[object, ValueType]
+    ):
+        self.general = general
+        self.candidate = candidate
+        self.improved = False
+
+    def visit_Combination(self, node):
+        if self.candidate.get(node) != self.general.get(node):
+            self.improved = True
+
+
+def _specializes_body(
+    lambda_: Lambda,
+    general: dict[object, ValueType],
+    candidate: dict[object, ValueType],
+) -> bool:
+    visitor = _HasCombinationImprovement(general, candidate)
+    for block in linked(lambda_.component, lambda_, "component").blocks():
+        for node in block.nodes():
+            node.accept(visitor)
+            if visitor.improved:
+                return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +235,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                 contract is not None and contract.contradicts(full)
                 for contract in signature.annotations
             )
+            and all(_ParameterUse(var).analyze() for var in lambda_.vars)
         ):
             parameters[lambda_, "fixnum"] = (full,) * len(lambda_.vars)
     summaries: dict[tuple[Lambda, str], ValueType] = dict.fromkeys(parameters, BOTTOM)
@@ -313,16 +432,25 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             key = lambda_, identifier
             if key not in parameters:
                 continue
-            if identifier == "observed" and parameters[key] == parameters.get(
-                (lambda_, "fixnum")
+            body = bodies[key]
+            candidate_types = body.types()
+            if identifier == "fixnum" and not _specializes_body(
+                lambda_, facts.types, candidate_types
             ):
                 continue
-            body = bodies[key]
+            if (
+                identifier == "observed"
+                and parameters[key] == parameters.get((lambda_, "fixnum"))
+                and _specializes_body(
+                    lambda_, facts.types, bodies[lambda_, "fixnum"].types()
+                )
+            ):
+                continue
             entries.append(
                 EntryContext(
                     identifier,
                     parameters[key],
-                    body.types(),
+                    candidate_types,
                     body.targets(),
                     summaries[key].normalized_bottom(),
                 )

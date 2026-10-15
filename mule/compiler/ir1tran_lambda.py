@@ -87,18 +87,26 @@ def convert_function(
             if parameter.annotation is not None
             else None
         )
+    qualname = qualname or (
+        parent.qualified(definition.name) if parent is not None else None
+    )
+    qualified = qualname or definition.name
+    sanitized = "".join(
+        ch if " " < ch <= "~" and ch not in ('"', "\\") else f"_u{ord(ch):x}_"
+        for ch in qualified
+    )
+    count = converter.function_names.get(sanitized, 0) + 1
+    converter.function_names[sanitized] = count
+    suffix = sanitized if count == 1 else f"{sanitized}.{count}"
     lambda_ = Lambda(
-        f"{converter.prefix}mule_fn_{len(converter.functions)}",
+        f"{converter.prefix}mule_fn_{suffix}",
         definition.name,
         policy=policy,
         namespace=converter.namespace,
     )
-    qualname = qualname or (
-        parent.qualified(definition.name) if parent is not None else None
-    )
     lambda_.code = CodeInfo(
         definition.name,
-        qualname or definition.name,
+        qualified,
         converter.filename,
         definition.source_start().line,
         3

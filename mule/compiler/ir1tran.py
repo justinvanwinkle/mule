@@ -272,6 +272,7 @@ class Converter:
         self.primitives: dict = primitives or {}
         self.primitive_data: dict = primitive_data or {}
         self.functions: list[Lambda] = []
+        self.function_names: dict[str, int] = {}
         self.function_converters: dict[Lambda, FunctionConverter] = {}
         self.compiler_bindings = {}
         self.active_compiler_bindings = {}

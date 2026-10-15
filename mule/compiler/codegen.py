@@ -1502,12 +1502,16 @@ class _ArgumentGuard(ValueTypeVisitor):
         operation = self.gen.operation
         bits = operation(f"ptrtoint ptr {self.value} to i64")
         tag = operation(f"and i64 {bits}, 1")
-        tagged = operation(f"icmp ne i64 {tag}, 0")
-        decoded = operation(f"ashr i64 {bits}, 1")
-        lower = operation(f"icmp sge i64 {decoded}, {fact.minimum}")
-        upper = operation(f"icmp sle i64 {decoded}, {fact.maximum}")
-        bounds = operation(f"and i1 {lower}, {upper}")
-        return operation(f"and i1 {tagged}, {bounds}")
+        valid = operation(f"icmp ne i64 {tag}, 0")
+        if fact.minimum > FIXNUM_MIN or fact.maximum < FIXNUM_MAX:
+            decoded = operation(f"ashr i64 {bits}, 1")
+            if fact.minimum > FIXNUM_MIN:
+                lower = operation(f"icmp sge i64 {decoded}, {fact.minimum}")
+                valid = operation(f"and i1 {valid}, {lower}")
+            if fact.maximum < FIXNUM_MAX:
+                upper = operation(f"icmp sle i64 {decoded}, {fact.maximum}")
+                valid = operation(f"and i1 {valid}, {upper}")
+        return valid
 
     def visit_NoneType(self, fact: ValueType) -> str:
         return self.gen.operation(f"icmp eq ptr {self.value}, @mule.none")

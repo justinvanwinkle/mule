@@ -105,8 +105,8 @@ def test_each_lambda_has_its_own_component_with_bind_first():
     compilation = compile_toplevel("def f(x):\n return x\ndef g():\n return f(1)\n")
     assert [lambda_.name for lambda_ in compilation.lambdas] == [
         "mule_module",
-        "mule_fn_1",
-        "mule_fn_2",
+        "mule_fn_f",
+        "mule_fn_g",
     ]
     assert compilation.entry.kind is FunctionalKind.TOPLEVEL
     for lambda_ in compilation.lambdas:

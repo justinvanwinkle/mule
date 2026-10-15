@@ -305,7 +305,7 @@ def test_rebound_global_is_only_a_guarded_target_candidate():
     compilation = lower("def f():\n return 7\nf = 3\nresult = f()\n")
     entry = function(compilation, 0)
     call = calls(entry)[0]
-    assert target(compilation, entry, call) == "mule_fn_1"
+    assert target(compilation, entry, call) == "mule_fn_f"
     assert operand_fact(compilation, entry, call.fun).fits(INTEGER)
     assert fact(compilation, entry, call) == UNKNOWN
 
@@ -314,7 +314,7 @@ def test_local_alias_propagates_guarded_candidate():
     compilation = lower("def f():\n return 7\ndef g():\n alias = f\n return alias()\n")
     body = function(compilation, 2)
     call = calls(body)[0]
-    assert target(compilation, body, call) == "mule_fn_1"
+    assert target(compilation, body, call) == "mule_fn_f"
     assert fact(compilation, body, call) == UNKNOWN
 
 
@@ -357,7 +357,7 @@ def test_local_candidate_join_requires_same_target_on_every_path(right_target):
     body = function(compilation, 3)
     call = calls(body)[0]
     assert target(compilation, body, call) == (
-        "mule_fn_1" if right_target == "target" else None
+        "mule_fn_target" if right_target == "target" else None
     )
     assert not fact(compilation, body, call).is_fixnum
 
@@ -779,3 +779,26 @@ def test_real_annotation_propagates_numeric_and_float_operations():
     assert fact(compilation, fn, stored_value(fn, "f").use()) == FLOAT
     assert fact(compilation, fn, stored_value(fn, "n").use()) == REAL
     assert fact(compilation, fn, stored_value(fn, "c").use()) == BooleanType()
+
+
+def test_fixnum_variant_requires_numeric_use_and_specialized_operation():
+    compilation = lower(
+        "def empty_like(text):\n"
+        " if isinstance(text, bytes):\n"
+        "  return b''\n"
+        " return ''\n"
+        "def is_word(char):\n"
+        " return char == '_' or char.isalnum()\n"
+        "def eq_global(op):\n"
+        " return op == TARGET\n"
+        "def ascii_tolower(code):\n"
+        " if 65 <= code <= 90:\n"
+        "  return code + 32\n"
+        " return code\n"
+    )
+    assert variants(compilation, function(compilation, 1)) == ()
+    assert variants(compilation, function(compilation, 2)) == ()
+    assert variants(compilation, function(compilation, 3)) == ()
+    assert [
+        context.id for context in variants(compilation, function(compilation, 4))
+    ] == ["fixnum"]
