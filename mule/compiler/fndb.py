@@ -68,6 +68,7 @@ FORMAT = defknown("%format", "call")
 RANGE_PREPARE = defknown("%range_prepare")
 RANGE_AVAILABLE = defknown("%range_available", "flushable")
 RANGE_ADVANCE = defknown("%range_advance", "unsafe")
+SEQUENCE_AVAILABLE = defknown("%sequence_available", "unsafe")
 
 # Compiled stdlib protocols, keyed by the name the sequence module exports.
 PROTOCOLS = {
@@ -156,6 +157,7 @@ __all__ = [
     "RERAISE",
     "RESOLVE_METHOD",
     "RESUME_EXCEPTION",
+    "SEQUENCE_AVAILABLE",
     "SETATTR",
     "UNARY",
     "UNPACK_REF",

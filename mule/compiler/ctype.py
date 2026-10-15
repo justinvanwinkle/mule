@@ -61,6 +61,9 @@ class ValueTypeVisitor:
     def visit_TupleType(self, fact):
         return self.visit_ValueType(fact)
 
+    def visit_ListType(self, fact):
+        return self.visit_ValueType(fact)
+
     def visit_BottomType(self, fact):
         return self.visit_ValueType(fact)
 
@@ -90,6 +93,10 @@ class ValueType:
 
     @property
     def is_heap_object(self):
+        return False
+
+    @property
+    def is_exact_list(self):
         return False
 
     @property
@@ -157,6 +164,9 @@ class ValueType:
         return self.join_unknown(left)
 
     def join_tuple(self, left):
+        return self.join_unknown(left)
+
+    def join_list(self, left):
         return self.join_unknown(left)
 
     def join_unbound(self, left):
@@ -296,6 +306,9 @@ class ValueType:
         return False
 
     def fits_possible_tuple(self, expected):
+        return False
+
+    def fits_list(self, expected):
         return False
 
     def proves_tuple_index(self, index):
@@ -1093,6 +1106,37 @@ class TupleType(ValueType):
 
 
 @dataclass(frozen=True, slots=True)
+class ListType(ValueType):
+    """Exact builtin list storage."""
+
+    def annotation_conflict(self, contract):
+        return True
+
+    @property
+    def is_heap_object(self):
+        return not self.may_be_unbound
+
+    @property
+    def is_exact_list(self):
+        return not self.may_be_unbound
+
+    def accept(self, visitor):
+        return visitor.visit_ListType(self)
+
+    def join(self, other):
+        return other.join_list(self)
+
+    def join_list(self, left):
+        return ListType(may_be_unbound=self.may_be_unbound or left.may_be_unbound)
+
+    def accepts(self, actual):
+        return actual.fits_list(self)
+
+    def fits_list(self, expected):
+        return not self.may_be_unbound
+
+
+@dataclass(frozen=True, slots=True)
 class BottomType(ValueType):
     @property
     def needs_release(self):
@@ -1121,6 +1165,7 @@ class BottomType(ValueType):
     join_bytes = join_unknown
     join_function = join_unknown
     join_tuple = join_unknown
+    join_list = join_unknown
     join_unbound = join_unknown
 
     def normalized_bottom(self):
@@ -1187,6 +1232,7 @@ class UnboundType(ValueType):
     join_bytes = join_unknown
     join_function = join_unknown
     join_tuple = join_unknown
+    join_list = join_unknown
     join_unbound = join_unknown
 
 

@@ -2688,27 +2688,35 @@ class _Statements(ast.Visitor):
             function.block(),
             function.block(),
         )
-        failed, finished = function.block(), function.block()
+        failed, finished, else_block = (
+            function.block(),
+            function.block(),
+            function.block(),
+        )
         function.jump(linked(generic.start, generic, "start"), test)
         outer = function.lexenv.cleanup
         region = Cleanup(CleanupKind.HANDLER_REGION, target=exhausted, parent=outer)
         with function.with_cleanup(region):
             ctran, iterator_value = Ctran(), Lvar()
             function.ref(test.start, ctran, iterator_value, iterator, node)
-            following, item = Ctran(), Lvar()
-            function.protocol(
-                ctran, following, item, "next_item", (iterator_value,), node
+            following, available = Ctran(), Lvar()
+            function.known(
+                ctran,
+                following,
+                available,
+                fndb.SEQUENCE_AVAILABLE,
+                (iterator_value,),
+                node,
             )
-            temporary = function.temporary()
-            ctran = Ctran()
-            function.set_var(following, ctran, temporary, item, node)
-        function.jump(ctran, loop)
-        ctran, loaded = Ctran(), Lvar()
-        function.ref(loop.start, ctran, loaded, temporary, node, final=True)
-        following = Ctran()
-        node.target.accept(_AssignmentTarget(function, loaded, ctran, following))
+            function.if_node(following, available, loop, else_block, node)
+        ctran, dummy = Ctran(), Lvar()
+        function.constant(loop.start, ctran, dummy, ast.NoneLiteral(None))
+        following, item = Ctran(), Lvar()
+        function.protocol(ctran, following, item, "next_item", (dummy,), node)
+        assigned = Ctran()
+        node.target.accept(_AssignmentTarget(function, item, following, assigned))
         with function.with_loop(LoopTarget(test, done, function.lexenv.cleanup)):
-            frontier = function.convert_body(following, node.body)
+            frontier = function.convert_body(assigned, node.body)
         if frontier is not None:
             function.jump(frontier, test)
         ctran, caught = Ctran(), Lvar()
@@ -2728,7 +2736,10 @@ class _Statements(ast.Visitor):
         self.terminal(ctran, fndb.RESUME_EXCEPTION, (value,), node)
         ctran = Ctran()
         function.discard(finished.start, ctran, exception.name, node)
-        frontier = function.convert_body(ctran, node.else_body)
+        function.jump(ctran, else_block)
+        frontier = function.convert_body(
+            linked(else_block.start, else_block, "start"), node.else_body
+        )
         if frontier is not None:
             function.jump(frontier, done)
         function.jump(linked(done.start, done, "start"), range_done)

@@ -707,6 +707,11 @@ def resolve_method(gen, vop):
     receiver = gen.take(vop.args[0])
     method, bound = vop.results
     info = vop.codegen_info
+    if info.exact_list_append:
+        gen.immortal_values.add("@mule.none")
+        gen.publish(method, "@mule.none")
+        gen.publish(bound, receiver)
+        return
     out = gen.out_pointer()
     value = gen.operation(
         f"call ptr @mule_resolve_method(ptr {receiver}, ptr {gen.module.text(info.name)}, "
@@ -1028,6 +1033,42 @@ def range_advance(gen, vop):
     gen.refine(vop.results[0].tn, result)
 
 
+@define_vop("sequence-available", translate=fndb.SEQUENCE_AVAILABLE, results=(OBJECT,))
+def sequence_available(gen, vop):
+    iterator = gen.load(vop.args[0])
+    out = gen.out_pointer()
+    if gen.module.program.exports:
+        owned = gen.operation(f"call ptr @mule.fast.retain(ptr {iterator})")
+        item = gen.sequence_call("next_item", [owned])
+        gen.line(f"store ptr {item}, ptr {out}")
+        failed = gen.operation(f"icmp eq ptr {item}, null")
+        status = gen.operation(f"select i1 {failed}, i32 -1, i32 1")
+    else:
+        helper = gen.module.next_item_helper()
+        status = gen.operation(f"call i32 {helper}(ptr {iterator}, ptr {out})")
+    gen.check_status(status)
+    available = gen.operation(f"icmp ne i32 {status}, 0")
+    result = gen.operation(f"select i1 {available}, ptr @mule.true, ptr @mule.false")
+    gen.publish(vop.results[0], result)
+    gen.refine(vop.results[0].tn, result)
+
+
+@define_vop(
+    "protocol-next_item", translate=fndb.PROTOCOLS["next_item"], results=(OBJECT,)
+)
+def protocol_next_item(gen, vop):
+    iterator = gen.take(vop.args[0])
+    if iterator in ("null", "@mule.none"):
+        item = gen.operation(f"load ptr, ptr {gen.out_pointer()}")
+        gen.publish(vop.results[0], item)
+        gen.refine(vop.results[0].tn, item)
+        return
+    result = gen.sequence_call("next_item", [iterator])
+    gen.publish(vop.results[0], result)
+    gen.check_pointer(result)
+    gen.refine(vop.results[0].tn, result)
+
+
 def _define_protocol(name, info):
     @define_vop(f"protocol-{name}", translate=info, results=(OBJECT,))
     def protocol(gen, vop):
@@ -1082,7 +1123,7 @@ def protocol_setitem(gen, vop):
 
 
 for _name, _info in fndb.PROTOCOLS.items():
-    if _name not in ("unpack", "getitem", "setitem"):
+    if _name not in ("unpack", "getitem", "setitem", "next_item"):
         _define_protocol(_name, _info)
 
 
@@ -1580,8 +1621,8 @@ def _ownership() -> str:
             else "call void @mule_release(ptr %value)\n  ret void"
         )
         # Fixnums and NULL are not objects. Immortal objects, including
-        # True, False and None, carry the reference count the runtime
-        # leaves unchanged; that check inlines with the runtime under LTO.
+        # True, False and None, carry the usize::MAX (-1) reference count at
+        # offset 0 of ValueData, which the runtime leaves unchanged.
         functions.append(f"""define internal {result} @mule.fast.{name}(ptr %value) {{
 entry:
   %bits = ptrtoint ptr %value to i64
@@ -1589,7 +1630,11 @@ entry:
   %integer = icmp ne i64 %tag, 0
   %null = icmp eq ptr %value, null
   %skip = or i1 %integer, %null
-  br i1 %skip, label %done, label %heap
+  br i1 %skip, label %done, label %check
+check:
+  %refs = load i64, ptr %value
+  %immortal = icmp eq i64 %refs, -1
+  br i1 %immortal, label %done, label %heap
 heap:
   {call}
 done:

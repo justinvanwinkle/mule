@@ -30,7 +30,7 @@ from dataclasses import dataclass, replace
 from mule import ast
 
 from . import fndb, vops
-from .ctype import UNKNOWN, TupleType
+from .ctype import UNKNOWN, NoneType, TupleType
 from .ir1util import block_exception_target, made_lambda
 from .ltn import EntryContext, primitive_type_of
 from .node import (
@@ -115,6 +115,7 @@ _BORROWING_VOPS = frozenset(
         "inplace-bit_and",
         "inplace-bit_xor",
         "inplace-bit_or",
+        "sequence-available",
     }
 )
 _RIGHT_BORROWING_VOPS = frozenset(
@@ -125,6 +126,18 @@ _RIGHT_BORROWING_VOPS = frozenset(
         "inplace-add",
         "inplace-subtract",
         "inplace-multiply",
+    }
+)
+_PURE_FIXNUM_VOPS = frozenset(
+    {
+        "binary-add",
+        "binary-subtract",
+        "binary-multiply",
+        "binary-bit_and",
+        "binary-bit_or",
+        "binary-bit_xor",
+        "binary-left_shift",
+        "binary-right_shift",
     }
 )
 
@@ -155,6 +168,19 @@ def _borrows_operand(vop: VOP, ref: TNRef) -> bool:
     return name.startswith("primitive-") and name not in _NON_BORROWING_PRIMITIVES
 
 
+def _safe_borrow_step(step: VOP, source) -> bool:
+    name = step.info.name
+    if name == "constant":
+        return True
+    if name == "load-local":
+        return not (step.args[0].tn is source and step.codegen_info.move)
+    if name in _PURE_FIXNUM_VOPS and step.results:
+        return (step.results[0].tn.type or UNKNOWN).is_fixnum and all(
+            (arg.tn.type or UNKNOWN).is_fixnum for arg in step.args
+        )
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class UnpackCheck:
     arity: int
@@ -181,9 +207,16 @@ class CallSite:
 
 
 @dataclass(frozen=True, slots=True)
+class MethodResolution:
+    name: str
+    exact_list_append: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class MethodCall:
     keywords: tuple
     name: str
+    exact_list_append: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,14 +279,21 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
                 continue
             if not _borrows_operand(reader, reader_ref):
                 continue
+            end_index = reader_index
+            if (
+                reader.info.name == "resolve-method"
+                and reader.codegen_info.exact_list_append
+            ):
+                bound = reader.results[1].tn
+                if len(bound.writes) != 1 or len(bound.reads) != 1:
+                    continue
+                call_index = positions.get(bound.reads[0].vop)
+                if call_index is None or call_index <= reader_index:
+                    continue
+                end_index = call_index
             if any(
-                step.info.name not in ("constant", "load-local")
-                or (
-                    step.info is vops.LOAD_LOCAL
-                    and step.args[0].tn is source
-                    and step.codegen_info.move
-                )
-                for step in block.vops[index + 1 : reader_index]
+                step is not reader and not _safe_borrow_step(step, source)
+                for step in block.vops[index + 1 : end_index]
             ):
                 continue
             vop.codegen_info = replace(access, borrow=True)
@@ -519,6 +559,21 @@ class _MethodResolution(NodeVisitor):
 
     def visit_Combination(self, node: Combination) -> Combination:
         return node
+
+
+class _ExactListAppendCall(NodeVisitor):
+    """Whether the consumer of a resolved method is a 1-argument positional call."""
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        return (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is fndb.CALL_RESOLVED
+            and len(node.args) == 2
+            and not linked(node.info, node, "call info").keywords
+        )
 
 
 class _Converter(NodeVisitor):
@@ -860,21 +915,37 @@ class _Converter(NodeVisitor):
         if discard:
             self.emit_discard(node, result)
 
+    def is_exact_list_append(self, resolve: Combination, call) -> bool:
+        receiver = self.context.type_of(resolve.args[0].use())
+        info = linked(resolve.info, resolve, "method info")
+        return (
+            receiver.is_exact_list
+            and info.name == "append"
+            and call is not None
+            and call.accept(_ExactListAppendCall())
+        )
+
     def convert_resolve_method(self, node: Combination):
         receiver = self.lvar_tn(node.args[0])
         lvar = node.lvar
         if lvar is None:
             raise ValueError("a resolved method is always consumed by its call")
+        exact_list_append = self.is_exact_list_append(node, lvar.dest)
         method = self.lvar_tn(lvar)
         bound = self.component.tn(T, name="receiver")
-        bound.type = UNKNOWN
+        if exact_list_append:
+            method.type = NoneType()
+            bound.type = receiver.type
+        else:
+            bound.type = UNKNOWN
         linked(lvar.info, lvar, "LTN annotation").locs.append(bound)
+        info = linked(node.info, node, "method info")
         self.emit(
             node.template,
             node,
             args=(receiver,),
             results=(method, bound),
-            info=node.info,
+            info=MethodResolution(info.name, exact_list_append),
         )
 
     def convert_call_resolved(self, node: Combination):
@@ -882,6 +953,7 @@ class _Converter(NodeVisitor):
         method, bound = linked(resolved.info, resolved, "LTN annotation").locs
         resolve = resolved.use().accept(_MethodResolution(resolved))
         info = linked(node.info, node, "call info")
+        exact_list_append = self.is_exact_list_append(resolve, node)
         result, discard = self.result_tn(node)
         self.emit(
             node.template,
@@ -889,7 +961,9 @@ class _Converter(NodeVisitor):
             args=(method, bound, *(self.lvar_tn(arg) for arg in node.args[1:])),
             results=(result,),
             info=MethodCall(
-                info.keywords, linked(resolve.info, resolve, "method info").name
+                info.keywords,
+                linked(resolve.info, resolve, "method info").name,
+                exact_list_append,
             ),
         )
         if discard:

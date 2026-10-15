@@ -34,6 +34,7 @@ from .ctype import (
     BytesType,
     FunctionType,
     IntegerType,
+    ListType,
     NoneType,
     TextType,
     TupleType,
@@ -275,6 +276,8 @@ class _Propagation(NodeVisitor):
                 return Fact(value_type)
         if name == "%build_tuple":
             return Fact(TupleType(len(args)))
+        if name == "%build_list":
+            return Fact(ListType())
         if name == "%unpack":
             self.invalidate()
             arity = self.type_of(args[1]).exact_integer()
@@ -316,7 +319,16 @@ class _Propagation(NodeVisitor):
                         ("local", lambda_, lambda_.vars[index].name),
                     )
             return Fact(FunctionType(), lambda_, True)
-        if name in ("%import", "%call_resolved", "%catch_exception"):
+        if name == "%call_resolved":
+            if (
+                len(args) == 2
+                and not linked(node.info, node, "info").keywords
+                and args[0].use().accept(_ExactListAppend(self))
+            ):
+                return Fact(NoneType())
+            self.invalidate()
+            return Fact()
+        if name in ("%import", "%catch_exception"):
             self.invalidate()
             return Fact()
         if name == "%format":
@@ -325,7 +337,12 @@ class _Propagation(NodeVisitor):
         if info.protocol is not None:
             self.invalidate()
             return Fact()
-        if name in ("%range_prepare", "%range_available", "%has_binding"):
+        if name in (
+            "%range_prepare",
+            "%range_available",
+            "%sequence_available",
+            "%has_binding",
+        ):
             return Fact(BooleanType())
         if name == "%range_advance":
             state = linked(node.info, node, "info")
@@ -363,6 +380,22 @@ class _Propagation(NodeVisitor):
     def visit_If(self, node: If):
         if self.type_of(node.test).may_run_user_code:
             self.invalidate()
+
+
+class _ExactListAppend(NodeVisitor):
+    def __init__(self, propagation: _Propagation):
+        self.propagation = propagation
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        return (
+            node.fun_info is not None
+            and node.fun_info.name == "%resolve_method"
+            and linked(node.info, node, "info").name == "append"
+            and self.propagation.type_of(node.args[0]).is_exact_list
+        )
 
 
 class _ReferenceFact(LeafVisitor):

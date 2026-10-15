@@ -774,6 +774,64 @@ unsafe fn resolve(
         let Some(lookup) = ATTRIBUTE_LOOKUP.with(Cell::get) else {
             return resolve_with(receiver, attribute, cache, bound, true, true);
         };
+        if let Some((layout, instance, owner)) = layout(receiver) {
+            if instance {
+                let encoded = match cached(layout, cache) {
+                    Some(encoded) => Some(encoded),
+                    None if hook(layout, "__getattribute__").is_null()
+                        && hook(layout, "__getattr__").is_null() =>
+                    {
+                        name(attribute).and_then(|attr| encoded(layout, attr, cache))
+                    }
+                    None => None,
+                };
+                if object::has_error() {
+                    return std::ptr::null_mut();
+                }
+                if let Some(encoded) = encoded {
+                    if let Some(value) =
+                        resolved(receiver, layout, instance, owner, encoded, attribute, bound)
+                    {
+                        return value;
+                    }
+                    if object::has_error() {
+                        return std::ptr::null_mut();
+                    }
+                }
+            }
+        } else if !receiver.is_null()
+            && !object::is_fixnum(receiver)
+            && !matches!(&(*receiver).data, Data::Namespace(_) | Data::Function { .. })
+            && object::typed_attributes(receiver, false).is_null()
+        {
+            let owner = class_of_value(receiver);
+            if let Some(layout) = layout_of_class(owner) {
+                let encoded = match cached(layout, cache) {
+                    Some(encoded) => Some(encoded),
+                    None if hook(layout, "__getattribute__").is_null()
+                        && hook(layout, "__getattr__").is_null() =>
+                    {
+                        name(attribute).and_then(|attr| encoded(layout, attr, cache))
+                    }
+                    None => None,
+                };
+                if object::has_error() {
+                    return std::ptr::null_mut();
+                }
+                if let Some(encoded) = encoded {
+                    let index = encoded >> SHIFT;
+                    let kind = encoded & KIND;
+                    if kind != FIELD {
+                        let value = class_attribute(
+                            layout, index, kind, receiver, true, owner, bound,
+                        );
+                        if !value.is_null() || object::has_error() {
+                            return value;
+                        }
+                    }
+                }
+            }
+        }
         let Some(attribute) = name(attribute) else {
             return std::ptr::null_mut();
         };

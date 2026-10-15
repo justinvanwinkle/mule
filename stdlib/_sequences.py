@@ -1101,6 +1101,11 @@ class SequenceIterator:
 class StorageIterator(SequenceIterator):
     """Builtin sequence iteration reads storage, independently of __getitem__."""
 
+    def __init__(self, sequence):
+        self.sequence = sequence
+        self.index = 0
+        self.exhausted = False
+
     def __next__(self):
         if self.exhausted:
             raise StopIteration

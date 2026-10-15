@@ -172,6 +172,7 @@ declare ptr @mule_storage_read(ptr, ptr)
 declare ptr @mule_storage_write(ptr, ptr, ptr)
 declare ptr @mule_fast_getitem(ptr, ptr)
 declare i32 @mule_fast_setitem(ptr, ptr, ptr)
+declare i32 @mule_fast_next_item(ptr, ptr)
 declare ptr @mule_storage_append(ptr, ptr)
 declare ptr @mule_storage_insert(ptr, ptr, ptr)
 declare ptr @mule_storage_delete(ptr, ptr, ptr)
@@ -971,6 +972,32 @@ class ModuleGenerator:
         )
         return symbol
 
+    def next_item_helper(self) -> str:
+        existing = self.protocol_helpers.get("$next_item.fast")
+        if existing is not None:
+            return existing
+        symbol = "@mule.fast.next_item"
+        self.protocol_helpers["$next_item.fast"] = symbol
+        slow = self.protocol_helper("next_item", 1)
+        self.auxiliary.append(
+            f"define internal i32 {symbol}(ptr %iterator, ptr %out) {{\n"
+            "entry:\n"
+            "  %status = call i32 @mule_fast_next_item(ptr %iterator, ptr %out)\n"
+            "  %handled = icmp sge i32 %status, 0\n"
+            "  br i1 %handled, label %fast, label %slow\n"
+            "fast:\n"
+            "  ret i32 %status\n"
+            "slow:\n"
+            "  %owned = call ptr @mule.fast.retain(ptr %iterator)\n"
+            f"  %item = call ptr {slow}(ptr %owned)\n"
+            "  store ptr %item, ptr %out\n"
+            "  %failed = icmp eq ptr %item, null\n"
+            "  %result = select i1 %failed, i32 -1, i32 1\n"
+            "  ret i32 %result\n"
+            "}"
+        )
+        return symbol
+
     def unpack_helper(self, arity: int) -> str:
         key = f"$unpack.{arity}"
         existing = self.protocol_helpers.get(key)
@@ -1182,12 +1209,34 @@ class ModuleGenerator:
             "  %valid = and i1 %identity, %bound",
             "  br i1 %valid, label %direct, label %fallback",
             "direct:",
-            "  %frame = call i32 @mule_enter_frame()",
-            "  %rejected = icmp slt i32 %frame, 0",
-            "  br i1 %rejected, label %failed, label %entered",
-            "failed:",
-            "  call void @mule.fast.release(ptr %receiver)",
         ]
+        if function.name == "mule_sequences_mule_fn_ListStorage.append" and order == (
+            -1,
+            0,
+        ):
+            lines.extend(
+                [
+                    "  %direct.res = call ptr @mule_storage_append(ptr %receiver, ptr %arg.0)",
+                    "  call void @mule.fast.release(ptr %receiver)",
+                    "  call void @mule.fast.release(ptr %arg.0)",
+                    "  ret ptr %direct.res",
+                    "fallback:",
+                    f"  %fallback.res = call ptr {fallback_helper}({fallback_args})",
+                    "  ret ptr %fallback.res",
+                    "}",
+                ]
+            )
+            self.auxiliary.append("\n".join(lines))
+            return symbol
+        lines.extend(
+            [
+                "  %frame = call i32 @mule_enter_frame()",
+                "  %rejected = icmp slt i32 %frame, 0",
+                "  br i1 %rejected, label %failed, label %entered",
+                "failed:",
+                "  call void @mule.fast.release(ptr %receiver)",
+            ]
+        )
         for i in range(arity):
             lines.append(f"  call void @mule.fast.release(ptr %arg.{i})")
         lines.extend(["  ret ptr null", "entered:"])
@@ -2632,6 +2681,14 @@ class FunctionGenerator:
 
     def call_method(self, info, callable_value, receiver, arguments) -> str:
         """Consume receiver/arguments on direct, fallback, and rejected arms."""
+        if info.exact_list_append:
+            result = self.operation(
+                f"call ptr @mule_storage_append(ptr {receiver}, ptr {arguments[0]})"
+            )
+            self.release(receiver)
+            self.release(arguments[0])
+            self.immortal_values.add(result)
+            return result
         module = self.module
         target = module.method_targets.get(info.name)
         function = (
@@ -2936,6 +2993,45 @@ class FunctionGenerator:
         lines.append("  %closure = call ptr @mule_closure(ptr %args)")
         return ["ptr %closure"]
 
+    def wrapper_body_call(
+        self, lines: list[str], param_names: list[str], arguments: str
+    ) -> None:
+        lambda_ = self.lambda_
+        module = self.module
+        if (
+            param_names
+            and not module.program.bootstrap
+            and module.native_plans.get(lambda_) is None
+            and any(v.id == "fixnum" for v in module.variants_of(lambda_))
+        ):
+            combined = None
+            for index, name in enumerate(param_names):
+                bits = f"%fix.bits.{index}"
+                lines.append(f"  {bits} = ptrtoint ptr {name} to i64")
+                if combined is None:
+                    combined = bits
+                else:
+                    next_combined = f"%fix.tags.{index}"
+                    lines.append(f"  {next_combined} = and i64 {combined}, {bits}")
+                    combined = next_combined
+            lines.extend(
+                [
+                    f"  %fix.tag = and i64 {combined}, 1",
+                    "  %fix.ok = icmp ne i64 %fix.tag, 0",
+                    "  br i1 %fix.ok, label %invoke.fixnum, label %invoke.general",
+                    "invoke.fixnum:",
+                    f"  %result.fixnum = call ptr {module.specialized[lambda_, 'fixnum']}({arguments})",
+                    "  ret ptr %result.fixnum",
+                    "invoke.general:",
+                ]
+            )
+        lines.extend(
+            [
+                f"  %result = call ptr {module.bodies[lambda_]}({arguments})",
+                "  ret ptr %result",
+            ]
+        )
+
     def binding_wrapper(self) -> str:
         lambda_ = self.lambda_
         module = self.module
@@ -3013,16 +3109,16 @@ class FunctionGenerator:
                 lines.append(
                     f"  %parameter.{index} = getelementptr i8, ptr %bound.{index}, i64 0"
                 )
+        param_names = [f"%parameter.{index}" for index in range(count)]
         arguments = ", ".join(
             [
                 "ptr %globals",
                 *self.wrapper_closure(lines),
-                *(f"ptr %parameter.{index}" for index in range(count)),
+                *(f"ptr {name}" for name in param_names),
             ]
         )
+        self.wrapper_body_call(lines, param_names, arguments)
         lines += [
-            f"  %result = call ptr {module.bodies[lambda_]}({arguments})",
-            "  ret ptr %result",
             "failed:",
             "  ret ptr null",
             "}",
@@ -3058,17 +3154,17 @@ class FunctionGenerator:
             )
         for index in range(fixed):
             lines.append(f"  %arg.{index} = call ptr @mule_arg(ptr %args, i32 {index})")
+        param_names = [f"%arg.{index}" for index in range(count)]
         arguments = ", ".join(
             [
                 "ptr %globals",
                 *self.wrapper_closure(lines),
-                *(f"ptr %arg.{index}" for index in range(count)),
+                *(f"ptr {name}" for name in param_names),
             ]
         )
+        self.wrapper_body_call(lines, param_names, arguments)
         lines.extend(
             [
-                f"  %result = call ptr {module.bodies[lambda_]}({arguments})",
-                "  ret ptr %result",
                 "failed:",
                 "  ret ptr null",
                 "}",

@@ -6,6 +6,7 @@ use std::ptr::null_mut;
 
 thread_local! {
     static GLOBALS: Cell<Value> = const { Cell::new(null_mut()) };
+    static STORAGE_ITERATOR: Cell<Value> = const { Cell::new(null_mut()) };
     static PENDING: Cell<Value> = const { Cell::new(null_mut()) };
     static ACTIVE: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
 }
@@ -91,6 +92,7 @@ pub unsafe fn finish() {
             }
         });
         crate::classes::mule_set_attribute_lookup(null_mut());
+        STORAGE_ITERATOR.with(|value| value.set(null_mut()));
         GLOBALS.with(|value| object::release(value.replace(null_mut())));
     }
 }
@@ -743,6 +745,68 @@ pub unsafe extern "C" fn mule_range_storage(iterator: Value, state: *mut i64) ->
             return 0;
         }
         std::ptr::copy_nonoverlapping(words.as_ptr(), state, 3);
+        1
+    }
+}
+
+/// Fast path for `for`-loop advancement on a `StorageIterator` (`list`/`tuple`).
+/// Returns `1` and writes the retained element to `*out` when `iterator` is an
+/// unexhausted `StorageIterator` with an in-bounds fixnum index; returns `0`
+/// and marks `exhausted = True` when `index >= len`; returns `-1` without
+/// setting an error when `iterator` needs the general `next_item` protocol.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_fast_next_item(iterator: Value, out: *mut Value) -> i32 {
+    unsafe {
+        if iterator.is_null() || object::is_fixnum(iterator) || out.is_null() {
+            return -1;
+        }
+        let Data::Instance { ty, fields, .. } = &mut (*iterator).data else {
+            return -1;
+        };
+        let mut storage_iterator = STORAGE_ITERATOR.with(Cell::get);
+        if storage_iterator.is_null() {
+            storage_iterator = object::lookup(mule_protocol_globals(), "StorageIterator");
+            STORAGE_ITERATOR.with(|slot| slot.set(storage_iterator));
+        }
+        if storage_iterator.is_null() || *ty != storage_iterator {
+            return -1;
+        }
+        if fields.len() < 3 {
+            return -1;
+        }
+        let sequence = fields[0];
+        let index = fields[1];
+        let exhausted = fields[2];
+        if exhausted != object::bool_value(false)
+            || !object::is_fixnum(index)
+            || sequence.is_null()
+            || object::is_fixnum(sequence)
+        {
+            return -1;
+        }
+        let pos = object::fixnum(index);
+        if pos < 0 {
+            return -1;
+        }
+        let values = match &(*sequence).data {
+            Data::List(values, ..) | Data::Args(values, ..) => values,
+            _ => return -1,
+        };
+        let len = values.len() as i64;
+        if pos >= len {
+            let old = fields[2];
+            fields[2] = object::retain(object::bool_value(true));
+            object::release(old);
+            return 0;
+        }
+        let Some(next_pos) = pos.checked_add(1) else {
+            return -1;
+        };
+        if !(numeric::MIN..=numeric::MAX).contains(&next_pos) {
+            return -1;
+        }
+        fields[1] = object::small(next_pos);
+        *out = object::retain(*values.get_unchecked(pos as usize));
         1
     }
 }
