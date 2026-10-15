@@ -14,8 +14,9 @@ README copy.
 
 ## Setup and use
 
-Use Python 3.14 and `uv`. `.python-version` selects 3.14; `pyproject.toml`
-requires Python >=3.14. Python package dependencies are currently empty. Development
+Use free-threaded Python 3.15 and `uv`. `.python-version` selects 3.15t;
+`pyproject.toml` requires Python >=3.15. The conformance oracle stays CPython
+3.14, the release of the vendored standard library (`test/python_host.py`). Python package dependencies are currently empty. Development
 dependencies are pytest and Ruff, resolved in `uv.lock`.
 
 Native builds additionally require Clang, Rust with its bundled LLVM LLD linker,

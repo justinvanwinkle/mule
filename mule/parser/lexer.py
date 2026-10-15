@@ -1,7 +1,6 @@
 """Handwritten Python lexical scanner with Unicode character coordinates."""
 
 import re
-from bisect import bisect_right
 from dataclasses import dataclass
 from typing import NoReturn
 
@@ -22,6 +21,11 @@ class Token:
 _ORIGIN = Position(1, 0)
 
 _PREFIXES = {"", "r", "u", "b", "f", "t", "br", "rb", "fr", "rf", "tr", "rt"}
+_STRING_START = frozenset("'\"rRuUbBfFtT")
+_ASCII_NAME_START = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_")
+_ASCII_NAME_CONTINUE = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+)
 _DIGITS = r"[0-9](?:_?[0-9])*"
 _NUMBER = re.compile(
     rf"(?:0[xX](?:_?[0-9a-fA-F])+|0[oO](?:_?[0-7])+|0[bB](?:_?[01])+|"
@@ -81,6 +85,14 @@ _OPERATORS = sorted(
     },
     key=len,
     reverse=True,
+)
+_OPS_3 = frozenset(op for op in _OPERATORS if len(op) == 3)
+_OPS_2 = frozenset(op for op in _OPERATORS if len(op) == 2)
+_OPS_1 = frozenset(op for op in _OPERATORS if len(op) == 1)
+_SINGLE_CHAR_OPS = frozenset(
+    op
+    for op in _OPS_1
+    if not any(other.startswith(op) for other in _OPERATORS if len(other) > 1)
 )
 
 
@@ -184,7 +196,7 @@ def scan_replacement(
         character = source[cursor]
         if character == ":" and not stack:
             return scan_format(source, cursor + 1, filename, start, outer_quote)
-        header = string_header(source, cursor)
+        header = string_header(source, cursor) if character in _STRING_START else None
         if header is not None:
             cursor = scan_string(source, cursor, filename, start)
         elif character == "#":
@@ -240,11 +252,19 @@ def scan_format(source, index, filename, start, outer_quote):
 
 
 def _name_start(character: str) -> bool:
-    return character == "_" or character.isidentifier()
+    return character in _ASCII_NAME_START or (
+        not character.isascii() and character.isidentifier()
+    )
 
 
 def _name_continue(character: str) -> bool:
-    return ("a" + character).isidentifier()
+    return character in _ASCII_NAME_CONTINUE or (
+        not character.isascii() and ("a" + character).isidentifier()
+    )
+
+
+_CLOSING_BRACKETS = {")": "(", "]": "[", "}": "{"}
+_TYPE_COMMENT_RE = re.compile(r"#\s*type:\s*")
 
 
 def lex(
@@ -256,7 +276,8 @@ def lex(
     fragment: bool = False,
 ) -> list[Token]:
     """Tokenize logical lines; fragment mode suppresses indentation and newlines."""
-    source = source.replace("\r\n", "\n").replace("\r", "\n")
+    if "\r" in source:
+        source = source.replace("\r\n", "\n").replace("\r", "\n")
     if "\x00" in source:
         lexical_error(
             "source cannot contain null characters",
@@ -265,31 +286,24 @@ def lex(
             filename,
             start,
         )
-    line_starts = [0] + [
-        index + 1 for index, character in enumerate(source) if character == "\n"
-    ]
     tokens: list[Token] = []
     cursor = 0
+    length = len(source)
+    line = start.line
+    line_start = -start.column
     indentation = [(0, 0)]
     brackets: list[tuple[str, int]] = []
     beginning = True
     continued = False
     line_has_code = False
 
-    def position(index):
-        line_index = bisect_right(line_starts, index) - 1
-        column = index - line_starts[line_index]
-        return Position(
-            start.line + line_index, column + (start.column if line_index == 0 else 0)
-        )
-
-    def emit(kind, text, first, last):
+    def emit(kind: str, text: str, first: int, last: int) -> None:
         tokens.append(
             Token(
                 kind,
                 text,
-                position(first),
-                position(last),
+                Position(line, first - line_start),
+                Position(line, last - line_start),
             )
         )
 
@@ -298,11 +312,11 @@ def lex(
     ) -> NoReturn:
         lexical_error(message, source, index, filename, start, error_type)
 
-    while cursor < len(source):
+    while cursor < length:
         if beginning:
             first = cursor
             column = alternate = 0
-            while cursor < len(source) and source[cursor] in " \t\f":
+            while cursor < length and source[cursor] in " \t\f":
                 character = source[cursor]
                 if character == " ":
                     column += 1
@@ -313,7 +327,7 @@ def lex(
                 else:
                     column = alternate = 0
                 cursor += 1
-            blank = cursor >= len(source) or source[cursor] in "\n#"
+            blank = cursor >= length or source[cursor] in "\n#"
             if not fragment and not brackets and not continued and not blank:
                 previous, previous_alternate = indentation[-1]
                 if column == previous:
@@ -350,7 +364,7 @@ def lex(
                         )
             beginning = False
             continued = False
-            if cursor >= len(source):
+            if cursor >= length:
                 break
         character = source[cursor]
         if character in " \t\f":
@@ -359,36 +373,63 @@ def lex(
         if character == "#":
             end = source.find("\n", cursor)
             if end < 0:
-                end = len(source)
-            comment = source[cursor:end]
-            if type_comments and re.match(r"#\s*type:\s*", comment):
-                emit("TYPE_COMMENT", comment, cursor, end)
-                if not brackets:
-                    line_has_code = True
+                end = length
+            if type_comments:
+                comment = source[cursor:end]
+                if _TYPE_COMMENT_RE.match(comment):
+                    emit("TYPE_COMMENT", comment, cursor, end)
+                    if not brackets:
+                        line_has_code = True
             cursor = end
             continue
         if character == "\n":
             if line_has_code and not brackets and not fragment:
-                emit("NEWLINE", "\n", cursor, cursor + 1)
+                tokens.append(
+                    Token(
+                        "NEWLINE",
+                        "\n",
+                        Position(line, cursor - line_start),
+                        Position(line + 1, 0),
+                    )
+                )
                 line_has_code = False
             cursor += 1
+            line += 1
+            line_start = cursor
             beginning = True
             continue
         if character == "\\":
             if source[cursor + 1 : cursor + 2] != "\n":
                 error("unexpected character after line continuation", cursor)
             cursor += 2
+            line += 1
+            line_start = cursor
             beginning = True
             continued = True
             continue
         first = cursor
-        if string_header(source, cursor) is not None:
+        if character in _STRING_START and string_header(source, cursor) is not None:
             cursor = scan_string(source, cursor, filename, start)
-            emit("STRING", source[first:cursor], first, cursor)
-        elif _name_start(character):
+            text = source[first:cursor]
+            first_pos = Position(line, first - line_start)
+            if "\n" in text:
+                line += text.count("\n")
+                line_start = source.rfind("\n", first, cursor) + 1
+            tokens.append(
+                Token("STRING", text, first_pos, Position(line, cursor - line_start))
+            )
+        elif character in _ASCII_NAME_START or (
+            not character.isascii() and character.isidentifier()
+        ):
             cursor += 1
-            while cursor < len(source) and _name_continue(source[cursor]):
-                cursor += 1
+            while cursor < length:
+                ch = source[cursor]
+                if ch in _ASCII_NAME_CONTINUE or (
+                    not ch.isascii() and ("a" + ch).isidentifier()
+                ):
+                    cursor += 1
+                else:
+                    break
             emit("NAME", source[first:cursor], first, cursor)
         elif (
             character in "0123456789"
@@ -400,7 +441,7 @@ def lex(
                 error("invalid numeric literal", cursor)
             cursor = match.end()
             text = source[first:cursor]
-            if cursor < len(source) and _name_continue(source[cursor]):
+            if cursor < length and _name_continue(source[cursor]):
                 error("invalid numeric literal", cursor)
             plain = text.replace("_", "")
             if (
@@ -413,19 +454,28 @@ def lex(
                 )
             emit("NUMBER", text, first, cursor)
         else:
-            operator = next(
-                (item for item in _OPERATORS if source.startswith(item, cursor)), None
-            )
-            if operator is None:
-                error("invalid character", cursor)
-            cursor += len(operator)
+            if character in _SINGLE_CHAR_OPS:
+                operator = character
+                cursor += 1
+            else:
+                three = source[cursor : cursor + 3]
+                if len(three) == 3 and three in _OPS_3:
+                    operator = three
+                    cursor += 3
+                else:
+                    two = source[cursor : cursor + 2]
+                    if len(two) == 2 and two in _OPS_2:
+                        operator = two
+                        cursor += 2
+                    elif character in _OPS_1:
+                        operator = character
+                        cursor += 1
+                    else:
+                        error("invalid character", cursor)
             if operator in "([{":
                 brackets.append((operator, first))
             elif operator in ")]}":
-                if (
-                    not brackets
-                    or brackets[-1][0] != {")": "(", "]": "[", "}": "{"}[operator]
-                ):
+                if not brackets or brackets[-1][0] != _CLOSING_BRACKETS[operator]:
                     error("unmatched closing delimiter", first)
                 brackets.pop()
             emit("OP", operator, first, cursor)
@@ -433,7 +483,7 @@ def lex(
     if brackets:
         error("unclosed delimiter", brackets[-1][1])
     if continued:
-        error("unexpected end after line continuation", max(0, len(source) - 1))
+        error("unexpected end after line continuation", max(0, length - 1))
     if line_has_code and not fragment:
         emit("NEWLINE", "", cursor, cursor)
     while len(indentation) > 1:

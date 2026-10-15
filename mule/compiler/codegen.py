@@ -28,6 +28,7 @@ entries (``@mule.native.N``) are additional bodies of the same lambda.
 from __future__ import annotations
 
 import logging
+import re
 import struct
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -213,6 +214,28 @@ declare void @mule_run_finalizers()
 declare i32 @mule_run(ptr)
 declare void @llvm.assume(i1)
 """
+
+_HEX_BYTE = tuple(f"\\{byte:02X}" for byte in range(256))
+_MULE_SYMBOL_RE = re.compile(r"@mule[._][A-Za-z0-9_.]*\(?")
+
+
+def _declaration_symbol(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith(";"):
+        return None
+    symbol = (
+        stripped.split()[0]
+        if stripped.startswith("@")
+        else stripped.split("(")[0].split()[-1]
+    )
+    return symbol, line
+
+
+_DECLARATION_LINES = tuple(
+    entry
+    for line in DECLARATIONS.splitlines()
+    if (entry := _declaration_symbol(line)) is not None
+)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -1468,13 +1491,11 @@ class ModuleGenerator:
             self.auxiliary.extend(self.executable_entry())
         self.auxiliary.extend(self.global_linkage())
         # Data first: the bodies emitted above registered their constants.
-        globals_ = []
-        for value, name in self.data.items():
-            escaped = "".join(f"\\{byte:02X}" for byte in value + b"\0")
-            globals_.append(
-                f"{name} = private unnamed_addr constant "
-                f'[{len(value) + 1} x i8] c"{escaped}"'
-            )
+        globals_ = [
+            f"{name} = private unnamed_addr constant "
+            f'[{len(value) + 1} x i8] c"{"".join(map(_HEX_BYTE.__getitem__, value))}\\00"'
+            for value, name in self.data.items()
+        ]
         foreign_decls = self.foreign_declarations()
         body_sections = [
             section
@@ -1482,7 +1503,7 @@ class ModuleGenerator:
             if section
         ]
         body_text = "\n\n".join(body_sections)
-        intrinsics_lines = []
+        intrinsics_lines: list[tuple[str, str]] = []
         helper_defs = []
         current_symbol = None
         current_lines: list[str] = []
@@ -1496,11 +1517,20 @@ class ModuleGenerator:
             elif line.startswith("define "):
                 current_symbol = line.split("(")[0].split()[-1]
                 current_lines = [line]
-            elif line.strip():
-                intrinsics_lines.append(line)
+            elif (entry := _declaration_symbol(line)) is not None:
+                intrinsics_lines.append(entry)
+        referenced = set(_MULE_SYMBOL_RE.findall(body_text))
+        for llvm_sym in (
+            "@llvm.assume",
+            "@llvm.sadd.with.overflow.i64",
+            "@llvm.ssub.with.overflow.i64",
+            "@llvm.smul.with.overflow.i64",
+        ):
+            if llvm_sym in body_text:
+                referenced.add(llvm_sym)
         kept_helpers: list[str] = []
         kept_symbols: set[str] = set()
-        search_text = body_text
+        search_text = "\n".join(referenced)
         changed = True
         while changed:
             changed = False
@@ -1510,24 +1540,17 @@ class ModuleGenerator:
                     kept_helpers.append(chunk)
                     search_text += "\n" + chunk
                     changed = True
-        kept_decls = []
-        for line in [*DECLARATIONS.splitlines(), *intrinsics_lines]:
-            stripped = line.strip()
-            if not stripped or stripped.startswith(";"):
-                continue
-            symbol = (
-                stripped.split()[0]
-                if stripped.startswith("@")
-                else stripped.split("(")[0].split()[-1]
-            )
-            if symbol in search_text:
-                kept_decls.append(line)
+        kept_decls = [
+            line
+            for symbol, line in (*_DECLARATION_LINES, *intrinsics_lines)
+            if symbol in search_text
+        ]
         return (
             "\n\n".join(
                 [
                     "\n".join(kept_decls),
                     *kept_helpers,
-                    *body_sections,
+                    *([body_text] if body_text else []),
                 ]
             )
             + "\n"

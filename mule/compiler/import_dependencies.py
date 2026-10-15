@@ -16,6 +16,9 @@ class _Assignments(ast.Visitor):
         for child in node.children():
             child.accept(self)
 
+    def visit_Expression(self, node):
+        pass
+
     def visit_FunctionDefinition(self, node):
         pass
 
@@ -43,6 +46,9 @@ class _ImportCall(ast.Visitor):
 
     def visit_Attribute(self, node):
         return node.attribute == "import_module"
+
+
+_IMPORT_CALL = _ImportCall()
 
 
 class _Patterns(ast.Visitor):
@@ -120,7 +126,7 @@ class ImportDependencies(ast.Visitor):
         self.scope(node.body)
 
     def visit_Call(self, node):
-        if node.function.accept(_ImportCall()) and node.arguments:
+        if node.function.accept(_IMPORT_CALL) and node.arguments:
             argument = node.arguments[0]
             if argument.kind is ast.ArgumentKind.POSITIONAL:
                 self.patterns.update(argument.value.accept(_Patterns(self.scopes)))

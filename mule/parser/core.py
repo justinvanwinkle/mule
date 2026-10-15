@@ -57,7 +57,9 @@ HARD_KEYWORDS = frozenset(
 
 def _normalize_source(source: str) -> str:
     try:
-        return source.replace("\r\n", "\n").replace("\r", "\n")
+        if source.find("\r") >= 0:
+            return source.replace("\r\n", "\n").replace("\r", "\n")
+        return source
     except (AttributeError, TypeError) as error:
         raise TypeError("source must be a string") from error
 
@@ -86,21 +88,22 @@ class Parser(
             fragment=fragment,
         )
         self.type_ignores = []
-        retained = []
-        for token in self.tokens:
-            if token.kind == "TYPE_COMMENT":
-                payload = token.text.partition("type:")[2].strip()
-                if payload == "ignore" or payload.startswith("ignore["):
-                    self.type_ignores.append(
-                        ast.TypeIgnore(
-                            token.start.line,
-                            payload[len("ignore") :],
-                            span=ast.Span(token.start, token.end),
+        if type_comments:
+            retained = []
+            for token in self.tokens:
+                if token.kind == "TYPE_COMMENT":
+                    payload = token.text.partition("type:")[2].strip()
+                    if payload == "ignore" or payload.startswith("ignore["):
+                        self.type_ignores.append(
+                            ast.TypeIgnore(
+                                token.start.line,
+                                payload[len("ignore") :],
+                                span=ast.Span(token.start, token.end),
+                            )
                         )
-                    )
-                    continue
-            retained.append(token)
-        self.tokens = retained
+                        continue
+                retained.append(token)
+            self.tokens = retained
         self.index = 0
         self.previous = self.tokens[0]
         self.grouped = set()
@@ -113,20 +116,28 @@ class Parser(
         return self.tokens[min(self.index + distance, len(self.tokens) - 1)]
 
     def advance(self) -> Token:
-        token = self.current
+        token = self.tokens[self.index]
         self.previous = token
         if self.index < len(self.tokens) - 1:
             self.index += 1
         return token
 
     def match(self, text: str) -> Token | None:
-        if self.current.text == text or self.current.kind == text:
-            return self.advance()
+        current = self.tokens[self.index]
+        if current.text == text or current.kind == text:
+            self.previous = current
+            if self.index < len(self.tokens) - 1:
+                self.index += 1
+            return current
         return None
 
     def match_kind(self, kind: str) -> Token | None:
-        if self.current.kind == kind:
-            return self.advance()
+        current = self.tokens[self.index]
+        if current.kind == kind:
+            self.previous = current
+            if self.index < len(self.tokens) - 1:
+                self.index += 1
+            return current
         return None
 
     def expect(self, text: str) -> Token:
@@ -136,15 +147,24 @@ class Parser(
         return token
 
     def expect_kind(self, kind: str) -> Token:
-        if self.current.kind != kind:
+        current = self.tokens[self.index]
+        if current.kind != kind:
             self.error(f"Expected {kind.lower()}")
-        return self.advance()
+        self.previous = current
+        if self.index < len(self.tokens) - 1:
+            self.index += 1
+        return current
 
     def name_token(self) -> Token:
-        if self.current.kind != "NAME" or self.current.text in HARD_KEYWORDS:
+        current = self.tokens[self.index]
+        if current.kind != "NAME" or current.text in HARD_KEYWORDS:
             self.error("Expected an identifier")
-        token = self.advance()
-        return replace(token, text=unicodedata.normalize("NFKC", token.text))
+        self.previous = current
+        if self.index < len(self.tokens) - 1:
+            self.index += 1
+        if current.text.isascii():
+            return current
+        return replace(current, text=unicodedata.normalize("NFKC", current.text))
 
     def finish[T: ast.Node](
         self, node: T, start: Token | ast.Position, *, end: ast.Position | None = None

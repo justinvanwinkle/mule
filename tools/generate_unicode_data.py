@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.14"
+# requires-python = ">=3.15"
 # dependencies = []
 # ///
 """Generate both compiled Unicode data modules from CPython's Unicode database.
@@ -10,8 +10,11 @@ predicates and case methods, and `unicodedata` for categories and digit values.
 The generated module therefore matches the `str` methods of the CPython that
 ran this script, including its `unicodedata.unidata_version`.
 
-Unicode 16.0.0 is required. _unicode_data.py retains the text-protocol record
-contract; _unicodedata_data.py adds properties and normalization mappings.
+The Unicode version is whatever the running CPython ships; the alias and
+named-sequence files under tools/unicode/ must carry the same version, so
+updating the host Python and those files go together. _unicode_data.py
+retains the text-protocol record contract; _unicodedata_data.py adds
+properties and normalization mappings.
 Host APIs are used only during this explicit generation, never by Mule programs.
 
 Case_Ignorable is not exposed by CPython's API; it is recovered from the
@@ -27,8 +30,32 @@ CODEPOINTS = 0x110000
 ASCII = 128
 OUTPUT = Path(__file__).resolve().parents[1] / "stdlib" / "_unicode_data.py"
 UNICODEDATA_OUTPUT = OUTPUT.with_name("_unicodedata_data.py")
-UNICODE_VERSION = "16.0.0"
+UNICODE_FILES = Path(__file__).with_name("unicode")
 COMMAND = "uv run tools/generate_unicode_data.py"
+
+
+def data_file_version(filename):
+    """The Unicode version a tools/unicode data file declares in its header,
+    such as ``NameAliases-17.0.0.txt``."""
+    header = (UNICODE_FILES / filename).read_text(encoding="utf-8").splitlines()[0]
+    stem, _, version = header.strip("# ").removesuffix(".txt").rpartition("-")
+    if stem != filename.removesuffix(".txt") or not version:
+        raise RuntimeError(f"{filename} has no versioned header: {header!r}")
+    return version
+
+
+def require_matching_unicode_version():
+    """Fail unless the running CPython's Unicode database is the version the
+    alias and named-sequence data files carry."""
+    for filename in ("NameAliases.txt", "NamedSequences.txt"):
+        version = data_file_version(filename)
+        if version != unicodedata.unidata_version:
+            raise RuntimeError(
+                f"tools/unicode/{filename} is Unicode {version}; the running "
+                f"Python has {unicodedata.unidata_version}. Update the data "
+                "files and the host Python together."
+            )
+
 
 # Flag bits in the first two bytes of each record, in bit order.
 FLAGS = (
@@ -677,10 +704,7 @@ def main():
     parser.add_argument("--output", type=Path, default=OUTPUT)
     parser.add_argument("--unicodedata-output", type=Path, default=UNICODEDATA_OUTPUT)
     args = parser.parse_args()
-    if unicodedata.unidata_version != UNICODE_VERSION:
-        raise RuntimeError(
-            f"expected Unicode {UNICODE_VERSION}, got {unicodedata.unidata_version}"
-        )
+    require_matching_unicode_version()
     output = args.output
     source = render_module()
     properties = render_unicodedata_module()

@@ -220,8 +220,11 @@ def compile_toplevel(
         if not binds_name.found:
             converter.module_name_literal = ast.TextLiteral(namespace)
         entry = convert_module(converter, tree)
-        for lambda_ in converter.functions:
-            _GlobalAnnotationStores(converter, lambda_).apply(lambda_blocks(lambda_))
+        if converter.module_annotations:
+            for lambda_ in converter.functions:
+                _GlobalAnnotationStores(converter, lambda_).apply(
+                    lambda_blocks(lambda_)
+                )
         components = find_initial_dfo(initial, converter.functions)
         converter.split = True
         check_ir1_consistency(components)

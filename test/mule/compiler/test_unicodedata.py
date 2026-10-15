@@ -22,7 +22,7 @@ for value in names:
     print(repr(u.lookup(value)))
 for value in ['', 'INVALID', 'CJK UNIFIED IDEOGRAPH-04E00',
               'CJK UNIFIED IDEOGRAPH-4E0', 'CJK UNIFIED IDEOGRAPH-110000',
-              'TANGUT IDEOGRAPH-187F8', 'grınnıng face',
+              'TANGUT IDEOGRAPH-18800', 'grınnıng face',
               'BELL\\x00x', b'BELL\\xff', None, 1, bytearray(b'BELL'),
               memoryview(b'BELL')]:
     try:

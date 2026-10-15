@@ -104,7 +104,7 @@ def generate():
         "        if len(args) > len(fields):",
         "            raise TypeError(",
         '                f"{type(self).__name__} constructor takes at most "',
-        '                f"{len(fields)} positional argument{\'\' if len(fields) == 1 else \'s\'}"',
+        "                f\"{len(fields)} positional argument{'' if len(fields) == 1 else 's'}\"",
         "            )",
         "        for index in range(len(args)):",
         "            setattr(self, fields[index], args[index])",

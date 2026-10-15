@@ -131,7 +131,9 @@ class ValueType:
         return other.join_unknown(self)
 
     def join_unknown(self, left):
-        return UnknownType(may_be_unbound=self.may_be_unbound or left.may_be_unbound)
+        return (
+            UNKNOWN_UNBOUND if self.may_be_unbound or left.may_be_unbound else UNKNOWN
+        )
 
     def join_integer(self, left):
         return self.join_unknown(left)
@@ -319,6 +321,14 @@ class ValueType:
 
 @dataclass(frozen=True, slots=True)
 class UnknownType(ValueType):
+    def with_unbound(self):
+        return UNKNOWN_UNBOUND
+
+    def join(self, other):
+        if other is self:
+            return self
+        return other.join_unknown(self)
+
     def accepts_dispatch(self, actual):
         return True
 
@@ -409,15 +419,26 @@ class IntegerType(PrimitiveType):
         return other.join_integer(self)
 
     def join_integer(self, left):
-        return IntegerType(
+        if left is self:
+            return self
+        lo = (
             min(left.minimum, self.minimum)
             if left.minimum is not None and self.minimum is not None
-            else None,
+            else None
+        )
+        hi = (
             max(left.maximum, self.maximum)
             if left.maximum is not None and self.maximum is not None
-            else None,
-            may_be_unbound=left.may_be_unbound or self.may_be_unbound,
+            else None
         )
+        unbound = left.may_be_unbound or self.may_be_unbound
+        if lo is None and hi is None and not unbound:
+            return INTEGER
+        if lo == self.minimum and hi == self.maximum and unbound == self.may_be_unbound:
+            return self
+        if lo == left.minimum and hi == left.maximum and unbound == left.may_be_unbound:
+            return left
+        return IntegerType(lo, hi, may_be_unbound=unbound)
 
     def join_boolean(self, left):
         return _join_python_integer(left, self)
@@ -434,6 +455,8 @@ class IntegerType(PrimitiveType):
             minimum = None
         if old.maximum is None or (maximum is not None and maximum > old.maximum):
             maximum = None
+        if minimum == self.minimum and maximum == self.maximum:
+            return self
         return replace(self, minimum=minimum, maximum=maximum)
 
     def binary(self, operator, right):
@@ -458,7 +481,7 @@ class IntegerType(PrimitiveType):
             ast.BinaryOperator.MULTIPLY,
             ast.BinaryOperator.MODULO,
         }:
-            return TextType()
+            return TEXT_TYPE
         return UNKNOWN
 
     def binary_bytes(self, operator, left):
@@ -466,7 +489,7 @@ class IntegerType(PrimitiveType):
             ast.BinaryOperator.MULTIPLY,
             ast.BinaryOperator.MODULO,
         }:
-            return BytesType()
+            return BYTES_TYPE
         return UNKNOWN
 
     def unary(self, operator):
@@ -508,6 +531,8 @@ class IntegerType(PrimitiveType):
             minimum = max(minimum, bound) if minimum is not None else bound
             maximum = min(maximum, bound) if maximum is not None else bound
         if minimum is not None and maximum is not None and minimum > maximum:
+            return self
+        if minimum == self.minimum and maximum == self.maximum:
             return self
         return replace(self, minimum=minimum, maximum=maximum)
 
@@ -637,15 +662,22 @@ class BooleanType(IntegerType):
         return _join_python_integer(left, self)
 
     def join_boolean(self, left):
-        return BooleanType(
+        if left is self:
+            return self
+        lo = (
             min(left.minimum, self.minimum)
             if left.minimum is not None and self.minimum is not None
-            else None,
+            else None
+        )
+        hi = (
             max(left.maximum, self.maximum)
             if left.maximum is not None and self.maximum is not None
-            else None,
-            may_be_unbound=left.may_be_unbound or self.may_be_unbound,
+            else None
         )
+        unbound = left.may_be_unbound or self.may_be_unbound
+        if lo == 0 and hi == 1 and not unbound:
+            return BOOLEAN
+        return BooleanType(lo, hi, may_be_unbound=unbound)
 
     def join_none(self, left):
         return _join_immortal(self, left)
@@ -733,7 +765,11 @@ class FloatType(PrimitiveType):
         return other.join_float(self)
 
     def join_float(self, left):
-        return FloatType(may_be_unbound=left.may_be_unbound or self.may_be_unbound)
+        return (
+            FloatType(may_be_unbound=True)
+            if left.may_be_unbound or self.may_be_unbound
+            else FLOAT
+        )
 
     def binary(self, operator, right):
         if self.may_be_unbound:
@@ -785,7 +821,11 @@ class RealType(PrimitiveType):
         return other.join_real(self)
 
     def join_numeric(self, left):
-        return RealType(may_be_unbound=self.may_be_unbound or left.may_be_unbound)
+        return (
+            RealType(may_be_unbound=True)
+            if self.may_be_unbound or left.may_be_unbound
+            else REAL
+        )
 
     join_real = join_numeric
     join_integer = join_numeric
@@ -889,7 +929,11 @@ class NoneType(PrimitiveType):
         return other.join_none(self)
 
     def join_none(self, left):
-        return NoneType(may_be_unbound=self.may_be_unbound or left.may_be_unbound)
+        return (
+            NoneType(may_be_unbound=True)
+            if self.may_be_unbound or left.may_be_unbound
+            else NONE_TYPE
+        )
 
     def join_boolean(self, left):
         return _join_immortal(self, left)
@@ -932,13 +976,17 @@ class TextType(PrimitiveType):
         return other.join_text(self)
 
     def join_text(self, left):
-        return TextType(may_be_unbound=self.may_be_unbound or left.may_be_unbound)
+        return (
+            TextType(may_be_unbound=True)
+            if self.may_be_unbound or left.may_be_unbound
+            else TEXT_TYPE
+        )
 
     def binary(self, operator, right):
         if self.may_be_unbound:
             return right.binary_unknown(operator, self)
         if operator == ast.BinaryOperator.MODULO and not right.may_be_unbound:
-            return TextType()
+            return TEXT_TYPE
         return right.binary_text(operator, self)
 
     def binary_text(self, operator, left):
@@ -946,17 +994,17 @@ class TextType(PrimitiveType):
             ast.BinaryOperator.ADD,
             ast.BinaryOperator.MODULO,
         }:
-            return TextType()
+            return TEXT_TYPE
         return UNKNOWN
 
     def binary_integer(self, operator, left):
         if not left.may_be_unbound and operator == ast.BinaryOperator.MULTIPLY:
-            return TextType()
+            return TEXT_TYPE
         return UNKNOWN
 
     def binary_boolean(self, operator, left):
         if not left.may_be_unbound and operator == ast.BinaryOperator.MULTIPLY:
-            return TextType()
+            return TEXT_TYPE
         return UNKNOWN
 
     def accepts(self, actual):
@@ -979,13 +1027,17 @@ class BytesType(PrimitiveType):
         return other.join_bytes(self)
 
     def join_bytes(self, left):
-        return BytesType(may_be_unbound=self.may_be_unbound or left.may_be_unbound)
+        return (
+            BytesType(may_be_unbound=True)
+            if self.may_be_unbound or left.may_be_unbound
+            else BYTES_TYPE
+        )
 
     def binary(self, operator, right):
         if self.may_be_unbound:
             return right.binary_unknown(operator, self)
         if operator == ast.BinaryOperator.MODULO and not right.may_be_unbound:
-            return BytesType()
+            return BYTES_TYPE
         return right.binary_bytes(operator, self)
 
     def binary_bytes(self, operator, left):
@@ -993,17 +1045,17 @@ class BytesType(PrimitiveType):
             ast.BinaryOperator.ADD,
             ast.BinaryOperator.MODULO,
         }:
-            return BytesType()
+            return BYTES_TYPE
         return UNKNOWN
 
     def binary_integer(self, operator, left):
         if not left.may_be_unbound and operator == ast.BinaryOperator.MULTIPLY:
-            return BytesType()
+            return BYTES_TYPE
         return UNKNOWN
 
     def binary_boolean(self, operator, left):
         if not left.may_be_unbound and operator == ast.BinaryOperator.MULTIPLY:
-            return BytesType()
+            return BYTES_TYPE
         return UNKNOWN
 
     def accepts(self, actual):
@@ -1029,7 +1081,11 @@ class FunctionType(ValueType):
         return other.join_function(self)
 
     def join_function(self, left):
-        return FunctionType(may_be_unbound=self.may_be_unbound or left.may_be_unbound)
+        return (
+            FunctionType(may_be_unbound=True)
+            if self.may_be_unbound or left.may_be_unbound
+            else FUNCTION_TYPE
+        )
 
     def accepts(self, actual):
         return actual.fits_function(self)
@@ -1062,10 +1118,15 @@ class TupleType(ValueType):
         return other.join_tuple(self)
 
     def join_tuple(self, left):
-        return TupleType(
-            self.arity if self.arity == left.arity else None,
-            may_be_unbound=self.may_be_unbound or left.may_be_unbound,
-        )
+        if left is self:
+            return self
+        arity = self.arity if self.arity == left.arity else None
+        unbound = self.may_be_unbound or left.may_be_unbound
+        if arity == self.arity and unbound == self.may_be_unbound:
+            return self
+        if arity == left.arity and unbound == left.may_be_unbound:
+            return left
+        return TupleType(arity, may_be_unbound=unbound)
 
     def binary(self, operator, right):
         if self.may_be_unbound:
@@ -1127,7 +1188,11 @@ class ListType(ValueType):
         return other.join_list(self)
 
     def join_list(self, left):
-        return ListType(may_be_unbound=self.may_be_unbound or left.may_be_unbound)
+        return (
+            ListType(may_be_unbound=True)
+            if self.may_be_unbound or left.may_be_unbound
+            else LIST_TYPE
+        )
 
     def accepts(self, actual):
         return actual.fits_list(self)
@@ -1237,11 +1302,21 @@ class UnboundType(ValueType):
 
 
 UNKNOWN = UnknownType()
+UNKNOWN_UNBOUND = UnknownType(may_be_unbound=True)
 INTEGER = IntegerType()
 PYTHON_INTEGER = PythonIntegerType()
 BOOLEAN = BooleanType()
+BOOLEAN_FALSE = BooleanType(0, 0)
+BOOLEAN_TRUE = BooleanType(1, 1)
 FLOAT = FloatType()
 REAL = RealType()
+IMMORTAL = ImmortalType()
+IMMORTAL_UNBOUND = ImmortalType(may_be_unbound=True)
+NONE_TYPE = NoneType()
+TEXT_TYPE = TextType()
+BYTES_TYPE = BytesType()
+FUNCTION_TYPE = FunctionType()
+LIST_TYPE = ListType()
 BOTTOM = BottomType()
 UNBOUND = UnboundType()
 
@@ -1275,19 +1350,24 @@ def _bounds_overlap(actual, expected):
 
 
 def _join_immortal(left, right):
-    return ImmortalType(may_be_unbound=left.may_be_unbound or right.may_be_unbound)
+    return IMMORTAL_UNBOUND if left.may_be_unbound or right.may_be_unbound else IMMORTAL
 
 
 def _join_python_integer(left, right):
-    return PythonIntegerType(
+    lo = (
         min(left.minimum, right.minimum)
         if left.minimum is not None and right.minimum is not None
-        else None,
+        else None
+    )
+    hi = (
         max(left.maximum, right.maximum)
         if left.maximum is not None and right.maximum is not None
-        else None,
-        may_be_unbound=left.may_be_unbound or right.may_be_unbound,
+        else None
     )
+    unbound = left.may_be_unbound or right.may_be_unbound
+    if lo is None and hi is None and not unbound:
+        return PYTHON_INTEGER
+    return PythonIntegerType(lo, hi, may_be_unbound=unbound)
 
 
 def _float_binary(operator, left, right):

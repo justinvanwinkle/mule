@@ -1,4 +1,4 @@
-"""Unicode 16.0.0 properties and normalization, compiled by Mule.
+"""Unicode properties and normalization, compiled by Mule.
 
 Property tables and normalization mappings are generated at build time.
 Algorithms follow SBCL's target-unicode.lisp and unicode-norm.lisp: canonical

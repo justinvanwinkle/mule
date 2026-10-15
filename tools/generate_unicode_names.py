@@ -1,20 +1,28 @@
 #!/usr/bin/env -S uv run --script
-"""Generate Unicode 16 name lookup data; no host APIs are used at execution.
+# /// script
+# requires-python = ">=3.15"
+# dependencies = []
+# ///
+"""Generate Unicode name lookup data; no host APIs are used at execution.
 
-Canonical names come from Python 3.14's UCD. Formal aliases and named sequences
-come from the adjacent, versioned Unicode Consortium data files, whose headers
-retain their copyright and license references.
+Canonical names come from the running CPython's Unicode database. Formal
+aliases and named sequences come from the adjacent, versioned Unicode
+Consortium data files, whose headers retain their copyright and license
+references and whose version must match the running Python's.
 """
 
 import unicodedata
 from pathlib import Path
 
-from generate_unicode_data import ascii_ranges, render_bytes
+from generate_unicode_data import (
+    ascii_ranges,
+    render_bytes,
+    require_matching_unicode_version,
+)
 
 
 def render_names():
-    if unicodedata.unidata_version != "16.0.0":
-        raise RuntimeError("Unicode 16.0.0 is required")
+    require_matching_unicode_version()
     names = {}
     algorithmic = {}
     for cp in range(0x110000):
@@ -64,10 +72,11 @@ def render_names():
         prefix.encode("ascii"): tuple(map(tuple, ascii_ranges(codes)))
         for prefix, codes in algorithmic.items()
     }
-    source = '''"""Generated Unicode 16 name data. Do not edit.
+    version = unicodedata.unidata_version
+    source = f'''"""Generated Unicode {version} name data. Do not edit.
 
 Regenerate with: uv run tools/generate_unicode_names.py
-Aliases and sequences originate in https://www.unicode.org/Public/16.0.0/ucd/.
+Aliases and sequences originate in https://www.unicode.org/Public/{version}/ucd/.
 Sorted records: name offset u24, name length u8, value offset u24,
 value length u8. Values are little-endian u24 codepoints.
 """

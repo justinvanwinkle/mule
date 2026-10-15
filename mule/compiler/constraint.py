@@ -25,18 +25,25 @@ from dataclasses import dataclass
 from mule import ast
 
 from .ctype import (
+    BOOLEAN,
+    BOOLEAN_FALSE,
+    BOOLEAN_TRUE,
     BOTTOM,
+    BYTES_TYPE,
     FLOAT,
+    FUNCTION_TYPE,
+    IMMORTAL,
+    IMMORTAL_UNBOUND,
+    INTEGER,
+    LIST_TYPE,
+    NONE_TYPE,
     PYTHON_INTEGER,
+    REAL,
+    TEXT_TYPE,
     UNBOUND,
     UNKNOWN,
-    BooleanType,
-    BytesType,
-    FunctionType,
+    UNKNOWN_UNBOUND,
     IntegerType,
-    ListType,
-    NoneType,
-    TextType,
     TupleType,
     ValueType,
 )
@@ -65,6 +72,48 @@ class Fact:
 NO_FACT = Fact(BOTTOM)
 UNBOUND_FACT = Fact(UNBOUND)
 UNKNOWN_FACT = Fact(UNKNOWN)
+UNKNOWN_UNBOUND_FACT = Fact(UNKNOWN_UNBOUND)
+NONE_FACT = Fact(NONE_TYPE)
+TEXT_FACT = Fact(TEXT_TYPE)
+BYTES_FACT = Fact(BYTES_TYPE)
+BOOLEAN_FACT = Fact(BOOLEAN)
+BOOLEAN_FALSE_FACT = Fact(BOOLEAN_FALSE)
+BOOLEAN_TRUE_FACT = Fact(BOOLEAN_TRUE)
+FLOAT_FACT = Fact(FLOAT)
+REAL_FACT = Fact(REAL)
+INTEGER_FACT = Fact(INTEGER)
+PYTHON_INTEGER_FACT = Fact(PYTHON_INTEGER)
+LIST_FACT = Fact(LIST_TYPE)
+IMMORTAL_FACT = Fact(IMMORTAL)
+IMMORTAL_UNBOUND_FACT = Fact(IMMORTAL_UNBOUND)
+
+_CANONICAL_FACTS: dict[int, Fact] = {
+    id(fact.type): fact
+    for fact in (
+        NO_FACT,
+        UNBOUND_FACT,
+        UNKNOWN_FACT,
+        UNKNOWN_UNBOUND_FACT,
+        NONE_FACT,
+        TEXT_FACT,
+        BYTES_FACT,
+        BOOLEAN_FACT,
+        BOOLEAN_FALSE_FACT,
+        BOOLEAN_TRUE_FACT,
+        FLOAT_FACT,
+        REAL_FACT,
+        INTEGER_FACT,
+        PYTHON_INTEGER_FACT,
+        LIST_FACT,
+        IMMORTAL_FACT,
+        IMMORTAL_UNBOUND_FACT,
+    )
+}
+
+
+def _fact(value_type: ValueType) -> Fact:
+    canonical = _CANONICAL_FACTS.get(id(value_type))
+    return Fact(value_type) if canonical is None else canonical
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,28 +154,52 @@ def join_fact(left: Fact, right: Fact) -> Fact:
 
 def _combine(a: Fact, b: Fact) -> Fact:
     target = a.target if a.target is b.target else None
-    return Fact(
-        a.type.join(b.type), target, target is not None and a.proven and b.proven
-    )
+    joined_type = a.type.join(b.type)
+    if target is None:
+        return _fact(joined_type)
+    return Fact(joined_type, target, a.proven and b.proven)
 
 
 def join_states(left: dict, right: dict) -> tuple[dict, bool]:
     """Join two variable states over the same keys. The flag reports whether
     the result differs from ``left``."""
-    joined, changed = {}, False
+    joined = None
     for key, fact in left.items():
         other = right[key]
         if other is not fact:
-            other = join_fact(fact, other)
-            if other is not fact:
-                changed = True
-                fact = other
-        joined[key] = fact
-    return joined, changed
+            merged = join_fact(fact, other)
+            if merged is not fact:
+                if joined is None:
+                    joined = left.copy()
+                joined[key] = merged
+    if joined is None:
+        return left, False
+    return joined, True
 
 
 def widen_fact(old: Fact, new: Fact) -> Fact:
-    return Fact(old.type.widen(new.type), new.target, new.proven)
+    widened = old.type.widen(new.type)
+    if widened is new.type:
+        return new
+    if new.target is None:
+        return _fact(widened)
+    return Fact(widened, new.target, new.proven)
+
+
+_SMALL_INTS = {i: IntegerType(i, i) for i in range(-16, 257)}
+_SMALL_INT_FACTS = {i: Fact(vt) for i, vt in _SMALL_INTS.items()}
+_SMALL_TUPLES = tuple(TupleType(i) for i in range(16))
+_SMALL_TUPLE_FACTS = tuple(Fact(vt) for vt in _SMALL_TUPLES)
+_UNBOUNDED_TUPLE = TupleType(None)
+_UNBOUNDED_TUPLE_FACT = Fact(_UNBOUNDED_TUPLE)
+
+
+def _tuple_fact(arity: int | None) -> Fact:
+    if arity is None:
+        return _UNBOUNDED_TUPLE_FACT
+    if 0 <= arity < 16:
+        return _SMALL_TUPLE_FACTS[arity]
+    return Fact(TupleType(arity))
 
 
 class _LiteralFacts(ast.Visitor):
@@ -134,36 +207,38 @@ class _LiteralFacts(ast.Visitor):
         return UNKNOWN
 
     def visit_IntegerLiteral(self, node):
-        return IntegerType(node.value, node.value)
+        value = node.value
+        cached = _SMALL_INTS.get(value)
+        return IntegerType(value, value) if cached is None else cached
 
     def visit_BooleanLiteral(self, node):
-        return BooleanType(int(node.value), int(node.value))
+        return BOOLEAN_TRUE if node.value else BOOLEAN_FALSE
 
     def visit_FloatLiteral(self, node):
         return FLOAT
 
     def visit_NoneLiteral(self, node):
-        return NoneType()
+        return NONE_TYPE
 
     def visit_TextLiteral(self, node):
-        return TextType()
+        return TEXT_TYPE
 
     def visit_BytesLiteral(self, node):
-        return BytesType()
+        return BYTES_TYPE
 
     def visit_Tuple(self, node):
-        return TupleType(len(node.elements))
+        arity = len(node.elements)
+        return _SMALL_TUPLES[arity] if arity < 16 else TupleType(arity)
+
+
+_LITERAL_FACTS = _LiteralFacts()
 
 
 def constant_type(literal) -> ValueType:
-    return literal.accept(_LiteralFacts())
+    return literal.accept(_LITERAL_FACTS)
 
 
 _GLOBAL = object()
-
-
-def _key(var):
-    return var.accept(_StateKey())
 
 
 class _StateKey(LeafVisitor):
@@ -180,6 +255,13 @@ class _StateKey(LeafVisitor):
         return (_GLOBAL, leaf.name)
 
 
+_STATE_KEY = _StateKey()
+
+
+def _key(var):
+    return var.accept(_STATE_KEY)
+
+
 class _Propagation(NodeVisitor):
     """Processes one block's nodes against the current variable state."""
 
@@ -190,6 +272,14 @@ class _Propagation(NodeVisitor):
         self.handler_state: dict[object, Fact] | None = None
         # Keys assigned since the handler state last absorbed the state.
         self.changed = set()
+        self._ref_visitor = _ReferenceFact(self)
+        self._exact_list_append = _ExactListAppend(self)
+
+    def reset(self, state: dict[object, Fact], has_handler: bool) -> None:
+        self.state = state
+        self.origins.clear()
+        self.changed.clear()
+        self.handler_state = state.copy() if has_handler else None
 
     def assign(self, key, fact):
         self.state[key] = fact
@@ -206,17 +296,21 @@ class _Propagation(NodeVisitor):
         self.changed.update(self.walk.volatile_keys)
 
     def forget_origin(self, var):
-        self.origins = {
-            lvar: origin for lvar, origin in self.origins.items() if origin is not var
-        }
+        if self.origins:
+            self.origins = {
+                lvar: origin
+                for lvar, origin in self.origins.items()
+                if origin is not var
+            }
 
     def note_handler_state(self):
         """Join the state after a node into what an error edge carries.
         Only keys assigned since the previous node can differ."""
-        if self.handler_state is not None:
+        if self.handler_state is not None and self.changed:
             handler = self.handler_state
+            state = self.state
             for key in self.changed:
-                handler[key] = join_fact(handler[key], self.state[key])
+                handler[key] = join_fact(handler[key], state[key])
         self.changed.clear()
 
     # Nodes
@@ -225,7 +319,8 @@ class _Propagation(NodeVisitor):
         return None
 
     def visit_Ref(self, node: Ref):
-        return node.leaf.accept(_ReferenceFact(self, node))
+        self._ref_visitor.ref = node
+        return node.leaf.accept(self._ref_visitor)
 
     def visit_Set(self, node: Set):
         key = _key(node.var)
@@ -245,13 +340,13 @@ class _Propagation(NodeVisitor):
         if self.walk.annotations.check(
             node.contract, value, node.location, node.declaration
         ):
-            return Fact(value)
-        return Fact(node.contract.refine(value))
+            return _fact(value)
+        return _fact(node.contract.refine(value))
 
     def visit_Combination(self, node: Combination):
         if node.kind in (CallKind.FULL, CallKind.GUARDED):
             info = linked(node.info, node, "info")
-            fact = Fact(
+            fact = _fact(
                 self.walk.resolve_call(
                     self.fact_of(node.fun),
                     tuple(self.type_of(arg) for arg in node.args),
@@ -273,31 +368,31 @@ class _Propagation(NodeVisitor):
             if value_type is not None:
                 if info.may_call or info.unsafe:
                     self.invalidate()
-                return Fact(value_type)
+                return _fact(value_type)
         if name == "%build_tuple":
-            return Fact(TupleType(len(args)))
+            return _tuple_fact(len(args))
         if name == "%build_list":
-            return Fact(ListType())
+            return LIST_FACT
         if name == "%unpack":
             self.invalidate()
             arity = self.type_of(args[1]).exact_integer()
-            return Fact(TupleType(arity if arity is not None and arity >= 0 else None))
+            return _tuple_fact(arity if arity is not None and arity >= 0 else None)
         if name in _BINARY_OPERATORS:
             left, right = self.type_of(args[0]), self.type_of(args[1])
-            fact = Fact(left.binary(_BINARY_OPERATORS[name], right))
+            fact = _fact(left.binary(_BINARY_OPERATORS[name], right))
             if left.may_run_user_code or right.may_run_user_code:
                 self.invalidate()
             return fact
         if name in _UNARY_OPERATORS:
             operand = self.type_of(args[0])
-            fact = Fact(operand.unary(_UNARY_OPERATORS[name]))
+            fact = _fact(operand.unary(_UNARY_OPERATORS[name]))
             if operand.may_run_user_code:
                 self.invalidate()
             return fact
         if name in _COMPARISON_OPERATORS:
             operator = _COMPARISON_OPERATORS[name]
             left, right = self.type_of(args[0]), self.type_of(args[1])
-            fact = Fact(left.comparison(operator, right))
+            fact = _fact(left.comparison(operator, right))
             if operator not in (
                 ast.ComparisonOperator.IS,
                 ast.ComparisonOperator.IS_NOT,
@@ -318,37 +413,37 @@ class _Propagation(NodeVisitor):
                         definition.location,
                         ("local", lambda_, lambda_.vars[index].name),
                     )
-            return Fact(FunctionType(), lambda_, True)
+            return Fact(FUNCTION_TYPE, lambda_, True)
         if name == "%call_resolved":
             if (
                 len(args) == 2
                 and not linked(node.info, node, "info").keywords
-                and args[0].use().accept(_ExactListAppend(self))
+                and args[0].use().accept(self._exact_list_append)
             ):
-                return Fact(NoneType())
+                return NONE_FACT
             self.invalidate()
-            return Fact()
+            return UNKNOWN_FACT
         if name in ("%import", "%catch_exception"):
             self.invalidate()
-            return Fact()
+            return UNKNOWN_FACT
         if name == "%format":
             self.invalidate()
-            return Fact(TextType())
+            return TEXT_FACT
         if info.protocol is not None:
             self.invalidate()
-            return Fact()
+            return UNKNOWN_FACT
         if name in (
             "%range_prepare",
             "%range_available",
             "%sequence_available",
             "%has_binding",
         ):
-            return Fact(BooleanType())
+            return BOOLEAN_FACT
         if name == "%range_advance":
             state = linked(node.info, node, "info")
-            return Fact(self.range_type(state))
+            return _fact(self.range_type(state))
         if info.result:
-            return Fact()
+            return UNKNOWN_FACT
         return None
 
     def range_type(self, state) -> IntegerType:
@@ -362,7 +457,7 @@ class _Propagation(NodeVisitor):
                     maximum = min(maximum, stop.maximum - 1)
             else:
                 start, stop = arguments[0], arguments[1]
-                step = arguments[2] if len(arguments) == 3 else IntegerType(1, 1)
+                step = arguments[2] if len(arguments) == 3 else _SMALL_INTS[1]
                 if step.minimum is not None and step.minimum > 0:
                     if start.minimum is not None:
                         minimum = max(minimum, start.minimum)
@@ -401,7 +496,7 @@ class _ExactListAppend(NodeVisitor):
 class _ReferenceFact(LeafVisitor):
     """The fact a reference yields, updating the propagation state."""
 
-    def __init__(self, propagation: _Propagation, ref: Ref):
+    def __init__(self, propagation: _Propagation, ref: Ref | None = None):
         self.propagation = propagation
         self.ref = ref
 
@@ -410,30 +505,34 @@ class _ReferenceFact(LeafVisitor):
         return None
 
     def visit_Constant(self, leaf):
-        return Fact(constant_type(leaf.value))
+        return _fact(constant_type(leaf.value))
 
     def visit_GlobalVar(self, leaf):
         propagation = self.propagation
-        fact = propagation.state[_key(leaf)]
+        fact = propagation.state[(_GLOBAL, leaf.name)]
         if fact.target is None:
-            fact = Fact(fact.type, propagation.walk.global_targets.get(leaf.name))
+            target = propagation.walk.global_targets.get(leaf.name)
+            if target is not None:
+                fact = Fact(fact.type, target)
         return fact
 
     def visit_LambdaVar(self, leaf):
         propagation = self.propagation
-        if leaf not in propagation.state:
+        state = propagation.state
+        if leaf not in state:
             # A free variable of an enclosing function: any value.
             return UNKNOWN_FACT
-        fact = propagation.state[leaf]
-        if self.ref.final:
+        fact = state[leaf]
+        ref = self.ref
+        if ref.final:
             propagation.forget_origin(leaf)
             propagation.assign(leaf, UNBOUND_FACT)
-        elif self.ref.lvar is not None:
-            propagation.origins[self.ref.lvar] = leaf
+        elif ref.lvar is not None:
+            propagation.origins[ref.lvar] = leaf
         return fact
 
     def visit_Lambda(self, leaf):
-        return Fact(FunctionType(), leaf, True)
+        return Fact(FUNCTION_TYPE, leaf, True)
 
 
 _BINARY_OPERATORS = {
@@ -454,7 +553,7 @@ _SWAPPED = {
 }
 
 
-def _loop_headers(entry, successors) -> set:
+def _loop_headers(entry, successors) -> frozenset:
     """Blocks that are targets of DFS back edges, where intervals need widening."""
     colors = {entry: 1}
     stack = [(entry, iter(successors[entry]))]
@@ -470,64 +569,126 @@ def _loop_headers(entry, successors) -> set:
         elif target not in colors:
             colors[target] = 1
             stack.append((target, iter(successors[target])))
-    return headers
+    return frozenset(headers)
+
+
+@dataclass(slots=True)
+class LambdaGraph:
+    """Static per-lambda CFG and def-use structure reused across propagations."""
+
+    blocks: tuple
+    block_nodes: dict
+    handlers: dict
+    entry: object
+    successors: dict
+    predecessors: dict
+    consumers: dict
+    headers: frozenset
+    global_names: tuple
+    indirect: tuple
+    volatile_keys: tuple
+
+
+def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
+    blocks = tuple(linked(lambda_.component, lambda_, "component").blocks())
+    block_nodes = {block: tuple(block.nodes()) for block in blocks}
+    handlers = {block: block_exception_target(block) for block in blocks}
+    entry = linked(lambda_.bind, lambda_, "bind").block
+    successors = {block: tuple(_successors(block, handlers[block])) for block in blocks}
+    predecessors_sets = defaultdict(set)
+    consumers = {}
+    global_names_set = set()
+    for block in blocks:
+        for target in successors[block]:
+            predecessors_sets[target].add(block)
+        for node in block_nodes[block]:
+            lvar = node.value_lvar
+            if lvar is not None and lvar.dest is not None:
+                dest_block = lvar.dest.block
+                if dest_block is not block:
+                    consumers[node] = dest_block
+            for leaf in _global_leaves(node):
+                global_names_set.add(leaf.name)
+    predecessors = {block: tuple(predecessors_sets[block]) for block in blocks}
+    headers = _loop_headers(entry, successors)
+    global_names = tuple(global_names_set)
+    indirect = tuple(var for var in lambda_.locals if var.indirect)
+    volatile_keys = (
+        *((_GLOBAL, name) for name in global_names),
+        *indirect,
+    )
+    return LambdaGraph(
+        blocks=blocks,
+        block_nodes=block_nodes,
+        handlers=handlers,
+        entry=entry,
+        successors=successors,
+        predecessors=predecessors,
+        consumers=consumers,
+        headers=headers,
+        global_names=global_names,
+        indirect=indirect,
+        volatile_keys=volatile_keys,
+    )
 
 
 class _Walk:
     """One propagation over a lambda under given parameter facts."""
 
     def __init__(
-        self, lambda_: Lambda, global_targets, parameters, resolve_call, annotations
+        self,
+        lambda_: Lambda,
+        global_targets,
+        parameters,
+        resolve_call,
+        annotations,
+        *,
+        graph: LambdaGraph | None = None,
     ):
         self.lambda_ = lambda_
         self.global_targets = global_targets
         self.resolve_call = resolve_call
         self.annotations = annotations
         self.facts: dict[object, Fact] = {}
-        self.blocks = list(linked(lambda_.component, lambda_, "component").blocks())
-        self.entry = linked(lambda_.bind, lambda_, "bind").block
-        self.successors = {block: tuple(_successors(block)) for block in self.blocks}
-        self.predecessors = defaultdict(set)
-        self.consumers = defaultdict(set)
-        for block in self.blocks:
-            for target in self.successors[block]:
-                self.predecessors[target].add(block)
-            for node in block.nodes():
-                for lvar in _operands(node):
-                    for producer in lvar.uses:
-                        self.consumers[producer].add(block)
-        self.headers = _loop_headers(self.entry, self.successors)
-        self.global_names = {
-            leaf.name
-            for block in self.blocks
-            for node in block.nodes()
-            for leaf in _global_leaves(node)
-        }
-        self.indirect = [var for var in lambda_.locals if var.indirect]
-        self.volatile_keys = [
-            *((_GLOBAL, name) for name in self.global_names),
-            *self.indirect,
-        ]
+        if graph is None:
+            graph = build_lambda_graph(lambda_)
+        self.graph = graph
+        self.blocks = graph.blocks
+        self.block_nodes = graph.block_nodes
+        self.handlers = graph.handlers
+        self.entry = graph.entry
+        self.successors = graph.successors
+        self.predecessors = graph.predecessors
+        self.consumers = graph.consumers
+        self.headers = graph.headers
+        self.global_names = graph.global_names
+        self.indirect = graph.indirect
+        self.volatile_keys = graph.volatile_keys
         parameter_facts = dict(zip(lambda_.vars, parameters, strict=True))
         self.initial: dict[object, Fact] = {
-            var: Fact(parameter_facts[var]) if var in parameter_facts else UNBOUND_FACT
+            var: _fact(parameter_facts[var]) if var in parameter_facts else UNBOUND_FACT
             for var in lambda_.locals
         }
         # What user code may leave behind in module globals and variables
         # captured by nested functions.
         invalidated_globals: dict[object, Fact] = {
-            (_GLOBAL, name): Fact(UNKNOWN, global_targets.get(name))
+            (_GLOBAL, name): (
+                Fact(UNKNOWN, target)
+                if (target := global_targets.get(name)) is not None
+                else UNKNOWN_FACT
+            )
             for name in self.global_names
         }
         self.invalidated = {
             **invalidated_globals,
-            **{var: UNKNOWN_FACT for var in self.indirect},
+            **dict.fromkeys(self.indirect, UNKNOWN_FACT),
         }
         self.initial.update(invalidated_globals)
 
     def invalidate_globals(self, state):
         """Forget facts that user code may change."""
-        state.update(self.invalidated)
+        if self.invalidated:
+            state.update(self.invalidated)
 
     def run(self) -> Body:
         incoming, edge_states = {}, {}
@@ -535,8 +696,9 @@ class _Walk:
             self.propagate(incoming, edge_states, widening=False)
         returned = BOTTOM
         call_sites = _CallSites(self.facts)
+        block_nodes = self.block_nodes
         for block in incoming:
-            for node in block.nodes():
+            for node in block_nodes[block]:
                 node.accept(call_sites)
         if self.lambda_.return_ is not None:
             for use in self.lambda_.return_.result.uses:
@@ -553,18 +715,25 @@ class _Walk:
             else [block for block in self.blocks if block in incoming]
         )
         pending, queued = deque(initial), set(initial)
-
-        def schedule(block):
-            if block not in queued:
-                pending.append(block)
-                queued.add(block)
+        cross_changed = set()
+        predecessors = self.predecessors
+        successors = self.successors
+        block_nodes = self.block_nodes
+        handlers = self.handlers
+        consumers = self.consumers
+        headers = self.headers
+        facts = self.facts
+        visitor = _Propagation(self, {}, {})
 
         while pending:
             block = pending.popleft()
             queued.remove(block)
+            operand_changed = block in cross_changed
+            if operand_changed:
+                cross_changed.remove(block)
             parents = [
                 edge_states[parent, block]
-                for parent in self.predecessors[block]
+                for parent in predecessors[block]
                 if (parent, block) in edge_states
             ]
             if block is self.entry:
@@ -582,19 +751,18 @@ class _Walk:
                     state, changed = join_states(previous, state)
                 if changed:
                     visits[block] += 1
-                    if (
-                        block in self.headers
-                        and block in incoming
-                        and visits[block] > 3
-                    ):
+                    if block in headers and block in incoming and visits[block] > 3:
+                        old_in = incoming[block]
                         widened = {
-                            key: widen_fact(incoming[block][key], state[key])
-                            for key in state
+                            key: widen_fact(old_in[key], val)
+                            for key, val in state.items()
                         }
                         if widened != state:
                             did_widen = True
                             state = widened
                     incoming[block] = state
+                elif not operand_changed:
+                    continue
             elif state != previous:
                 if visits[block] < 2:
                     visits[block] += 1
@@ -602,45 +770,55 @@ class _Walk:
                 else:
                     state = previous
             # The visitor updates its state in place.
-            state = dict(state)
-            handler = block_exception_target(block)
-            visitor = _Propagation(self, state, {})
-            if handler is not None:
-                visitor.handler_state = dict(state)
-            for node in block.nodes():
+            state = state.copy()
+            handler = handlers[block]
+            has_handler = handler is not None
+            visitor.reset(state, has_handler)
+            for node in block_nodes[block]:
                 fact = node.accept(visitor)
                 if fact is not None:
-                    previous = self.facts.get(node, NO_FACT)
+                    previous_fact = facts.get(node, NO_FACT)
                     if widening:
-                        # join_fact returns ``previous`` itself when nothing changed.
-                        updated = join_fact(previous, fact)
-                        changed = updated is not previous
+                        # join_fact returns ``previous_fact`` itself when nothing changed.
+                        updated = join_fact(previous_fact, fact)
+                        changed = updated is not previous_fact
                     else:
                         updated = fact
-                        changed = updated != previous
+                        changed = (
+                            updated is not previous_fact and updated != previous_fact
+                        )
                     if changed:
-                        self.facts[node] = updated
-                        for consumer in self.consumers[node]:
-                            schedule(consumer)
-                if handler is not None:
+                        facts[node] = updated
+                        consumer = consumers.get(node)
+                        if consumer is not None:
+                            cross_changed.add(consumer)
+                            if consumer not in queued:
+                                pending.append(consumer)
+                                queued.add(consumer)
+                if has_handler:
                     visitor.note_handler_state()
-            for target in self.successors[block]:
+            for target in successors[block]:
                 if target is handler:
-                    edge = dict(linked(visitor.handler_state, visitor, "handler state"))
+                    edge = linked(
+                        visitor.handler_state, visitor, "handler state"
+                    ).copy()
                     self.invalidate_globals(edge)
                 else:
-                    edge = dict(state)
+                    edge = state.copy()
                     self.constrain_edge(block, target, visitor, edge)
                 key = block, target
-                if edge_states.get(key) != edge:
+                old_edge = edge_states.get(key)
+                if old_edge is None or old_edge != edge:
                     edge_states[key] = edge
-                    schedule(target)
+                    if target not in queued:
+                        pending.append(target)
+                        queued.add(target)
         return did_widen
 
     def constrain_edge(self, block, target, visitor, edge):
         """Narrow an integer local on a branch edge tested against a constant."""
         last = block.last
-        if last is not None:
+        if last is not None and visitor.origins:
             last.accept(_ConstrainEdge(target, visitor, edge))
 
 
@@ -703,10 +881,11 @@ class _ConstrainComparison(NodeVisitor):
         if local is None or bound is None or local not in visitor.state:
             return
         current = visitor.state[local]
-        self.edge[local] = Fact(
-            current.type.narrow(operator, bound, self.truth),
-            current.target,
-            current.proven,
+        narrowed = current.type.narrow(operator, bound, self.truth)
+        self.edge[local] = (
+            _fact(narrowed)
+            if current.target is None
+            else Fact(narrowed, current.target, current.proven)
         )
 
 
@@ -735,22 +914,20 @@ class _Operands(NodeVisitor):
         return () if node.value is None else (node.value,)
 
 
+_OPERANDS = _Operands()
+
+
 def _operands(node):
-    return node.accept(_Operands())
+    return node.accept(_OPERANDS)
 
 
-def _successors(block):
+def _successors(block, handler):
     """Normal successors inside the component plus the error destination."""
     for successor in block.succ:
         if successor.start is not None:
             yield successor
-    target = block_exception_target(block)
-    if target is not None:
-        yield target
-
-
-def _global_leaves(node):
-    return node.accept(_GlobalLeaves())
+    if handler is not None:
+        yield handler
 
 
 class _GlobalLeaves(NodeVisitor, LeafVisitor):
@@ -772,8 +949,21 @@ class _GlobalLeaves(NodeVisitor, LeafVisitor):
         return (leaf,)
 
 
+_GLOBAL_LEAVES = _GlobalLeaves()
+
+
+def _global_leaves(node):
+    return node.accept(_GLOBAL_LEAVES)
+
+
 def propagate(
-    lambda_: Lambda, global_targets, parameters, resolve_call, annotations
+    lambda_: Lambda,
+    global_targets,
+    parameters,
+    resolve_call,
+    annotations,
+    *,
+    graph: LambdaGraph | None = None,
 ) -> Body:
     """Propagate facts through ``lambda_`` from the given parameter types.
 
@@ -783,7 +973,14 @@ def propagate(
     contradictions are recorded in ``annotations``, the module's
     ``AnnotationLedger``.
     """
-    return _Walk(lambda_, global_targets, parameters, resolve_call, annotations).run()
+    return _Walk(
+        lambda_,
+        global_targets,
+        parameters,
+        resolve_call,
+        annotations,
+        graph=graph,
+    ).run()
 
 
 __all__ = [
@@ -791,6 +988,8 @@ __all__ = [
     "Body",
     "CallSite",
     "Fact",
+    "LambdaGraph",
+    "build_lambda_graph",
     "constant_type",
     "join_fact",
     "propagate",

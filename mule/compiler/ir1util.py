@@ -49,7 +49,8 @@ def aver(condition, message="IR1 invariant violated"):
 
 
 def link_node_to_previous_ctran(node: Node, ctran: Ctran) -> None:
-    aver(ctran.next is None, f"{ctran!r} already leads to {ctran.next!r}")
+    if ctran.next is not None:
+        raise IR1Error(f"{ctran!r} already leads to {ctran.next!r}")
     ctran.next = node
     node.prev = ctran
 
@@ -71,16 +72,20 @@ def _use_block_start(node: Node, ctran: Ctran) -> None:
     aver(ctran.kind is CtranKind.BLOCK_START)
     block = linked(ctran.block, ctran, "block")
     node_block = node.block
-    aver(node_block.last is None, f"{node_block!r} has already ended")
+    if node_block.last is not None:
+        raise IR1Error(f"{node_block!r} has already ended")
     node_block.last = node
-    aver(not node_block.succ, f"{node_block!r} already has successors")
+    if node_block.succ:
+        raise IR1Error(f"{node_block!r} already has successors")
     node_block.succ = [block]
-    aver(node_block not in block.pred, f"{node_block!r} already precedes {block!r}")
+    if node_block in block.pred:
+        raise IR1Error(f"{node_block!r} already precedes {block!r}")
     block.pred.append(node_block)
 
 
 def use_lvar(node: ValuedNode, lvar: Lvar | None) -> None:
-    aver(node.lvar is None, f"{node!r} already delivers to {node.lvar!r}")
+    if node.lvar is not None:
+        raise IR1Error(f"{node!r} already delivers to {node.lvar!r}")
     if lvar is not None:
         node.lvar = lvar
         aver(node not in lvar.uses)
@@ -113,6 +118,17 @@ def insert_node_after(old: Node, new: Node) -> None:
         use_ctran(old, ctran)
 
 
+class _ReoptimizeLinkedBranch(NodeVisitor):
+    """A branch consuming a reoptimized node's value is reoptimized too."""
+
+    def visit_If(self, node):
+        if node.prev is not None:
+            node.reoptimize = True
+
+
+_REOPTIMIZE_LINKED_BRANCH = _ReoptimizeLinkedBranch()
+
+
 def reoptimize_lvar(lvar: Lvar | None) -> None:
     """Invalidate cached facts about ``lvar`` and request reoptimization of
     its destination, its block, and its component (``ir1opt.lisp:326``)."""
@@ -129,20 +145,12 @@ def reoptimize_lvar(lvar: Lvar | None) -> None:
         return
     result = dest.value_lvar
     if result is not None and result.dest is not None:
-        result.dest.accept(_ReoptimizeLinkedBranch())
+        result.dest.accept(_REOPTIMIZE_LINKED_BRANCH)
     block = linked(prev.block, prev, "block")
     block.reoptimize = True
     component = block.component
     if component is not None and component.reoptimize is not True:
         component.reoptimize = "maybe"
-
-
-class _ReoptimizeLinkedBranch(NodeVisitor):
-    """A branch consuming a reoptimized node's value is reoptimized too."""
-
-    def visit_If(self, node):
-        if node.prev is not None:
-            node.reoptimize = True
 
 
 # Blocks
@@ -177,13 +185,15 @@ def ensure_block_start(ctran: Ctran, component: Component) -> None:
 
 
 def link_blocks(block1: Block, block2: Block) -> None:
-    aver(block2 not in block1.succ, f"{block2!r} already succeeds {block1!r}")
+    if block2 in block1.succ:
+        raise IR1Error(f"{block2!r} already succeeds {block1!r}")
     block1.succ.append(block2)
     block2.pred.append(block1)
 
 
 def unlink_blocks(block1: Block, block2: Block) -> None:
-    aver(block2 in block1.succ, f"{block2!r} does not succeed {block1!r}")
+    if block2 not in block1.succ:
+        raise IR1Error(f"{block2!r} does not succeed {block1!r}")
     block1.succ.remove(block2)
     block2.pred.remove(block1)
 

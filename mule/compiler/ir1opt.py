@@ -96,19 +96,13 @@ def ir1_optimize(component: Component) -> bool:
             continue
         if not (block.reoptimize or block.flush_p):
             continue
+        was_flush = block.flush_p
         block.reoptimize = False
         block.flush_p = False
         changed |= _optimize_block(block)
-    return changed
-
-
-def _optimize_block(block) -> bool:
-    changed = False
-    optimizer = _OptimizeNode()
-    for node in list(block.nodes()):
-        if node.prev is None:
-            continue
-        changed |= node.accept(optimizer)
+        if was_flush or block.flush_p:
+            block.flush_p = False
+            _flush_dead_operands(block)
     return changed
 
 
@@ -136,11 +130,16 @@ class _OptimizeNode(NodeVisitor):
         return _optimize_if(node)
 
 
-def constant_literal(lvar):
-    """The literal ``lvar`` always delivers, or None when it is not a constant."""
-    if len(lvar.uses) != 1:
-        return None
-    return lvar.uses[0].accept(_ConstantValue())
+_OPTIMIZE_NODE = _OptimizeNode()
+
+
+def _optimize_block(block) -> bool:
+    changed = False
+    for node in list(block.nodes()):
+        if node.prev is None:
+            continue
+        changed |= node.accept(_OPTIMIZE_NODE)
+    return changed
 
 
 class _ConstantValue(NodeVisitor, LeafVisitor):
@@ -159,8 +158,14 @@ class _ConstantValue(NodeVisitor, LeafVisitor):
         return leaf.value
 
 
-def _immutable_literal(literal):
-    return literal is not None and literal.accept(_ImmutableLiteral())
+_CONSTANT_VALUE = _ConstantValue()
+
+
+def constant_literal(lvar):
+    """The literal ``lvar`` always delivers, or None when it is not a constant."""
+    if len(lvar.uses) != 1:
+        return None
+    return lvar.uses[0].accept(_CONSTANT_VALUE)
 
 
 class _ImmutableLiteral(ast.Visitor):
@@ -189,6 +194,13 @@ class _ImmutableLiteral(ast.Visitor):
         return True
 
 
+_IMMUTABLE_LITERAL = _ImmutableLiteral()
+
+
+def _immutable_literal(literal):
+    return literal is not None and literal.accept(_IMMUTABLE_LITERAL)
+
+
 def _constant_fold_tuple(node: Combination) -> bool:
     """Capture immutable evaluated constants, never mutable or dynamic operands."""
     if node.lvar is None:
@@ -209,7 +221,7 @@ def _constant_fold(node: Combination) -> bool:
     literals = [constant_literal(arg) for arg in node.args]
     if any(literal is None for literal in literals):
         return False
-    domains = [literal.accept(_FoldDomainOf()) for literal in literals]
+    domains = [literal.accept(_FOLD_DOMAIN_OF) for literal in literals]
     if any(domain is None for domain in domains):
         return False
     domain = functools.reduce(
@@ -348,54 +360,7 @@ class _FoldDomainOf(ast.Visitor):
         return _TEXT_DOMAIN
 
 
-def replace_combination_with_constant(node: Combination, literal) -> None:
-    """Substitute a constant reference for a combination and flush its
-    operands (``replace-combination-with-constant``)."""
-    lvar = linked(node.lvar, node, "lvar")
-    leaf = Constant(literal)
-    ref = Ref(node.lexenv, node.source, leaf)
-    leaf.refs.append(ref)
-    node.lvar = None
-    lvar.uses.remove(node)
-    flush_dest(node.fun)
-    for arg in node.args:
-        flush_dest(arg)
-    prev = linked(node.prev, node, "preceding control position")
-    block = linked(prev.block, prev, "block")
-    following = node.next
-    # Splice the reference in where the combination was.
-    prev.next = ref
-    ref.prev = prev
-    if following is not None:
-        ref.next = following
-        following.use = ref
-    else:
-        block.last = ref
-    node.prev = node.next = None
-    ref.lvar = lvar
-    lvar.uses.append(ref)
-    reoptimize_lvar(lvar)
-    _flush_dead_operands(block)
-
-
-def flush_combination(node: Combination) -> None:
-    """Delete an unused flushable call and any constant references it consumed."""
-    flush_dest(node.fun)
-    for arg in node.args:
-        flush_dest(arg)
-    block = node.block
-    unlink_node(node)
-    _flush_dead_operands(block)
-
-
-def _flush_dead_operands(block) -> None:
-    """Delete references whose value is unused and whose evaluation has no
-    effect: constants, known-function references, and lambda references."""
-    flusher = _FlushDeadReference()
-    for node in list(block.nodes()):
-        if node.prev is None:
-            continue
-        node.accept(flusher)
+_FOLD_DOMAIN_OF = _FoldDomainOf()
 
 
 class _FlushDeadReference(NodeVisitor, LeafVisitor):
@@ -419,8 +384,63 @@ class _FlushDeadReference(NodeVisitor, LeafVisitor):
         return True
 
 
-def _literal_truth(literal):
-    return literal.accept(_LiteralTruth())
+_FLUSH_DEAD_REFERENCE = _FlushDeadReference()
+
+
+def _flush_operand(lvar) -> None:
+    if lvar is None:
+        return
+    uses = list(lvar.uses)
+    flush_dest(lvar)
+    for use in uses:
+        if use.prev is not None:
+            use.accept(_FLUSH_DEAD_REFERENCE)
+
+
+def replace_combination_with_constant(node: Combination, literal) -> None:
+    """Substitute a constant reference for a combination and flush its
+    operands (``replace-combination-with-constant``)."""
+    lvar = linked(node.lvar, node, "lvar")
+    leaf = Constant(literal)
+    ref = Ref(node.lexenv, node.source, leaf)
+    leaf.refs.append(ref)
+    node.lvar = None
+    lvar.uses.remove(node)
+    _flush_operand(node.fun)
+    for arg in node.args:
+        _flush_operand(arg)
+    prev = linked(node.prev, node, "preceding control position")
+    block = linked(prev.block, prev, "block")
+    following = node.next
+    # Splice the reference in where the combination was.
+    prev.next = ref
+    ref.prev = prev
+    if following is not None:
+        ref.next = following
+        following.use = ref
+    else:
+        block.last = ref
+    node.prev = node.next = None
+    ref.lvar = lvar
+    lvar.uses.append(ref)
+    reoptimize_lvar(lvar)
+
+
+def flush_combination(node: Combination) -> None:
+    """Delete an unused flushable call and any constant references it consumed."""
+    _flush_operand(node.fun)
+    for arg in node.args:
+        _flush_operand(arg)
+    unlink_node(node)
+
+
+def _flush_dead_operands(block) -> None:
+    """Delete references whose value is unused and whose evaluation has no
+    effect: constants, known-function references, and lambda references."""
+    for node in list(block.nodes()):
+        if node.prev is None:
+            continue
+        node.accept(_FLUSH_DEAD_REFERENCE)
 
 
 class _LiteralTruth(ast.Visitor):
@@ -448,6 +468,13 @@ class _LiteralTruth(ast.Visitor):
         return node.value != 0.0
 
 
+_LITERAL_TRUTH = _LiteralTruth()
+
+
+def _literal_truth(literal):
+    return literal.accept(_LITERAL_TRUTH)
+
+
 def _optimize_if(node: If) -> bool:
     """Replace a branch on a literal test by a jump to the live arm."""
     literal = constant_literal(node.test)
@@ -461,7 +488,7 @@ def _optimize_if(node: If) -> bool:
     dead = node.alternative if truth else node.consequent
     if dead is not live:
         unlink_blocks(block, dead)
-    flush_dest(node.test)
+    _flush_operand(node.test)
     prev = linked(node.prev, node, "preceding control position")
     if prev.kind is CtranKind.INSIDE_BLOCK:
         previous = linked(prev.use, prev, "use")
@@ -476,7 +503,6 @@ def _optimize_if(node: If) -> bool:
         node.prev = None
     aver(block.succ == [live])
     linked(block.component, block, "component").reanalyze = True
-    _flush_dead_operands(block)
     return True
 
 

@@ -4935,30 +4935,49 @@ class BindsName(ast.Visitor):
     def __init__(self, name):
         self.name = name
         self.found = False
+        self._bound_names = set()
+        self._bound_visitor = _BoundNames(self._bound_names)
 
     def visit_Node(self, node):
-        for target in node.assigned_targets():
-            names = set()
-            target.accept(_BoundNames(names))
-            if self.name in names:
-                self.found = True
+        if self.found:
+            return
+        targets = node.assigned_targets()
+        if targets:
+            names = self._bound_names
+            visitor = self._bound_visitor
+            for target in targets:
+                names.clear()
+                target.accept(visitor)
+                if self.name in names:
+                    self.found = True
+                    return
         for child in node.children():
             child.accept(self)
+            if self.found:
+                return
 
     def visit_FunctionDefinition(self, node):
-        self.found |= node.name == self.name
+        if node.name == self.name:
+            self.found = True
+            return
         self.visit_Node(node)
 
     def visit_ClassDefinition(self, node):
-        self.found |= node.name == self.name
+        if node.name == self.name:
+            self.found = True
+            return
         self.visit_Node(node)
 
     def visit_ExceptionHandler(self, node):
-        self.found |= node.binding == self.name
+        if node.binding == self.name:
+            self.found = True
+            return
         self.visit_Node(node)
 
     def visit_MatchCase(self, node):
-        self.found |= self.name in _pattern_names(node.pattern)
+        if self.name in _pattern_names(node.pattern):
+            self.found = True
+            return
         self.visit_Node(node)
 
     def visit_Global(self, node):
@@ -4966,11 +4985,15 @@ class BindsName(ast.Visitor):
 
     def visit_Import(self, node):
         for item in node.items:
-            self.found |= (item.alias or item.name.split(".")[0]) == self.name
+            if (item.alias or item.name.split(".")[0]) == self.name:
+                self.found = True
+                return
 
     def visit_ImportFrom(self, node):
         for item in node.items:
-            self.found |= item.name == "*" or (item.alias or item.name) == self.name
+            if item.name == "*" or (item.alias or item.name) == self.name:
+                self.found = True
+                return
 
 
 class _BoundNames(ast.Visitor):
@@ -5039,7 +5062,10 @@ class _ContainsYield(ast.Visitor):
     Nested functions, lambdas and classes are separate scopes."""
 
     def visit_Node(self, node):
-        return any(child.accept(self) for child in node.children())
+        for child in node.children():
+            if child.accept(self):
+                return True
+        return False
 
     def visit_Yield(self, node):
         return True
@@ -5095,7 +5121,10 @@ class _ComprehensionAssignment(ast.Visitor):
     in the enclosing scope rather than the comprehension's."""
 
     def visit_Node(self, node):
-        return any(child.accept(self) for child in node.children())
+        for child in node.children():
+            if child.accept(self):
+                return True
+        return False
 
     def visit_NamedExpression(self, node):
         return True

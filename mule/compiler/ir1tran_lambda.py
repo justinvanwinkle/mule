@@ -44,6 +44,8 @@ from .node import (
     linked,
 )
 
+_CONTAINS_YIELD = _ContainsYield()
+
 
 def convert_function(
     converter: Converter,
@@ -60,7 +62,7 @@ def convert_function(
     policy = converter.policy(definition.decorators, policy)
     # Generator, coroutine and async generator functions return an object
     # that runs their body on its own stack; that body is not wrapped again.
-    yields = any(statement.accept(_ContainsYield()) for statement in definition.body)
+    yields = any(statement.accept(_CONTAINS_YIELD) for statement in definition.body)
     if body_kind is not None:
         kind = None
     elif definition.is_async:
@@ -361,11 +363,13 @@ def lambda_blocks(lambda_: Lambda) -> list:
     """Blocks reachable from the lambda's bind block, following normal and
     error edges, in discovery order."""
     seen = []
+    seen_set = set()
     pending = [linked(lambda_.bind, lambda_, "bind").block]
     while pending:
         block = pending.pop()
-        if block in seen or block.start is None:
+        if block in seen_set or block.start is None:
             continue
+        seen_set.add(block)
         seen.append(block)
         pending.extend(block.succ)
         target = block_exception_target(block)

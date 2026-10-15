@@ -32,13 +32,15 @@ from .constraint import (
     _UNARY_OPERATORS,
     Body,
     Fact,
+    LambdaGraph,
+    build_lambda_graph,
     join_fact,
     propagate,
     widen_fact,
 )
 from .ctype import BOTTOM, FIXNUM_MAX, FIXNUM_MIN, UNKNOWN, IntegerType, ValueType
 from .ir1util import made_function
-from .node import CallKind, Lambda, LeafVisitor, NodeVisitor, Set, linked
+from .node import CallKind, Lambda, LeafVisitor, NodeVisitor, Set
 
 _NUMERIC_KNOWN = (
     frozenset(_BINARY_OPERATORS)
@@ -137,13 +139,13 @@ class _HasCombinationImprovement(NodeVisitor):
 
 
 def _specializes_body(
-    lambda_: Lambda,
+    graph: LambdaGraph,
     general: dict[object, ValueType],
     candidate: dict[object, ValueType],
 ) -> bool:
     visitor = _HasCombinationImprovement(general, candidate)
-    for block in linked(lambda_.component, lambda_, "component").blocks():
-        for node in block.nodes():
+    for block in graph.blocks:
+        for node in graph.block_nodes[block]:
             node.accept(visitor)
             if visitor.improved:
                 return True
@@ -205,12 +207,16 @@ class _GlobalFunctionStore(LeafVisitor):
             self.namespace[leaf.name] = lambda_
 
 
+def _noop():
+    return None
+
+
 def _with_defined_arguments(arguments, continuation):
-    if not arguments:
-        return continuation()
-    return arguments[0].when_defined(
-        lambda: _with_defined_arguments(arguments[1:], continuation)
-    )
+    for argument in arguments:
+        defined = argument.when_defined(_noop)
+        if defined is not None:
+            return defined
+    return continuation()
 
 
 def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]:
@@ -222,7 +228,16 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
     by union, and widen cyclic intervals before publication.
     """
     lambdas = list(lambdas)
-    global_targets = global_bindings(lambdas)
+    graphs: dict[Lambda, LambdaGraph] = {
+        lambda_: build_lambda_graph(lambda_) for lambda_ in lambdas
+    }
+    global_targets = defaultdict(dict)
+    for lambda_ in lambdas:
+        visitor = _GlobalFunctionStores(global_targets[lambda_.namespace])
+        graph = graphs[lambda_]
+        for block in graph.blocks:
+            for node in graph.block_nodes[block]:
+                node.accept(visitor)
     full = IntegerType(FIXNUM_MIN, FIXNUM_MAX)
     parameters: dict[tuple[Lambda, str], tuple[ValueType, ...]] = {}
     for lambda_ in lambdas:
@@ -339,6 +354,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     expected,
                     resolve,
                     annotations,
+                    graph=graphs[lambda_],
                 )
                 bodies[key] = body
                 inputs[key] = (
@@ -421,6 +437,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
 
     results: dict[Lambda, LambdaFacts] = {}
     for lambda_ in lambdas:
+        graph = graphs[lambda_]
         general = bodies[lambda_, "general"]
         facts = LambdaFacts(
             general.types(),
@@ -435,14 +452,14 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             body = bodies[key]
             candidate_types = body.types()
             if identifier == "fixnum" and not _specializes_body(
-                lambda_, facts.types, candidate_types
+                graph, facts.types, candidate_types
             ):
                 continue
             if (
                 identifier == "observed"
                 and parameters[key] == parameters.get((lambda_, "fixnum"))
                 and _specializes_body(
-                    lambda_, facts.types, bodies[lambda_, "fixnum"].types()
+                    graph, facts.types, bodies[lambda_, "fixnum"].types()
                 )
             ):
                 continue
@@ -457,16 +474,16 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             )
         facts.variants = tuple(entries)
         results[lambda_] = facts
-        _mark_guarded_calls(lambda_, general)
+        _mark_guarded_calls(graph, general)
     return results
 
 
-def _mark_guarded_calls(lambda_: Lambda, body: Body) -> None:
+def _mark_guarded_calls(graph: LambdaGraph, body: Body) -> None:
     """Record predicted targets on full calls so later phases and code
     generation can guard them; the general path always remains."""
     visitor = _MarkGuardedCall(body)
-    for block in linked(lambda_.component, lambda_, "component").blocks():
-        for node in block.nodes():
+    for block in graph.blocks:
+        for node in graph.block_nodes[block]:
             node.accept(visitor)
 
 

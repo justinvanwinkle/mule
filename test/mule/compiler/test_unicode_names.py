@@ -1,4 +1,4 @@
-"""Generated Unicode name records preserve the Python 3.14 oracle."""
+"""Generated Unicode name records match the host Python's Unicode database."""
 
 import importlib.util
 import unicodedata
