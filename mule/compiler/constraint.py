@@ -795,27 +795,27 @@ class _Walk:
                     visitor.note_handler_state()
             for target in successors[block]:
                 if target is handler:
-                    edge = linked(
-                        visitor.handler_state, visitor, "handler state"
-                    ).copy()
+                    edge = linked(visitor.handler_state, visitor, "handler state")
                     self.invalidate_globals(edge)
                 else:
-                    edge = state.copy()
-                    self.constrain_edge(block, target, visitor, edge)
+                    edge = self.constrain_edge(block, target, visitor, state)
                 key = block, target
                 old_edge = edge_states.get(key)
-                if old_edge is None or old_edge != edge:
+                if old_edge is None or (old_edge is not edge and old_edge != edge):
                     edge_states[key] = edge
                     if target not in queued:
                         pending.append(target)
                         queued.add(target)
         return did_widen
 
-    def constrain_edge(self, block, target, visitor, edge):
+    def constrain_edge(self, block, target, visitor, state):
         """Narrow an integer local on a branch edge tested against a constant."""
         last = block.last
         if last is not None and visitor.origins:
-            last.accept(_ConstrainEdge(target, visitor, edge))
+            narrowed = last.accept(_ConstrainEdge(target, visitor, state))
+            if narrowed is not None:
+                return narrowed
+        return state
 
 
 class _CallSites(NodeVisitor):
@@ -840,32 +840,40 @@ class _CallSites(NodeVisitor):
 class _ConstrainEdge(NodeVisitor):
     """Only a two-way branch narrows its edges."""
 
-    def __init__(self, target, visitor: _Propagation, edge):
+    def __init__(self, target, visitor: _Propagation, state):
         self.target = target
         self.visitor = visitor
-        self.edge = edge
+        self.state = state
+
+    def visit_Node(self, node):
+        return None
 
     def visit_If(self, node):
         if node.consequent is node.alternative:
-            return
+            return None
         truth = self.target is node.consequent
-        node.test.use().accept(_ConstrainComparison(self.visitor, self.edge, truth))
+        return node.test.use().accept(
+            _ConstrainComparison(self.visitor, self.state, truth)
+        )
 
 
 class _ConstrainComparison(NodeVisitor):
     """A known comparison of a local against a constant narrows the local."""
 
-    def __init__(self, visitor: _Propagation, edge, truth: bool):
+    def __init__(self, visitor: _Propagation, state, truth: bool):
         self.visitor = visitor
-        self.edge = edge
+        self.state = state
         self.truth = truth
+
+    def visit_Node(self, node):
+        return None
 
     def visit_Combination(self, node):
         if node.kind is not CallKind.KNOWN:
-            return
+            return None
         operator = _COMPARISON_OPERATORS.get(node.fun_info.name)
         if operator is None:
-            return
+            return None
         visitor = self.visitor
         left, right = node.args
         local = visitor.origins.get(left)
@@ -875,14 +883,18 @@ class _ConstrainComparison(NodeVisitor):
             bound = visitor.type_of(left).exact_integer()
             operator = _SWAPPED.get(operator, operator)
         if local is None or bound is None or local not in visitor.state:
-            return
+            return None
         current = visitor.state[local]
         narrowed = current.type.narrow(operator, bound, self.truth)
-        self.edge[local] = (
+        if narrowed == current.type:
+            return None
+        edge = self.state.copy()
+        edge[local] = (
             _fact(narrowed)
             if current.target is None
             else Fact(narrowed, current.target, current.proven)
         )
+        return edge
 
 
 class _Operands(NodeVisitor):

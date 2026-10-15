@@ -150,19 +150,18 @@ def _remove_cast(node: Cast) -> None:
 
 def _ir1_optimize_phase_1(compilation: Compilation) -> None:
     for iteration in range(REOPTIMIZE_LIMIT):
-        reoptimized = False
         with phase("IR1 optimization round %d", iteration + 1, level=logging.DEBUG):
             for component in compilation.components:
-                reoptimized |= ir1opt.ir1_optimize_until_done(component)
+                ir1opt.ir1_optimize_until_done(component)
                 if component.reanalyze:
                     find_dfo(component)
+        if any(component.reoptimize for component in compilation.components):
+            continue
         with phase("IR1 local-call and flow analysis", level=logging.DEBUG):
             compilation.facts = locall.analyze(
                 compilation.lambdas, compilation.annotations
             )
-        if not reoptimized and not any(
-            component.reoptimize for component in compilation.components
-        ):
+        if not any(component.reoptimize for component in compilation.components):
             return
     # The reoptimize limit was reached; the facts computed last remain valid.
     logger.debug("IR1 reoptimization reached its %d-round limit", REOPTIMIZE_LIMIT)

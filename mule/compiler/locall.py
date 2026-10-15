@@ -430,7 +430,16 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             # A new, narrower callee context can replace a broad summary used
             # provisionally by callers. Solve returns afresh for the current
             # context graph rather than permanently retaining that broad type.
-            summaries = dict.fromkeys(parameters, BOTTOM)
+            summaries = {
+                key: (
+                    bodies[key].return_type
+                    if (recorded := inputs.get(key)) is not None
+                    and recorded[0] == expected
+                    and not recorded[1]
+                    else BOTTOM
+                )
+                for key, expected in parameters.items()
+            }
             return_changes.clear()
         if not changed:
             break
