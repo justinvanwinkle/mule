@@ -4,6 +4,26 @@ Status: measurement and optimization work in progress. The target is at least
 10 times CPython's speed for compiled programs; current measurements do not meet
 that target.
 
+## Design goal
+
+Every operation is to be as efficient as it theoretically could be with the
+available technology: given all the information derivable from the program,
+the compiler emits the most specialized, most efficient machine code. The
+reference for each operation is the cost its information permits. A tuple
+comparison whose elements are known fixnums is an inline integer compare; a
+call to a module function whose binding is never reassigned is a direct call;
+a value that provably does not escape carries no reference-count traffic.
+Measured instruction counts above that reference are defects in the compiler's
+analyses or lowering, not properties of the workload.
+
+Specialization is derived from the program through the compiler's analyses,
+following SBCL: known functions and direct calls, type inference and
+declarations, constant bindings, ownership and escape facts, and
+representation selection. Per-type fast paths inside generic runtime primitives
+are not the mechanism: they hide missing compiler work and do not transfer to
+other programs or types. They may be added only once an operation is already as
+specialized as its information allows and a measured remainder justifies them.
+
 ## Reproducible comparisons
 
 The new [standalone performance suite](../perf/README.md) lives in `perf/suite/`.

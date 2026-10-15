@@ -191,6 +191,8 @@ def main() -> int:
         return 0
     try:
         return run(kind, value, arguments, optimize=options.optimize, lto=options.lto)
+    except KeyboardInterrupt:
+        return 130
     except SyntaxError as error:
         print(
             f"{error.filename}:{error.lineno}:{error.offset}: {error.msg}",

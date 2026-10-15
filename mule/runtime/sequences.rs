@@ -557,6 +557,9 @@ pub unsafe extern "C" fn mule_catch_exception() -> Value {
         // The handler's exception carries the traceback it was raised along.
         let traceback = crate::traceback::take();
         let exception = caught_exception();
+        if crate::signals::has_pending_signals() {
+            crate::threads::request_safepoint();
+        }
         if exception.is_null() || traceback.is_null() {
             object::release(traceback);
             return exception;

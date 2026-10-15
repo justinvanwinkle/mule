@@ -43,6 +43,7 @@ thread_local! {
 // The `_time` native module: clock and calendar services for stdlib/time.py.
 
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
 struct Timespec {
     seconds: i64,
     nanoseconds: i64,
@@ -152,14 +153,31 @@ unsafe extern "C" fn time_sleep(_: Value, args: Value) -> Value {
         let Some([value]) = operands::<1>(args) else { return null_mut() };
         let Some(seconds) = numeric::number_double(value) else { return null_mut() };
         if seconds <= 0.0 {
+            if !crate::signals::check_signals() {
+                return null_mut();
+            }
             return object::none_value();
         }
         let whole = seconds.floor();
-        let spec = Timespec {
+        let mut spec = Timespec {
             seconds: whole as i64,
             nanoseconds: ((seconds - whole) * 1_000_000_000.0) as i64,
         };
-        nanosleep(&spec, std::ptr::null_mut());
+        let mut remaining = Timespec {
+            seconds: 0,
+            nanoseconds: 0,
+        };
+        while nanosleep(&spec, &mut remaining) != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                if !crate::signals::check_signals() {
+                    return null_mut();
+                }
+                spec = remaining;
+                continue;
+            }
+            return posix_error(&error);
+        }
         object::none_value()
     }
 }
@@ -566,14 +584,21 @@ unsafe extern "C" fn write_fd(_: Value, args: Value) -> Value {
         let written = match object::fixnum(fd) {
             1 => std::io::stdout().lock().write_all(bytes).map(|_| bytes.len()),
             2 => std::io::stderr().lock().write_all(bytes).map(|_| bytes.len()),
-            descriptor => {
+            descriptor => loop {
                 let count = write(descriptor as i32, bytes.as_ptr(), bytes.len());
                 if count < 0 {
-                    Err(std::io::Error::last_os_error())
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() == std::io::ErrorKind::Interrupted {
+                        if !crate::signals::check_signals() {
+                            return null_mut();
+                        }
+                        continue;
+                    }
+                    break Err(error);
                 } else {
-                    Ok(count as usize)
+                    break Ok(count as usize);
                 }
-            }
+            },
         };
         match written {
             Ok(count) => numeric::integer_from_usize(count),
@@ -1157,10 +1182,21 @@ unsafe extern "C" fn posix_read(_: Value, args: Value) -> Value {
         let Some([fd, count]) = operands::<2>(args) else { return null_mut() };
         let (Some(fd), Some(count)) = (posix_int(fd), posix_int(count)) else { return fail("TypeError", "fd and count must be integers") };
         let mut buffer = vec![0u8; count.max(0) as usize];
-        let read = unsafe { read(fd as i32, buffer.as_mut_ptr().cast(), buffer.len()) };
-        if read < 0 { return posix_error(&std::io::Error::last_os_error()); }
-        buffer.truncate(read as usize);
-        posix_bytes(&buffer)
+        loop {
+            let read = unsafe { read(fd as i32, buffer.as_mut_ptr().cast(), buffer.len()) };
+            if read < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    if !crate::signals::check_signals() {
+                        return null_mut();
+                    }
+                    continue;
+                }
+                return posix_error(&error);
+            }
+            buffer.truncate(read as usize);
+            return posix_bytes(&buffer);
+        }
     }
 }
 
@@ -1169,9 +1205,20 @@ unsafe extern "C" fn posix_write(_: Value, args: Value) -> Value {
         let Some([fd, data]) = operands::<2>(args) else { return null_mut() };
         let Some(fd) = posix_int(fd) else { return fail("TypeError", "fd must be an integer") };
         let Some(data) = posix_path(data) else { return null_mut() };
-        let written = unsafe { write(fd as i32, data.as_ptr().cast(), data.len()) };
-        if written < 0 { return posix_error(&std::io::Error::last_os_error()); }
-        posix_number(i128::from(written as i64))
+        loop {
+            let written = unsafe { write(fd as i32, data.as_ptr().cast(), data.len()) };
+            if written < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    if !crate::signals::check_signals() {
+                        return null_mut();
+                    }
+                    continue;
+                }
+                return posix_error(&error);
+            }
+            return posix_number(i128::from(written as i64));
+        }
     }
 }
 
@@ -1212,7 +1259,12 @@ unsafe extern "C" fn posix_ftruncate(_: Value, args: Value) -> Value {
         loop {
             if ftruncate(fd as i32, length) == 0 { return object::none_value(); }
             let error = std::io::Error::last_os_error();
-            if error.raw_os_error() == Some(4) { continue; }
+            if error.raw_os_error() == Some(4) {
+                if !crate::signals::check_signals() {
+                    return null_mut();
+                }
+                continue;
+            }
             return posix_error(&error);
         }
     }
@@ -1304,6 +1356,9 @@ unsafe extern "C" fn posix_entropy(_: Value, args: Value) -> Value {
             if count < 0 {
                 let error = std::io::Error::last_os_error();
                 if error.kind() == std::io::ErrorKind::Interrupted {
+                    if !crate::signals::check_signals() {
+                        return null_mut();
+                    }
                     continue;
                 }
                 return posix_error(&error);
@@ -1394,6 +1449,9 @@ unsafe extern "C" fn posix_kill(_: Value, args: Value) -> Value {
         let Some([pid, signal]) = operands::<2>(args) else { return null_mut() };
         let (Some(pid), Some(signal)) = (posix_int(pid), posix_int(signal)) else { return fail("TypeError", "pid and signal must be integers") };
         if unsafe { kill(pid as i32, signal as i32) } < 0 { return posix_error(&std::io::Error::last_os_error()); }
+        if !crate::signals::check_signals() {
+            return null_mut();
+        }
         object::none_value()
     }
 }

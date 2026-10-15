@@ -80,7 +80,27 @@ timeouts, and incorrect results appear in the report and produce a nonzero
 exit status; other comparisons continue.
 
 Generated files live in an ignored `perf/results/<timestamp>/`, or a fresh
-directory selected with `--output`. Reports include raw samples, medians,
+directory selected with `--output`.
+
+## History
+
+A complete run, meaning every scenario with a `--config` of runtimes, appends
+one line to the committed `perf/history.jsonl`: the UTC stamp, platform, run
+options, each runtime's checkout commit and tracked-diff digest, and each
+row's status, kernel/process/preparation medians, and speedups. Runs of a
+subset of scenarios, baseline-only runs, and runs with `--no-history` are not
+recorded, so every line is comparable with every other. Commit the file with
+the compiler change it measures.
+
+```sh
+uv run python -m perf.suite.perfutils history            # every recorded run
+uv run python -m perf.suite.perfutils history --last 10 --runtime mule-o3
+uv run python -m perf.suite.perfutils history graph_paths
+```
+
+The table has one row per run and one column per scenario, each cell the
+selected runtime's kernel median and its speedup against that run's baseline.
+A `+` after the commit means the tree had uncommitted tracked changes. Reports include raw samples, medians,
 variation, commands, source/helper/binary hashes, build diagnostics, platform,
 affinity, runtime version when configured, and checkout revision/diff identity.
 `index.html` is an offline dashboard with exportable `kernel.svg` and

@@ -202,8 +202,8 @@ compiled `select` owns file-object conversion, poll registration, event-mask
 validation, timeout conversion and preservation of original select objects.
 Rust owns temporary syscall buffers and monotonic deadlines, returning ready
 descriptor rows. Python's automatic EINTR retry requires recomputing remaining
-time rather than returning SBCL's raw errno. Active Python signal callbacks
-remain unavailable until compiler interrupt checks exist, as described below.
+time rather than returning SBCL's raw errno, while checking deferred pending
+signals before retrying so handlers that raise exceptions interrupt the wait.
 The Linux poll and select interfaces are implemented; epoll, kqueue and devpoll
 are not advertised.
 
@@ -243,20 +243,28 @@ they do not retain a subclass as their result. This moves override selection out
 of the bootstrap numeric conversion path, with the same descriptor binding and
 result validation as other compiled protocols.
 
-### POSIX signal dispositions and masks
+### POSIX signal dispositions, masks, and deferred delivery
 
 SBCL `src/code/target-signal.lisp`, `enable-interrupt` and `%install-handler`,
-translates default/ignore dispositions before crossing the native OS boundary.
-Mule's compiled `_signal` similarly owns signal-number conversion, default/ignore
-handler validation, mask iteration and Python sets; Rust binds libc disposition,
-mask, pending-signal and synchronous wait services. Linux realtime limits come
-from libc, and valid signals come from its filled mask. These operations do not
-execute Python in an asynchronous signal handler. Callable-handler activation
-is explicitly rejected until compiler interrupt checks and deferred delivery
-are implemented, following SBCL `src/code/signal.lisp`'s separation of pending
-interrupt state and safe language-handler invocation. The normal compiled
-`default_int_handler` raises `KeyboardInterrupt` when called directly; automatic
-SIGINT delivery is not yet installed. No new library is linked.
+translates default/ignore dispositions before crossing the native OS boundary,
+and `src/runtime/interrupt.c`, `arrange_return_to_lisp_function` and
+`maybe_now_maybe_later`, records pending interrupts when asynchronous execution
+is unsafe so language handlers run at safe points. Mule's compiled `_signal`
+owns signal-number conversion, handler validation, `default_int_handler`, mask
+iteration and Python sets; Rust binds libc disposition, mask, pending-signal
+and synchronous wait services. Linux realtime limits come from libc, and valid
+signals come from its filled mask. Asynchronous OS signal handlers never execute
+Python code or acquire runtime locks: a trapped signal sets an atomic pending
+bit and sets the shared `@mule_safepoint_requested` byte, without `SA_RESTART`
+so blocking syscalls wake with `EINTR`. When the main thread reaches a function
+entry or loop-header safepoint or wakes from an interrupted syscall (`waitpid`,
+`poll`, `select`, `nanosleep`, `read`, `write`, `getrandom`, or socket I/O),
+it drains pending signal bits and invokes registered Python handlers with the
+signal number and current frame (or raises `KeyboardInterrupt` for the default
+`SIGINT` disposition installed at startup when `SIGINT` is not ignored). An
+uncaught `KeyboardInterrupt` at the top level prints the traceback, restores
+`SIG_DFL` for `SIGINT`, and re-raises `SIGINT` so wait statuses report `SIGINT`
+termination. No new library is linked.
 
 ### POSIX clock records
 
@@ -476,6 +484,25 @@ Directory inventories and all source reads are cache inputs. Other arbitrary
 computed names still require an explicitly linked module. The scan may retain
 extra modules when a syntactically named import method is shadowed; this costs
 build time and image size but executes no additional module bodies.
+
+A unit links the modules whose import statements survive IR1 optimization,
+not every import statement its source contains. SBCL deletes unreachable code
+before anything downstream sees it (`src/compiler/ir1opt.lisp`,
+`ir1-optimize-if` and `delete-block`), and Mule's `_optimize_if` and dead-block
+deletion do the same, so an import in a branch proven dead at compile time is
+neither linked nor compiled. The main case is the self-test guard: a module's
+`__name__` is a compile-time constant, its import name, or `__main__` for the
+program's main unit, while no statement of the module could rebind it (an
+assignment, deletion, import, definition, exception or pattern binding, or a
+`global` declaration in a nested scope). Text literals then fold under
+comparison, so `if __name__ == "__main__":` keeps only its live arm, and an
+imported module's `import doctest` under that guard does not pull the doctest
+closure into the image. A module that rebinds `__name__` reads it as an
+ordinary global and keeps every import. Names resolved without a statement,
+by the literal-import scan, the project declaration, or a builtin requirement
+such as `open` needing `io`, stay linked regardless. Imports inside function
+bodies stay linked: whether the function runs is not a compile-time fact, and
+the image has no loader.
 
 Projects can declare additional exact module names or immediate package
 children in the nearest `pyproject.toml`, for example

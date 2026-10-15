@@ -1,12 +1,12 @@
 import json
 import subprocess
-import sys
 from pathlib import Path
-from xml.etree import ElementTree
 
 import pytest
 
+from perf.suite.perfutils import history
 from perf.suite.perfutils.__main__ import RunFailure, load_runtimes, read_sample
+from test.python_host import python_host
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -53,6 +53,7 @@ def test_config_rejects_duplicate_names(tmp_path):
 def test_harness_records_bad_results_and_continues(tmp_path):
     # Execute the real case, then corrupt just the candidate's result. The
     # candidate must never contribute a speedup or a timing sample.
+    host = python_host()
     wrapper = tmp_path / "corrupt.py"
     wrapper.write_text(
         "import subprocess, sys\n"
@@ -65,17 +66,17 @@ def test_harness_records_bad_results_and_continues(tmp_path):
     config.write_text(
         'baseline = "reference"\n'
         '[[runtime]]\nname="reference"\ncommand='
-        + json.dumps([sys.executable, "{source}"])
+        + json.dumps([host, "{source}"])
         + '\n[[runtime]]\nname="corrupt"\ncommand='
-        + json.dumps([sys.executable, str(wrapper), "{source}"])
+        + json.dumps([host, str(wrapper), "{source}"])
         + '\n[[runtime]]\nname="another-python"\ncommand='
-        + json.dumps([sys.executable, "{source}"])
+        + json.dumps([host, "{source}"])
         + "\n"
     )
     output = tmp_path / "report"
     process = subprocess.run(
         [
-            sys.executable,
+            host,
             "-m",
             "perf.suite.perfutils",
             "run",
@@ -108,7 +109,9 @@ def test_harness_records_bad_results_and_continues(tmp_path):
             assert row["speedup"]["kernel_seconds"] > 0
     assert "incorrect_result" in (output / "index.html").read_text()
     for name in ("kernel.svg", "process.svg"):
-        ElementTree.parse(output / name)
+        svg = (output / name).read_text()
+        assert svg.startswith('<svg xmlns="http://www.w3.org/2000/svg"')
+        assert svg.endswith("</svg>")
 
 
 def test_timeout_is_visible(tmp_path):
@@ -117,5 +120,65 @@ def test_timeout_is_visible(tmp_path):
     from perf.suite.perfutils.__main__ import invoke
 
     with pytest.raises(RunFailure) as error:
-        invoke([sys.executable, str(script)], tmp_path, 0.02)
+        invoke([python_host(), str(script)], tmp_path, 0.02)
     assert error.value.status == "timeout"
+
+
+def _report(
+    kernel_seconds, status="ok", commit="0123456789abcdef", diff=history._CLEAN_DIFF
+):
+    def row(runtime, seconds, speedup):
+        summary = {
+            field: {"median": seconds, "min": seconds, "max": seconds, "stdev": 0.0}
+            for field in ("kernel_seconds", "process_seconds", "preparation_seconds")
+        }
+        return {
+            "case": "integer_accumulation",
+            "runtime": runtime,
+            "status": status if runtime == "mule" else "ok",
+            "samples": [],
+            "summary": summary,
+            "speedup": {"kernel_seconds": speedup, "process_seconds": speedup},
+        }
+
+    return {
+        "created_utc": "20261015T120000.000000Z",
+        "platform": "test",
+        "baseline": "cpython",
+        "options": {"samples": 3, "size": None, "seed": 42, "loops": 1, "warmups": 1},
+        "runtimes": [
+            {"name": "cpython", "revision": None, "version": "Python 3.14.7\n"},
+            {
+                "name": "mule",
+                "revision": {"commit": commit, "tracked_diff_sha256": diff},
+            },
+        ],
+        "rows": [
+            row("cpython", 0.010, 1.0),
+            row("mule", kernel_seconds, 0.010 / kernel_seconds),
+        ],
+    }
+
+
+def test_history_records_runs_and_tabulates_the_candidate_trend(tmp_path):
+    path = tmp_path / "history.jsonl"
+    history.record(_report(0.050), path)
+    history.record(_report(0.020, diff="not clean"), path)
+    runs = history.load(path)
+    assert [run["results"][1]["kernel_ms"] for run in runs] == [50.0, 20.0]
+    assert runs[0]["runtimes"][1]["commit"] == "0123456789abcdef"
+    lines = history.table(runs)
+    assert lines[0].startswith("runtime mule:")
+    assert "integer_accumulation" in lines[1]
+    assert "012345678 " in lines[2] and "50 ms 0.2x" in lines[2]
+    assert "012345678+" in lines[3] and "20 ms 0.5x" in lines[3]
+
+
+def test_history_shows_failures_and_limits_runs(tmp_path):
+    path = tmp_path / "history.jsonl"
+    history.record(_report(0.050), path)
+    history.record(_report(0.050, status="build_failed"), path)
+    lines = history.table(history.load(path), limit=1)
+    assert len(lines) == 3
+    assert "build_failed" in lines[2]
+    assert history.table([]) == ["no history"]

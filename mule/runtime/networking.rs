@@ -119,7 +119,13 @@ unsafe fn result(error: i32, payload: Value) -> Value {
     unsafe { tuple(&[object::small(i64::from(error)), payload]) }
 }
 unsafe fn failure() -> Value {
-    unsafe { result(std::io::Error::last_os_error().raw_os_error().unwrap_or(5), object::none_value()) }
+    unsafe {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(5);
+        if code == 4 && !crate::signals::check_signals() {
+            return null_mut();
+        }
+        result(code, object::none_value())
+    }
 }
 unsafe fn status(value: i32) -> Value {
     unsafe { if value < 0 { failure() } else { result(0, object::none_value()) } }

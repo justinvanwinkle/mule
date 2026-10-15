@@ -44,7 +44,7 @@ unsafe fn integer(value: Value) -> Option<i64> {
 
 fn interrupted() -> bool {
     let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(4) { true }
+    if error.raw_os_error() == Some(4) { unsafe { crate::signals::check_signals() } }
     else { object::error("OSError", &error.to_string()); false }
 }
 

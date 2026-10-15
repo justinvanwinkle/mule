@@ -395,6 +395,9 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
         };
         let entry = std::mem::transmute::<*mut c_void, Native>(native);
         let initialized = crate::sequences::initialize(protocols);
+        if initialized {
+            crate::signals::initialize();
+        }
         let result = if initialized {
             entry(globals, &mut args)
         } else {
@@ -411,6 +414,7 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
         if io::stdout().flush().is_err() {
             object::error("OSError", "output failed");
         }
+        let mut sigint_exit = false;
         let status = if object::has_error() {
             if initialized && !protocols.is_null() {
                 // Uncaught primitive errors use the same exception instances
@@ -424,11 +428,23 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
             if object::error_kind() == "SystemExit" {
                 exit_status()
             } else {
-                let message = format!("{}: {}\n", object::error_kind(), object::error_message());
+                let kind = object::error_kind();
+                let detail = object::error_message();
+                let message = if detail.is_empty() {
+                    format!("{kind}\n")
+                } else {
+                    format!("{kind}: {detail}\n")
+                };
                 let mut stderr = io::stderr().lock();
                 crate::traceback::print_pending(&mut stderr);
                 let _ = stderr.write_all(message.as_bytes());
-                1
+                let _ = stderr.flush();
+                if kind == "KeyboardInterrupt" {
+                    sigint_exit = true;
+                    130
+                } else {
+                    1
+                }
             }
         } else {
             0
@@ -440,8 +456,12 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
         for (_, module) in early {
             object::release(module);
         }
+        crate::signals::finish();
         crate::sequences::finish();
         crate::classes::finish_builtin_types();
+        if sigint_exit {
+            crate::signals::terminate_with_sigint();
+        }
         status
     }
 }

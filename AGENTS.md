@@ -210,6 +210,29 @@ boundary and remaining compatibility gaps are documented in
 remain. Once a reference program compiles, validate the executable against the
 same upstream output before including it in comparisons.
 
+## Performance design goal
+
+Every operation in a compiled program must be as efficient as it theoretically
+could be with the technology available: given all the information derivable
+from the program, the compiler produces the most specialized, most efficient
+final machine code. A generic runtime call is acceptable only where the program
+leaves the operation genuinely unknown, and even then the dispatch itself must
+be the cheapest correct form. CPython has no effective JIT; a statically
+compiled program with the same information available to it has no reason to be
+slower on any operation, and should be faster on most.
+
+The way to reach that goal is architecture, not special cases. A fast path for
+one type in one runtime primitive hides the missing compiler work and does not
+transfer to the next program. Derive specialization from the program: known
+calls, inferred and declared types, constant bindings, ownership and escape
+facts, and representation selection, as SBCL does. Where a hot operation is
+slow, first identify which information the compiler already had and failed to
+use, or which analysis would have produced it, and build that. Measure the
+instruction count of the operation against what the information permits, and
+treat the gap as the defect. Special cases may be added later, when an
+operation is already as specialized as its information allows and a measured
+remainder justifies them.
+
 ## Mandatory SBCL architecture
 
 ALWAYS refer to how SBCL does it. Before designing or implementing any compiler

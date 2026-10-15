@@ -5,8 +5,6 @@ import hashlib
 import math
 import os
 import platform
-import signal
-import statistics
 import subprocess
 import sys
 import time
@@ -14,10 +12,12 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import history
 from .report import write_report
 
 SUITE = Path(__file__).resolve().parents[1]
 ROOT = SUITE.parents[1]
+_SIGKILL = 9
 
 
 class RunFailure(Exception):
@@ -48,8 +48,12 @@ def invoke(command, cwd, timeout):
     except subprocess.TimeoutExpired as error:
         # Compiler drivers and scenarios can spawn children. Kill the whole
         # process group so a timed-out job cannot overlap subsequent samples.
+        killpg = getattr(os, "killpg", None)
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            if killpg is not None:
+                killpg(process.pid, _SIGKILL)
+            else:
+                process.kill()
         except ProcessLookupError:
             pass
         process.communicate()
@@ -138,15 +142,28 @@ def expand(tokens, source, binary):
     return [token.format_map(substitutions) for token in tokens]
 
 
+def _median(values):
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
+def _pstdev(values):
+    mean = sum(values) / len(values)
+    return math.sqrt(sum((value - mean) ** 2 for value in values) / len(values))
+
+
 def summarize(samples):
     summary = {}
     for field in ("kernel_seconds", "process_seconds", "preparation_seconds"):
         values = [sample[field] for sample in samples]
         summary[field] = {
-            "median": statistics.median(values),
+            "median": _median(values),
             "min": min(values),
             "max": max(values),
-            "stdev": statistics.pstdev(values),
+            "stdev": _pstdev(values),
         }
     return summary
 
@@ -263,10 +280,25 @@ def measure_group(case, entries, baseline, args, reference):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("list", "run"))
+    parser.add_argument("action", choices=("list", "run", "history"))
     parser.add_argument("cases", nargs="*")
     parser.add_argument("--config", type=Path, help="TOML runtime/build commands")
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--history",
+        type=Path,
+        default=ROOT / "perf/history.jsonl",
+        help="file that complete configured runs append to (default: perf/history.jsonl)",
+    )
+    parser.add_argument(
+        "--no-history", action="store_true", help="do not record this run"
+    )
+    parser.add_argument(
+        "--runtime", help="history: the runtime to show (default: first non-baseline)"
+    )
+    parser.add_argument(
+        "--last", type=int, help="history: show only the most recent N runs"
+    )
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--size", type=int, help="override each case's workload size")
     parser.add_argument("--seed", type=int, default=42)
@@ -279,7 +311,18 @@ def main():
     if args.action == "list":
         print("\n".join(available))
         return 0
+    if args.action == "history":
+        if args.cases and any(case not in available for case in args.cases):
+            parser.error("select scenario names from the list command")
+        runs = history.load(args.history)
+        print(
+            "\n".join(history.table(runs, args.runtime, args.cases or None, args.last))
+        )
+        return 0
     cases = args.cases or list(available)
+    # A run of every scenario with configured runtimes is a point in the
+    # trend; a partial selection or a baseline-only run is not recorded.
+    complete = not args.cases and args.config is not None and not args.no_history
     if len(set(cases)) != len(cases) or any(case not in available for case in cases):
         parser.error("select unique scenario names from the list command")
     if args.samples < 1 or args.loops < 1 or args.warmups < 0:
@@ -300,6 +343,7 @@ def main():
     options = vars(args).copy()
     options["config"] = str(args.config) if args.config else None
     options["output"] = str(output)
+    options["history"] = str(args.history) if complete else None
     report = {
         "schema_version": 2,
         "created_utc": stamp,
@@ -383,6 +427,9 @@ def main():
         for row in rows:
             print(f"  {row['runtime']}: {row['status']}", flush=True)
     print(output / "index.html")
+    if complete:
+        history.record(report, args.history)
+        print(f"Recorded in {args.history}")
     return int(any(row["status"] != "ok" for row in report["rows"]))
 
 

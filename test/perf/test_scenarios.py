@@ -3,10 +3,11 @@
 import copy
 import importlib
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
+
+from test.python_host import python_host
 
 SUITE = Path(__file__).resolve().parents[2] / "perf" / "suite"
 SCENARIOS = (
@@ -130,7 +131,7 @@ def test_generated_graph_against_independent_algorithm(load_case, size, seed):
 def test_standalone_cli_protocol(load_case, tmp_path):
     completed = subprocess.run(
         [
-            sys.executable,
+            python_host(),
             str(SUITE / "integer_accumulation.py"),
             "--size",
             "23",
@@ -163,7 +164,7 @@ def test_standalone_cli_protocol(load_case, tmp_path):
 def test_invalid_cli_rejects_unknown_option(tmp_path):
     completed = subprocess.run(
         [
-            sys.executable,
+            python_host(),
             str(SUITE / "integer_accumulation.py"),
             "--variant",
             "unrecognized",

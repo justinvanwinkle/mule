@@ -212,10 +212,16 @@ def _constant_fold(node: Combination) -> bool:
     domains = [literal.accept(_FoldDomainOf()) for literal in literals]
     if any(domain is None for domain in domains):
         return False
-    domain = functools.reduce(lambda left, right: left.join(right), domains)
+    domain = functools.reduce(
+        lambda left, right: None if left is None else left.join(right), domains
+    )
+    if domain is None:
+        return False
     values = [literal.value for literal in literals]
     name = linked(node.fun_info, node, "function info").name
     if name in _BINARY_NAMES:
+        if domain is _TEXT_DOMAIN:
+            return False
         operator = _BINARY_NAMES[name]
         left, right = values
         if operator is ast.BinaryOperator.ADD:
@@ -285,8 +291,8 @@ class _UnaryLiteralFold(ast.Visitor):
 class _IntegerDomain:
     """Folding over integers: results stay within the folding bit limit."""
 
-    def join(self, other: _IntegerDomain) -> _IntegerDomain:
-        return self
+    def join(self, other: _IntegerDomain) -> _IntegerDomain | None:
+        return None if other is _TEXT_DOMAIN else self
 
     def literal(self, operator: ast.BinaryOperator, result: int) -> ast.Literal | None:
         if result.bit_length() > _FOLD_LIMIT_BITS:
@@ -297,8 +303,8 @@ class _IntegerDomain:
 class _BooleanDomain(_IntegerDomain):
     """Booleans are integers closed under the bitwise operators."""
 
-    def join(self, other: _IntegerDomain) -> _IntegerDomain:
-        return other
+    def join(self, other: _IntegerDomain) -> _IntegerDomain | None:
+        return None if other is _TEXT_DOMAIN else other
 
     def literal(self, operator: ast.BinaryOperator, result: int) -> ast.Literal | None:
         if operator in _BITWISE:
@@ -306,8 +312,19 @@ class _BooleanDomain(_IntegerDomain):
         return super().literal(operator, result)
 
 
+class _TextDomain(_IntegerDomain):
+    """Text literals fold only under comparison with other text literals."""
+
+    def join(self, other: _IntegerDomain) -> _IntegerDomain | None:
+        return self if other is self else None
+
+    def literal(self, operator: ast.BinaryOperator, result) -> ast.Literal | None:
+        return None
+
+
 _INTEGER_DOMAIN = _IntegerDomain()
 _BOOLEAN_DOMAIN = _BooleanDomain()
+_TEXT_DOMAIN = _TextDomain()
 _BITWISE = {
     ast.BinaryOperator.BIT_AND,
     ast.BinaryOperator.BIT_OR,
@@ -326,6 +343,9 @@ class _FoldDomainOf(ast.Visitor):
 
     def visit_BooleanLiteral(self, node):
         return _BOOLEAN_DOMAIN
+
+    def visit_TextLiteral(self, node):
+        return _TEXT_DOMAIN
 
 
 def replace_combination_with_constant(node: Combination, literal) -> None:

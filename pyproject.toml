@@ -31,7 +31,7 @@ markers = [
     "integration: builds many programs or runs whole external suites",
 ]
 testpaths = ["test"]
-pythonpath = ["."]
+pythonpath = [".", "perf/suite"]
 
 [tool.mule]
 # Loaded by pytest from a path selected at runtime.
@@ -41,7 +41,12 @@ include_modules = [
     "test.conformance.*",
     "test.mule.compiler.*",
     "test.mule.parser.*",
+    "test.perf.*",
     "test.stdlib.*",
+    "integer_accumulation",
+    "graph_paths",
+    "log_aggregation",
+    "http_routing",
     "xdist.plugin",
     "xdist.looponfail",
 ]

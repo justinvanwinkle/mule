@@ -1,7 +1,6 @@
-"""POSIX signal dispositions and masks, compiled by Mule.
+"""POSIX signal dispositions and masks, compiled by Mule."""
 
-Callable delivery requires compiler interrupt checks and is not implemented.
-"""
+__mule_builtin_implementation__ = True
 
 from _mule_native import signal_limits as _limits
 from _mule_native import signal_disposition as _disposition
@@ -31,8 +30,8 @@ SIGSEGV = 11
 SIGUSR2 = 12
 SIGPIPE = 13
 SIGALRM = 14
-SIGTERM = 15
 SIGSTKFLT = 16
+SIGTERM = 15
 SIGCHLD = SIGCLD = 17
 SIGCONT = 18
 SIGSTOP = 19
@@ -73,18 +72,23 @@ def default_int_handler(*args):
 def signal(signalnum, handler, /):
     number = _number(signalnum)
     if isinstance(handler, int) and handler in (SIG_DFL, SIG_IGN):
-        return _disposition(number, int(handler))
+        previous = _disposition(number, int(handler))
+        return default_int_handler if previous == 2 else previous
     if callable(handler):
-        raise NotImplementedError(
-            "Mule compiler interrupt checks and callable signal delivery are not implemented"
-        )
+        previous = _disposition(number, handler)
+        return default_int_handler if previous == 2 else previous
     raise TypeError(
         "signal handler must be signal.SIG_IGN, signal.SIG_DFL, or a callable object"
     )
 
 
 def getsignal(signalnum, /):
-    return _disposition(_number(signalnum), None)
+    previous = _disposition(_number(signalnum), None)
+    return default_int_handler if previous == 2 else previous
+
+
+if _disposition(SIGINT, None) == 2:
+    _disposition(SIGINT, default_int_handler)
 
 
 def raise_signal(signalnum, /):

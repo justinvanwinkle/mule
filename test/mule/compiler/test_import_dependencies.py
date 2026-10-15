@@ -163,3 +163,61 @@ print(choose('alpha') is choose('alpha'))
     )
     assert native.returncode == 0, native.stderr
     assert native.stdout == oracle.stdout
+
+
+def _unit_imports(tmp_path, name, source):
+    """The modules the unit of ``source`` links, compiled as module ``name``,
+    or as the main module when ``name`` is None."""
+    from mule.compiler.driver import cached_builtins_interface, compile_unit
+
+    interface = cached_builtins_interface()
+    filename = tmp_path / ((name or "main") + ".py")
+    filename.write_text(source)
+    module = None
+    if name is not None:
+        module = ModuleCompiler(str(filename), roots=(tmp_path,)).resolve(
+            name, None, None
+        )
+    _, imported = compile_unit(
+        source, str(filename), interface, module=module, roots=(tmp_path,)
+    )
+    return {descriptor.name for descriptor in imported}
+
+
+def test_main_guard_imports_link_only_in_the_main_module(tmp_path):
+    for name in ("selftest", "support"):
+        (tmp_path / (name + ".py")).write_text("")
+    source = (
+        "import support\n"
+        "def run():\n"
+        " return 1\n"
+        'if __name__ == "__main__":\n'
+        " import selftest\n"
+        " run()\n"
+    )
+    assert _unit_imports(tmp_path, "tool", source) == {"support"}
+    assert _unit_imports(tmp_path, None, source) == {"support", "selftest"}
+
+
+def test_rebound_module_name_keeps_guarded_imports(tmp_path):
+    (tmp_path / "selftest.py").write_text("")
+    for source in (
+        '__name__ = "__main__"\nif __name__ == "__main__":\n import selftest\n',
+        (
+            "def rename():\n global __name__\n __name__ = '__main__'\n"
+            'rename()\nif __name__ == "__main__":\n import selftest\n'
+        ),
+    ):
+        assert _unit_imports(tmp_path, "tool", source) == {"selftest"}
+
+
+def test_module_name_folds_to_the_unit_name(tmp_path):
+    from mule.compiler import emit_llvm
+
+    llvm = emit_llvm(
+        'if __name__ == "__main__":\n print("main")\nelse:\n print("imported")\n',
+        str(tmp_path / "main.py"),
+        roots=(tmp_path,),
+    )
+    assert "imported" not in llvm
+    assert "mule_compare" not in llvm.split('define ptr @"mule_module"')[-1]

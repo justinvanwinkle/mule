@@ -38,10 +38,19 @@ from .artifacts import (
 from .codegen import ForeignFunction, Program, generate
 from .inputs import file_digest, read_source
 from .ir1opt import constant_literal
+from .ir1tran_lambda import lambda_blocks
 from .ir1util import class_method_definitions, known_calls
 from .main import compile_source
 from .modules import STDLIB, CompiledModule, ModuleCompiler, search_path
-from .node import CallKind, FunctionalKind, LeafVisitor, NodeVisitor, Signature, linked
+from .node import (
+    CallKind,
+    Combination,
+    FunctionalKind,
+    LeafVisitor,
+    NodeVisitor,
+    Signature,
+    linked,
+)
 
 __all__ = [
     "ToolchainError",
@@ -351,7 +360,26 @@ def compile_unit(
         and any(node.accept(compile_attr) for node in nodes)
     ):
         compiler.resolve("ast", None, None)
-    return program, [compiler.modules[name] for name in compiler.requested]
+    return program, linked_imports(compilation, compiler)
+
+
+def linked_imports(compilation, compiler: ModuleCompiler) -> list[CompiledModule]:
+    """The modules a unit links: those whose import statements survive IR1
+    optimization, which deletes imports in branches proven dead, such as an
+    imported module's ``if __name__ == "__main__":``, plus the names scans
+    and builtin requirements resolved without a statement. The recorded
+    request order is kept."""
+    imported = set(compiler.scanned)
+    for lambda_ in compilation.lambdas:
+        for block in lambda_blocks(lambda_):
+            for node in block.nodes():
+                if (
+                    isinstance(node, Combination)
+                    and node.fun_info is not None
+                    and node.fun_info.name == "%import"
+                ):
+                    imported.add(node.info.module_name)
+    return [compiler.modules[name] for name in compiler.requested if name in imported]
 
 
 def import_resolver(

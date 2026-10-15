@@ -234,21 +234,35 @@ impl Drop for Collection<'_> {
         let mut registry = registration.coordinator.lock();
         assert_eq!(registry.collector, Some(registration.id));
         registry.collector = None;
-        registration
-            .coordinator
-            .requested
-            .store(false, Ordering::Release);
+        if !crate::signals::has_pending_signals() {
+            registration
+                .coordinator
+                .requested
+                .store(false, Ordering::Release);
+        }
         registration.coordinator.changed.notify_all();
+    }
+}
+
+pub fn request_safepoint() {
+    SAFEPOINT_REQUESTED.store(true, Ordering::Release);
+}
+
+pub fn clear_safepoint_if_idle() {
+    let coordinator = coordinator();
+    let registry = coordinator.lock();
+    if registry.collector.is_none() && !crate::signals::has_pending_signals() {
+        coordinator.requested.store(false, Ordering::Release);
     }
 }
 
 /// The fast path takes no registry lock. Owned native values remain live while
 /// parked; moving/reclaiming heap algorithms must still enumerate those roots.
 #[unsafe(no_mangle)]
-pub extern "C" fn mule_safepoint() {
+pub extern "C" fn mule_safepoint() -> i32 {
     let coordinator = coordinator();
     if !coordinator.requested.load(Ordering::Acquire) {
-        return;
+        return 0;
     }
     assert!(
         REGISTERED
@@ -257,6 +271,11 @@ pub extern "C" fn mule_safepoint() {
         "unregistered language entry at a safepoint"
     );
     drop(coordinator.park(coordinator.lock(), thread::current().id()));
+    if unsafe { crate::signals::check_signals() } {
+        0
+    } else {
+        -1
+    }
 }
 
 #[cfg(test)]

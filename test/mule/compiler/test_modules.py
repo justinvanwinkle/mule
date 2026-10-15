@@ -356,3 +356,19 @@ def test_namespace_packages_have_paths_and_resolve_relative_imports(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "42\nnamespace namespace None\nTrue\n"
+
+
+def test_module_name_is_the_import_name_and_main_in_the_program(tmp_path):
+    result = execute(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/tool.py": "print(__name__)\n"
+            'if __name__ == "__main__":\n print("tool main")\n',
+            "renamed.py": '__name__ = "other"\nprint(__name__)\n',
+        },
+        "import pkg.tool\nimport renamed\nprint(__name__)\n"
+        'if __name__ == "__main__":\n print("program main")\n',
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "pkg.tool\nother\n__main__\nprogram main\n"

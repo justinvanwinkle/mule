@@ -279,6 +279,9 @@ class Converter:
         self.module_annotations = {}
         self.future_annotations = False
         self.named_constants = {"__debug__": ast.BooleanLiteral(True)}
+        # The module's ``__name__`` as a literal while the module never
+        # rebinds it, so ``if __name__ == "__main__":`` folds at compile time.
+        self.module_name_literal: ast.TextLiteral | None = None
         self.class_definitions = 0
         self.class_fields = {}
         self.module_annotation_shadows = set()
@@ -634,7 +637,13 @@ class FunctionConverter:
             if name in scope.bound:
                 return load.namespace()
             return self.variable(name).accept(load)
-        return self.ref(start, next_, result, self.variable(name), source, final=final)
+        var = self.variable(name)
+        literal = self.converter.module_name_literal
+        if literal is not None and isinstance(var, GlobalVar) and name == "__name__":
+            return self.constant(
+                start, next_, result, replace(literal, span=source.span)
+            )
+        return self.ref(start, next_, result, var, source, final=final)
 
     def class_reader(self, name) -> ClassScope | None:
         """The class body that reads ``name`` from its namespace first, as
@@ -2246,6 +2255,11 @@ class _Statements(ast.Visitor):
         node.target.accept(_AnnotationTarget(self.function, node, start, next_))
 
     def visit_ExpressionStatement(self, node):
+        # A literal statement, such as a docstring, has no effect: Python's
+        # compiler discards it, and converting it would build and release
+        # the value on every execution.
+        if isinstance(node.expression, ast.Literal):
+            return
         start, next_, _ = self.frame
         self.function.convert(start, next_, None, node.expression)
 
@@ -4909,6 +4923,54 @@ class _ClassBindings(_ImportNames):
 
     def visit_Nonlocal(self, node):
         self.nonlocals.update(node.identifiers)
+
+
+class BindsName(ast.Visitor):
+    """Whether any statement of a module, at any depth, may bind ``name`` in
+    the module namespace: an assignment or deletion target, an import, a
+    definition, an exception or pattern binding, or a ``global`` declaration
+    in a nested scope that could store it. A binding in a class body is
+    counted too, conservatively."""
+
+    def __init__(self, name):
+        self.name = name
+        self.found = False
+
+    def visit_Node(self, node):
+        for target in node.assigned_targets():
+            names = set()
+            target.accept(_BoundNames(names))
+            if self.name in names:
+                self.found = True
+        for child in node.children():
+            child.accept(self)
+
+    def visit_FunctionDefinition(self, node):
+        self.found |= node.name == self.name
+        self.visit_Node(node)
+
+    def visit_ClassDefinition(self, node):
+        self.found |= node.name == self.name
+        self.visit_Node(node)
+
+    def visit_ExceptionHandler(self, node):
+        self.found |= node.binding == self.name
+        self.visit_Node(node)
+
+    def visit_MatchCase(self, node):
+        self.found |= self.name in _pattern_names(node.pattern)
+        self.visit_Node(node)
+
+    def visit_Global(self, node):
+        self.found |= self.name in node.identifiers
+
+    def visit_Import(self, node):
+        for item in node.items:
+            self.found |= (item.alias or item.name.split(".")[0]) == self.name
+
+    def visit_ImportFrom(self, node):
+        for item in node.items:
+            self.found |= item.name == "*" or (item.alias or item.name) == self.name
 
 
 class _BoundNames(ast.Visitor):

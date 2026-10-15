@@ -215,7 +215,10 @@ unsafe extern "C" fn wait(_: Value, args: Value) -> Value {
         loop {
             let result = waitpid(pid as i32, &mut status, options as i32);
             if result < 0 {
-                if *__errno_location() == 4 { continue; }
+                if *__errno_location() == 4 {
+                    if !crate::signals::check_signals() { return null_mut(); }
+                    continue;
+                }
                 return os_error();
             }
             let values = [object::small(i64::from(result)), object::small(i64::from(status))];

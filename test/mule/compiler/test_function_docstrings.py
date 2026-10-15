@@ -1,5 +1,6 @@
 """Leading function documentation survives native definition and decoration."""
 
+from mule.compiler import emit_llvm
 from test.mule.compiler.test_exception_groups import compare
 
 
@@ -57,3 +58,19 @@ print(repr(whitespace.__doc__))
 """,
     )
     assert result.stderr == ""
+
+
+def test_docstring_and_literal_statements_emit_no_code_in_the_body():
+    """``__doc__`` is set when the function is defined; the body itself must
+    not build the docstring, or any other literal statement, on each call."""
+    llvm = emit_llvm(
+        "def run(value):\n"
+        " 'documentation that is long enough to be distinctive'\n"
+        " 42\n"
+        " 'not documentation'\n"
+        " return value + 1\n"
+        "print(run(1), run.__doc__)\n"
+    )
+    body = llvm.split('define internal ptr @"mule_fn_run.body"(')[1].split("\n}")[0]
+    assert "mule_literal_text" not in body
+    assert "documentation" not in body

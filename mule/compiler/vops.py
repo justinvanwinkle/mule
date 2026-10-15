@@ -137,7 +137,8 @@ def insert_safepoint(gen, vop):
     )
     gen.line(f"br i1 {pending}, label %{park}, label %{ready}")
     gen.lines.append(park + ":")
-    gen.line("call void @mule_safepoint()")
+    status = gen.operation("call i32 @mule_safepoint()")
+    gen.check_status(status)
     gen.line(f"br label %{ready}")
     gen.lines.append(ready + ":")
 

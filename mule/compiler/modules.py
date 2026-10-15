@@ -114,6 +114,10 @@ class ModuleCompiler:
         self.pending: deque[CompiledModule] = deque()
         # Every module name resolved, in first-request order.
         self.requested: dict[str, None] = {}
+        # Names resolved without an import statement: literal-import scans,
+        # project patterns and builtin requirements. They stay linked even
+        # when no import of them survives optimization.
+        self.scanned: set[str] = set()
         self.project_modules = ()
 
     def configure_project(self):
@@ -126,9 +130,8 @@ class ModuleCompiler:
             project = directory / "pyproject.toml"
             if not source_exists(project):
                 continue
-            settings = (
-                tomllib.loads(read_source(project)).get("tool", {}).get("mule", {})
-            )
+            tool = tomllib.loads(read_source(project)).get("tool", {})
+            settings = tool.get("mule", {})
             names = settings.get("include_modules", [])
             patterns = []
             try:
@@ -145,8 +148,16 @@ class ModuleCompiler:
                     "tool.mule.include_modules must contain module names or package.* patterns"
                 ) from error
             self.project_modules = tuple(patterns)
-            if self.project_modules and directory not in self.roots:
-                self.roots = (self.roots[0], directory, *self.roots[1:])
+            if self.project_modules:
+                pytest_paths = (
+                    tool.get("pytest", {}).get("ini_options", {}).get("pythonpath", [])
+                )
+                project_roots = tuple(
+                    (directory / entry).resolve() for entry in (".", *pytest_paths)
+                )
+                self.roots = tuple(
+                    dict.fromkeys((self.roots[0], *project_roots, *self.roots[1:]))
+                )
             return
 
     def path_for(self, name):
@@ -156,7 +167,11 @@ class ModuleCompiler:
         if name in NATIVE_MODULES or name == "__main__":
             return None, ()
         # The system module and its private decoder precede source-local modules.
-        if name in ("sys", "_mule_codecs"):
+        if name in (
+            "sys",
+            "_mule_codecs",
+            "_sysconfigdata__linux_x86_64-linux-gnu",
+        ):
             path = STDLIB / f"{name}.py"
             return (path, ()) if source_exists(path) else (None, ())
         relative = Path(*name.split("."))
@@ -212,6 +227,8 @@ class ModuleCompiler:
     def resolve(self, name, lowerer, node):
         # What a unit's output depends on from its imports: how each resolved.
         self.requested.setdefault(name, None)
+        if lowerer is None:
+            self.scanned.add(name)
         if name in self.modules:
             return self.modules[name]
         if name in NATIVE_MODULES:
@@ -240,6 +257,8 @@ class ModuleCompiler:
         self.modules[name] = descriptor
         if protocol_module:
             self.pending.append(descriptor)
+        if name == "sysconfig":
+            self.resolve("_sysconfigdata__linux_x86_64-linux-gnu", None, None)
         return descriptor
 
     def include_patterns(self, patterns):

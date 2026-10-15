@@ -23,6 +23,7 @@ from .envanal import environment_analyze
 from .import_dependencies import discover as import_dependencies
 from .interface_annotations import imported_bindings as interface_bindings
 from .ir1tran import (
+    BindsName,
     Converter,
     _AnnotationShadows,
     _GlobalAnnotationStores,
@@ -214,6 +215,10 @@ def compile_toplevel(
             statement.accept(shadows)
         converter.module_annotation_shadows = shadows.names
         converter.interface_bindings = interface_bindings(tree.statements)
+        binds_name = BindsName("__name__")
+        tree.accept(binds_name)
+        if not binds_name.found:
+            converter.module_name_literal = ast.TextLiteral(namespace)
         entry = convert_module(converter, tree)
         for lambda_ in converter.functions:
             _GlobalAnnotationStores(converter, lambda_).apply(lambda_blocks(lambda_))

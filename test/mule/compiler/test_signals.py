@@ -1,7 +1,10 @@
 """POSIX dispositions, signal sets and synchronous waiting match Python 3.14."""
 
+import signal
+import subprocess
+
+from mule.compiler.driver import build_executable
 from test.mule.compiler.test_exception_groups import compare
-from test.mule.compiler.test_modules import execute
 
 
 def test_signal_constants_dispositions_and_mask_services(tmp_path):
@@ -64,22 +67,59 @@ for cls in (int, bool):
     )
 
 
-def test_callable_activation_requires_deferred_compiler_delivery(tmp_path):
-    result = execute(
+def test_callable_signal_delivery_and_sigint_keyboard_interrupt(tmp_path):
+    compare(
         tmp_path,
-        {},
         """
+import os
 import signal
+import time
+
+print(signal.getsignal(signal.SIGINT) is signal.default_int_handler)
+
+events = []
+old_usr1 = signal.signal(signal.SIGUSR1, lambda signum, frame: events.append((signum, frame is not None)))
 try:
-    signal.signal(signal.SIGUSR1, lambda number, frame: None)
-except NotImplementedError as error:
-    print(str(error))
-else:
-    raise AssertionError('a callable cannot be registered without delivery support')
+    signal.raise_signal(signal.SIGUSR1)
+    print(events)
+finally:
+    print(callable(signal.signal(signal.SIGUSR1, old_usr1)))
+
+try:
+    os.kill(os.getpid(), signal.SIGINT)
+except KeyboardInterrupt:
+    print("caught kill SIGINT")
+
+try:
+    signal.raise_signal(signal.SIGINT)
+except KeyboardInterrupt:
+    print("caught raise_signal SIGINT")
 """,
     )
-    assert result.returncode == 0, result.stderr
-    assert (
-        result.stdout
-        == "Mule compiler interrupt checks and callable signal delivery are not implemented\n"
+
+
+def test_uncaught_sigint_terminates_with_sigint_and_interrupts_tight_loop(tmp_path):
+    exe = build_executable(
+        """
+import sys
+sys.stdout.write("ready\\n")
+sys.stdout.flush()
+while True:
+    pass
+""",
+        str(tmp_path / "loop_prog.py"),
+        roots=None,
+        workers=1,
     )
+    proc = subprocess.Popen(
+        [str(exe)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdout.readline() == "ready\n"
+    proc.send_signal(signal.SIGINT)
+    _, stderr = proc.communicate(timeout=5)
+    assert proc.returncode == -signal.SIGINT
+    assert "KeyboardInterrupt\n" in stderr
+    assert "KeyboardInterrupt:" not in stderr

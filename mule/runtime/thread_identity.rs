@@ -14,6 +14,11 @@ pub fn initialize_main_identity() {
     MAIN_IDENT.store(current_ident(), Ordering::Release);
 }
 
+pub fn is_main_thread() -> bool {
+    let main = MAIN_IDENT.load(Ordering::Acquire);
+    main != 0 && main == current_ident()
+}
+
 fn current_ident() -> usize {
     unsafe { pthread_self() }
 }

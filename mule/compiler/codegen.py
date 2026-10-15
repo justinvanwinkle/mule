@@ -76,7 +76,7 @@ declare void @mule_traceback_here(ptr, i32, ptr, ptr, i32, ptr)
 declare void @mule_frame_push(ptr, ptr)
 declare void @mule_frame_pop()
 @mule_safepoint_requested = external global i8
-declare void @mule_safepoint()
+declare i32 @mule_safepoint()
 declare ptr @mule_namespace()
 declare i32 @mule_namespace_bind(ptr, ptr, ptr)
 declare i32 @mule_namespace_bound(ptr, ptr)
