@@ -68,7 +68,7 @@ Tokens support `{source}`, `{binary}`, and `{python}` (the harness interpreter).
 their working directory and their own compiler-host Python executable.
 The designated baseline must be a trusted CPython interpreter.
 Mule builds use `-O1` per-unit optimization by default; the example runtime selects
-`-O3` explicitly. Append `--lto` to a build
+`-O2` explicitly, which keeps build times reasonable for the whole suite. Append `--lto` to a build
 command to measure full link-time optimization separately; this can increase
 link time substantially.
 

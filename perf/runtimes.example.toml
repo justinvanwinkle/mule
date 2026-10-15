@@ -11,10 +11,10 @@ command = ["{python}", "{source}"]
 version_command = ["{python}", "--version"]
 
 [[runtime]]
-name = "mule-o3"
+name = "mule-o2"
 cwd = ".."
 command = ["{binary}"]
-build = ["{python}", "-m", "mule.compiler", "{source}", "-o", "{binary}", "-O", "3"]
+build = ["{python}", "-m", "mule.compiler", "{source}", "-o", "{binary}", "-O", "2"]
 # Append "--lto" to this build command to enable full link-time optimization.
 
 # A different Mule checkout should use its own compiler-host Python executable,
