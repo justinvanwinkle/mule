@@ -399,14 +399,13 @@ def branch(gen, vop):
     value = gen.take(operand)
     truth = gen.truth(operand.tn, value)
     gen.line(
-        f"br i1 {truth}, label %{gen.labels[targets.consequent]}, "
-        f"label %{gen.labels[targets.alternative]}"
+        f"br i1 {truth}, label %{targets.consequent}, label %{targets.alternative}"
     )
 
 
 @define_vop("jump")
 def jump(gen, vop):
-    gen.line(f"br label %{gen.labels[vop.codegen_info]}")
+    gen.line(f"br label %{vop.codegen_info}")
 
 
 @define_vop("return", args=(None,))

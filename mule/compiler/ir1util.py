@@ -321,6 +321,7 @@ def join_blocks(block1: Block, block2: Block) -> None:
     block1.flush_p |= block2.flush_p
     block1.type_check |= block2.type_check
     remove_from_dfo(block2)
+    block2.start = block2.last = None
     block2.component = None
 
 
@@ -470,6 +471,9 @@ def unlink_node(node: Node) -> bool:
     delete_lvar_use(node)
     ctran = node.next
     following = ctran.next if ctran is not None else None
+    if ctran is not None:
+        ctran.next = ctran.use = ctran.block = None
+    node.next = None
     prev = linked(node.prev, node, "preceding control position")
     block = linked(prev.block, prev, "block")
     prev_kind = prev.kind
@@ -481,6 +485,7 @@ def unlink_node(node: Node) -> bool:
             previous_node = linked(prev.use, prev, "use")
             block.last = previous_node
             previous_node.next = None
+            prev.next = prev.use = prev.block = None
         else:
             following = linked(following, node, "following node")
             prev.next = following
@@ -507,6 +512,8 @@ def unlink_node(node: Node) -> bool:
         linked(block.component, block, "component").delete_blocks.remove(block)
     remove_from_dfo(block)
     block.delete_p = True
+    prev.next = prev.block = None
+    block.start = block.last = block.component = None
     node.prev = None
     return True
 
@@ -551,8 +558,15 @@ def delete_block(block: Block) -> None:
     for node in list(block.nodes()):
         node.accept(_DeleteNode())
         delete_lvar_use(node)
-        node.prev = None
+        prev = node.prev
+        if prev is not None:
+            prev.next = prev.use = prev.block = None
+        next_ctran = node.next
+        if next_ctran is not None:
+            next_ctran.next = next_ctran.use = next_ctran.block = None
+        node.prev = node.next = None
     remove_from_dfo(block)
+    block.start = block.last = None
     block.component = None
 
 

@@ -303,18 +303,15 @@ class object:
         return (1, str(self))
 
     def __setattr__(self, name, value):
-        try:
-            descriptor = _class_lookup(_type_of(self), name)
-        except AttributeError:
+        missing = _binding_missing()
+        descriptor = _class_lookup_default(_type_of(self), name, missing)
+        if descriptor is missing:
             _generic_set_attribute(self, name, value)
             return
         descriptor_type = _type_of(descriptor)
-        try:
-            setter = _class_lookup(descriptor_type, "__set__")
-        except AttributeError:
-            try:
-                _class_lookup(descriptor_type, "__delete__")
-            except AttributeError:
+        setter = _class_lookup_default(descriptor_type, "__set__", missing)
+        if setter is missing:
+            if _class_lookup_default(descriptor_type, "__delete__", missing) is missing:
                 _generic_set_attribute(self, name, value)
                 return
             raise AttributeError(f"attribute {name!r} is read-only")
@@ -336,18 +333,15 @@ class object:
         return getstate(self)
 
     def __delattr__(self, name):
-        try:
-            descriptor = _class_lookup(_type_of(self), name)
-        except AttributeError:
+        missing = _binding_missing()
+        descriptor = _class_lookup_default(_type_of(self), name, missing)
+        if descriptor is missing:
             _generic_delete_attribute(self, name)
             return
         descriptor_type = _type_of(descriptor)
-        try:
-            deleter = _class_lookup(descriptor_type, "__delete__")
-        except AttributeError:
-            try:
-                _class_lookup(descriptor_type, "__set__")
-            except AttributeError:
+        deleter = _class_lookup_default(descriptor_type, "__delete__", missing)
+        if deleter is missing:
+            if _class_lookup_default(descriptor_type, "__set__", missing) is missing:
                 _generic_delete_attribute(self, name)
                 return
             raise AttributeError(f"attribute {name!r} cannot be deleted")
@@ -1085,11 +1079,9 @@ class int(object):
         if len(args) == 1:
             source = args[0]
             owner = _type_of(source)
-            try:
-                method = _class_lookup(owner, "__int__")
-            except AttributeError:
-                pass
-            else:
+            missing = _binding_missing()
+            method = _class_lookup_default(owner, "__int__", missing)
+            if method is not missing:
                 value = _bind_attribute(method, source, owner)()
                 if not _is_instance(value, int):
                     raise TypeError(f"__int__ returned non-int (type {_type_of(value).__name__})")

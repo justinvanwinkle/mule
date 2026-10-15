@@ -75,19 +75,25 @@ IMMORTAL_TYPES = (FIXNUM, BOOLEAN_T, NONE_T, IMMORTAL_T)
 
 def select_representations(component: IR2Component) -> None:
     raw = component.context.plan is not None
+    reads = component.reads
+    writes = component.writes
     if not raw:
         for tn in component.tns:
             if tn.leaf is not None:
-                tn.primitive_type = _variable_type(tn, component)
+                tn.primitive_type = _variable_type(tn, component, writes)
     for tn in component.tns:
-        tn.sc = select_tn_representation(tn, raw=raw)
+        tn.sc = select_tn_representation(
+            tn,
+            reads=reads.get(tn, ()),
+            writes=writes.get(tn, ()),
+            raw=raw,
+        )
 
 
-def _variable_type(tn, component) -> PrimitiveType:
+def _variable_type(tn, component, writes) -> PrimitiveType:
     """A local is immortal when every value written into it is."""
     context = component.context
-    for ref in tn.writes:
-        vop = ref.vop
+    for vop, _ref in writes.get(tn, ()):
         name = vop.info.name
         if name == "move":
             written = vop.args[0].tn.primitive_type
@@ -102,7 +108,7 @@ def _variable_type(tn, component) -> PrimitiveType:
     return IMMORTAL_T
 
 
-def select_tn_representation(tn, *, raw=False):
+def select_tn_representation(tn, *, reads=(), writes=(), raw=False):
     """The cheapest storage class among the primitive type's candidates,
     counting one coercion per operand whose restriction excludes it. A native
     body holds every value that has a machine representation in it."""
@@ -114,9 +120,9 @@ def select_tn_representation(tn, *, raw=False):
     best, best_cost = None, None
     for sc in candidates:
         cost = 0
-        for ref in (*tn.reads, *tn.writes):
+        for vop, ref in (*reads, *writes):
             restriction = tn.primitive_type.operand_restriction(
-                _restriction(ref), raw=raw
+                _restriction(vop, ref), raw=raw
             )
             if restriction is not None and sc not in restriction:
                 cost += 1
@@ -125,8 +131,7 @@ def select_tn_representation(tn, *, raw=False):
     return best
 
 
-def _restriction(ref):
-    vop = ref.vop
+def _restriction(vop, ref):
     operands = vop.results if ref.write_p else vop.args
     restrictions = vop.info.results if ref.write_p else vop.info.args
     if not restrictions:

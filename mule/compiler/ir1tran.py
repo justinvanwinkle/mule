@@ -472,8 +472,8 @@ class FunctionConverter:
             self.locals[var.name] = var
         self._bindings(statements)
         self.lexenv = Lexenv(vars=self.locals, lambda_=lambda_, policy=lambda_.policy)
-        self.expressions = _Expressions(self)
-        self.statements_visitor = _Statements(self)
+        self.expressions: _Expressions | None = None
+        self.statements_visitor: _Statements | None = None
         self.frames: list[tuple] = []
         converter.function_converters[lambda_] = self
 
@@ -799,7 +799,8 @@ class FunctionConverter:
     def convert(self, start, next_, result, expression) -> None:
         self.frames.append((start, next_, result))
         try:
-            expression.accept(self.expressions)
+            visitor = self.expressions or _Expressions(self)
+            expression.accept(visitor)
         finally:
             self.frames.pop()
 
@@ -812,7 +813,8 @@ class FunctionConverter:
     def convert_statement(self, start, next_, statement) -> None:
         self.frames.append((start, next_, None))
         try:
-            statement.accept(self.statements_visitor)
+            visitor = self.statements_visitor or _Statements(self)
+            statement.accept(visitor)
         finally:
             self.frames.pop()
 
@@ -821,6 +823,9 @@ class FunctionConverter:
         frontier, or ``None`` when the final statement transferred control.
         Code after a transfer is still converted, into an unreachable block, so
         unsupported syntax there is rejected."""
+        if self.depth == 0:
+            self.expressions = _Expressions(self)
+            self.statements_visitor = _Statements(self)
         self.depth += 1
         try:
             current = start
@@ -839,6 +844,9 @@ class FunctionConverter:
             return None if terminated else current
         finally:
             self.depth -= 1
+            if self.depth == 0:
+                self.expressions = None
+                self.statements_visitor = None
 
     def leave_handlers(self, start: Ctran, stop: Cleanup | None, source) -> Ctran:
         """Emit the handler-exit actions for leaving every handler body between

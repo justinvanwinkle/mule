@@ -234,8 +234,8 @@ class TypeCheck:
 
 @dataclass(frozen=True, slots=True)
 class BranchTargets:
-    consequent: IR2Block
-    alternative: IR2Block
+    consequent: str
+    alternative: str
 
 
 def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
@@ -260,6 +260,8 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
 def _mark_borrowed_local_reads(component: IR2Component) -> None:
     """Mark bound ``LOAD_LOCAL`` VOPs whose single block-local consumer only
     borrows the value while the local slot still retains it."""
+    reads = component.reads
+    writes = component.writes
     for block in component.blocks:
         positions = {vop: index for index, vop in enumerate(block.vops)}
         for index, vop in enumerate(block.vops):
@@ -270,10 +272,16 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
                 continue
             source = vop.args[0].tn
             result = vop.results[0].tn
-            if len(result.writes) != 1 or len(result.reads) != 1:
+            result_reads = reads.get(result)
+            result_writes = writes.get(result)
+            if (
+                result_writes is None
+                or len(result_writes) != 1
+                or result_reads is None
+                or len(result_reads) != 1
+            ):
                 continue
-            reader_ref = result.reads[0]
-            reader = reader_ref.vop
+            reader, reader_ref = result_reads[0]
             reader_index = positions.get(reader)
             if reader_index is None or reader_index <= index:
                 continue
@@ -285,9 +293,16 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
                 and reader.codegen_info.exact_list_append
             ):
                 bound = reader.results[1].tn
-                if len(bound.writes) != 1 or len(bound.reads) != 1:
+                bound_reads = reads.get(bound)
+                bound_writes = writes.get(bound)
+                if (
+                    bound_writes is None
+                    or len(bound_writes) != 1
+                    or bound_reads is None
+                    or len(bound_reads) != 1
+                ):
                     continue
-                call_index = positions.get(bound.reads[0].vop)
+                call_index = positions.get(bound_reads[0][0])
                 if call_index is None or call_index <= reader_index:
                     continue
                 end_index = call_index
@@ -643,16 +658,6 @@ class _Converter(NodeVisitor):
         ptype = plan.node_type(node) if plan is not None else None
         return self.temporary(ptype or primitive_type_of(value_type), value_type), True
 
-    def read(self, tn) -> TNRef:
-        ref = TNRef(tn, False)
-        tn.reads.append(ref)
-        return ref
-
-    def write(self, tn) -> TNRef:
-        ref = TNRef(tn, True)
-        tn.writes.append(ref)
-        return ref
-
     def range_tn(self, state):
         tn = self.environment.ranges.get(id(state))
         if tn is None:
@@ -664,13 +669,16 @@ class _Converter(NodeVisitor):
     # VOP emission
 
     def emit(self, template, node, args=(), results=(), info=None) -> VOP:
-        vop = VOP(
-            template,
-            node,
-            [self.read(tn) for tn in args],
-            [self.write(tn) for tn in results],
-        )
+        arg_refs = [TNRef(tn, False) for tn in args]
+        result_refs = [TNRef(tn, True) for tn in results]
+        vop = VOP(template, node, arg_refs, result_refs)
         vop.codegen_info = info
+        reads = self.component.reads
+        for ref in arg_refs:
+            reads[ref.tn].append((vop, ref))
+        writes = self.component.writes
+        for ref in result_refs:
+            writes[ref.tn].append((vop, ref))
         return linked(self.current, self, "current block").append(vop)
 
     def emit_discard(self, node, tn) -> None:
@@ -696,7 +704,9 @@ class _Converter(NodeVisitor):
         successors = [succ for succ in block.succ if succ.start is not None]
         if len(successors) != 1:
             raise ValueError(f"{block!r} has no IR2 control transfer")
-        self.emit(vops.JUMP, block.last, info=self.component.ir2_blocks[successors[0]])
+        self.emit(
+            vops.JUMP, block.last, info=self.component.ir2_blocks[successors[0]].label
+        )
 
     # Nodes
 
@@ -810,7 +820,9 @@ class _Converter(NodeVisitor):
             vops.BRANCH,
             node,
             args=(self.lvar_tn(node.test),),
-            info=BranchTargets(blocks[node.consequent], blocks[node.alternative]),
+            info=BranchTargets(
+                blocks[node.consequent].label, blocks[node.alternative].label
+            ),
         )
 
     def visit_Return(self, node: Return):

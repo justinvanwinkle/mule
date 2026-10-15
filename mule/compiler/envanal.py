@@ -68,6 +68,7 @@ def environment_analyze(compilation) -> None:
         if pending:
             for lambda_ in compilation.lambdas:
                 compute_closure(lambda_)
+    converter.function_converters.clear()
 
 
 def compute_closure(lambda_: Lambda) -> bool:

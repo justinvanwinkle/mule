@@ -17,7 +17,7 @@ per process, so their values are not part of the language contract.
 
 from _descriptors import classmethod
 from _mule_native import bind_instance_attribute as _bind_attribute
-from _mule_native import class_lookup as _class_lookup
+from _mule_native import class_lookup_default as _class_lookup_default
 from _mule_native import class_of as _class_of
 from _mule_native import identity_hash as _identity_hash
 from _mule_native import is_class as _is_class
@@ -91,9 +91,9 @@ def hash(value, /):
         if _type_name(value) == "list":
             raise TypeError("unhashable type: 'list'")
         return _identity_hash(value)
-    try:
-        method = _class_lookup(owner, "__hash__")
-    except AttributeError:
+    missing = _binding_missing()
+    method = _class_lookup_default(owner, "__hash__", missing)
+    if method is missing:
         return _identity_hash(value)
     if method is None:
         raise TypeError("unhashable type: '" + _type_name(value) + "'")
@@ -282,9 +282,9 @@ class dict(_Table):
             return self._values[entry]
         owner = _class_of(self)
         if owner is not dict:
-            try:
-                missing = _class_lookup(owner, "__missing__")
-            except AttributeError:
+            absent = _binding_missing()
+            missing = _class_lookup_default(owner, "__missing__", absent)
+            if missing is absent:
                 raise KeyError(key)
             return _bind_attribute(missing, self, owner)(key)
         raise KeyError(key)
@@ -392,10 +392,10 @@ class dict(_Table):
         owner = _raised_class(other)
         keys = None
         if owner is not None:
-            try:
-                keys = _bind_attribute(_class_lookup(owner, "keys"), other, owner)
-            except AttributeError:
-                keys = None
+            missing = _binding_missing()
+            method = _class_lookup_default(owner, "keys", missing)
+            if method is not missing:
+                keys = _bind_attribute(method, other, owner)
         if keys is not None:
             for key in keys():
                 self._insert(key, other[key])

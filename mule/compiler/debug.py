@@ -29,14 +29,14 @@ def barf(message: str) -> NoReturn:
     raise InconsistentIR1(message)
 
 
-class _Checker:
+class _Checker(NodeVisitor, LeafVisitor):
     def __init__(self, components: list[Component]):
         self.components = components
         self.seen_blocks: set = set()
         self.seen_funs: set = set()
         self.leaf_refs: dict[object, set] = {}
         self.var_sets: dict[object, set] = {}
-        self._node_checker = _NodeChecker(self)
+        self._current_ref: Node | None = None
         self._successor_checker = _SuccessorChecker()
 
     def run(self) -> None:
@@ -158,7 +158,6 @@ class _Checker:
         home = last.lexenv.lambda_
         if home.kind is not FunctionalKind.DELETED:
             self.check_fun_reached(home, block)
-        node_checker = self._node_checker
         while True:
             if ctran.block is not block:
                 barf(f"BLOCK of {ctran!r} should be {block!r}")
@@ -173,7 +172,7 @@ class _Checker:
                     barf(f"{node!r} is not used by its LVAR {lvar!r}")
                 if lvar.dest is None:
                     barf(f"{lvar!r} does not have a dest")
-            node.accept(node_checker)
+            node.accept(self)
             following = node.next
             if following is None and node is not last:
                 barf(f"{node!r} has no NEXT")
@@ -206,7 +205,10 @@ class _Checker:
         if last is None:
             barf(f"{block!r} has no LAST")
         self._successor_checker.block = block
-        last.accept(self._successor_checker)
+        try:
+            last.accept(self._successor_checker)
+        finally:
+            self._successor_checker.block = None
 
     def check_dest(self, lvar, node) -> None:
         seen_blocks = self.seen_blocks
@@ -218,66 +220,64 @@ class _Checker:
             barf(f"DEST for {lvar!r} should be {node!r}")
 
     def check_node(self, node: Node) -> None:
-        node.accept(self._node_checker)
-
-
-class _NodeChecker(NodeVisitor):
-    """Checks one node's links to its operands, leaves, and lambda."""
-
-    def __init__(self, checker: _Checker):
-        self.checker = checker
-        self._leaf_checker = _ReferencedLeafChecker(checker)
+        node.accept(self)
 
     def visit_Ref(self, node):
         leaf = node.leaf
         refs = leaf.refs
         if len(refs) > 8:
-            ref_set = self.checker.leaf_refs.get(leaf)
+            ref_set = self.leaf_refs.get(leaf)
             if ref_set is None:
                 ref_set = set(refs)
-                self.checker.leaf_refs[leaf] = ref_set
+                self.leaf_refs[leaf] = ref_set
             if node not in ref_set:
                 barf(f"{node!r} is not in the refs of {leaf!r}")
         elif node not in refs:
             barf(f"{node!r} is not in the refs of {leaf!r}")
-        self._leaf_checker.ref = node
-        leaf.accept(self._leaf_checker)
+        self._current_ref = node
+        try:
+            leaf.accept(self)
+        finally:
+            self._current_ref = None
+
+    def visit_Lambda(self, leaf):
+        self.check_fun_reached(leaf, self._current_ref)
 
     def visit_Combination(self, node):
-        check_dest = self.checker.check_dest
+        check_dest = self.check_dest
         check_dest(node.fun, node)
         for arg in node.args:
             check_dest(arg, node)
 
     def visit_If(self, node):
-        self.checker.check_dest(node.test, node)
+        self.check_dest(node.test, node)
         if node.block.last is not node:
             barf(f"IF not at block end: {node!r}")
 
     def visit_Set(self, node):
         if node.value is not None:
-            self.checker.check_dest(node.value, node)
+            self.check_dest(node.value, node)
         var = node.var
         sets = var.sets
         if len(sets) > 8:
-            set_set = self.checker.var_sets.get(var)
+            set_set = self.var_sets.get(var)
             if set_set is None:
                 set_set = set(sets)
-                self.checker.var_sets[var] = set_set
+                self.var_sets[var] = set_set
             if node not in set_set:
                 barf(f"{node!r} is not in the sets of {var!r}")
         elif node not in sets:
             barf(f"{node!r} is not in the sets of {var!r}")
 
     def visit_Cast(self, node):
-        self.checker.check_dest(node.value, node)
+        self.check_dest(node.value, node)
 
     def visit_Bind(self, node):
-        self.checker.check_fun_reached(node.lambda_, node)
+        self.check_fun_reached(node.lambda_, node)
 
     def visit_Return(self, node):
-        self.checker.check_fun_reached(node.lambda_, node)
-        self.checker.check_dest(node.result, node)
+        self.check_fun_reached(node.lambda_, node)
+        self.check_dest(node.result, node)
         if node.block.last is not node:
             barf(f"RETURN not at block end: {node!r}")
 
@@ -287,20 +287,9 @@ class _NodeChecker(NodeVisitor):
 
     def visit_Exit(self, node):
         if node.value is not None:
-            self.checker.check_dest(node.value, node)
+            self.check_dest(node.value, node)
         if node.entry is not None and node not in node.entry.exits:
             barf(f"{node!r} is not in the exits of its entry")
-
-
-class _ReferencedLeafChecker(LeafVisitor):
-    """A referenced lambda must be reachable; other leaves have no home."""
-
-    def __init__(self, checker: _Checker, ref: Node | None = None):
-        self.checker = checker
-        self.ref = ref
-
-    def visit_Lambda(self, leaf):
-        self.checker.check_fun_reached(leaf, self.ref)
 
 
 class _SuccessorChecker(NodeVisitor):

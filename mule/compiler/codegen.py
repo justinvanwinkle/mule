@@ -333,28 +333,39 @@ class _Symbols:
     """One kind of symbol for every lambda a unit may reference. A reference
     to another unit's lambda is recorded so the unit declares it."""
 
-    def __init__(self, module, suffix):
-        self.module = module
+    def __init__(self, owned: set, foreign: dict, suffix: str):
+        self.owned = owned
+        self.foreign = foreign
         self.suffix = suffix
 
     def __getitem__(self, lambda_: Function) -> str:
-        return self.module.reference(
-            lambda_, f"{lambda_.name}.{self.suffix}", self.suffix
-        )
+        name = f"{lambda_.name}.{self.suffix}"
+        if lambda_ not in self.owned:
+            self.foreign[name] = (self.suffix, lambda_)
+        return _symbol(name)
 
 
 class _SpecializedSymbols:
     """The guarded entry of a lambda for one of its entry contexts."""
 
-    def __init__(self, module):
-        self.module = module
+    def __init__(self, owned: set, foreign: dict, facts: dict):
+        self.owned = owned
+        self.foreign = foreign
+        self.facts = facts
         self.requested: set[tuple[Function, object]] = set()
 
     def __getitem__(self, key: tuple[Function, object]) -> str:
         lambda_, context_id = key
         self.requested.add(key)
-        variant = self.module.variant_index(lambda_, context_id)
-        return self.module.reference(lambda_, f"{lambda_.name}.spec.{variant}", "body")
+        facts = self.facts.get(lambda_)
+        variants = facts.variants if facts is not None else ()
+        for variant, context in enumerate(variants):
+            if context.id == context_id:
+                name = f"{lambda_.name}.spec.{variant}"
+                if lambda_ not in self.owned:
+                    self.foreign[name] = ("body", lambda_)
+                return _symbol(name)
+        raise KeyError((lambda_.name, context_id))
 
 
 def generate(program: Program) -> str:
@@ -448,9 +459,9 @@ class ModuleGenerator:
         self.facts = {**program.external_facts, **program.facts}
         # Other units' functions this unit refers to, by symbol name.
         self.foreign: dict[str, tuple[str, Function]] = {}
-        self.functions = _Symbols(self, "fn")
-        self.bodies = _Symbols(self, "body")
-        self.specialized = _SpecializedSymbols(self)
+        self.functions = _Symbols(self.owned, self.foreign, "fn")
+        self.bodies = _Symbols(self.owned, self.foreign, "body")
+        self.specialized = _SpecializedSymbols(self.owned, self.foreign, self.facts)
         self.by_name = {
             lambda_.name: lambda_ for lambda_ in [*program.external, *lambdas]
         }
@@ -2157,25 +2168,29 @@ class _TypeAssumption(ValueTypeVisitor):
         return valid
 
 
-def _block_local_last_vop(tn, positions):
+def _block_local_last_vop(tn, positions, reads, writes):
     """The last vop using a temporary that is written once and read only by
     later vops of the writer's block, or None when it needs a slot."""
-    if len(tn.writes) != 1:
+    tn_writes = writes.get(tn)
+    if tn_writes is None or len(tn_writes) != 1:
         return None
-    writer = tn.writes[0].vop
-    if writer not in positions:
+    writer = tn_writes[0][0]
+    writer_pos = positions.get(writer)
+    if writer_pos is None:
         return None
+    writer_block, last_index = writer_pos
     last = writer
-    for ref in tn.reads:
-        reader = ref.vop
+    for reader, _ref in reads.get(tn, ()):
+        reader_pos = positions.get(reader)
         if (
-            reader not in positions
-            or reader.block is not writer.block
-            or positions[reader] <= positions[writer]
+            reader_pos is None
+            or reader_pos[0] is not writer_block
+            or reader_pos[1] <= writer_pos[1]
         ):
             return None
-        if positions[reader] > positions[last]:
+        if reader_pos[1] > last_index:
             last = reader
+            last_index = reader_pos[1]
     return last
 
 
@@ -2195,7 +2210,6 @@ class FunctionGenerator:
         self.lines: list[str] = []
         self.serial = 0
         self.exception_target: str | None = None
-        self.labels = {block: block.label for block in component.blocks}
         if self.raw:
             self.body = self.plan.entry
         elif self.context.id is not None:
@@ -2216,10 +2230,12 @@ class FunctionGenerator:
         self.live: dict = {}
         self.expiring: dict = {}
         positions = {
-            vop: index
+            vop: (block, index)
             for block in component.blocks
             for index, vop in enumerate(block.vops)
         }
+        reads = component.reads
+        writes = component.writes
         for tn in component.tns:
             if tn.primitive_type is not None and tn.sc is RANGE:
                 self.range_tns.append(tn)
@@ -2235,7 +2251,7 @@ class FunctionGenerator:
             ):
                 # Compiler temporaries. The leafless "$cell:"/"$copy:" TNs
                 # holding captures are locals, below.
-                last = _block_local_last_vop(tn, positions)
+                last = _block_local_last_vop(tn, positions, reads, writes)
                 if last is not None:
                     tn.slot = None
                     self.registers.add(tn)
@@ -2512,7 +2528,7 @@ class FunctionGenerator:
     def refine(self, tn, value: str) -> None:
         """Expose proven representation/range facts after the error check."""
         self.record_facts(tn, value)
-        if tn.reads:
+        if self.component.reads.get(tn):
             self.refine_type(tn.type or UNKNOWN, value)
 
     def refine_type(self, fact: ValueType, value: str, *, nullable=False) -> None:

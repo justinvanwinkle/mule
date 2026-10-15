@@ -117,6 +117,8 @@ def find_initial_dfo(initial: Component, lambdas) -> list[Component]:
         components.append(component)
     for block in list(initial.blocks()):
         delete_block(block)
+    initial.head.next = initial.tail.prev = None
+    initial.head.component = initial.tail.component = None
     initial.kind = ComponentKind.DELETED
     return components
 

@@ -262,7 +262,7 @@ def _key(var):
     return var.accept(_STATE_KEY)
 
 
-class _Propagation(NodeVisitor):
+class _Propagation(NodeVisitor, LeafVisitor):
     """Processes one block's nodes against the current variable state."""
 
     def __init__(self, walk, state, origins):
@@ -272,8 +272,7 @@ class _Propagation(NodeVisitor):
         self.handler_state: dict[object, Fact] | None = None
         # Keys assigned since the handler state last absorbed the state.
         self.changed = set()
-        self._ref_visitor = _ReferenceFact(self)
-        self._exact_list_append = _ExactListAppend(self)
+        self._current_ref: Ref | None = None
 
     def reset(self, state: dict[object, Fact], has_handler: bool) -> None:
         self.state = state
@@ -319,8 +318,43 @@ class _Propagation(NodeVisitor):
         return None
 
     def visit_Ref(self, node: Ref):
-        self._ref_visitor.ref = node
-        return node.leaf.accept(self._ref_visitor)
+        self._current_ref = node
+        try:
+            return node.leaf.accept(self)
+        finally:
+            self._current_ref = None
+
+    def visit_Leaf(self, leaf):
+        # A known function's reference is a compile-time operand with no fact.
+        return None
+
+    def visit_Constant(self, leaf):
+        return _fact(constant_type(leaf.value))
+
+    def visit_GlobalVar(self, leaf):
+        fact = self.state[(_GLOBAL, leaf.name)]
+        if fact.target is None:
+            target = self.walk.global_targets.get(leaf.name)
+            if target is not None:
+                fact = Fact(fact.type, target)
+        return fact
+
+    def visit_LambdaVar(self, leaf):
+        state = self.state
+        if leaf not in state:
+            # A free variable of an enclosing function: any value.
+            return UNKNOWN_FACT
+        fact = state[leaf]
+        ref = linked(self._current_ref, leaf, "reference")
+        if ref.final:
+            self.forget_origin(leaf)
+            self.assign(leaf, UNBOUND_FACT)
+        elif ref.lvar is not None:
+            self.origins[ref.lvar] = leaf
+        return fact
+
+    def visit_Lambda(self, leaf):
+        return Fact(FUNCTION_TYPE, leaf, True)
 
     def visit_Set(self, node: Set):
         key = _key(node.var)
@@ -418,7 +452,9 @@ class _Propagation(NodeVisitor):
             if (
                 len(args) == 2
                 and not linked(node.info, node, "info").keywords
-                and args[0].use().accept(self._exact_list_append)
+                and (receiver := args[0].use().accept(_EXACT_LIST_APPEND_RECEIVER))
+                is not None
+                and self.type_of(receiver).is_exact_list
             ):
                 return NONE_FACT
             self.invalidate()
@@ -478,61 +514,20 @@ class _Propagation(NodeVisitor):
 
 
 class _ExactListAppend(NodeVisitor):
-    def __init__(self, propagation: _Propagation):
-        self.propagation = propagation
-
     def visit_Node(self, node):
-        return False
+        return None
 
     def visit_Combination(self, node: Combination):
-        return (
+        if (
             node.fun_info is not None
             and node.fun_info.name == "%resolve_method"
             and linked(node.info, node, "info").name == "append"
-            and self.propagation.type_of(node.args[0]).is_exact_list
-        )
-
-
-class _ReferenceFact(LeafVisitor):
-    """The fact a reference yields, updating the propagation state."""
-
-    def __init__(self, propagation: _Propagation, ref: Ref | None = None):
-        self.propagation = propagation
-        self.ref = ref
-
-    def visit_Leaf(self, leaf):
-        # A known function's reference is a compile-time operand with no fact.
+        ):
+            return node.args[0]
         return None
 
-    def visit_Constant(self, leaf):
-        return _fact(constant_type(leaf.value))
 
-    def visit_GlobalVar(self, leaf):
-        propagation = self.propagation
-        fact = propagation.state[(_GLOBAL, leaf.name)]
-        if fact.target is None:
-            target = propagation.walk.global_targets.get(leaf.name)
-            if target is not None:
-                fact = Fact(fact.type, target)
-        return fact
-
-    def visit_LambdaVar(self, leaf):
-        propagation = self.propagation
-        state = propagation.state
-        if leaf not in state:
-            # A free variable of an enclosing function: any value.
-            return UNKNOWN_FACT
-        fact = state[leaf]
-        ref = self.ref
-        if ref.final:
-            propagation.forget_origin(leaf)
-            propagation.assign(leaf, UNBOUND_FACT)
-        elif ref.lvar is not None:
-            propagation.origins[ref.lvar] = leaf
-        return fact
-
-    def visit_Lambda(self, leaf):
-        return Fact(FUNCTION_TYPE, leaf, True)
+_EXACT_LIST_APPEND_RECEIVER = _ExactListAppend()
 
 
 _BINARY_OPERATORS = {
@@ -694,6 +689,7 @@ class _Walk:
         incoming, edge_states = {}, {}
         if self.propagate(incoming, edge_states, widening=True):
             self.propagate(incoming, edge_states, widening=False)
+        self.resolve_call = None
         returned = BOTTOM
         call_sites = _CallSites(self.facts)
         block_nodes = self.block_nodes

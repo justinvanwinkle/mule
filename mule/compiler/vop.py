@@ -22,6 +22,7 @@ Python and LLVM adaptations, recorded in ``spec/python-changes.md``:
 from __future__ import annotations
 
 import itertools
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -141,11 +142,9 @@ class TN:
         "name",
         "number",
         "primitive_type",
-        "reads",
         "sc",
         "slot",
         "type",
-        "writes",
     )
 
     def __init__(
@@ -156,8 +155,6 @@ class TN:
         self.leaf = leaf
         self.name = name
         self.kind = kind or TNKind.NORMAL
-        self.reads: list[TNRef] = []
-        self.writes: list[TNRef] = []
         # The derived value type, when flow analysis established one.
         self.type = None
         # Assigned by code generation: the entry-block slot holding the value.
@@ -173,12 +170,11 @@ class TN:
 class TNRef:
     """A VOP operand: a read or write of a TN."""
 
-    __slots__ = ("tn", "vop", "write_p")
+    __slots__ = ("tn", "write_p")
 
     def __init__(self, tn: TN, write_p: bool):
         self.tn = tn
         self.write_p = write_p
-        self.vop: VOP | None = None
 
     def __repr__(self):
         return f"<TNRef {'write' if self.write_p else 'read'} {self.tn!r}>"
@@ -187,7 +183,7 @@ class TNRef:
 class VOP:
     """One instance of a template in an IR2 block."""
 
-    __slots__ = ("args", "block", "codegen_info", "info", "node", "number", "results")
+    __slots__ = ("args", "codegen_info", "info", "node", "number", "results")
 
     def __init__(self, info: Template, node, args: list[TNRef], results: list[TNRef]):
         self.info = info
@@ -195,10 +191,7 @@ class VOP:
         self.args = args
         self.results = results
         self.codegen_info = None
-        self.block: IR2Block | None = None
         self.number = _number()
-        for ref in (*args, *results):
-            ref.vop = self
 
     def __repr__(self):
         return f"<VOP {self.info.name} {self.number}>"
@@ -245,7 +238,6 @@ class IR2Block:
         self.label = f"block.{number}"
 
     def append(self, vop: VOP) -> VOP:
-        vop.block = self
         self.vops.append(vop)
         return vop
 
@@ -295,6 +287,12 @@ class IR2Component:
     blocks: list[IR2Block] = field(default_factory=list)
     tns: list[TN] = field(default_factory=list)
     ir2_blocks: dict[object, IR2Block] = field(default_factory=dict)
+    reads: dict[TN, list[tuple[VOP, TNRef]]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+    writes: dict[TN, list[tuple[VOP, TNRef]]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
 
     def tn(self, primitive_type, **kwargs) -> TN:
         tn = TN(primitive_type, **kwargs)
