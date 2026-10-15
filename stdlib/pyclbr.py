@@ -84,8 +84,7 @@ class Class(_Object):
         self.methods = {}
 
 
-# These 2 functions are used in these tests
-# Lib/test/test_pyclbr, Lib/idlelib/idle_test/test_browser.py
+# These 2 functions are used in Lib/test/test_pyclbr
 def _nest_function(ob, func_name, lineno, end_lineno, is_async=False):
     "Return a Function after nesting within ob."
     return Function(ob.module, func_name, ob.file, lineno,

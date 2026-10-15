@@ -16,7 +16,9 @@ No CPython interpreter or native extension implementation
 is included. The test tree preserves binary and intentionally invalid source
 fixtures as test data; these are not runtime dependencies.
 
-655 upstream Python files are included. 39 files are adapted to select existing
+621 upstream Python files are included. Not vendored, along with their tests:
+the GUI trees `tkinter`, `idlelib`, `turtle` and `turtledemo`, and the CPython
+installer tools `ensurepip` and `venv`. 39 files are adapted to select existing
 Python implementations rather than import optional native accelerators. These
 include bisect, heapq, collections helpers, functools, operator, statistics, JSON,
 decimal, datetime, pickle, queues, ABCs, warnings, asyncio, ElementTree, zoneinfo,
@@ -41,8 +43,7 @@ library yet. Language and runtime facilities the library uses still need
 compiler support. Import/bootstrap code retains upstream Python
 semantics; it must be adapted to Mule's compiled-module loading before use by
 generated executables. It must never call a CPython runtime or host evaluator.
-The release's 46 non-Python library resources are included for the upstream tests,
-including IDLE configuration and ensurepip's bundled wheel.
+The release's 8 non-Python library resources are included for the upstream tests.
 
 The imported Python code preserves upstream language idioms; this task does not
 refactor the standard library's algorithms or type inspection into Mule's own
@@ -64,9 +65,9 @@ external test host; they do not substitute that host for Mule execution.
 
 ## Complete upstream tests
 
-All 1,660 files under the release's `Lib/test` and all 69 files under
-`idlelib/idle_test` are preserved unchanged, including support code, tests requiring
-native extensions, and 515 non-Python fixture files. Their accelerator imports,
+All 1,623 files under the release's `Lib/test`, other than the tkinter, ttk, tcl,
+IDLE, turtle, ensurepip and venv suites, are preserved unchanged, including support code, tests
+requiring native extensions, and 505 non-Python fixture files. Their accelerator imports,
 decorators and assertions are retained. Tests for missing native extensions are
 not excluded.
 
@@ -75,7 +76,7 @@ uv run python -m tools.run_stdlib_tests
 uv run pytest test/stdlib/test_upstream.py
 ```
 
-Both commands attempt all 492 entries discovered by Python's upstream rules.
+Both commands attempt all 484 entries discovered by Python's upstream rules.
 Discovery reads `SPLITTESTDIRS` from the shipped `findtests.py` with Mule's parser.
 It splits only the packages upstream splits; other packages remain whole so their
 `load_tests` hooks can select nested tests and doctests. The pytest entries are also

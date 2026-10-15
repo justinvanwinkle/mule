@@ -512,7 +512,7 @@ class StackSummary(list):
         FrameSummary objects or old-style list of tuples.
         """
         # While doing a fast-path check for isinstance(a_list, StackSummary) is
-        # appealing, idlelib.run.cleanup_traceback and other similar code may
+        # appealing, traceback-cleaning code in other tools may
         # break this by making arbitrary frames plain tuples, so we need to
         # check on a frame by frame basis.
         result = StackSummary()

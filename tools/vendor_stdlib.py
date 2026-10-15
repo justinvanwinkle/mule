@@ -14,7 +14,26 @@ from .stdlib_io import adapt_io
 VERSION = "3.14.7"
 ARCHIVE_SHA256 = "3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81"
 SOURCE_URL = f"https://www.python.org/ftp/python/{VERSION}/Python-{VERSION}.tar.xz"
-TEST_DIRECTORIES = {"test", "tests", "idle_test"}
+TEST_DIRECTORIES = {"test", "tests"}
+# Library trees Mule does not ship: tkinter and the modules that exist only to
+# drive it, the pip installer and the venv creator that runs it, and their tests.
+EXCLUDED_PATHS = (
+    "tkinter/",
+    "idlelib/",
+    "turtledemo/",
+    "turtle.py",
+    "ensurepip/",
+    "venv/",
+    "test/test_ensurepip.py",
+    "test/test_venv.py",
+    "test/test_tkinter/",
+    "test/test_ttk/",
+    "test/tkinterdata/",
+    "test/test_ttk_textonly.py",
+    "test/test_tcl.py",
+    "test/test_idle.py",
+    "test/test_turtle.py",
+)
 
 
 def replace_once(source, old, new):
@@ -246,6 +265,8 @@ def vendor(archive, destination):
             relative = PurePosixPath(member.name.removeprefix(prefix))
             if relative.is_absolute() or ".." in relative.parts:
                 raise ValueError(f"unsafe archive member: {member.name}")
+            if str(relative).startswith(EXCLUDED_PATHS):
+                continue
             if member.isdir():
                 directories.append(str(relative))
                 continue

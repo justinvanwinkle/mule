@@ -12,18 +12,6 @@ IMPORT_MAPPING = {
     'SocketServer': 'socketserver',
     'ConfigParser': 'configparser',
     'repr': 'reprlib',
-    'tkFileDialog': 'tkinter.filedialog',
-    'tkSimpleDialog': 'tkinter.simpledialog',
-    'tkColorChooser': 'tkinter.colorchooser',
-    'tkCommonDialog': 'tkinter.commondialog',
-    'Dialog': 'tkinter.dialog',
-    'Tkdnd': 'tkinter.dnd',
-    'tkFont': 'tkinter.font',
-    'tkMessageBox': 'tkinter.messagebox',
-    'ScrolledText': 'tkinter.scrolledtext',
-    'Tkconstants': 'tkinter.constants',
-    'ttk': 'tkinter.ttk',
-    'Tkinter': 'tkinter',
     'markupbase': '_markupbase',
     '_winreg': 'winreg',
     'thread': '_thread',
@@ -171,8 +159,6 @@ assert len(REVERSE_NAME_MAPPING) == len(NAME_MAPPING)
 IMPORT_MAPPING.update({
     'cPickle': 'pickle',
     '_elementtree': 'xml.etree.ElementTree',
-    'FileDialog': 'tkinter.filedialog',
-    'SimpleDialog': 'tkinter.simpledialog',
     'DocXMLRPCServer': 'xmlrpc.server',
     'SimpleHTTPServer': 'http.server',
     'CGIHTTPServer': 'http.server',
@@ -202,10 +188,6 @@ NAME_MAPPING.update({
 
 REVERSE_NAME_MAPPING.update({
     ('_functools', 'reduce'): ('__builtin__', 'reduce'),
-    ('tkinter.filedialog', 'FileDialog'): ('FileDialog', 'FileDialog'),
-    ('tkinter.filedialog', 'LoadFileDialog'): ('FileDialog', 'LoadFileDialog'),
-    ('tkinter.filedialog', 'SaveFileDialog'): ('FileDialog', 'SaveFileDialog'),
-    ('tkinter.simpledialog', 'SimpleDialog'): ('SimpleDialog', 'SimpleDialog'),
     ('xmlrpc.server', 'ServerHTMLDoc'): ('DocXMLRPCServer', 'ServerHTMLDoc'),
     ('xmlrpc.server', 'XMLRPCDocGenerator'):
         ('DocXMLRPCServer', 'XMLRPCDocGenerator'),

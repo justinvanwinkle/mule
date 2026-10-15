@@ -102,7 +102,7 @@ def main(*args):
         db_name = repr(args.filename)
 
     # Prepare REPL banner and prompts.
-    if sys.platform == "win32" and "idlelib.run" not in sys.modules:
+    if sys.platform == "win32":
         eofkey = "CTRL-Z"
     else:
         eofkey = "CTRL-D"

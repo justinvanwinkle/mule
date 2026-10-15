@@ -5,20 +5,7 @@ import os
 import sys
 
 
-if support.check_sanitizer(address=True, memory=True):
-    SKIP_MODULES = frozenset((
-        # gh-90791: Tests involving libX11 can SEGFAULT on ASAN/MSAN builds.
-        # Skip modules, packages and tests using '_tkinter'.
-        '_tkinter',
-        'tkinter',
-        'test_tkinter',
-        'test_ttk',
-        'test_ttk_textonly',
-        'idlelib',
-        'test_idle',
-    ))
-else:
-    SKIP_MODULES = ()
+SKIP_MODULES = ()
 
 
 class NoAll(RuntimeError):

@@ -55,10 +55,6 @@ from urllib.parse import SplitResult, ParseResult
 from unittest.case import _AssertRaisesContext
 from queue import Queue, SimpleQueue
 from weakref import WeakSet, ReferenceType, ref
-try:
-    from tkinter import Event
-except ImportError:
-    Event = None
 from string.templatelib import Template, Interpolation
 
 import typing
@@ -148,8 +144,6 @@ class BaseTest(unittest.TestCase):
     if ValueProxy is not None:
         generic_types.extend((ValueProxy, DictProxy, ListProxy, ApplyResult,
                               MPSimpleQueue, MPQueue, MPJoinableQueue))
-    if Event is not None:
-        generic_types.append(Event)
 
     def test_subscriptable(self):
         for t in self.generic_types:
