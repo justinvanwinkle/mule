@@ -115,7 +115,9 @@ declare ptr @mule_function_defaults(ptr, ptr, ptr, ptr)
 declare ptr @mule_function_default(ptr, i32)
 declare void @mule_set_argument_constructor(ptr)
 declare ptr @mule_construct_arguments(ptr, i64, ptr)
-declare i32 @mule_binding_plain(ptr, i32, i32)
+declare i32 @mule_binding_positional(ptr, i32, i32, i32)
+declare ptr @mule_arg_or_default(ptr, i32, i32)
+declare ptr @mule_binding_default_at(ptr, i32)
 declare ptr @mule_binding_missing()
 declare ptr @mule_binding_count(ptr)
 declare ptr @mule_binding_pos(ptr, ptr)
@@ -3126,9 +3128,19 @@ class FunctionGenerator:
             )
             for kind in kinds
         )
-        fast = (
-            ast.ParameterKind.KEYWORD_ONLY not in kinds
-            and ast.ParameterKind.VAR_KEYWORD not in kinds
+        default_offsets = {
+            index: offset
+            for offset, index in enumerate(lambda_.signature.default_parameters)
+        }
+        # A call without keywords binds here when every parameter it leaves
+        # unsupplied has a default; only ``**kwargs`` needs the general binder.
+        fast = ast.ParameterKind.VAR_KEYWORD not in kinds and all(
+            index in default_offsets
+            for index, kind in enumerate(kinds)
+            if kind == ast.ParameterKind.KEYWORD_ONLY
+        )
+        required = sum(
+            index not in default_offsets for index in range(positional)
         )
         lines = [
             f"define ptr {module.functions[lambda_]}(ptr %globals, ptr %args) {{",
@@ -3136,23 +3148,36 @@ class FunctionGenerator:
         ]
         if fast:
             lines += [
-                f"  %plain.status = call i32 @mule_binding_plain(ptr %args, i32 {positional}, i32 {int(lambda_.signature.variadic)})",
-                "  %fits = icmp ne i32 %plain.status, 0",
+                f"  %plain.count = call i32 @mule_binding_positional(ptr %args, i32 {required}, i32 {positional}, i32 {int(lambda_.signature.variadic)})",
+                "  %fits = icmp sge i32 %plain.count, 0",
                 "  br i1 %fits, label %plain, label %binding",
                 "plain:",
             ]
             if lambda_.signature.variadic:
-                rest_idx = count - 1
+                rest_idx = kinds.index(ast.ParameterKind.VAR_POSITIONAL)
                 lines += [
-                    f"  %plain.{rest_idx} = call ptr @mule_rest_args(ptr %args, i32 {rest_idx})",
+                    f"  %rest.more = icmp sgt i32 %plain.count, {positional}",
+                    f"  %rest.start = select i1 %rest.more, i32 {positional}, i32 %plain.count",
+                    f"  %plain.{rest_idx} = call ptr @mule_rest_args(ptr %args, i32 %rest.start)",
                     f"  %plain.missing = icmp eq ptr %plain.{rest_idx}, null",
                     "  br i1 %plain.missing, label %failed, label %plain.ok",
                     "plain.ok:",
                 ]
-            for index in range(positional):
-                lines.append(
-                    f"  %plain.{index} = call ptr @mule_arg(ptr %args, i32 {index})"
-                )
+            for index, kind in enumerate(kinds):
+                if kind == ast.ParameterKind.VAR_POSITIONAL:
+                    continue
+                if kind == ast.ParameterKind.KEYWORD_ONLY:
+                    lines.append(
+                        f"  %plain.{index} = call ptr @mule_binding_default_at(ptr %args, i32 {default_offsets[index]})"
+                    )
+                elif index < required:
+                    lines.append(
+                        f"  %plain.{index} = call ptr @mule_arg(ptr %args, i32 {index})"
+                    )
+                else:
+                    lines.append(
+                        f"  %plain.{index} = call ptr @mule_arg_or_default(ptr %args, i32 {index}, i32 {default_offsets[index]})"
+                    )
             lines.append("  br label %invoke")
         else:
             lines.append("  br label %binding")

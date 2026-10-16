@@ -39,19 +39,47 @@ unsafe fn defaults(view: Value) -> Value {
     }
 }
 
+/// The positional argument count of a call the generated plain entry binds
+/// itself: no keywords, at least `required` and (without a rest parameter)
+/// at most `positional` arguments. -1 sends the call to the general binder.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mule_binding_plain(view: Value, count: i32, rest: i32) -> i32 {
+pub unsafe extern "C" fn mule_binding_positional(view: Value, required: i32, positional: i32, rest: i32) -> i32 {
     unsafe {
         if keyword_count(view) != 0 {
-            return 0;
+            return -1;
         }
-        object::argument_count(view).map_or(0, |actual| {
-            i32::from(if rest == 0 {
-                actual == count as usize
-            } else {
-                actual >= count as usize
-            })
-        })
+        let Some(actual) = object::argument_count(view) else {
+            return -1;
+        };
+        if actual < required as usize || (rest == 0 && actual > positional as usize) {
+            return -1;
+        }
+        actual as i32
+    }
+}
+
+/// Positional argument `index`, or the callee's default at `offset` when the
+/// call supplied fewer arguments. Owned; NULL with an error when neither exists.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_arg_or_default(view: Value, index: i32, offset: i32) -> Value {
+    unsafe {
+        if object::argument_count(view).is_some_and(|count| (index as usize) < count) {
+            return object::mule_arg(view, index);
+        }
+        mule_binding_default_at(view, offset)
+    }
+}
+
+/// The callee's default at `offset`, owned; NULL with an error when absent.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_binding_default_at(view: Value, offset: i32) -> Value {
+    unsafe {
+        let defaults = defaults(view);
+        if defaults.is_null() {
+            object::error("SystemError", "callable has no captured defaults");
+            return std::ptr::null_mut();
+        }
+        object::mule_arg(defaults, offset)
     }
 }
 
