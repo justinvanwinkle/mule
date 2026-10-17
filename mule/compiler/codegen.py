@@ -2057,6 +2057,41 @@ class ModuleGenerator:
         return "\n\n".join(("\n".join(legacy), create, "\n".join(lines)))
 
 
+def _needs_cleanup_release(tn) -> bool:
+    if tn.sc is not DESCRIPTOR:
+        return False
+    fact = tn.type or UNKNOWN
+    return not (fact.is_fixnum or fact.is_immortal)
+
+
+def _vop_reads_tn(vop, tn) -> bool:
+    if any(ref.tn is tn for ref in vop.args):
+        return True
+    if not any(ref.tn is tn for ref in vop.results):
+        return False
+    if vop.info is vops.UNBIND_LOCAL:
+        return vop.codegen_info is not False
+    if vop.info is vops.MOVE:
+        return vop.codegen_info is not False and tn.sc.owned
+    return False
+
+
+def _vop_clears_tn(vop, tn) -> bool:
+    if vop.info is vops.UNBIND_LOCAL:
+        return vop.results[0].tn is tn
+    if vop.info is vops.LOAD_LOCAL:
+        return vop.args[0].tn is tn and vop.codegen_info.move
+    if tn.leaf is not None:
+        return False
+    if not any(ref.tn is tn for ref in vop.args):
+        return False
+    if vop.info.name == "unpack-ref" and vop.args[0].tn is tn:
+        return not vop.codegen_info.borrow_parent
+    if vop.info.name == "sequence-available" and vop.args[0].tn is tn:
+        return False
+    return True
+
+
 def _value_tns_live_in(component, candidates) -> dict:
     """Backward liveness of the cross-block temporaries in ``candidates``:
     for each IR2 block, those read on some path from its start before being
@@ -2065,12 +2100,14 @@ def _value_tns_live_in(component, candidates) -> dict:
     for block in component.blocks:
         used, defined = set(), set()
         for vop in block.vops:
-            for ref in vop.args:
-                if ref.tn in candidates and ref.tn not in defined:
-                    used.add(ref.tn)
-            for ref in vop.results:
-                if ref.tn in candidates:
-                    defined.add(ref.tn)
+            for ref in (*vop.args, *vop.results):
+                tn = ref.tn
+                if tn not in candidates:
+                    continue
+                if tn not in defined and _vop_reads_tn(vop, tn):
+                    used.add(tn)
+                if any(res.tn is tn for res in vop.results):
+                    defined.add(tn)
         uses[block], defs[block] = used, defined
         following = [
             component.ir2_blocks[succ]
@@ -2094,6 +2131,160 @@ def _value_tns_live_in(component, candidates) -> dict:
                 live[block] = incoming
                 changed = True
     return live
+
+
+def _pack_slot_tns(component, candidates, fixed, prefix: str) -> list[list]:
+    """Assign stack slots to ``fixed`` (one each) and ``candidates`` (packing
+    non-overlapping TNs of the same storage class and cleanup policy, following
+    SBCL ``life.lisp``/``pack.lisp``). Returns the list of TN groups per slot."""
+    import heapq
+
+    groups: list[list] = []
+    for tn in fixed:
+        tn.slot = f"{prefix}.{len(groups)}"
+        groups.append([tn])
+    if not candidates:
+        return groups
+    candidate_set = set(candidates)
+    owned_set = {tn for tn in candidates if _needs_cleanup_release(tn)}
+    blocks = component.blocks
+    ir2_blocks = component.ir2_blocks
+    block_start = {}
+    block_end = {}
+    normal_succs = {}
+    handlers = {}
+    live_use = {}
+    live_kill = {}
+    occ_gen = {}
+    occ_kill = {}
+    occ_mid = {}
+    first_step = {}
+    last_step = {}
+    step = 0
+    for block in blocks:
+        start_step = step
+        used, defined = set(), set()
+        gen, kill, mid = set(), set(), set()
+        for vop in block.vops:
+            touched = {
+                ref.tn
+                for ref in (*vop.args, *vop.results)
+                if ref.tn in candidate_set
+            }
+            for tn in touched:
+                if tn not in first_step:
+                    first_step[tn] = step
+                last_step[tn] = step
+                if tn not in defined and _vop_reads_tn(vop, tn):
+                    used.add(tn)
+                if any(ref.tn is tn for ref in vop.results):
+                    defined.add(tn)
+                if tn in owned_set:
+                    if _vop_clears_tn(vop, tn):
+                        gen.discard(tn)
+                        kill.add(tn)
+                    if (
+                        any(ref.tn is tn for ref in vop.results)
+                        and vop.info is not vops.UNBIND_LOCAL
+                    ):
+                        kill.discard(tn)
+                        gen.add(tn)
+                        mid.add(tn)
+            step += 1
+        if step == start_step:
+            step += 1
+        block_start[block] = start_step
+        block_end[block] = step - 1
+        live_use[block] = used
+        live_kill[block] = defined
+        occ_gen[block] = gen
+        occ_kill[block] = kill
+        occ_mid[block] = mid
+        normal_succs[block] = [
+            ir2_blocks[succ] for succ in block.block.succ if succ in ir2_blocks
+        ]
+        handlers[block] = ir2_blocks.get(block_exception_target(block.block))
+    live_in = {block: set(live_use[block]) for block in blocks}
+    live_out = {block: set() for block in blocks}
+    changed = True
+    while changed:
+        changed = False
+        for block in reversed(blocks):
+            out = set()
+            for succ in normal_succs[block]:
+                out |= live_in[succ]
+            handler = handlers[block]
+            if handler is not None:
+                out |= live_in[handler]
+            incoming = live_use[block] | (out - live_kill[block])
+            if out != live_out[block] or incoming != live_in[block]:
+                live_out[block] = out
+                live_in[block] = incoming
+                changed = True
+    occ_in = {block: set() for block in blocks}
+    occ_out = {block: set(occ_gen[block]) for block in blocks}
+    changed = True
+    while changed:
+        changed = False
+        for block in blocks:
+            outgoing = (occ_in[block] - occ_kill[block]) | occ_gen[block]
+            if outgoing != occ_out[block]:
+                occ_out[block] = outgoing
+                changed = True
+            for succ in normal_succs[block]:
+                if not outgoing.issubset(occ_in[succ]):
+                    occ_in[succ] |= outgoing
+                    changed = True
+            handler = handlers[block]
+            if handler is not None:
+                into_handler = (occ_in[block] | occ_mid[block]) & live_in[handler]
+                if not into_handler.issubset(occ_in[handler]):
+                    occ_in[handler] |= into_handler
+                    changed = True
+    for block in blocks:
+        b_start = block_start[block]
+        b_end = block_end[block]
+        for tn in live_in[block] | occ_in[block]:
+            if tn not in first_step or b_start < first_step[tn]:
+                first_step[tn] = b_start
+            if tn not in last_step or b_start > last_step[tn]:
+                last_step[tn] = b_start
+        for tn in live_out[block] | occ_out[block]:
+            if tn not in first_step or b_end < first_step[tn]:
+                first_step[tn] = b_end
+            if tn not in last_step or b_end > last_step[tn]:
+                last_step[tn] = b_end
+    by_kind: dict[tuple, list] = {}
+    for tn in candidates:
+        if tn not in first_step:
+            continue
+        key = (tn.sc, tn in owned_set)
+        by_kind.setdefault(key, []).append(tn)
+    for kind_tns in by_kind.values():
+        kind_tns.sort(key=lambda tn: (first_step[tn], last_step[tn]))
+        active_heap: list[tuple[int, int]] = []
+        free_groups: list[int] = []
+        for tn in kind_tns:
+            start = first_step[tn]
+            end = last_step[tn]
+            while active_heap and active_heap[0][0] < start:
+                _, freed_idx = heapq.heappop(active_heap)
+                free_groups.append(freed_idx)
+            if free_groups:
+                group_idx = free_groups.pop()
+                groups[group_idx].append(tn)
+            else:
+                group_idx = len(groups)
+                groups.append([tn])
+            tn.slot = f"{prefix}.{group_idx}"
+            heapq.heappush(active_heap, (end, group_idx))
+    for tn in candidates:
+        if tn not in first_step:
+            group_idx = len(groups)
+            groups.append([tn])
+            tn.slot = f"{prefix}.{group_idx}"
+    return groups
+
 
 
 class _HelperBuilder:
@@ -2285,7 +2476,6 @@ class FunctionGenerator:
                 # expression temporary stays in a slot, released when an
                 # exception transfers out of the expression.
                 self.value_tns.append(tn)
-                tn.slot = f"%value.{len(self.value_tns) - 1}"
             elif tn.leaf is None and not (
                 tn.name is not None and tn.name.startswith("$")
             ):
@@ -2298,13 +2488,33 @@ class FunctionGenerator:
                     self.expiring.setdefault(last, []).append(tn)
                 else:
                     self.value_tns.append(tn)
-                    tn.slot = f"%value.{len(self.value_tns) - 1}"
             else:
                 self.local_tns.append(tn)
-                tn.slot = f"%local.{len(self.local_tns) - 1}"
-                if tn.leaf is not None:
-                    self.local_slots[tn.leaf.name] = tn.slot
-                    self.local_tns_by_name[tn.leaf.name] = tn
+        packable_locals = [
+            tn
+            for tn in self.local_tns
+            if tn.leaf is not None
+            and tn.leaf.hidden
+            and not tn.leaf.expression_temporary
+            and tn.leaf not in self.environment.cells
+            and tn.leaf not in self.environment.copies
+        ]
+        packable_set = set(packable_locals)
+        fixed_locals = [tn for tn in self.local_tns if tn not in packable_set]
+        self.local_slot_groups = _pack_slot_tns(
+            component, packable_locals, fixed_locals, "%local"
+        )
+        self.value_slot_groups = _pack_slot_tns(
+            component, self.value_tns, (), "%value"
+        )
+        self.unwind_slot_groups = [
+            *self.local_slot_groups[len(fixed_locals) :],
+            *self.value_slot_groups,
+        ]
+        for tn in self.local_tns:
+            if tn.leaf is not None:
+                self.local_slots[tn.leaf.name] = tn.slot
+                self.local_tns_by_name[tn.leaf.name] = tn
         self.landings: dict[tuple[str, tuple[str, ...], bool, bool], str] = {}
         # Each landing's predecessor blocks and the source line failing there.
         self.landing_sites: dict[str, dict[str, tuple[int, str]]] = {}
@@ -2413,6 +2623,41 @@ class FunctionGenerator:
         release owned temporaries. ``activation`` is a stack slot of this call
         that tells ordinary propagation apart from distinct activations."""
         code = self.module.code_descriptor(self.lambda_)
+        owned_sets = list(
+            dict.fromkeys(
+                (base, owned)
+                for base, owned, _record, _explicit in self.landings
+                if owned
+            )
+        )
+        by_end: dict[tuple[str, int, str], list[tuple[str, ...]]] = {}
+        for base, owned in owned_sets:
+            by_end.setdefault((base, len(owned), owned[-1]), []).append(owned)
+        parent_prefix: dict[tuple[str, tuple[str, ...]], tuple[str, ...]] = {}
+        chain_labels: dict[tuple[str, tuple[str, ...]], str] = {}
+        for base, owned in owned_sets:
+            for index in range(len(owned) - 1, 0, -1):
+                candidates = by_end.get((base, index, owned[index - 1]))
+                if candidates is None:
+                    continue
+                prefix = owned[:index]
+                if prefix in candidates:
+                    parent_prefix[base, owned] = prefix
+                    if (base, prefix) not in chain_labels:
+                        chain_labels[base, prefix] = self.fresh("release")[1:]
+                    break
+
+        def emit_release_step(base: str, owned: tuple[str, ...]) -> None:
+            prefix = parent_prefix.get((base, owned))
+            if prefix is None:
+                for value in owned:
+                    self.release(value)
+                self.line(f"br label %{base}")
+            else:
+                for value in owned[len(prefix) :]:
+                    self.release(value)
+                self.line(f"br label %{chain_labels[base, prefix]}")
+
         for (
             base,
             owned,
@@ -2436,9 +2681,13 @@ class FunctionGenerator:
                     f"call void @mule_traceback_here(ptr {code}, i32 {line}, "
                     f"ptr %globals, ptr {activation}, i32 {int(explicit_raise)}, ptr {marker})"
                 )
-            for value in owned:
-                self.release(value)
-            self.line(f"br label %{base}")
+            if (base, owned) in chain_labels:
+                self.line(f"br label %{chain_labels[base, owned]}")
+            else:
+                emit_release_step(base, owned)
+        for (base, prefix), label in chain_labels.items():
+            self.lines.append(label + ":")
+            emit_release_step(base, prefix)
 
     def guard(self, failed: str, failed_value=None) -> str:
         """Branch to the failure path when ``failed``; returns the label of
@@ -2931,7 +3180,8 @@ class FunctionGenerator:
                 self.refine_type(fact, value)
         self.line("%return = alloca ptr")
         self.line("store ptr null, ptr %return")
-        for tn in [*self.local_tns, *self.value_tns]:
+        for group in (*self.local_slot_groups, *self.value_slot_groups):
+            tn = group[0]
             self.line(f"{tn.slot} = alloca {tn.sc.llvm_type}")
             self.line(f"store {tn.sc.llvm_type} {tn.sc.zero}, ptr {tn.slot}")
         for tn in self.range_tns:
@@ -2959,15 +3209,19 @@ class FunctionGenerator:
             if target is None:
                 continue
             if handler_live is None:
-                handler_live = _value_tns_live_in(self.component, set(self.value_tns))
+                unwind_tns = {
+                    tn for group in self.unwind_slot_groups for tn in group
+                }
+                handler_live = _value_tns_live_in(self.component, unwind_tns)
             label = self.component.ir2_blocks[target].label
             self.lines.append("unwind." + label + ":")
             # Values the handler still uses were computed before its region
             # was entered, like the stack below an SBCL catch block; only the
             # temporaries the transfer abandons are released.
             live = handler_live[self.component.ir2_blocks[target]]
-            for tn in self.value_tns:
-                if tn.sc not in OBJECT or tn in live:
+            for group in self.unwind_slot_groups:
+                tn = group[0]
+                if tn.sc not in OBJECT or any(member in live for member in group):
                     continue
                 value = self.operation(f"load ptr, ptr {tn.slot}")
                 self.line(f"store ptr null, ptr {tn.slot}")
@@ -2979,16 +3233,23 @@ class FunctionGenerator:
         self.lines.append("error:")
         self.line("br label %cleanup")
         self.lines.append("cleanup:")
-        for tn in [*self.local_tns, *self.value_tns]:
-            if tn.sc is DESCRIPTOR:
-                fact = tn.type or UNKNOWN
-                if fact.is_fixnum or fact.is_immortal:
-                    continue
-                loaded = self.operation(f"load ptr, ptr {tn.slot}")
-                if len(self.component.blocks) > 8:
-                    self.line(f"call void @mule_release(ptr {loaded})")
-                else:
-                    self.release(loaded)
+        cleanup_groups = [
+            group
+            for group in (*self.local_slot_groups, *self.value_slot_groups)
+            if _needs_cleanup_release(group[0])
+        ]
+        call_release = (
+            len(self.component.blocks) > 8
+            or len(cleanup_groups) > 8
+            or len(self.lines) > 250
+        )
+        for group in cleanup_groups:
+            tn = group[0]
+            loaded = self.operation(f"load ptr, ptr {tn.slot}")
+            if call_release:
+                self.line(f"call void @mule_release(ptr {loaded})")
+            else:
+                self.release(loaded)
         self.line("call void @mule_frame_pop()")
         value = self.operation("load ptr, ptr %return")
         self.line(f"ret ptr {value}")
@@ -3044,7 +3305,8 @@ class FunctionGenerator:
         self.line(f"%return = alloca {returned.llvm_type}")
         self.line(f"store {returned.llvm_type} {returned.zero}, ptr %return")
         self.line("%call.error = alloca i1")
-        for tn in [*self.local_tns, *self.value_tns]:
+        for group in (*self.local_slot_groups, *self.value_slot_groups):
+            tn = group[0]
             self.line(f"{tn.slot} = alloca {tn.sc.llvm_type}")
             if tn.sc in OBJECT:
                 self.line(f"store ptr null, ptr {tn.slot}")

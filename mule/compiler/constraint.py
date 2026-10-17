@@ -593,11 +593,6 @@ class _GraphScan(NodeVisitor, LeafVisitor):
         self.call_nodes: list[tuple[object, Combination]] = []
         self.block = None
 
-    def reset(self) -> None:
-        self.global_names.clear()
-        self.call_nodes.clear()
-        self.block = None
-
     def visit_Ref(self, node):
         node.leaf.accept(self)
 
@@ -612,9 +607,6 @@ class _GraphScan(NodeVisitor, LeafVisitor):
             self.call_nodes.append((self.block, node))
 
 
-_GRAPH_SCAN = _GraphScan()
-
-
 def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
     blocks = tuple(linked(lambda_.component, lambda_, "component").blocks())
     block_nodes = {block: tuple(block.nodes()) for block in blocks}
@@ -623,8 +615,7 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
     successors = {block: tuple(_successors(block, handlers[block])) for block in blocks}
     predecessors_sets = defaultdict(set)
     consumers = {}
-    scan = _GRAPH_SCAN
-    scan.reset()
+    scan = _GraphScan()
     for block in blocks:
         scan.block = block
         for target in successors[block]:
@@ -640,7 +631,6 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
     headers = _loop_headers(entry, successors)
     global_names = tuple(scan.global_names)
     call_nodes = tuple(scan.call_nodes)
-    scan.reset()
     indirect = tuple(var for var in lambda_.locals if var.indirect)
     volatile_keys = (
         *((_GLOBAL, name) for name in global_names),
