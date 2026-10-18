@@ -1435,10 +1435,28 @@ pub unsafe fn compare(op: i32, left: Value, right: Value) -> Value {
                     let matched = match op {
                         0 => std::ptr::eq(left, right) || a == b,
                         1 => !std::ptr::eq(left, right) && a != b,
-                        2 => a < b,
-                        3 => a <= b,
-                        4 => a > b,
-                        _ => a >= b,
+                        _ => {
+                            if let Some(table) = LATIN1_CHARACTERS.get() {
+                                let base = table.as_ptr() as usize;
+                                let span = std::mem::size_of::<[ImmortalObject; 256]>();
+                                let l = (left as usize).wrapping_sub(base);
+                                let r = (right as usize).wrapping_sub(base);
+                                if l < span && r < span {
+                                    return bool_value(match op {
+                                        2 => l < r,
+                                        3 => l <= r,
+                                        4 => l > r,
+                                        _ => l >= r,
+                                    });
+                                }
+                            }
+                            match op {
+                                2 => a < b,
+                                3 => a <= b,
+                                4 => a > b,
+                                _ => a >= b,
+                            }
+                        }
                     };
                     return bool_value(matched);
                 }
@@ -2357,6 +2375,20 @@ pub unsafe extern "C" fn mule_text_codepoint(value: Value, index: Value) -> Valu
         text_position(value, index).map_or(std::ptr::null_mut(), |(text, index)| {
             small(i64::from(text.get(index).expect("index was checked")))
         })
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_codepoint_at(value: Value, index: i64) -> Value {
+    unsafe {
+        let Some(text) = text_storage(value) else {
+            return std::ptr::null_mut();
+        };
+        if let Some(code) = usize::try_from(index).ok().and_then(|idx| text.get(idx)) {
+            small(i64::from(code))
+        } else {
+            error("IndexError", "text storage index out of range");
+            std::ptr::null_mut()
+        }
     }
 }
 /// The value of global `name` in `globals`, falling back to the builtins,

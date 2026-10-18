@@ -1304,28 +1304,74 @@ class TextStorage:
         if not _text_storage(sub):
             _require_text(sub, "find() argument 1 must be str")
         length = _text_length(self)
-        return find_in(self, sub, _start_bound(length, start), _end_bound(length, end))
+        if start is None:
+            start = 0
+        else:
+            if _index_method(start) is not None:
+                start = _index(start)
+            else:
+                start = _integer_storage(start)
+            if start < 0:
+                start += length
+                if start < 0:
+                    start = 0
+            elif start > length:
+                start = length + 1
+        if end is None:
+            end = length
+        else:
+            if _index_method(end) is not None:
+                end = _index(end)
+            else:
+                end = _integer_storage(end)
+            if end > length:
+                end = length
+            elif end < 0:
+                end += length
+                if end < 0:
+                    end = 0
+        return find_in(self, sub, start, end)
 
     def rfind(self, sub, start=None, end=None, /):
         if not _text_storage(sub):
             _require_text(sub, "rfind() argument 1 must be str")
         length = _text_length(self)
-        return rfind_in(self, sub, _start_bound(length, start), _end_bound(length, end))
+        if start is None:
+            start = 0
+        else:
+            if _index_method(start) is not None:
+                start = _index(start)
+            else:
+                start = _integer_storage(start)
+            if start < 0:
+                start += length
+                if start < 0:
+                    start = 0
+            elif start > length:
+                start = length + 1
+        if end is None:
+            end = length
+        else:
+            if _index_method(end) is not None:
+                end = _index(end)
+            else:
+                end = _integer_storage(end)
+            if end > length:
+                end = length
+            elif end < 0:
+                end += length
+                if end < 0:
+                    end = 0
+        return rfind_in(self, sub, start, end)
 
     def index(self, sub, start=None, end=None, /):
-        if not _text_storage(sub):
-            _require_text(sub, "index() argument 1 must be str")
-        length = _text_length(self)
-        result = find_in(self, sub, _start_bound(length, start), _end_bound(length, end))
+        result = self.find(sub, start, end)
         if result < 0:
             raise ValueError("substring not found")
         return result
 
     def rindex(self, sub, start=None, end=None, /):
-        if not _text_storage(sub):
-            _require_text(sub, "rindex() argument 1 must be str")
-        length = _text_length(self)
-        result = rfind_in(self, sub, _start_bound(length, start), _end_bound(length, end))
+        result = self.rfind(sub, start, end)
         if result < 0:
             raise ValueError("substring not found")
         return result

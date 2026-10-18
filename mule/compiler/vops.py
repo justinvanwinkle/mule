@@ -1355,6 +1355,13 @@ def text_access(function):
             return gen.operation(f"call ptr @mule.fast.integer_storage(ptr {values[0]})")
         if function == "mule_text_storage" and arg_type.fits_text(arg_type):
             return "@mule.true"
+        if function == "mule_text_codepoint" and len(vop.args) == 2:
+            index_type = vop.args[1].tn.type or UNKNOWN
+            if index_type.is_fixnum and (index_type.minimum or 0) >= 0:
+                index = gen.decode(values[1])
+                return gen.operation(
+                    f"call ptr @mule_text_codepoint_at(ptr {values[0]}, i64 {index})"
+                )
         operands = ", ".join(f"ptr {value}" for value in values)
         return gen.operation(f"call ptr @{function}({operands})")
 
