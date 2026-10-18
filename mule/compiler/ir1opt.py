@@ -38,6 +38,7 @@ from .node import (
     CtranKind,
     Exit,
     If,
+    KnownFunction,
     LeafVisitor,
     NodeVisitor,
     Ref,
@@ -139,13 +140,15 @@ class _RetargetKnownRef(NodeVisitor):
     def visit_Ref(self, node: Ref):
         if node in node.leaf.refs:
             node.leaf.refs.remove(node)
-        node.leaf = self.info
-        self.info.refs.append(node)
+        leaf = KnownFunction(self.info)
+        node.leaf = leaf
+        leaf.refs.append(node)
 
 
 def _optimize_getslice(node: Combination) -> bool:
-    if len(node.args) != 2:
+    if len(node.args) != 2 or len(node.fun.uses) != 1:
         return False
+    fun_ref = node.fun.uses[0]
     slice_lvar = node.args[1]
     if len(slice_lvar.uses) != 1:
         return False
@@ -153,7 +156,9 @@ def _optimize_getslice(node: Combination) -> bool:
     if (
         slice_node is None
         or slice_node.prev is None
-        or slice_node.next is not node.prev
+        or fun_ref.prev is None
+        or fun_ref.next is not node.prev
+        or slice_node.next is not fun_ref.prev
     ):
         return False
     start_lvar, stop_lvar, step_lvar = slice_node.args
@@ -161,8 +166,7 @@ def _optimize_getslice(node: Combination) -> bool:
         arg.dest = node
     node.args = [node.args[0], start_lvar, stop_lvar, step_lvar]
     node.fun_info = fndb.GETSLICE
-    if len(node.fun.uses) == 1:
-        node.fun.uses[0].accept(_RetargetKnownRef(fndb.GETSLICE))
+    fun_ref.accept(_RetargetKnownRef(fndb.GETSLICE))
     slice_node.args = []
     slice_node.lvar = None
     slice_lvar.uses.clear()

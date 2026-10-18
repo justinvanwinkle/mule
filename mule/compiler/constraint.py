@@ -44,6 +44,7 @@ from .ctype import (
     UNKNOWN,
     UNKNOWN_UNBOUND,
     IntegerType,
+    TextType,
     TupleType,
     ValueType,
 )
@@ -192,6 +193,14 @@ _SMALL_TUPLES = tuple(TupleType(i) for i in range(16))
 _SMALL_TUPLE_FACTS = tuple(Fact(vt) for vt in _SMALL_TUPLES)
 _UNBOUNDED_TUPLE = TupleType(None)
 _UNBOUNDED_TUPLE_FACT = Fact(_UNBOUNDED_TUPLE)
+_INTERNED_TEXTS = {
+    "": TextType(""),
+    **{chr(code): TextType(chr(code)) for code in range(256)},
+}
+_INTERNED_TEXT_FACTS = {s: Fact(vt) for s, vt in _INTERNED_TEXTS.items()}
+_CANONICAL_FACTS.update(
+    {id(fact.type): fact for fact in _INTERNED_TEXT_FACTS.values()}
+)
 
 
 def _tuple_fact(arity: int | None) -> Fact:
@@ -221,7 +230,7 @@ class _LiteralFacts(ast.Visitor):
         return NONE_TYPE
 
     def visit_TextLiteral(self, node):
-        return TEXT_TYPE
+        return _INTERNED_TEXTS.get(node.value, TEXT_TYPE)
 
     def visit_BytesLiteral(self, node):
         return BYTES_TYPE
@@ -380,14 +389,16 @@ class _Propagation(NodeVisitor, LeafVisitor):
     def visit_Combination(self, node: Combination):
         if node.kind in (CallKind.FULL, CallKind.GUARDED):
             info = linked(node.info, node, "info")
-            fact = _fact(
-                self.walk.resolve_call(
-                    self.fact_of(node.fun),
-                    tuple(self.type_of(arg) for arg in node.args),
-                    info.location,
-                    info.keywords,
-                )
+            arg_types = tuple(self.type_of(arg) for arg in node.args)
+            resolved = self.walk.resolve_call(
+                self.fact_of(node.fun),
+                arg_types,
+                info.location,
+                info.keywords,
             )
+            if resolved is UNKNOWN and not info.keywords:
+                resolved = self.walk.builtin_return_type(node.fun, len(arg_types))
+            fact = _fact(resolved)
             self.invalidate()
             return fact
         return self.derive_known(node)
@@ -487,7 +498,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 self.type_of(arg).may_run_user_code for arg in args[1:]
             ):
                 self.invalidate()
-            if receiver_type is TEXT_TYPE:
+            if receiver_type.fits_text(TEXT_TYPE):
                 return TEXT_FACT
             if receiver_type is BYTES_TYPE:
                 return BYTES_FACT
@@ -680,6 +691,25 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
     )
 
 
+class _GlobalCalleeName(NodeVisitor, LeafVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_GlobalVar(self, leaf):
+        return leaf.name
+
+
+_GLOBAL_CALLEE_NAME = _GlobalCalleeName()
+_LENGTH_TYPE = IntegerType(0, (1 << 60) - 1)
+_CODEPOINT_TYPE = IntegerType(0, 0x10FFFF)
+
+
 class _Walk:
     """One propagation over a lambda under given parameter facts."""
 
@@ -693,11 +723,13 @@ class _Walk:
         *,
         graph: LambdaGraph | None = None,
         proven_globals: frozenset[str] = frozenset(),
+        rebound_globals: frozenset[str] = frozenset(),
     ):
         self.lambda_ = lambda_
         self.global_targets = global_targets
         self.resolve_call = resolve_call
         self.annotations = annotations
+        self.rebound_globals = rebound_globals
         self.facts: dict[object, Fact] = {}
         if graph is None:
             graph = build_lambda_graph(lambda_)
@@ -750,6 +782,42 @@ class _Walk:
             },
         }
         self.initial.update(invalidated_globals)
+
+    def builtin_return_type(self, fun_lvar, arity: int) -> ValueType:
+        if self.lambda_.policy.safety >= 3 or self.lambda_.name.startswith(
+            (
+                "mule_sequences_",
+                "mule_format_",
+                "mule_arguments_",
+                "mule_native_class_",
+                "mule_print_",
+            )
+        ):
+            return UNKNOWN
+        name = fun_lvar.use().accept(_GLOBAL_CALLEE_NAME)
+        if (
+            name is None
+            or name in self.rebound_globals
+            or name in self.global_targets
+        ):
+            return UNKNOWN
+        if name == "len" and arity == 1:
+            return _LENGTH_TYPE
+        if name == "int" and arity <= 2:
+            return INTEGER
+        if name == "bool" and arity <= 1:
+            return BOOLEAN
+        if name == "float" and arity <= 1:
+            return FLOAT
+        if name in ("str", "repr", "ascii", "chr", "hex", "oct", "bin") and arity <= 1:
+            return TEXT_TYPE
+        if name == "ord" and arity == 1:
+            return _CODEPOINT_TYPE
+        if name == "list" and arity <= 1:
+            return LIST_TYPE
+        if name == "tuple" and arity <= 1:
+            return _UNBOUNDED_TUPLE
+        return UNKNOWN
 
     def invalidate_globals(self, state):
         """Forget facts that user code may change."""
@@ -1029,6 +1097,7 @@ def propagate(
     *,
     graph: LambdaGraph | None = None,
     proven_globals: frozenset[str] = frozenset(),
+    rebound_globals: frozenset[str] = frozenset(),
 ) -> Body:
     """Propagate facts through ``lambda_`` from the given parameter types.
 
@@ -1046,6 +1115,7 @@ def propagate(
         annotations,
         graph=graph,
         proven_globals=proven_globals,
+        rebound_globals=rebound_globals,
     ).run()
 
 

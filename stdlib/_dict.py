@@ -350,7 +350,7 @@ class dict(_Table):
         return iter(keys)
 
     def __eq__(self, other):
-        if _raised_class(other) is None or not _is_dict(other):
+        if not _is_dict(other):
             return False
         if self._used != other._used:
             return False
@@ -432,13 +432,12 @@ class dict(_Table):
         if _is_dict(other):
             self._update_table(other)
             return
-        owner = _raised_class(other)
+        owner = _type_of(other)
         keys = None
-        if owner is not None:
-            missing = _binding_missing()
-            method = class_lookup_default(owner, "keys", missing)
-            if method is not missing:
-                keys = bind_instance_attribute(method, other, owner)
+        missing = _binding_missing()
+        method = class_lookup_default(owner, "keys", missing)
+        if method is not missing:
+            keys = bind_instance_attribute(method, other, owner)
         if keys is not None:
             for key in keys():
                 self._insert(key, other[key])
@@ -465,7 +464,7 @@ class dict(_Table):
 
 
 def _is_dict(value):
-    owner = _raised_class(value)
+    owner = _type_of(value)
     while owner is not None:
         if owner is dict:
             return True
@@ -742,7 +741,7 @@ class _SetBase(_Table):
 
 
 def _is_set(value):
-    owner = _raised_class(value)
+    owner = _type_of(value)
     while owner is not None:
         if owner is set or owner is frozenset:
             return True

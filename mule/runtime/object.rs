@@ -372,8 +372,13 @@ impl Data {
                     || !attributes.is_null()
                     || values.iter().any(|&v| !v.is_null() && !is_fixnum(v) && unsafe { (*v).tracked })
             }
+            Self::BoundMethod { receiver, .. } => {
+                !receiver.is_null()
+                    && !is_fixnum(*receiver)
+                    && unsafe { (**receiver).tracked }
+            }
             Self::List(..) | Self::Namespace(_) | Self::Class(_) | Self::Instance { .. }
-            | Self::NativeInstance { .. } | Self::BoundMethod { .. } | Self::WeakHandle { .. } | Self::BufferLease { .. }
+            | Self::NativeInstance { .. } | Self::WeakHandle { .. } | Self::BufferLease { .. }
             | Self::Traceback { .. } | Self::Frame { .. } | Self::Function { .. } => true,
             Self::None | Self::Bool(_) | Self::DescriptorLease(_) | Self::ForeignPointerVector { .. } | Self::ForeignCString { .. }
             | Self::ArgumentView { .. } | Self::ReceiverArgs { .. } | Self::KeywordArgs { .. }
@@ -509,6 +514,20 @@ pub unsafe fn fixnum(value: Value) -> i64 {
     (value as isize >> 1) as i64
 }
 pub unsafe fn new_value(data: Data) -> Value {
+    if let Data::Text(ref text, ty, attrs) = data {
+        if ty.is_null() && attrs.is_null() {
+            if text.is_empty() {
+                return empty_text();
+            }
+            if text.len() == 1 {
+                if let Some(code) = text.get(0) {
+                    if code <= 0xff {
+                        return latin1_character(code as u8);
+                    }
+                }
+            }
+        }
+    }
     let tracked = data.cycle_candidate();
     let value = Box::into_raw(Box::new(Object {
         references: std::sync::atomic::AtomicUsize::new(1),

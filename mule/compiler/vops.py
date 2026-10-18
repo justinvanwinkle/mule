@@ -708,17 +708,35 @@ def _define_compare(operator, opcode):
             gen.check_pointer(value)
             gen.refine(result.tn, value)
             return
-        if (
-            opcode < 6
-            and (left.tn.type or UNKNOWN).is_fixnum
-            and (right.tn.type or UNKNOWN).is_fixnum
-        ):
+        left_type = left.tn.type or UNKNOWN
+        right_type = right.tn.type or UNKNOWN
+        if opcode < 6 and left_type.is_fixnum and right_type.is_fixnum:
             a, b = gen.decode(lhs), gen.decode(rhs)
             predicate = ("eq", "ne", "slt", "sle", "sgt", "sge")[opcode]
             condition = gen.operation(f"icmp {predicate} i64 {a}, {b}")
             boolean = gen.operation(
                 f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
             )
+            gen.native_result(result, boolean, (lhs, rhs))
+            return
+        if (
+            opcode < 6
+            and left_type.fits_text(left_type)
+            and right_type.fits_text(right_type)
+        ):
+            if opcode in (0, 1) and (
+                left_type.interned_text() is not None
+                or right_type.interned_text() is not None
+            ):
+                predicate = "eq" if opcode == 0 else "ne"
+                condition = gen.operation(f"icmp {predicate} ptr {lhs}, {rhs}")
+                boolean = gen.operation(
+                    f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
+                )
+            else:
+                boolean = gen.operation(
+                    f"call ptr @mule_compare(i32 {opcode}, ptr {lhs}, ptr {rhs})"
+                )
             gen.native_result(result, boolean, (lhs, rhs))
             return
         operation = (
@@ -1321,7 +1339,8 @@ def primitive(name, info, emit, *, consumes_arguments=False):
         if not consumes_arguments:
             for value in values:
                 gen.release(value)
-        gen.check_pointer(result)
+        if not result.startswith("@mule."):
+            gen.check_pointer(result)
         gen.refine(vop.results[0].tn, result)
 
     return generator
@@ -1329,6 +1348,13 @@ def primitive(name, info, emit, *, consumes_arguments=False):
 
 def text_access(function):
     def emit(gen, vop, values):
+        arg_type = (vop.args[0].tn.type or UNKNOWN) if vop.args else UNKNOWN
+        if function == "mule_integer_storage":
+            if arg_type.is_fixnum:
+                return values[0]
+            return gen.operation(f"call ptr @mule.fast.integer_storage(ptr {values[0]})")
+        if function == "mule_text_storage" and arg_type.fits_text(arg_type):
+            return "@mule.true"
         operands = ", ".join(f"ptr {value}" for value in values)
         return gen.operation(f"call ptr @{function}({operands})")
 
@@ -1343,6 +1369,12 @@ def lookup_method(name, *, include_object_defaults=False):
     )
 
     def emit(gen, vop, values):
+        if name == "__index__":
+            if (vop.args[0].tn.type or UNKNOWN).is_fixnum:
+                return "@mule.none"
+            return gen.operation(
+                f"call ptr @mule.fast.index_method(ptr {values[0]}, ptr {gen.module.text(name)})"
+            )
         return gen.operation(
             f"call ptr @{entry}(ptr {values[0]}, ptr {gen.module.text(name)})"
         )
@@ -1784,6 +1816,32 @@ free:
   ret void
 done:
   ret void
+}
+
+define internal ptr @mule.fast.index_method(ptr %value, ptr %name) alwaysinline {
+entry:
+  %bits = ptrtoint ptr %value to i64
+  %tag = and i64 %bits, 1
+  %integer = icmp ne i64 %tag, 0
+  br i1 %integer, label %fixnum, label %slow
+fixnum:
+  ret ptr @mule.none
+slow:
+  %result = call ptr @mule_lookup_special(ptr %value, ptr %name)
+  ret ptr %result
+}
+
+define internal ptr @mule.fast.integer_storage(ptr %value) alwaysinline {
+entry:
+  %bits = ptrtoint ptr %value to i64
+  %tag = and i64 %bits, 1
+  %integer = icmp ne i64 %tag, 0
+  br i1 %integer, label %fixnum, label %slow
+fixnum:
+  ret ptr %value
+slow:
+  %result = call ptr @mule_integer_storage(ptr %value)
+  ret ptr %result
 }"""
 
 

@@ -43,13 +43,14 @@ from .ctype import (
     BOTTOM,
     FIXNUM_MAX,
     FIXNUM_MIN,
+    TEXT_TYPE,
     UNBOUND,
     UNKNOWN,
     IntegerType,
     ValueType,
 )
 from .ir1util import made_function
-from .node import CallKind, FunctionalKind, Lambda, LeafVisitor, NodeVisitor, Set
+from .node import CallKind, FunctionalKind, Lambda, LeafVisitor, NodeVisitor, Set, linked
 
 _PROTOCOL_PREFIXES = (
     "mule_sequences_",
@@ -81,9 +82,67 @@ _NON_INTEGER_FIRST_OPERAND = frozenset(
         "%iterate",
         "%for_next",
         "%unpack",
+        "_text_length",
+        "_text_codepoint",
+        "_text_character",
+        "_text_slice",
+        "_text_join",
+        "_storage_length",
+        "_storage_read",
+        "_storage_write",
+        "_storage_append",
+        "_storage_insert",
+        "_storage_delete",
+        "_storage_tuple",
     }
 )
 _INDEX_SECOND_OPERAND = frozenset({"%getitem", "%setitem", "%delitem"})
+_TEXT_METHODS = frozenset(
+    {
+        "find",
+        "rfind",
+        "split",
+        "rsplit",
+        "splitlines",
+        "strip",
+        "lstrip",
+        "rstrip",
+        "startswith",
+        "endswith",
+        "replace",
+        "lower",
+        "upper",
+        "join",
+        "partition",
+        "rpartition",
+        "encode",
+        "isalpha",
+        "isdigit",
+        "isdecimal",
+        "isnumeric",
+        "isalnum",
+        "isspace",
+        "islower",
+        "isupper",
+        "istitle",
+        "isidentifier",
+        "isprintable",
+        "isascii",
+        "casefold",
+        "capitalize",
+        "title",
+        "swapcase",
+        "center",
+        "ljust",
+        "rjust",
+        "zfill",
+        "expandtabs",
+        "removeprefix",
+        "removesuffix",
+        "format",
+        "format_map",
+    }
+)
 
 
 class _ParameterUse(NodeVisitor, LeafVisitor):
@@ -94,16 +153,31 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         self.queue = [parameter]
         self.numeric = False
         self.disqualified = False
+        self.text = False
+        self.text_disqualified = False
         self.current = None
 
-    def analyze(self) -> bool:
-        while self.queue and not self.disqualified:
+    def analyze(self, contract, full: ValueType) -> ValueType:
+        while self.queue and not (self.disqualified and self.text_disqualified):
             var = self.queue.pop()
             for ref in var.refs:
                 if ref.dest is not None and ref.lvar is not None:
                     self.current = ref.lvar
                     ref.dest.accept(self)
-        return self.numeric and not self.disqualified
+        if (
+            self.numeric
+            and not self.disqualified
+            and (contract is None or not contract.contradicts(full))
+        ):
+            return full
+        if (
+            self.text
+            and not self.text_disqualified
+            and not self.numeric
+            and (contract is None or not contract.contradicts(TEXT_TYPE))
+        ):
+            return TEXT_TYPE
+        return UNKNOWN
 
     def visit_Set(self, node):
         if node.value is self.current:
@@ -118,16 +192,29 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         lvar = self.current
         if node.fun is lvar:
             self.disqualified = True
+            self.text_disqualified = True
             return
         info = node.fun_info
         if info is None:
             return
         name = info.name
+        if name == "%resolve_method" and node.args and node.args[0] is lvar:
+            self.disqualified = True
+            if linked(node.info, node, "info").name in _TEXT_METHODS:
+                self.text = True
+            else:
+                self.text_disqualified = True
+            return
+        if node.args and node.args[0] is lvar and name in {"%setitem", "%delitem"}:
+            self.disqualified = True
+            self.text_disqualified = True
+            return
         if node.args and node.args[0] is lvar and name in _NON_INTEGER_FIRST_OPERAND:
             self.disqualified = True
             return
         if name == "%resolve_super_method" and lvar in node.args:
             self.disqualified = True
+            self.text_disqualified = True
             return
         if (
             len(node.args) > 1
@@ -136,11 +223,21 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         ):
             self.disqualified = True
             return
-        if name in _NUMERIC_KNOWN or (
+        if (
             len(node.args) > 1
             and node.args[1] is lvar
             and name in _INDEX_SECOND_OPERAND
         ):
+            self.numeric = True
+            self.text_disqualified = True
+            return
+        if (
+            node.args
+            and node.args[0] is lvar
+            and name in {"%getitem", "%getslice"}
+        ):
+            return
+        if name in _NUMERIC_KNOWN:
             self.numeric = True
 
 
@@ -284,6 +381,9 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
         )
         for ns, targets in global_targets.items()
     }
+    rebound_by_namespace: dict[str, frozenset[str]] = {
+        ns: frozenset(counts) for ns, counts in global_counts.items()
+    }
     captured_vars: list = []
     seen_captured: set = set()
     for lambda_ in lambdas:
@@ -306,24 +406,26 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
         parameters[lambda_, "general"] = (UNKNOWN,) * len(lambda_.vars)
         signature = lambda_.signature
         if lambda_.vars and not signature.variadic:
-            usable = tuple(
-                (contract is None or not contract.contradicts(full))
-                and _ParameterUse(var).analyze()
+            spec_params = tuple(
+                _ParameterUse(var).analyze(contract, full)
                 for var, contract in zip(
                     lambda_.vars, signature.annotations, strict=True
                 )
             )
-            if all(usable):
-                parameters[lambda_, "fixnum"] = (full,) * len(lambda_.vars)
+            if all(param is not UNKNOWN for param in spec_params):
+                parameters[lambda_, "fixnum"] = spec_params
             else:
-                fixnum_params = tuple(
-                    full if is_usable and contract is not None else UNKNOWN
-                    for is_usable, contract in zip(
-                        usable, signature.annotations, strict=True
+                partial_params = tuple(
+                    param
+                    if param is not UNKNOWN
+                    and (contract is not None or lambda_.vars[0].name != "self")
+                    else UNKNOWN
+                    for param, contract in zip(
+                        spec_params, signature.annotations, strict=True
                     )
                 )
-                if any(param is full for param in fixnum_params):
-                    parameters[lambda_, "fixnum"] = fixnum_params
+                if any(param is not UNKNOWN for param in partial_params):
+                    parameters[lambda_, "fixnum"] = partial_params
     summaries: dict[tuple[Lambda, str], ValueType] = dict.fromkeys(parameters, BOTTOM)
     return_changes = defaultdict(int)
     argument_changes = defaultdict(int)
@@ -399,7 +501,16 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     annotations.check(
                         contract, actual, location, ("local", target, var.name)
                     )
-            for context in ("observed", "fixnum", "general"):
+            obs = context_parameters.get((target, "observed"))
+            fix = context_parameters.get((target, "fixnum"))
+            order_contexts = (
+                ("fixnum", "observed", "general")
+                if obs is not None
+                and fix is not None
+                and not all(a.fits(b) for a, b in zip(obs, fix, strict=True))
+                else ("observed", "fixnum", "general")
+            )
+            for context in order_contexts:
                 key = target, context
                 expected = context_parameters.get(key)
                 if expected is not None and all(
@@ -439,6 +550,9 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     annotations,
                     graph=graphs[lambda_],
                     proven_globals=proven_globals,
+                    rebound_globals=rebound_by_namespace.get(
+                        lambda_.namespace, frozenset()
+                    ),
                 )
                 bodies[key] = body
                 inputs[key] = (
@@ -502,7 +616,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     continue
                 domains = tuple(
                     domain
-                    if (domain := type_.fixnum_domain()) is not None
+                    if (domain := type_.dispatch_domain()) is not None
                     and (contract is None or not contract.contradicts(domain))
                     else UNKNOWN
                     for type_, contract in zip(
@@ -528,7 +642,8 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     argument_changes[key] += 1
                     if argument_changes[key] > 3:
                         seed = tuple(
-                            widen_fact(Fact(a), Fact(b)).type.fixnum_domain() or UNKNOWN
+                            widen_fact(Fact(a), Fact(b)).type.dispatch_domain()
+                            or UNKNOWN
                             for a, b in zip(old, seed, strict=True)
                         )
             if old != seed:
@@ -570,14 +685,30 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             return_type=summaries[lambda_, "general"].normalized_bottom(),
         )
         entries = []
-        for identifier in ("observed", "fixnum"):
+        obs_params = parameters.get((lambda_, "observed"))
+        fix_params = parameters.get((lambda_, "fixnum"))
+        variant_order = (
+            ("fixnum", "observed")
+            if obs_params is not None
+            and fix_params is not None
+            and not all(a.fits(b) for a, b in zip(obs_params, fix_params, strict=True))
+            else ("observed", "fixnum")
+        )
+        for identifier in variant_order:
             key = lambda_, identifier
             if key not in parameters:
                 continue
             body = bodies[key]
             candidate_types = body.types()
+            ret_type = summaries[key].normalized_bottom()
             if identifier == "fixnum" and not _specializes_body(
                 graph, facts.types, candidate_types
+            ):
+                continue
+            if (
+                identifier == "observed"
+                and not _specializes_body(graph, facts.types, candidate_types)
+                and ret_type == facts.return_type
             ):
                 continue
             if (
@@ -594,7 +725,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     parameters[key],
                     candidate_types,
                     body.targets(),
-                    summaries[key].normalized_bottom(),
+                    ret_type,
                 )
             )
         facts.variants = tuple(entries)

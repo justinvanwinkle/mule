@@ -595,12 +595,13 @@ def chr(value, /):
 
 
 def getitem(value, index):
-    if _raised_class(value) is dict:
+    cls = _type_of(value)
+    if cls is dict:
         entry = value._lookup(index)
         if entry >= 0:
             return _storage_read(value._values, entry)
         raise KeyError(index)
-    if _type_of(value) is list and is_slice(index):
+    if cls is list and is_slice(index):
         return _selected(value, index)
     method = _getitem_method(value)
     if method is None:
@@ -615,7 +616,7 @@ def getitem(value, index):
 
 
 def delitem(value, index):
-    if _raised_class(value) is dict:
+    if _type_of(value) is dict:
         dict.__delitem__(value, index)
         return
     method = _delitem_method(value)
@@ -1096,10 +1097,11 @@ def _list_set_slice(target, index, value):
 
 
 def setitem(value, index, item):
-    if _raised_class(value) is dict:
+    cls = _type_of(value)
+    if cls is dict:
         value._insert(index, item)
         return
-    if type_of(value) is list and is_slice(index):
+    if cls is list and is_slice(index):
         _list_set_slice(value, index, item)
         return
     method = _setitem_method(value)
@@ -2210,12 +2212,12 @@ def _optional_special(value, name):
 
 
 def _iterate(value, membership):
-    cls = _raised_class(value)
+    cls = _type_of(value)
     if cls is dict:
         return dict.__iter__(value)
     if cls is set or cls is frozenset:
         return set.__iter__(value)
-    if cls is None and (_type_of(value) is list or _type_of(value) is tuple):
+    if cls is list or cls is tuple:
         iterator = _allocate_instance(StorageIterator)
         iterator.sequence = value
         iterator.index = 0
@@ -2244,24 +2246,20 @@ def _iteration_error(value, membership):
 
 
 def contains(container, item):
-    cls = _raised_class(container)
-    if cls is dict or cls is set or cls is frozenset:
+    owner = _type_of(container)
+    if owner is dict or owner is set or owner is frozenset:
         return container._lookup(item) >= 0
-    if cls is None:
-        if _text_storage(container):
-            return TextStorage.__contains__(container, item)
-        owner = _type_of(container)
-        if owner is list or owner is tuple:
-            count = _storage_length(container)
-            index = 0
-            while index < count:
-                existing = _storage_read(container, index)
-                if existing is item or existing == item:
-                    return True
-                index += 1
-            return False
-    else:
-        owner = cls
+    if owner is str:
+        return TextStorage.__contains__(container, item)
+    if owner is list or owner is tuple:
+        count = _storage_length(container)
+        index = 0
+        while index < count:
+            existing = _storage_read(container, index)
+            if existing is item or existing == item:
+                return True
+            index += 1
+        return False
     missing = _binding_missing()
     method = _optional_special(container, "__contains__")
     if method is not missing:
@@ -2283,7 +2281,7 @@ def not_contains(container, item):
 
 
 def next_item(value):
-    cls = _raised_class(value)
+    cls = _type_of(value)
     if cls is StorageIterator:
         if value.exhausted:
             raise StopIteration

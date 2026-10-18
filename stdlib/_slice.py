@@ -45,7 +45,7 @@ def _bound(value):
 
 
 def is_slice(value):
-    return _raised_class(value) is slice
+    return _type_of(value) is slice
 
 
 def positions(bounds, length):

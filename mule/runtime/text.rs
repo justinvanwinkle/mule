@@ -137,6 +137,7 @@ impl Text {
         Self::from_codepoints(codes.into_iter()).map_err(|_| "text storage allocation failed")
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         match &self.kind {
             Kind::Latin1(values) => values.len(),
@@ -158,6 +159,7 @@ impl Text {
         }
     }
 
+    #[inline]
     pub fn as_latin1(&self) -> Option<&[u8]> {
         match &self.kind {
             Kind::Latin1(values) => Some(values),
@@ -165,6 +167,7 @@ impl Text {
         }
     }
 
+    #[inline]
     pub fn get(&self, index: usize) -> Option<u32> {
         match &self.kind {
             Kind::Latin1(values) => values.get(index).map(|code| u32::from(*code)),
@@ -329,9 +332,15 @@ impl Text {
 
 impl Ord for Text {
     /// Lexicographic codepoint order, as Python compares `str`.
+    #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         match (&self.kind, &other.kind) {
-            (Kind::Latin1(left), Kind::Latin1(right)) => left.cmp(right),
+            (Kind::Latin1(left), Kind::Latin1(right)) => {
+                if left.len() == 1 && right.len() == 1 {
+                    return left[0].cmp(&right[0]);
+                }
+                left.cmp(right)
+            }
             _ => self.codepoints().cmp(other.codepoints()),
         }
     }

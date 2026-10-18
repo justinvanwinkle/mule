@@ -99,3 +99,26 @@ except AttributeError as error:
     print(str(error))
 """,
     )
+
+
+def test_container_class_objects_are_not_treated_as_instances(tmp_path):
+    compare(
+        tmp_path,
+        """
+print(dict[str, int], set[int], frozenset[str], list[int], tuple[int, ...])
+print({} == dict, set() == set, frozenset() == frozenset)
+for target in (dict, set, frozenset):
+    try:
+        1 in target
+    except TypeError as error:
+        print(type(error).__name__)
+    try:
+        iter(target)
+    except TypeError as error:
+        print(type(error).__name__)
+try:
+    [1, 2][slice]
+except TypeError as error:
+    print(type(error).__name__)
+""",
+    )

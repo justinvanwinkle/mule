@@ -1232,27 +1232,24 @@ pub unsafe fn construct(class: Value, args: &[Value]) -> Value {
             instance
         } else {
             // `__new__` is an implicit static method receiving the class.
-            let mut arguments = Vec::with_capacity(args.len() + 1);
-            arguments.push(class);
-            arguments.extend_from_slice(args);
-            let callable = if attribute_kind(creator) == METHOD {
-                object::retain(creator)
+            let instance = if attribute_kind(creator) == METHOD {
+                object::call_with_receiver(creator, class, args)
             } else {
-                bind_class_attribute(creator, std::ptr::null_mut(), class)
+                let callable = bind_class_attribute(creator, std::ptr::null_mut(), class);
+                if callable.is_null() {
+                    return callable;
+                }
+                let result = object::call_with_receiver(callable, class, args);
+                object::release(callable);
+                result
             };
-            if callable.is_null() {
-                return callable;
-            }
-            let instance = object::call(callable, &arguments);
-            object::release(callable);
-            // Python initializes only instances of the class being called.
-            if instance.is_null() || !is_instance(instance, class) {
+            if instance.is_null() {
                 return instance;
             }
             instance
         };
         let initializer = hook(layout, Special::Init);
-        if !initializer.is_null() {
+        if !initializer.is_null() && is_instance(instance, class) {
             let result = call_attribute(initializer, instance, class, args);
             if result.is_null() {
                 object::release(instance);

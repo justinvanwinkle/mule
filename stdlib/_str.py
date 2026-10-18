@@ -45,12 +45,7 @@ def _index(value):
     method = _index_method(value)
     if method is not None:
         value = method()
-    try:
-        return _integer_storage(value)
-    except TypeError:
-        raise TypeError(
-            f"'{_type_name(value)}' object cannot be interpreted as an integer"
-        )
+    return _integer_storage(value)
 
 
 def _require_text(value, message):
@@ -64,7 +59,10 @@ def _start_bound(length, start):
     ``ADJUST_INDICES`` does; ``start`` may still exceed ``length``."""
     if start is None:
         return 0
-    start = _index(start)
+    if _index_method(start) is not None:
+        start = _index(start)
+    else:
+        start = _integer_storage(start)
     if start < 0:
         start += length
         if start < 0:
@@ -78,7 +76,10 @@ def _end_bound(length, end):
     """Clamp optional ``end`` like slice indices."""
     if end is None:
         return length
-    end = _index(end)
+    if _index_method(end) is not None:
+        end = _index(end)
+    else:
+        end = _integer_storage(end)
     if end > length:
         return length
     if end < 0:
@@ -99,6 +100,8 @@ def _matches_at(text, sub, position, size):
 
 def find_in(text, sub, start, end):
     """The first index of ``sub`` within clamped ``start:end``, or -1."""
+    if start < 0 or end < 0:
+        return -1
     size = _text_length(sub)
     if end - start < size:
         return -1
@@ -123,6 +126,8 @@ def find_in(text, sub, start, end):
 
 
 def rfind_in(text, sub, start, end):
+    if start < 0 or end < 0:
+        return -1
     size = _text_length(sub)
     if end - start < size:
         return -1
@@ -146,7 +151,8 @@ def rfind_in(text, sub, start, end):
 
 
 def _search(text, sub, start, end, method):
-    _require_text(sub, f"{method}() argument 1 must be str")
+    if not _text_storage(sub):
+        _require_text(sub, f"{method}() argument 1 must be str")
     length = _text_length(text)
     start = _start_bound(length, start)
     end = _end_bound(length, end)
@@ -1295,19 +1301,31 @@ class TextStorage:
         return encode(self, encoding, errors)
 
     def find(self, sub, start=None, end=None, /):
-        return _search(self, sub, start, end, "find")
+        if not _text_storage(sub):
+            _require_text(sub, "find() argument 1 must be str")
+        length = _text_length(self)
+        return find_in(self, sub, _start_bound(length, start), _end_bound(length, end))
 
     def rfind(self, sub, start=None, end=None, /):
-        return _search(self, sub, start, end, "rfind")
+        if not _text_storage(sub):
+            _require_text(sub, "rfind() argument 1 must be str")
+        length = _text_length(self)
+        return rfind_in(self, sub, _start_bound(length, start), _end_bound(length, end))
 
     def index(self, sub, start=None, end=None, /):
-        result = _search(self, sub, start, end, "index")
+        if not _text_storage(sub):
+            _require_text(sub, "index() argument 1 must be str")
+        length = _text_length(self)
+        result = find_in(self, sub, _start_bound(length, start), _end_bound(length, end))
         if result < 0:
             raise ValueError("substring not found")
         return result
 
     def rindex(self, sub, start=None, end=None, /):
-        result = _search(self, sub, start, end, "rindex")
+        if not _text_storage(sub):
+            _require_text(sub, "rindex() argument 1 must be str")
+        length = _text_length(self)
+        result = rfind_in(self, sub, _start_bound(length, start), _end_bound(length, end))
         if result < 0:
             raise ValueError("substring not found")
         return result

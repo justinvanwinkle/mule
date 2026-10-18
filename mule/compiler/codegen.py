@@ -2472,6 +2472,12 @@ class _ArgumentGuard(ValueTypeVisitor):
                 valid = operation(f"and i1 {valid}, {upper}")
         return valid
 
+    def visit_TextType(self, fact: ValueType) -> str:
+        if fact.literal is not None:
+            return self.visit_ValueType(fact)
+        matched = self.gen.operation(f"call ptr @mule_text_storage(ptr {self.value})")
+        return self.gen.operation(f"icmp eq ptr {matched}, @mule.true")
+
     def visit_NoneType(self, fact: ValueType) -> str:
         return self.gen.operation(f"icmp eq ptr {self.value}, @mule.none")
 
@@ -3244,10 +3250,7 @@ class FunctionGenerator:
                             supplied_sources, context.parameters, strict=True
                         )
                     ),
-                    sum(
-                        fact.maximum - fact.minimum if fact.is_fixnum else 2**64
-                        for fact in context.parameters
-                    ),
+                    sum(fact.dispatch_rank() for fact in context.parameters),
                 ),
             )
         steps: list[tuple[EntryContext | None, tuple[ValueType | None, ...]]] = []

@@ -77,6 +77,7 @@ from _mule_native import read_byte
 _convert_int = int
 _convert_float = float
 _convert_bool = bool
+_MISSING = _binding_missing()
 
 
 def _bytes_special(value):
@@ -1067,33 +1068,36 @@ class int(object):
         return numeric_negate(value) if value < 0 else value
     __slots__ = ()
 
-    def __new__(cls, *args):
-        if len(args) == 1 and cls is int:
-            source = args[0]
-            owner = _type_of(source)
-            if owner is int:
-                return source
-            if owner is str:
-                return _convert_int(source)
-        if args:
-            value = args[0]
+    def __new__(cls, x=_MISSING, base=_MISSING, /):
+        if base is _MISSING and cls is int and x is not _MISSING:
+            if _text_storage(x):
+                return _convert_int(x)
+            if _type_of(x) is int:
+                return x
+        if x is _MISSING:
+            value = 0
+        elif base is _MISSING:
             # Latin-1 preserves every byte so invalid input reaches the integer
             # parser as ValueError rather than failing UTF-8 decoding first.
-            if isinstance(value, bytes):
-                args = (bytes.decode(value, "latin-1"),) + args[1:]
-            elif isinstance(value, bytearray):
-                args = (bytearray.decode(value, "latin-1"),) + args[1:]
-        if len(args) == 1:
-            source = args[0]
-            owner = type_of(source)
-            missing = _binding_missing()
-            method = class_lookup_default(owner, "__int__", missing)
-            if method is not missing:
-                value = bind_instance_attribute(method, source, owner)()
-                if not is_instance(value, int):
-                    raise TypeError(f"__int__ returned non-int (type {type_of(value).__name__})")
-                args = (value,)
-        value = _convert_int(*args)
+            if isinstance(x, bytes):
+                x = bytes.decode(x, "latin-1")
+            elif isinstance(x, bytearray):
+                x = bytearray.decode(x, "latin-1")
+            else:
+                owner = type_of(x)
+                missing = _MISSING
+                method = class_lookup_default(owner, "__int__", missing)
+                if method is not missing:
+                    x = bind_instance_attribute(method, x, owner)()
+                    if not is_instance(x, int):
+                        raise TypeError(f"__int__ returned non-int (type {type_of(x).__name__})")
+            value = _convert_int(x)
+        else:
+            if isinstance(x, bytes):
+                x = bytes.decode(x, "latin-1")
+            elif isinstance(x, bytearray):
+                x = bytearray.decode(x, "latin-1")
+            value = _convert_int(x, base)
         if cls is not int and cls is not bool:
             return typed_value(value, cls)
         return value

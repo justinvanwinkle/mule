@@ -235,8 +235,17 @@ class ValueType:
     def exact_integer(self):
         return None
 
+    def interned_text(self) -> str | None:
+        return None
+
     def fixnum_domain(self):
         return None
+
+    def dispatch_domain(self):
+        return self.fixnum_domain()
+
+    def dispatch_rank(self) -> int:
+        return 2**64
 
     def getitem_type(self, index):
         return UNKNOWN
@@ -307,6 +316,9 @@ class ValueType:
     def fits_text(self, expected):
         return False
 
+    def fits_possible_text(self, expected):
+        return False
+
     def fits_bytes(self, expected):
         return False
 
@@ -355,6 +367,9 @@ class UnknownType(ValueType):
 
     def fits_possible_tuple(self, expected):
         return not self.may_be_unbound
+
+    def fits_possible_text(self, expected):
+        return not self.may_be_unbound and expected.literal is None
 
 
 @dataclass(frozen=True, slots=True)
@@ -564,6 +579,9 @@ class IntegerType(PrimitiveType):
             min(FIXNUM_MAX, self.maximum) if self.maximum is not None else FIXNUM_MAX
         )
         return IntegerType(minimum, maximum) if minimum <= maximum else None
+
+    def dispatch_rank(self) -> int:
+        return self.maximum - self.minimum if self.is_fixnum else 2**64
 
     def accepts(self, actual):
         return actual.fits_integer(self)
@@ -974,9 +992,34 @@ class NoneType(PrimitiveType):
 
 @dataclass(frozen=True, slots=True)
 class TextType(PrimitiveType):
+    literal: str | None = None
+
     @property
     def is_heap_object(self):
         return not self.may_be_unbound
+
+    @property
+    def is_immortal(self):
+        return not self.may_be_unbound and self.interned_text() is not None
+
+    @property
+    def needs_release(self):
+        return self.may_be_unbound or self.interned_text() is None
+
+    def interned_text(self) -> str | None:
+        if self.may_be_unbound or self.literal is None:
+            return None
+        if self.literal == "" or (
+            len(self.literal) == 1 and ord(self.literal) <= 0xFF
+        ):
+            return self.literal
+        return None
+
+    def dispatch_domain(self):
+        return None if self.may_be_unbound else TEXT_TYPE
+
+    def dispatch_rank(self) -> int:
+        return 2**64 if self.may_be_unbound else 0
 
     def accept(self, visitor):
         return visitor.visit_TextType(self)
@@ -985,11 +1028,18 @@ class TextType(PrimitiveType):
         return other.join_text(self)
 
     def join_text(self, left):
-        return (
-            TextType(may_be_unbound=True)
-            if self.may_be_unbound or left.may_be_unbound
-            else TEXT_TYPE
-        )
+        if left is self:
+            return self
+        unbound = self.may_be_unbound or left.may_be_unbound
+        literal = self.literal if self.literal == left.literal else None
+        if literal is None and not unbound:
+            return TEXT_TYPE
+        return TextType(literal, may_be_unbound=unbound)
+
+    def widen(self, new):
+        if new.fits_text(TEXT_TYPE) and self.literal != new.interned_text():
+            return TEXT_TYPE if not new.may_be_unbound else TextType(may_be_unbound=True)
+        return new
 
     def binary(self, operator, right):
         if self.may_be_unbound:
@@ -1019,8 +1069,23 @@ class TextType(PrimitiveType):
     def accepts(self, actual):
         return actual.fits_text(self)
 
+    def accepts_dispatch(self, actual):
+        return actual.fits_text(self)
+
+    def accepts_possible_dispatch(self, actual):
+        return actual.fits_possible_text(self)
+
     def fits_text(self, expected):
-        return not self.may_be_unbound
+        return not self.may_be_unbound and (
+            expected.literal is None or self.literal == expected.literal
+        )
+
+    def fits_possible_text(self, expected):
+        return not self.may_be_unbound and (
+            expected.literal is None
+            or self.literal is None
+            or self.literal == expected.literal
+        )
 
     def getitem_type(self, index):
         return UNKNOWN if self.may_be_unbound else TEXT_TYPE

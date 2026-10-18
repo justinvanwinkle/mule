@@ -180,7 +180,11 @@ pub unsafe extern "C" fn mule_integer_storage(value: Value) -> Value {
                 _ => (),
             }
         }
-        object::error("TypeError", "an integer index is required");
+        let name = object::type_name(value).unwrap_or_else(|| "object".into());
+        object::error(
+            "TypeError",
+            &format!("'{name}' object cannot be interpreted as an integer"),
+        );
         null_mut()
     }
 }
