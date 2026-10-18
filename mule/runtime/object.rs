@@ -6,6 +6,7 @@ use std::ffi::{CStr, c_char, c_void};
 
 pub type Value = *mut Object;
 pub type Native = unsafe extern "C" fn(Value, Value) -> Value;
+#[repr(C)]
 pub struct Object {
     pub references: std::sync::atomic::AtomicUsize,
     pub tracked: bool,
@@ -479,6 +480,7 @@ impl Object {
     }
 }
 
+#[inline]
 pub unsafe fn retain(value: Value) -> Value {
     unsafe {
         if !value.is_null() && !is_fixnum(value) && (*value).reference_count() != usize::MAX {
@@ -489,12 +491,29 @@ pub unsafe fn retain(value: Value) -> Value {
         value
     }
 }
+#[inline]
 pub unsafe fn release(value: Value) {
     unsafe {
         if value.is_null() || is_fixnum(value) || (*value).reference_count() == usize::MAX {
             return;
         }
         if !(*value).remove_reference() { return; }
+        destroy(value);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_destroy(value: Value) {
+    unsafe {
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+        destroy(value);
+    }
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn destroy(value: Value) {
+    unsafe {
         if crate::weakref::has_references(value) {
             // Callbacks see the referent already cleared; they may resurrect
             // nothing, because no reference to it remains reachable.

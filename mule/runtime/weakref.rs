@@ -12,14 +12,19 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static HAS_ANY_WEAKREFS: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     // Referent address to live handles. Empty in programs without weak references.
     static REGISTRY: RefCell<HashMap<usize, Vec<Value>>> = RefCell::new(HashMap::new());
 }
 
+#[inline]
 pub fn has_references(value: Value) -> bool {
-    REGISTRY.with_borrow(|registry| !registry.is_empty() && registry.contains_key(&(value as usize)))
+    HAS_ANY_WEAKREFS.load(Ordering::Relaxed)
+        && REGISTRY.with_borrow(|registry| !registry.is_empty() && registry.contains_key(&(value as usize)))
 }
 
 /// Forget a handle being freed while its referent is still alive.
@@ -129,6 +134,7 @@ unsafe extern "C" fn weak_handle(_: Value, args: Value) -> Value {
             callback,
             owner,
         });
+        HAS_ANY_WEAKREFS.store(true, Ordering::Relaxed);
         REGISTRY.with_borrow_mut(|registry| {
             registry.entry(referent as usize).or_default().push(handle);
         });

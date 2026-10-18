@@ -1625,19 +1625,7 @@ declare {i64, i1} @llvm.smul.with.overflow.i64(i64, i64)
 
 
 def _ownership() -> str:
-    functions = []
-    for name in ("retain", "release"):
-        result = "ptr" if name == "retain" else "void"
-        returned = "ret ptr %value" if name == "retain" else "ret void"
-        call = (
-            "call ptr @mule_retain(ptr %value)\n  ret ptr %value"
-            if name == "retain"
-            else "call void @mule_release(ptr %value)\n  ret void"
-        )
-        # Fixnums and NULL are not objects. Immortal objects, including
-        # True, False and None, carry the usize::MAX (-1) reference count at
-        # offset 0 of ValueData, which the runtime leaves unchanged.
-        functions.append(f"""define internal {result} @mule.fast.{name}(ptr %value) {{
+    return """define internal ptr @mule.fast.retain(ptr %value) alwaysinline {
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
@@ -1650,11 +1638,68 @@ check:
   %immortal = icmp eq i64 %refs, -1
   br i1 %immortal, label %done, label %heap
 heap:
-  {call}
+  atomicrmw add ptr %value, i64 1 monotonic
+  br label %done
 done:
-  {returned}
-}}""")
-    return "\n\n".join(functions)
+  ret ptr %value
+}
+
+define internal void @mule.fast.release(ptr %value) alwaysinline {
+entry:
+  %bits = ptrtoint ptr %value to i64
+  %tag = and i64 %bits, 1
+  %integer = icmp ne i64 %tag, 0
+  %null = icmp eq ptr %value, null
+  %skip = or i1 %integer, %null
+  br i1 %skip, label %done, label %check
+check:
+  %refs = load i64, ptr %value
+  %immortal = icmp eq i64 %refs, -1
+  br i1 %immortal, label %done, label %heap
+heap:
+  %prev = atomicrmw sub ptr %value, i64 1 release
+  %last = icmp eq i64 %prev, 1
+  br i1 %last, label %free, label %done
+free:
+  call void @mule_destroy(ptr %value)
+  ret void
+done:
+  ret void
+}
+
+define internal ptr @mule.heap.retain(ptr %value) alwaysinline {
+entry:
+  %null = icmp eq ptr %value, null
+  br i1 %null, label %done, label %check
+check:
+  %refs = load i64, ptr %value
+  %immortal = icmp eq i64 %refs, -1
+  br i1 %immortal, label %done, label %heap
+heap:
+  atomicrmw add ptr %value, i64 1 monotonic
+  br label %done
+done:
+  ret ptr %value
+}
+
+define internal void @mule.heap.release(ptr %value) alwaysinline {
+entry:
+  %null = icmp eq ptr %value, null
+  br i1 %null, label %done, label %check
+check:
+  %refs = load i64, ptr %value
+  %immortal = icmp eq i64 %refs, -1
+  br i1 %immortal, label %done, label %heap
+heap:
+  %prev = atomicrmw sub ptr %value, i64 1 release
+  %last = icmp eq i64 %prev, 1
+  br i1 %last, label %free, label %done
+free:
+  call void @mule_destroy(ptr %value)
+  ret void
+done:
+  ret void
+}"""
 
 
 def _truth() -> str:
@@ -1968,7 +2013,7 @@ bounded:
 }"""
 
 
-LITERAL_HELPERS = """define internal ptr @mule.cached.float(ptr %slot, double %value) {
+LITERAL_HELPERS = """define internal ptr @mule.cached.float(ptr %slot, double %value) alwaysinline {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -1979,11 +2024,11 @@ build:
   br label %ready
 ready:
   %result = phi ptr [%cached, %entry], [%built, %build]
-  %owned = call ptr @mule_retain(ptr %result)
+  %owned = call ptr @mule.heap.retain(ptr %result)
   ret ptr %owned
 }
 
-define internal ptr @mule.cached.text(ptr %slot, ptr %data, i64 %length) {
+define internal ptr @mule.cached.text(ptr %slot, ptr %data, i64 %length) alwaysinline {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -1994,11 +2039,11 @@ build:
   br label %ready
 ready:
   %result = phi ptr [%cached, %entry], [%built, %build]
-  %owned = call ptr @mule_retain(ptr %result)
+  %owned = call ptr @mule.heap.retain(ptr %result)
   ret ptr %owned
 }
 
-define internal ptr @mule.cached.bytes(ptr %slot, ptr %data, i64 %length) {
+define internal ptr @mule.cached.bytes(ptr %slot, ptr %data, i64 %length) alwaysinline {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -2009,11 +2054,11 @@ build:
   br label %ready
 ready:
   %result = phi ptr [%cached, %entry], [%built, %build]
-  %owned = call ptr @mule_retain(ptr %result)
+  %owned = call ptr @mule.heap.retain(ptr %result)
   ret ptr %owned
 }
 
-define internal ptr @mule.cached.int(ptr %slot, ptr %text) {
+define internal ptr @mule.cached.int(ptr %slot, ptr %text) alwaysinline {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -2024,11 +2069,11 @@ build:
   br label %ready
 ready:
   %result = phi ptr [%cached, %entry], [%built, %build]
-  %owned = call ptr @mule_retain(ptr %result)
+  %owned = call ptr @mule.heap.retain(ptr %result)
   ret ptr %owned
 }
 
-define internal ptr @mule.cached.tuple(ptr %slot, i64 %count, ptr %items) {
+define internal ptr @mule.cached.tuple(ptr %slot, i64 %count, ptr %items) alwaysinline {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -2040,7 +2085,7 @@ build:
   br i1 %bad, label %failed, label %ready
 ready:
   %result = phi ptr [%cached, %entry], [%tuple, %build]
-  %owned = call ptr @mule_retain(ptr %result)
+  %owned = call ptr @mule.heap.retain(ptr %result)
   ret ptr %owned
 failed:
   ret ptr null

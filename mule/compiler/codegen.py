@@ -167,6 +167,7 @@ declare i32 @mule_assert_real(ptr, ptr)
 declare ptr @mule_arg(ptr, i32)
 declare ptr @mule_retain(ptr returned)
 declare void @mule_release(ptr)
+declare void @mule_destroy(ptr)
 declare i32 @mule_enter_frame()
 declare void @mule_leave_frame()
 declare i32 @mule_function_matches(ptr, ptr, ptr)
@@ -2889,7 +2890,7 @@ class FunctionGenerator:
         if value in self.immortal_values:
             return value
         if value in self.heap_values:
-            self.line(f"call ptr @mule_retain(ptr {value})")
+            self.line(f"call ptr @mule.heap.retain(ptr {value})")
             return value
         self.line(f"call ptr @mule.fast.retain(ptr {value})")
         return value
@@ -2898,7 +2899,7 @@ class FunctionGenerator:
         if value in self.immortal_values:
             return
         if value in self.heap_values:
-            self.line(f"call void @mule_release(ptr {value})")
+            self.line(f"call void @mule.heap.release(ptr {value})")
             return
         self.line(f"call void @mule.fast.release(ptr {value})")
 
