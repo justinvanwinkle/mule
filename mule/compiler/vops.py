@@ -1881,14 +1881,14 @@ slow:
 }
 
 ; A cell never holds NULL: an unbound name's cell holds the undefined object.
-define internal ptr @mule.global.unchecked(ptr %cell, ptr %name) {
+define internal ptr @mule.global.unchecked(ptr %cell, ptr %name) alwaysinline {
 entry:
   %value = load ptr, ptr %cell, !nonnull !{}
   %owned = call ptr @mule.fast.retain(ptr %value)
   ret ptr %owned
 }
 
-define internal ptr @mule.global.checked(ptr %cell, ptr %name) {
+define internal ptr @mule.global.checked(ptr %cell, ptr %name) alwaysinline {
 entry:
   %value = load ptr, ptr %cell, !nonnull !{}
   %unbound = icmp eq ptr %value, @mule.undefined
@@ -1932,7 +1932,7 @@ slow:
   ret ptr %result
 }
 
-define internal ptr @mule.fast.local(ptr %value, ptr %name) {
+define internal ptr @mule.fast.local(ptr %value, ptr %name) alwaysinline {
 entry:
   %missing = icmp eq ptr %value, null
   br i1 %missing, label %slow, label %loaded
@@ -1944,7 +1944,7 @@ slow:
   ret ptr %error
 }
 
-define internal ptr @mule.fast.local.move(ptr %value, ptr %name) {
+define internal ptr @mule.fast.local.move(ptr %value, ptr %name) alwaysinline {
 entry:
   %missing = icmp eq ptr %value, null
   br i1 %missing, label %slow, label %loaded
@@ -2040,7 +2040,8 @@ slow.call:
         else f"""  %fallback = call ptr @mule_binary_reuse(i32 {op}, ptr %left, ptr %right, i32 %inplace, ptr null)
   ret ptr %fallback"""
     )
-    return f"""define internal ptr @mule.{prefix}.binary.{op}(ptr %left, ptr %right, i32 %inplace, ptr %reuse, ptr %reuse.slot) {{
+    inline = " alwaysinline" if op in (0, 1, 2, 10, 11, 12) else ""
+    return f"""define internal ptr @mule.{prefix}.binary.{op}(ptr %left, ptr %right, i32 %inplace, ptr %reuse, ptr %reuse.slot){inline} {{
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
@@ -2061,12 +2062,12 @@ entry:
   %truth = call i32 @mule.fast.truth(ptr %operand)
   %error = icmp slt i32 %truth, 0
   br i1 %error, label %failed, label %done
-failed:
-  ret ptr null
 done:
   %zero = icmp eq i32 %truth, 0
   %value = select i1 %zero, ptr @mule.true, ptr @mule.false
   ret ptr %value
+failed:
+  ret ptr null
 }"""
     if op == 0:
         operation = "  ret ptr %operand"
@@ -2088,7 +2089,7 @@ negate:
 fixnum:
 """
     )
-    return f"""define internal ptr @mule.{prefix}.unary.{op}(ptr %operand) {{
+    return f"""define internal ptr @mule.{prefix}.unary.{op}(ptr %operand) alwaysinline {{
 entry:
   %bits = ptrtoint ptr %operand to i64
 {guard}  %decoded = ashr i64 %bits, 1
@@ -2105,13 +2106,13 @@ def _compare_helper(op: int) -> str:
   %value = select i1 %compared, ptr @mule.true, ptr @mule.false
   ret ptr %value"""
     if op in (6, 7):
-        return f"""define internal ptr @mule.fast.compare.{op}(ptr %left, ptr %right) {{
+        return f"""define internal ptr @mule.fast.compare.{op}(ptr %left, ptr %right) alwaysinline {{
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
 {operation}
 }}"""
-    return f"""define internal ptr @mule.fast.compare.{op}(ptr %left, ptr %right) {{
+    return f"""define internal ptr @mule.fast.compare.{op}(ptr %left, ptr %right) alwaysinline {{
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
