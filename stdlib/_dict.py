@@ -16,14 +16,14 @@ per process, so their values are not part of the language contract.
 """
 
 from _descriptors import classmethod
-from _mule_native import bind_instance_attribute as _bind_attribute
-from _mule_native import class_lookup_default as _class_lookup_default
-from _mule_native import class_of as _class_of
-from _mule_native import identity_hash as _identity_hash
-from _mule_native import is_class as _is_class
-from _mule_native import is_subclass as _is_subclass
-from _mule_native import math_number_kind as _math_number_kind
-from _mule_native import storage_hash as _storage_hash
+from _mule_native import bind_instance_attribute
+from _mule_native import class_lookup_default
+from _mule_native import class_of
+from _mule_native import identity_hash
+from _mule_native import is_class
+from _mule_native import is_subclass
+from _mule_native import math_number_kind
+from _mule_native import storage_hash
 
 # Compiler-provided physical primitives are not host Python globals.
 # ruff: noqa: F821
@@ -77,27 +77,27 @@ def _tuple_hash(value):
 
 
 def hash(value, /):
-    kind = _storage_hash(value)
+    kind = storage_hash(value)
     if kind is not None:
         return kind
     if _integer_storage_kind(value):
         return _integer_hash(_integer_storage(value))
     if _tuple_storage(value):
         return _tuple_hash(value)
-    if _is_class(value):
-        return _identity_hash(value)
+    if is_class(value):
+        return identity_hash(value)
     owner = _raised_class(value)
     if owner is None:
         if _type_name(value) == "list":
             raise TypeError("unhashable type: 'list'")
-        return _identity_hash(value)
+        return identity_hash(value)
     missing = _binding_missing()
-    method = _class_lookup_default(owner, "__hash__", missing)
+    method = class_lookup_default(owner, "__hash__", missing)
     if method is missing:
-        return _identity_hash(value)
+        return identity_hash(value)
     if method is None:
         raise TypeError("unhashable type: '" + _type_name(value) + "'")
-    result = _bind_attribute(method, value, owner)()
+    result = bind_instance_attribute(method, value, owner)()
     if not _integer_storage_kind(result):
         raise TypeError("__hash__ method should return an integer")
     result = _integer_storage(result)
@@ -107,7 +107,7 @@ def hash(value, /):
 
 
 def _integer_storage_kind(value):
-    return _math_number_kind(value) == 1
+    return math_number_kind(value) == 1
 
 
 class _Table:
@@ -252,7 +252,7 @@ def _representation(open, items, close):
 
 class dict(_Table):
     def __new__(cls, /, *args, **kwargs):
-        if not _is_class(cls) or not _is_subclass(cls, dict):
+        if not is_class(cls) or not is_subclass(cls, dict):
             raise TypeError("dict.__new__() requires a subtype of dict")
         return _empty_table(cls)
 
@@ -280,13 +280,13 @@ class dict(_Table):
         entry = self._lookup(key)
         if entry >= 0:
             return self._values[entry]
-        owner = _class_of(self)
+        owner = class_of(self)
         if owner is not dict:
             absent = _binding_missing()
-            missing = _class_lookup_default(owner, "__missing__", absent)
+            missing = class_lookup_default(owner, "__missing__", absent)
             if missing is absent:
                 raise KeyError(key)
-            return _bind_attribute(missing, self, owner)(key)
+            return bind_instance_attribute(missing, self, owner)(key)
         raise KeyError(key)
 
     def __setitem__(self, key, value):
@@ -393,9 +393,9 @@ class dict(_Table):
         keys = None
         if owner is not None:
             missing = _binding_missing()
-            method = _class_lookup_default(owner, "keys", missing)
+            method = class_lookup_default(owner, "keys", missing)
             if method is not missing:
-                keys = _bind_attribute(method, other, owner)
+                keys = bind_instance_attribute(method, other, owner)
         if keys is not None:
             for key in keys():
                 self._insert(key, other[key])
@@ -557,7 +557,7 @@ class _SetBase(_Table):
             self._insert(item, None)
 
     def _same_kind(self):
-        return _class_of(self)()
+        return class_of(self)()
 
     def __contains__(self, item):
         return self._lookup(item) >= 0

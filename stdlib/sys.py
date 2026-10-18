@@ -7,17 +7,16 @@ Mule does not have (frames, tracing, audit hooks with effects) are present
 with their documented "absent" results where CPython defines one.
 """
 
-from _mule_native import active_exception as _active_exception
-from _mule_native import argc as _argc
-from _mule_native import argv as _argv
-from _mule_native import current_frame as _current_frame
-from _mule_native import flush_fd as _flush_fd
-from _mule_native import isatty as _isatty
-from _mule_native import image_search_path as _image_search_path
-from _mule_native import read_c_string as _read_c_string
-from _mule_native import read_pointer as _read_pointer
-from _mule_native import register_modules as _register_modules
-from _mule_native import write_fd as _write_fd
+import _mule_native
+from _mule_native import active_exception
+from _mule_native import argc
+from _mule_native import current_frame
+from _mule_native import flush_fd
+from _mule_native import image_search_path
+from _mule_native import read_c_string
+from _mule_native import read_pointer
+from _mule_native import register_modules
+from _mule_native import write_fd
 from _posix import read as _read
 from _posix import environ_items as _environ_items
 from _posix import executable_path_bytes as _executable_path_bytes
@@ -26,11 +25,11 @@ from _posix import executable_path_bytes as _executable_path_bytes
 def _make_argv():
     arguments = []
     index = 0
-    while index < _argc:
-        pointer = _read_pointer(_argv, index)
+    while index < argc:
+        pointer = read_pointer(_mule_native.argv, index)
         if pointer is None:
             raise SystemError("NULL pointer inside native argument vector")
-        arguments.append(_read_c_string(pointer).decode('utf-8', 'surrogateescape'))
+        arguments.append(read_c_string(pointer).decode('utf-8', 'surrogateescape'))
         index += 1
     return arguments
 
@@ -44,7 +43,7 @@ except OSError:
 _base_executable = executable
 
 modules = {}
-_register_modules(modules)
+register_modules(modules)
 
 import _monitoring as monitoring
 modules["sys.monitoring"] = monitoring
@@ -89,7 +88,7 @@ abiflags = ""
 float_repr_style = "short"
 warnoptions = []
 _xoptions = {}
-path = list(_image_search_path())
+path = list(image_search_path())
 meta_path = []
 path_hooks = []
 path_importer_cache = {}
@@ -283,7 +282,7 @@ class _TextStream:
     def write(self, text):
         if not isinstance(text, str):
             raise TypeError(f"write() argument must be str, not {type(text).__name__}")
-        _write_fd(self._fd, text.encode(self.encoding, self.errors))
+        write_fd(self._fd, text.encode(self.encoding, self.errors))
         return len(text)
 
     def writelines(self, lines):
@@ -291,13 +290,13 @@ class _TextStream:
             self.write(line)
 
     def flush(self):
-        _flush_fd(self._fd)
+        flush_fd(self._fd)
 
     def fileno(self):
         return self._fd
 
     def isatty(self):
-        return _isatty(self._fd)
+        return _mule_native.isatty(self._fd)
 
     def readable(self):
         return self._fd == 0
@@ -440,20 +439,20 @@ class _BinaryStream:
         return line
 
     def write(self, data):
-        return _write_fd(self._fd, bytes(data))
+        return write_fd(self._fd, bytes(data))
 
     def writelines(self, lines):
         for line in lines:
             self.write(line)
 
     def flush(self):
-        _flush_fd(self._fd)
+        flush_fd(self._fd)
 
     def fileno(self):
         return self._fd
 
     def isatty(self):
-        return _isatty(self._fd)
+        return _mule_native.isatty(self._fd)
 
     def readable(self):
         return self._fd == 0
@@ -509,11 +508,11 @@ def exit(status=None, /):
 
 
 def exception():
-    return _active_exception()
+    return active_exception()
 
 
 def exc_info():
-    value = _active_exception()
+    value = active_exception()
     if value is None:
         return (None, None, None)
     return (type(value), value, getattr(value, "__traceback__", None))
@@ -591,7 +590,7 @@ def _getframe(depth=0, /):
     if depth < 0:
         raise ValueError("depth must be >= 0")
     # This function's own frame is one deeper than CPython's C _getframe.
-    frame = _current_frame(depth + 1)
+    frame = current_frame(depth + 1)
     if frame is None:
         raise ValueError("call stack is not deep enough")
     return frame

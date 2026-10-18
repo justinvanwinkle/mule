@@ -9,21 +9,21 @@ raises RuntimeError, because generated programs do not create OS threads yet.
 
 __mule_builtin_implementation__ = True
 
-from _mule_native import thread_ident as _ident
-from _mule_native import thread_native_id as _native_id
-from _mule_native import main_thread_ident as _main_ident
+from _mule_native import thread_ident
+from _mule_native import thread_native_id
+from _mule_native import main_thread_ident
 
 error = RuntimeError
 TIMEOUT_MAX = 9223372036.0
-_MAIN_THREAD = _main_ident()
+_MAIN_THREAD = main_thread_ident()
 
 
 def get_ident():
-    return _ident()
+    return thread_ident()
 
 
 def get_native_id():
-    return _native_id()
+    return thread_native_id()
 
 
 def _get_main_thread_ident():

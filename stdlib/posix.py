@@ -5,6 +5,7 @@ and rows; the Python-level types (``stat_result``, ``uname_result``) and
 argument handling live here, following CPython's ``Modules/posixmodule.c``.
 """
 
+import _mule_native
 __mule_builtin_implementation__ = True
 
 from _posix import access as _access
@@ -52,10 +53,6 @@ from _posix import unlink as _unlink
 from _posix import unsetenv_bytes as _unsetenv_bytes
 from _posix import utime_at as _utime_at
 from _posix import write as _write
-from _mule_native import waitpid as _waitpid
-from _mule_native import get_inheritable as _get_inheritable
-from _mule_native import set_inheritable as _set_inheritable
-from _mule_native import isatty as _isatty
 
 __all__ = [
     "F_OK", "R_OK", "W_OK", "X_OK", "O_RDONLY", "O_WRONLY", "O_RDWR",
@@ -134,19 +131,19 @@ def _path(value, operation, descriptors=False, nullable=False):
 
 
 def waitpid(pid, options, /):
-    return _waitpid(_native_fd(pid), _native_fd(options))
+    return _mule_native.waitpid(_native_fd(pid), _native_fd(options))
 
 
 def get_inheritable(fd, /):
-    return _get_inheritable(_native_fd(fd))
+    return _mule_native.get_inheritable(_native_fd(fd))
 
 
 def isatty(fd, /):
-    return _isatty(_native_fd(fd))
+    return _mule_native.isatty(_native_fd(fd))
 
 
 def set_inheritable(fd, inheritable, /):
-    _set_inheritable(_native_fd(fd), bool(inheritable))
+    _mule_native.set_inheritable(_native_fd(fd), bool(inheritable))
 
 
 def sched_getaffinity(pid, /):

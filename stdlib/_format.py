@@ -7,8 +7,8 @@ compiler. Method selection and Python fallback rules execute as compiled Python.
 # Compiler-provided physical primitives are not host Python globals.
 # ruff: noqa: F821
 
-from _mule_native import class_lookup_default as _class_lookup_default
-from _mule_native import type_of as _type_of
+from _mule_native import class_lookup_default
+from _mule_native import type_of
 
 _MAPPING_MISSING = object()
 
@@ -268,7 +268,7 @@ def _mapping_operand(value):
     return (
         not _text_storage(value)
         and not _storage_compatible(value, ())
-        and _class_lookup_default(_type_of(value), "__getitem__", _MAPPING_MISSING)
+        and class_lookup_default(type_of(value), "__getitem__", _MAPPING_MISSING)
         is not _MAPPING_MISSING
     )
 

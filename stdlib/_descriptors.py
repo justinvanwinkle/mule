@@ -10,16 +10,16 @@ protocol, following CPython's ``Objects/funcobject.c`` (``staticmethod``,
 storage operations; the rules here are ordinary compiled Python.
 """
 
-from _mule_native import bind_attribute as _bind_attribute
-from _mule_native import bound_method as _bound_method
-from _mule_native import class_mro as _class_mro
-from _mule_native import class_own_names as _class_own_names
-from _mule_native import class_lookup as _class_lookup
-from _mule_native import class_of as _class_of
-from _mule_native import instance_field as _instance_field
-from _mule_native import is_class as _is_class
-from _mule_native import is_subclass as _is_subclass
-from _mule_native import type_of as _type_of
+from _mule_native import bind_attribute
+from _mule_native import bound_method
+from _mule_native import class_mro
+from _mule_native import class_own_names
+from _mule_native import class_lookup
+from _mule_native import class_of
+from _mule_native import instance_field
+from _mule_native import is_class
+from _mule_native import is_subclass
+from _mule_native import type_of
 
 
 _metadata_ready = False
@@ -61,8 +61,8 @@ class classmethod:
 
     def __get__(self, instance, owner=None):
         if owner is None:
-            owner = _class_of(instance)
-        return _bound_method(self.__func__, owner)
+            owner = class_of(instance)
+        return bound_method(self.__func__, owner)
 
 
 class property:
@@ -99,15 +99,15 @@ class property:
 
     def getter(self, fget):
         doc = None if self._doc_from_getter else self.__doc__
-        return _class_of(self)(fget, self.fset, self.fdel, doc)
+        return class_of(self)(fget, self.fset, self.fdel, doc)
 
     def setter(self, fset):
         doc = None if self._doc_from_getter else self.__doc__
-        return _class_of(self)(self.fget, fset, self.fdel, doc)
+        return class_of(self)(self.fget, fset, self.fdel, doc)
 
     def deleter(self, fdel):
         doc = None if self._doc_from_getter else self.__doc__
-        return _class_of(self)(self.fget, self.fset, fdel, doc)
+        return class_of(self)(self.fget, self.fset, fdel, doc)
 
 
 class super:
@@ -122,17 +122,17 @@ class super:
         self.__self__ = obj
 
     def __getattribute__(self, name):
-        thisclass = _instance_field(self, "__thisclass__")
-        obj = _instance_field(self, "__self__")
+        thisclass = instance_field(self, "__thisclass__")
+        obj = instance_field(self, "__self__")
         # When obj is a class, it selects its own hierarchy only if it is
         # a subclass of thisclass (the classmethod case). A class that is
         # merely an instance of thisclass, as a class is of its metaclass,
         # searches the hierarchy of its own class instead.
-        if _is_class(obj) and _is_subclass(obj, thisclass):
+        if is_class(obj) and is_subclass(obj, thisclass):
             owner, instance = obj, None
         else:
-            owner, instance = _type_of(obj), obj
-        order = _class_mro(owner)
+            owner, instance = type_of(obj), obj
+        order = class_mro(owner)
         index = 0
         while index < len(order) and order[index] is not thisclass:
             index += 1
@@ -141,8 +141,8 @@ class super:
             # Only a class's own attributes count here: an attribute a
             # class merely inherits belongs to a later MRO entry, and
             # returning it now would skip that entry's own definition.
-            if name in _class_own_names(order[index]):
-                value = _class_lookup(order[index], name)
-                return _bind_attribute(value, instance, owner)
+            if name in class_own_names(order[index]):
+                value = class_lookup(order[index], name)
+                return bind_attribute(value, instance, owner)
             index += 1
         raise AttributeError("'super' object has no attribute '" + name + "'")

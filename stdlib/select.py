@@ -1,7 +1,7 @@
 """Compiled descriptor policy over Linux poll and select physical primitives."""
 
-from _mule_native import descriptor_poll as _poll
-from _mule_native import descriptor_select as _select
+from _mule_native import descriptor_poll
+from _mule_native import descriptor_select
 from math import _as_float, ceil, floor, isfinite, isnan
 from math.integer import _index
 
@@ -79,7 +79,7 @@ class poll:
 
     def poll(self, timeout=None, /):
         milliseconds = -1 if timeout is None else _timeout(timeout, 1, (1 << 31) - 1)
-        return list(_poll(tuple(self._registrations.items()), milliseconds))
+        return list(descriptor_poll(tuple(self._registrations.items()), milliseconds))
 
 
 def select(rlist, wlist, xlist, timeout=None, /):
@@ -91,7 +91,7 @@ def select(rlist, wlist, xlist, timeout=None, /):
         if timeout < 0:
             raise ValueError("timeout must be non-negative")
         microseconds = _timeout(timeout, 1_000_000, (1 << 63) - 1)
-    ready = _select(*descriptors, microseconds)
+    ready = descriptor_select(*descriptors, microseconds)
     return tuple(
         [value for value, fd in zip(group, fds) if fd in selected]
         for group, fds, selected in zip(objects, descriptors, ready)

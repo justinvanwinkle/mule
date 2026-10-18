@@ -359,8 +359,8 @@ pub unsafe fn populate(globals: Value) -> bool {
             }
         }
         for (name, value) in [
-            ("math_inf", f64::INFINITY),
-            ("math_nan", f64::from_bits(0x7ff8_0000_0000_0000)),
+            ("inf", f64::INFINITY),
+            ("nan", f64::from_bits(0x7ff8_0000_0000_0000)),
         ] {
             let value = object::new_value(Data::Float(value, std::ptr::null_mut(), std::ptr::null_mut()));
             let bound = object::bind(globals, name, value);

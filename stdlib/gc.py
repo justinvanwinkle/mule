@@ -1,9 +1,9 @@
 """Manual cycle collection over Mule's independent reference-counted heap."""
 
-from _mule_native import gc_collect as _collect
-from _mule_native import gc_objects as _objects
-from _mule_native import gc_referents as _referents
-from _mule_native import gc_tracked as _tracked
+from _mule_native import gc_collect
+from _mule_native import gc_objects
+from _mule_native import gc_referents
+from _mule_native import gc_tracked
 from math.integer import _index
 
 callbacks = []
@@ -47,7 +47,7 @@ def collect(generation=2):
     _collecting = True
     try:
         _notify('start', {'generation': generation, 'collected': 0, 'uncollectable': 0})
-        result = _collect()
+        result = gc_collect()
         _notify('stop', {'generation': generation, 'collected': result, 'uncollectable': 0})
         return result
     finally:
@@ -57,18 +57,18 @@ def collect(generation=2):
 def get_objects(generation=None):
     if generation is not None:
         _generation(generation)
-    return _objects()
+    return gc_objects()
 
 
 def get_referents(*objects):
     result = []
     for obj in objects:
-        result.extend(_referents(obj))
+        result.extend(gc_referents(obj))
     return result
 
 
 def is_tracked(obj, /):
-    return _tracked(obj)
+    return gc_tracked(obj)
 
 
 def disable():

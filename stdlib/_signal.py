@@ -2,13 +2,12 @@
 
 __mule_builtin_implementation__ = True
 
-from _mule_native import signal_limits as _limits
-from _mule_native import signal_disposition as _disposition
-from _mule_native import raise_signal as _raise
-from _mule_native import signal_mask as _signal_mask
-from _mule_native import pending_signals as _pending
-from _mule_native import valid_signals as _valid
-from _mule_native import wait_signal as _wait
+import _mule_native
+from _mule_native import signal_limits
+from _mule_native import signal_disposition
+from _mule_native import signal_mask
+from _mule_native import pending_signals
+from _mule_native import wait_signal
 from math.integer import _index
 
 SIG_DFL = 0
@@ -47,7 +46,7 @@ SIGWINCH = 28
 SIGIO = SIGPOLL = 29
 SIGPWR = 30
 SIGSYS = 31
-SIGRTMIN, SIGRTMAX = _limits()
+SIGRTMIN, SIGRTMAX = signal_limits()
 NSIG = SIGRTMAX + 1
 ITIMER_REAL = 0
 ITIMER_VIRTUAL = 1
@@ -72,10 +71,10 @@ def default_int_handler(*args):
 def signal(signalnum, handler, /):
     number = _number(signalnum)
     if isinstance(handler, int) and handler in (SIG_DFL, SIG_IGN):
-        previous = _disposition(number, int(handler))
+        previous = signal_disposition(number, int(handler))
         return default_int_handler if previous == 2 else previous
     if callable(handler):
-        previous = _disposition(number, handler)
+        previous = signal_disposition(number, handler)
         return default_int_handler if previous == 2 else previous
     raise TypeError(
         "signal handler must be signal.SIG_IGN, signal.SIG_DFL, or a callable object"
@@ -83,16 +82,16 @@ def signal(signalnum, handler, /):
 
 
 def getsignal(signalnum, /):
-    previous = _disposition(_number(signalnum), None)
+    previous = signal_disposition(_number(signalnum), None)
     return default_int_handler if previous == 2 else previous
 
 
-if _disposition(SIGINT, None) == 2:
-    _disposition(SIGINT, default_int_handler)
+if signal_disposition(SIGINT, None) == 2:
+    signal_disposition(SIGINT, default_int_handler)
 
 
 def raise_signal(signalnum, /):
-    _raise(_number(signalnum))
+    _mule_native.raise_signal(_number(signalnum))
 
 
 def _mask(values):
@@ -100,16 +99,16 @@ def _mask(values):
 
 
 def pthread_sigmask(how, mask, /):
-    return set(_signal_mask(_index(how), _mask(mask)))
+    return set(signal_mask(_index(how), _mask(mask)))
 
 
 def sigpending():
-    return set(_pending())
+    return set(pending_signals())
 
 
 def valid_signals():
-    return set(_valid())
+    return set(_mule_native.valid_signals())
 
 
 def sigwait(sigset, /):
-    return _wait(_mask(sigset))
+    return wait_signal(_mask(sigset))

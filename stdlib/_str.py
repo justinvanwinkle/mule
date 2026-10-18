@@ -7,11 +7,11 @@ primitives bound by the compiler: storage length, codepoint reads, substring
 copies, and concatenation of finished pieces.
 """
 
-from _mule_native import bytes_from_values as _bytes_from_values
-from _mule_native import byte_length as _byte_length
-from _mule_native import byte_copy as _byte_copy
-from _mule_native import read_byte as _read_byte
-from _mule_native import text_from_codepoints as _from_codepoints
+from _mule_native import bytes_from_values
+from _mule_native import byte_length
+from _mule_native import byte_copy
+from _mule_native import read_byte
+from _mule_native import text_from_codepoints
 from _descriptors import staticmethod
 from _slice import is_slice, positions
 from _unicode_data import (
@@ -336,7 +336,7 @@ def _codec_name(encoding):
             code = 45
         codes.append(code)
         index += 1
-    name = _from_codepoints(codes)
+    name = text_from_codepoints(codes)
     if name == "utf-8" or name == "utf8" or name == "u8" or name == "utf":
         return "utf-8"
     if name == "ascii" or name == "us-ascii" or name == "646":
@@ -372,7 +372,7 @@ def _hex(value, width):
     while width > 0:
         width -= 1
         codes.append(_text_codepoint(_HEX_DIGITS, (value >> (width * 4)) & 15))
-    return _from_codepoints(codes)
+    return text_from_codepoints(codes)
 
 
 def _decimal(value):
@@ -382,7 +382,7 @@ def _decimal(value):
     while value > 0:
         codes.append(48 + value % 10)
         value //= 10
-    return _from_codepoints(_reversed(codes))
+    return text_from_codepoints(_reversed(codes))
 
 
 def _append_ascii(values, text):
@@ -440,7 +440,7 @@ def encode(text, encoding, errors):
         else:
             raise LookupError(f"unknown error handler name '{errors}'")
         index += 1
-    return _bytes_from_values(values)
+    return bytes_from_values(values)
 
 
 def _encode_one(values, codec, code):
@@ -470,7 +470,7 @@ def _encode_utf8(values, code):
 def _continuation(data, position, size, low, high):
     if position >= size:
         return False
-    byte = _read_byte(data, position)
+    byte = read_byte(data, position)
     return byte >= low and byte <= high
 
 
@@ -478,7 +478,7 @@ def _utf8_sequence(data, index, size, surrogates):
     """Return ``(codepoint, length)`` for the sequence at ``index``, or
     ``(-1, length)`` with the invalid maximal subpart's length, or
     ``(-2, length)`` when the data ends inside a valid prefix."""
-    first = _read_byte(data, index)
+    first = read_byte(data, index)
     if first < 0x80:
         return first, 1
     if first >= 0xC2 and first <= 0xDF:
@@ -512,7 +512,7 @@ def _utf8_sequence(data, index, size, surrogates):
             return -2, length
         if not _continuation(data, index + length, size, low, high):
             return -1, length
-        value = (value << 6) | (_read_byte(data, index + length) & 0x3F)
+        value = (value << 6) | (read_byte(data, index + length) & 0x3F)
         low = 0x80
         high = 0xBF
         length += 1
@@ -537,7 +537,7 @@ def decode(data, encoding, errors):
         return _unicode_escape_decode(data, errors, True, codec == "raw-unicode-escape")[0]
     codes = []
     index = 0
-    size = _byte_length(data)
+    size = byte_length(data)
     while index < size:
         if codec == "utf-8":
             code, length = _utf8_sequence(
@@ -557,7 +557,7 @@ def decode(data, encoding, errors):
                 if length > 1:
                     length -= 1
         else:
-            byte = _read_byte(data, index)
+            byte = read_byte(data, index)
             if codec == "latin-1" or byte < 128:
                 codes.append(byte)
                 index += 1
@@ -566,7 +566,7 @@ def decode(data, encoding, errors):
             reason = "ordinal not in range(128)"
         _decode_failure(codes, codec, data, index, index + length, reason, errors)
         index += length
-    return _from_codepoints(codes)
+    return text_from_codepoints(codes)
 
 
 def _decode_failure(codes, codec, data, start, end, reason, errors):
@@ -579,7 +579,7 @@ def _decode_failure(codes, codec, data, start, end, reason, errors):
         return
     position = start
     while position < end:
-        byte = _read_byte(data, position)
+        byte = read_byte(data, position)
         if errors == "surrogateescape" and byte >= 128:
             codes.append(0xDC00 + byte)
         elif errors == "backslashreplace":
@@ -601,7 +601,7 @@ def _unicode_escape_encode(text, raw):
             values.extend((92, {9: 116, 10: 110, 13: 114}[code]))
         else:
             _append_ascii(values, _escaped_character(code))
-    return _bytes_from_values(values)
+    return bytes_from_values(values)
 
 
 def _escape_decode_error(codes, data, start, end, reason, errors, raw):
@@ -613,7 +613,7 @@ def _escape_decode_error(codes, data, start, end, reason, errors, raw):
     )
     _require_text(replacement, 'decoding error handler must return str')
     position = _index(position)
-    size = _byte_length(data)
+    size = byte_length(data)
     if position < 0:
         position += size
     if not 0 <= position <= size:
@@ -627,11 +627,11 @@ def _unicode_escape_decode(data, errors='strict', final=False, raw=False):
     """Decode escape syntax, leaving an incomplete terminal escape unconsumed."""
     _require_text(errors, "decode() argument 'errors' must be str")
     codes, invalid = [], None
-    index, size = 0, _byte_length(data)
+    index, size = 0, byte_length(data)
     simple = {92: 92, 39: 39, 34: 34, 98: 8, 102: 12, 116: 9,
               110: 10, 114: 13, 118: 11, 97: 7}
     while index < size:
-        byte = _read_byte(data, index)
+        byte = read_byte(data, index)
         index += 1
         if byte != 92:
             codes.append(byte)
@@ -646,7 +646,7 @@ def _unicode_escape_decode(data, errors='strict', final=False, raw=False):
                 continue
             index = _escape_decode_error(codes, data, start, index, '\\ at end of string', errors, raw)
             continue
-        byte = _read_byte(data, index)
+        byte = read_byte(data, index)
         index += 1
         if raw and byte not in (117, 85):
             codes.extend((92, byte))
@@ -658,13 +658,13 @@ def _unicode_escape_decode(data, errors='strict', final=False, raw=False):
             continue
         if not raw and 48 <= byte <= 55:
             code, digits = byte - 48, 1
-            while digits < 3 and index < size and 48 <= _read_byte(data, index) <= 55:
-                code = code * 8 + _read_byte(data, index) - 48
+            while digits < 3 and index < size and 48 <= read_byte(data, index) <= 55:
+                code = code * 8 + read_byte(data, index) - 48
                 index += 1
                 digits += 1
             codes.append(code)
             if code > 255 and invalid is None:
-                invalid = _from_codepoints([_read_byte(data, position)
+                invalid = text_from_codepoints([read_byte(data, position)
                                             for position in range(start + 1, index)])
             continue
         if byte in (120, 117, 85):
@@ -673,7 +673,7 @@ def _unicode_escape_decode(data, errors='strict', final=False, raw=False):
                       85: 'truncated \\UXXXXXXXX escape'}[byte]
             code, digits = 0, 0
             while digits < width and index < size:
-                digit = _read_byte(data, index)
+                digit = read_byte(data, index)
                 if 48 <= digit <= 57:
                     digit -= 48
                 elif 65 <= digit <= 70:
@@ -703,16 +703,16 @@ def _unicode_escape_decode(data, errors='strict', final=False, raw=False):
             if index == size and not final:
                 index = start
                 break
-            if index < size and _read_byte(data, index) == 123:
+            if index < size and read_byte(data, index) == 123:
                 index += 1
                 name_start = index
-                while index < size and _read_byte(data, index) != 125:
+                while index < size and read_byte(data, index) != 125:
                     index += 1
                 if index == size and not final:
                     index = start
                     break
                 if index < size and index > name_start:
-                    name = _byte_copy(data, name_start, index - name_start)
+                    name = byte_copy(data, name_start, index - name_start)
                     index += 1
                     reason = 'unknown Unicode character name'
                     try:
@@ -728,7 +728,7 @@ def _unicode_escape_decode(data, errors='strict', final=False, raw=False):
             continue
         codes.extend((92, byte))
         if invalid is None:
-            invalid = _from_codepoints([byte])
+            invalid = text_from_codepoints([byte])
     if invalid is not None:
         from _py_warnings import warn
 
@@ -736,7 +736,7 @@ def _unicode_escape_decode(data, errors='strict', final=False, raw=False):
         warn('"\\' + invalid + '" is an invalid ' + kind +
              ' sequence. Such sequences will not work in the future. ',
              DeprecationWarning, stacklevel=2)
-    return _from_codepoints(codes), index
+    return text_from_codepoints(codes), index
 
 
 def parse_specification(specification):
@@ -1057,7 +1057,7 @@ def representation(text):
         else:
             _append_ascii(codes, _escaped_character(code))
     codes.append(quote)
-    return _from_codepoints(codes)
+    return text_from_codepoints(codes)
 
 
 class _Missing:
@@ -1079,7 +1079,7 @@ def str(object=_MISSING, encoding=_MISSING, errors=_MISSING):
     if _text_storage(object):
         raise TypeError("decoding str is not supported")
     try:
-        _byte_length(object)
+        byte_length(object)
     except TypeError:
         raise TypeError(
             f"decoding to str: need a bytes-like object, {_type_name(object)} found"
@@ -1103,7 +1103,7 @@ def ascii(value, /):
         else:
             _append_ascii(codes, _escaped_character(code))
         index += 1
-    return _from_codepoints(codes)
+    return text_from_codepoints(codes)
 
 
 def format(value, format_spec="", /):
@@ -1137,7 +1137,7 @@ class TextStorage:
             while offset < count:
                 codes.append(_text_codepoint(self, start + offset * step))
                 offset += 1
-            return _from_codepoints(codes)
+            return text_from_codepoints(codes)
         size = _text_length(self)
         index = _index(index)
         if index < 0:
@@ -1475,7 +1475,7 @@ class TextStorage:
         while index < length:
             _lower_into(codes, self, index, length)
             index += 1
-        return _from_codepoints(codes)
+        return text_from_codepoints(codes)
 
     def upper(self):
         codes = []
@@ -1484,7 +1484,7 @@ class TextStorage:
         while index < length:
             _extend_mapping(codes, upper_full(_text_codepoint(self, index)))
             index += 1
-        return _from_codepoints(codes)
+        return text_from_codepoints(codes)
 
     def casefold(self):
         codes = []
@@ -1493,7 +1493,7 @@ class TextStorage:
         while index < length:
             _extend_mapping(codes, fold_full(_text_codepoint(self, index)))
             index += 1
-        return _from_codepoints(codes)
+        return text_from_codepoints(codes)
 
     def capitalize(self):
         length = _text_length(self)
@@ -1505,7 +1505,7 @@ class TextStorage:
         while index < length:
             _lower_into(codes, self, index, length)
             index += 1
-        return _from_codepoints(codes)
+        return text_from_codepoints(codes)
 
     def title(self):
         codes = []
@@ -1520,7 +1520,7 @@ class TextStorage:
                 _extend_mapping(codes, title_full(code))
             previous_cased = is_cased(code)
             index += 1
-        return _from_codepoints(codes)
+        return text_from_codepoints(codes)
 
     def swapcase(self):
         codes = []
@@ -1535,7 +1535,7 @@ class TextStorage:
             else:
                 codes.append(code)
             index += 1
-        return _from_codepoints(codes)
+        return text_from_codepoints(codes)
 
     def isalpha(self):
         return _all_codepoints(self, is_alpha, False)
@@ -1680,7 +1680,7 @@ class TextStorage:
                 column += 1
                 if code == 10 or code == 13:
                     column = 0
-        return _from_codepoints(codes)
+        return text_from_codepoints(codes)
 
     def translate(self, table, /):
         codes = []
@@ -1709,7 +1709,7 @@ class TextStorage:
             if mapped < 0 or mapped > 0x10FFFF:
                 raise ValueError("character mapping must be in range(0x110000)")
             codes.append(mapped)
-        return _from_codepoints(codes)
+        return text_from_codepoints(codes)
 
     def format(self, *args, **keyws):
         return _expand(self, _Fields(args, keyws), 1)

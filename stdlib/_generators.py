@@ -12,14 +12,14 @@ coroutine rather than a single function.
 
 from _attributes import getattr
 from _descriptors import property
-from _mule_native import coroutine_abandon as _coroutine_abandon
-from _mule_native import coroutine_new as _coroutine_new
-from _mule_native import coroutine_resume as _coroutine_resume
-from _mule_native import coroutine_state as _coroutine_state
-from _mule_native import coroutine_throw as _coroutine_throw
-from _mule_native import coroutine_yield as _coroutine_yield
-from _mule_native import is_class as _is_class
-from _mule_native import is_instance as _is_instance
+from _mule_native import coroutine_abandon
+from _mule_native import coroutine_new
+from _mule_native import coroutine_resume
+from _mule_native import coroutine_state
+from _mule_native import coroutine_throw
+from _mule_native import coroutine_yield
+from _mule_native import is_class
+from _mule_native import is_instance
 
 _CREATED = 0
 _RUNNING = 2
@@ -28,11 +28,11 @@ _FINISHED = 3
 
 def _exception(kind, value):
     """Normalize ``throw``'s arguments to an exception instance."""
-    if not _is_class(kind):
+    if not is_class(kind):
         return kind
     if value is None:
         return kind()
-    if _is_instance(value, kind):
+    if is_instance(value, kind):
         return value
     return kind(value)
 
@@ -41,7 +41,7 @@ class generator:
     """The iterator a generator function returns."""
 
     def __init__(self, function, arguments, name, qualname):
-        self._handle = _coroutine_new(function, arguments)
+        self._handle = coroutine_new(function, arguments)
         self.__name__ = name
         self.__qualname__ = qualname
 
@@ -54,21 +54,21 @@ class generator:
     def _resume(self, value, exception):
         try:
             if exception is None:
-                result = _coroutine_resume(self._handle, value)
+                result = coroutine_resume(self._handle, value)
             else:
-                result = _coroutine_throw(self._handle, exception)
+                result = coroutine_throw(self._handle, exception)
         except StopIteration as error:
-            if _coroutine_state(self._handle) == _FINISHED:
+            if coroutine_state(self._handle) == _FINISHED:
                 raise RuntimeError("generator raised StopIteration") from error
             raise
-        if _coroutine_state(self._handle) == _FINISHED:
+        if coroutine_state(self._handle) == _FINISHED:
             if result is None:
                 raise StopIteration
             raise StopIteration(result)
         return result
 
     def send(self, value):
-        state = _coroutine_state(self._handle)
+        state = coroutine_state(self._handle)
         if state == _FINISHED:
             raise StopIteration
         if state == _CREATED and value is not None:
@@ -77,16 +77,16 @@ class generator:
 
     def throw(self, kind, value=None, traceback=None):
         exception = _exception(kind, value)
-        state = _coroutine_state(self._handle)
+        state = coroutine_state(self._handle)
         if state == _CREATED or state == _FINISHED:
-            _coroutine_abandon(self._handle)
+            coroutine_abandon(self._handle)
             raise exception
         return self._resume(None, exception)
 
     def close(self):
-        state = _coroutine_state(self._handle)
+        state = coroutine_state(self._handle)
         if state == _CREATED or state == _FINISHED:
-            _coroutine_abandon(self._handle)
+            coroutine_abandon(self._handle)
             return None
         try:
             self._resume(None, GeneratorExit())
@@ -96,11 +96,11 @@ class generator:
 
     @property
     def gi_running(self):
-        return _coroutine_state(self._handle) == _RUNNING
+        return coroutine_state(self._handle) == _RUNNING
 
     @property
     def gi_suspended(self):
-        return _coroutine_state(self._handle) == 1
+        return coroutine_state(self._handle) == 1
 
     def __repr__(self):
         return f"<generator object {self.__qualname__}>"
@@ -115,7 +115,7 @@ def yield_from(iterable):
         return stop.value
     while True:
         try:
-            sent = _coroutine_yield(value)
+            sent = coroutine_yield(value)
         except GeneratorExit:
             close = getattr(iterator, "close", None)
             if close is not None:
@@ -207,7 +207,7 @@ class _AsyncGeneratorValue:
 
 
 def async_generator_yield(value):
-    return _coroutine_yield(_AsyncGeneratorValue(value))
+    return coroutine_yield(_AsyncGeneratorValue(value))
 
 
 class async_generator:

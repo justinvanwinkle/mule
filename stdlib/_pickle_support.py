@@ -2,31 +2,31 @@
 
 import copyreg
 from _object import (
-    _bind_attribute,
-    _class_lookup,
-    _class_lookup_default,
-    _instance_extra_items,
-    _instance_items,
+    bind_instance_attribute,
+    class_lookup,
+    class_lookup_default,
+    instance_extra_items,
+    instance_items,
     _index_integer,
-    _storage_dictionary,
-    _type_of,
+    storage_dictionary,
+    type_of,
     object,
 )
 
 
 def getstate(value):
-    owner = _type_of(value)
+    owner = type_of(value)
     slotnames = copyreg._slotnames(owner)
     try:
-        namespace = _storage_dictionary(value)
+        namespace = storage_dictionary(value)
     except AttributeError:
         state = None
     else:
         if namespace is None:
-            extras = dict(_instance_extra_items(value))
+            extras = dict(instance_extra_items(value))
             state = {
                 name: item
-                for name, item in _instance_items(value)
+                for name, item in instance_items(value)
                 if name not in slotnames and name not in extras
             }
             state.update(extras)
@@ -44,11 +44,11 @@ def getstate(value):
 
 
 def _new_arguments(value):
-    owner = _type_of(value)
+    owner = type_of(value)
     missing = object()
-    method = _class_lookup_default(owner, "__getnewargs_ex__", missing)
+    method = class_lookup_default(owner, "__getnewargs_ex__", missing)
     if method is not missing:
-        result = _bind_attribute(method, value, owner)()
+        result = bind_instance_attribute(method, value, owner)()
         if not isinstance(result, tuple):
             raise TypeError(
                 f"__getnewargs_ex__ should return a tuple, not '{type(result).__name__}'"
@@ -67,10 +67,10 @@ def _new_arguments(value):
                 f"second item of the tuple returned by __getnewargs_ex__ must be a dict, not '{type(kwargs).__name__}'"
             )
         return args, kwargs
-    method = _class_lookup_default(owner, "__getnewargs__", missing)
+    method = class_lookup_default(owner, "__getnewargs__", missing)
     if method is missing:
         return (), {}
-    args = _bind_attribute(method, value, owner)()
+    args = bind_instance_attribute(method, value, owner)()
     if not isinstance(args, tuple):
         raise TypeError(
             f"__getnewargs__ should return a tuple, not '{type(args).__name__}'"
@@ -82,7 +82,7 @@ def reduce(value, protocol):
     if protocol < 2:
         return copyreg._reduce_ex(value, protocol)
     args, kwargs = _new_arguments(value)
-    owner = _type_of(value)
+    owner = type_of(value)
     if kwargs:
         constructor, arguments = copyreg.__newobj_ex__, (owner, args, kwargs)
     else:
@@ -102,7 +102,7 @@ def reduce_ex(value, protocol):
     except AttributeError:
         pass
     else:
-        if _class_lookup(_type_of(value), "__reduce__") is not _class_lookup(
+        if class_lookup(type_of(value), "__reduce__") is not class_lookup(
             object, "__reduce__"
         ):
             return method()

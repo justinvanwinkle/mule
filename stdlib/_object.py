@@ -10,67 +10,67 @@ any other compiled builtin defines a class, so those classes derive from
 ``object``.
 """
 
-from _mule_native import allocate_instance as _new_instance
-from _mule_native import default_construct as _default_construct
-from _mule_native import bind_instance_attribute as _bind_attribute
-from _mule_native import bound_method as _bound_method
-from _mule_native import bound_method_receiver as _bound_method_receiver
-from _mule_native import bound_method_function as _bound_method_function
-from _mule_native import class_base as _class_base
-from _mule_native import class_bases as _class_bases
-from _mule_native import class_subclasses as _class_subclasses
-from _mule_native import class_lookup as _class_lookup
-from _mule_native import class_lookup_default as _class_lookup_default
-from _mule_native import class_mro as _class_mro
-from _mule_native import class_name as _class_name
-from _mule_native import class_own_names as _class_own_names
-from _mule_native import default_repr as _default_repr
-from _mule_native import generic_get_attribute as _generic_get_attribute
-from _mule_native import generic_set_attribute as _generic_set_attribute
-from _mule_native import generic_delete_attribute as _generic_delete_attribute
-from _mule_native import identity_hash as _identity_hash
-from _mule_native import instance_items as _instance_items
-from _mule_native import instance_extra_items as _instance_extra_items
-from _mule_native import instance_set_binding as _instance_set_binding
-from _mule_native import instance_delete_binding as _instance_delete_binding
-from _mule_native import instance_field as _instance_field
-from _mule_native import set_instance_field as _set_instance_field
-from _mule_native import delete_instance_field as _delete_instance_field
-from _mule_native import storage_dictionary as _storage_dictionary
-from _mule_native import is_class as _is_class
-from _mule_native import is_instance as _is_instance
-from _mule_native import is_subclass as _is_subclass
-from _mule_native import new_class as _new_class
-from _mule_native import namespace_items as _namespace_items
-from _mule_native import namespace_binding as _namespace_binding
-from _mule_native import namespace_bind as _namespace_bind
-from _mule_native import namespace_unbind as _namespace_unbind
-from _mule_native import math_float_bits as _math_float_bits
-from _mule_native import math_float_format as _math_float_format
-from _mule_native import numeric_negate as _numeric_negate
-from _mule_native import numeric_invert as _numeric_invert
-from _mule_native import integer_decimal as _integer_decimal
-from _mule_native import math_fabs as _math_fabs
-from _mule_native import register_type as _register_type
-from _mule_native import traceback_field as _traceback_field
-from _mule_native import set_class_name as _set_class_name
-from _mule_native import type_of as _type_of
-from _mule_native import typed_value as _typed_value
-from _mule_native import function_attributes as _function_attributes
-from _mule_native import code_metadata as _code_metadata
-from _mule_native import code_cache as _code_cache
-from _mule_native import set_code_cache as _set_code_cache
-from _mule_native import function_captured_defaults as _function_captured_defaults
-from _mule_native import function_positional_defaults as _function_positional_defaults
-from _mule_native import set_function_positional_defaults as _set_function_positional_defaults
-from _mule_native import function_keyword_defaults as _function_keyword_defaults
-from _mule_native import set_function_keyword_defaults as _set_function_keyword_defaults
-from _mule_native import function_annotate as _function_annotate
-from _mule_native import function_annotations as _function_annotations
-from _mule_native import set_function_annotate as _set_function_annotate
-from _mule_native import set_function_annotations as _set_function_annotations
-from _mule_native import byte_length as _byte_length
-from _mule_native import read_byte as _read_byte
+from _mule_native import allocate_instance
+from _mule_native import default_construct
+from _mule_native import bind_instance_attribute
+from _mule_native import bound_method
+from _mule_native import bound_method_receiver
+from _mule_native import bound_method_function
+from _mule_native import class_base
+from _mule_native import class_bases
+from _mule_native import class_subclasses
+from _mule_native import class_lookup
+from _mule_native import class_lookup_default
+from _mule_native import class_mro
+from _mule_native import class_name
+from _mule_native import class_own_names
+from _mule_native import default_repr
+from _mule_native import generic_get_attribute
+from _mule_native import generic_set_attribute
+from _mule_native import generic_delete_attribute
+from _mule_native import identity_hash
+from _mule_native import instance_items
+from _mule_native import instance_extra_items
+from _mule_native import instance_set_binding
+from _mule_native import instance_delete_binding
+from _mule_native import instance_field
+from _mule_native import set_instance_field
+from _mule_native import delete_instance_field
+from _mule_native import storage_dictionary
+from _mule_native import is_class
+from _mule_native import is_instance
+from _mule_native import is_subclass
+from _mule_native import new_class
+from _mule_native import namespace_items
+from _mule_native import namespace_binding
+from _mule_native import namespace_bind
+from _mule_native import namespace_unbind
+from _mule_native import math_float_bits
+from _mule_native import math_float_format
+from _mule_native import numeric_negate
+from _mule_native import numeric_invert
+from _mule_native import integer_decimal
+from _mule_native import math_fabs
+from _mule_native import register_type
+from _mule_native import traceback_field
+from _mule_native import set_class_name
+from _mule_native import type_of
+from _mule_native import typed_value
+from _mule_native import function_attributes
+from _mule_native import code_metadata
+from _mule_native import code_cache
+from _mule_native import set_code_cache
+from _mule_native import function_captured_defaults
+from _mule_native import function_positional_defaults
+from _mule_native import set_function_positional_defaults
+from _mule_native import function_keyword_defaults
+from _mule_native import set_function_keyword_defaults
+from _mule_native import function_annotate
+from _mule_native import function_annotations
+from _mule_native import set_function_annotate
+from _mule_native import set_function_annotations
+from _mule_native import byte_length
+from _mule_native import read_byte
 
 # The runtime's conversion functions, captured before the classes below
 # take over their builtin names.
@@ -82,37 +82,37 @@ _convert_bool = bool
 def _bytes_special(value):
     """Apply __bytes__ once, distinguishing absence from a non-callable value."""
     missing = _binding_missing()
-    owner = _type_of(value)
-    method = _class_lookup_default(owner, "__bytes__", missing)
+    owner = type_of(value)
+    method = class_lookup_default(owner, "__bytes__", missing)
     if method is missing:
         return False, None
     try:
-        method = _bind_attribute(method, value, owner)
+        method = bind_instance_attribute(method, value, owner)
     except AttributeError:
         return False, None
     result = method()
-    if not _is_instance(result, bytes):
-        raise TypeError(f"__bytes__ returned non-bytes (type {_type_of(result).__name__})")
+    if not is_instance(result, bytes):
+        raise TypeError(f"__bytes__ returned non-bytes (type {type_of(result).__name__})")
     return True, result
 
 
 def _index_integer(value):
-    if _is_instance(value, int):
+    if is_instance(value, int):
         return _convert_int(value)
-    owner = _type_of(value)
+    owner = type_of(value)
     missing = _binding_missing()
-    method = _class_lookup_default(owner, "__index__", missing)
+    method = class_lookup_default(owner, "__index__", missing)
     if method is missing:
         raise TypeError(f"'{owner.__name__}' object cannot be interpreted as an integer")
-    result = _bind_attribute(method, value, owner)()
-    if not _is_instance(result, int):
-        raise TypeError(f"__index__ returned non-int (type {_type_of(result).__name__})")
+    result = bind_instance_attribute(method, value, owner)()
+    if not is_instance(result, int):
+        raise TypeError(f"__index__ returned non-int (type {type_of(result).__name__})")
     return _convert_int(result)
 
 
 def _integer_byteorder(value, operation):
-    if not _is_instance(value, str):
-        name = "None" if value is None else _type_of(value).__name__
+    if not is_instance(value, str):
+        name = "None" if value is None else type_of(value).__name__
         raise TypeError(f"{operation}() argument 'byteorder' must be str, not {name}")
     order = str.encode(value, "utf-8")
     if order == b"little":
@@ -176,12 +176,12 @@ def _format_number(value, kind, format_spec):
             raise ValueError("unknown format code '" + conversion + "' for object of type 'float'")
         if precision < 0:
             precision = 6
-        body = _math_float_format(value, codes[conversion], precision, alternate)
+        body = math_float_format(value, codes[conversion], precision, alternate)
     elif conversion in "eEfFgG%" and kind == "int":
         codes = {"f": 0, "e": 1, "E": 2, "g": 3, "G": 4, "%": 5}
         if precision < 0:
             precision = 6
-        body = _math_float_format(_convert_float(value), codes[conversion], precision, alternate)
+        body = math_float_format(_convert_float(value), codes[conversion], precision, alternate)
         kind = "float"
     elif kind == "int":
         number = value
@@ -274,18 +274,18 @@ class object:
 
     def __new__(cls, *args):
         if args and _overrides(cls, "__init__") is False:
-            raise TypeError(f"{_class_name(cls)}() takes no arguments")
-        return _new_instance(cls)
+            raise TypeError(f"{class_name(cls)}() takes no arguments")
+        return allocate_instance(cls)
 
     def __init__(self, *args):
-        cls = _type_of(self)
+        cls = type_of(self)
         if args and (_overrides(cls, "__init__") or not _overrides(cls, "__new__")):
             raise TypeError(
                 "object.__init__() takes exactly one argument (the instance to initialize)"
             )
 
     def __getattribute__(self, name):
-        return _generic_get_attribute(self, name)
+        return generic_get_attribute(self, name)
 
     def __mule_annotation_mapping__(self):
         raise TypeError("__annotations__ must be a dict or None")
@@ -295,8 +295,8 @@ class object:
             names = set(self.__dict__)
         except AttributeError:
             names = set()
-        for cls in _class_mro(_type_of(self)):
-            names.update(_class_own_names(cls))
+        for cls in class_mro(type_of(self)):
+            names.update(class_own_names(cls))
         return list(names)
 
     def __mule_exit_status__(self):
@@ -304,18 +304,18 @@ class object:
 
     def __setattr__(self, name, value):
         missing = _binding_missing()
-        descriptor = _class_lookup_default(_type_of(self), name, missing)
+        descriptor = class_lookup_default(type_of(self), name, missing)
         if descriptor is missing:
-            _generic_set_attribute(self, name, value)
+            generic_set_attribute(self, name, value)
             return
-        descriptor_type = _type_of(descriptor)
-        setter = _class_lookup_default(descriptor_type, "__set__", missing)
+        descriptor_type = type_of(descriptor)
+        setter = class_lookup_default(descriptor_type, "__set__", missing)
         if setter is missing:
-            if _class_lookup_default(descriptor_type, "__delete__", missing) is missing:
-                _generic_set_attribute(self, name, value)
+            if class_lookup_default(descriptor_type, "__delete__", missing) is missing:
+                generic_set_attribute(self, name, value)
                 return
             raise AttributeError(f"attribute {name!r} is read-only")
-        _bind_attribute(setter, descriptor, descriptor_type)(self, value)
+        bind_instance_attribute(setter, descriptor, descriptor_type)(self, value)
 
     def __reduce_ex__(self, protocol):
         from _pickle_support import reduce_ex
@@ -334,45 +334,45 @@ class object:
 
     def __delattr__(self, name):
         missing = _binding_missing()
-        descriptor = _class_lookup_default(_type_of(self), name, missing)
+        descriptor = class_lookup_default(type_of(self), name, missing)
         if descriptor is missing:
-            _generic_delete_attribute(self, name)
+            generic_delete_attribute(self, name)
             return
-        descriptor_type = _type_of(descriptor)
-        deleter = _class_lookup_default(descriptor_type, "__delete__", missing)
+        descriptor_type = type_of(descriptor)
+        deleter = class_lookup_default(descriptor_type, "__delete__", missing)
         if deleter is missing:
-            if _class_lookup_default(descriptor_type, "__set__", missing) is missing:
-                _generic_delete_attribute(self, name)
+            if class_lookup_default(descriptor_type, "__set__", missing) is missing:
+                generic_delete_attribute(self, name)
                 return
             raise AttributeError(f"attribute {name!r} cannot be deleted")
-        _bind_attribute(deleter, descriptor, descriptor_type)(self)
+        bind_instance_attribute(deleter, descriptor, descriptor_type)(self)
 
     # The runtime applies these defaults itself when a class inherits them
     # (see ClassLayout::special); they exist for explicit calls such as
     # ``object.__repr__(self)`` and must match that built-in behavior.
     def __repr__(self):
-        return _default_repr(self)
+        return default_repr(self)
 
     def __str__(self):
-        return _type_of(self).__repr__(self)
+        return type_of(self).__repr__(self)
 
     def __format__(self, format_spec):
         if format_spec:
             raise TypeError(
-                f"unsupported format string passed to {_class_name(_type_of(self))}.__format__"
+                f"unsupported format string passed to {class_name(type_of(self))}.__format__"
             )
         return str(self)
 
     def __hash__(self):
-        return _identity_hash(self)
+        return identity_hash(self)
 
     def __eq__(self, other):
         return True if self is other else NotImplemented
 
     def __ne__(self, other):
-        owner = _type_of(self)
-        method = _class_lookup(owner, '__eq__')
-        result = _bind_attribute(method, self, owner)(other)
+        owner = type_of(self)
+        method = class_lookup(owner, '__eq__')
+        result = bind_instance_attribute(method, self, owner)(other)
         return result if result is NotImplemented else not result
 
     def __lt__(self, other):
@@ -394,12 +394,12 @@ class object:
         return NotImplemented
 
 
-_register_type("object", object)
+register_type("object", object)
 
 
 def _overrides(cls, name):
     """Whether ``cls`` defines ``name`` somewhere other than ``object``."""
-    return _class_lookup(cls, name) is not _class_lookup(object, name)
+    return class_lookup(cls, name) is not class_lookup(object, name)
 
 
 _slot_descriptors_ready = False
@@ -432,25 +432,25 @@ class type(object):
     ``type(name, bases, namespace)`` creates a class."""
 
     def __call__(cls, *args, **kwargs):
-        if not _is_class(cls):
+        if not is_class(cls):
             raise TypeError('type.__call__ requires a class')
-        return _default_construct(cls, tuple(args), tuple(kwargs), tuple(kwargs.values()))
+        return default_construct(cls, tuple(args), tuple(kwargs), tuple(kwargs.values()))
 
     def __new__(metaclass, *args, **keywords):
         if len(args) == 1 and metaclass is type and not keywords:
-            return _type_of(args[0])
+            return type_of(args[0])
         if len(args) != 3:
             raise TypeError("type() takes 1 or 3 arguments")
         name, bases, namespace = args
-        if not _is_instance(name, str):
+        if not is_instance(name, str):
             raise TypeError("type.__new__() argument 1 must be str")
-        if not _is_instance(bases, tuple):
+        if not is_instance(bases, tuple):
             raise TypeError("type.__new__() argument 2 must be tuple")
         original_bases = bases
         resolved = []
         changed = False
         for base in bases:
-            if _is_class(base):
+            if is_class(base):
                 resolved.append(base)
                 continue
             method = getattr(base, "__mro_entries__", None)
@@ -458,7 +458,7 @@ class type(object):
                 resolved.append(base)
                 continue
             entries = method(bases)
-            if not _is_instance(entries, tuple):
+            if not is_instance(entries, tuple):
                 raise TypeError("__mro_entries__ must return a tuple")
             changed = True
             for entry in entries:
@@ -475,7 +475,7 @@ class type(object):
             if key == "__mule_fields__":
                 continue
             # These hooks are implicit class methods (CPython's type_new).
-            if key in ("__init_subclass__", "__class_getitem__") and _is_instance(
+            if key in ("__init_subclass__", "__class_getitem__") and is_instance(
                 value, function
             ):
                 value = classmethod(value)
@@ -498,16 +498,16 @@ class type(object):
         # this call was made through (type itself for a plain type() call).
         winner = metaclass
         for base in bases:
-            candidate = _type_of(base)
-            if _is_subclass(candidate, winner):
+            candidate = type_of(base)
+            if is_subclass(candidate, winner):
                 winner = candidate
-            elif not _is_subclass(winner, candidate):
+            elif not is_subclass(winner, candidate):
                 raise TypeError(
                     "metaclass conflict: the metaclass of a derived class "
                     "must be a (non-strict) subclass of the metaclasses "
                     "of all its bases"
                 )
-        cls = _new_class(
+        cls = new_class(
             winner,
             name,
             bases,
@@ -521,7 +521,7 @@ class type(object):
                 setattr(cls, slot, member_descriptor(cls, slot, property(accessor.get, accessor.set, accessor.delete)))
         index = 0
         while index < len(names):
-            hook = getattr(_type_of(values[index]), "__set_name__", None)
+            hook = getattr(type_of(values[index]), "__set_name__", None)
             if hook is not None:
                 hook(values[index], cls, names[index])
             index += 1
@@ -535,27 +535,27 @@ class type(object):
         return {}
 
     def mro(cls):
-        return list(_class_mro(cls))
+        return list(class_mro(cls))
 
     def __instancecheck__(cls, instance):
-        return _is_instance(instance, cls)
+        return is_instance(instance, cls)
 
     def __subclasscheck__(cls, subclass):
-        if not _is_class(subclass):
+        if not is_class(subclass):
             raise TypeError("issubclass() arg 1 must be a class")
-        return _is_subclass(subclass, cls)
+        return is_subclass(subclass, cls)
 
     def __subclasses__(cls):
-        return list(_class_subclasses(cls))
+        return list(class_subclasses(cls))
 
     def __dir__(cls):
         names = set()
-        for base in _class_mro(cls):
-            names.update(_class_own_names(base))
+        for base in class_mro(cls):
+            names.update(class_own_names(base))
         return list(names)
 
 
-_register_type("type", type)
+register_type("type", type)
 
 # Descriptor classes derive from object, so they are created after it.
 from _descriptors import classmethod, property, staticmethod, super  # noqa: E402
@@ -570,7 +570,7 @@ def _class_annotations(cls):
     # A class without stored annotations has an empty dict, as
     # type.__annotations__ provides in CPython. Classes keep their own
     # stored dict when they define annotations.
-    if "__annotations__" in _class_own_names(cls):
+    if "__annotations__" in class_own_names(cls):
         return _namespace(cls)["__annotations__"]
     return {}
 
@@ -579,18 +579,18 @@ type.__annotations__ = property(_class_annotations)
 
 
 def _bases(cls):
-    return _class_bases(cls)
+    return class_bases(cls)
 
 
 def _namespace(cls):
     return mappingproxy(_ClassDict(cls))
 
 
-object.__class__ = property(_type_of)
-type.__name__ = property(_class_name, _set_class_name)
-type.__base__ = property(_class_base)
+object.__class__ = property(type_of)
+type.__name__ = property(class_name, set_class_name)
+type.__base__ = property(class_base)
 type.__bases__ = property(_bases)
-type.__mro__ = property(_class_mro)
+type.__mro__ = property(class_mro)
 type.__dict__ = property(_namespace)
 
 
@@ -603,20 +603,20 @@ class _InstanceDict(object):
         self._owner = owner
 
     def __getitem__(self, key):
-        for name, value in _instance_items(self._owner):
+        for name, value in instance_items(self._owner):
             if name == key:
                 return value
         raise KeyError(key)
 
     def __setitem__(self, key, value):
-        _instance_set_binding(self._owner, key, value)
+        instance_set_binding(self._owner, key, value)
 
     def __delitem__(self, key):
-        if not _instance_delete_binding(self._owner, key):
+        if not instance_delete_binding(self._owner, key):
             raise KeyError(key)
 
     def __contains__(self, key):
-        for name, value in _instance_items(self._owner):
+        for name, value in instance_items(self._owner):
             if name == key:
                 return True
         return False
@@ -625,19 +625,19 @@ class _InstanceDict(object):
         return iter(self.keys())
 
     def __len__(self):
-        return len(_instance_items(self._owner))
+        return len(instance_items(self._owner))
 
     def keys(self):
-        return [name for name, value in _instance_items(self._owner)]
+        return [name for name, value in instance_items(self._owner)]
 
     def values(self):
-        return [value for name, value in _instance_items(self._owner)]
+        return [value for name, value in instance_items(self._owner)]
 
     def items(self):
-        return list(_instance_items(self._owner))
+        return list(instance_items(self._owner))
 
     def get(self, key, default=None):
-        for name, value in _instance_items(self._owner):
+        for name, value in instance_items(self._owner):
             if name == key:
                 return value
         return default
@@ -668,7 +668,7 @@ class _InstanceDict(object):
             self[key] = keywords[key]
 
     def copy(self):
-        return dict(_instance_items(self._owner))
+        return dict(instance_items(self._owner))
 
     def __eq__(self, other):
         return self.copy() == other
@@ -678,7 +678,7 @@ class _InstanceDict(object):
 
 
 def _object_dictionary(owner):
-    namespace = _storage_dictionary(owner)
+    namespace = storage_dictionary(owner)
     if namespace is None:
         return _InstanceDict(owner)
     return _GlobalsDict(namespace)
@@ -708,20 +708,20 @@ class _GlobalsDict(object):
         self._namespace = namespace
 
     def __getitem__(self, key):
-        for name, value in _namespace_items(self._namespace):
+        for name, value in namespace_items(self._namespace):
             if name == key:
                 return value
         raise KeyError(key)
 
     def __setitem__(self, key, value):
-        _namespace_bind(self._namespace, key, value)
+        namespace_bind(self._namespace, key, value)
 
     def __delitem__(self, key):
-        if not _namespace_unbind(self._namespace, key):
+        if not namespace_unbind(self._namespace, key):
             raise KeyError(key)
 
     def __contains__(self, key):
-        for name, value in _namespace_items(self._namespace):
+        for name, value in namespace_items(self._namespace):
             if name == key:
                 return True
         return False
@@ -730,19 +730,19 @@ class _GlobalsDict(object):
         return iter(self.keys())
 
     def __len__(self):
-        return len(_namespace_items(self._namespace))
+        return len(namespace_items(self._namespace))
 
     def keys(self):
-        return [name for name, value in _namespace_items(self._namespace)]
+        return [name for name, value in namespace_items(self._namespace)]
 
     def values(self):
-        return [value for name, value in _namespace_items(self._namespace)]
+        return [value for name, value in namespace_items(self._namespace)]
 
     def items(self):
-        return list(_namespace_items(self._namespace))
+        return list(namespace_items(self._namespace))
 
     def get(self, key, default=None):
-        for name, value in _namespace_items(self._namespace):
+        for name, value in namespace_items(self._namespace):
             if name == key:
                 return value
         return default
@@ -758,9 +758,9 @@ class _GlobalsDict(object):
             return default
 
     def pop(self, key, *default):
-        for name, value in _namespace_items(self._namespace):
+        for name, value in namespace_items(self._namespace):
             if name == key:
-                _namespace_unbind(self._namespace, key)
+                namespace_unbind(self._namespace, key)
                 return value
         if default:
             return default[0]
@@ -774,7 +774,7 @@ class _GlobalsDict(object):
             self[key] = keywords[key]
 
     def copy(self):
-        return dict(_namespace_items(self._namespace))
+        return dict(namespace_items(self._namespace))
 
     def __eq__(self, other):
         return self.copy() == other
@@ -790,12 +790,12 @@ class _ClassDict(object):
         self._owner = owner
 
     def __getitem__(self, key):
-        if key not in _class_own_names(self._owner):
+        if key not in class_own_names(self._owner):
             raise KeyError(key)
-        return _class_lookup(self._owner, key)
+        return class_lookup(self._owner, key)
 
     def __contains__(self, key):
-        return key in _class_own_names(self._owner)
+        return key in class_own_names(self._owner)
 
     def __iter__(self):
         return iter(self.keys())
@@ -804,7 +804,7 @@ class _ClassDict(object):
         return len(self.keys())
 
     def keys(self):
-        return _class_own_names(self._owner)
+        return class_own_names(self._owner)
 
     def values(self):
         return [self[key] for key in self.keys()]
@@ -865,8 +865,8 @@ class NoneType(object):
 
     def __getattribute__(self, name):
         if name == "__class__":
-            return _type_of(self)
-        return _generic_get_attribute(self, name)
+            return type_of(self)
+        return generic_get_attribute(self, name)
 
     def __mule_exit_status__(self):
         return (0, None)
@@ -907,7 +907,7 @@ class complex(object):
             raise TypeError("complex() second argument must be a number")
         real_part = real_part - imag_parts[1]
         imag_part = imag_part + imag_parts[0]
-        instance = _new_instance(cls)
+        instance = allocate_instance(cls)
         instance._real = _convert_float(real_part)
         instance._imag = _convert_float(imag_part)
         return instance
@@ -916,7 +916,7 @@ class complex(object):
     def _parse(cls, text):
         value = text.strip().replace(" ", "")
         if not value.endswith(("j", "J")):
-            instance = _new_instance(cls)
+            instance = allocate_instance(cls)
             instance._real = _convert_float(float(value))
             instance._imag = 0.0
             return instance
@@ -933,7 +933,7 @@ class complex(object):
             real_part = float(body[:split])
             imag_text = body[split:]
             imag_part = 1.0 if imag_text == "+" else (-1.0 if imag_text == "-" else float(imag_text))
-        instance = _new_instance(cls)
+        instance = allocate_instance(cls)
         instance._real = _convert_float(real_part)
         instance._imag = _convert_float(imag_part)
         return instance
@@ -947,7 +947,7 @@ class complex(object):
         return self._imag
 
     def conjugate(self):
-        instance = _new_instance(_type_of(self))
+        instance = allocate_instance(type_of(self))
         instance._real = self._real
         instance._imag = -self._imag
         return instance
@@ -959,7 +959,7 @@ class complex(object):
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
-        return _make_complex(_type_of(self), self._real + parts[0], self._imag + parts[1])
+        return _make_complex(type_of(self), self._real + parts[0], self._imag + parts[1])
 
     def __radd__(self, other):
         return self.__add__(other)
@@ -968,20 +968,20 @@ class complex(object):
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
-        return _make_complex(_type_of(self), self._real - parts[0], self._imag - parts[1])
+        return _make_complex(type_of(self), self._real - parts[0], self._imag - parts[1])
 
     def __rsub__(self, other):
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
-        return _make_complex(_type_of(self), parts[0] - self._real, parts[1] - self._imag)
+        return _make_complex(type_of(self), parts[0] - self._real, parts[1] - self._imag)
 
     def __mul__(self, other):
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
         return _make_complex(
-            _type_of(self),
+            type_of(self),
             self._real * parts[0] - self._imag * parts[1],
             self._real * parts[1] + self._imag * parts[0],
         )
@@ -997,7 +997,7 @@ class complex(object):
         if denominator == 0:
             raise ZeroDivisionError("complex division by zero")
         return _make_complex(
-            _type_of(self),
+            type_of(self),
             (self._real * parts[0] + self._imag * parts[1]) / denominator,
             (self._imag * parts[0] - self._real * parts[1]) / denominator,
         )
@@ -1006,10 +1006,10 @@ class complex(object):
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
-        return _make_complex(_type_of(self), parts[0], parts[1]).__truediv__(self)
+        return _make_complex(type_of(self), parts[0], parts[1]).__truediv__(self)
 
     def __neg__(self):
-        return _make_complex(_type_of(self), -self._real, -self._imag)
+        return _make_complex(type_of(self), -self._real, -self._imag)
 
     def __pos__(self):
         return self
@@ -1041,7 +1041,7 @@ class complex(object):
 
 
 def _make_complex(cls, real, imag):
-    instance = _new_instance(cls)
+    instance = allocate_instance(cls)
     instance._real = _convert_float(real)
     instance._imag = _convert_float(imag)
     return instance
@@ -1049,22 +1049,22 @@ def _make_complex(cls, real, imag):
 
 class int(object):
     def __repr__(self):
-        if not _is_instance(self, int):
-            raise TypeError(f"descriptor '__repr__' requires a 'int' object but received a '{_type_of(self).__name__}'")
-        return _integer_decimal(self)
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__repr__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        return integer_decimal(self)
 
     def __pos__(self):
         return _convert_int(self)
 
     def __neg__(self):
-        return _numeric_negate(_convert_int(self))
+        return numeric_negate(_convert_int(self))
 
     def __invert__(self):
-        return _numeric_invert(_convert_int(self))
+        return numeric_invert(_convert_int(self))
 
     def __abs__(self):
         value = _convert_int(self)
-        return _numeric_negate(value) if value < 0 else value
+        return numeric_negate(value) if value < 0 else value
     __slots__ = ()
 
     def __new__(cls, *args):
@@ -1078,17 +1078,17 @@ class int(object):
                 args = (bytearray.decode(value, "latin-1"),) + args[1:]
         if len(args) == 1:
             source = args[0]
-            owner = _type_of(source)
+            owner = type_of(source)
             missing = _binding_missing()
-            method = _class_lookup_default(owner, "__int__", missing)
+            method = class_lookup_default(owner, "__int__", missing)
             if method is not missing:
-                value = _bind_attribute(method, source, owner)()
-                if not _is_instance(value, int):
-                    raise TypeError(f"__int__ returned non-int (type {_type_of(value).__name__})")
+                value = bind_instance_attribute(method, source, owner)()
+                if not is_instance(value, int):
+                    raise TypeError(f"__int__ returned non-int (type {type_of(value).__name__})")
                 args = (value,)
         value = _convert_int(*args)
         if cls is not int and cls is not bool:
-            return _typed_value(value, cls)
+            return typed_value(value, cls)
         return value
 
     def __format__(self, format_spec=""):
@@ -1097,13 +1097,13 @@ class int(object):
         return _format_number(self, "int", format_spec)
 
     def __index__(self):
-        if not _is_instance(self, int):
-            raise TypeError(f"descriptor '__index__' requires a 'int' object but received a '{_type_of(self).__name__}'")
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__index__' requires a 'int' object but received a '{type_of(self).__name__}'")
         return _convert_int(self)
 
     def __int__(self):
-        if not _is_instance(self, int):
-            raise TypeError(f"descriptor '__int__' requires a 'int' object but received a '{_type_of(self).__name__}'")
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__int__' requires a 'int' object but received a '{type_of(self).__name__}'")
         return _convert_int(self)
 
     def __float__(self):
@@ -1120,8 +1120,8 @@ class int(object):
         return quotient * scale
 
     def __divmod__(self, other):
-        if not _is_instance(self, int):
-            raise TypeError(f"descriptor '__divmod__' requires a 'int' object but received a '{_type_of(self).__name__}'")
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__divmod__' requires a 'int' object but received a '{type_of(self).__name__}'")
         if not isinstance(other, int):
             return NotImplemented
         left, right = _convert_int(self), _convert_int(other)
@@ -1130,8 +1130,8 @@ class int(object):
         return (left // right, left % right)
 
     def __rdivmod__(self, other):
-        if not _is_instance(self, int):
-            raise TypeError(f"descriptor '__rdivmod__' requires a 'int' object but received a '{_type_of(self).__name__}'")
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__rdivmod__' requires a 'int' object but received a '{type_of(self).__name__}'")
         if not isinstance(other, int):
             return NotImplemented
         left, right = _convert_int(other), _convert_int(self)
@@ -1167,15 +1167,15 @@ class int(object):
         converted, result = _bytes_special(data)
         if converted:
             data = result
-        elif _is_instance(data, int) or _is_instance(data, str):
-            raise TypeError(f"cannot convert '{_type_of(data).__name__}' object to bytes")
-        if _is_instance(data, bytes):
-            count = _byte_length(data)
+        elif is_instance(data, int) or is_instance(data, str):
+            raise TypeError(f"cannot convert '{type_of(data).__name__}' object to bytes")
+        if is_instance(data, bytes):
+            count = byte_length(data)
             value = 0
             for index in range(count):
                 position = index if big_endian else count - index - 1
-                value = (value << 8) | _read_byte(data, position)
-            if signed and count and _read_byte(data, 0 if big_endian else count - 1) & 0x80:
+                value = (value << 8) | read_byte(data, position)
+            if signed and count and read_byte(data, 0 if big_endian else count - 1) & 0x80:
                 value -= 1 << (8 * count)
             return cls(value)
         value = 0
@@ -1243,8 +1243,8 @@ class bool(int):
         return _convert_bool(*args)
 
     def __repr__(self):
-        if not _is_instance(self, bool):
-            raise TypeError(f"descriptor '__repr__' requires a 'bool' object but received a '{_type_of(self).__name__}'")
+        if not is_instance(self, bool):
+            raise TypeError(f"descriptor '__repr__' requires a 'bool' object but received a '{type_of(self).__name__}'")
         return "True" if self else "False"
 
 
@@ -1253,8 +1253,8 @@ _FLOAT_INFINITY = _convert_float('inf')
 
 class float(object):
     def __int__(self):
-        if not _is_instance(self, float):
-            raise TypeError(f"descriptor '__int__' requires a 'float' object but received a '{_type_of(self).__name__}'")
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__int__' requires a 'float' object but received a '{type_of(self).__name__}'")
         value = _convert_float(self)
         if value != value:
             raise ValueError('cannot convert float NaN to integer')
@@ -1266,16 +1266,16 @@ class float(object):
         return _convert_float(self)
 
     def __neg__(self):
-        return _numeric_negate(_convert_float(self))
+        return numeric_negate(_convert_float(self))
 
     def __abs__(self):
-        return _math_fabs(_convert_float(self))
+        return math_fabs(_convert_float(self))
     __slots__ = ()
 
     def __new__(cls, *args):
         value = _convert_float(*args)
         if cls is not float:
-            return _typed_value(value, cls)
+            return typed_value(value, cls)
         return value
 
     def __format__(self, format_spec=""):
@@ -1287,9 +1287,9 @@ class float(object):
         return self
 
     def hex(self, /):
-        if not _is_instance(self, float):
-            raise TypeError(f"descriptor 'hex' for 'float' objects doesn't apply to a '{_type_of(self).__name__}' object")
-        bits = _math_float_bits(self)
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor 'hex' for 'float' objects doesn't apply to a '{type_of(self).__name__}' object")
+        bits = math_float_bits(self)
         negative = bits >> 63
         exponent = (bits >> 52) & 0x7ff
         fraction = bits & ((1 << 52) - 1)
@@ -1306,9 +1306,9 @@ class float(object):
         return sign + "0x" + leading + "." + digits + "p" + ("+" if power >= 0 else "-") + str(abs(power))
 
     def as_integer_ratio(self, /):
-        if not _is_instance(self, float):
-            raise TypeError(f"descriptor 'as_integer_ratio' for 'float' objects doesn't apply to a '{_type_of(self).__name__}' object")
-        bits = _math_float_bits(self)
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor 'as_integer_ratio' for 'float' objects doesn't apply to a '{type_of(self).__name__}' object")
+        bits = math_float_bits(self)
         exponent = (bits >> 52) & 0x7ff
         numerator = bits & ((1 << 52) - 1)
         if exponent == 0x7ff:
@@ -1332,9 +1332,9 @@ class float(object):
         return numerator, 1 << -power
 
     def is_integer(self, /):
-        if not _is_instance(self, float):
-            raise TypeError(f"descriptor 'is_integer' for 'float' objects doesn't apply to a '{_type_of(self).__name__}' object")
-        bits = _math_float_bits(self)
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor 'is_integer' for 'float' objects doesn't apply to a '{type_of(self).__name__}' object")
+        bits = math_float_bits(self)
         exponent = (bits >> 52) & 0x7ff
         fraction = bits & ((1 << 52) - 1)
         if exponent == 0x7ff:
@@ -1375,8 +1375,8 @@ class float(object):
         return whole + 1 if whole < self else whole
 
     def __divmod__(self, other):
-        if not _is_instance(self, float):
-            raise TypeError(f"descriptor '__divmod__' requires a 'float' object but received a '{_type_of(self).__name__}'")
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__divmod__' requires a 'float' object but received a '{type_of(self).__name__}'")
         if not isinstance(other, (int, float)):
             return NotImplemented
         left, right = _convert_float(self), _convert_float(other)
@@ -1385,8 +1385,8 @@ class float(object):
         return (left // right, left % right)
 
     def __rdivmod__(self, other):
-        if not _is_instance(self, float):
-            raise TypeError(f"descriptor '__rdivmod__' requires a 'float' object but received a '{_type_of(self).__name__}'")
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__rdivmod__' requires a 'float' object but received a '{type_of(self).__name__}'")
         if not isinstance(other, (int, float)):
             return NotImplemented
         left, right = _convert_float(other), _convert_float(self)
@@ -1468,17 +1468,17 @@ def _install_code_fields():
 
 
 def _code_for(receiver, fallback=None):
-    cached = _code_cache(receiver)
+    cached = code_cache(receiver)
     if cached is not None:
         return cached
-    metadata = _code_metadata(receiver)
+    metadata = code_metadata(receiver)
     if metadata is None:
         if fallback is None:
             raise AttributeError("native callable has no Python code metadata")
         cached = code(fallback[0], fallback[2], fallback[1], fallback[3])
     else:
         cached = code(*metadata)
-    _set_code_cache(receiver, cached)
+    set_code_cache(receiver, cached)
     return cached
 
 
@@ -1492,11 +1492,11 @@ class function(object):
     # to name the descriptor types.
     @property
     def __globals__(self):
-        return _generic_get_attribute(self, "__globals__")
+        return generic_get_attribute(self, "__globals__")
 
     @property
     def __closure__(self):
-        return _generic_get_attribute(self, "__closure__")
+        return generic_get_attribute(self, "__closure__")
 
     @property
     def __code__(self):
@@ -1515,79 +1515,79 @@ class function(object):
                     raise NotImplementedError("changing native execution flags is not implemented")
             elif before != after:
                 raise NotImplementedError("changing native code layout or debug metadata is not implemented")
-        _namespace_bind(_function_attributes(self), "__code__", value)
+        namespace_bind(function_attributes(self), "__code__", value)
 
     @property
     def __defaults__(self):
-        defaults = _function_positional_defaults(self)
+        defaults = function_positional_defaults(self)
         if defaults is not None:
             return defaults
         count = self.__code__._positional_defaults
         if not count:
             return None
-        captured = _function_captured_defaults(self)
+        captured = function_captured_defaults(self)
         defaults = tuple(captured[index] for index in range(count))
-        _set_function_positional_defaults(self, defaults)
+        set_function_positional_defaults(self, defaults)
         return defaults
 
     @__defaults__.setter
     def __defaults__(self, value):
-        _namespace_bind(_function_attributes(self), "__defaults__", value)
+        namespace_bind(function_attributes(self), "__defaults__", value)
 
     @property
     def __kwdefaults__(self):
-        defaults = _function_keyword_defaults(self)
+        defaults = function_keyword_defaults(self)
         if defaults is not None:
             return defaults
         metadata = self.__code__
         names = metadata._keyword_defaults
         if not names:
             return None
-        captured = _function_captured_defaults(self)
+        captured = function_captured_defaults(self)
         defaults = {name: captured[metadata._positional_defaults + index]
                     for index, name in enumerate(names)}
-        _set_function_keyword_defaults(self, defaults)
+        set_function_keyword_defaults(self, defaults)
         return defaults
 
     @__kwdefaults__.setter
     def __kwdefaults__(self, value):
-        _namespace_bind(_function_attributes(self), "__kwdefaults__", value)
+        namespace_bind(function_attributes(self), "__kwdefaults__", value)
 
     @property
     def __annotations__(self):
-        annotations = _function_annotations(self)
+        annotations = function_annotations(self)
         if annotations is None:
-            annotate = _function_annotate(self)
+            annotate = function_annotate(self)
             annotations = {} if annotate is None else annotate(1).__mule_annotation_mapping__()
-            _set_function_annotations(self, annotations)
+            set_function_annotations(self, annotations)
         return annotations
 
     @__annotations__.setter
     def __annotations__(self, value):
         if value is not None:
             value = value.__mule_annotation_mapping__()
-        _set_function_annotations(self, value)
-        _set_function_annotate(self, None)
+        set_function_annotations(self, value)
+        set_function_annotate(self, None)
 
     @__annotations__.deleter
     def __annotations__(self):
-        _set_function_annotations(self, None)
+        set_function_annotations(self, None)
 
     @property
     def __annotate__(self):
-        return _function_annotate(self)
+        return function_annotate(self)
 
     @__annotate__.setter
     def __annotate__(self, value):
         if value is not None and not callable(value):
             raise TypeError("__annotate__ must be callable or None")
-        _set_function_annotate(self, value)
+        set_function_annotate(self, value)
         if value is not None:
-            _set_function_annotations(self, None)
+            set_function_annotations(self, None)
 
     @property
     def __dict__(self):
-        return _GlobalsDict(_function_attributes(self))
+        return _GlobalsDict(function_attributes(self))
 
     def __get__(self, instance, owner=None):
         # Functions are descriptors: reading one through an instance binds
@@ -1596,7 +1596,7 @@ class function(object):
         # looks the descriptor protocol up by name.
         if instance is None:
             return self
-        return _bound_method(self, instance)
+        return bound_method(self, instance)
 
 
 _builtin_type_cache = None
@@ -1637,8 +1637,8 @@ class getset_descriptor(property):
         return property.__delete__(self, instance)
 
     def _check(self, instance):
-        if not _is_instance(instance, self.__objclass__):
-            raise TypeError(f"descriptor '{self.__name__}' for '{self.__objclass__.__name__}' objects doesn't apply to a '{_type_of(instance).__name__}' object")
+        if not is_instance(instance, self.__objclass__):
+            raise TypeError(f"descriptor '{self.__name__}' for '{self.__objclass__.__name__}' objects doesn't apply to a '{type_of(instance).__name__}' object")
 
 
 class member_descriptor(getset_descriptor):
@@ -1650,13 +1650,13 @@ class _SlotAccessor:
         self.name = name
 
     def get(self, instance):
-        return _instance_field(instance, self.name)
+        return instance_field(instance, self.name)
 
     def set(self, instance, value):
-        _set_instance_field(instance, self.name, value)
+        set_instance_field(instance, self.name, value)
 
     def delete(self, instance):
-        _delete_instance_field(instance, self.name)
+        delete_instance_field(instance, self.name)
 
 
 def _install_builtin_descriptors():
@@ -1670,10 +1670,10 @@ def _install_builtin_descriptors():
         (function, ("__code__", "__defaults__", "__kwdefaults__", "__annotations__", "__annotate__", "__dict__")),
     ):
         for name in names:
-            setattr(owner, name, getset_descriptor(owner, name, _class_lookup(owner, name)))
+            setattr(owner, name, getset_descriptor(owner, name, class_lookup(owner, name)))
     for owner, names in ((function, ("__globals__", "__closure__")), (method, ("__self__", "__func__"))):
         for name in names:
-            setattr(owner, name, member_descriptor(owner, name, _class_lookup(owner, name)))
+            setattr(owner, name, member_descriptor(owner, name, class_lookup(owner, name)))
 
 
 class builtin_function_or_method(object):
@@ -1682,7 +1682,7 @@ class builtin_function_or_method(object):
     def __get__(self, instance, owner=None):
         if instance is None:
             return self
-        return _bound_method(self, instance)
+        return bound_method(self, instance)
 
 
 class method(object):
@@ -1693,24 +1693,24 @@ class method(object):
             raise TypeError('first argument must be callable')
         if instance is None:
             raise TypeError('instance must not be None')
-        return _bound_method(function, instance)
+        return bound_method(function, instance)
 
     def __init__(self, function, instance, /):
         pass
 
     @property
     def __self__(self):
-        return _bound_method_receiver(self)
+        return bound_method_receiver(self)
 
     @property
     def __func__(self):
-        return _bound_method_function(self)
+        return bound_method_function(self)
 
     def __getattribute__(self, name):
         try:
-            return _generic_get_attribute(self, name)
+            return generic_get_attribute(self, name)
         except AttributeError:
-            return getattr(_bound_method_function(self), name)
+            return getattr(bound_method_function(self), name)
 
 
 class module(object):
@@ -1725,16 +1725,16 @@ class module(object):
 
     def __getattribute__(self, name):
         try:
-            return _generic_get_attribute(self, name)
+            return generic_get_attribute(self, name)
         except AttributeError:
-            hook = _namespace_binding(self, "__getattr__")
+            hook = namespace_binding(self, "__getattr__")
             if hook is None:
                 raise
             return hook[0](name)
 
     @property
     def __dict__(self):
-        if _namespace_items(self) is None:
+        if namespace_items(self) is None:
             return _InstanceDict(self)
         return _GlobalsDict(self)
 
@@ -1751,15 +1751,15 @@ class traceback(object):
 
     @property
     def tb_frame(self):
-        return _traceback_field(self, 0)
+        return traceback_field(self, 0)
 
     @property
     def tb_lineno(self):
-        return _traceback_field(self, 1)
+        return traceback_field(self, 1)
 
     @property
     def tb_next(self):
-        return _traceback_field(self, 2)
+        return traceback_field(self, 2)
 
     @property
     def tb_lasti(self):
@@ -1774,25 +1774,25 @@ class frame(object):
 
     @property
     def f_code(self):
-        info = _traceback_field(self, 0)
+        info = traceback_field(self, 0)
         return _code_for(self, info)
 
     @property
     def f_lineno(self):
-        return _traceback_field(self, 1)
+        return traceback_field(self, 1)
 
     @property
     def f_globals(self):
-        return _GlobalsDict(_traceback_field(self, 2))
+        return _GlobalsDict(traceback_field(self, 2))
 
     @property
     def f_back(self):
-        return _traceback_field(self, 3)
+        return traceback_field(self, 3)
 
     @property
     def f_locals(self):
         result = {}
-        for name, value in _namespace_items(_traceback_field(self, 2)):
+        for name, value in namespace_items(traceback_field(self, 2)):
             result[name] = value
         return framelocalsproxy(result)
 
@@ -1836,27 +1836,27 @@ class framelocalsproxy(object):
 
 # Bootstrap code runs before the exception classes exist, so it cannot use
 # loops, which end by raising StopIteration.
-_register_type("NoneType", NoneType)
-_register_type("int", int)
-_register_type("bool", bool)
-_register_type("float", float)
-_register_type("function", function)
-_register_type("builtin_function_or_method", builtin_function_or_method)
-_register_type("method", method)
-_register_type("module", module)
-_register_type("traceback", traceback)
-_register_type("frame", frame)
+register_type("NoneType", NoneType)
+register_type("int", int)
+register_type("bool", bool)
+register_type("float", float)
+register_type("function", function)
+register_type("builtin_function_or_method", builtin_function_or_method)
+register_type("method", method)
+register_type("module", module)
+register_type("traceback", traceback)
+register_type("frame", frame)
 
 
 def isinstance(obj, classinfo, /):
-    if _is_instance(classinfo, tuple):
+    if is_instance(classinfo, tuple):
         for candidate in classinfo:
             if isinstance(obj, candidate):
                 return True
         return False
-    if _type_of(classinfo) is type:
-        return _is_instance(obj, classinfo)
-    check = getattr(_type_of(classinfo), "__instancecheck__", None)
+    if type_of(classinfo) is type:
+        return is_instance(obj, classinfo)
+    check = getattr(type_of(classinfo), "__instancecheck__", None)
     if check is None:
         raise TypeError(
             "isinstance() arg 2 must be a type, a tuple of types, or a union"
@@ -1865,16 +1865,16 @@ def isinstance(obj, classinfo, /):
 
 
 def issubclass(cls, classinfo, /):
-    if _is_instance(classinfo, tuple):
+    if is_instance(classinfo, tuple):
         for candidate in classinfo:
             if issubclass(cls, candidate):
                 return True
         return False
-    if _type_of(classinfo) is type:
-        if not _is_class(cls):
+    if type_of(classinfo) is type:
+        if not is_class(cls):
             raise TypeError("issubclass() arg 1 must be a class")
-        return _is_subclass(cls, classinfo)
-    check = getattr(_type_of(classinfo), "__subclasscheck__", None)
+        return is_subclass(cls, classinfo)
+    check = getattr(type_of(classinfo), "__subclasscheck__", None)
     if check is None:
         raise TypeError(
             "issubclass() arg 2 must be a class, a tuple of classes, or a union"

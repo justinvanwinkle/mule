@@ -1,6 +1,6 @@
 """Subprocess argument preparation for the native POSIX spawn boundary."""
 
-from _mule_native import fork_exec as _fork
+import _mule_native
 from math.integer import _index
 import os
 
@@ -73,7 +73,7 @@ def fork_exec(
     if not arguments or not candidates:
         raise ValueError("argument and executable vectors must not be empty")
     environment = None if env is None else tuple(bytes(value) for value in env)
-    return _fork(
+    return _mule_native.fork_exec(
         arguments,
         candidates,
         bool(close_fds),

@@ -6,14 +6,14 @@ by that function's constant signature tuple.
 
 # Physical allocation, method lookup and borrowed-view invocation are primitives.
 # The binder runs in the shared protocol namespace, which also supplies
-# ``dict``, ``_call_with``, ``_is_instance`` and ``_overriding_new``.
+# ``dict``, ``call_with``, ``is_instance`` and ``overriding_new``.
 # ruff: noqa: F821
 
 
 def construct(cls, view):
-    creator = _overriding_new(cls)
+    creator = overriding_new(cls)
     if creator is None:
-        instance = _allocate_instance(cls)
+        instance = allocate_instance(cls)
     else:
         positional = [cls]
         index = 0
@@ -26,14 +26,14 @@ def construct(cls, view):
             _storage_append(names, _binding_keyword_name(view, index))
             _storage_append(values, _binding_keyword_value(view, index))
             index += 1
-        instance = _call_with(
+        instance = call_with(
             creator,
             _storage_tuple(positional),
             _storage_tuple(names),
             _storage_tuple(values),
         )
         # Python initializes only instances of the class being called.
-        if not _is_instance(instance, cls):
+        if not is_instance(instance, cls):
             return instance
     initializer = _init_method(instance)
     if initializer is None:

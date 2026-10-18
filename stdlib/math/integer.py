@@ -2,24 +2,24 @@
 
 __mule_builtin_implementation__ = True
 
-from _mule_native import math_integer_bit_length as _bit_length
-from _mule_native import math_integer_value as _integer_value
-from _mule_native import math_number_kind as _number_kind
-from _mule_native import math_special_method as _special_method
+from _mule_native import math_integer_bit_length
+from _mule_native import math_integer_value
+from _mule_native import math_number_kind
+from _mule_native import math_special_method
 
 __all__ = ("comb", "factorial", "gcd", "isqrt", "lcm", "perm")
 
 
 def _index(value):
-    if _number_kind(value) == 1:
-        return _integer_value(value)
-    method = _special_method(value, "__index__")
+    if math_number_kind(value) == 1:
+        return math_integer_value(value)
+    method = math_special_method(value, "__index__")
     if method is None:
         raise TypeError("an integer is required")
     result = method()
-    if _number_kind(result) != 1:
+    if math_number_kind(result) != 1:
         raise TypeError("__index__ returned a non-integer")
-    return _integer_value(result)
+    return math_integer_value(result)
 
 
 def factorial(n, /):
@@ -128,13 +128,13 @@ def isqrt(n, /):
         raise ValueError("isqrt requires a nonnegative integer")
     if n == 0:
         return 0
-    bits = _bit_length(n)
+    bits = math_integer_bit_length(n)
     half_bits = (bits - 1) // 2
     if bits <= 64:
         shift = 31 - half_bits
         root = _approximate_isqrt(n << (2 * shift)) >> shift
     else:
-        half_bit_length = _bit_length(half_bits)
+        half_bit_length = math_integer_bit_length(half_bits)
         prefix = half_bits >> (half_bit_length - 5)
         leading_word = n >> (2 * half_bits - 62)
         root = _approximate_isqrt(leading_word) >> (31 - prefix)

@@ -7,16 +7,16 @@ referent is freed, and then calls the reference's callback with the
 reference itself.
 """
 
-from _mule_native import allocate_instance as _allocate_instance
-from _mule_native import class_of as _class_of
-from _mule_native import get_attribute as _get_attribute
-from _mule_native import instance_field as _instance_field
-from _mule_native import is_instance as _is_instance
-from _mule_native import set_attribute as _set_attribute
-from _mule_native import set_instance_field as _set_instance_field
-from _mule_native import weak_handle as _weak_handle
-from _mule_native import weak_owners as _weak_owners
-from _mule_native import weak_target as _weak_target
+from _mule_native import allocate_instance
+from _mule_native import class_of
+from _mule_native import get_attribute
+from _mule_native import instance_field
+from _mule_native import is_instance
+from _mule_native import set_attribute
+from _mule_native import set_instance_field
+from _mule_native import weak_handle
+from _mule_native import weak_owners
+from _mule_native import weak_target
 from _object import _builtin_types, builtin_function_or_method, code, function, method
 
 
@@ -51,8 +51,8 @@ class ref:
     def __new__(cls, ob, callback=None):
         if not _referenceable(ob):
             raise TypeError(f"cannot create weak reference to '{type(ob).__name__}' object")
-        self = _allocate_instance(cls)
-        self._handle = _weak_handle(ob, callback, self)
+        self = allocate_instance(cls)
+        self._handle = weak_handle(ob, callback, self)
         self._hash = None
         self.__callback__ = callback
         return self
@@ -61,7 +61,7 @@ class ref:
         pass
 
     def __call__(self):
-        return _weak_target(self._handle)
+        return weak_target(self._handle)
 
     def __hash__(self):
         if self._hash is None:
@@ -72,7 +72,7 @@ class ref:
         return self._hash
 
     def __eq__(self, other):
-        if not _is_instance(other, ref):
+        if not is_instance(other, ref):
             return False
         mine, theirs = self(), other()
         if mine is None or theirs is None:
@@ -86,14 +86,14 @@ class ref:
         target = self()
         if target is None:
             return "<weakref; dead>"
-        return f"<weakref; to '{_class_of(target).__qualname__}'>"
+        return f"<weakref; to '{class_of(target).__qualname__}'>"
 
 
 ReferenceType = ref
 
 
 def _target(proxy):
-    target = _weak_target(_instance_field(proxy, "_handle"))
+    target = weak_target(instance_field(proxy, "_handle"))
     if target is None:
         raise ReferenceError("weakly-referenced object no longer exists")
     return target
@@ -107,22 +107,22 @@ class ProxyType:
     def __new__(cls, ob, callback=None):
         if not _referenceable(ob):
             raise TypeError(f"cannot create weak reference to '{type(ob).__name__}' object")
-        self = _allocate_instance(cls)
-        _set_instance_field(self, "_handle", _weak_handle(ob, callback, self))
-        _set_instance_field(self, "__callback__", callback)
+        self = allocate_instance(cls)
+        set_instance_field(self, "_handle", weak_handle(ob, callback, self))
+        set_instance_field(self, "__callback__", callback)
         return self
 
     def __getattribute__(self, name):
-        return _get_attribute(_target(self), name)
+        return get_attribute(_target(self), name)
 
     def __setattr__(self, name, value):
-        _set_attribute(_target(self), name, value)
+        set_attribute(_target(self), name, value)
 
     def __bool__(self):
         return bool(_target(self))
 
     def __repr__(self):
-        return f"<weakproxy; to '{_class_of(_target(self)).__qualname__}'>"
+        return f"<weakproxy; to '{class_of(_target(self)).__qualname__}'>"
 
 
 class CallableProxyType(ProxyType):
@@ -141,11 +141,11 @@ def proxy(ob, callback=None, /):
 
 
 def getweakrefcount(ob, /):
-    return len(_weak_owners(ob))
+    return len(weak_owners(ob))
 
 
 def getweakrefs(ob, /):
-    return _weak_owners(ob)
+    return weak_owners(ob)
 
 
 def _remove_dead_weakref(mapping, key, /):

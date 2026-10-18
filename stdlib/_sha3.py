@@ -1,7 +1,7 @@
 """SHA-3 and SHAKE, following FIPS 202's byte-oriented Keccak sponge."""
 
 from _hash_common import buffer_bytes, rotate_left
-from _mule_native import read_u64_le as _read_u64_le
+from _mule_native import read_u64_le
 from math.integer import _index
 
 _CONSTANTS = (
@@ -151,7 +151,7 @@ class _Sponge:
 
     def _absorb(self, block):
         for index in range(self._rate // 8):
-            self._state[index] ^= _read_u64_le(block, index * 8)
+            self._state[index] ^= read_u64_le(block, index * 8)
         self._permute()
 
     def update(self, data, /):

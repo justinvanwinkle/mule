@@ -6,8 +6,8 @@ ordering, blocked primary composition, and algorithmic Hangul processing.
 """
 
 from _str import TextStorage
-from _mule_native import byte_copy as _byte_copy
-from _mule_native import byte_length as _byte_length
+from _mule_native import byte_copy
+from _mule_native import byte_length
 from _unicodedata_data import (
     category_code,
     combining_code,
@@ -45,7 +45,7 @@ def lookup(name, /):
     if isinstance(name, str):
         key = TextStorage.encode(name, "utf-8")
     elif isinstance(name, bytes):
-        key = _byte_copy(name, 0, _byte_length(name))
+        key = byte_copy(name, 0, byte_length(name))
     else:
         kind = type(name).__name__
         if isinstance(name, (bytearray, memoryview)):

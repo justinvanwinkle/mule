@@ -1,30 +1,30 @@
 """Compiled socket policy over owned Linux descriptors and libc services."""
 
 from _mule_native import (
-    address_info as _address_info,
-    address_pack as _address_pack,
-    address_text as _address_text,
-    host_name as _host_name,
-    socket_accept as _accept,
-    socket_adopt as _adopt,
-    socket_bind as _bind,
-    socket_close as _close,
-    socket_connect as _connect,
-    socket_detach as _detach,
-    socket_fd as _fd,
-    socket_listen as _listen,
-    socket_name as _name,
-    socket_new as _new,
-    socket_nonblocking as _nonblocking,
-    socket_option as _option,
-    socket_pair as _pair,
-    socket_peer as _peer,
-    socket_receive as _receive,
-    socket_receive_from as _receive_from,
-    socket_send as _send,
-    socket_send_to as _send_to,
-    socket_set_option as _set_option,
-    socket_shutdown as _shutdown,
+    address_info,
+    address_pack,
+    address_text,
+    host_name,
+    socket_accept,
+    socket_adopt,
+    socket_bind,
+    socket_close,
+    socket_connect,
+    socket_detach,
+    socket_fd,
+    socket_listen,
+    socket_name,
+    socket_new,
+    socket_nonblocking,
+    socket_option,
+    socket_pair,
+    socket_peer,
+    socket_receive,
+    socket_receive_from,
+    socket_send,
+    socket_send_to,
+    socket_set_option,
+    socket_shutdown,
 )
 import os
 from math import _as_float, isfinite, isnan
@@ -144,15 +144,15 @@ def _buffer(value):
 
 
 def inet_pton(family, address):
-    return _checked(_address_pack(_integer(family), address))
+    return _checked(address_pack(_integer(family), address))
 
 
 def inet_ntop(family, packed_ip):
-    return _checked(_address_text(_integer(family), _buffer(packed_ip)))
+    return _checked(address_text(_integer(family), _buffer(packed_ip)))
 
 
 def gethostname():
-    return _checked(_host_name())
+    return _checked(host_name())
 
 
 def _decode_address(raw):
@@ -181,7 +181,7 @@ def getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
         raise TypeError("getaddrinfo() argument 1 must be string or None")
     if isinstance(port, int):
         port = str(_index(port))
-    code, rows = _address_info(
+    code, rows = address_info(
         host, port, _integer(family), _integer(type), _integer(proto), _integer(flags)
     )
     if code:
@@ -214,7 +214,7 @@ def _encode_address(family, kind, protocol, address):
         host = "0.0.0.0" if family == AF_INET else "::"
     elif host == "<broadcast>" and family == AF_INET:
         host = "255.255.255.255"
-    code, packed = _address_pack(family, host)
+    code, packed = address_pack(family, host)
     if code:
         host = getaddrinfo(host, port, family, kind, protocol)[0][4][0]
         packed = inet_pton(family, host)
@@ -232,12 +232,12 @@ class socket:
     def __init__(self, family=AF_INET, type=SOCK_STREAM, proto=0, fileno=None):
         family, type, proto = _integer(family), _integer(type), _integer(proto)
         if fileno is None:
-            self._lease = _checked(_new(family, type, proto))
+            self._lease = _checked(socket_new(family, type, proto))
         else:
             descriptor = _integer(fileno)
             if descriptor < 0:
                 raise ValueError("negative file descriptor")
-            self._lease = _adopt(descriptor)
+            self._lease = socket_adopt(descriptor)
             if family == -1:
                 family = self.getsockopt(SOL_SOCKET, SO_DOMAIN)
             if type == -1:
@@ -263,20 +263,20 @@ class socket:
         return self._proto
 
     def fileno(self):
-        return _fd(self._lease)
+        return socket_fd(self._lease)
 
     def close(self):
-        _close(self._lease)
+        socket_close(self._lease)
 
     def detach(self):
-        return _detach(self._lease)
+        return socket_detach(self._lease)
 
     def gettimeout(self):
         return self._timeout_value
 
     def settimeout(self, value):
         value = _timeout(value)
-        _checked(_nonblocking(self._lease, value is not None))
+        _checked(socket_nonblocking(self._lease, value is not None))
         self._timeout_value = value
 
     def setblocking(self, flag):
@@ -307,7 +307,7 @@ class socket:
 
     def bind(self, address):
         _checked(
-            _bind(
+            socket_bind(
                 self._lease,
                 _encode_address(self.family, self.type, self.proto, address),
             )
@@ -315,7 +315,7 @@ class socket:
 
     def connect(self, address):
         raw = _encode_address(self.family, self.type, self.proto, address)
-        code, value = _connect(self._lease, raw)
+        code, value = socket_connect(self._lease, raw)
         if code in (4, 114, 115) and self._timeout_value:
             if not select([], [self], [], self._timeout_value)[1]:
                 raise TimeoutError("timed out")
@@ -331,23 +331,23 @@ class socket:
         return 0
 
     def listen(self, backlog=128):
-        _checked(_listen(self._lease, max(0, _integer(backlog))))
+        _checked(socket_listen(self._lease, max(0, _integer(backlog))))
 
-    def _accept(self):
-        lease, raw = self._operation(_accept, False)
-        return _detach(lease), _decode_address(raw)
+    def socket_accept(self):
+        lease, raw = self._operation(socket_accept, False)
+        return socket_detach(lease), _decode_address(raw)
 
     def getsockname(self):
-        return _decode_address(_checked(_name(self._lease)))
+        return _decode_address(_checked(socket_name(self._lease)))
 
     def getpeername(self):
-        return _decode_address(_checked(_peer(self._lease)))
+        return _decode_address(_checked(socket_peer(self._lease)))
 
     def shutdown(self, how):
-        _checked(_shutdown(self._lease, _integer(how)))
+        _checked(socket_shutdown(self._lease, _integer(how)))
 
     def send(self, data, flags=0):
-        return self._operation(_send, True, _buffer(data), _integer(flags))
+        return self._operation(socket_send, True, _buffer(data), _integer(flags))
 
     def sendall(self, data, flags=0):
         data = _buffer(data)
@@ -356,14 +356,14 @@ class socket:
         deadline = monotonic() + self._timeout_value if self._timeout_value else None
         while offset < len(data):
             offset += self._operation(
-                _send, True, data[offset:], flags, deadline=deadline
+                socket_send, True, data[offset:], flags, deadline=deadline
             )
 
     def recv(self, bufsize, flags=0):
         bufsize = _index(bufsize)
         if bufsize < 0:
             raise ValueError("negative buffersize in recv")
-        return self._operation(_receive, False, bufsize, _integer(flags))
+        return self._operation(socket_receive, False, bufsize, _integer(flags))
 
     def recv_into(self, buffer, nbytes=0, flags=0):
         view = memoryview(buffer)
@@ -391,13 +391,13 @@ class socket:
         else:
             raise TypeError("sendto() takes 2 or 3 arguments")
         raw = _encode_address(self.family, self.type, self.proto, address)
-        return self._operation(_send_to, True, _buffer(data), flags, raw)
+        return self._operation(socket_send_to, True, _buffer(data), flags, raw)
 
     def recvfrom(self, bufsize, flags=0):
         bufsize = _index(bufsize)
         if bufsize < 0:
             raise ValueError("negative buffersize in recvfrom")
-        data, address = self._operation(_receive_from, False, bufsize, _integer(flags))
+        data, address = self._operation(socket_receive_from, False, bufsize, _integer(flags))
         return data, _decode_address(address)
 
     def getsockopt(self, level, optname, buflen=0):
@@ -405,7 +405,7 @@ class socket:
         if not 0 <= buflen <= 1024:
             raise OSError("getsockopt buflen out of range")
         result = _checked(
-            _option(self._lease, _integer(level), _integer(optname), buflen or 4)
+            socket_option(self._lease, _integer(level), _integer(optname), buflen or 4)
         )
         return result if buflen else int.from_bytes(result, "little", signed=True)
 
@@ -415,7 +415,7 @@ class socket:
             if isinstance(value, int)
             else _buffer(value)
         )
-        _checked(_set_option(self._lease, _integer(level), _integer(optname), data))
+        _checked(socket_set_option(self._lease, _integer(level), _integer(optname), data))
 
     def get_inheritable(self):
         return os.get_inheritable(self.fileno())
@@ -429,10 +429,10 @@ SocketType = socket
 
 def socketpair(family=AF_UNIX, type=SOCK_STREAM, proto=0):
     family, type, proto = _integer(family), _integer(type), _integer(proto)
-    left, right = _checked(_pair(family, type, proto))
+    left, right = _checked(socket_pair(family, type, proto))
     return (
-        socket(family, type, proto, _detach(left)),
-        socket(family, type, proto, _detach(right)),
+        socket(family, type, proto, socket_detach(left)),
+        socket(family, type, proto, socket_detach(right)),
     )
 
 

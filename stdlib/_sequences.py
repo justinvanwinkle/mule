@@ -8,8 +8,8 @@ from _object import bool, complex, float, globals, int, isinstance, issubclass, 
 from _object import _make_complex
 from _object import _bytes_special
 from _object import _index_integer
-from _mule_native import text_from_codepoints as _text_from_codepoints
-from _mule_native import typed_value as _typed_value
+from _mule_native import text_from_codepoints
+from _mule_native import typed_value
 from _str import TextStorage, ascii, decode, format, ord, repr
 from _str import str as _make_str
 from _str import _MISSING as _CODEC_ERRORS_MISSING
@@ -24,22 +24,22 @@ from _generators import coroutine as _coroutine
 from _dict import build_dict as _build_dict
 from _dict import build_set as _build_set
 from _dict import _tuple_hash, dict, frozenset, hash, set
-from _mule_native import bytes_from_values as _bytes_from_values
-from _mule_native import byte_length as _byte_length
-from _mule_native import read_byte as _read_byte
-from _mule_native import byte_copy as _byte_copy
-from _mule_native import call_with as _call_with
-from _mule_native import identity as _identity
-from _mule_native import is_class as _is_class
-from _mule_native import is_subclass as _is_subclass
-from _mule_native import register_not_implemented as _register_not_implemented
-from _mule_native import namespace_items as _namespace_items
-from _mule_native import new_namespace as _new_namespace
-from _mule_native import is_instance as _is_instance
-from _mule_native import overriding_new as _overriding_new
-from _mule_native import class_lookup_default as _class_lookup_default
-from _mule_native import bind_instance_attribute as _bind_special_attribute
-from _mule_native import type_of as _type_of
+from _mule_native import bytes_from_values
+from _mule_native import byte_length
+from _mule_native import read_byte
+from _mule_native import byte_copy
+from _mule_native import call_with
+from _mule_native import identity
+from _mule_native import is_class
+from _mule_native import is_subclass
+from _mule_native import register_not_implemented
+from _mule_native import namespace_items
+from _mule_native import new_namespace
+from _mule_native import is_instance
+from _mule_native import overriding_new
+from _mule_native import class_lookup_default
+from _mule_native import bind_instance_attribute
+from _mule_native import type_of
 from _slice import is_slice, positions, slice
 
 # ruff: noqa: F821
@@ -288,8 +288,8 @@ class UnicodeDecodeError(UnicodeError):
         self.object = object
 
     def __str__(self):
-        if self.end == self.start + 1 and 0 <= self.start < _byte_length(self.object):
-            where = 'byte 0x' + format(_read_byte(self.object, self.start), '02x')
+        if self.end == self.start + 1 and 0 <= self.start < byte_length(self.object):
+            where = 'byte 0x' + format(read_byte(self.object, self.start), '02x')
             where += ' in position ' + str(self.start)
         else:
             where = 'bytes in position ' + str(self.start) + '-' + str(self.end - 1)
@@ -579,7 +579,7 @@ def abs(value, /):
 
 
 def integer_index(value):
-    if _type_of(value) is int:
+    if type_of(value) is int:
         return value
     method = _index_method(value)
     if method is not None:
@@ -591,16 +591,16 @@ def chr(value, /):
     value = integer_index(value)
     if value < 0 or value > 0x10FFFF:
         raise ValueError("chr() arg not in range(0x110000)")
-    return _text_from_codepoints([value])
+    return text_from_codepoints([value])
 
 
 def getitem(value, index):
-    if _type_of(value) is list and is_slice(index):
+    if type_of(value) is list and is_slice(index):
         return _selected(value, index)
     method = _getitem_method(value)
     if method is None:
         # Subscripting a class without a metaclass __getitem__ (PEP 560).
-        if _is_class(value):
+        if is_class(value):
             hook = getattr(value, "__class_getitem__", None)
             if hook is not None:
                 return hook(index)
@@ -634,7 +634,7 @@ def sum(iterable, /, start=0):
     if _text_storage(start):
         raise TypeError("sum() can't sum strings [use ''.join(seq) instead]")
     total = start
-    if _type_of(iterable) is list or _type_of(iterable) is tuple:
+    if type_of(iterable) is list or type_of(iterable) is tuple:
         index = 0
         length = _storage_length(iterable)
         while index < length:
@@ -756,22 +756,22 @@ _DIVMOD_MISSING = object()
 
 
 def divmod(left, right, /):
-    left_owner, right_owner = _type_of(left), _type_of(right)
-    forward = _class_lookup_default(left_owner, '__divmod__', _DIVMOD_MISSING)
-    reflected = _class_lookup_default(right_owner, '__rdivmod__', _DIVMOD_MISSING)
+    left_owner, right_owner = type_of(left), type_of(right)
+    forward = class_lookup_default(left_owner, '__divmod__', _DIVMOD_MISSING)
+    reflected = class_lookup_default(right_owner, '__rdivmod__', _DIVMOD_MISSING)
     right_first = (left_owner is not right_owner and reflected is not _DIVMOD_MISSING
-                   and _is_subclass(right_owner, left_owner)
-                   and reflected is not _class_lookup_default(left_owner, '__rdivmod__', _DIVMOD_MISSING))
+                   and is_subclass(right_owner, left_owner)
+                   and reflected is not class_lookup_default(left_owner, '__rdivmod__', _DIVMOD_MISSING))
     if right_first:
-        result = _bind_special_attribute(reflected, right, right_owner)(left)
+        result = bind_instance_attribute(reflected, right, right_owner)(left)
         if result is not NotImplemented:
             return result
     if forward is not _DIVMOD_MISSING:
-        result = _bind_special_attribute(forward, left, left_owner)(right)
+        result = bind_instance_attribute(forward, left, left_owner)(right)
         if result is not NotImplemented:
             return result
     if not right_first and left_owner is not right_owner and reflected is not _DIVMOD_MISSING:
-        result = _bind_special_attribute(reflected, right, right_owner)(left)
+        result = bind_instance_attribute(reflected, right, right_owner)(left)
         if result is not NotImplemented:
             return result
     raise TypeError("unsupported operand type(s) for divmod(): '" + left_owner.__name__
@@ -814,17 +814,17 @@ def bin(number, /):
 
 
 def callable(obj, /):
-    if _is_class(obj):
+    if is_class(obj):
         return True
     kind = _type_name(obj)
     if kind in ("function", "builtin_function_or_method", "method"):
         return True
     missing = _binding_missing()
-    return _class_lookup_default(_type_of(obj), '__call__', missing) is not missing
+    return class_lookup_default(type_of(obj), '__call__', missing) is not missing
 
 
 def id(obj, /):
-    return _identity(obj)
+    return identity(obj)
 
 
 def sorted(iterable, /, *, key=None, reverse=False):
@@ -847,7 +847,7 @@ def append_argument(positional, value):
 
 
 def extend_arguments(positional, iterable):
-    owner = _type_of(iterable)
+    owner = type_of(iterable)
     if owner is tuple or owner is list:
         # Exact element storage is copied by index: the iteration protocol
         # would end with a StopIteration that costs an exception object.
@@ -864,7 +864,7 @@ def extend_arguments(positional, iterable):
 def _argument_tuple(iterable):
     """The positional arguments ``f(*iterable)`` passes, as the tuple the
     call primitive reads. An exact tuple is already that tuple."""
-    owner = _type_of(iterable)
+    owner = type_of(iterable)
     if owner is tuple:
         return iterable
     if owner is list:
@@ -892,7 +892,7 @@ def tuple_from_list(items):
 
 
 def dict_merge(mapping, other):
-    if _is_instance(other, dict):
+    if is_instance(other, dict):
         mapping.update(other)
         return
     keys = getattr(other, "keys", None)
@@ -905,7 +905,7 @@ def dict_merge(mapping, other):
 def call_expanded_positional(function, arguments):
     """``f(*arguments)`` without keyword arguments: no keyword mapping is
     built, and a tuple of arguments is passed through as it is."""
-    return _call_with(function, _argument_tuple(arguments), (), ())
+    return call_with(function, _argument_tuple(arguments), (), ())
 
 
 def call_expanded(function, positional, keywords):
@@ -913,7 +913,7 @@ def call_expanded(function, positional, keywords):
     for name in keywords:
         _storage_append(names, name)
         _storage_append(values, keywords[name])
-    return _call_with(
+    return call_with(
         function,
         _storage_tuple(positional),
         _storage_tuple(names),
@@ -979,7 +979,7 @@ def _resolved_bases(bases):
     resolved = []
     changed = False
     for base in bases:
-        if _is_class(base):
+        if is_class(base):
             _storage_append(resolved, base)
             continue
         method = getattr(base, "__mro_entries__", None)
@@ -998,13 +998,13 @@ def _resolved_bases(bases):
 def prepare_class(name, bases, keywords):
     """The namespace a class body runs against (``__build_class__``)."""
     if keywords is None and len(bases) <= 1 and _direct_bases(bases):
-        return _new_namespace()
+        return new_namespace()
     keywords = {} if keywords is None else keywords
     explicit = keywords.get("metaclass")
     bases, _changed = _resolved_bases(bases)
     metaclass = _metaclass(bases, explicit)
     if metaclass is type:
-        return _new_namespace()
+        return new_namespace()
     others = {}
     for key in keywords:
         if key != "metaclass":
@@ -1023,7 +1023,7 @@ def build_class(name, bases, namespace, keywords, fields):
     for key in keywords:
         if key != "metaclass":
             others[key] = keywords[key]
-    items = _namespace_items(namespace)
+    items = namespace_items(namespace)
     if items is not None:
         namespace = {}
         for key, value in items:
@@ -1059,7 +1059,7 @@ def build_set(items):
 
 
 def _list_set_slice(target, index, value):
-    items = value if _type_of(value) is list and value is not target else list(value)
+    items = value if type_of(value) is list and value is not target else list(value)
     start, stop, step, count = positions(index, _storage_length(target))
     if step == 1:
         stop = stop if stop > start else start
@@ -1088,7 +1088,7 @@ def _list_set_slice(target, index, value):
 
 
 def setitem(value, index, item):
-    if _type_of(value) is list and is_slice(index):
+    if type_of(value) is list and is_slice(index):
         _list_set_slice(value, index, item)
         return
     method = _setitem_method(value)
@@ -1511,7 +1511,7 @@ def _byte_sequence_values(value):
 
 
 def _bytes_like_values(value):
-    if _is_instance(value, bytes):
+    if is_instance(value, bytes):
         length = _storage_length(value)
         values = []
         index = 0
@@ -1519,7 +1519,7 @@ def _bytes_like_values(value):
             _storage_append(values, _storage_read(value, index))
             index += 1
         return values
-    if _is_instance(value, bytearray):
+    if is_instance(value, bytearray):
         source_values = value.values
         length = _storage_length(source_values)
         values = []
@@ -1528,7 +1528,7 @@ def _bytes_like_values(value):
             _storage_append(values, _storage_read(source_values, index))
             index += 1
         return values
-    if _is_instance(value, memoryview):
+    if is_instance(value, memoryview):
         if not value.c_contiguous:
             raise BufferError("memoryview: underlying buffer is not C-contiguous")
         return _bytes_like_values(value.tobytes())
@@ -1584,7 +1584,7 @@ def _make_bytes_translation_table(frm, to):
     while index < _storage_length(from_values):
         _storage_write(result, _storage_read(from_values, index), _storage_read(to_values, index))
         index += 1
-    return _bytes_from_values(result)
+    return bytes_from_values(result)
 
 
 def _bytes_bounds(length, start, end):
@@ -1936,8 +1936,8 @@ def _hex_bytes(values, sep, bytes_per_sep):
             size = len(sep)
         except TypeError:
             missing = _binding_missing()
-            if _class_lookup_default(_type_of(sep), '__len__', missing) is missing:
-                raise TypeError("object of type '" + _type_of(sep).__name__ + "' has no len()") from None
+            if class_lookup_default(type_of(sep), '__len__', missing) is missing:
+                raise TypeError("object of type '" + type_of(sep).__name__ + "' has no len()") from None
             raise
         if size != 1:
             raise ValueError('sep must be length 1.')
@@ -1970,9 +1970,9 @@ def _byte_padding(values, width, fillchar, alignment, method):
     width = _index_integer(width)
     if not -(1 << 63) <= width < 1 << 63:
         raise OverflowError("Python int too large to convert to C ssize_t")
-    if _is_instance(fillchar, bytes):
+    if is_instance(fillchar, bytes):
         fill_values = fillchar
-    elif _is_instance(fillchar, bytearray):
+    elif is_instance(fillchar, bytearray):
         fill_values = fillchar.values
     else:
         kind = "None" if fillchar is None else _type_name(fillchar)
@@ -2002,14 +2002,14 @@ def _byte_padding(values, width, fillchar, alignment, method):
 
 class BytesStorage:
     def _padding_result(self, values):
-        if _type_of(self) is bytes and _storage_length(self) == _storage_length(values):
+        if type_of(self) is bytes and _storage_length(self) == _storage_length(values):
             return self
-        return _bytes_from_values(values)
+        return bytes_from_values(values)
 
     def _slice_result(self, start, end):
-        if _type_of(self) is bytes and start == 0 and end == _storage_length(self):
+        if type_of(self) is bytes and start == 0 and end == _storage_length(self):
             return self
-        return _byte_copy(self, start, end - start)
+        return byte_copy(self, start, end - start)
 
     def ljust(self, width, fillchar=b" ", /):
         return BytesStorage._padding_result(self, _byte_padding(self, width, fillchar, 0, "ljust"))
@@ -2024,7 +2024,7 @@ class BytesStorage:
         return _hex_bytes(self, sep, bytes_per_sep)
 
     def join(self, iterable, /):
-        return _bytes_from_values(_bytes_joined_values(self, iterable))
+        return bytes_from_values(_bytes_joined_values(self, iterable))
 
     __slots__ = ()
 
@@ -2032,8 +2032,8 @@ class BytesStorage:
         if is_slice(index):
             start, stop, step, count = positions(index, _storage_length(self))
             if step == 1:
-                return _byte_copy(self, start, count)
-            return _bytes_from_values(_selected_positions(self, start, step, count))
+                return byte_copy(self, start, count)
+            return bytes_from_values(_selected_positions(self, start, step, count))
         return _storage_read(self, storage_index(self, index))
 
     def __iter__(self):
@@ -2120,9 +2120,9 @@ class BytesStorage:
         if position < 0:
             return (BytesStorage._slice_result(self, 0, length), b"", b"")
         return (
-            _byte_copy(self, 0, position),
+            byte_copy(self, 0, position),
             sep,
-            _byte_copy(self, position + size, length - position - size),
+            byte_copy(self, position + size, length - position - size),
         )
 
     def rpartition(self, sep, /):
@@ -2135,19 +2135,19 @@ class BytesStorage:
         if position < 0:
             return (b"", b"", BytesStorage._slice_result(self, 0, length))
         return (
-            _byte_copy(self, 0, position),
+            byte_copy(self, 0, position),
             sep,
-            _byte_copy(self, position + size, length - position - size),
+            byte_copy(self, position + size, length - position - size),
         )
 
     def replace(self, old, new, count=-1, /):
         replaced = _bytes_replaced(self, old, new, count)
         if replaced is None:
             return BytesStorage._slice_result(self, 0, _storage_length(self))
-        return _bytes_from_values(replaced)
+        return bytes_from_values(replaced)
 
     def translate(self, table, delete=b""):
-        return _bytes_from_values(_bytes_translated(self, table, delete))
+        return bytes_from_values(_bytes_translated(self, table, delete))
 
     @staticmethod
     def maketrans(frm, to):
@@ -2186,20 +2186,20 @@ def iterate(value):
 
 
 def _optional_special(value, name):
-    owner = _type_of(value)
+    owner = type_of(value)
     missing = _binding_missing()
-    method = _class_lookup_default(owner, name, missing)
+    method = class_lookup_default(owner, name, missing)
     if method is missing:
         return missing
     try:
-        return _bind_special_attribute(method, value, owner)
+        return bind_instance_attribute(method, value, owner)
     except AttributeError:
         # Python treats a descriptor's AttributeError as an absent special method.
         return missing
 
 
 def _iterate(value, membership):
-    if _type_of(value) is list or _type_of(value) is tuple:
+    if type_of(value) is list or type_of(value) is tuple:
         iterator = _allocate_instance(StorageIterator)
         iterator.sequence = value
         iterator.index = 0
@@ -2211,7 +2211,7 @@ def _iterate(value, membership):
         if method is None:
             return _iteration_error(value, membership)
         iterator = method()
-        if _class_lookup_default(_type_of(iterator), "__next__", missing) is missing:
+        if class_lookup_default(type_of(iterator), "__next__", missing) is missing:
             raise TypeError("__iter__ returned a non-iterator")
         return iterator
     method = _optional_special(value, "__getitem__")
@@ -2221,14 +2221,14 @@ def _iterate(value, membership):
 
 
 def _iteration_error(value, membership):
-    name = _type_of(value).__name__
+    name = type_of(value).__name__
     if membership:
         raise TypeError(f"argument of type '{name}' is not a container or iterable")
     raise TypeError(f"'{name}' object is not iterable")
 
 
 def contains(container, item):
-    owner = _type_of(container)
+    owner = type_of(container)
     missing = _binding_missing()
     method = _optional_special(container, "__contains__")
     if method is not missing:
@@ -2275,7 +2275,7 @@ def next_item(value):
 
 def unpack(value, count):
     count = _integer_storage(count)
-    if _type_of(value) is tuple:
+    if type_of(value) is tuple:
         length = _storage_length(value)
         if length < count:
             raise ValueError("not enough values to unpack")
@@ -2577,11 +2577,11 @@ class list(ListStorage):
     __slots__ = ()
 
     def __new__(cls, *args, **kwargs):
-        if not _is_class(cls) or not _is_subclass(cls, list):
+        if not is_class(cls) or not is_subclass(cls, list):
             raise TypeError('list.__new__: class must be a subtype of list')
         value = []
         if cls is not list:
-            return _typed_value(value, cls)
+            return typed_value(value, cls)
         return value
 
     def __init__(self, *args):
@@ -2600,7 +2600,7 @@ class tuple(TupleStorage):
     def __new__(cls, *args):
         value = _make_tuple(*args)
         if cls is not tuple:
-            return _typed_value(value, cls)
+            return typed_value(value, cls)
         return value
 
 
@@ -2610,7 +2610,7 @@ class str(TextStorage):
     def __new__(cls, *args):
         value = _make_str(*args)
         if cls is not str:
-            return _typed_value(value, cls)
+            return typed_value(value, cls)
         return value
 
 
@@ -2622,7 +2622,7 @@ class bytes(BytesStorage):
             if encoding is None:
                 raise TypeError("string argument without an encoding")
             value = source.encode(encoding, errors)
-            return _typed_value(value, cls) if cls is not bytes else value
+            return typed_value(value, cls) if cls is not bytes else value
         if encoding is not None:
             raise TypeError("encoding without a string argument")
         converted, result = _bytes_special(source)
@@ -2630,7 +2630,7 @@ class bytes(BytesStorage):
             if cls is bytes:
                 return result
             values = [_storage_read(result, index) for index in range(_storage_length(result))]
-            return _typed_value(_bytes_from_values(values), cls)
+            return typed_value(bytes_from_values(values), cls)
         if _integer_storage_kind(source):
             source = _index_integer(source)
             if source < 0:
@@ -2640,24 +2640,24 @@ class bytes(BytesStorage):
             while index < source:
                 _storage_append(values, 0)
                 index += 1
-            value = _bytes_from_values(values)
-            return _typed_value(value, cls) if cls is not bytes else value
-        if _is_instance(source, bytes):
+            value = bytes_from_values(values)
+            return typed_value(value, cls) if cls is not bytes else value
+        if is_instance(source, bytes):
             if cls is bytes and type(source) is bytes:
                 return source
             values = [_storage_read(source, index) for index in range(_storage_length(source))]
-            value = _bytes_from_values(values)
-            return _typed_value(value, cls) if cls is not bytes else value
-        if _is_instance(source, bytearray):
-            value = _bytes_from_values(source.values)
-            return _typed_value(value, cls) if cls is not bytes else value
+            value = bytes_from_values(values)
+            return typed_value(value, cls) if cls is not bytes else value
+        if is_instance(source, bytearray):
+            value = bytes_from_values(source.values)
+            return typed_value(value, cls) if cls is not bytes else value
         values = [_byte_value(item, "bytes must be in range(0, 256)") for item in source]
-        value = _bytes_from_values(values)
-        return _typed_value(value, cls) if cls is not bytes else value
+        value = bytes_from_values(values)
+        return typed_value(value, cls) if cls is not bytes else value
 
 
 def _integer_storage_kind(value):
-    return _is_instance(value, int)
+    return is_instance(value, int)
 
 
 def _byte_value(value, range_message="byte must be in range(0, 256)"):
@@ -2672,7 +2672,7 @@ def _byte_values(source, encoding, errors):
         if encoding is None:
             raise TypeError("string argument without an encoding")
         source = source.encode(encoding, errors)
-    if _is_instance(source, bytes):
+    if is_instance(source, bytes):
         length = _storage_length(source)
         values = []
         index = 0
@@ -2680,7 +2680,7 @@ def _byte_values(source, encoding, errors):
             _storage_append(values, _storage_read(source, index))
             index += 1
         return values
-    if _is_instance(source, bytearray):
+    if is_instance(source, bytearray):
         source_values = source.values
         length = _storage_length(source_values)
         values = []
@@ -2705,8 +2705,8 @@ def _byte_values(source, encoding, errors):
     return values
 
 
-from _mule_native import buffer_lease as _buffer_lease  # noqa: E402
-from _mule_native import buffer_exports as _buffer_exports  # noqa: E402
+from _mule_native import buffer_lease  # noqa: E402
+from _mule_native import buffer_exports  # noqa: E402
 
 
 def _byte_sublist(values, start, end):
@@ -2722,7 +2722,7 @@ class bytearray:
     """A mutable sequence of bytes, stored as a list of ints in range(256)."""
 
     def __init__(self, source=b"", encoding=None, errors="strict"):
-        if _buffer_exports(self):
+        if buffer_exports(self):
             raise BufferError('Existing exports of data: object cannot be re-sized')
         self.values = _byte_values(source, encoding, errors)
 
@@ -2742,7 +2742,7 @@ class bytearray:
         return bytearray(_byte_padding(self.values, width, fillchar, 2, "center"))
 
     def _check_resize(self, size):
-        if size != len(self.values) and _buffer_exports(self):
+        if size != len(self.values) and buffer_exports(self):
             raise BufferError('Existing exports of data: object cannot be re-sized')
 
     def resize(self, size, /):
@@ -2822,7 +2822,7 @@ class bytearray:
         return bytearray(self.values + _byte_values(other, None, "strict"))
 
     def __repr__(self):
-        return "bytearray(" + repr(_bytes_from_values(self.values)) + ")"
+        return "bytearray(" + repr(bytes_from_values(self.values)) + ")"
 
     def append(self, value):
         value = _byte_value(value)
@@ -2860,7 +2860,7 @@ class bytearray:
         self.values.reverse()
 
     def decode(self, encoding="utf-8", errors=_CODEC_ERRORS_MISSING):
-        return decode(_bytes_from_values(self.values), encoding, errors)
+        return decode(bytes_from_values(self.values), encoding, errors)
 
     def find(self, sub, start=0, end=None):
         return _bytes_find(self.values, sub, start, end)
@@ -3056,7 +3056,7 @@ class memoryview:
     def __init__(self, source):
         self.released = False
         self.format_code = "B"
-        if _is_instance(source, memoryview):
+        if is_instance(source, memoryview):
             source._check()
             self.source = source.source
             self.start = source.start
@@ -3064,13 +3064,13 @@ class memoryview:
             self.length = source.length
             self._readonly = source.readonly
             self.format_code = source.format_code
-        elif _is_instance(source, bytearray):
+        elif is_instance(source, bytearray):
             self.source = source
             self.start = 0
             self.step = 1
             self.length = _storage_length(source.values)
             self._readonly = False
-        elif _is_instance(source, bytes):
+        elif is_instance(source, bytes):
             self.source = source
             self.start = 0
             self.step = 1
@@ -3082,7 +3082,7 @@ class memoryview:
                 + _type_name(source)
                 + "'"
             )
-        self._lease = _buffer_lease(self.source)
+        self._lease = buffer_lease(self.source)
 
     def _check(self):
         if self.released:
@@ -3090,7 +3090,7 @@ class memoryview:
 
     def _byte_at(self, index):
         at = self.start + index * self.step
-        if _is_instance(self.source, bytearray):
+        if is_instance(self.source, bytearray):
             return _storage_read(self.source.values, at)
         return _storage_read(self.source, at)
 
@@ -3104,7 +3104,7 @@ class memoryview:
         return _memoryview_format_size(self.format_code)
 
     def _raw_byte(self, offset):
-        if _is_instance(self.source, bytearray):
+        if is_instance(self.source, bytearray):
             return _storage_read(self.source.values, offset)
         return _storage_read(self.source, offset)
 
@@ -3115,7 +3115,7 @@ class memoryview:
         if code == "B":
             return self._raw_byte(base)
         if code == "c":
-            return _bytes_from_values([self._raw_byte(base)])
+            return bytes_from_values([self._raw_byte(base)])
         bits = 0
         position = 0
         while position < size:
@@ -3245,7 +3245,7 @@ class memoryview:
     def __setitem__(self, index, value):
         self._check()
         if is_slice(index):
-            if self._itemsize() == 1 and _is_instance(value, bytes):
+            if self._itemsize() == 1 and is_instance(value, bytes):
                 if self.readonly:
                     raise TypeError("cannot modify read-only memory")
                 start, stop, step, count = positions(index, self.length)
@@ -3315,8 +3315,8 @@ class memoryview:
 
     def tobytes(self):
         self._check()
-        if _is_instance(self.source, bytes) and self.step == self._itemsize():
-            return _byte_copy(self.source, self.start, self.length * self._itemsize())
+        if is_instance(self.source, bytes) and self.step == self._itemsize():
+            return byte_copy(self.source, self.start, self.length * self._itemsize())
         values = []
         element = 0
         while element < self.length:
@@ -3326,7 +3326,7 @@ class memoryview:
                 _storage_append(values, self._raw_byte(base + position))
                 position += 1
             element += 1
-        return _bytes_from_values(values)
+        return bytes_from_values(values)
 
     def tolist(self):
         self._check()
@@ -3532,7 +3532,7 @@ class NotImplementedType:
 
 
 NotImplemented = NotImplementedType()
-_register_not_implemented(NotImplemented)
+register_not_implemented(NotImplemented)
 _install_builtin("NotImplemented", NotImplemented)
 
 

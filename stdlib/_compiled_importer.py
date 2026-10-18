@@ -1,21 +1,21 @@
 """Importlib policy for modules already compiled into the native image."""
 
-from _mule_native import compiled_module_info as _info
-from _mule_native import load_compiled_module as _load
-from _mule_native import create_compiled_module as _create
-from _mule_native import exec_compiled_module as _execute
+from _mule_native import compiled_module_info
+from _mule_native import load_compiled_module
+from _mule_native import create_compiled_module
+from _mule_native import exec_compiled_module
 from importlib._bootstrap import ModuleSpec
 
 
 class CompiledLoader:
     def create_module(self, spec):
-        return _create(spec.name)
+        return create_compiled_module(spec.name)
 
     def exec_module(self, module):
-        _execute(module.__spec__.name, module)
+        exec_compiled_module(module.__spec__.name, module)
 
     def load_module(self, fullname):
-        return _load(fullname)
+        return load_compiled_module(fullname)
 
 
 class CompiledFinder:
@@ -27,7 +27,7 @@ class CompiledFinder:
 
     @staticmethod
     def find_spec(fullname, path=None, target=None):
-        info = _info(fullname)
+        info = compiled_module_info(fullname)
         if info is None:
             return None
         filename, locations = info
