@@ -54,6 +54,7 @@ from .node import (
     CallKind,
     Cast,
     Combination,
+    FunctionalKind,
     If,
     Lambda,
     LeafVisitor,
@@ -809,13 +810,17 @@ class _Walk:
     def builtin_return_type(
         self, fun_lvar, arg_types: tuple[ValueType, ...]
     ) -> ValueType:
-        if self.lambda_.policy.safety >= 3 or self.lambda_.name.startswith(
-            (
-                "mule_sequences_",
-                "mule_format_",
-                "mule_arguments_",
-                "mule_native_class_",
-                "mule_print_",
+        if (
+            self.lambda_.kind is FunctionalKind.TOPLEVEL
+            or self.lambda_.policy.safety >= 3
+            or self.lambda_.name.startswith(
+                (
+                    "mule_sequences_",
+                    "mule_format_",
+                    "mule_arguments_",
+                    "mule_native_class_",
+                    "mule_print_",
+                )
             )
         ):
             return UNKNOWN

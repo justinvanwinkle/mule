@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 
 #[derive(Default)]
 struct HeapMembership {
-    tracked: HashSet<usize>,
+    tracked: Vec<usize>,
     dead: HashSet<usize>,
 }
 
@@ -22,11 +22,40 @@ thread_local! {
 }
 
 pub fn track(value: Value) {
-    unsafe { (*value).tracked = true; }
-    membership().lock().expect("heap registry poisoned").tracked.insert(value as usize);
+    let mut guard = membership().lock().expect("heap registry poisoned");
+    unsafe {
+        (*value).tracked = true;
+        let current = (*value).gc_slot;
+        if current != 0 {
+            let index = (current - 1) as usize;
+            if index < guard.tracked.len() && guard.tracked[index] == value as usize {
+                return;
+            }
+        }
+        let index = guard.tracked.len();
+        let slot = u32::try_from(index + 1).expect("tracked heap capacity exceeded");
+        (*value).gc_slot = slot;
+        guard.tracked.push(value as usize);
+    }
 }
 pub fn untrack(value: Value) {
-    membership().lock().expect("heap registry poisoned").tracked.remove(&(value as usize));
+    let mut guard = membership().lock().expect("heap registry poisoned");
+    unsafe {
+        let current = (*value).gc_slot;
+        (*value).gc_slot = 0;
+        if current == 0 {
+            return;
+        }
+        let index = (current - 1) as usize;
+        if index >= guard.tracked.len() || guard.tracked[index] != value as usize {
+            return;
+        }
+        let last = guard.tracked.pop().unwrap();
+        if index < guard.tracked.len() {
+            guard.tracked[index] = last;
+            (*(last as Value)).gc_slot = current;
+        }
+    }
 }
 pub fn is_tracked(value: Value) -> bool {
     membership().lock().expect("heap registry poisoned").tracked.contains(&(value as usize))

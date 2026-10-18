@@ -202,7 +202,7 @@ pub fn clear() {
 /// attribute access does not run while an error is pending.
 pub unsafe fn resume(exception: Value) {
     unsafe {
-        let traceback = crate::classes::mule_get_attr(exception, c"__traceback__".as_ptr());
+        let traceback = crate::classes::get_exception_traceback(exception);
         if traceback.is_null() {
             // Not an exception carrying a traceback; nothing to continue.
             object::clear_error();
@@ -215,6 +215,49 @@ pub unsafe fn resume(exception: Value) {
 
 fn is_traceback(value: Value) -> bool {
     !value.is_null() && !object::is_fixnum(value) && matches!(unsafe { &(*value).data }, Data::Traceback { .. })
+}
+
+/// Materialize `Data::Frame` records along a traceback chain on first access
+/// to `tb_frame` or `tb_next`, linking each inner frame's `f_back` to the
+/// outer frame.
+unsafe fn ensure_frame(tb: Value) -> Value {
+    unsafe {
+        let mut cursor = tb;
+        let mut outer_frame: Value = null_mut();
+        while let Some(Data::Traceback {
+            frame,
+            code,
+            globals,
+            line,
+            next,
+            ..
+        }) = (!cursor.is_null()).then(|| &(*cursor).data)
+        {
+            let mut current_frame = frame.get();
+            if current_frame.is_null() {
+                current_frame = object::new_value(Data::Frame {
+                    code: *code,
+                    line: *line,
+                    globals: object::retain(*globals),
+                    back: null_mut(),
+                });
+                frame.set(current_frame);
+            }
+            if !outer_frame.is_null() {
+                if let Data::Frame { back, .. } = &mut (*current_frame).data {
+                    if back.is_null() {
+                        *back = object::retain(outer_frame);
+                    }
+                }
+            }
+            outer_frame = current_frame;
+            cursor = *next;
+        }
+        let Data::Traceback { frame, .. } = &(*tb).data else {
+            return null_mut();
+        };
+        frame.get()
+    }
 }
 
 /// Record that the pending error passed through a compiled function at
@@ -241,25 +284,26 @@ pub unsafe extern "C" fn mule_traceback_here(
                 return;
             }
         }
-        let frame = object::new_value(Data::Frame {
-            code,
-            line: i64::from(line),
-            globals: object::retain(globals),
-            back: null_mut(),
-        });
-        if let Some(Data::Traceback { frame: inner, .. }) = (!head.is_null()).then(|| &(*head).data) {
-            if let Data::Frame { back, .. } = &mut (**inner).data {
-                *back = object::retain(frame);
-            }
-        }
         // The new entry takes over the reference the pending slot held.
         let traceback = object::new_value(Data::Traceback {
-            frame,
+            frame: Cell::new(null_mut()),
+            code,
+            globals: object::retain(globals),
             line: i64::from(line),
             marker,
             next: PENDING.with(|pending| pending.replace(null_mut())),
             activation: activation as usize,
         });
+        if let Some(Data::Traceback { frame: inner, .. }) = (!head.is_null()).then(|| &(*head).data) {
+            if !inner.get().is_null() {
+                let outer_frame = ensure_frame(traceback);
+                if let Data::Frame { back, .. } = &mut (*inner.get()).data {
+                    if back.is_null() {
+                        *back = object::retain(outer_frame);
+                    }
+                }
+            }
+        }
         PENDING.with(|pending| pending.set(traceback));
     }
 }
@@ -275,9 +319,14 @@ pub unsafe fn field(value: Value, index: i64) -> Value {
             return null_mut();
         }
         match (&(*value).data, index) {
-            (Data::Traceback { frame, .. }, 0) => object::retain(*frame),
+            (Data::Traceback { .. }, 0) => object::retain(ensure_frame(value)),
             (Data::Traceback { line, .. }, 1) => object::small(*line),
-            (Data::Traceback { next, .. }, 2) => optional(*next),
+            (Data::Traceback { next, .. }, 2) => {
+                if !next.is_null() {
+                    let _ = ensure_frame(value);
+                }
+                optional(*next)
+            }
             (Data::Frame { code, .. }, 0) => {
                 let code = &**code;
                 let values = [
@@ -316,15 +365,13 @@ pub fn print_pending(output: &mut impl Write) {
     let _ = writeln!(output, "Traceback (most recent call last):");
     let show_ranges = std::env::var_os("PYTHONNODEBUGRANGES").is_none();
     let mut entry = head;
-    while let Some(Data::Traceback { frame, line, next, marker, .. }) = (!entry.is_null()).then(|| unsafe { &(*entry).data }) {
-        if let Data::Frame { code, .. } = unsafe { &(**frame).data } {
-            let code = unsafe { &**code };
-            let _ = writeln!(output, "  File \"{}\", line {line}, in {}", code.filename(), code.name());
-            if let Some(source) = source_line(code.filename(), *line) {
-                let _ = writeln!(output, "    {source}");
-                if show_ranges && !marker.is_null() {
-                    let _ = writeln!(output, "    {}", CodeInfo::text(*marker));
-                }
+    while let Some(Data::Traceback { code, line, next, marker, .. }) = (!entry.is_null()).then(|| unsafe { &(*entry).data }) {
+        let code = unsafe { &**code };
+        let _ = writeln!(output, "  File \"{}\", line {line}, in {}", code.filename(), code.name());
+        if let Some(source) = source_line(code.filename(), *line) {
+            let _ = writeln!(output, "    {source}");
+            if show_ranges && !marker.is_null() {
+                let _ = writeln!(output, "    {}", CodeInfo::text(*marker));
             }
         }
         entry = *next;

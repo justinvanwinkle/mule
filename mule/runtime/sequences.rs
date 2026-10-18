@@ -760,6 +760,10 @@ pub unsafe extern "C" fn mule_class_parent(value: Value) -> Value {
     }
 }
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_class_is_subclass(derived: Value, class: Value) -> Value {
+    unsafe { object::bool_value(crate::classes::is_subclass(derived, class)) }
+}
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_raised_class(value: Value) -> Value {
     unsafe {
         if !value.is_null() && !object::is_fixnum(value) {
@@ -820,7 +824,7 @@ pub unsafe extern "C" fn mule_catch_exception() -> Value {
             object::release(traceback);
             return exception;
         }
-        let status = crate::classes::mule_set_attr(exception, c"__traceback__".as_ptr(), traceback);
+        let status = crate::classes::set_exception_traceback(exception, traceback);
         object::release(traceback);
         if status < 0 {
             object::release(exception);

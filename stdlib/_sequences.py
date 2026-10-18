@@ -58,12 +58,7 @@ class BaseException:
     _suppress_context = False
 
     def __init__(self, *args):
-        # Direct stores of the values the properties below accept: a raise
-        # must not pay for descriptor dispatch and validation on each of them.
         self.args = args
-        self._cause = None
-        self._context = None
-        self._suppress_context = False
 
     @property
     def __cause__(self):
@@ -501,15 +496,26 @@ class UserWarning(Warning):
 
 
 def exception_matches(value, expected):
-    choices = _exception_targets(expected)
-    index = 0
-    while index < _storage_length(choices):
-        target = _storage_read(choices, index)
-        parent = _class_identity(target)
-        if parent is None or not issubclass(parent, BaseException):
+    target = _class_identity(expected)
+    if target is not None:
+        if not _class_is_subclass(target, BaseException):
             raise TypeError("catching classes that do not inherit from BaseException")
-        parent = _raised_class(value)
-        if parent is not None and issubclass(parent, target):
+        raised = _raised_class(value)
+        return raised is not None and _class_is_subclass(raised, target)
+    if not _tuple_storage(expected) and not is_instance(expected, tuple):
+        raise TypeError("catching classes that do not inherit from BaseException")
+    raised = _raised_class(value)
+    count = _storage_length(expected)
+    index = 0
+    while index < count:
+        item = _storage_read(expected, index)
+        target = _class_identity(item)
+        if target is not None:
+            if not _class_is_subclass(target, BaseException):
+                raise TypeError("catching classes that do not inherit from BaseException")
+            if raised is not None and _class_is_subclass(raised, target):
+                return True
+        elif exception_matches(value, item):
             return True
         index += 1
     return False
@@ -522,7 +528,7 @@ def iteration_exhausted(value):
 def raise_value(value):
     """Prepare an exception; the source raise VOP installs pending state."""
     parent = _raised_class(value)
-    if parent is None or not issubclass(parent, BaseException):
+    if parent is None or not _class_is_subclass(parent, BaseException):
         # Use the physical error primitive here to avoid recursive invalid raises.
         return _invalid_raise()
     instance = _exception_instance(value)
@@ -537,7 +543,7 @@ def raise_value(value):
 def exception_instance(value):
     """The instance a ``raise`` statement will raise, creating it from a class."""
     parent = _raised_class(value)
-    if parent is None or not issubclass(parent, BaseException):
+    if parent is None or not _class_is_subclass(parent, BaseException):
         raise TypeError("exceptions must derive from BaseException")
     return _exception_instance(value)
 

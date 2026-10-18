@@ -10,6 +10,7 @@ pub type Native = unsafe extern "C" fn(Value, Value) -> Value;
 pub struct Object {
     pub references: std::sync::atomic::AtomicUsize,
     pub tracked: bool,
+    pub gc_slot: u32,
     pub data: Data,
 }
 /// A global's storage: one per namespace and name, at an address that never
@@ -299,9 +300,12 @@ pub enum Data {
     /// compares against it; using it unchecked raises `NameError`.
     Undefined,
     /// One entry of an exception's traceback (see `traceback.rs`): the
-    /// frame, its line, and the entry nearer the raise, or NULL.
+    /// frame (lazily materialized on access), its code and globals, its line,
+    /// and the entry nearer the raise, or NULL.
     Traceback {
-        frame: Value,
+        frame: Cell<Value>,
+        code: *const crate::traceback::CodeInfo,
+        globals: Value,
         line: i64,
         /// Constant compiler-planned highlight, or NULL without source ranges.
         marker: *const c_char,
@@ -352,7 +356,7 @@ impl Data {
             Self::BoundMethod { receiver, method } => { visit(*receiver); visit(*method); }
             Self::WeakHandle { callback, .. } => visit(*callback),
             Self::BufferLease { owner } => visit(*owner),
-            Self::Traceback { frame, next, .. } => { visit(*frame); visit(*next); }
+            Self::Traceback { frame, globals, next, .. } => { visit(frame.get()); visit(*globals); visit(*next); }
             Self::Frame { globals, back, .. } => { visit(*globals); visit(*back); }
             Self::Function { defaults, closure, attributes, annotate, annotations, positional_defaults, keyword_defaults, .. } => {
                 for value in [*defaults, *closure, *attributes, *annotate, *annotations, *positional_defaults, *keyword_defaults] { visit(value); }
@@ -374,7 +378,7 @@ impl Data {
         match self {
             Self::BigInt(_, ty, attributes) | Self::Float(_, ty, attributes)
             | Self::Text(_, ty, attributes) | Self::Bytes(_, ty, attributes) => !ty.is_null() || !attributes.is_null(),
-            Self::Args(values, ty, attributes) | Self::List(values, ty, attributes) => {
+            Self::Args(values, ty, attributes) => {
                 !ty.is_null()
                     || !attributes.is_null()
                     || values.iter().any(|&v| Self::may_cycle(v))
@@ -384,7 +388,7 @@ impl Data {
                     && !is_fixnum(*receiver)
                     && unsafe { (**receiver).tracked }
             }
-            Self::Namespace(_) | Self::Class(_) | Self::Instance { .. }
+            Self::List(..) | Self::Namespace(_) | Self::Class(_) | Self::Instance { .. }
             | Self::NativeInstance { .. } | Self::WeakHandle { .. } | Self::BufferLease { .. }
             | Self::Traceback { .. } | Self::Frame { .. } | Self::Function { .. } => true,
             Self::None | Self::Bool(_) | Self::DescriptorLease(_) | Self::ForeignPointerVector { .. } | Self::ForeignCString { .. }
@@ -549,6 +553,7 @@ pub unsafe fn new_value(data: Data) -> Value {
     let value = Box::into_raw(Box::new(Object {
         references: std::sync::atomic::AtomicUsize::new(1),
         tracked,
+        gc_slot: 0,
         data,
     }));
     if tracked { crate::gc::track(value); }
@@ -610,10 +615,10 @@ unsafe fn destroy(value: Value) {
             crate::weakref::clear(value);
             if !(*value).remove_reference() { return; }
         }
-        let owned = Box::from_raw(value);
-        if owned.tracked {
+        if (*value).tracked {
             crate::gc::untrack(value);
         }
+        let owned = Box::from_raw(value);
         release_data(value, owned.data);
     }
 }
@@ -652,6 +657,7 @@ unsafe impl Sync for ImmortalObject {}
 static UNDEFINED: ImmortalObject = ImmortalObject(Object {
     references: std::sync::atomic::AtomicUsize::new(usize::MAX),
     tracked: false,
+    gc_slot: 0,
     data: Data::Undefined,
 });
 pub fn undefined_value() -> Value {
@@ -664,18 +670,21 @@ pub fn is_undefined(value: Value) -> bool {
 static NONE: ImmortalObject = ImmortalObject(Object {
     references: std::sync::atomic::AtomicUsize::new(usize::MAX),
     tracked: false,
+    gc_slot: 0,
     data: Data::None,
 });
 #[unsafe(export_name = "mule.false")]
 static FALSE: ImmortalObject = ImmortalObject(Object {
     references: std::sync::atomic::AtomicUsize::new(usize::MAX),
     tracked: false,
+    gc_slot: 0,
     data: Data::Bool(false),
 });
 #[unsafe(export_name = "mule.true")]
 static TRUE: ImmortalObject = ImmortalObject(Object {
     references: std::sync::atomic::AtomicUsize::new(usize::MAX),
     tracked: false,
+    gc_slot: 0,
     data: Data::Bool(true),
 });
 pub unsafe fn none_value() -> Value {
@@ -699,6 +708,7 @@ pub fn empty_text() -> Value {
         ImmortalObject(Object {
             references: std::sync::atomic::AtomicUsize::new(usize::MAX),
             tracked: false,
+            gc_slot: 0,
             data: Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut()),
         })
     });
@@ -714,6 +724,7 @@ pub fn latin1_character(byte: u8) -> Value {
             ImmortalObject(Object {
                 references: std::sync::atomic::AtomicUsize::new(usize::MAX),
                 tracked: false,
+                gc_slot: 0,
                 data: Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut()),
             })
         }))
@@ -993,6 +1004,7 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
         let mut view = Object {
             references: std::sync::atomic::AtomicUsize::new(usize::MAX),
             tracked: false,
+            gc_slot: 0,
             data: Data::ArgumentView {
                 values: args.as_ptr(),
                 count: args.len(),
@@ -1033,6 +1045,7 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
                 let mut view = Object {
                     references: std::sync::atomic::AtomicUsize::new(usize::MAX),
                     tracked: false,
+                    gc_slot: 0,
                     data: Data::ReceiverArgs {
                         receiver,
                         values: args.as_ptr(),
@@ -3005,6 +3018,7 @@ mod lifetime_tests {
         let value = Object {
             references: std::sync::atomic::AtomicUsize::new(0),
             tracked: false,
+            gc_slot: 0,
             data: Data::None,
         };
         value.remove_reference();

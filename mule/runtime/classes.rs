@@ -1930,9 +1930,46 @@ pub unsafe extern "C" fn mule_get_attr_cached(
     }
 }
 
+thread_local! {
+    static TRACEBACK_GET_CACHE: std::cell::UnsafeCell<AttrCache> =
+        std::cell::UnsafeCell::new(AttrCache::default());
+    static TRACEBACK_SET_CACHE: std::cell::UnsafeCell<AttrCache> =
+        std::cell::UnsafeCell::new(AttrCache::default());
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_get_attr(receiver: Value, attribute: *const c_char) -> Value {
     unsafe { mule_get_attr_cached(receiver, attribute, std::ptr::null_mut()) }
+}
+
+pub unsafe fn get_exception_traceback(exception: Value) -> Value {
+    unsafe {
+        let cache = TRACEBACK_GET_CACHE.with(|cell| cell.get());
+        if !exception.is_null() && !object::is_fixnum(exception) {
+            if let Data::Instance { ty, fields, .. } = &(*exception).data {
+                if let Data::Class(layout) = &(**ty).data {
+                    if let Some(encoded) = cached(layout, cache) {
+                        if encoded & KIND == FIELD {
+                            let value = fields[encoded >> SHIFT];
+                            return if value.is_null() {
+                                object::none_value()
+                            } else {
+                                object::retain(value)
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        mule_get_attr_cached(exception, c"__traceback__".as_ptr(), cache)
+    }
+}
+
+pub unsafe fn set_exception_traceback(exception: Value, traceback: Value) -> i32 {
+    unsafe {
+        let cache = TRACEBACK_SET_CACHE.with(|cell| cell.get());
+        mule_set_attr_cached(exception, c"__traceback__".as_ptr(), traceback, cache)
+    }
 }
 
 #[unsafe(no_mangle)]

@@ -154,6 +154,7 @@ unsafe fn call_buffers(
         let mut view = Object {
             references: std::sync::atomic::AtomicUsize::new(usize::MAX),
             tracked: false,
+            gc_slot: 0,
             data: Data::KeywordArgs {
                 receiver,
                 values: values.as_ptr(),
@@ -350,7 +351,7 @@ pub unsafe extern "C" fn mule_function_default(callable: Value, offset: i32) -> 
 
 // This private immortal object is an identity sentinel, never a user value.
 thread_local! {
-    static MISSING: Object = const { Object { references: std::sync::atomic::AtomicUsize::new(usize::MAX), tracked: false, data: Data::None } };
+    static MISSING: Object = const { Object { references: std::sync::atomic::AtomicUsize::new(usize::MAX), tracked: false, gc_slot: 0, data: Data::None } };
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_binding_missing() -> Value {
@@ -464,6 +465,7 @@ pub(crate) unsafe extern "C" fn default_construct(_: Value, args: Value) -> Valu
             let mut view = Object {
                 references: std::sync::atomic::AtomicUsize::new(usize::MAX),
                 tracked: false,
+                gc_slot: 0,
                 data: Data::KeywordArgs {
                     receiver: std::ptr::null_mut(),
                     values: positional.as_ptr(), count: positional.len(),

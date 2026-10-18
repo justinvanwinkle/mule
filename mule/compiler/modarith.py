@@ -287,11 +287,18 @@ def _transform_bit_xor_assoc(node: Combination) -> bool:
     )
 
 
+_INT64_TYPE = IntegerType(-(1 << 63), (1 << 63) - 1)
+
+
 def _transform_add_subtract_assoc(node: Combination) -> bool:
     matched = _match_assoc_int_binary(node, _ADD_SUB_NAMES)
     if matched is None:
         return False
     inner_node, x_lvar, c1_lvar, c1, right_lvar, c2 = matched
+    if lvar_type(x_lvar).exact_integer() is not None and not lvar_type(
+        node.args[0]
+    ).fits(_INT64_TYPE):
+        return False
     inner_is_add = (
         inner_node.fun_info is not None and inner_node.fun_info.name == "%add"
     )
