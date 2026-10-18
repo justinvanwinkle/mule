@@ -104,6 +104,7 @@ declare ptr @mule_text_codepoint(ptr, ptr)
 declare ptr @mule_text_slice(ptr, ptr, ptr)
 declare ptr @mule_text_join(ptr)
 declare ptr @mule_storage_hash(ptr)
+declare ptr @mule_identity_hash(ptr)
 declare ptr @mule_type_of(ptr)
 declare ptr @mule_type_name(ptr)
 declare ptr @mule_load_local(ptr, ptr)
@@ -188,6 +189,7 @@ declare ptr @mule_storage_length(ptr)
 declare ptr @mule_storage_read(ptr, ptr)
 declare ptr @mule_storage_write(ptr, ptr, ptr)
 declare ptr @mule_fast_getitem(ptr, ptr)
+declare ptr @mule_fast_getslice(ptr, ptr, ptr, ptr)
 declare i32 @mule_fast_setitem(ptr, ptr, ptr)
 declare i32 @mule_fast_next_item(ptr, ptr)
 declare ptr @mule_storage_append(ptr, ptr)
@@ -1094,6 +1096,39 @@ class ModuleGenerator:
         )
         return symbol
 
+    def getslice_helper(self) -> str:
+        existing = self.protocol_helpers.get("$getslice.fast")
+        if existing is not None:
+            return existing
+        symbol = "@mule.fast.getslice"
+        self.protocol_helpers["$getslice.fast"] = symbol
+        make_slice = self.protocol_helper("make_slice", 3)
+        slow = self.protocol_helper("getitem", 2)
+        self.auxiliary.append(
+            f"define internal ptr {symbol}(ptr %sequence, ptr %start, ptr %stop, ptr %step) {{\n"
+            "entry:\n"
+            "  %fast = call ptr @mule_fast_getslice(ptr %sequence, ptr %start, ptr %stop, ptr %step)\n"
+            "  %matched = icmp ne ptr %fast, null\n"
+            "  br i1 %matched, label %hit, label %slow\n"
+            "hit:\n"
+            "  ret ptr %fast\n"
+            "slow:\n"
+            "  %owned.start = call ptr @mule.fast.retain(ptr %start)\n"
+            "  %owned.stop = call ptr @mule.fast.retain(ptr %stop)\n"
+            "  %owned.step = call ptr @mule.fast.retain(ptr %step)\n"
+            f"  %slice = call ptr {make_slice}(ptr %owned.start, ptr %owned.stop, ptr %owned.step)\n"
+            "  %bad = icmp eq ptr %slice, null\n"
+            "  br i1 %bad, label %failed, label %lookup\n"
+            "failed:\n"
+            "  ret ptr null\n"
+            "lookup:\n"
+            "  %owned.seq = call ptr @mule.fast.retain(ptr %sequence)\n"
+            f"  %result = call ptr {slow}(ptr %owned.seq, ptr %slice)\n"
+            "  ret ptr %result\n"
+            "}"
+        )
+        return symbol
+
     def setitem_helper(self) -> str:
         existing = self.protocol_helpers.get("$setitem.fast")
         if existing is not None:
@@ -1369,9 +1404,13 @@ class ModuleGenerator:
                     f"{direct_label}:",
                 ]
             )
-            if function.name == "mule_sequences_mule_fn_ListStorage.append" and order == (
-                -1,
-                0,
+            if (
+                function.name == "mule_sequences_mule_fn_ListStorage.append"
+                and order
+                == (
+                    -1,
+                    0,
+                )
             ):
                 lines.extend(
                     [
@@ -1454,40 +1493,48 @@ class ModuleGenerator:
         keywords: tuple[str | None, ...],
         arity: int,
         steps: tuple[tuple[EntryContext | None, tuple[ValueType | None, ...]], ...],
+        *,
+        proven: bool = False,
     ) -> str:
         step_key = tuple(
             (None if ctx is None else ctx.id, needed) for ctx, needed in steps
         )
-        key = ("$call.direct", function, keywords, arity, step_key)
+        key = ("$call.direct", function, keywords, arity, step_key, proven)
         existing = self.protocol_helpers.get(key)
         if existing is not None:
             return existing
         index = len(self.protocol_helpers)
         symbol = _symbol(f"mule.direct.{function.name}.{arity}.{index}")
         self.protocol_helpers[key] = symbol
-        fallback_helper = (
-            self.keyword_call_helper(keywords, resolved=False)
-            if keywords
-            else self.positional_call_helper(arity)
-        )
         order = function.call_order(keywords, arity)
         params = [
             "ptr %globals",
             "ptr %callee",
             *(f"ptr %arg.{i}" for i in range(arity)),
         ]
-        fallback_args = ", ".join(
-            ["ptr %callee", *(f"ptr %arg.{i}" for i in range(arity))]
-        )
         builder = _HelperBuilder()
-        builder.lines = [
-            f"define internal ptr {symbol}({', '.join(params)}) {{",
-            "entry:",
-            f"  %matched = call i32 @mule_function_matches(ptr %callee, ptr {self.functions[function]}, ptr %globals)",
-            "  %matching = icmp ne i32 %matched, 0",
-            "  br i1 %matching, label %direct, label %fallback",
-            "direct:",
-        ]
+        if proven:
+            builder.lines = [
+                f"define internal ptr {symbol}({', '.join(params)}) {{",
+                "entry:",
+            ]
+        else:
+            fallback_helper = (
+                self.keyword_call_helper(keywords, resolved=False)
+                if keywords
+                else self.positional_call_helper(arity)
+            )
+            fallback_args = ", ".join(
+                ["ptr %callee", *(f"ptr %arg.{i}" for i in range(arity))]
+            )
+            builder.lines = [
+                f"define internal ptr {symbol}({', '.join(params)}) {{",
+                "entry:",
+                f"  %matched = call i32 @mule_function_matches(ptr %callee, ptr {self.functions[function]}, ptr %globals)",
+                "  %matching = icmp ne i32 %matched, 0",
+                "  br i1 %matching, label %direct, label %fallback",
+                "direct:",
+            ]
 
         def emit_invoke(context: EntryContext | None, tag: int) -> None:
             entered = f"entered.{tag}"
@@ -1555,15 +1602,16 @@ class ModuleGenerator:
         builder.lines.append("failed:")
         for i in range(arity):
             builder.line(f"  call void @mule.fast.release(ptr %arg.{i})")
-        builder.lines.extend(
-            [
-                "  ret ptr null",
-                "fallback:",
-                f"  %fallback.res = call ptr {fallback_helper}({fallback_args})",
-                "  ret ptr %fallback.res",
-                "}",
-            ]
-        )
+        builder.line("  ret ptr null")
+        if not proven:
+            builder.lines.extend(
+                [
+                    "fallback:",
+                    f"  %fallback.res = call ptr {fallback_helper}({fallback_args})",
+                    "  ret ptr %fallback.res",
+                ]
+            )
+        builder.lines.append("}")
         self.auxiliary.append("\n".join(builder.lines))
         return symbol
 
@@ -3174,27 +3222,34 @@ class FunctionGenerator:
             (argument_refs[index].tn.type or UNKNOWN) if index >= 0 else None
             for index in order
         )
-        contexts = sorted(
-            module.variants_of(function),
-            key=lambda context: sum(
-                fact.maximum - fact.minimum if fact.is_fixnum else 2**64
-                for fact in context.parameters
-            ),
-        )
         supplied_sources = [source for source in argument_types if source is not None]
         if len(supplied_sources) != len(order):
             contexts = []
         else:
-            contexts = [
-                context
-                for context in contexts
-                if all(
-                    source.may_dispatch_fit(expected)
-                    for source, expected in zip(
-                        supplied_sources, context.parameters, strict=True
+            contexts = sorted(
+                (
+                    context
+                    for context in module.variants_of(function)
+                    if all(
+                        source.may_dispatch_fit(expected)
+                        for source, expected in zip(
+                            supplied_sources, context.parameters, strict=True
+                        )
                     )
-                )
-            ]
+                ),
+                key=lambda context: (
+                    sum(
+                        0 if source.dispatch_fits(expected) else 1
+                        for source, expected in zip(
+                            supplied_sources, context.parameters, strict=True
+                        )
+                    ),
+                    sum(
+                        fact.maximum - fact.minimum if fact.is_fixnum else 2**64
+                        for fact in context.parameters
+                    ),
+                ),
+            )
         steps: list[tuple[EntryContext | None, tuple[ValueType | None, ...]]] = []
         for context in contexts:
             needed = tuple(
@@ -3209,7 +3264,11 @@ class FunctionGenerator:
         else:
             steps.append((None, ()))
         helper = module.direct_call_helper(
-            function, keywords, len(arguments), tuple(steps)
+            function,
+            keywords,
+            len(arguments),
+            tuple(steps),
+            proven=site.proven and not keywords,
         )
         operands = ", ".join(
             [
@@ -3425,14 +3484,21 @@ class FunctionGenerator:
     ) -> None:
         lambda_ = self.lambda_
         module = self.module
+        fixnum_variant = next(
+            (v for v in module.variants_of(lambda_) if v.id == "fixnum"), None
+        )
         if (
             param_names
             and not module.program.bootstrap
             and module.native_plans.get(lambda_) is None
-            and any(v.id == "fixnum" for v in module.variants_of(lambda_))
+            and fixnum_variant is not None
         ):
             combined = None
-            for index, name in enumerate(param_names):
+            for index, (name, expected) in enumerate(
+                zip(param_names, fixnum_variant.parameters, strict=True)
+            ):
+                if not expected.is_fixnum:
+                    continue
                 bits = f"%fix.bits.{index}"
                 lines.append(f"  {bits} = ptrtoint ptr {name} to i64")
                 if combined is None:
@@ -3441,17 +3507,18 @@ class FunctionGenerator:
                     next_combined = f"%fix.tags.{index}"
                     lines.append(f"  {next_combined} = and i64 {combined}, {bits}")
                     combined = next_combined
-            lines.extend(
-                [
-                    f"  %fix.tag = and i64 {combined}, 1",
-                    "  %fix.ok = icmp ne i64 %fix.tag, 0",
-                    "  br i1 %fix.ok, label %invoke.fixnum, label %invoke.general",
-                    "invoke.fixnum:",
-                    f"  %result.fixnum = call ptr {module.specialized[lambda_, 'fixnum']}({arguments})",
-                    "  ret ptr %result.fixnum",
-                    "invoke.general:",
-                ]
-            )
+            if combined is not None:
+                lines.extend(
+                    [
+                        f"  %fix.tag = and i64 {combined}, 1",
+                        "  %fix.ok = icmp ne i64 %fix.tag, 0",
+                        "  br i1 %fix.ok, label %invoke.fixnum, label %invoke.general",
+                        "invoke.fixnum:",
+                        f"  %result.fixnum = call ptr {module.specialized[lambda_, 'fixnum']}({arguments})",
+                        "  ret ptr %result.fixnum",
+                        "invoke.general:",
+                    ]
+                )
         lines.extend(
             [
                 f"  %result = call ptr {module.bodies[lambda_]}({arguments})",

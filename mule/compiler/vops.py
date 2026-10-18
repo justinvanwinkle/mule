@@ -506,6 +506,17 @@ for _operator, _opcode in BINARY_OPCODES.items():
     _define_binary(_operator, _opcode)
 
 
+def _unbox_float_operand(gen, operand):
+    if operand.tn.sc is DOUBLE:
+        return gen.load(operand)
+    slot = gen.float_scratch()
+    status = gen.operation(
+        f"call i32 @mule_unbox_f64(ptr {gen.load(operand)}, ptr {slot})"
+    )
+    gen.check_status(status)
+    return gen.operation(f"load double, ptr {slot}")
+
+
 def _boxed_float_binary(operator, opcode):
     @define_vop(
         f"boxed-float-{operator.name.lower()}",
@@ -520,17 +531,7 @@ def _boxed_float_binary(operator, opcode):
     def generator(gen, vop):
         # Retain the operand slots through checked extraction: an error must
         # leave both objects available to the shared ownership cleanup.
-        operands = []
-        for operand in vop.args:
-            if operand.tn.sc is DOUBLE:
-                operands.append(gen.load(operand))
-                continue
-            slot = gen.float_scratch()
-            status = gen.operation(
-                f"call i32 @mule_unbox_f64(ptr {gen.load(operand)}, ptr {slot})"
-            )
-            gen.check_status(status)
-            operands.append(gen.operation(f"load double, ptr {slot}"))
+        operands = [_unbox_float_operand(gen, operand) for operand in vop.args]
         value = gen.float_arithmetic(opcode, *operands, check_zero=True)
         left, right = (gen.take(operand) for operand in vop.args)
         consumed = [
@@ -562,6 +563,66 @@ def _boxed_float_binary(operator, opcode):
 
 for _operator, _opcode in _RAW_FLOAT_BINARY.items():
     _boxed_float_binary(_operator, _opcode)
+
+
+def _boxed_float_unary(operator, negate: bool):
+    @define_vop(
+        f"boxed-float-{operator.name.lower()}",
+        translate=fndb.UNARY[operator],
+        args=((DESCRIPTOR, DOUBLE),),
+        results=((DESCRIPTOR, DOUBLE),),
+        arg_types=((BOXED_FLOAT,),),
+        result_types=((BOXED_FLOAT,),),
+        cost=-1,
+    )
+    def generator(gen, vop):
+        operand = vop.args[0]
+        raw = _unbox_float_operand(gen, operand)
+        value = gen.operation(f"fneg double {raw}") if negate else raw
+        taken = gen.take(operand)
+        consumed = [taken] if operand.tn.sc is DESCRIPTOR else []
+        if vop.results[0].tn.sc is DOUBLE:
+            gen.store(vop.results[0], value)
+            for item in consumed:
+                gen.release(item)
+            return
+        gen.pointer_result(
+            vop.results[0], f"call ptr @mule_box_f64(double {value})", consumed
+        )
+
+
+_boxed_float_unary(ast.UnaryOperator.POSITIVE, False)
+_boxed_float_unary(ast.UnaryOperator.NEGATIVE, True)
+
+
+def _boxed_float_compare(operator, predicate):
+    @define_vop(
+        f"boxed-float-compare-{operator.name.lower()}",
+        translate=fndb.COMPARE[operator],
+        args=((DESCRIPTOR, DOUBLE), (DESCRIPTOR, DOUBLE)),
+        results=(OBJECT,),
+        arg_types=((BOXED_FLOAT,), (BOXED_FLOAT,)),
+        cost=-1,
+    )
+    def generator(gen, vop):
+        operands = [_unbox_float_operand(gen, operand) for operand in vop.args]
+        condition = gen.operation(
+            f"fcmp {predicate} double {operands[0]}, {operands[1]}"
+        )
+        boolean = gen.operation(
+            f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
+        )
+        left, right = (gen.take(operand) for operand in vop.args)
+        consumed = [
+            val
+            for operand, val in zip(vop.args, (left, right))
+            if operand.tn.sc is DESCRIPTOR
+        ]
+        gen.native_result(vop.results[0], boolean, consumed)
+
+
+for _operator, _predicate in _RAW_FLOAT_COMPARE.items():
+    _boxed_float_compare(_operator, _predicate)
 
 
 def _define_unary(operator, opcode):
@@ -1119,6 +1180,25 @@ def protocol_getitem(gen, vop):
     result = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {index})")
     gen.release(sequence)
     gen.release(index)
+    gen.publish(vop.results[0], result)
+    gen.check_pointer(result)
+    gen.refine(vop.results[0].tn, result)
+
+
+@define_vop("protocol-getslice", translate=fndb.GETSLICE, results=(OBJECT,))
+def protocol_getslice(gen, vop):
+    sequence = gen.take(vop.args[0])
+    start = gen.take(vop.args[1])
+    stop = gen.take(vop.args[2])
+    step = gen.take(vop.args[3])
+    helper = gen.module.getslice_helper()
+    result = gen.operation(
+        f"call ptr {helper}(ptr {sequence}, ptr {start}, ptr {stop}, ptr {step})"
+    )
+    gen.release(sequence)
+    gen.release(start)
+    gen.release(stop)
+    gen.release(step)
     gen.publish(vop.results[0], result)
     gen.check_pointer(result)
     gen.refine(vop.results[0].tn, result)

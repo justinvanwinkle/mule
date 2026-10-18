@@ -146,13 +146,23 @@ fn identity(value: Value) -> i64 {
     (((value as usize).rotate_right(4) as i64) << 1) >> 1
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_identity_hash(value: Value) -> Value {
+    unsafe {
+        if object::has_error() || value.is_null() {
+            return null_mut();
+        }
+        let hash = identity(value);
+        integer(if hash == -1 { -2 } else { hash })
+    }
+}
+
 unsafe extern "C" fn identity_hash(_: Value, args: Value) -> Value {
     unsafe {
         let Some(value) = operand(args) else {
             return null_mut();
         };
-        let hash = identity(value);
-        integer(if hash == -1 { -2 } else { hash })
+        mule_identity_hash(value)
     }
 }
 

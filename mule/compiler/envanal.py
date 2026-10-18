@@ -84,7 +84,7 @@ def compute_closure(lambda_: Lambda) -> bool:
         for ref in var.refs:
             ref_lambda = ref.home_lambda
             if ref_lambda is not lambda_:
-                if var.sets:
+                if any(s is not var.arg_info for s in var.sets):
                     var.indirect = True
                 closed = True
                 _close_over(var, ref_lambda.environment, environment)

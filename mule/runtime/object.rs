@@ -2252,6 +2252,28 @@ pub unsafe extern "C" fn mule_type_name(value: Value) -> Value {
         })
     }
 }
+pub unsafe fn text_slice_range(text: &Text, start: usize, stop: usize) -> Value {
+    unsafe {
+        if start >= stop {
+            return empty_text();
+        }
+        if stop - start == 1 {
+            if let Some(code) = text.get(start) {
+                if code <= 0xff {
+                    return latin1_character(code as u8);
+                }
+            }
+        }
+        match text.slice(start, stop) {
+            Ok(slice) => new_value(Data::Text(slice, std::ptr::null_mut(), std::ptr::null_mut())),
+            Err(_) => {
+                error("MemoryError", "text storage allocation failed");
+                std::ptr::null_mut()
+            }
+        }
+    }
+}
+
 /// Copy `text[start:stop]`; the compiled caller has clamped both bounds.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_text_slice(value: Value, start: Value, stop: Value) -> Value {
@@ -2270,23 +2292,7 @@ pub unsafe extern "C" fn mule_text_slice(value: Value, start: Value, stop: Value
             error("IndexError", "text slice bounds must be nonnegative small integers");
             return std::ptr::null_mut();
         };
-        if start >= stop {
-            return empty_text();
-        }
-        if stop - start == 1 {
-            if let Some(code) = text.get(start) {
-                if code <= 0xff {
-                    return latin1_character(code as u8);
-                }
-            }
-        }
-        match text.slice(start, stop) {
-            Ok(slice) => new_value(Data::Text(slice, std::ptr::null_mut(), std::ptr::null_mut())),
-            Err(_) => {
-                error("MemoryError", "text storage allocation failed");
-                std::ptr::null_mut()
-            }
-        }
+        text_slice_range(text, start, stop)
     }
 }
 /// Concatenate a list or tuple of `str` pieces into one new string.

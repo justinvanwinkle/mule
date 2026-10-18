@@ -481,6 +481,19 @@ class _Propagation(NodeVisitor, LeafVisitor):
             if receiver_type.may_run_user_code or index_type.may_run_user_code:
                 self.invalidate()
             return _fact(receiver_type.getitem_type(index_type))
+        if name == "%getslice":
+            receiver_type = self.type_of(args[0])
+            if receiver_type.may_run_user_code or any(
+                self.type_of(arg).may_run_user_code for arg in args[1:]
+            ):
+                self.invalidate()
+            if receiver_type is TEXT_TYPE:
+                return TEXT_FACT
+            if receiver_type is BYTES_TYPE:
+                return BYTES_FACT
+            if receiver_type is LIST_TYPE:
+                return LIST_FACT
+            return UNKNOWN_FACT
         if info.protocol is not None:
             self.invalidate()
             return UNKNOWN_FACT
@@ -643,7 +656,10 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
     headers = _loop_headers(entry, successors)
     global_names = tuple(scan.global_names)
     call_nodes = tuple(scan.call_nodes)
-    indirect = tuple(var for var in lambda_.locals if var.indirect)
+    closure = (
+        tuple(lambda_.environment.closure) if lambda_.environment is not None else ()
+    )
+    indirect = tuple(var for var in (*lambda_.locals, *closure) if var.indirect)
     volatile_keys = (
         *((_GLOBAL, name) for name in global_names),
         *indirect,
@@ -676,6 +692,7 @@ class _Walk:
         annotations,
         *,
         graph: LambdaGraph | None = None,
+        proven_globals: frozenset[str] = frozenset(),
     ):
         self.lambda_ = lambda_
         self.global_targets = global_targets
@@ -701,11 +718,21 @@ class _Walk:
             var: _fact(parameter_facts[var]) if var in parameter_facts else UNBOUND_FACT
             for var in lambda_.locals
         }
+        closure = lambda_.environment.closure if lambda_.environment is not None else ()
+        for var in closure:
+            vtype = var.optimistic_type
+            self.initial[var] = _fact(
+                vtype if vtype is not None and vtype is not BOTTOM else UNKNOWN
+            )
         # What user code may leave behind in module globals and variables
         # captured by nested functions.
         invalidated_globals: dict[object, Fact] = {
             (_GLOBAL, name): (
-                Fact(UNKNOWN, target)
+                Fact(
+                    FUNCTION_TYPE if name in proven_globals else UNKNOWN,
+                    target,
+                    name in proven_globals,
+                )
                 if (target := global_targets.get(name)) is not None
                 else UNKNOWN_FACT
             )
@@ -713,7 +740,14 @@ class _Walk:
         }
         self.invalidated = {
             **invalidated_globals,
-            **dict.fromkeys(self.indirect, UNKNOWN_FACT),
+            **{
+                var: (
+                    self.initial.get(var, UNKNOWN_FACT)
+                    if var in closure
+                    else UNKNOWN_FACT
+                )
+                for var in self.indirect
+            },
         }
         self.initial.update(invalidated_globals)
 
@@ -879,8 +913,39 @@ class _ConstrainEdge(NodeVisitor):
         )
 
 
+_NEGATED_COMPARISON = {
+    ast.ComparisonOperator.LESS: ast.ComparisonOperator.GREATER_EQUAL,
+    ast.ComparisonOperator.LESS_EQUAL: ast.ComparisonOperator.GREATER,
+    ast.ComparisonOperator.GREATER: ast.ComparisonOperator.LESS_EQUAL,
+    ast.ComparisonOperator.GREATER_EQUAL: ast.ComparisonOperator.LESS,
+    ast.ComparisonOperator.EQUAL: ast.ComparisonOperator.NOT_EQUAL,
+    ast.ComparisonOperator.NOT_EQUAL: ast.ComparisonOperator.EQUAL,
+}
+
+
+def _comparison_bound(
+    operator: ast.ComparisonOperator, other_type: ValueType, truth: bool
+) -> int | None:
+    if other_type.may_be_unbound:
+        return None
+    effective = operator if truth else _NEGATED_COMPARISON.get(operator, operator)
+    if effective in (
+        ast.ComparisonOperator.LESS,
+        ast.ComparisonOperator.LESS_EQUAL,
+    ):
+        return other_type.maximum
+    if effective in (
+        ast.ComparisonOperator.GREATER,
+        ast.ComparisonOperator.GREATER_EQUAL,
+    ):
+        return other_type.minimum
+    if effective is ast.ComparisonOperator.EQUAL:
+        return other_type.exact_integer()
+    return None
+
+
 class _ConstrainComparison(NodeVisitor):
-    """A known comparison of a local against a constant narrows the local."""
+    """A known comparison of a local against an integer interval narrows the local."""
 
     def __init__(self, visitor: _Propagation, state, truth: bool):
         self.visitor = visitor
@@ -898,24 +963,51 @@ class _ConstrainComparison(NodeVisitor):
             return None
         visitor = self.visitor
         left, right = node.args
-        local = visitor.origins.get(left)
-        bound = visitor.type_of(right).exact_integer()
-        if local is None:
-            local = visitor.origins.get(right)
-            bound = visitor.type_of(left).exact_integer()
-            operator = _SWAPPED.get(operator, operator)
-        if local is None or bound is None or local not in visitor.state:
-            return None
-        current = visitor.state[local]
-        narrowed = current.type.narrow(operator, bound, self.truth)
-        if narrowed == current.type:
-            return None
-        edge = self.state.copy()
-        edge[local] = (
-            _fact(narrowed)
-            if current.target is None
-            else Fact(narrowed, current.target, current.proven)
+        swapped = _SWAPPED.get(
+            operator,
+            operator
+            if operator
+            in (
+                ast.ComparisonOperator.EQUAL,
+                ast.ComparisonOperator.NOT_EQUAL,
+                ast.ComparisonOperator.IS,
+                ast.ComparisonOperator.IS_NOT,
+            )
+            else None,
         )
+        edge = None
+        for operand, other, op in (
+            (left, right, operator),
+            (right, left, swapped),
+        ):
+            if op is None:
+                continue
+            local = visitor.origins.get(operand)
+            if local is None or local not in visitor.state:
+                continue
+            other_type = visitor.type_of(other)
+            if op in (ast.ComparisonOperator.IS, ast.ComparisonOperator.IS_NOT):
+                if other_type is not NONE_TYPE:
+                    continue
+                current = (edge or visitor.state)[local]
+                narrowed = current.type.narrow_none(
+                    (op is ast.ComparisonOperator.IS) == self.truth
+                )
+            else:
+                bound = _comparison_bound(op, other_type, self.truth)
+                if bound is None:
+                    continue
+                current = (edge or visitor.state)[local]
+                narrowed = current.type.narrow(op, bound, self.truth)
+            if narrowed == current.type:
+                continue
+            if edge is None:
+                edge = self.state.copy()
+            edge[local] = (
+                _fact(narrowed)
+                if current.target is None
+                else Fact(narrowed, current.target, current.proven)
+            )
         return edge
 
 
@@ -936,6 +1028,7 @@ def propagate(
     annotations,
     *,
     graph: LambdaGraph | None = None,
+    proven_globals: frozenset[str] = frozenset(),
 ) -> Body:
     """Propagate facts through ``lambda_`` from the given parameter types.
 
@@ -952,6 +1045,7 @@ def propagate(
         resolve_call,
         annotations,
         graph=graph,
+        proven_globals=proven_globals,
     ).run()
 
 

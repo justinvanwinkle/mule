@@ -118,6 +118,7 @@ _BORROWING_VOPS = frozenset(
         "inplace-bit_or",
         "sequence-available",
         "protocol-getitem",
+        "protocol-getslice",
         "protocol-setitem",
     }
 )
@@ -669,7 +670,12 @@ class _Converter(NodeVisitor):
             if var.indirect:
                 environment.cells[var] = self.component.tn(T, name=f"$cell:{var.name}")
             else:
-                environment.copies[var] = self.component.tn(T, name=f"$copy:{var.name}")
+                vtype = var.optimistic_type or UNKNOWN
+                tn = self.component.tn(
+                    primitive_type_of(vtype), leaf=var, name=f"$copy:{var.name}"
+                )
+                tn.type = vtype
+                environment.copies[var] = tn
         for var in lambda_.locals:
             if var.indirect:
                 environment.cells[var] = self.component.tn(T, name=f"$cell:{var.name}")
@@ -820,7 +826,9 @@ class _Converter(NodeVisitor):
             node,
             args=(source,),
             results=(loaded,),
-            info=LocalAccess(var.name, False, var in environment.copies),
+            info=LocalAccess(
+                var.name, False, var in environment.copies or var in self.lambda_.vars
+            ),
         )
         return loaded
 

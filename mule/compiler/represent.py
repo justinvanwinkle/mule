@@ -99,6 +99,8 @@ def _variable_type(tn, component, writes) -> PrimitiveType:
             written = vop.args[0].tn.primitive_type
         elif name == "move-argument":
             written = primitive_type_of(context.parameters[vop.codegen_info])
+        elif name == "load-closure":
+            written = tn.primitive_type
         elif name == "unbind-local":
             continue
         else:

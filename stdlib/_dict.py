@@ -88,16 +88,16 @@ def hash(value, /):
     if _tuple_storage(value):
         return _tuple_hash(value)
     if is_class(value):
-        return identity_hash(value)
+        return _identity_hash(value)
     owner = _raised_class(value)
     if owner is None:
         if _type_name(value) == "list":
             raise TypeError("unhashable type: 'list'")
-        return identity_hash(value)
+        return _identity_hash(value)
     missing = _binding_missing()
     method = class_lookup_default(owner, "__hash__", missing)
     if method is missing:
-        return identity_hash(value)
+        return _identity_hash(value)
     if method is None:
         raise TypeError("unhashable type: '" + _type_name(value) + "'")
     result = bind_instance_attribute(method, value, owner)()
@@ -128,7 +128,7 @@ class _Table:
         indices = self._indices
         hashes = self._hashes
         keys = self._keys
-        mask = _storage_length(indices) - 1
+        mask = (_storage_length(indices) - 1) & _PERTURB_MASK
         perturb = code & _PERTURB_MASK
         slot = perturb & mask
         while True:
@@ -149,7 +149,7 @@ class _Table:
         indices = self._indices
         hashes = self._hashes
         keys = self._keys
-        mask = _storage_length(indices) - 1
+        mask = (_storage_length(indices) - 1) & _PERTURB_MASK
         perturb = code & _PERTURB_MASK
         slot = perturb & mask
         while True:
@@ -219,7 +219,7 @@ class _Table:
         indices = _empty_indices(size * 2)
         self._indices = indices
         self._hashes, self._keys, self._values = hashes, keys, values
-        mask = _storage_length(indices) - 1
+        mask = (_storage_length(indices) - 1) & _PERTURB_MASK
         live_count = _storage_length(keys)
         index = 0
         while index < live_count:

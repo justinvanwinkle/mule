@@ -373,7 +373,10 @@ build at `-O3`, or compile large stdlib modules such as `typing`. Run them
 explicitly when a change affects what they cover. Keep default tests targeted:
 check compiler output directly where it shows the behavior, build small native
 programs that use only the builtins unit, pass `workers=1` to builds (pytest
-already runs tests in parallel), and mark anything heavier `integration`.
+already runs tests in parallel), and mark anything heavier `integration`. Do
+not override `XDG_CACHE_HOME` when running tests or benchmarks; Mule's cache
+hashes every compiler and runtime input, so overriding `XDG_CACHE_HOME` adds
+no isolation or benefit.
 
 Check changed Python files with Ruff; format only intended files. Documentation
 changes do not require rerunning parser tests unless behavior also changes.

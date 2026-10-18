@@ -30,6 +30,7 @@ from .constraint import (
     _BINARY_OPERATORS,
     _COMPARISON_OPERATORS,
     _UNARY_OPERATORS,
+    NO_FACT,
     Body,
     Fact,
     LambdaGraph,
@@ -38,9 +39,25 @@ from .constraint import (
     propagate,
     widen_fact,
 )
-from .ctype import BOTTOM, FIXNUM_MAX, FIXNUM_MIN, UNKNOWN, IntegerType, ValueType
+from .ctype import (
+    BOTTOM,
+    FIXNUM_MAX,
+    FIXNUM_MIN,
+    UNBOUND,
+    UNKNOWN,
+    IntegerType,
+    ValueType,
+)
 from .ir1util import made_function
-from .node import CallKind, Lambda, LeafVisitor, NodeVisitor, Set
+from .node import CallKind, FunctionalKind, Lambda, LeafVisitor, NodeVisitor, Set
+
+_PROTOCOL_PREFIXES = (
+    "mule_sequences_",
+    "mule_format_",
+    "mule_arguments_",
+    "mule_native_class_",
+    "mule_print_",
+)
 
 _NUMERIC_KNOWN = (
     frozenset(_BINARY_OPERATORS)
@@ -49,7 +66,7 @@ _NUMERIC_KNOWN = (
         frozenset(_COMPARISON_OPERATORS)
         - {"%compare_is", "%compare_is_not", "%compare_in", "%compare_not_in"}
     )
-    | {"%range_prepare", "%range_advance", "%make_slice"}
+    | {"%range_prepare", "%range_advance", "%make_slice", "%getslice"}
 )
 _NON_INTEGER_FIRST_OPERAND = frozenset(
     {
@@ -58,6 +75,7 @@ _NON_INTEGER_FIRST_OPERAND = frozenset(
         "%delattr",
         "%resolve_method",
         "%getitem",
+        "%getslice",
         "%setitem",
         "%delitem",
         "%iterate",
@@ -187,22 +205,35 @@ def global_bindings(lambdas) -> dict[str, dict[str, Lambda]]:
 
 
 class _GlobalFunctionStores(NodeVisitor):
-    def __init__(self, namespace: dict[str, Lambda]):
+    def __init__(
+        self,
+        namespace: dict[str, Lambda],
+        counts: dict[str, int] | None = None,
+    ):
         self.namespace = namespace
+        self.counts = counts
 
     def visit_Set(self, node):
-        node.var.accept(_GlobalFunctionStore(self.namespace, node))
+        node.var.accept(_GlobalFunctionStore(self.namespace, self.counts, node))
 
 
 class _GlobalFunctionStore(LeafVisitor):
     """Records a store of a fresh function object into a module global; a
     store into a local binds no module name."""
 
-    def __init__(self, namespace: dict[str, Lambda], store: Set):
+    def __init__(
+        self,
+        namespace: dict[str, Lambda],
+        counts: dict[str, int] | None,
+        store: Set,
+    ):
         self.namespace = namespace
+        self.counts = counts
         self.store = store
 
     def visit_GlobalVar(self, leaf):
+        if self.counts is not None:
+            self.counts[leaf.name] = self.counts.get(leaf.name, 0) + 1
         if self.store.value is None:
             return
         lambda_ = made_function(self.store.value.use())
@@ -235,27 +266,64 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
         lambda_: build_lambda_graph(lambda_) for lambda_ in lambdas
     }
     global_targets = defaultdict(dict)
+    global_counts: dict[str, dict[str, int]] = defaultdict(dict)
     for lambda_ in lambdas:
-        visitor = _GlobalFunctionStores(global_targets[lambda_.namespace])
+        visitor = _GlobalFunctionStores(
+            global_targets[lambda_.namespace], global_counts[lambda_.namespace]
+        )
         graph = graphs[lambda_]
         for block in graph.blocks:
             for node in graph.block_nodes[block]:
                 node.accept(visitor)
+    proven_by_namespace: dict[str, frozenset[str]] = {
+        ns: frozenset(
+            name
+            for name, target in targets.items()
+            if global_counts[ns].get(name) == 1
+            and target.name.startswith(_PROTOCOL_PREFIXES)
+        )
+        for ns, targets in global_targets.items()
+    }
+    captured_vars: list = []
+    seen_captured: set = set()
+    for lambda_ in lambdas:
+        if lambda_.environment is not None:
+            for var in lambda_.environment.closure:
+                if var not in seen_captured:
+                    seen_captured.add(var)
+                    captured_vars.append(var)
+    for var in captured_vars:
+        if not var.sets or (
+            var in var.home.vars and var.name not in var.home.local_annotations
+        ):
+            var.optimistic_type = UNKNOWN
+        else:
+            var.optimistic_type = BOTTOM
+    var_changes = defaultdict(int)
     full = IntegerType(FIXNUM_MIN, FIXNUM_MAX)
     parameters: dict[tuple[Lambda, str], tuple[ValueType, ...]] = {}
     for lambda_ in lambdas:
         parameters[lambda_, "general"] = (UNKNOWN,) * len(lambda_.vars)
         signature = lambda_.signature
-        if (
-            lambda_.vars
-            and not signature.variadic
-            and not any(
-                contract is not None and contract.contradicts(full)
-                for contract in signature.annotations
+        if lambda_.vars and not signature.variadic:
+            usable = tuple(
+                (contract is None or not contract.contradicts(full))
+                and _ParameterUse(var).analyze()
+                for var, contract in zip(
+                    lambda_.vars, signature.annotations, strict=True
+                )
             )
-            and all(_ParameterUse(var).analyze() for var in lambda_.vars)
-        ):
-            parameters[lambda_, "fixnum"] = (full,) * len(lambda_.vars)
+            if all(usable):
+                parameters[lambda_, "fixnum"] = (full,) * len(lambda_.vars)
+            else:
+                fixnum_params = tuple(
+                    full if is_usable and contract is not None else UNKNOWN
+                    for is_usable, contract in zip(
+                        usable, signature.annotations, strict=True
+                    )
+                )
+                if any(param is full for param in fixnum_params):
+                    parameters[lambda_, "fixnum"] = fixnum_params
     summaries: dict[tuple[Lambda, str], ValueType] = dict.fromkeys(parameters, BOTTOM)
     return_changes = defaultdict(int)
     argument_changes = defaultdict(int)
@@ -273,6 +341,11 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             )
             for context in ("observed", "fixnum", "general")
         )
+
+    def closure_inputs(lambda_):
+        if lambda_.environment is None:
+            return ()
+        return tuple(var.optimistic_type for var in lambda_.environment.closure)
 
     # The callees whose summaries the current propagation consulted.
     consulted: set[Lambda] = set()
@@ -339,9 +412,11 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
         for key, expected in previous_parameters.items():
             lambda_ = key[0]
             recorded = inputs.get(key)
+            current_closure = closure_inputs(lambda_)
             if (
                 recorded is not None
                 and recorded[0] == expected
+                and recorded[2] == current_closure
                 and all(
                     callee_inputs(target, previous_parameters, previous_summaries)
                     == state
@@ -351,6 +426,11 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                 body = bodies[key]
             else:
                 consulted.clear()
+                proven_globals = (
+                    proven_by_namespace.get(lambda_.namespace, frozenset())
+                    if lambda_.kind is not FunctionalKind.TOPLEVEL
+                    else frozenset()
+                )
                 body = propagate(
                     lambda_,
                     global_targets[lambda_.namespace],
@@ -358,6 +438,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     resolve,
                     annotations,
                     graph=graphs[lambda_],
+                    proven_globals=proven_globals,
                 )
                 bodies[key] = body
                 inputs[key] = (
@@ -368,6 +449,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                         )
                         for target in consulted
                     },
+                    current_closure,
                 )
             returned = summaries[key].join(body.return_type)
             if returned != summaries[key]:
@@ -376,6 +458,30 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     returned = widen_fact(Fact(summaries[key]), Fact(returned)).type
                 if returned != summaries[key]:
                     summaries[key] = returned
+                    changed = True
+
+        for var in captured_vars:
+            if not var.sets or (
+                var in var.home.vars and var.name not in var.home.local_annotations
+            ):
+                continue
+            joined = BOTTOM
+            for store in var.sets:
+                home_body = bodies.get((store.home_lambda, "general"))
+                if home_body is None:
+                    continue
+                if store.value is None:
+                    joined = joined.join(UNBOUND)
+                else:
+                    joined = joined.join(
+                        home_body.facts.get(store.value.use(), NO_FACT).type
+                    )
+            if joined != var.optimistic_type:
+                var_changes[var] += 1
+                if var_changes[var] > 3:
+                    joined = widen_fact(Fact(var.optimistic_type), Fact(joined)).type
+                if joined != var.optimistic_type:
+                    var.optimistic_type = joined
                     changed = True
 
         # The broad guard context is not evidence that callers actually supplied
@@ -394,15 +500,16 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     or len(call.arguments) != len(target.vars)
                 ):
                     continue
-                domains = tuple(type_.fixnum_domain() for type_ in call.arguments)
-                if any(domain is None for domain in domains):
-                    continue
-                if any(
-                    contract is not None and contract.contradicts(domain)
-                    for domain, contract in zip(
-                        domains, target.signature.annotations, strict=True
+                domains = tuple(
+                    domain
+                    if (domain := type_.fixnum_domain()) is not None
+                    and (contract is None or not contract.contradicts(domain))
+                    else UNKNOWN
+                    for type_, contract in zip(
+                        call.arguments, target.signature.annotations, strict=True
                     )
-                ):
+                )
+                if all(domain is UNKNOWN for domain in domains):
                     continue
                 if target not in seeds:
                     seeds[target] = domains
@@ -421,7 +528,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     argument_changes[key] += 1
                     if argument_changes[key] > 3:
                         seed = tuple(
-                            widen_fact(Fact(a), Fact(b)).type.fixnum_domain()
+                            widen_fact(Fact(a), Fact(b)).type.fixnum_domain() or UNKNOWN
                             for a, b in zip(old, seed, strict=True)
                         )
             if old != seed:
@@ -446,6 +553,12 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             return_changes.clear()
         if not changed:
             break
+
+    for var in captured_vars:
+        if var.optimistic_type is None or var.optimistic_type is BOTTOM:
+            var.optimistic_type = UNKNOWN
+        else:
+            var.optimistic_type = var.optimistic_type.normalized_bottom()
 
     results: dict[Lambda, LambdaFacts] = {}
     for lambda_ in lambdas:

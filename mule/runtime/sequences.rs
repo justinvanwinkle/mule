@@ -353,6 +353,92 @@ pub unsafe extern "C" fn mule_fast_getitem(sequence: Value, index: Value) -> Val
         }
     }
 }
+
+unsafe fn slice_bound(value: Value, default: i64, len: i64) -> Option<usize> {
+    unsafe {
+        if value.is_null() {
+            return None;
+        }
+        if object::is_fixnum(value) {
+            let raw = object::fixnum(value);
+            let adjusted = if raw < 0 { raw + len } else { raw };
+            return Some(adjusted.clamp(0, len) as usize);
+        }
+        if matches!(&(*value).data, Data::None) {
+            return Some(default as usize);
+        }
+        None
+    }
+}
+
+/// Fast path for `sequence[start:stop:step]` when `sequence` is an exact
+/// builtin `str`, `bytes`, `list`, or `tuple`, `step` is `None` or `1`, and
+/// `start`/`stop` are `None` or fixnums. Avoids allocating a `slice` object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_fast_getslice(
+    sequence: Value,
+    start: Value,
+    stop: Value,
+    step: Value,
+) -> Value {
+    unsafe {
+        if sequence.is_null() || object::is_fixnum(sequence) || step.is_null() {
+            return null_mut();
+        }
+        let unit_step = if object::is_fixnum(step) {
+            object::fixnum(step) == 1
+        } else {
+            matches!(&(*step).data, Data::None)
+        };
+        if !unit_step {
+            return null_mut();
+        }
+        match &(*sequence).data {
+            Data::Text(text, ty, ..) if ty.is_null() => {
+                let len = text.len() as i64;
+                let (Some(s), Some(e)) = (slice_bound(start, 0, len), slice_bound(stop, len, len))
+                else {
+                    return null_mut();
+                };
+                object::text_slice_range(text, s, e)
+            }
+            Data::Bytes(values, ty, ..) if ty.is_null() => {
+                let len = values.len() as i64;
+                let (Some(s), Some(e)) = (slice_bound(start, 0, len), slice_bound(stop, len, len))
+                else {
+                    return null_mut();
+                };
+                let slice = if s < e { &values[s..e] } else { &[] };
+                let mut copied = Vec::new();
+                if copied.try_reserve_exact(slice.len()).is_err() {
+                    object::error("MemoryError", "bytes allocation failed");
+                    return null_mut();
+                }
+                copied.extend_from_slice(slice);
+                object::new_value(Data::Bytes(copied, null_mut(), null_mut()))
+            }
+            Data::List(values, ty, ..) if ty.is_null() => {
+                let len = values.len() as i64;
+                let (Some(s), Some(e)) = (slice_bound(start, 0, len), slice_bound(stop, len, len))
+                else {
+                    return null_mut();
+                };
+                let slice = if s < e { &values[s..e] } else { &[] };
+                object::mule_sequence_list(slice.len() as isize, slice.as_ptr())
+            }
+            Data::Args(values, ty, ..) if ty.is_null() => {
+                let len = values.len() as i64;
+                let (Some(s), Some(e)) = (slice_bound(start, 0, len), slice_bound(stop, len, len))
+                else {
+                    return null_mut();
+                };
+                let slice = if s < e { &values[s..e] } else { &[] };
+                object::mule_sequence_tuple(slice.len() as isize, slice.as_ptr())
+            }
+            _ => null_mut(),
+        }
+    }
+}
 /// Fast path for `sequence[index] = item` when `sequence` is an exact builtin
 /// `list` (`ty.is_null()`) and `index` is an in-bounds fixnum. Returns 1 when
 /// handled (retaining `item` and releasing the old element), or 0 when the

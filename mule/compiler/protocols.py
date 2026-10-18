@@ -11,7 +11,15 @@ the program being generated.
 
 from __future__ import annotations
 
-from .ctype import TEXT_TYPE, BooleanType, IntegerType, TupleType
+from .ctype import (
+    FIXNUM_MAX,
+    FIXNUM_MIN,
+    OPTIONAL_FIXNUM,
+    TEXT_TYPE,
+    BooleanType,
+    IntegerType,
+    TupleType,
+)
 from .fndb import defknown
 from .main import compile_toplevel, ir1_phases
 from .vops import (
@@ -67,6 +75,7 @@ _TEXT_ACCESS = {
         "_text_slice",
         "_text_join",
         "_storage_hash",
+        "_identity_hash",
         "_type_of",
         "_type_name",
         "_class_identity",
@@ -121,10 +130,12 @@ _RESULT_TYPES = {
     "_tuple_storage": lambda node: BooleanType(),
     "_text_storage": lambda node: BooleanType(),
     "_storage_compatible": lambda node: BooleanType(),
-    "_storage_length": lambda node: IntegerType(0, None),
+    "_storage_length": lambda node: IntegerType(0, (1 << 60) - 1),
     "_text_length": lambda node: IntegerType(0, (1 << 60) - 1),
     "_text_codepoint": lambda node: IntegerType(0, 0x10FFFF),
     "_integer_storage": lambda node: IntegerType(),
+    "_storage_hash": lambda node: OPTIONAL_FIXNUM,
+    "_identity_hash": lambda node: IntegerType(FIXNUM_MIN, FIXNUM_MAX),
     "_text_character": lambda node: TEXT_TYPE,
     "_text_slice": lambda node: TEXT_TYPE,
     "_text_join": lambda node: TEXT_TYPE,

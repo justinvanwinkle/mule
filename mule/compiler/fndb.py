@@ -70,6 +70,7 @@ RANGE_PREPARE = defknown("%range_prepare")
 RANGE_AVAILABLE = defknown("%range_available", "flushable")
 RANGE_ADVANCE = defknown("%range_advance", "unsafe")
 SEQUENCE_AVAILABLE = defknown("%sequence_available", "unsafe")
+GETSLICE = defknown("%getslice", "call", "unsafe")
 
 # Compiled stdlib protocols, keyed by the name the sequence module exports.
 PROTOCOLS = {
@@ -144,6 +145,7 @@ __all__ = [
     "ENTER_HANDLER",
     "FORMAT",
     "GETATTR",
+    "GETSLICE",
     "HAS_BINDING",
     "IMPORT",
     "IMPORT_STAR",

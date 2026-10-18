@@ -229,6 +229,9 @@ class ValueType:
     def narrow(self, operator, bound, truth):
         return self
 
+    def narrow_none(self, is_none: bool):
+        return self
+
     def exact_integer(self):
         return None
 
@@ -1421,6 +1424,28 @@ class UnboundType(ValueType):
     join_unbound = join_unknown
 
 
+@dataclass(frozen=True, slots=True)
+class OptionalIntegerType(ValueType):
+    integer: IntegerType = field(default_factory=IntegerType)
+
+    @property
+    def is_immortal(self):
+        return not self.may_be_unbound and self.integer.is_fixnum
+
+    @property
+    def needs_release(self):
+        return self.may_be_unbound or self.integer.needs_release
+
+    @property
+    def may_run_user_code(self):
+        return False
+
+    def narrow_none(self, is_none: bool):
+        if self.may_be_unbound:
+            return self
+        return NONE_TYPE if is_none else self.integer
+
+
 UNKNOWN = UnknownType()
 UNKNOWN_UNBOUND = UnknownType(may_be_unbound=True)
 INTEGER = IntegerType()
@@ -1439,6 +1464,7 @@ FUNCTION_TYPE = FunctionType()
 LIST_TYPE = ListType()
 BOTTOM = BottomType()
 UNBOUND = UnboundType()
+OPTIONAL_FIXNUM = OptionalIntegerType(IntegerType(FIXNUM_MIN, FIXNUM_MAX))
 
 
 def _bounds_fit(actual, expected):
@@ -1550,6 +1576,33 @@ def _integer_binary(operator, left, right, factory=IntegerType):
             for minimum, maximum in ((lo, hi), (rlo, rhi)):
                 if minimum is not None and minimum >= 0 and maximum is not None:
                     return IntegerType(0, maximum)
+        if (
+            operator == ast.BinaryOperator.MULTIPLY
+            and lo is not None
+            and lo >= 0
+            and rlo is not None
+            and rlo >= 0
+        ):
+            return IntegerType(lo * rlo, None)
+        if (
+            operator == ast.BinaryOperator.RIGHT_SHIFT
+            and lo is not None
+            and lo >= 0
+            and rlo is not None
+            and rlo >= 0
+        ):
+            return IntegerType(
+                lo >> rhi if rhi is not None and rhi <= 256 else 0,
+                hi >> rlo if hi is not None and rlo <= 256 else None,
+            )
+        if (
+            operator == ast.BinaryOperator.LEFT_SHIFT
+            and lo is not None
+            and lo >= 0
+            and rlo is not None
+            and 0 <= rlo <= 256
+        ):
+            return IntegerType(lo << rlo, None)
         return INTEGER
     minimum = maximum = None
     if operator == ast.BinaryOperator.MULTIPLY:

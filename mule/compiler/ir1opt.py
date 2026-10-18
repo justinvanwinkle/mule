@@ -21,6 +21,7 @@ import functools
 
 from mule import ast
 
+from . import fndb
 from .ir1util import (
     aver,
     delete_ref,
@@ -67,7 +68,11 @@ _COMPARE_NAMES = {
 }
 _UNARY_NAMES = {
     f"%unary_{operator.name.lower()}": operator
-    for operator in (ast.UnaryOperator.POSITIVE, ast.UnaryOperator.NEGATIVE)
+    for operator in (
+        ast.UnaryOperator.POSITIVE,
+        ast.UnaryOperator.NEGATIVE,
+        ast.UnaryOperator.INVERT,
+    )
 }
 # Folded integers stay within the bounds literal syntax reaches comfortably.
 _FOLD_LIMIT_BITS = 128
@@ -106,6 +111,69 @@ def ir1_optimize(component: Component) -> bool:
     return changed
 
 
+class _MakeSliceProducer(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is not None
+            and node.fun_info.name == "%make_slice"
+            and len(node.args) == 3
+        ):
+            return node
+        return None
+
+
+_MAKE_SLICE_PRODUCER = _MakeSliceProducer()
+
+
+class _RetargetKnownRef(NodeVisitor):
+    def __init__(self, info):
+        self.info = info
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        if node in node.leaf.refs:
+            node.leaf.refs.remove(node)
+        node.leaf = self.info
+        self.info.refs.append(node)
+
+
+def _optimize_getslice(node: Combination) -> bool:
+    if len(node.args) != 2:
+        return False
+    slice_lvar = node.args[1]
+    if len(slice_lvar.uses) != 1:
+        return False
+    slice_node = slice_lvar.uses[0].accept(_MAKE_SLICE_PRODUCER)
+    if (
+        slice_node is None
+        or slice_node.prev is None
+        or slice_node.next is not node.prev
+    ):
+        return False
+    start_lvar, stop_lvar, step_lvar = slice_node.args
+    for arg in (start_lvar, stop_lvar, step_lvar):
+        arg.dest = node
+    node.args = [node.args[0], start_lvar, stop_lvar, step_lvar]
+    node.fun_info = fndb.GETSLICE
+    if len(node.fun.uses) == 1:
+        node.fun.uses[0].accept(_RetargetKnownRef(fndb.GETSLICE))
+    slice_node.args = []
+    slice_node.lvar = None
+    slice_lvar.uses.clear()
+    slice_lvar.dest = None
+    _flush_operand(slice_node.fun)
+    unlink_node(slice_node)
+    if node.lvar is not None:
+        reoptimize_lvar(node.lvar)
+    return True
+
+
 class _OptimizeNode(NodeVisitor):
     """Applies one node's rewrite; returns whether the graph changed."""
 
@@ -118,6 +186,8 @@ class _OptimizeNode(NodeVisitor):
         if node.lvar is None and node.fun_info.flushable:
             flush_combination(node)
             return True
+        if node.fun_info.name == "%getitem":
+            return _optimize_getslice(node)
         if node.fun_info.name == "%build_tuple" and node.fun_info.foldable:
             return _constant_fold_tuple(node)
         if node.fun_info.name in _UNARY_NAMES:
@@ -293,7 +363,31 @@ class _UnaryLiteralFold(ast.Visitor):
     def visit_Node(self, node):
         return None
 
+    def visit_IntegerLiteral(self, node):
+        if self.operator is ast.UnaryOperator.POSITIVE:
+            value = +node.value
+        elif self.operator is ast.UnaryOperator.NEGATIVE:
+            value = -node.value
+        else:
+            value = ~node.value
+        if value.bit_length() > _FOLD_LIMIT_BITS:
+            return None
+        return ast.IntegerLiteral(value)
+
+    def visit_BooleanLiteral(self, node):
+        return self.visit_IntegerLiteral(ast.IntegerLiteral(int(node.value)))
+
+    def visit_FloatLiteral(self, node):
+        if self.operator is ast.UnaryOperator.INVERT:
+            return None
+        value = (
+            -node.value if self.operator is ast.UnaryOperator.NEGATIVE else +node.value
+        )
+        return ast.FloatLiteral(value)
+
     def visit_ComplexLiteral(self, node):
+        if self.operator is ast.UnaryOperator.INVERT:
+            return None
         value = (
             -node.value if self.operator is ast.UnaryOperator.NEGATIVE else +node.value
         )

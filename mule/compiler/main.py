@@ -31,7 +31,18 @@ from .ir1tran import (
 )
 from .ir1tran_lambda import convert_module, lambda_blocks
 from .ir1util import join_blocks_if_possible, substitute_lvar_uses, unlink_node
-from .node import Cast, Component, Lambda, NodeVisitor, linked
+from .node import (
+    Cast,
+    Component,
+    Constant,
+    GlobalVar,
+    Lambda,
+    LeafVisitor,
+    NodeVisitor,
+    Ref,
+    Set,
+    linked,
+)
 
 
 @dataclass(slots=True)
@@ -148,6 +159,99 @@ def _remove_cast(node: Cast) -> None:
     unlink_node(node)
 
 
+class _ConstantLeaf(NodeVisitor, LeafVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Constant(self, leaf: Constant):
+        return leaf
+
+
+_CONSTANT_LEAF = _ConstantLeaf()
+
+
+class _GlobalConstantScan(NodeVisitor, LeafVisitor):
+    def __init__(self, toplevel: bool):
+        self.toplevel = toplevel
+        self.counts: dict[str, int] = {}
+        self.constants: dict[str, Constant] = {}
+        self._store: Set | None = None
+
+    def visit_Set(self, node: Set):
+        self._store = node
+        node.var.accept(self)
+        self._store = None
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        self.counts[leaf.name] = self.counts.get(leaf.name, 0) + 1
+        store = self._store
+        if self.toplevel and store is not None and store.value is not None:
+            constant = store.value.use().accept(_CONSTANT_LEAF)
+            if constant is not None:
+                self.constants[leaf.name] = constant
+
+
+class _ReplaceGlobalConstantRefs(NodeVisitor, LeafVisitor):
+    def __init__(self, constants: dict[str, Constant]):
+        self.constants = constants
+        self.changed = False
+        self._ref: Ref | None = None
+
+    def visit_Ref(self, node: Ref):
+        self._ref = node
+        node.leaf.accept(self)
+        self._ref = None
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        constant = self.constants.get(leaf.name)
+        ref = self._ref
+        if constant is None or ref is None:
+            return
+        if ref in leaf.refs:
+            leaf.refs.remove(ref)
+        ref.leaf = constant
+        constant.refs.append(ref)
+        self.changed = True
+
+
+def _fold_protocol_constants(compilation: Compilation) -> bool:
+    if not compilation.entry.name.startswith(locall._PROTOCOL_PREFIXES):
+        return False
+    counts: dict[str, int] = {}
+    constants: dict[str, Constant] = {}
+    for lambda_ in compilation.lambdas:
+        scan = _GlobalConstantScan(lambda_ is compilation.entry)
+        for block in lambda_.component.blocks():
+            for node in block.nodes():
+                node.accept(scan)
+        for name, count in scan.counts.items():
+            counts[name] = counts.get(name, 0) + count
+        constants.update(scan.constants)
+    single_constants = {
+        name: constant for name, constant in constants.items() if counts.get(name) == 1
+    }
+    if not single_constants:
+        return False
+    changed = False
+    for lambda_ in compilation.lambdas:
+        if lambda_ is compilation.entry:
+            continue
+        replacer = _ReplaceGlobalConstantRefs(single_constants)
+        for block in lambda_.component.blocks():
+            for node in block.nodes():
+                node.accept(replacer)
+        if replacer.changed:
+            lambda_.component.reoptimize = True
+            changed = True
+    return changed
+
+
 def _ir1_optimize_phase_1(compilation: Compilation) -> None:
     for iteration in range(REOPTIMIZE_LIMIT):
         with phase("IR1 optimization round %d", iteration + 1, level=logging.DEBUG):
@@ -155,6 +259,8 @@ def _ir1_optimize_phase_1(compilation: Compilation) -> None:
                 ir1opt.ir1_optimize_until_done(component)
                 if component.reanalyze:
                     find_dfo(component)
+        if _fold_protocol_constants(compilation):
+            continue
         if any(component.reoptimize for component in compilation.components):
             continue
         with phase("IR1 local-call and flow analysis", level=logging.DEBUG):

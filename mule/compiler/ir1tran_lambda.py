@@ -170,7 +170,9 @@ def convert_function(
     def prologue(start: Ctran) -> Ctran:
         """Assert parameter annotations before the body runs."""
         current = start
-        for parameter, contract in zip(definition.parameters, annotations, strict=True):
+        for parameter, contract, var in zip(
+            definition.parameters, annotations, lambda_.vars, strict=True
+        ):
             if contract is None:
                 continue
             if parameter.kind == ast.ParameterKind.VAR_POSITIONAL:
@@ -193,6 +195,8 @@ def convert_function(
             function.load(current, ctran, loaded, parameter.name, parameter, final=True)
             current = Ctran()
             function.store(ctran, current, parameter.name, loaded, parameter)
+            if var.sets:
+                var.arg_info = var.sets[-1]
         return current
 
     if generator:

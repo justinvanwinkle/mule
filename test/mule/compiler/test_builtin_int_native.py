@@ -101,14 +101,23 @@ def test_unbounded_or_mixed_int_values_keep_general_entries(
 
 
 def test_dynamic_int64_loop_bound_does_not_assume_int_local_width(tmp_path):
-    source = (
+    proven = (
         PREFIX + "def calculate(limit: int64) -> int:\n index: int = 0\n"
         " while index < limit:\n  index += 1\n return index\nprint(calculate(10))\n"
     )
-    # Current range analysis does not infer relations between two variables.
-    # Until it proves index + 1 fits, preserving Python integer semantics takes
+    assert native_bodies(proven)
+    result = run_native(tmp_path, proven)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "10\n"
+
+    # An inclusive <= bound allows index == INT64_MAX inside the loop, where
+    # index + 1 overflows int64, so preserving Python integer semantics takes
     # precedence over selecting a machine representation.
-    assert not native_bodies(source)
-    result = run_native(tmp_path, source)
+    unproven = (
+        PREFIX + "def calculate(limit: int64) -> int:\n index: int = 0\n"
+        " while index <= limit:\n  index += 1\n return index\nprint(calculate(9))\n"
+    )
+    assert not native_bodies(unproven)
+    result = run_native(tmp_path, unproven)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "10\n"

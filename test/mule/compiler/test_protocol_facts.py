@@ -118,7 +118,7 @@ def test_tuple_control_flow_join_with_non_tuple_discards_tuple_proof():
     "primitive,expected",
     [
         ("_tuple_storage", BooleanType()),
-        ("_storage_length", IntegerType(0, None)),
+        ("_storage_length", IntegerType(0, (1 << 60) - 1)),
         ("_integer_storage", IntegerType()),
     ],
 )
