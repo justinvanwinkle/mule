@@ -235,6 +235,12 @@ class ValueType:
     def fixnum_domain(self):
         return None
 
+    def getitem_type(self, index):
+        return UNKNOWN
+
+    def method_return_type(self, name: str, arity: int, has_keywords: bool):
+        return UNKNOWN
+
     def fits(self, expected):
         return expected.accepts(self)
 
@@ -1013,6 +1019,61 @@ class TextType(PrimitiveType):
     def fits_text(self, expected):
         return not self.may_be_unbound
 
+    def getitem_type(self, index):
+        return UNKNOWN if self.may_be_unbound else TEXT_TYPE
+
+    def method_return_type(self, name: str, arity: int, has_keywords: bool):
+        if self.may_be_unbound:
+            return UNKNOWN
+        if name in {"find", "rfind", "index", "rindex", "count"}:
+            return IntegerType(-1, (1 << 60) - 1)
+        if name in {"partition", "rpartition"}:
+            return TupleType(3)
+        if name in {"split", "rsplit", "splitlines"}:
+            return LIST_TYPE
+        if name in {
+            "strip",
+            "lstrip",
+            "rstrip",
+            "lower",
+            "upper",
+            "casefold",
+            "capitalize",
+            "title",
+            "swapcase",
+            "replace",
+            "removeprefix",
+            "removesuffix",
+            "join",
+            "center",
+            "ljust",
+            "rjust",
+            "zfill",
+            "expandtabs",
+            "format",
+        }:
+            return TEXT_TYPE
+        if name in {
+            "startswith",
+            "endswith",
+            "isalpha",
+            "isdecimal",
+            "isdigit",
+            "isnumeric",
+            "isalnum",
+            "isspace",
+            "isprintable",
+            "isascii",
+            "isidentifier",
+            "islower",
+            "isupper",
+            "istitle",
+        }:
+            return BOOLEAN
+        if name == "encode":
+            return BYTES_TYPE
+        return UNKNOWN
+
 
 @dataclass(frozen=True, slots=True)
 class BytesType(PrimitiveType):
@@ -1063,6 +1124,52 @@ class BytesType(PrimitiveType):
 
     def fits_bytes(self, expected):
         return not self.may_be_unbound
+
+    def method_return_type(self, name: str, arity: int, has_keywords: bool):
+        if self.may_be_unbound:
+            return UNKNOWN
+        if name in {"find", "rfind", "index", "rindex", "count"}:
+            return IntegerType(-1, (1 << 60) - 1)
+        if name in {"partition", "rpartition"}:
+            return TupleType(3)
+        if name in {"split", "rsplit", "splitlines"}:
+            return LIST_TYPE
+        if name in {
+            "strip",
+            "lstrip",
+            "rstrip",
+            "lower",
+            "upper",
+            "capitalize",
+            "title",
+            "swapcase",
+            "replace",
+            "removeprefix",
+            "removesuffix",
+            "join",
+            "center",
+            "ljust",
+            "rjust",
+            "zfill",
+            "expandtabs",
+        }:
+            return BYTES_TYPE
+        if name in {
+            "startswith",
+            "endswith",
+            "isalpha",
+            "isdigit",
+            "isalnum",
+            "isspace",
+            "isascii",
+            "islower",
+            "isupper",
+            "istitle",
+        }:
+            return BOOLEAN
+        if name in {"decode", "hex"}:
+            return TEXT_TYPE
+        return UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -1199,6 +1306,19 @@ class ListType(ValueType):
 
     def fits_list(self, expected):
         return not self.may_be_unbound
+
+    def method_return_type(self, name: str, arity: int, has_keywords: bool):
+        if self.may_be_unbound:
+            return UNKNOWN
+        if name == "append" and arity == 1 and not has_keywords:
+            return NONE_TYPE
+        if name in {"clear", "reverse", "insert", "extend", "remove", "sort"}:
+            return NONE_TYPE
+        if name == "copy":
+            return LIST_TYPE
+        if name in {"index", "count"}:
+            return IntegerType(0, (1 << 60) - 1)
+        return UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)

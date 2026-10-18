@@ -90,17 +90,34 @@ unsafe fn operand(args: Value) -> Option<Value> {
     }
 }
 
-/// The hash of text, bytes, None or binary64 storage, or None for other values.
-unsafe extern "C" fn storage_hash(_: Value, args: Value) -> Value {
+fn fixnum_hash(value: i64) -> i64 {
+    let modulus = MODULUS as i64;
+    let result = if value > -modulus && value < modulus {
+        value
+    } else if value < 0 {
+        -((-value) % modulus)
+    } else {
+        value % modulus
+    };
+    if result == -1 { -2 } else { result }
+}
+
+/// The hash of fixnum, bool, text, bytes, None or binary64 storage, or None for other values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_storage_hash(value: Value) -> Value {
     unsafe {
-        let Some(value) = operand(args) else {
+        if object::has_error() {
             return null_mut();
-        };
-        if value.is_null() || object::is_fixnum(value) {
+        }
+        if value.is_null() {
             return object::none_value();
+        }
+        if object::is_fixnum(value) {
+            return integer(fixnum_hash(object::fixnum(value)));
         }
         let hash = match &(*value).data {
             Data::None => NONE_HASH,
+            Data::Bool(b) => i64::from(*b),
             Data::Text(text, ..) => text.hash(),
             Data::Bytes(bytes, ..) => fnv(bytes),
             Data::Float(number, ..) if number.is_nan() => identity(value),
@@ -108,6 +125,15 @@ unsafe extern "C" fn storage_hash(_: Value, args: Value) -> Value {
             _ => return object::none_value(),
         };
         integer(hash)
+    }
+}
+
+unsafe extern "C" fn storage_hash(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some(value) = operand(args) else {
+            return null_mut();
+        };
+        mule_storage_hash(value)
     }
 }
 

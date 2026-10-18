@@ -117,6 +117,8 @@ _BORROWING_VOPS = frozenset(
         "inplace-bit_xor",
         "inplace-bit_or",
         "sequence-available",
+        "protocol-getitem",
+        "protocol-setitem",
     }
 )
 _RIGHT_BORROWING_VOPS = frozenset(

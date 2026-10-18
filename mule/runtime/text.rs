@@ -158,6 +158,13 @@ impl Text {
         }
     }
 
+    pub fn as_latin1(&self) -> Option<&[u8]> {
+        match &self.kind {
+            Kind::Latin1(values) => Some(values),
+            _ => None,
+        }
+    }
+
     pub fn get(&self, index: usize) -> Option<u32> {
         match &self.kind {
             Kind::Latin1(values) => values.get(index).map(|code| u32::from(*code)),

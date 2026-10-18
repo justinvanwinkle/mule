@@ -117,7 +117,6 @@ pub fn clear_code_cache() {
 /// Enter a compiled function activation.
 #[unsafe(no_mangle)]
 pub extern "C" fn mule_frame_push(code: *const CodeInfo, globals: Value) {
-    unsafe { object::retain(globals) };
     FRAMES.with_borrow_mut(|frames| frames.push((code, globals)));
     crate::faults::push(code);
 }
@@ -125,11 +124,10 @@ pub extern "C" fn mule_frame_push(code: *const CodeInfo, globals: Value) {
 /// Leave the innermost compiled function activation.
 #[unsafe(no_mangle)]
 pub extern "C" fn mule_frame_pop() {
-    let popped = FRAMES.with_borrow_mut(|frames| frames.pop());
+    FRAMES.with_borrow_mut(|frames| {
+        frames.pop();
+    });
     crate::faults::pop();
-    if let Some((_, globals)) = popped {
-        unsafe { object::release(globals) };
-    }
 }
 
 /// Move suspended activations into the currently running stack, preserving the

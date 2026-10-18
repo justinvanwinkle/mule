@@ -176,7 +176,7 @@ unsafe extern "C" fn input(_: Value, args: Value) -> Value {
         }
     }
 }
-fn parse_integer(bytes: &[u8], mut base: i32) -> Option<BigInt> {
+unsafe fn parse_integer_value(bytes: &[u8], mut base: i32) -> Option<Value> {
     let mut bytes = bytes.trim_ascii();
     let mut negative = false;
     if let Some((&sign, rest)) = bytes.split_first() {
@@ -203,9 +203,11 @@ fn parse_integer(bytes: &[u8], mut base: i32) -> Option<BigInt> {
     if base == 0 {
         base = 10;
     }
-    let mut digits = String::new();
     let mut previous = false;
     let mut nonzero = false;
+    let mut has_digits = false;
+    let mut small_acc: Option<i64> = Some(0);
+    let base_i64 = i64::from(base);
     for (index, &byte) in bytes.iter().enumerate() {
         if byte == b'_' {
             if (!previous && !(prefixed && index == 0))
@@ -219,14 +221,30 @@ fn parse_integer(bytes: &[u8], mut base: i32) -> Option<BigInt> {
         }
         let digit = char::from(byte).to_digit(base as u32)?;
         previous = true;
+        has_digits = true;
         nonzero |= digit != 0;
-        digits.push(char::from(byte));
+        if let Some(acc) = small_acc {
+            small_acc = acc
+                .checked_mul(base_i64)
+                .and_then(|v| v.checked_add(i64::from(digit)));
+        }
     }
-    if digits.is_empty() || (autodetect && bytes.first() == Some(&b'0') && nonzero) {
+    if !has_digits || (autodetect && bytes.first() == Some(&b'0') && nonzero) {
         return None;
     }
+    if let Some(acc) = small_acc {
+        let signed = if negative { -acc } else { acc };
+        return Some(unsafe { numeric::integer_from_i64(signed) });
+    }
+    let mut digits = String::with_capacity(bytes.len());
+    for &byte in bytes {
+        if byte != b'_' {
+            digits.push(char::from(byte));
+        }
+    }
     let result = BigInt::parse(&digits, base)?;
-    Some(if negative { result.neg() } else { result })
+    let result = if negative { result.neg() } else { result };
+    Some(unsafe { numeric::integer_import(&result) })
 }
 unsafe extern "C" fn int(_: Value, args: Value) -> Value {
     unsafe {
@@ -237,6 +255,9 @@ unsafe extern "C" fn int(_: Value, args: Value) -> Value {
             return object::small(0);
         }
         let value = arg(args, 0);
+        if count == 1 && object::is_fixnum(value) {
+            return value;
+        }
         let base = if count == 2 {
             let Some(base) = numeric::integer_export(arg(args, 1)).and_then(|value| value.to_i64())
             else {
@@ -252,11 +273,23 @@ unsafe extern "C" fn int(_: Value, args: Value) -> Value {
         } else {
             10
         };
-        if let Some(bytes) = text(value) {
-            return parse_integer(&bytes, base).map_or_else(
-                || fail("ValueError", "invalid literal for int"),
-                |value| numeric::integer_import(&value),
-            );
+        if !value.is_null() && !object::is_fixnum(value) {
+            match &(*value).data {
+                Data::Text(text, ..) => {
+                    let parsed = if let Some(bytes) = text.as_latin1() {
+                        parse_integer_value(bytes, base)
+                    } else {
+                        let bytes = text.to_wtf8();
+                        parse_integer_value(&bytes, base)
+                    };
+                    return parsed.unwrap_or_else(|| fail("ValueError", "invalid literal for int"));
+                }
+                Data::Bytes(bytes, ..) => {
+                    return parse_integer_value(bytes, base)
+                        .unwrap_or_else(|| fail("ValueError", "invalid literal for int"));
+                }
+                _ => (),
+            }
         }
         if count == 2 {
             return fail("TypeError", "int with explicit base requires a string");

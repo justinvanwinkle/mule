@@ -59,28 +59,33 @@ def _require_text(value, message):
         raise TypeError(f"{message}, not {kind}")
 
 
-def _bounds(length, start, end):
-    """Clamp optional ``start``/``end`` like slice indices, as CPython's
+def _start_bound(length, start):
+    """Clamp optional ``start`` like slice indices, as CPython's
     ``ADJUST_INDICES`` does; ``start`` may still exceed ``length``."""
     if start is None:
-        start = 0
-    else:
-        start = _index(start)
+        return 0
+    start = _index(start)
+    if start < 0:
+        start += length
         if start < 0:
-            start += length
-            if start < 0:
-                start = 0
+            return 0
+    if start > length:
+        return length + 1
+    return start
+
+
+def _end_bound(length, end):
+    """Clamp optional ``end`` like slice indices."""
     if end is None:
-        end = length
-    else:
-        end = _index(end)
-        if end > length:
-            end = length
-        elif end < 0:
-            end += length
-            if end < 0:
-                end = 0
-    return start, end
+        return length
+    end = _index(end)
+    if end > length:
+        return length
+    if end < 0:
+        end += length
+        if end < 0:
+            return 0
+    return end
 
 
 def _matches_at(text, sub, position, size):
@@ -101,6 +106,12 @@ def find_in(text, sub, start, end):
         return start
     first = _text_codepoint(sub, 0)
     position = start
+    if size == 1:
+        while position < end:
+            if _text_codepoint(text, position) == first:
+                return position
+            position += 1
+        return -1
     last = end - size
     while position <= last:
         if _text_codepoint(text, position) == first and _matches_at(
@@ -119,6 +130,12 @@ def rfind_in(text, sub, start, end):
         return end
     first = _text_codepoint(sub, 0)
     position = end - size
+    if size == 1:
+        while position >= start:
+            if _text_codepoint(text, position) == first:
+                return position
+            position -= 1
+        return -1
     while position >= start:
         if _text_codepoint(text, position) == first and _matches_at(
             text, sub, position, size
@@ -130,7 +147,9 @@ def rfind_in(text, sub, start, end):
 
 def _search(text, sub, start, end, method):
     _require_text(sub, f"{method}() argument 1 must be str")
-    start, end = _bounds(_text_length(text), start, end)
+    length = _text_length(text)
+    start = _start_bound(length, start)
+    end = _end_bound(length, end)
     if method == "find" or method == "index":
         return find_in(text, sub, start, end)
     return rfind_in(text, sub, start, end)
@@ -149,9 +168,9 @@ def _contains_codepoint(text, code):
 def _extend_mapping(codes, mapped):
     if _tuple_storage(mapped):
         for code in mapped:
-            codes.append(code)
+            _storage_append(codes, code)
     else:
-        codes.append(mapped)
+        _storage_append(codes, mapped)
 
 
 def _final_sigma(text, index, length):
@@ -176,7 +195,7 @@ def _final_sigma(text, index, length):
 def _lower_into(codes, text, index, length):
     code = _text_codepoint(text, index)
     if code == 0x3A3:
-        codes.append(_final_sigma(text, index, length))
+        _storage_append(codes, _final_sigma(text, index, length))
     else:
         _extend_mapping(codes, lower_full(code))
 
@@ -248,7 +267,7 @@ def _repeat(text, count):
     power = text
     while count > 0:
         if count & 1:
-            pieces.append(power)
+            _storage_append(pieces, power)
         count >>= 1
         if count > 0:
             power = _text_join((power, power))
@@ -265,7 +284,7 @@ def _reversed(values):
     result = []
     index = _storage_length(values) - 1
     while index >= 0:
-        result.append(_storage_read(values, index))
+        _storage_append(result, _storage_read(values, index))
         index -= 1
     return result
 
@@ -283,12 +302,12 @@ def _split_whitespace(text, maxsplit):
         index += 1
         while index < length and not is_space(_text_codepoint(text, index)):
             index += 1
-        result.append(_text_slice(text, start, index))
+        _storage_append(result, _text_slice(text, start, index))
         maxsplit -= 1
     while index < length and is_space(_text_codepoint(text, index)):
         index += 1
     if index != length:
-        result.append(_text_slice(text, index, length))
+        _storage_append(result, _text_slice(text, index, length))
     return result
 
 
@@ -304,12 +323,12 @@ def _rsplit_whitespace(text, maxsplit):
         index -= 1
         while index >= 0 and not is_space(_text_codepoint(text, index)):
             index -= 1
-        result.append(_text_slice(text, index + 1, end))
+        _storage_append(result, _text_slice(text, index + 1, end))
         maxsplit -= 1
     while index >= 0 and is_space(_text_codepoint(text, index)):
         index -= 1
     if index >= 0:
-        result.append(_text_slice(text, 0, index + 1))
+        _storage_append(result, _text_slice(text, 0, index + 1))
     return _reversed(result)
 
 
@@ -1186,12 +1205,20 @@ class TextStorage:
         return self.__mul__(count)
 
     def __eq__(self, other):
+        if self is other:
+            return True
         if not _text_storage(other):
+            return False
+        if _text_length(self) != _text_length(other):
             return False
         return _compare(self, other) == 0
 
     def __ne__(self, other):
+        if self is other:
+            return False
         if not _text_storage(other):
+            return True
+        if _text_length(self) != _text_length(other):
             return True
         return _compare(self, other) != 0
 
@@ -1287,7 +1314,9 @@ class TextStorage:
 
     def count(self, sub, start=None, end=None, /):
         _require_text(sub, "count() argument 1 must be str")
-        start, end = _bounds(_text_length(self), start, end)
+        length = _text_length(self)
+        start = _start_bound(length, start)
+        end = _end_bound(length, end)
         size = _text_length(sub)
         if end - start < size:
             return 0
@@ -1337,25 +1366,25 @@ class TextStorage:
         if old_size == 0:
             index = 0
             while index < length and count > 0:
-                pieces.append(new)
-                pieces.append(_text_character(self, index))
+                _storage_append(pieces, new)
+                _storage_append(pieces, _text_character(self, index))
                 count -= 1
                 index += 1
             if count > 0:
-                pieces.append(new)
-            pieces.append(_text_slice(self, index, length))
+                _storage_append(pieces, new)
+            _storage_append(pieces, _text_slice(self, index, length))
             return _text_join(pieces)
         start = 0
         position = find_in(self, old, 0, length)
         if position < 0:
             return self
         while position >= 0 and count > 0:
-            pieces.append(_text_slice(self, start, position))
-            pieces.append(new)
+            _storage_append(pieces, _text_slice(self, start, position))
+            _storage_append(pieces, new)
             start = position + old_size
             count -= 1
             position = find_in(self, old, start, length)
-        pieces.append(_text_slice(self, start, length))
+        _storage_append(pieces, _text_slice(self, start, length))
         return _text_join(pieces)
 
     def split(self, sep=None, maxsplit=-1):
@@ -1368,11 +1397,11 @@ class TextStorage:
         start = 0
         position = find_in(self, sep, 0, length)
         while position >= 0 and maxsplit != 0:
-            result.append(_text_slice(self, start, position))
+            _storage_append(result, _text_slice(self, start, position))
             start = position + size
             maxsplit -= 1
             position = find_in(self, sep, start, length)
-        result.append(_text_slice(self, start, length))
+        _storage_append(result, _text_slice(self, start, length))
         return result
 
     def rsplit(self, sep=None, maxsplit=-1):
@@ -1384,11 +1413,11 @@ class TextStorage:
         end = _text_length(self)
         position = rfind_in(self, sep, 0, end)
         while position >= 0 and maxsplit != 0:
-            result.append(_text_slice(self, position + size, end))
+            _storage_append(result, _text_slice(self, position + size, end))
             end = position
             maxsplit -= 1
             position = rfind_in(self, sep, 0, end)
-        result.append(_text_slice(self, 0, end))
+        _storage_append(result, _text_slice(self, 0, end))
         return _reversed(result)
 
     def splitlines(self, keepends=False):
@@ -1411,7 +1440,7 @@ class TextStorage:
                     index += 1
                 if keepends:
                     line_end = index
-            result.append(_text_slice(self, start, line_end))
+            _storage_append(result, _text_slice(self, start, line_end))
         return result
 
     def partition(self, sep, /):
@@ -1453,8 +1482,8 @@ class TextStorage:
                     f"instance, {_type_name(item)} found"
                 )
             if _storage_length(pieces) > 0:
-                pieces.append(self)
-            pieces.append(item)
+                _storage_append(pieces, self)
+            _storage_append(pieces, item)
         if _storage_length(pieces) == 1:
             return _storage_read(pieces, 0)
         return _text_join(pieces)
@@ -1533,7 +1562,7 @@ class TextStorage:
             elif is_lower(code):
                 _extend_mapping(codes, upper_full(code))
             else:
-                codes.append(code)
+                _storage_append(codes, code)
             index += 1
         return text_from_codepoints(codes)
 
@@ -1673,10 +1702,10 @@ class TextStorage:
                     spaces = tabsize - column % tabsize
                     column += spaces
                     while spaces > 0:
-                        codes.append(32)
+                        _storage_append(codes, 32)
                         spaces -= 1
             else:
-                codes.append(code)
+                _storage_append(codes, code)
                 column += 1
                 if code == 10 or code == 13:
                     column = 0
@@ -1692,14 +1721,14 @@ class TextStorage:
             try:
                 mapped = table[code]
             except LookupError:
-                codes.append(code)
+                _storage_append(codes, code)
                 continue
             if mapped is None:
                 continue
             if _text_storage(mapped):
                 position = 0
                 while position < _text_length(mapped):
-                    codes.append(_text_codepoint(mapped, position))
+                    _storage_append(codes, _text_codepoint(mapped, position))
                     position += 1
                 continue
             try:
@@ -1708,7 +1737,7 @@ class TextStorage:
                 raise TypeError("character mapping must return integer, None or str")
             if mapped < 0 or mapped > 0x10FFFF:
                 raise ValueError("character mapping must be in range(0x110000)")
-            codes.append(mapped)
+            _storage_append(codes, mapped)
         return text_from_codepoints(codes)
 
     def format(self, *args, **keyws):
@@ -1771,7 +1800,9 @@ def _affix_match(text, affix, start, end, suffix, method):
         raise TypeError(
             f"{method} first arg must be str or a tuple of str, not {_type_name(affix)}"
         )
-    start, end = _bounds(_text_length(text), start, end)
+    length = _text_length(text)
+    start = _start_bound(length, start)
+    end = _end_bound(length, end)
     size = _text_length(affix)
     if end - start < size:
         return False

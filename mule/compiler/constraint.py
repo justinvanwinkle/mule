@@ -449,14 +449,24 @@ class _Propagation(NodeVisitor, LeafVisitor):
                     )
             return Fact(FUNCTION_TYPE, lambda_, True)
         if name == "%call_resolved":
-            if (
-                len(args) == 2
-                and not linked(node.info, node, "info").keywords
-                and (receiver := args[0].use().accept(_EXACT_LIST_APPEND_RECEIVER))
-                is not None
-                and self.type_of(receiver).is_exact_list
-            ):
-                return NONE_FACT
+            resolved = args[0].use().accept(_RESOLVED_METHOD)
+            if resolved is not None:
+                receiver_lvar, method_name = resolved
+                receiver_type = self.type_of(receiver_lvar)
+                has_keywords = bool(linked(node.info, node, "info").keywords)
+                arity = len(args) - 1
+                if (
+                    receiver_type.is_exact_list
+                    and method_name == "append"
+                    and arity == 1
+                    and not has_keywords
+                ):
+                    return NONE_FACT
+                result_type = receiver_type.method_return_type(
+                    method_name, arity, has_keywords
+                )
+                self.invalidate()
+                return _fact(result_type)
             self.invalidate()
             return UNKNOWN_FACT
         if name in ("%import", "%catch_exception"):
@@ -465,6 +475,12 @@ class _Propagation(NodeVisitor, LeafVisitor):
         if name == "%format":
             self.invalidate()
             return TEXT_FACT
+        if name == "%getitem":
+            receiver_type = self.type_of(args[0])
+            index_type = self.type_of(args[1])
+            if receiver_type.may_run_user_code or index_type.may_run_user_code:
+                self.invalidate()
+            return _fact(receiver_type.getitem_type(index_type))
         if info.protocol is not None:
             self.invalidate()
             return UNKNOWN_FACT
@@ -513,21 +529,17 @@ class _Propagation(NodeVisitor, LeafVisitor):
             self.invalidate()
 
 
-class _ExactListAppend(NodeVisitor):
+class _ResolvedMethod(NodeVisitor):
     def visit_Node(self, node):
         return None
 
     def visit_Combination(self, node: Combination):
-        if (
-            node.fun_info is not None
-            and node.fun_info.name == "%resolve_method"
-            and linked(node.info, node, "info").name == "append"
-        ):
-            return node.args[0]
+        if node.fun_info is not None and node.fun_info.name == "%resolve_method":
+            return node.args[0], linked(node.info, node, "info").name
         return None
 
 
-_EXACT_LIST_APPEND_RECEIVER = _ExactListAppend()
+_RESOLVED_METHOD = _ResolvedMethod()
 
 
 _BINARY_OPERATORS = {

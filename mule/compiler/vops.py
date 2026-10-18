@@ -1117,6 +1117,8 @@ def protocol_getitem(gen, vop):
     index = gen.take(vop.args[1])
     helper = gen.module.getitem_helper()
     result = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {index})")
+    gen.release(sequence)
+    gen.release(index)
     gen.publish(vop.results[0], result)
     gen.check_pointer(result)
     gen.refine(vop.results[0].tn, result)
@@ -1131,6 +1133,9 @@ def protocol_setitem(gen, vop):
     result = gen.operation(
         f"call ptr {helper}(ptr {sequence}, ptr {index}, ptr {item})"
     )
+    gen.release(sequence)
+    gen.release(index)
+    gen.release(item)
     gen.publish(vop.results[0], result)
     gen.check_pointer(result)
     gen.refine(vop.results[0].tn, result)

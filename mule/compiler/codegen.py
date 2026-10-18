@@ -103,6 +103,8 @@ declare ptr @mule_text_character(ptr, ptr)
 declare ptr @mule_text_codepoint(ptr, ptr)
 declare ptr @mule_text_slice(ptr, ptr, ptr)
 declare ptr @mule_text_join(ptr)
+declare ptr @mule_storage_hash(ptr)
+declare ptr @mule_type_of(ptr)
 declare ptr @mule_type_name(ptr)
 declare ptr @mule_load_local(ptr, ptr)
 declare ptr @mule_binary_reuse(i32, ptr, ptr, i32, ptr)
@@ -1082,11 +1084,11 @@ class ModuleGenerator:
             "  %matched = icmp ne ptr %fast, null\n"
             "  br i1 %matched, label %hit, label %slow\n"
             "hit:\n"
-            "  call void @mule.fast.release(ptr %sequence)\n"
-            "  call void @mule.fast.release(ptr %index)\n"
             "  ret ptr %fast\n"
             "slow:\n"
-            f"  %result = call ptr {slow}(ptr %sequence, ptr %index)\n"
+            "  %owned.seq = call ptr @mule.fast.retain(ptr %sequence)\n"
+            "  %owned.idx = call ptr @mule.fast.retain(ptr %index)\n"
+            f"  %result = call ptr {slow}(ptr %owned.seq, ptr %owned.idx)\n"
             "  ret ptr %result\n"
             "}"
         )
@@ -1106,13 +1108,12 @@ class ModuleGenerator:
             "  %valid = icmp ne i32 %matched, 0\n"
             "  br i1 %valid, label %hit, label %slow\n"
             "hit:\n"
-            "  call void @mule.fast.release(ptr %sequence)\n"
-            "  call void @mule.fast.release(ptr %index)\n"
-            "  call void @mule.fast.release(ptr %item)\n"
-            "  %none = call ptr @mule_retain(ptr @mule.none)\n"
-            "  ret ptr %none\n"
+            "  ret ptr @mule.none\n"
             "slow:\n"
-            f"  %result = call ptr {slow}(ptr %sequence, ptr %index, ptr %item)\n"
+            "  %owned.seq = call ptr @mule.fast.retain(ptr %sequence)\n"
+            "  %owned.idx = call ptr @mule.fast.retain(ptr %index)\n"
+            "  %owned.item = call ptr @mule.fast.retain(ptr %item)\n"
+            f"  %result = call ptr {slow}(ptr %owned.seq, ptr %owned.idx, ptr %owned.item)\n"
             "  ret ptr %result\n"
             "}"
         )
@@ -2181,9 +2182,7 @@ def _vop_clears_tn(vop, tn) -> bool:
         return False
     if vop.info.name == "unpack-ref" and vop.args[0].tn is tn:
         return not vop.codegen_info.borrow_parent
-    if vop.info.name == "sequence-available" and vop.args[0].tn is tn:
-        return False
-    return True
+    return not (vop.info.name == "sequence-available" and vop.args[0].tn is tn)
 
 
 def _value_tns_live_in(component, candidates) -> dict:

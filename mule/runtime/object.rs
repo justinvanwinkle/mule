@@ -381,9 +381,30 @@ impl Data {
         }
     }
 }
+#[derive(Clone, Copy)]
+struct FrameState {
+    depth: u32,
+    has_native_error: bool,
+    has_pending_exception: bool,
+}
+
 thread_local! {
     static ERROR: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
-    static DEPTH: Cell<usize> = const { Cell::new(0) };
+    static FRAME_STATE: Cell<FrameState> = const {
+        Cell::new(FrameState {
+            depth: 0,
+            has_native_error: false,
+            has_pending_exception: false,
+        })
+    };
+}
+#[inline(always)]
+pub fn set_has_pending_exception(pending: bool) {
+    FRAME_STATE.with(|state| {
+        let mut current = state.get();
+        current.has_pending_exception = pending;
+        state.set(current);
+    });
 }
 pub fn error(kind: &str, message: &str) {
     if crate::sequences::has_pending() {
@@ -392,15 +413,29 @@ pub fn error(kind: &str, message: &str) {
     ERROR.with_borrow_mut(|current| {
         if current.is_none() {
             *current = Some((kind.into(), message.into()));
+            FRAME_STATE.with(|state| {
+                let mut st = state.get();
+                st.has_native_error = true;
+                state.set(st);
+            });
             crate::traceback::clear();
         }
     });
 }
+#[inline(always)]
 pub fn has_error() -> bool {
-    ERROR.with_borrow(|current| current.is_some()) || crate::sequences::has_pending()
+    FRAME_STATE.with(|state| {
+        let st = state.get();
+        st.has_native_error || st.has_pending_exception
+    })
 }
 pub fn clear_error() {
     ERROR.with_borrow_mut(|current| *current = None);
+    FRAME_STATE.with(|state| {
+        let mut st = state.get();
+        st.has_native_error = false;
+        state.set(st);
+    });
     crate::sequences::clear_pending();
     crate::traceback::clear();
 }
@@ -411,19 +446,37 @@ pub struct SavedError {
     traceback: Value,
 }
 pub fn save_error() -> SavedError {
+    let native = ERROR.with_borrow_mut(Option::take);
+    FRAME_STATE.with(|state| {
+        let mut st = state.get();
+        st.has_native_error = false;
+        state.set(st);
+    });
     SavedError {
-        native: ERROR.with_borrow_mut(Option::take),
+        native,
         pending: crate::sequences::take_pending(),
         traceback: crate::traceback::take(),
     }
 }
 pub fn restore_error(saved: SavedError) {
+    let has_native = saved.native.is_some();
     ERROR.with_borrow_mut(|current| *current = saved.native);
+    FRAME_STATE.with(|state| {
+        let mut st = state.get();
+        st.has_native_error = has_native;
+        state.set(st);
+    });
     crate::sequences::restore_pending(saved.pending);
     crate::traceback::restore(saved.traceback);
 }
 pub fn take_native_error() -> Option<(String, String)> {
-    ERROR.with_borrow_mut(Option::take)
+    let taken = ERROR.with_borrow_mut(Option::take);
+    FRAME_STATE.with(|state| {
+        let mut st = state.get();
+        st.has_native_error = false;
+        state.set(st);
+    });
+    taken
 }
 pub fn error_kind() -> String {
     if crate::sequences::has_pending() {
@@ -556,6 +609,7 @@ pub unsafe fn release_data(value: Value, mut data: Data) {
 /// never modified by retain/release. No other Object variants may be stored here.
 #[repr(transparent)]
 struct ImmortalObject(Object);
+unsafe impl Send for ImmortalObject {}
 unsafe impl Sync for ImmortalObject {}
 
 #[unsafe(export_name = "mule.undefined")]
@@ -597,6 +651,38 @@ pub unsafe fn bool_value(value: bool) -> Value {
     } else {
         std::ptr::addr_of!(FALSE.0).cast_mut()
     }
+}
+static EMPTY_TEXT: std::sync::OnceLock<ImmortalObject> = std::sync::OnceLock::new();
+static LATIN1_CHARACTERS: std::sync::OnceLock<Box<[ImmortalObject; 256]>> =
+    std::sync::OnceLock::new();
+
+pub fn empty_text() -> Value {
+    let entry = EMPTY_TEXT.get_or_init(|| {
+        let text = Text::empty();
+        let _ = text.hash();
+        ImmortalObject(Object {
+            references: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            tracked: false,
+            data: Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut()),
+        })
+    });
+    std::ptr::from_ref(&entry.0).cast_mut()
+}
+
+pub fn latin1_character(byte: u8) -> Value {
+    let table = LATIN1_CHARACTERS.get_or_init(|| {
+        Box::new(std::array::from_fn(|code| {
+            let text = Text::from_codepoints(std::iter::once(code as u32))
+                .expect("single-character Latin-1 allocation");
+            let _ = text.hash();
+            ImmortalObject(Object {
+                references: std::sync::atomic::AtomicUsize::new(usize::MAX),
+                tracked: false,
+                data: Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut()),
+            })
+        }))
+    });
+    std::ptr::from_ref(&table[byte as usize].0).cast_mut()
 }
 pub unsafe fn namespace() -> Value {
     unsafe { new_value(Data::Namespace(Namespace::default())) }
@@ -1101,6 +1187,27 @@ pub unsafe fn binary(op: i32, left: Value, right: Value, inplace: bool) -> Value
         }
         if !left.is_null() && !right.is_null() && !is_fixnum(left) && !is_fixnum(right) {
             match (&(*left).data, &(*right).data) {
+                (Data::Text(a, ty_a, ..), Data::Text(b, ty_b, ..))
+                    if op == 0 && ty_a.is_null() && ty_b.is_null() =>
+                {
+                    if a.is_empty() {
+                        return retain(right);
+                    }
+                    if b.is_empty() {
+                        return retain(left);
+                    }
+                    return match Text::join([a, b].into_iter()) {
+                        Ok(text) => new_value(Data::Text(
+                            text,
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                        )),
+                        Err(_) => {
+                            error("MemoryError", "text storage allocation failed");
+                            std::ptr::null_mut()
+                        }
+                    };
+                }
                 (Data::Bytes(a, ..), Data::Bytes(b, ..)) if op == 0 => {
                     let mut result = a.clone();
                     result.extend_from_slice(b);
@@ -1300,6 +1407,37 @@ pub unsafe fn compare(op: i32, left: Value, right: Value) -> Value {
         if op == 8 || op == 9 {
             return contains(right, left)
                 .map_or(std::ptr::null_mut(), |found| bool_value(found == (op == 8)));
+        }
+        if !left.is_null() && !right.is_null() && !is_fixnum(left) && !is_fixnum(right) {
+            match (&(*left).data, &(*right).data) {
+                (Data::Text(a, ty_a, ..), Data::Text(b, ty_b, ..))
+                    if ty_a.is_null() && ty_b.is_null() =>
+                {
+                    let matched = match op {
+                        0 => std::ptr::eq(left, right) || a == b,
+                        1 => !std::ptr::eq(left, right) && a != b,
+                        2 => a < b,
+                        3 => a <= b,
+                        4 => a > b,
+                        _ => a >= b,
+                    };
+                    return bool_value(matched);
+                }
+                (Data::Bytes(a, ty_a, ..), Data::Bytes(b, ty_b, ..))
+                    if ty_a.is_null() && ty_b.is_null() =>
+                {
+                    let matched = match op {
+                        0 => std::ptr::eq(left, right) || a == b,
+                        1 => !std::ptr::eq(left, right) && a != b,
+                        2 => a < b,
+                        3 => a <= b,
+                        4 => a > b,
+                        _ => a >= b,
+                    };
+                    return bool_value(matched);
+                }
+                _ => (),
+            }
         }
         let methods = ["__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"];
         let Some(method) = usize::try_from(op).ok().and_then(|op| methods.get(op)) else {
@@ -1684,21 +1822,37 @@ unsafe fn literal_bytes(data: *const c_char, length: isize, text: bool) -> Value
             error("OverflowError", "invalid string buffer");
             return std::ptr::null_mut();
         }
+        if text {
+            if length == 0 {
+                return empty_text();
+            }
+            let slice = std::slice::from_raw_parts(data.cast::<u8>(), length as usize);
+            if slice.len() == 1 && slice[0] < 0x80 {
+                return latin1_character(slice[0]);
+            }
+            return match Text::from_wtf8(slice) {
+                Ok(decoded) => {
+                    if decoded.len() == 1 {
+                        if let Some(code) = decoded.get(0) {
+                            if code <= 0xff {
+                                return latin1_character(code as u8);
+                            }
+                        }
+                    }
+                    new_value(Data::Text(decoded, std::ptr::null_mut(), std::ptr::null_mut()))
+                }
+                Err(message) => {
+                    error("UnicodeDecodeError", message);
+                    std::ptr::null_mut()
+                }
+            };
+        }
         let bytes = if length == 0 {
             Vec::new()
         } else {
             std::slice::from_raw_parts(data.cast::<u8>(), length as usize).to_vec()
         };
-        if !text {
-            return new_value(Data::Bytes(bytes, std::ptr::null_mut(), std::ptr::null_mut()));
-        }
-        match Text::from_wtf8(&bytes) {
-            Ok(text) => new_value(Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut())),
-            Err(message) => {
-                error("UnicodeDecodeError", message);
-                std::ptr::null_mut()
-            }
-        }
+        new_value(Data::Bytes(bytes, std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 #[unsafe(no_mangle)]
@@ -1707,36 +1861,45 @@ pub unsafe extern "C" fn mule_retain(value: Value) -> Value {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn mule_enter_frame() -> i32 {
-    if has_error() {
-        return -1;
-    }
-    let entered = DEPTH.with(|depth| {
-        if depth.get() >= 1000 {
-            false
-        } else {
-            depth.set(depth.get() + 1);
-            true
+    let status = FRAME_STATE.with(|state| {
+        let mut st = state.get();
+        if st.has_native_error || st.has_pending_exception {
+            return -1;
         }
+        if st.depth >= 1000 {
+            return -2;
+        }
+        st.depth += 1;
+        state.set(st);
+        0
     });
-    if entered {
+    if status == 0 {
         0
     } else {
-        error("RecursionError", "maximum native recursion depth exceeded");
+        if status == -2 {
+            error("RecursionError", "maximum native recursion depth exceeded");
+        }
         -1
     }
 }
 /// The current native frame depth, which a coroutine switch saves and restores.
 pub fn frame_depth() -> usize {
-    DEPTH.with(Cell::get)
+    FRAME_STATE.with(|state| state.get().depth as usize)
 }
 pub fn set_frame_depth(value: usize) {
-    DEPTH.with(|depth| depth.set(value));
+    FRAME_STATE.with(|state| {
+        let mut st = state.get();
+        st.depth = value as u32;
+        state.set(st);
+    });
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn mule_leave_frame() {
-    DEPTH.with(|depth| {
-        debug_assert!(depth.get() > 0, "native frame exits must match entries");
-        depth.set(depth.get() - 1);
+    FRAME_STATE.with(|state| {
+        let mut st = state.get();
+        debug_assert!(st.depth > 0, "native frame exits must match entries");
+        st.depth -= 1;
+        state.set(st);
     });
 }
 #[unsafe(no_mangle)]
@@ -1922,7 +2085,7 @@ unsafe fn lookup_special(value: Value, name: *const c_char, include_object_defau
         let Some(name) = name_from_c(name) else {
             return std::ptr::null_mut();
         };
-        if value.is_null() {
+        if value.is_null() || (is_fixnum(value) && name == "__index__") {
             return none_value();
         }
         let bound = crate::classes::lookup_special_bound(value, name, include_object_defaults);
@@ -1955,6 +2118,12 @@ pub unsafe extern "C" fn mule_text_result(value: Value) -> Value {
 /// Own a new `str` holding formatted UTF-8 output.
 pub unsafe fn text_value(bytes: &[u8]) -> Value {
     unsafe {
+        if bytes.is_empty() {
+            return empty_text();
+        }
+        if bytes.len() == 1 && bytes[0] < 0x80 {
+            return latin1_character(bytes[0]);
+        }
         match Text::from_wtf8(bytes) {
             Ok(text) => new_value(Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut())),
             Err(message) => {
@@ -2001,12 +2170,13 @@ unsafe fn text_position(value: Value, index: Value) -> Option<(&'static Text, us
         Some((text, index))
     }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mule_text_character(value: Value, index: Value) -> Value {
+pub unsafe fn text_character_at(text: &Text, index: usize) -> Value {
     unsafe {
-        let Some((text, index)) = text_position(value, index) else {
-            return std::ptr::null_mut();
-        };
+        if let Some(code) = text.get(index) {
+            if code <= 0xff {
+                return latin1_character(code as u8);
+            }
+        }
         match text.slice(index, index + 1) {
             Ok(character) => new_value(Data::Text(character, std::ptr::null_mut(), std::ptr::null_mut())),
             Err(_) => {
@@ -2014,6 +2184,15 @@ pub unsafe extern "C" fn mule_text_character(value: Value, index: Value) -> Valu
                 std::ptr::null_mut()
             }
         }
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_character(value: Value, index: Value) -> Value {
+    unsafe {
+        let Some((text, index)) = text_position(value, index) else {
+            return std::ptr::null_mut();
+        };
+        text_character_at(text, index)
     }
 }
 /// The Python type name of a value, for error messages.
@@ -2091,6 +2270,16 @@ pub unsafe extern "C" fn mule_text_slice(value: Value, start: Value, stop: Value
             error("IndexError", "text slice bounds must be nonnegative small integers");
             return std::ptr::null_mut();
         };
+        if start >= stop {
+            return empty_text();
+        }
+        if stop - start == 1 {
+            if let Some(code) = text.get(start) {
+                if code <= 0xff {
+                    return latin1_character(code as u8);
+                }
+            }
+        }
         match text.slice(start, stop) {
             Ok(slice) => new_value(Data::Text(slice, std::ptr::null_mut(), std::ptr::null_mut())),
             Err(_) => {

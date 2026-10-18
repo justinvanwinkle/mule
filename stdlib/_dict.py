@@ -57,6 +57,8 @@ def _signed(value):
 
 
 def _integer_hash(value):
+    if -_MODULUS < value < _MODULUS:
+        return -2 if value == -1 else value
     result = (-value if value < 0 else value) % _MODULUS
     if value < 0:
         result = -result
@@ -78,7 +80,7 @@ def _tuple_hash(value):
 
 
 def hash(value, /):
-    kind = storage_hash(value)
+    kind = _storage_hash(value)
     if kind is not None:
         return kind
     if _integer_storage_kind(value):
@@ -124,52 +126,76 @@ class _Table:
     def _find(self, key, code):
         """The index-table slot for ``key`` and its entry, or -1 for none."""
         indices = self._indices
+        hashes = self._hashes
+        keys = self._keys
         mask = _storage_length(indices) - 1
         perturb = code & _PERTURB_MASK
         slot = perturb & mask
         while True:
-            entry = indices[slot]
+            entry = _storage_read(indices, slot)
             if entry == _EMPTY:
                 return slot, -1
-            if entry >= 0 and self._hashes[entry] == code:
-                existing = self._keys[entry]
+            if entry >= 0 and _storage_read(hashes, entry) == code:
+                existing = _storage_read(keys, entry)
                 if existing is key or existing == key:
                     return slot, entry
             perturb >>= 5
             slot = (slot * 5 + perturb + 1) & mask
 
     def _lookup(self, key):
-        slot, entry = self._find(key, hash(key))
-        return entry
+        code = _storage_hash(key)
+        if code is None:
+            code = hash(key)
+        indices = self._indices
+        hashes = self._hashes
+        keys = self._keys
+        mask = _storage_length(indices) - 1
+        perturb = code & _PERTURB_MASK
+        slot = perturb & mask
+        while True:
+            entry = _storage_read(indices, slot)
+            if entry == _EMPTY:
+                return -1
+            if entry >= 0 and _storage_read(hashes, entry) == code:
+                existing = _storage_read(keys, entry)
+                if existing is key or existing == key:
+                    return entry
+            perturb >>= 5
+            slot = (slot * 5 + perturb + 1) & mask
 
     def _get_value(self, key, default):
         entry = self._lookup(key)
-        return self._values[entry] if entry >= 0 else default
+        return _storage_read(self._values, entry) if entry >= 0 else default
 
     def _insert(self, key, value):
-        code = hash(key)
+        code = _storage_hash(key)
+        if code is None:
+            code = hash(key)
         slot, entry = self._find(key, code)
         if entry >= 0:
-            self._values[entry] = value
+            _storage_write(self._values, entry, value)
             return
         if (_storage_length(self._keys) + 1) * 3 > _storage_length(self._indices) * 2:
             self._resize(self._used + 1)
             slot, entry = self._find(key, code)
-        self._indices[slot] = _storage_length(self._keys)
-        self._hashes.append(code)
-        self._keys.append(key)
-        self._values.append(value)
+        _storage_write(self._indices, slot, _storage_length(self._keys))
+        _storage_append(self._hashes, code)
+        _storage_append(self._keys, key)
+        _storage_append(self._values, value)
         self._used += 1
 
     def _remove(self, key):
         """Delete ``key``'s entry, returning its value, or _MISSING if absent."""
-        slot, entry = self._find(key, hash(key))
+        code = _storage_hash(key)
+        if code is None:
+            code = hash(key)
+        slot, entry = self._find(key, code)
         if entry < 0:
             return _MISSING
-        value = self._values[entry]
-        self._indices[slot] = _DUMMY
-        self._keys[entry] = _DELETED
-        self._values[entry] = None
+        value = _storage_read(self._values, entry)
+        _storage_write(self._indices, slot, _DUMMY)
+        _storage_write(self._keys, entry, _DELETED)
+        _storage_write(self._values, entry, None)
         self._used -= 1
         return value
 
@@ -178,29 +204,43 @@ class _Table:
         while size * 2 < minimum * 3:
             size *= 2
         hashes, keys, values = [], [], []
-        for index in range(_storage_length(self._keys)):
-            key = self._keys[index]
+        old_hashes = self._hashes
+        old_keys = self._keys
+        old_values = self._values
+        count = _storage_length(old_keys)
+        index = 0
+        while index < count:
+            key = _storage_read(old_keys, index)
             if key is not _DELETED:
-                hashes.append(self._hashes[index])
-                keys.append(key)
-                values.append(self._values[index])
-        self._indices = _empty_indices(size * 2)
+                _storage_append(hashes, _storage_read(old_hashes, index))
+                _storage_append(keys, key)
+                _storage_append(values, _storage_read(old_values, index))
+            index += 1
+        indices = _empty_indices(size * 2)
+        self._indices = indices
         self._hashes, self._keys, self._values = hashes, keys, values
-        mask = len(self._indices) - 1
-        for index in range(len(keys)):
-            perturb = hashes[index] & _PERTURB_MASK
+        mask = _storage_length(indices) - 1
+        live_count = _storage_length(keys)
+        index = 0
+        while index < live_count:
+            perturb = _storage_read(hashes, index) & _PERTURB_MASK
             slot = perturb & mask
-            while self._indices[slot] != _EMPTY:
+            while _storage_read(indices, slot) != _EMPTY:
                 perturb >>= 5
                 slot = (slot * 5 + perturb + 1) & mask
-            self._indices[slot] = index
+            _storage_write(indices, slot, index)
+            index += 1
 
     def _live(self):
         """The live entries' indices, in insertion order."""
         positions = []
-        for index in range(len(self._keys)):
-            if self._keys[index] is not _DELETED:
-                positions.append(index)
+        keys = self._keys
+        count = _storage_length(keys)
+        index = 0
+        while index < count:
+            if _storage_read(keys, index) is not _DELETED:
+                _storage_append(positions, index)
+            index += 1
         return positions
 
     def __len__(self):
@@ -234,12 +274,12 @@ class _TableIterator:
         while self.index < _storage_length(keys):
             index = self.index
             self.index = index + 1
-            key = keys[index]
+            key = _storage_read(keys, index)
             if key is not _DELETED:
                 if self.kind == 2:
-                    return table._values[index]
+                    return _storage_read(table._values, index)
                 if self.kind == 3:
-                    return (key, table._values[index])
+                    return (key, _storage_read(table._values, index))
                 return key
         raise StopIteration
 
@@ -277,7 +317,7 @@ class dict(_Table):
     def __getitem__(self, key):
         entry = self._lookup(key)
         if entry >= 0:
-            return self._values[entry]
+            return _storage_read(self._values, entry)
         owner = class_of(self)
         if owner is not dict:
             absent = _binding_missing()
@@ -303,10 +343,10 @@ class dict(_Table):
     def __reversed__(self):
         keys = []
         positions = self._live()
-        index = len(positions)
+        index = _storage_length(positions)
         while index > 0:
             index -= 1
-            keys.append(self._keys[positions[index]])
+            _storage_append(keys, _storage_read(self._keys, _storage_read(positions, index)))
         return iter(keys)
 
     def __eq__(self, other):
@@ -315,10 +355,10 @@ class dict(_Table):
         if self._used != other._used:
             return False
         for index in self._live():
-            entry = other._lookup(self._keys[index])
+            entry = other._lookup(_storage_read(self._keys, index))
             if entry < 0:
                 return False
-            mine, theirs = self._values[index], other._values[entry]
+            mine, theirs = _storage_read(self._values, index), _storage_read(other._values, entry)
             if not (mine is theirs or mine == theirs):
                 return False
         return True
@@ -329,7 +369,12 @@ class dict(_Table):
     def __repr__(self):
         items = []
         for index in self._live():
-            items.append(repr(self._keys[index]) + ": " + repr(self._values[index]))
+            _storage_append(
+                items,
+                repr(_storage_read(self._keys, index))
+                + ": "
+                + repr(_storage_read(self._values, index)),
+            )
         return _representation("{", items, "}")
 
     def __or__(self, other):
@@ -349,7 +394,7 @@ class dict(_Table):
     def setdefault(self, key, default=None):
         entry = self._lookup(key)
         if entry >= 0:
-            return self._values[entry]
+            return _storage_read(self._values, entry)
         self._insert(key, default)
         return default
 
@@ -365,8 +410,8 @@ class dict(_Table):
         positions = self._live()
         if not positions:
             raise KeyError("popitem(): dictionary is empty")
-        index = positions[len(positions) - 1]
-        key, value = self._keys[index], self._values[index]
+        index = _storage_read(positions, _storage_length(positions) - 1)
+        key, value = _storage_read(self._keys, index), _storage_read(self._values, index)
         self._remove(key)
         return (key, value)
 
@@ -381,7 +426,7 @@ class dict(_Table):
 
     def _update_table(self, other):
         for index in other._live():
-            self._insert(other._keys[index], other._values[index])
+            self._insert(_storage_read(other._keys, index), _storage_read(other._values, index))
 
     def _update_other(self, other):
         if _is_dict(other):
@@ -817,7 +862,7 @@ def build_dict(flat):
     result = _empty_dict()
     index = 0
     while index < _storage_length(flat):
-        result._insert(flat[index], flat[index + 1])
+        result._insert(_storage_read(flat, index), _storage_read(flat, index + 1))
         index += 2
     return result
 

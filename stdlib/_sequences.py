@@ -579,7 +579,7 @@ def abs(value, /):
 
 
 def integer_index(value):
-    if type_of(value) is int:
+    if _type_of(value) is int:
         return value
     method = _index_method(value)
     if method is not None:
@@ -595,7 +595,12 @@ def chr(value, /):
 
 
 def getitem(value, index):
-    if type_of(value) is list and is_slice(index):
+    if _raised_class(value) is dict:
+        entry = value._lookup(index)
+        if entry >= 0:
+            return _storage_read(value._values, entry)
+        raise KeyError(index)
+    if _type_of(value) is list and is_slice(index):
         return _selected(value, index)
     method = _getitem_method(value)
     if method is None:
@@ -610,6 +615,9 @@ def getitem(value, index):
 
 
 def delitem(value, index):
+    if _raised_class(value) is dict:
+        dict.__delitem__(value, index)
+        return
     method = _delitem_method(value)
     if method is None:
         raise TypeError("object does not support item deletion")
@@ -634,7 +642,7 @@ def sum(iterable, /, start=0):
     if _text_storage(start):
         raise TypeError("sum() can't sum strings [use ''.join(seq) instead]")
     total = start
-    if type_of(iterable) is list or type_of(iterable) is tuple:
+    if _type_of(iterable) is list or _type_of(iterable) is tuple:
         index = 0
         length = _storage_length(iterable)
         while index < length:
@@ -1088,6 +1096,9 @@ def _list_set_slice(target, index, value):
 
 
 def setitem(value, index, item):
+    if _raised_class(value) is dict:
+        value._insert(index, item)
+        return
     if type_of(value) is list and is_slice(index):
         _list_set_slice(value, index, item)
         return
@@ -2186,7 +2197,7 @@ def iterate(value):
 
 
 def _optional_special(value, name):
-    owner = type_of(value)
+    owner = _type_of(value)
     missing = _binding_missing()
     method = class_lookup_default(owner, name, missing)
     if method is missing:
@@ -2199,7 +2210,12 @@ def _optional_special(value, name):
 
 
 def _iterate(value, membership):
-    if type_of(value) is list or type_of(value) is tuple:
+    cls = _raised_class(value)
+    if cls is dict:
+        return dict.__iter__(value)
+    if cls is set or cls is frozenset:
+        return set.__iter__(value)
+    if cls is None and (_type_of(value) is list or _type_of(value) is tuple):
         iterator = _allocate_instance(StorageIterator)
         iterator.sequence = value
         iterator.index = 0
@@ -2211,7 +2227,7 @@ def _iterate(value, membership):
         if method is None:
             return _iteration_error(value, membership)
         iterator = method()
-        if class_lookup_default(type_of(iterator), "__next__", missing) is missing:
+        if class_lookup_default(_type_of(iterator), "__next__", missing) is missing:
             raise TypeError("__iter__ returned a non-iterator")
         return iterator
     method = _optional_special(value, "__getitem__")
@@ -2221,14 +2237,31 @@ def _iterate(value, membership):
 
 
 def _iteration_error(value, membership):
-    name = type_of(value).__name__
+    name = _type_of(value).__name__
     if membership:
         raise TypeError(f"argument of type '{name}' is not a container or iterable")
     raise TypeError(f"'{name}' object is not iterable")
 
 
 def contains(container, item):
-    owner = type_of(container)
+    cls = _raised_class(container)
+    if cls is dict or cls is set or cls is frozenset:
+        return container._lookup(item) >= 0
+    if cls is None:
+        if _text_storage(container):
+            return TextStorage.__contains__(container, item)
+        owner = _type_of(container)
+        if owner is list or owner is tuple:
+            count = _storage_length(container)
+            index = 0
+            while index < count:
+                existing = _storage_read(container, index)
+                if existing is item or existing == item:
+                    return True
+                index += 1
+            return False
+    else:
+        owner = cls
     missing = _binding_missing()
     method = _optional_special(container, "__contains__")
     if method is not missing:
@@ -2275,7 +2308,7 @@ def next_item(value):
 
 def unpack(value, count):
     count = _integer_storage(count)
-    if type_of(value) is tuple:
+    if _type_of(value) is tuple:
         length = _storage_length(value)
         if length < count:
             raise ValueError("not enough values to unpack")

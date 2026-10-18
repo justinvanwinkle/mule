@@ -246,9 +246,7 @@ impl Drop for Coroutine {
             object::release(self.transfer);
             object::release(self.function);
             object::release(self.arguments);
-            for (_, globals) in self.frames.drain(..) {
-                object::release(globals);
-            }
+            self.frames.clear();
             for exception in self.handlers.drain(..) {
                 object::release(exception);
             }

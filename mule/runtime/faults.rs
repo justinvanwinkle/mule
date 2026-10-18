@@ -32,10 +32,19 @@ unsafe extern "C" {
     fn pthread_self() -> usize;
 }
 
+#[inline(always)]
 pub fn enabled() -> bool { ACTIVE.load(Ordering::Relaxed) }
 
+#[inline(always)]
 pub fn push(code: *const CodeInfo) {
-    if !enabled() { return; }
+    if enabled() {
+        push_slow(code);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn push_slow(code: *const CodeInfo) {
     FRAMES.with_borrow_mut(|frames| {
         let mut node = Box::new(Frame {
             label: unsafe { (*code).fault_label },
@@ -46,8 +55,16 @@ pub fn push(code: *const CodeInfo) {
     });
 }
 
+#[inline(always)]
 pub fn pop() {
-    if !enabled() { return; }
+    if enabled() {
+        pop_slow();
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn pop_slow() {
     FRAMES.with_borrow_mut(|frames| {
         if let Some(node) = frames.pop() {
             HEAD.store(node.parent, Ordering::SeqCst);

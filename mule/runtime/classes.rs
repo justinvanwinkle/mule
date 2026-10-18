@@ -282,14 +282,17 @@ const BUILTIN_NAMES: [&str; BUILTIN_COUNT] = [
 ];
 
 thread_local! {
-    static BUILTIN_TYPES: std::cell::RefCell<[Value; BUILTIN_COUNT]> =
-        const { std::cell::RefCell::new([std::ptr::null_mut(); BUILTIN_COUNT]) };
+    static BUILTIN_TYPES: std::cell::Cell<[Value; BUILTIN_COUNT]> =
+        const { std::cell::Cell::new([std::ptr::null_mut(); BUILTIN_COUNT]) };
 }
 
 pub unsafe fn register_builtin(kind: Builtin, class: Value) {
     unsafe {
-        BUILTIN_TYPES.with_borrow_mut(|types| {
-            object::release(std::mem::replace(&mut types[kind as usize], object::retain(class)));
+        BUILTIN_TYPES.with(|cell| {
+            let mut types = cell.get();
+            let old = std::mem::replace(&mut types[kind as usize], object::retain(class));
+            cell.set(types);
+            object::release(old);
         });
     }
 }
@@ -313,15 +316,16 @@ unsafe extern "C" fn register_not_implemented(_: Value, args: Value) -> Value {
     }
 }
 
+#[inline(always)]
 pub fn builtin_type(kind: Builtin) -> Value {
-    BUILTIN_TYPES.with_borrow(|types| types[kind as usize])
+    BUILTIN_TYPES.with(|cell| unsafe { *cell.as_ptr().cast::<Value>().add(kind as usize) })
 }
 
 /// Release the registered builtin classes at executable shutdown.
 pub unsafe fn finish_builtin_types() {
     unsafe {
         object::release(NOT_IMPLEMENTED.with(|slot| slot.replace(std::ptr::null_mut())));
-        let types = BUILTIN_TYPES.with_borrow_mut(|types| std::mem::replace(types, [std::ptr::null_mut(); BUILTIN_COUNT]));
+        let types = BUILTIN_TYPES.with(|cell| cell.replace([std::ptr::null_mut(); BUILTIN_COUNT]));
         for class in types {
             object::release(class);
         }
@@ -1763,6 +1767,27 @@ pub unsafe extern "C" fn mule_resolve_method(
             return std::ptr::null_mut();
         }
         *bound = std::ptr::null_mut();
+        if !cache.is_null() && !receiver.is_null() && !object::is_fixnum(receiver) {
+            if let Data::Instance { ty, fields, attributes } = &(*receiver).data {
+                if let Data::Class(layout) = &(**ty).data {
+                    if let Some(encoded) = cached(layout, cache) {
+                        let kind = encoded & KIND;
+                        if kind == FIELD {
+                            let value = fields[encoded >> SHIFT];
+                            if !value.is_null() {
+                                return object::retain(value);
+                            }
+                        } else if kind == METHOD && attributes.is_null() {
+                            let position = encoded >> SHIFT;
+                            let defining = layout.ancestor(position >> DEPTH_SHIFT);
+                            let value = defining.attributes[position & INDEX_MASK].1;
+                            *bound = object::retain(receiver);
+                            return object::retain(value);
+                        }
+                    }
+                }
+            }
+        }
         resolve(receiver, attribute, cache, bound)
     }
 }
@@ -1881,6 +1906,20 @@ pub unsafe extern "C" fn mule_get_attr_cached(
     cache: *mut AttrCache,
 ) -> Value {
     unsafe {
+        if !cache.is_null() && !receiver.is_null() && !object::is_fixnum(receiver) {
+            if let Data::Instance { ty, fields, .. } = &(*receiver).data {
+                if let Data::Class(layout) = &(**ty).data {
+                    if let Some(encoded) = cached(layout, cache) {
+                        if encoded & KIND == FIELD {
+                            let value = fields[encoded >> SHIFT];
+                            if !value.is_null() {
+                                return object::retain(value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let mut bound = std::ptr::null_mut();
         let method = mule_resolve_method(receiver, attribute, cache, &mut bound);
         if bound.is_null() {
@@ -1906,7 +1945,28 @@ pub unsafe extern "C" fn mule_set_attr_cached(
     value: Value,
     cache: *mut AttrCache,
 ) -> i32 {
-    unsafe { set_attribute_with(receiver, attribute, value, cache, true) }
+    unsafe {
+        if !cache.is_null()
+            && !value.is_null()
+            && !receiver.is_null()
+            && !object::is_fixnum(receiver)
+        {
+            if let Data::Instance { ty, fields, .. } = &mut (*receiver).data {
+                if let Data::Class(layout) = &(**ty).data {
+                    if let Some(encoded) = cached(layout, cache) {
+                        if encoded & KIND == FIELD {
+                            let index = encoded >> SHIFT;
+                            let old = fields[index];
+                            fields[index] = object::retain(value);
+                            object::release(old);
+                            return 0;
+                        }
+                    }
+                }
+            }
+        }
+        set_attribute_with(receiver, attribute, value, cache, true)
+    }
 }
 
 /// Attribute assignment; without `hooks` it is `object.__setattr__`.
@@ -2621,8 +2681,11 @@ unsafe extern "C" fn register_type(_: Value, args: Value) -> Value {
         if class_layout(class).is_none() {
             return std::ptr::null_mut();
         }
-        BUILTIN_TYPES.with_borrow_mut(|types| {
-            object::release(std::mem::replace(&mut types[index], object::retain(class)));
+        BUILTIN_TYPES.with(|cell| {
+            let mut types = cell.get();
+            let old = std::mem::replace(&mut types[index], object::retain(class));
+            cell.set(types);
+            object::release(old);
         });
         // Classes created before `type` existed adopt it as their metaclass.
         object::none_value()
@@ -2643,16 +2706,26 @@ unsafe extern "C" fn traceback_field(_: Value, args: Value) -> Value {
 }
 
 /// `type(value)`: the class of any value.
-unsafe extern "C" fn type_of(_: Value, args: Value) -> Value {
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_type_of(value: Value) -> Value {
     unsafe {
-        let Some([value]) = operands(args) else {
+        if object::has_error() {
             return std::ptr::null_mut();
-        };
+        }
         let class = class_of_value(value);
         if class.is_null() {
             return fail("SystemError", "builtin types are not initialized");
         }
         object::retain(class)
+    }
+}
+
+unsafe extern "C" fn type_of(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        mule_type_of(value)
     }
 }
 
@@ -3163,6 +3236,27 @@ unsafe extern "C" fn typed_value(_: Value, args: Value) -> Value {
         if value.is_null() {
             object::error("TypeError", "typed value storage is required");
             return std::ptr::null_mut();
+        }
+        if (*value).reference_count() != 1 {
+            let cloned = match &(*value).data {
+                Data::BigInt(n, _, _) => Data::BigInt(n.clone(), object::retain(class), std::ptr::null_mut()),
+                Data::Float(f, _, _) => Data::Float(*f, object::retain(class), std::ptr::null_mut()),
+                Data::Text(t, _, _) => Data::Text(t.clone(), object::retain(class), std::ptr::null_mut()),
+                Data::Bytes(b, _, _) => Data::Bytes(b.clone(), object::retain(class), std::ptr::null_mut()),
+                Data::List(v, _, _) => {
+                    let items = v.iter().map(|&item| object::retain(item)).collect();
+                    Data::List(items, object::retain(class), std::ptr::null_mut())
+                }
+                Data::Args(v, _, _) => {
+                    let items = v.iter().map(|&item| object::retain(item)).collect();
+                    Data::Args(items, object::retain(class), std::ptr::null_mut())
+                }
+                _ => {
+                    object::error("TypeError", "typed value storage is required");
+                    return std::ptr::null_mut();
+                }
+            };
+            return object::new_value(cloned);
         }
         match &mut (*value).data {
             Data::BigInt(_, ty, _)

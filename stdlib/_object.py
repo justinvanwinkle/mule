@@ -1068,6 +1068,13 @@ class int(object):
     __slots__ = ()
 
     def __new__(cls, *args):
+        if len(args) == 1 and cls is int:
+            source = args[0]
+            owner = _type_of(source)
+            if owner is int:
+                return source
+            if owner is str:
+                return _convert_int(source)
         if args:
             value = args[0]
             # Latin-1 preserves every byte so invalid input reaches the integer
@@ -1849,14 +1856,16 @@ register_type("frame", frame)
 
 
 def isinstance(obj, classinfo, /):
-    if is_instance(classinfo, tuple):
+    if _type_of(classinfo) is type:
+        if _type_of(obj) is classinfo:
+            return True
+        return is_instance(obj, classinfo)
+    if _tuple_storage(classinfo) or is_instance(classinfo, tuple):
         for candidate in classinfo:
             if isinstance(obj, candidate):
                 return True
         return False
-    if type_of(classinfo) is type:
-        return is_instance(obj, classinfo)
-    check = getattr(type_of(classinfo), "__instancecheck__", None)
+    check = getattr(_type_of(classinfo), "__instancecheck__", None)
     if check is None:
         raise TypeError(
             "isinstance() arg 2 must be a type, a tuple of types, or a union"
@@ -1865,16 +1874,16 @@ def isinstance(obj, classinfo, /):
 
 
 def issubclass(cls, classinfo, /):
-    if is_instance(classinfo, tuple):
+    if _type_of(classinfo) is type:
+        if not is_class(cls):
+            raise TypeError("issubclass() arg 1 must be a class")
+        return is_subclass(cls, classinfo)
+    if _tuple_storage(classinfo) or is_instance(classinfo, tuple):
         for candidate in classinfo:
             if issubclass(cls, candidate):
                 return True
         return False
-    if type_of(classinfo) is type:
-        if not is_class(cls):
-            raise TypeError("issubclass() arg 1 must be a class")
-        return is_subclass(cls, classinfo)
-    check = getattr(type_of(classinfo), "__subclasscheck__", None)
+    check = getattr(_type_of(classinfo), "__subclasscheck__", None)
     if check is None:
         raise TypeError(
             "issubclass() arg 2 must be a class, a tuple of classes, or a union"

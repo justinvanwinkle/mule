@@ -10,19 +10,25 @@ thread_local! {
     static PENDING: Cell<Value> = const { Cell::new(null_mut()) };
     static ACTIVE: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
 }
+#[inline(always)]
+fn replace_pending(new_value: Value) -> Value {
+    object::set_has_pending_exception(!new_value.is_null());
+    PENDING.with(|value| value.replace(new_value))
+}
+#[inline(always)]
 pub fn has_pending() -> bool {
     PENDING.with(|value| !value.get().is_null())
 }
 /// Remove and return the pending exception, if any, for later restoration.
 pub fn take_pending() -> Value {
-    PENDING.with(|value| value.replace(null_mut()))
+    replace_pending(null_mut())
 }
 /// Reinstate an exception taken with `take_pending`, replacing any current one.
 pub fn restore_pending(saved: Value) {
-    PENDING.with(|value| unsafe { object::release(value.replace(saved)) });
+    unsafe { object::release(replace_pending(saved)) };
 }
 pub fn clear_pending() {
-    PENDING.with(|value| unsafe { object::release(value.replace(null_mut())) });
+    unsafe { object::release(replace_pending(null_mut())) };
 }
 pub fn pending_kind() -> String {
     PENDING.with(|value| unsafe {
@@ -308,9 +314,9 @@ pub unsafe extern "C" fn mule_storage_write(
     }
 }
 /// Fast path for `sequence[index]` when `sequence` is an exact builtin
-/// `list`, `tuple`, or `bytes` (`ty.is_null()`) and `index` is an in-bounds
-/// fixnum (non-negative or negative). Returns NULL without setting an error
-/// when the operands need the general compiled `getitem` protocol.
+/// `list`, `tuple`, `bytes`, or `str` (`ty.is_null()`) and `index` is an
+/// in-bounds fixnum (non-negative or negative). Returns NULL without setting
+/// an error when the operands need the general compiled `getitem` protocol.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_fast_getitem(sequence: Value, index: Value) -> Value {
     unsafe {
@@ -332,6 +338,14 @@ pub unsafe extern "C" fn mule_fast_getitem(sequence: Value, index: Value) -> Val
                 let pos = if raw < 0 { raw + len } else { raw };
                 if pos >= 0 && pos < len {
                     return object::small(i64::from(*values.get_unchecked(pos as usize)));
+                }
+                null_mut()
+            }
+            Data::Text(text, ty, ..) if ty.is_null() => {
+                let len = text.len() as i64;
+                let pos = if raw < 0 { raw + len } else { raw };
+                if pos >= 0 && pos < len {
+                    return object::text_character_at(text, pos as usize);
                 }
                 null_mut()
             }
@@ -546,7 +560,7 @@ pub unsafe extern "C" fn mule_raise_pending(value: Value) -> Value {
         };
         if !instance.is_null() {
             crate::traceback::resume(instance);
-            PENDING.with(|slot| object::release(slot.replace(instance)));
+            object::release(replace_pending(instance));
         }
         null_mut()
     }
@@ -575,7 +589,7 @@ pub unsafe extern "C" fn mule_catch_exception() -> Value {
 }
 unsafe fn caught_exception() -> Value {
     unsafe {
-        let exception = PENDING.with(|value| value.replace(null_mut()));
+        let exception = replace_pending(null_mut());
         if !exception.is_null() {
             return exception;
         }
@@ -659,7 +673,7 @@ pub unsafe extern "C" fn mule_reraise() -> i32 {
         ACTIVE.with_borrow(|values| {
             if let Some(value) = values.last() {
                 crate::traceback::resume(*value);
-                PENDING.with(|slot| object::release(slot.replace(object::retain(*value))));
+                object::release(replace_pending(object::retain(*value)));
             } else {
                 object::error("RuntimeError", "no active exception to reraise");
             }

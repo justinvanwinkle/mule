@@ -38,8 +38,6 @@ class slice:
 
 
 def _bound(value):
-    if type_of(value) is int:
-        return value
     method = _index_method(value)
     if method is not None:
         value = method()
