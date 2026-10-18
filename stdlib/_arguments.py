@@ -13,7 +13,7 @@ by that function's constant signature tuple.
 def construct(cls, view):
     creator = overriding_new(cls)
     if creator is None:
-        instance = allocate_instance(cls)
+        instance = _allocate_instance(cls)
     else:
         positional = [cls]
         index = 0

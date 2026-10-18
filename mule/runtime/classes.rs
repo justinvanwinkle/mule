@@ -574,16 +574,19 @@ pub type NativeConstructor = unsafe extern "C" fn(Value, Value, isize, *const Va
 pub type NativeGetter = unsafe extern "C" fn(Value, Value, i64) -> Value;
 pub type NativeSetter = unsafe extern "C" fn(Value, Value, i64, Value) -> i32;
 
-/// LLVM reserves three zero-initialized machine words per attribute site.
-/// IDs never repeat, so an expired class cannot make a cache entry valid again.
-/// The encoding is a property of the class and name alone: whether the
-/// receiver is an instance or the class itself is applied when it is used.
+/// LLVM reserves 27 zero-initialized machine words per attribute site:
+/// a primary MRU entry plus an 8-way direct-indexed secondary table for
+/// polymorphic sites. IDs never repeat, so an expired class cannot make a
+/// cache entry valid again.
+const EXTRA_CACHE_SLOTS: usize = 8;
+
 #[repr(C)]
 #[derive(Default)]
 pub struct AttrCache {
     pub class_id: usize,
     pub encoded: usize,
     pub epoch: usize,
+    pub extra: [[usize; 3]; EXTRA_CACHE_SLOTS],
 }
 const FIELD: usize = 1;
 const METHOD: usize = 2;
@@ -688,9 +691,11 @@ fn encoded(layout: &ClassLayout, attribute: &str, cache: *mut AttrCache) -> Opti
         };
         if let Some(encoded) = resolved {
             if !cache.is_null() {
+                let epoch = ATTRIBUTE_EPOCH.load(Ordering::Relaxed);
                 (*cache).encoded = encoded;
                 (*cache).class_id = layout.id;
-                (*cache).epoch = ATTRIBUTE_EPOCH.load(Ordering::Relaxed);
+                (*cache).epoch = epoch;
+                (*cache).extra[layout.id & (EXTRA_CACHE_SLOTS - 1)] = [layout.id, encoded, epoch];
             }
         }
         resolved
@@ -698,13 +703,57 @@ fn encoded(layout: &ClassLayout, attribute: &str, cache: *mut AttrCache) -> Opti
 }
 
 #[inline]
-unsafe fn cached(layout: &ClassLayout, cache: *mut AttrCache) -> Option<usize> {
+unsafe fn cached_key(key: usize, cache: *mut AttrCache) -> Option<usize> {
     unsafe {
-        if !cache.is_null()
-            && (*cache).class_id == layout.id
-            && (*cache).epoch == ATTRIBUTE_EPOCH.load(Ordering::Relaxed)
-        {
-            return Some((*cache).encoded);
+        if !cache.is_null() {
+            let epoch = ATTRIBUTE_EPOCH.load(Ordering::Relaxed);
+            if (*cache).class_id == key && (*cache).epoch == epoch {
+                return Some((*cache).encoded);
+            }
+            let slot = &(*cache).extra[key & (EXTRA_CACHE_SLOTS - 1)];
+            if slot[0] == key && slot[2] == epoch {
+                return Some(slot[1]);
+            }
+        }
+        None
+    }
+}
+
+#[inline]
+unsafe fn cached(layout: &ClassLayout, cache: *mut AttrCache) -> Option<usize> {
+    unsafe { cached_key(layout.id, cache) }
+}
+
+unsafe fn encoded_super(
+    layout: &ClassLayout,
+    owner: Value,
+    thisclass: Value,
+    attribute: &str,
+    cache_key: usize,
+    cache: *mut AttrCache,
+) -> Option<usize> {
+    unsafe {
+        let start = if owner == thisclass {
+            0
+        } else {
+            layout.mro.iter().position(|&c| c == thisclass)? + 1
+        };
+        for (offset, ancestor) in layout.mro[start..].iter().enumerate() {
+            let anc_layout = layout_of_class(*ancestor)?;
+            if let Some(&index) = anc_layout.attribute_lookup.get(attribute) {
+                let depth = start + offset + 1;
+                let kind = attribute_kind(anc_layout.attributes[index].1);
+                let encoded = (((depth << DEPTH_SHIFT) | index) << SHIFT) | kind;
+                if !cache.is_null() {
+                    let epoch = ATTRIBUTE_EPOCH.load(Ordering::Relaxed);
+                    (*cache).encoded = encoded;
+                    (*cache).class_id = cache_key;
+                    (*cache).epoch = epoch;
+                    (*cache).extra[cache_key & (EXTRA_CACHE_SLOTS - 1)] =
+                        [cache_key, encoded, epoch];
+                }
+                return Some(encoded);
+            }
         }
         None
     }
@@ -1719,6 +1768,88 @@ pub unsafe extern "C" fn mule_resolve_method(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_resolve_super_method(
+    super_callee: Value,
+    thisclass: Value,
+    receiver: Value,
+    attribute: *const c_char,
+    cache: *mut AttrCache,
+    bound: *mut Value,
+) -> Value {
+    unsafe {
+        if bound.is_null() {
+            object::error("SystemError", "NULL receiver output");
+            return std::ptr::null_mut();
+        }
+        *bound = std::ptr::null_mut();
+        if object::has_error() {
+            return std::ptr::null_mut();
+        }
+        if let (Some(super_layout), Some(thisclass_layout), Some((layout, true, owner))) = (
+            layout_of_class(super_callee),
+            layout_of_class(thisclass),
+            layout(receiver),
+        ) {
+            if super_layout.name == "super"
+                && super_layout.fields.len() == 2
+                && super_layout.fields[0] == "__thisclass__"
+                && super_layout.fields[1] == "__self__"
+                && super_layout.subclasses.is_empty()
+            {
+                let mut cache_key = layout.id ^ thisclass_layout.id.rotate_left(32);
+                if cache_key == 0 {
+                    cache_key = 1;
+                }
+                let encoded = match cached_key(cache_key, cache) {
+                    Some(encoded) => Some(encoded),
+                    None => name(attribute).and_then(|attr| {
+                        encoded_super(layout, owner, thisclass, attr, cache_key, cache)
+                    }),
+                };
+                if object::has_error() {
+                    return std::ptr::null_mut();
+                }
+                if let Some(encoded) = encoded {
+                    let index = encoded >> SHIFT;
+                    let kind = encoded & KIND;
+                    let value =
+                        class_attribute(layout, index, kind, receiver, true, owner, bound);
+                    if value.is_null() {
+                        if !object::has_error() {
+                            object::error(
+                                "SystemError",
+                                "attribute lookup returned NULL without an error",
+                            );
+                        }
+                        return value;
+                    }
+                    if bound.is_null() && !object::is_fixnum(value) {
+                        if let Data::BoundMethod {
+                            receiver: bm_recv,
+                            method,
+                        } = &(*value).data
+                        {
+                            *bound = object::retain(*bm_recv);
+                            let callable = object::retain(*method);
+                            object::release(value);
+                            return callable;
+                        }
+                    }
+                    return value;
+                }
+            }
+        }
+        let super_obj = object::call(super_callee, &[thisclass, receiver]);
+        if super_obj.is_null() {
+            return std::ptr::null_mut();
+        }
+        let result = resolve(super_obj, attribute, std::ptr::null_mut(), bound);
+        object::release(super_obj);
+        result
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_call_resolved(
     callable: Value,
     receiver: Value,
@@ -2191,6 +2322,19 @@ unsafe extern "C" fn class_lookup_default(_: Value, args: Value) -> Value {
         let Some(attribute) = text_argument(attribute) else { return std::ptr::null_mut(); };
         let value = layout.method(&attribute);
         object::retain(if value.is_null() { default } else { value })
+    }
+}
+
+unsafe extern "C" fn class_own_lookup_default(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class, attribute, default]) = operands(args) else { return std::ptr::null_mut(); };
+        let Some(layout) = class_layout(class) else { return std::ptr::null_mut(); };
+        let Some(attribute) = text_argument(attribute) else { return std::ptr::null_mut(); };
+        let value = match layout.attribute_lookup.get(&attribute) {
+            Some(&index) => layout.attributes[index].1,
+            None => default,
+        };
+        object::retain(value)
     }
 }
 
@@ -3111,9 +3255,10 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 60] = [
+        let exports: [(&str, object::Native); 61] = [
             ("delete_instance_field", delete_instance_field),
             ("class_lookup_default", class_lookup_default),
+            ("class_own_lookup_default", class_own_lookup_default),
             ("code_metadata", code_metadata),
             ("code_cache", code_cache),
             ("set_code_cache", set_code_cache),

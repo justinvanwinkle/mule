@@ -158,6 +158,7 @@ declare i32 @mule_native_overflow()
 declare ptr @mule_get_attr_cached(ptr, ptr, ptr)
 declare i32 @mule_set_attr_cached(ptr, ptr, ptr, ptr)
 declare ptr @mule_resolve_method(ptr, ptr, ptr, ptr)
+declare ptr @mule_resolve_super_method(ptr, ptr, ptr, ptr, ptr, ptr)
 declare ptr @mule_call_resolved(ptr, ptr, i64, ptr)
 declare i32 @mule_check_args(ptr, i32)
 declare i32 @mule_assert_integer(ptr, ptr, ptr, ptr)
@@ -169,6 +170,7 @@ declare void @mule_release(ptr)
 declare i32 @mule_enter_frame()
 declare void @mule_leave_frame()
 declare i32 @mule_function_matches(ptr, ptr, ptr)
+declare ptr @mule_method_entry(ptr, ptr)
 declare i32 @mule_run_protocols(ptr, ptr)
 declare i32 @mule_range_storage(ptr, ptr)
 declare ptr @mule_protocol_globals()
@@ -325,7 +327,9 @@ class Program:
     # Units the main unit initializes before its own, in order.
     dependencies: list[str] = field(default_factory=list)
     # Other units' method definitions, predictions after this unit's own.
-    external_methods: dict[str, ForeignFunction] = field(default_factory=dict)
+    external_methods: dict[str, tuple[ForeignFunction, ...]] = field(
+        default_factory=dict
+    )
     # A module unit's own import: its initializer belongs to this unit and
     # initializes the unit before running the module body.
     module_import: ImportInfo | None = None
@@ -484,7 +488,9 @@ class _NestedTuples(ast.Visitor):
 class _ModuleCollector(NodeVisitor):
     """Collects native method predictions and imported modules in first-use order."""
 
-    def __init__(self, method_targets: dict[str, Function], imports: dict[str, object]):
+    def __init__(
+        self, method_targets: dict[str, list[Function]], imports: dict[str, object]
+    ):
         self.method_targets = method_targets
         self.imports = imports
         self.classes: dict[str, dict[str, Lambda]] = {}
@@ -496,7 +502,9 @@ class _ModuleCollector(NodeVisitor):
                 node.accept(self)
         for methods in self.classes.values():
             for method_name, target in methods.items():
-                self.method_targets.setdefault(method_name, target)
+                targets = self.method_targets.setdefault(method_name, [])
+                if target not in targets:
+                    targets.append(target)
 
     def visit_Combination(self, node):
         if node.kind is not CallKind.KNOWN:
@@ -547,6 +555,9 @@ class ModuleGenerator:
         self.data: dict[bytes, str] = {}
         self.tuple_constants: dict[tuple, TupleConstant] = {}
         self.float_constants: dict[bytes, tuple[str, str]] = {}
+        self.text_constants: dict[bytes, tuple[str, str]] = {}
+        self.bytes_constants: dict[bytes, tuple[str, str]] = {}
+        self.bigint_constants: dict[int, tuple[str, str]] = {}
         self.protocol_helpers: dict[str, str] = {}
         self.auxiliary: list[str] = []
         # Each runtime namespace's static cells (the runtime's ``GlobalCell``),
@@ -567,7 +578,7 @@ class ModuleGenerator:
         # Namespaces whose cells a linkonce_odr initializer uses, which must
         # then be shared definitions too.
         self.shared_namespaces: set[str] = set()
-        self.method_targets: dict[str, Function] = {}
+        self.method_targets: dict[str, list[Function]] = {}
         self.imports: dict[str, object] = {}
         if program.module_import is not None:
             self.imports[program.module_import.module_name] = program.module_import
@@ -575,8 +586,11 @@ class ModuleGenerator:
         for lambda_ in lambdas:
             collector.collect(lambda_)
         # Other units' methods are predictions too, after this unit's own.
-        for method_name, target in program.external_methods.items():
-            self.method_targets.setdefault(method_name, target)
+        for method_name, external_targets in program.external_methods.items():
+            targets = self.method_targets.setdefault(method_name, [])
+            for target in external_targets:
+                if target not in targets:
+                    targets.append(target)
 
     def bodies_by_name(self, name: str) -> str:
         return self.bodies[self.by_name[name]]
@@ -846,7 +860,7 @@ class ModuleGenerator:
 
     def attribute_cache(self) -> str:
         name = f"@mule.cache.{len(self.auxiliary)}"
-        self.auxiliary.append(f"{name} = internal global [3 x i64] zeroinitializer")
+        self.auxiliary.append(f"{name} = internal global [27 x i64] zeroinitializer")
         return name
 
     def names(self, names: tuple[str, ...]) -> str:
@@ -881,6 +895,49 @@ class ModuleGenerator:
             f"double {vops.double_constant(literal.value)})"
         )
         self.float_constants[key] = slot, entry
+        self.auxiliary.append(f"{slot} = internal global ptr null")
+        return entry
+
+    def constant_text(self, literal: ast.TextLiteral) -> str:
+        """A unit-owned immutable str, pooled by its WTF-8 byte representation."""
+        encoded = literal.value.encode("utf-8", "surrogatepass")
+        existing = self.text_constants.get(encoded)
+        if existing is not None:
+            return existing[1]
+        index = len(self.text_constants)
+        slot = f"@mule.literal.text.slot.{index}"
+        data = self.literal_data(encoded)
+        entry = (
+            f"call ptr @mule.cached.text(ptr {slot}, ptr {data}, i64 {len(encoded)})"
+        )
+        self.text_constants[encoded] = slot, entry
+        self.auxiliary.append(f"{slot} = internal global ptr null")
+        return entry
+
+    def constant_bytes(self, literal: ast.BytesLiteral) -> str:
+        """A unit-owned immutable bytes object, pooled by its byte sequence."""
+        value = literal.value
+        existing = self.bytes_constants.get(value)
+        if existing is not None:
+            return existing[1]
+        index = len(self.bytes_constants)
+        slot = f"@mule.literal.bytes.slot.{index}"
+        data = self.literal_data(value)
+        entry = f"call ptr @mule.cached.bytes(ptr {slot}, ptr {data}, i64 {len(value)})"
+        self.bytes_constants[value] = slot, entry
+        self.auxiliary.append(f"{slot} = internal global ptr null")
+        return entry
+
+    def constant_bigint(self, value: int) -> str:
+        """A unit-owned immutable arbitrary-precision int literal."""
+        existing = self.bigint_constants.get(value)
+        if existing is not None:
+            return existing[1]
+        index = len(self.bigint_constants)
+        slot = f"@mule.literal.int.slot.{index}"
+        text = self.text(vops.decimal(value))
+        entry = f"call ptr @mule.cached.int(ptr {slot}, ptr {text})"
+        self.bigint_constants[value] = slot, entry
         self.auxiliary.append(f"{slot} = internal global ptr null")
         return entry
 
@@ -1260,102 +1317,126 @@ class ModuleGenerator:
         return symbol
 
     def method_call_helper(
-        self, function: Function, keywords: tuple[str | None, ...], arity: int
+        self,
+        functions: tuple[Function, ...],
+        keywords: tuple[str | None, ...],
+        arity: int,
     ) -> str:
-        key = ("$method.direct", function, keywords, arity)
+        key = ("$method.direct", functions, keywords, arity)
         existing = self.protocol_helpers.get(key)
         if existing is not None:
             return existing
         index = len(self.protocol_helpers)
-        symbol = _symbol(f"mule.method.{function.name}.{arity}.{index}")
+        symbol = _symbol(f"mule.method.{functions[0].name}.{arity}.{index}")
         self.protocol_helpers[key] = symbol
         fallback_helper = (
             self.keyword_call_helper(keywords, resolved=True)
             if keywords
             else self.resolved_call_helper(arity)
         )
-        order = function.call_order(keywords, arity, receiver=True)
         params = [
-            "ptr %globals",
             "ptr %callable",
             "ptr %receiver",
             *(f"ptr %arg.{i}" for i in range(arity)),
         ]
-        fallback_args = ", ".join(
-            [
-                "ptr %callable",
-                "ptr %receiver",
-                *(f"ptr %arg.{i}" for i in range(arity)),
-            ]
-        )
+        fallback_args = ", ".join(params)
         lines = [
             f"define internal ptr {symbol}({', '.join(params)}) {{",
             "entry:",
-            f"  %matched = call i32 @mule_function_matches(ptr %callable, ptr {self.functions[function]}, ptr %globals)",
-            "  %identity = icmp ne i32 %matched, 0",
+            "  %fn.globals.slot = alloca ptr",
             "  %bound = icmp ne ptr %receiver, null",
-            "  %valid = and i1 %identity, %bound",
-            "  br i1 %valid, label %direct, label %fallback",
-            "direct:",
+            "  br i1 %bound, label %resolve, label %fallback",
+            "resolve:",
+            "  %entry.fn = call ptr @mule_method_entry(ptr %callable, ptr %fn.globals.slot)",
+            "  br label %check.0",
         ]
-        if function.name == "mule_sequences_mule_fn_ListStorage.append" and order == (
-            -1,
-            0,
-        ):
+        need_failed_block = False
+        for candidate_index, function in enumerate(functions):
+            order = function.call_order(keywords, arity, receiver=True)
+            next_label = (
+                f"check.{candidate_index + 1}"
+                if candidate_index + 1 < len(functions)
+                else "fallback"
+            )
+            direct_label = f"direct.{candidate_index}"
             lines.extend(
                 [
-                    "  %direct.res = call ptr @mule_storage_append(ptr %receiver, ptr %arg.0)",
-                    "  call void @mule.fast.release(ptr %receiver)",
-                    "  call void @mule.fast.release(ptr %arg.0)",
-                    "  ret ptr %direct.res",
-                    "fallback:",
-                    f"  %fallback.res = call ptr {fallback_helper}({fallback_args})",
-                    "  ret ptr %fallback.res",
-                    "}",
+                    f"check.{candidate_index}:",
+                    f"  %match.{candidate_index} = icmp eq ptr %entry.fn, {self.functions[function]}",
+                    f"  br i1 %match.{candidate_index}, label %{direct_label}, label %{next_label}",
+                    f"{direct_label}:",
                 ]
             )
-            self.auxiliary.append("\n".join(lines))
-            return symbol
-        lines.extend(
-            [
-                "  %frame = call i32 @mule_enter_frame()",
-                "  %rejected = icmp slt i32 %frame, 0",
-                "  br i1 %rejected, label %failed, label %entered",
-                "failed:",
-                "  call void @mule.fast.release(ptr %receiver)",
-            ]
-        )
-        for i in range(arity):
-            lines.append(f"  call void @mule.fast.release(ptr %arg.{i})")
-        lines.extend(["  ret ptr null", "entered:"])
-        owned = []
-        for pos, idx in enumerate(order):
-            if idx == -1:
-                owned.append("%receiver")
-            elif idx >= 0:
-                owned.append(f"%arg.{idx}")
-            else:
-                lines.append(
-                    f"  %def.{pos} = call ptr @mule_function_default(ptr %callable, i32 {-2 - idx})"
+            if function.name == "mule_sequences_mule_fn_ListStorage.append" and order == (
+                -1,
+                0,
+            ):
+                lines.extend(
+                    [
+                        f"  %append.res.{candidate_index} = call ptr @mule_storage_append(ptr %receiver, ptr %arg.0)",
+                        "  call void @mule.fast.release(ptr %receiver)",
+                        "  call void @mule.fast.release(ptr %arg.0)",
+                        f"  ret ptr %append.res.{candidate_index}",
+                    ]
                 )
-                lines.append(
-                    f"  %own.{pos} = call ptr @mule.fast.retain(ptr %def.{pos})"
-                )
-                owned.append(f"%own.{pos}")
-        closure_ops = []
-        if self.closure_of(function):
-            lines.append(
-                "  %closure = call ptr @mule_function_closure_of(ptr %callable)"
+                continue
+            need_failed_block = True
+            entered_label = f"entered.{candidate_index}"
+            lines.extend(
+                [
+                    f"  %frame.{candidate_index} = call i32 @mule_enter_frame()",
+                    f"  %rejected.{candidate_index} = icmp slt i32 %frame.{candidate_index}, 0",
+                    f"  br i1 %rejected.{candidate_index}, label %failed, label %{entered_label}",
+                    f"{entered_label}:",
+                    f"  %globals.{candidate_index} = load ptr, ptr %fn.globals.slot",
+                ]
             )
-            closure_ops.append("ptr %closure")
-        body_args = ", ".join(
-            ["ptr %globals", *closure_ops, *(f"ptr {v}" for v in owned)]
-        )
+            owned = []
+            for pos, idx in enumerate(order):
+                if idx == -1:
+                    owned.append("%receiver")
+                elif idx >= 0:
+                    owned.append(f"%arg.{idx}")
+                else:
+                    lines.append(
+                        f"  %def.{candidate_index}.{pos} = call ptr @mule_function_default(ptr %callable, i32 {-2 - idx})"
+                    )
+                    lines.append(
+                        f"  %own.{candidate_index}.{pos} = call ptr @mule.fast.retain(ptr %def.{candidate_index}.{pos})"
+                    )
+                    owned.append(f"%own.{candidate_index}.{pos}")
+            closure_ops = []
+            if self.closure_of(function):
+                lines.append(
+                    f"  %closure.{candidate_index} = call ptr @mule_function_closure_of(ptr %callable)"
+                )
+                closure_ops.append(f"ptr %closure.{candidate_index}")
+            body_args = ", ".join(
+                [
+                    f"ptr %globals.{candidate_index}",
+                    *closure_ops,
+                    *(f"ptr {v}" for v in owned),
+                ]
+            )
+            lines.extend(
+                [
+                    f"  %direct.res.{candidate_index} = call ptr {self.bodies[function]}({body_args})",
+                    "  call void @mule_leave_frame()",
+                    f"  ret ptr %direct.res.{candidate_index}",
+                ]
+            )
+        if need_failed_block:
+            lines.extend(
+                [
+                    "failed:",
+                    "  call void @mule.fast.release(ptr %receiver)",
+                ]
+            )
+            for i in range(arity):
+                lines.append(f"  call void @mule.fast.release(ptr %arg.{i})")
+            lines.append("  ret ptr null")
         lines.extend(
             [
-                f"  %direct.res = call ptr {self.bodies[function]}({body_args})",
-                "  call void @mule_leave_frame()",
-                "  ret ptr %direct.res",
                 "fallback:",
                 f"  %fallback.res = call ptr {fallback_helper}({fallback_args})",
                 "  ret ptr %fallback.res",
@@ -1727,6 +1808,18 @@ class ModuleGenerator:
             + [
                 (f"%float.root.{index}", slot)
                 for index, (slot, _) in enumerate(self.float_constants.values())
+            ]
+            + [
+                (f"%text.root.{index}", slot)
+                for index, (slot, _) in enumerate(self.text_constants.values())
+            ]
+            + [
+                (f"%bytes.root.{index}", slot)
+                for index, (slot, _) in enumerate(self.bytes_constants.values())
+            ]
+            + [
+                (f"%int.root.{index}", slot)
+                for index, (slot, _) in enumerate(self.bigint_constants.values())
             ]
         )
         finalize = (
@@ -2167,9 +2260,7 @@ def _pack_slot_tns(component, candidates, fixed, prefix: str) -> list[list]:
         gen, kill, mid = set(), set(), set()
         for vop in block.vops:
             touched = {
-                ref.tn
-                for ref in (*vop.args, *vop.results)
-                if ref.tn in candidate_set
+                ref.tn for ref in (*vop.args, *vop.results) if ref.tn in candidate_set
             }
             for tn in touched:
                 if tn not in first_step:
@@ -2284,7 +2375,6 @@ def _pack_slot_tns(component, candidates, fixed, prefix: str) -> list[list]:
             groups.append([tn])
             tn.slot = f"{prefix}.{group_idx}"
     return groups
-
 
 
 class _HelperBuilder:
@@ -2504,9 +2594,7 @@ class FunctionGenerator:
         self.local_slot_groups = _pack_slot_tns(
             component, packable_locals, fixed_locals, "%local"
         )
-        self.value_slot_groups = _pack_slot_tns(
-            component, self.value_tns, (), "%value"
-        )
+        self.value_slot_groups = _pack_slot_tns(component, self.value_tns, (), "%value")
         self.unwind_slot_groups = [
             *self.local_slot_groups[len(fixed_locals) :],
             *self.value_slot_groups,
@@ -3020,15 +3108,14 @@ class FunctionGenerator:
             self.immortal_values.add(result)
             return result
         module = self.module
-        target = module.method_targets.get(info.name)
-        function = (
+        candidates = module.method_targets.get(info.name, ())
+        functions = tuple(
             target
-            if target is not None
-            and target.call_order(info.keywords, len(arguments), receiver=True)
+            for target in candidates
+            if target.call_order(info.keywords, len(arguments), receiver=True)
             is not None
-            else None
         )
-        if function is None:
+        if not functions:
             helper = (
                 module.keyword_call_helper(info.keywords, resolved=True)
                 if info.keywords
@@ -3042,10 +3129,9 @@ class FunctionGenerator:
                 ]
             )
             return self.operation(f"call ptr {helper}({operands})")
-        helper = module.method_call_helper(function, info.keywords, len(arguments))
+        helper = module.method_call_helper(functions, info.keywords, len(arguments))
         operands = ", ".join(
             [
-                "ptr %globals",
                 f"ptr {callable_value}",
                 f"ptr {receiver}",
                 *(f"ptr {value}" for value in arguments),
@@ -3209,9 +3295,7 @@ class FunctionGenerator:
             if target is None:
                 continue
             if handler_live is None:
-                unwind_tns = {
-                    tn for group in self.unwind_slot_groups for tn in group
-                }
+                unwind_tns = {tn for group in self.unwind_slot_groups for tn in group}
                 handler_live = _value_tns_live_in(self.component, unwind_tns)
             label = self.component.ir2_blocks[target].label
             self.lines.append("unwind." + label + ":")
@@ -3401,9 +3485,7 @@ class FunctionGenerator:
             for index, kind in enumerate(kinds)
             if kind == ast.ParameterKind.KEYWORD_ONLY
         )
-        required = sum(
-            index not in default_offsets for index in range(positional)
-        )
+        required = sum(index not in default_offsets for index in range(positional))
         lines = [
             f"define ptr {module.functions[lambda_]}(ptr %globals, ptr %args) {{",
             "entry:",

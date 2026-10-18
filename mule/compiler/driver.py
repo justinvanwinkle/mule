@@ -80,7 +80,7 @@ class BuiltinsInterface:
     builtins."""
 
     functions: dict[str, ForeignFunction]
-    methods: dict[str, str]
+    methods: dict[str, list[str]]
     sequence_functions: dict[str, str]
     entries: dict[str, str | None]
     modules: dict[str, CompiledModule]
@@ -167,6 +167,25 @@ def compile_builtins() -> tuple[Program, dict[str, CompiledModule]]:
     return unit, modules
 
 
+_BUILTIN_METHOD_PRIORITY = (
+    "fn_ListStorage.",
+    "fn_TextStorage.",
+    "fn_dict.",
+    "fn_set.",
+    "fn__SetBase.",
+    "fn_TupleStorage.",
+    "fn_BytesStorage.",
+    "fn_bytearray.",
+)
+
+
+def _builtin_method_rank(target_name: str) -> int:
+    for index, marker in enumerate(_BUILTIN_METHOD_PRIORITY):
+        if marker in target_name:
+            return index
+    return len(_BUILTIN_METHOD_PRIORITY)
+
+
 def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
     functions = {
         lambda_.name: ForeignFunction(
@@ -174,11 +193,15 @@ def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
         )
         for lambda_ in unit.lambdas
     }
-    methods = {}
+    methods: dict[str, list[str]] = {}
     for lambda_ in unit.lambdas:
         for definitions in class_method_definitions(lambda_).values():
             for method_name, target in definitions.items():
-                methods.setdefault(method_name, target.name)
+                targets = methods.setdefault(method_name, [])
+                if target.name not in targets:
+                    targets.append(target.name)
+    for targets in methods.values():
+        targets.sort(key=_builtin_method_rank)
 
     def name(lambda_):
         return None if lambda_ is None else lambda_.name
@@ -332,7 +355,8 @@ def compile_unit(
         builtin_names=frozenset(interface.builtins),
         external=list(functions.values()),
         external_methods={
-            method: functions[name] for method, name in interface.methods.items()
+            method: tuple(functions[name] for name in names)
+            for method, names in interface.methods.items()
         },
         unit=unit_name,
         dependencies=["builtins"],

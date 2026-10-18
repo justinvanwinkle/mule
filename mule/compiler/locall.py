@@ -108,6 +108,9 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         if node.args and node.args[0] is lvar and name in _NON_INTEGER_FIRST_OPERAND:
             self.disqualified = True
             return
+        if name == "%resolve_super_method" and lvar in node.args:
+            self.disqualified = True
+            return
         if (
             len(node.args) > 1
             and node.args[1] is lvar

@@ -13,8 +13,7 @@ storage operations; the rules here are ordinary compiled Python.
 from _mule_native import bind_attribute
 from _mule_native import bound_method
 from _mule_native import class_mro
-from _mule_native import class_own_names
-from _mule_native import class_lookup
+from _mule_native import class_own_lookup_default
 from _mule_native import class_of
 from _mule_native import instance_field
 from _mule_native import is_class
@@ -23,6 +22,10 @@ from _mule_native import type_of
 
 
 _metadata_ready = False
+
+
+def _missing():
+    pass
 
 
 def _enable_metadata():
@@ -141,8 +144,8 @@ class super:
             # Only a class's own attributes count here: an attribute a
             # class merely inherits belongs to a later MRO entry, and
             # returning it now would skip that entry's own definition.
-            if name in class_own_names(order[index]):
-                value = class_lookup(order[index], name)
+            value = class_own_lookup_default(order[index], name, _missing)
+            if value is not _missing:
                 return bind_attribute(value, instance, owner)
             index += 1
         raise AttributeError("'super' object has no attribute '" + name + "'")

@@ -1741,6 +1741,28 @@ pub unsafe extern "C" fn mule_function_matches(
     }
 }
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_method_entry(
+    callable: Value,
+    globals_out: *mut Value,
+) -> *mut c_void {
+    unsafe {
+        if callable.is_null() || is_fixnum(callable) {
+            return std::ptr::null_mut();
+        }
+        match &(*callable).data {
+            Data::Function {
+                entry,
+                globals: captured,
+                ..
+            } if !captured.is_null() => {
+                *globals_out = *captured;
+                *entry as *const () as *mut c_void
+            }
+            _ => std::ptr::null_mut(),
+        }
+    }
+}
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_namespace() -> Value {
     unsafe { namespace() }
 }

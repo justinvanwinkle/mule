@@ -724,6 +724,33 @@ def resolve_method(gen, vop):
     gen.refine(method.tn, value)
 
 
+@define_vop(
+    "resolve-super-method",
+    translate=fndb.RESOLVE_SUPER_METHOD,
+    args=(OBJECT, OBJECT, OBJECT),
+    results=(OBJECT, OBJECT),
+)
+def resolve_super_method(gen, vop):
+    super_callee = gen.take(vop.args[0])
+    thisclass = gen.take(vop.args[1])
+    receiver = gen.take(vop.args[2])
+    method, bound = vop.results
+    info = vop.codegen_info
+    out = gen.out_pointer()
+    value = gen.operation(
+        f"call ptr @mule_resolve_super_method(ptr {super_callee}, ptr {thisclass}, "
+        f"ptr {receiver}, ptr {gen.module.text(info.name)}, "
+        f"ptr {gen.module.attribute_cache()}, ptr {out})"
+    )
+    gen.publish(method, value)
+    gen.publish(bound, gen.operation(f"load ptr, ptr {out}"))
+    gen.release(super_callee)
+    gen.release(thisclass)
+    gen.release(receiver)
+    gen.check_pointer(value)
+    gen.refine(method.tn, value)
+
+
 @define_vop("call-resolved", translate=fndb.CALL_RESOLVED, results=(OBJECT,))
 def call_resolved(gen, vop):
     method, bound, *arguments = vop.args
@@ -1956,6 +1983,51 @@ ready:
   ret ptr %owned
 }
 
+define internal ptr @mule.cached.text(ptr %slot, ptr %data, i64 %length) {
+entry:
+  %cached = load ptr, ptr %slot
+  %present = icmp ne ptr %cached, null
+  br i1 %present, label %ready, label %build
+build:
+  %built = call ptr @mule_literal_text(ptr %data, i64 %length)
+  store ptr %built, ptr %slot
+  br label %ready
+ready:
+  %result = phi ptr [%cached, %entry], [%built, %build]
+  %owned = call ptr @mule_retain(ptr %result)
+  ret ptr %owned
+}
+
+define internal ptr @mule.cached.bytes(ptr %slot, ptr %data, i64 %length) {
+entry:
+  %cached = load ptr, ptr %slot
+  %present = icmp ne ptr %cached, null
+  br i1 %present, label %ready, label %build
+build:
+  %built = call ptr @mule_literal_bytes(ptr %data, i64 %length)
+  store ptr %built, ptr %slot
+  br label %ready
+ready:
+  %result = phi ptr [%cached, %entry], [%built, %build]
+  %owned = call ptr @mule_retain(ptr %result)
+  ret ptr %owned
+}
+
+define internal ptr @mule.cached.int(ptr %slot, ptr %text) {
+entry:
+  %cached = load ptr, ptr %slot
+  %present = icmp ne ptr %cached, null
+  br i1 %present, label %ready, label %build
+build:
+  %built = call ptr @mule_literal_int(ptr %text)
+  store ptr %built, ptr %slot
+  br label %ready
+ready:
+  %result = phi ptr [%cached, %entry], [%built, %build]
+  %owned = call ptr @mule_retain(ptr %result)
+  ret ptr %owned
+}
+
 define internal ptr @mule.cached.tuple(ptr %slot, i64 %count, ptr %items) {
 entry:
   %cached = load ptr, ptr %slot
@@ -2020,24 +2092,16 @@ class LiteralEmitter(ast.Visitor):
         if -(1 << 62) <= value < (1 << 62):
             tagged = ((value << 1) | 1) & ((1 << 64) - 1)
             return f"inttoptr i64 {tagged} to ptr"
-        return f"call ptr @mule_literal_int(ptr {self.module.text(decimal(value))})"
+        return self.module.constant_bigint(value)
 
     def visit_FloatLiteral(self, node: ast.FloatLiteral) -> str:
         return self.module.constant_float(node)
 
     def visit_TextLiteral(self, node: ast.TextLiteral) -> str:
-        encoded = node.value.encode("utf-8", "surrogatepass")
-        return (
-            f"call ptr @mule_literal_text(ptr {self.module.literal_data(encoded)}, "
-            f"i64 {len(encoded)})"
-        )
+        return self.module.constant_text(node)
 
     def visit_BytesLiteral(self, node: ast.BytesLiteral) -> str:
-        value = node.value
-        return (
-            f"call ptr @mule_literal_bytes(ptr {self.module.literal_data(value)}, "
-            f"i64 {len(value)})"
-        )
+        return self.module.constant_bytes(node)
 
     def visit_ComplexLiteral(self, node: ast.ComplexLiteral) -> str:
         return self.visit_Literal(node)

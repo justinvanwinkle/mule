@@ -4689,17 +4689,38 @@ class _CallTarget(ast.Visitor):
 
     def visit_Attribute(self, node):
         function = self.function
-        ctran, receiver = function.value(self.start, node.value)
-        following, resolved = Ctran(), Lvar()
-        function.known(
-            ctran,
-            following,
-            resolved,
-            fndb.RESOLVE_METHOD,
-            (receiver,),
-            node,
-            AttributeInfo(node.attribute, function.converter.location(node)),
-        )
+        super_name = node.value.accept(_SuperCallee(function))
+        if super_name is not None:
+            cell = function.class_cell()
+            ctran, callee = function.value(self.start, super_name)
+            following, owner = Ctran(), Lvar()
+            function.ref(ctran, following, owner, cell, node.value)
+            ctran, receiver = Ctran(), Lvar()
+            function.ref(
+                following, ctran, receiver, function.lambda_.vars[0], node.value
+            )
+            following, resolved = Ctran(), Lvar()
+            function.known(
+                ctran,
+                following,
+                resolved,
+                fndb.RESOLVE_SUPER_METHOD,
+                (callee, owner, receiver),
+                node,
+                AttributeInfo(node.attribute, function.converter.location(node)),
+            )
+        else:
+            ctran, receiver = function.value(self.start, node.value)
+            following, resolved = Ctran(), Lvar()
+            function.known(
+                ctran,
+                following,
+                resolved,
+                fndb.RESOLVE_METHOD,
+                (receiver,),
+                node,
+                AttributeInfo(node.attribute, function.converter.location(node)),
+            )
         function.known(
             following,
             self.next,
@@ -4709,6 +4730,37 @@ class _CallTarget(ast.Visitor):
             self.call,
             CallInfo(self.keywords(), None),
         )
+
+
+class _SuperCallee(ast.Visitor):
+    """The ``super`` name node of a zero-argument ``super()`` receiver in a method."""
+
+    def __init__(self, function):
+        self.function = function
+        self.in_call = False
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Call(self, node: ast.Call):
+        if self.in_call or node.arguments:
+            return None
+        self.in_call = True
+        return node.function.accept(self)
+
+    def visit_Name(self, node: ast.Name):
+        if not self.in_call or node.identifier != "super":
+            return None
+        function = self.function
+        parameters = function.lambda_.vars
+        if (
+            function.defining_class is None
+            or not parameters
+            or function.lambda_.signature.kinds[0] == ast.ParameterKind.VAR_POSITIONAL
+            or function.local("super")
+        ):
+            return None
+        return node
 
 
 def _documentation(statements):

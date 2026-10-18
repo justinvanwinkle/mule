@@ -81,6 +81,7 @@ _BORROWING_VOPS = frozenset(
         "getattr",
         "setattr",
         "resolve-method",
+        "resolve-super-method",
         "branch",
         "store-global",
         "build-list",
@@ -882,7 +883,7 @@ class _Converter(NodeVisitor):
         name = linked(node.fun_info, node, "known function").name
         if name == "%make_function":
             self.convert_make_function(node)
-        elif name == "%resolve_method":
+        elif name in ("%resolve_method", "%resolve_super_method"):
             self.convert_resolve_method(node)
         elif name == "%call_resolved":
             self.convert_call_resolved(node)
@@ -975,6 +976,8 @@ class _Converter(NodeVisitor):
             self.emit_discard(node, result)
 
     def is_exact_list_append(self, resolve: Combination, call) -> bool:
+        if resolve.fun_info is not fndb.RESOLVE_METHOD:
+            return False
         receiver = self.context.type_of(resolve.args[0].use())
         info = linked(resolve.info, resolve, "method info")
         return (
@@ -985,7 +988,7 @@ class _Converter(NodeVisitor):
         )
 
     def convert_resolve_method(self, node: Combination):
-        receiver = self.lvar_tn(node.args[0])
+        args = tuple(self.lvar_tn(arg) for arg in node.args)
         lvar = node.lvar
         if lvar is None:
             raise ValueError("a resolved method is always consumed by its call")
@@ -994,7 +997,7 @@ class _Converter(NodeVisitor):
         bound = self.component.tn(T, name="receiver")
         if exact_list_append:
             method.type = NoneType()
-            bound.type = receiver.type
+            bound.type = args[0].type
         else:
             bound.type = UNKNOWN
         linked(lvar.info, lvar, "LTN annotation").locs.append(bound)
@@ -1002,7 +1005,7 @@ class _Converter(NodeVisitor):
         self.emit(
             node.template,
             node,
-            args=(receiver,),
+            args=args,
             results=(method, bound),
             info=MethodResolution(info.name, exact_list_append),
         )

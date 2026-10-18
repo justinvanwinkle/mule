@@ -35,6 +35,7 @@ COMPARE = {
 GETATTR = defknown("%getattr", "call")
 SETATTR = defknown("%setattr", "call", "unsafe", result=False)
 RESOLVE_METHOD = defknown("%resolve_method", "call")
+RESOLVE_SUPER_METHOD = defknown("%resolve_super_method", "call")
 CALL_RESOLVED = defknown("%call_resolved", "call", "unsafe")
 
 # Definitions executed when a module runs.
@@ -157,6 +158,7 @@ __all__ = [
     "RANGE_PREPARE",
     "RERAISE",
     "RESOLVE_METHOD",
+    "RESOLVE_SUPER_METHOD",
     "RESUME_EXCEPTION",
     "SEQUENCE_AVAILABLE",
     "SETATTR",

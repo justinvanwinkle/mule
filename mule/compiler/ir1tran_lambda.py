@@ -450,6 +450,10 @@ class _Uses(_Writes):
             if node.args[0] in self.receivers:
                 self.require_initialized(node.info.location)
             return
+        if name == "%resolve_super_method":
+            if node.args[2] in self.receivers:
+                self.require_initialized(node.info.location)
+            return
         self.visit_Node(node)
 
     def visit_Return(self, node):
