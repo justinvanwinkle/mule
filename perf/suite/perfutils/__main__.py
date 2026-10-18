@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -304,8 +305,14 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--loops", type=int, default=1)
     parser.add_argument("--warmups", type=int, default=1)
-    parser.add_argument("--timeout", type=float, default=30)
+    parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--build-timeout", type=float, default=600)
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=4,
+        help="number of scenarios to build or measure concurrently (default: 4)",
+    )
     args = parser.parse_args()
     available = {path.stem: path for path in sorted(SUITE.glob("*.py"))}
     if args.action == "list":
@@ -325,8 +332,8 @@ def main():
     complete = not args.cases and args.config is not None and not args.no_history
     if len(set(cases)) != len(cases) or any(case not in available for case in cases):
         parser.error("select unique scenario names from the list command")
-    if args.samples < 1 or args.loops < 1 or args.warmups < 0:
-        parser.error("samples/loops must be positive; warmups must be nonnegative")
+    if args.samples < 1 or args.loops < 1 or args.warmups < 0 or args.jobs < 1:
+        parser.error("samples/loops/jobs must be positive; warmups must be nonnegative")
     if args.size is not None and args.size < 1:
         parser.error("size must be positive")
     if not all(
@@ -374,6 +381,7 @@ def main():
                 runtime["version_error"] = str(error)
     # All builds finish before any measurements, so compiler jobs never overlap timing.
     entries_by_case = {}
+    build_tasks = []
     for case_index, case in enumerate(cases):
         entries = []
         for runtime_index, runtime in enumerate(runtimes):
@@ -388,28 +396,33 @@ def main():
                 command = expand(runtime["build"], available[case], binary)
                 build = {"case": case, "runtime": runtime["name"], "command": command}
                 report["builds"].append(build)
-                print(f"Building {case}: {runtime['name']}", flush=True)
-                try:
-                    process, seconds = invoke(
-                        command, runtime["cwd"], args.build_timeout
-                    )
-                    if not binary.is_file():
-                        raise RunFailure(
-                            "build_failed", "build did not produce {binary}"
-                        )
-                    build.update(
-                        status="ok",
-                        seconds=seconds,
-                        binary_sha256=digest(binary),
-                        stdout=process.stdout,
-                        stderr=process.stderr,
-                    )
-                except RunFailure as error:
-                    entry["error"] = {"status": "build_failed", "error": str(error)}
-                    build.update(entry["error"])
+                build_tasks.append((case, runtime, binary, entry, build, command))
         entries_by_case[case] = entries
+
+    def _run_build(task):
+        case, runtime, binary, entry, build, command = task
+        print(f"Building {case}: {runtime['name']}", flush=True)
+        try:
+            process, seconds = invoke(command, runtime["cwd"], args.build_timeout)
+            if not binary.is_file():
+                raise RunFailure("build_failed", "build did not produce {binary}")
+            build.update(
+                status="ok",
+                seconds=seconds,
+                binary_sha256=digest(binary),
+                stdout=process.stdout,
+                stderr=process.stderr,
+            )
+        except RunFailure as error:
+            entry["error"] = {"status": "build_failed", "error": str(error)}
+            build.update(entry["error"])
+
+    if build_tasks:
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            list(pool.map(_run_build, build_tasks))
     write_report(report, output)
-    for case in cases:
+
+    def _measure_case(case):
         entries = entries_by_case[case]
         reference_entry = next(
             entry for entry in entries if entry["runtime"] == baseline
@@ -422,10 +435,14 @@ def main():
                 reference_entry["error"] = {"status": error.status, "error": str(error)}
         print(f"Measuring {case}", flush=True)
         rows = measure_group(case, entries, baseline, args, reference)
-        report["rows"].extend(rows)
-        write_report(report, output)
         for row in rows:
-            print(f"  {row['runtime']}: {row['status']}", flush=True)
+            print(f"  {case} / {row['runtime']}: {row['status']}", flush=True)
+        return rows
+
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        for rows in pool.map(_measure_case, cases):
+            report["rows"].extend(rows)
+            write_report(report, output)
     print(output / "index.html")
     if complete:
         history.record(report, args.history)

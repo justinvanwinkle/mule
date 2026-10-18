@@ -26,10 +26,20 @@ uv run python -m perfutils list
 
 | Script | Size means | Work measured |
 | --- | --- | --- |
-| `integer_accumulation.py` | Integers | Signed sum and data-dependent positive count |
+| `account_ledger.py` | Transactions | Polymorphic class hierarchy, `super()` calls, slot updates |
+| `closure_pipeline.py` | Values | Higher-order function pipelines with mutable lexical closure state |
+| `exception_validation.py` | Records | Nested validation raising and catching domain exceptions |
+| `expression_tree.py` | Evaluations | Recursive AST evaluation with polymorphic nodes and `dict` environments |
 | `graph_paths.py` | Vertices | Dijkstra traversal, heap operations, distance reduction |
-| `log_aggregation.py` | Log records | Parsing, numeric conversion, dictionary grouping |
 | `http_routing.py` | Requests | HTTP parsing, query extraction, handler dispatch, response accounting |
+| `integer_accumulation.py` | Integers | Signed sum and data-dependent positive count |
+| `interval_merging.py` | Intervals | Tuple sorting, interval coalescing, binary-search point queries |
+| `json_tokenizer.py` | Payloads | Handwritten character scanning, slicing, and `dict` aggregation |
+| `kv_record_parse.py` | Log lines | Delimited key-value string splitting, partitioning, and formatting |
+| `log_aggregation.py` | Log records | Parsing, numeric conversion, dictionary grouping |
+| `lru_simulation.py` | Operations | Doubly-linked list node mutation and `dict` LRU cache simulation |
+| `matrix_multiply.py` | Matrix dimension | Dense 2D matrix multiplication, transpose, and norm reduction |
+| `word_frequency.py` | Tokens | Dictionary frequency counting and bucketed list reduction |
 
 The HTTP case executes handlers in process. It deliberately covers bounded
 generated requests rather than a production parser; socket throughput,

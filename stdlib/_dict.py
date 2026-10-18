@@ -33,6 +33,7 @@ _DUMMY = -2
 _MINIMUM_SIZE = 8
 _MODULUS = 2305843009213693951
 _WORD = 0xFFFFFFFFFFFFFFFF
+_PERTURB_MASK = 0x3FFFFFFFFFFFFFFF
 _PRIME_1 = 11400714785074694791
 _PRIME_2 = 14029467366897019727
 _PRIME_5 = 2870177450012600261
@@ -124,7 +125,7 @@ class _Table:
         """The index-table slot for ``key`` and its entry, or -1 for none."""
         indices = self._indices
         mask = _storage_length(indices) - 1
-        perturb = code & _WORD
+        perturb = code & _PERTURB_MASK
         slot = perturb & mask
         while True:
             entry = indices[slot]
@@ -187,7 +188,7 @@ class _Table:
         self._hashes, self._keys, self._values = hashes, keys, values
         mask = len(self._indices) - 1
         for index in range(len(keys)):
-            perturb = hashes[index] & _WORD
+            perturb = hashes[index] & _PERTURB_MASK
             slot = perturb & mask
             while self._indices[slot] != _EMPTY:
                 perturb >>= 5
@@ -207,10 +208,7 @@ class _Table:
 
 
 def _empty_indices(size):
-    indices = []
-    for _ in range(size):
-        indices.append(_EMPTY)
-    return indices
+    return [_EMPTY] * size
 
 
 class _TableIterator:

@@ -11,10 +11,20 @@ from test.python_host import python_host
 
 SUITE = Path(__file__).resolve().parents[2] / "perf" / "suite"
 SCENARIOS = (
-    "integer_accumulation",
+    "account_ledger",
+    "closure_pipeline",
+    "exception_validation",
+    "expression_tree",
     "graph_paths",
-    "log_aggregation",
     "http_routing",
+    "integer_accumulation",
+    "interval_merging",
+    "json_tokenizer",
+    "kv_record_parse",
+    "log_aggregation",
+    "lru_simulation",
+    "matrix_multiply",
+    "word_frequency",
 )
 
 

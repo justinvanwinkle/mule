@@ -23,7 +23,7 @@ fn fnv(bytes: &[u8]) -> i64 {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    let hash = hash as i64;
+    let hash = (((hash ^ (hash >> 62)) as i64) << 1) >> 1;
     if hash == -1 { -2 } else { hash }
 }
 
@@ -101,7 +101,7 @@ unsafe extern "C" fn storage_hash(_: Value, args: Value) -> Value {
         }
         let hash = match &(*value).data {
             Data::None => NONE_HASH,
-            Data::Text(text, ..) => fnv(&text.to_wtf8()),
+            Data::Text(text, ..) => text.hash(),
             Data::Bytes(bytes, ..) => fnv(bytes),
             Data::Float(number, ..) if number.is_nan() => identity(value),
             Data::Float(number, ..) => double_hash(*number),
@@ -112,12 +112,12 @@ unsafe extern "C" fn storage_hash(_: Value, args: Value) -> Value {
 }
 
 unsafe fn integer(value: i64) -> Value {
-    unsafe { crate::numeric::integer_import_owned(crate::gmp::BigInt::from_i64(value)) }
+    unsafe { crate::numeric::integer_from_i64(value) }
 }
 
 fn identity(value: Value) -> i64 {
-    // CPython's default object hash: the address rotated by four bits.
-    (value as usize).rotate_right(4) as i64
+    // CPython's default object hash: the address rotated by four bits, masked to fixnum range.
+    (((value as usize).rotate_right(4) as i64) << 1) >> 1
 }
 
 unsafe extern "C" fn identity_hash(_: Value, args: Value) -> Value {

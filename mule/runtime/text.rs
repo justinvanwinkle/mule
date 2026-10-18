@@ -7,13 +7,37 @@
 //! Text algorithms are compiled Mule Python; this module only allocates,
 //! copies, and reads storage.
 use std::cmp::Ordering;
+use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Text {
+enum Kind {
     Latin1(Vec<u8>),
     Ucs2(Vec<u16>),
     Ucs4(Vec<u32>),
 }
+
+#[derive(Debug)]
+pub struct Text {
+    kind: Kind,
+    cached_hash: AtomicI64,
+}
+
+impl Clone for Text {
+    fn clone(&self) -> Self {
+        Self {
+            kind: self.kind.clone(),
+            cached_hash: AtomicI64::new(self.cached_hash.load(AtomicOrdering::Relaxed)),
+        }
+    }
+}
+
+impl PartialEq for Text {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl Eq for Text {}
 
 /// A storage request exceeded the address space or the allocator failed.
 #[derive(Debug)]
@@ -28,8 +52,15 @@ fn reserve<T>(length: usize) -> Result<Vec<T>, AllocationError> {
 }
 
 impl Text {
+    const fn from_kind(kind: Kind) -> Self {
+        Self {
+            kind,
+            cached_hash: AtomicI64::new(-1),
+        }
+    }
+
     pub const fn empty() -> Self {
-        Self::Latin1(Vec::new())
+        Self::from_kind(Kind::Latin1(Vec::new()))
     }
 
     /// Store validated codepoints (each at most U+10FFFF) at their canonical width.
@@ -38,22 +69,28 @@ impl Text {
     ) -> Result<Self, AllocationError> {
         let length = codes.len();
         let widest = codes.clone().max().unwrap_or(0);
-        Ok(if widest <= 0xff {
+        let kind = if widest <= 0xff {
             let mut values = reserve(length)?;
             values.extend(codes.map(|code| code as u8));
-            Self::Latin1(values)
+            Kind::Latin1(values)
         } else if widest <= 0xffff {
             let mut values = reserve(length)?;
             values.extend(codes.map(|code| code as u16));
-            Self::Ucs2(values)
+            Kind::Ucs2(values)
         } else {
             let mut values = reserve(length)?;
             values.extend(codes);
-            Self::Ucs4(values)
-        })
+            Kind::Ucs4(values)
+        };
+        Ok(Self::from_kind(kind))
     }
 
     pub fn from_rust_str(text: &str) -> Self {
+        if text.is_ascii() {
+            let mut values = reserve(text.len()).expect("decoded text already fits in memory");
+            values.extend_from_slice(text.as_bytes());
+            return Self::from_kind(Kind::Latin1(values));
+        }
         let codes: Vec<u32> = text.chars().map(u32::from).collect();
         Self::from_codepoints(codes.into_iter()).expect("decoded text already fits in memory")
     }
@@ -61,6 +98,11 @@ impl Text {
     /// Decode generalized UTF-8, which also encodes lone surrogates. Compiler
     /// literals use this form so that `"\ud800"` survives code generation.
     pub fn from_wtf8(data: &[u8]) -> Result<Self, &'static str> {
+        if data.is_ascii() {
+            let mut values = reserve(data.len()).map_err(|_| "text storage allocation failed")?;
+            values.extend_from_slice(data);
+            return Ok(Self::from_kind(Kind::Latin1(values)));
+        }
         let mut codes = Vec::with_capacity(data.len());
         let mut offset = 0;
         while offset < data.len() {
@@ -96,10 +138,10 @@ impl Text {
     }
 
     pub fn len(&self) -> usize {
-        match self {
-            Self::Latin1(values) => values.len(),
-            Self::Ucs2(values) => values.len(),
-            Self::Ucs4(values) => values.len(),
+        match &self.kind {
+            Kind::Latin1(values) => values.len(),
+            Kind::Ucs2(values) => values.len(),
+            Kind::Ucs4(values) => values.len(),
         }
     }
 
@@ -109,18 +151,18 @@ impl Text {
 
     /// Bytes per codepoint: 1, 2, or 4, as `PyUnicode_KIND` reports.
     pub fn kind(&self) -> usize {
-        match self {
-            Self::Latin1(_) => 1,
-            Self::Ucs2(_) => 2,
-            Self::Ucs4(_) => 4,
+        match &self.kind {
+            Kind::Latin1(_) => 1,
+            Kind::Ucs2(_) => 2,
+            Kind::Ucs4(_) => 4,
         }
     }
 
     pub fn get(&self, index: usize) -> Option<u32> {
-        match self {
-            Self::Latin1(values) => values.get(index).map(|code| u32::from(*code)),
-            Self::Ucs2(values) => values.get(index).map(|code| u32::from(*code)),
-            Self::Ucs4(values) => values.get(index).copied(),
+        match &self.kind {
+            Kind::Latin1(values) => values.get(index).map(|code| u32::from(*code)),
+            Kind::Ucs2(values) => values.get(index).map(|code| u32::from(*code)),
+            Kind::Ucs4(values) => values.get(index).copied(),
         }
     }
 
@@ -135,10 +177,10 @@ impl Text {
     pub fn slice(&self, start: usize, stop: usize) -> Result<Self, AllocationError> {
         let stop = stop.min(self.len());
         let start = start.min(stop);
-        if let Self::Latin1(values) = self {
+        if let Kind::Latin1(values) = &self.kind {
             let mut result = reserve(stop - start)?;
             result.extend_from_slice(&values[start..stop]);
-            return Ok(Self::Latin1(result));
+            return Ok(Self::from_kind(Kind::Latin1(result)));
         }
         let codes = Codepoints {
             text: self,
@@ -156,35 +198,43 @@ impl Text {
             length = length.checked_add(piece.len()).ok_or(AllocationError)?;
             kind = kind.max(piece.kind());
         }
-        Ok(match kind {
+        let storage = match kind {
             1 => {
                 let mut values = reserve(length)?;
                 for piece in pieces {
-                    if let Self::Latin1(piece) = piece {
+                    if let Kind::Latin1(piece) = &piece.kind {
                         values.extend_from_slice(piece);
                     }
                 }
-                Self::Latin1(values)
+                Kind::Latin1(values)
             }
             2 => {
                 let mut values = reserve(length)?;
                 for piece in pieces {
                     values.extend(piece.codepoints().map(|code| code as u16));
                 }
-                Self::Ucs2(values)
+                Kind::Ucs2(values)
             }
             _ => {
                 let mut values = reserve(length)?;
                 for piece in pieces {
                     values.extend(piece.codepoints());
                 }
-                Self::Ucs4(values)
+                Kind::Ucs4(values)
             }
-        })
+        };
+        Ok(Self::from_kind(storage))
     }
 
     /// Encode as UTF-8, failing at the first lone surrogate.
     pub fn to_utf8(&self) -> Result<Vec<u8>, usize> {
+        if let Kind::Latin1(values) = &self.kind {
+            if values.is_ascii() {
+                let mut bytes = Vec::with_capacity(values.len());
+                bytes.extend_from_slice(values);
+                return Ok(bytes);
+            }
+        }
         let mut bytes = Vec::with_capacity(self.len());
         for (index, code) in self.codepoints().enumerate() {
             let character = char::from_u32(code).ok_or(index)?;
@@ -196,11 +246,70 @@ impl Text {
 
     /// Encode as generalized UTF-8, preserving lone surrogates.
     pub fn to_wtf8(&self) -> Vec<u8> {
+        if let Kind::Latin1(values) = &self.kind {
+            if values.is_ascii() {
+                let mut bytes = Vec::with_capacity(values.len());
+                bytes.extend_from_slice(values);
+                return bytes;
+            }
+        }
         let mut bytes = Vec::with_capacity(self.len());
         for code in self.codepoints() {
             append_wtf8(&mut bytes, code);
         }
         bytes
+    }
+
+    /// Compute or return the cached 63-bit fixnum hash without allocating a temporary buffer.
+    pub fn hash(&self) -> i64 {
+        let cached = self.cached_hash.load(AtomicOrdering::Relaxed);
+        if cached != -1 {
+            return cached;
+        }
+        let computed = if self.is_empty() {
+            0
+        } else {
+            let mut state: u64 = 0xcbf2_9ce4_8422_2325;
+            let mut feed = |byte: u8| {
+                state ^= u64::from(byte);
+                state = state.wrapping_mul(0x0000_0100_0000_01b3);
+            };
+            match &self.kind {
+                Kind::Latin1(values) => {
+                    for &code in values {
+                        if code < 0x80 {
+                            feed(code);
+                        } else {
+                            feed(0xc0 | (code >> 6));
+                            feed(0x80 | (code & 0x3f));
+                        }
+                    }
+                }
+                _ => {
+                    for code in self.codepoints() {
+                        if code < 0x80 {
+                            feed(code as u8);
+                        } else if code < 0x800 {
+                            feed((0xc0 | (code >> 6)) as u8);
+                            feed((0x80 | (code & 0x3f)) as u8);
+                        } else if code < 0x10000 {
+                            feed((0xe0 | (code >> 12)) as u8);
+                            feed((0x80 | ((code >> 6) & 0x3f)) as u8);
+                            feed((0x80 | (code & 0x3f)) as u8);
+                        } else {
+                            feed((0xf0 | (code >> 18)) as u8);
+                            feed((0x80 | ((code >> 12) & 0x3f)) as u8);
+                            feed((0x80 | ((code >> 6) & 0x3f)) as u8);
+                            feed((0x80 | (code & 0x3f)) as u8);
+                        }
+                    }
+                }
+            }
+            let folded = (((state ^ (state >> 62)) as i64) << 1) >> 1;
+            if folded == -1 { -2 } else { folded }
+        };
+        self.cached_hash.store(computed, AtomicOrdering::Relaxed);
+        computed
     }
 
     /// A Rust string for identifiers and messages; `None` with surrogates.
@@ -214,8 +323,8 @@ impl Text {
 impl Ord for Text {
     /// Lexicographic codepoint order, as Python compares `str`.
     fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (Self::Latin1(left), Self::Latin1(right)) => left.cmp(right),
+        match (&self.kind, &other.kind) {
+            (Kind::Latin1(left), Kind::Latin1(right)) => left.cmp(right),
             _ => self.codepoints().cmp(other.codepoints()),
         }
     }

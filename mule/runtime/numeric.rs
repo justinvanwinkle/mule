@@ -83,6 +83,14 @@ pub unsafe fn integer_from_usize(value: usize) -> Value {
     }
 }
 
+pub unsafe fn integer_from_i64(value: i64) -> Value {
+    if (MIN..=MAX).contains(&value) {
+        object::small(value)
+    } else {
+        unsafe { integer_import_owned(BigInt::from_i64(value)) }
+    }
+}
+
 /// Transfer a freshly computed GMP integer into its runtime box without copying.
 pub unsafe fn integer_import_owned(integer: BigInt) -> Value {
     if let Some(value) = integer.to_i64() {
