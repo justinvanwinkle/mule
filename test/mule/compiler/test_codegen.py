@@ -5,6 +5,7 @@ import struct
 import pytest
 
 from mule import ast
+from mule.compiler import emit_llvm
 from mule.compiler.codegen import _ConstantKey
 from test.mule.compiler.test_native import run_native
 
@@ -92,3 +93,63 @@ def test_moved_temporaries_transfer_references_once(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "True\n"
+
+
+def test_text_char_index_and_compare_fusion_emits_codepoint_getitem_and_icmp():
+    llvm = emit_llvm(
+        "def scan(text):\n"
+        " i = 0\n"
+        " n = len(text)\n"
+        " count = 0\n"
+        " while i < n:\n"
+        "  ch = text[i]\n"
+        "  if ch == '\"' or ch == '[' or ch == ',':\n"
+        "   count += 1\n"
+        "  elif text[i] == ' ':\n"
+        "   count += 2\n"
+        "  elif '0' <= text[i] <= '9':\n"
+        "   count += 3\n"
+        "  i += 1\n"
+        " return count\n"
+        "scan('\"[ 5,')\n",
+        "scan.py",
+    )
+    body = llvm.split('define internal ptr @"mule_fn_scan.spec.0"', 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    assert "@mule_text_codepoint_getitem(" in body
+    assert "icmp eq i64" in body
+    assert "icmp sle i64" in body
+    assert "@mule.fast.getitem(" not in body
+    assert "@mule_compare(" not in body
+
+
+def test_text_char_index_and_compare_fusion_preserves_semantics(tmp_path):
+    result = run_native(
+        tmp_path,
+        "def check(text: str, i: int):\n"
+        " ch = text[i]\n"
+        " is_quote = ch == '\"' or ch == '['\n"
+        " is_space = text[i] == ' '\n"
+        " is_digit = '0' <= text[i] <= '9'\n"
+        " is_greek = 'α' <= text[i] <= 'ω'\n"
+        " return is_quote, is_space, is_digit, is_greek\n"
+        "print(check('\" 5β', 0))\n"
+        "print(check('\" 5β', 1))\n"
+        "print(check('\" 5β', -2))\n"
+        "print(check('\" 5β', -1))\n"
+        "for bad in (4, -5):\n"
+        " try:\n"
+        "  check('\" 5β', bad)\n"
+        " except IndexError as exc:\n"
+        "  print(type(exc).__name__, exc)\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "(True, False, False, False)\n"
+        "(False, True, False, False)\n"
+        "(False, False, True, False)\n"
+        "(False, False, False, True)\n"
+        "IndexError string index out of range\n"
+        "IndexError string index out of range\n"
+    )

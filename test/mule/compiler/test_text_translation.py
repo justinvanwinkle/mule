@@ -1,6 +1,56 @@
 """Translation table construction preserves Python's strings and validation."""
 
+from mule.compiler import emit_llvm
 from test.mule.compiler.test_exception_groups import compare
+
+
+def test_exact_str_find_emits_mule_text_find_and_borrows_receiver():
+    llvm = emit_llvm(
+        """
+def search(text: str, needle: str, pos: int) -> int:
+    a = text.find(needle)
+    b = text.find(needle, pos)
+    c = text.find(needle, pos, pos + 10)
+    d = text.rfind(needle, None, pos)
+    return a + b + c + d
+
+print(search("hello world", "o", 2))
+"""
+    )
+    spec_start = llvm.index('define internal ptr @"mule_fn_search.spec.0"(')
+    spec_end = llvm.index("}", spec_start)
+    spec_body = llvm[spec_start:spec_end]
+    assert spec_body.count("call ptr @mule_text_find(") == 4
+    assert "@mule_resolve_method" not in spec_body
+
+
+def test_str_find_and_rfind_edge_cases(tmp_path):
+    result = compare(
+        tmp_path,
+        """
+def check(s: str, sub: str):
+    results = [
+        s.find(sub),
+        s.rfind(sub),
+        s.find(sub, 0),
+        s.rfind(sub, 0),
+        s.find(sub, None, None),
+        s.rfind(sub, None, None),
+    ]
+    for start in (-10, -3, -1, 0, 1, 2, 5, 10):
+        results.append(s.find(sub, start))
+        results.append(s.rfind(sub, start))
+        for end in (-10, -3, -1, 0, 1, 2, 5, 10):
+            results.append(s.find(sub, start, end))
+            results.append(s.rfind(sub, start, end))
+    return results
+
+for text in ("", "a", "aaaaa", "abcdeabcde", "héllo wörld héllo", "😀🐍😀🐍x"):
+    for sub in ("", "a", "abc", "de", "ö", "hé", "🐍", "😀🐍", "missing", "😀🐍😀🐍xyz"):
+        print(check(text, sub))
+""",
+    )
+    assert result.stderr == ""
 
 
 def test_maketrans_arbitrary_values_deletion_unicode_and_validation(tmp_path):

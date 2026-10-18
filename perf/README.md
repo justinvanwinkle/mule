@@ -1,20 +1,23 @@
 # Performance suite
 
-Each file in `suite/` is a standalone, standard-library-only workload. Shared
-measurement and orchestration code lives in `suite/perfutils/`; there is no
-`perf/bin/` and no plotting dependency.
+Each scenario in `suite/` has a standalone, standard-library-only Python
+workload (`<case>.py`) alongside its SBCL Common Lisp equivalent
+(`<case>.lisp`). Shared measurement and orchestration code lives in
+`suite/perfutils/`; there is no `perf/bin/` and no plotting dependency.
 
 ```sh
 # From the repository root: list cases or run against the current CPython.
 uv run python -m perf.suite.perfutils list
 uv run python -m perf.suite.perfutils run --samples 7
 
-# Compare CPython with an optimized native build of every case.
-XDG_CACHE_HOME=/tmp/mule-progress-cache uv run python -m perf.suite.perfutils run \
+# Compare CPython, an optimized native Mule build, and SBCL on every case.
+uv run python -m perf.suite.perfutils run \
   --config perf/runtimes.example.toml --samples 7
 
 # Run one scenario directly, from any working directory.
 uv run python perf/suite/log_aggregation.py \
+  --size 10000 --seed 17 --loops 3
+sbcl --script perf/suite/log_aggregation.lisp \
   --size 10000 --seed 17 --loops 3
 
 # The shorter module invocation also works from perf/suite/.
@@ -24,22 +27,22 @@ uv run python -m perfutils list
 
 ## Initial scenarios
 
-| Script | Size means | Work measured |
-| --- | --- | --- |
-| `account_ledger.py` | Transactions | Polymorphic class hierarchy, `super()` calls, slot updates |
-| `closure_pipeline.py` | Values | Higher-order function pipelines with mutable lexical closure state |
-| `exception_validation.py` | Records | Nested validation raising and catching domain exceptions |
-| `expression_tree.py` | Evaluations | Recursive AST evaluation with polymorphic nodes and `dict` environments |
-| `graph_paths.py` | Vertices | Dijkstra traversal, heap operations, distance reduction |
-| `http_routing.py` | Requests | HTTP parsing, query extraction, handler dispatch, response accounting |
-| `integer_accumulation.py` | Integers | Signed sum and data-dependent positive count |
-| `interval_merging.py` | Intervals | Tuple sorting, interval coalescing, binary-search point queries |
-| `json_tokenizer.py` | Payloads | Handwritten character scanning, slicing, and `dict` aggregation |
-| `kv_record_parse.py` | Log lines | Delimited key-value string splitting, partitioning, and formatting |
-| `log_aggregation.py` | Log records | Parsing, numeric conversion, dictionary grouping |
-| `lru_simulation.py` | Operations | Doubly-linked list node mutation and `dict` LRU cache simulation |
-| `matrix_multiply.py` | Matrix dimension | Dense 2D matrix multiplication, transpose, and norm reduction |
-| `word_frequency.py` | Tokens | Dictionary frequency counting and bucketed list reduction |
+| Script | SBCL equivalent | Size means | Work measured |
+| --- | --- | --- | --- |
+| `account_ledger.py` | `account_ledger.lisp` | Transactions | Polymorphic class hierarchy, `super()` calls, slot updates |
+| `closure_pipeline.py` | `closure_pipeline.lisp` | Values | Higher-order function pipelines with mutable lexical closure state |
+| `exception_validation.py` | `exception_validation.lisp` | Records | Nested validation raising and catching domain exceptions |
+| `expression_tree.py` | `expression_tree.lisp` | Evaluations | Recursive AST evaluation with polymorphic nodes and `dict` environments |
+| `graph_paths.py` | `graph_paths.lisp` | Vertices | Dijkstra traversal, heap operations, distance reduction |
+| `http_routing.py` | `http_routing.lisp` | Requests | HTTP parsing, query extraction, handler dispatch, response accounting |
+| `integer_accumulation.py` | `integer_accumulation.lisp` | Integers | Signed sum and data-dependent positive count |
+| `interval_merging.py` | `interval_merging.lisp` | Intervals | Tuple sorting, interval coalescing, binary-search point queries |
+| `json_tokenizer.py` | `json_tokenizer.lisp` | Payloads | Handwritten character scanning, slicing, and `dict` aggregation |
+| `kv_record_parse.py` | `kv_record_parse.lisp` | Log lines | Delimited key-value string splitting, partitioning, and formatting |
+| `log_aggregation.py` | `log_aggregation.lisp` | Log records | Parsing, numeric conversion, dictionary grouping |
+| `lru_simulation.py` | `lru_simulation.lisp` | Operations | Doubly-linked list node mutation and `dict` LRU cache simulation |
+| `matrix_multiply.py` | `matrix_multiply.lisp` | Matrix dimension | Dense 2D matrix multiplication, transpose, and norm reduction |
+| `word_frequency.py` | `word_frequency.lisp` | Tokens | Dictionary frequency counting and bucketed list reduction |
 
 The HTTP case executes handlers in process. It deliberately covers bounded
 generated requests rather than a production parser; socket throughput,
@@ -50,12 +53,13 @@ concurrency, and latency distributions are future separate cases.
 Keep `NAME`, `DESCRIPTION`, `DEFAULT_SIZE`, and `DEFAULT_SEED` at module scope.
 `prepare(size, seed)` constructs repeatable runtime input. `run(data)` implements
 the workload and returns a deterministic tuple of integers. Each scenario has
-one implementation. Annotations follow that scenario's code naturally; setup is
-shared and unmeasured. Annotations do not promise that Mule currently specializes
-every declared type.
+one Python implementation and one matching SBCL implementation. Annotations
+follow that scenario's code naturally; setup is shared and unmeasured.
+Annotations do not promise that Mule currently specializes every declared type.
 
-`main()` passes those functions and metadata to `perfutils.run_case`. All cases
-accept `--size`, `--seed`, `--loops`, `--warmups`, and `--help`.
+`main()` passes those functions and metadata to `perfutils.run_case`
+(`run-case` in `perfutils/case.lisp`). All cases accept `--size`, `--seed`,
+`--loops`, `--warmups`, and `--help`.
 Kernels must not mutate prepared input. Every warmup and measured invocation's
 result is checked outside its timer, and the final result is printed. The small
 tab-separated protocol keeps JSON, subprocess, and dashboard code out of the
@@ -73,14 +77,16 @@ all runtimes if a shortcut defeats the operation it was intended to measure.
 
 Copy `runtimes.example.toml` and add named runtimes. `command` is an argument
 array, optionally accompanied by a `build` command and `version_command`.
-Tokens support `{source}`, `{binary}`, and `{python}` (the harness interpreter).
+Tokens support `{source}`, `{lisp_source}`, `{binary}`, and `{python}` (the
+harness interpreter).
 `cwd` is resolved relative to the config. For other Mule checkouts, set both
 their working directory and their own compiler-host Python executable.
 The designated baseline must be a trusted CPython interpreter.
 Mule builds use `-O1` per-unit optimization by default; the example runtime selects
 `-O2` explicitly, which keeps build times reasonable for the whole suite. Append `--lto` to a build
 command to measure full link-time optimization separately; this can increase
-link time substantially.
+link time substantially. The example configuration also compiles each scenario's
+`.lisp` implementation into a standalone SBCL executable for side-by-side comparison.
 
 All native builds complete before validation or timing begins. Each case is
 built once. The harness validates every runtime

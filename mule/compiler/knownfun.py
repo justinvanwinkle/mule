@@ -19,6 +19,13 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
+class Transform:
+    fun: Callable[[Combination], bool]
+    arg_types: tuple[ValueType, ...] | None = None
+    policy: Callable[[Combination], bool] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class FunInfo:
     name: str
     # Effect attributes, as in SBCL's DEFKNOWN attribute list:
@@ -33,8 +40,8 @@ class FunInfo:
     # The compiled stdlib protocol name this operation invokes, if any.
     protocol: str | None = None
     derive_type: Callable[[Combination], ValueType | None] | None = None
-    optimizer: object = None
-    transforms: tuple = field(default_factory=tuple)
+    optimizer: Callable[[Combination], bool] | None = None
+    transforms: tuple[Transform, ...] = field(default_factory=tuple)
 
     @property
     def foldable(self) -> bool:
@@ -81,3 +88,63 @@ def fun_info(name: str) -> FunInfo:
         return KNOWN[name]
     except KeyError:
         raise KeyError(f"no known function named {name}") from None
+
+
+def deftransform(
+    name: str,
+    arg_types: tuple[ValueType, ...] | None = None,
+    fun: Callable[[Combination], bool] | None = None,
+    *,
+    policy: Callable[[Combination], bool] | None = None,
+):
+    """Register an IR1 transform on the known function ``name``."""
+    info = fun_info(name)
+
+    def register(fn: Callable[[Combination], bool]) -> Callable[[Combination], bool]:
+        transform = Transform(fn, arg_types, policy)
+        object.__setattr__(info, "transforms", (*info.transforms, transform))
+        return fn
+
+    return register(fun) if fun is not None else register
+
+
+def defoptimizer(
+    name: str,
+    fun: Callable[[Combination], bool] | None = None,
+):
+    """Register a custom IR1 optimizer on the known function ``name``."""
+    info = fun_info(name)
+
+    def register(fn: Callable[[Combination], bool]) -> Callable[[Combination], bool]:
+        object.__setattr__(info, "optimizer", fn)
+        return fn
+
+    return register(fun) if fun is not None else register
+
+
+def defderive(
+    name: str,
+    fun: Callable[[Combination], ValueType | None] | None = None,
+):
+    """Register a result-type derivation function on the known function ``name``."""
+    info = fun_info(name)
+
+    def register(
+        fn: Callable[[Combination], ValueType | None],
+    ) -> Callable[[Combination], ValueType | None]:
+        object.__setattr__(info, "derive_type", fn)
+        return fn
+
+    return register(fun) if fun is not None else register
+
+
+__all__ = [
+    "KNOWN",
+    "FunInfo",
+    "Transform",
+    "defderive",
+    "defknown",
+    "defoptimizer",
+    "deftransform",
+    "fun_info",
+]

@@ -38,7 +38,14 @@ from mule import ast
 from mule.diagnostics import phase
 
 from . import vops
-from .ctype import FIXNUM_MAX, FIXNUM_MIN, UNKNOWN, ValueType, ValueTypeVisitor
+from .ctype import (
+    FIXNUM_MAX,
+    FIXNUM_MIN,
+    NONE_TYPE,
+    UNKNOWN,
+    ValueType,
+    ValueTypeVisitor,
+)
 from .ir1util import block_exception_target, made_function
 from .ir2tran import ir2_convert
 from .ltn import EntryContext, ltn_analyze
@@ -47,6 +54,7 @@ from .node import (
     CodeInfo,
     FunctionalKind,
     Lambda,
+    LeafVisitor,
     NodeVisitor,
     Signature,
     linked,
@@ -102,8 +110,11 @@ declare ptr @mule_text_length(ptr)
 declare ptr @mule_text_character(ptr, ptr)
 declare ptr @mule_text_codepoint(ptr, ptr)
 declare ptr @mule_text_codepoint_at(ptr, i64)
+declare ptr @mule_text_codepoint_getitem(ptr, ptr)
 declare ptr @mule_text_slice(ptr, ptr, ptr)
+declare ptr @mule_text_find(ptr, ptr, ptr, ptr, i32)
 declare ptr @mule_text_join(ptr)
+declare ptr @mule_text_from_codepoints(ptr)
 declare ptr @mule_storage_hash(ptr)
 declare ptr @mule_identity_hash(ptr)
 declare ptr @mule_type_of(ptr)
@@ -186,11 +197,15 @@ declare i32 @mule_delete_global(ptr, ptr)
 declare i32 @mule_reraise()
 declare i32 @mule_check_rest_args(ptr, i32)
 declare ptr @mule_rest_args(ptr, i32)
+declare ptr @mule_fast_len(ptr)
+declare ptr @mule_parse_int_text(ptr)
+declare ptr @mule_parse_int_slice(ptr, ptr, ptr)
 declare ptr @mule_storage_length(ptr)
 declare ptr @mule_storage_read(ptr, ptr)
 declare ptr @mule_storage_write(ptr, ptr, ptr)
 declare ptr @mule_fast_getitem(ptr, ptr)
 declare ptr @mule_fast_getslice(ptr, ptr, ptr, ptr)
+declare ptr @mule_text_slice_eq(ptr, ptr, ptr, ptr, i32)
 declare i32 @mule_fast_setitem(ptr, ptr, ptr)
 declare i32 @mule_fast_next_item(ptr, ptr)
 declare ptr @mule_storage_append(ptr, ptr)
@@ -412,6 +427,147 @@ class _SpecializedSymbols:
         raise KeyError((lambda_.name, context_id))
 
 
+class _UnpackedSymbols:
+    """The unpacked tuple-returning entry of a lambda for its general or guarded context."""
+
+    def __init__(self, owned: set, facts: dict):
+        self.owned = owned
+        self.facts = facts
+        self.requested: set[tuple[Function, object]] = set()
+
+    def __getitem__(self, key: tuple[Function, object]) -> str:
+        lambda_, context_id = key
+        if lambda_ not in self.owned:
+            raise KeyError((lambda_.name, context_id))
+        self.requested.add(key)
+        if context_id is None:
+            return _symbol(f"{lambda_.name}.body.unpacked")
+        facts = self.facts.get(lambda_)
+        variants = facts.variants if facts is not None else ()
+        for variant, context in enumerate(variants):
+            if context.id == context_id:
+                return _symbol(f"{lambda_.name}.spec.{variant}.unpacked")
+        raise KeyError((lambda_.name, context_id))
+
+
+class _IsScalarConstant(ast.Visitor):
+    """True when a constant tuple element materializes without a fallible call."""
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_NoneLiteral(self, node):
+        return True
+
+    def visit_BooleanLiteral(self, node):
+        return True
+
+    def visit_IntegerLiteral(self, node):
+        return True
+
+    def visit_FloatLiteral(self, node):
+        return True
+
+    def visit_TextLiteral(self, node):
+        return True
+
+    def visit_BytesLiteral(self, node):
+        return True
+
+
+_IS_SCALAR_CONSTANT = _IsScalarConstant()
+
+
+class _ConstantTupleArity(ast.Visitor):
+    """Fixed tuple arity of a literal AST node, or None."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Tuple(self, node):
+        if all(element.accept(_IS_SCALAR_CONSTANT) for element in node.elements):
+            return len(node.elements)
+        return None
+
+
+_CONSTANT_TUPLE_ARITY = _ConstantTupleArity()
+
+
+class _LeafTupleArity(LeafVisitor):
+    """Fixed tuple arity of a leaf, or None."""
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Constant(self, leaf):
+        return leaf.value.accept(_CONSTANT_TUPLE_ARITY)
+
+
+_LEAF_TUPLE_ARITY = _LeafTupleArity()
+
+
+class _ReturnTupleArity(NodeVisitor):
+    """Fixed tuple arity of a node directly producing a tuple, or None."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node):
+        if (
+            node.kind is CallKind.KNOWN
+            and linked(node.fun_info, node, "known function").name == "%build_tuple"
+        ):
+            return len(node.args)
+        return None
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(_LEAF_TUPLE_ARITY)
+
+
+_RETURN_TUPLE_ARITY = _ReturnTupleArity()
+
+
+def _flows_directly_to_return(use, return_) -> bool:
+    """True when ``use`` is the last operation before ``return_`` with no
+    intervening cleanup or node."""
+    if use.lvar is not return_.result:
+        return False
+    if use.next is not None:
+        return use.next.next is return_
+    return (
+        use.block is not None
+        and use.block.last is use
+        and use.block.succ == [return_.block]
+        and return_.block.start is not None
+        and return_.block.start.next is return_
+    )
+
+
+def _return_tuple_info(lambda_: Lambda) -> tuple[int, frozenset] | None:
+    """When every return path of ``lambda_`` constructs a fixed-size tuple of
+    arity ``1 <= K <= 8`` and flows directly to ``return_``, return ``(K, uses)``."""
+    if lambda_.kind is FunctionalKind.TOPLEVEL:
+        return None
+    return_ = lambda_.return_
+    if return_ is None or not return_.result.uses:
+        return None
+    uses = tuple(return_.result.uses)
+    arity = None
+    for use in uses:
+        if not _flows_directly_to_return(use, return_):
+            return None
+        use_arity = use.accept(_RETURN_TUPLE_ARITY)
+        if use_arity is None or not (1 <= use_arity <= 8):
+            return None
+        if arity is None:
+            arity = use_arity
+        elif arity != use_arity:
+            return None
+    if arity is None:
+        return None
+    return arity, frozenset(uses)
+
+
 def generate(program: Program) -> str:
     """Return a complete LLVM module with a native executable entry point."""
     with phase("LLVM generation"):
@@ -545,6 +701,7 @@ class ModuleGenerator:
         self.functions = _Symbols(self.owned, self.foreign, "fn")
         self.bodies = _Symbols(self.owned, self.foreign, "body")
         self.specialized = _SpecializedSymbols(self.owned, self.foreign, self.facts)
+        self.unpacked = _UnpackedSymbols(self.owned, self.facts)
         self.by_name = {
             lambda_.name: lambda_ for lambda_ in [*program.external, *lambdas]
         }
@@ -552,6 +709,16 @@ class ModuleGenerator:
         self.sequence_functions = program.sequence_functions
         with phase("native entry selection", level=logging.DEBUG):
             self.native_plans = select_native_plans(lambdas, self.facts, self.layouts)
+        self.return_tuple_arities: dict[Lambda, int] = {}
+        self.return_tuple_uses: dict[Lambda, frozenset] = {}
+        for lambda_ in lambdas:
+            if lambda_ not in self.native_plans:
+                info = _return_tuple_info(lambda_)
+                if info is not None:
+                    (
+                        self.return_tuple_arities[lambda_],
+                        self.return_tuple_uses[lambda_],
+                    ) = info
         logger.debug(
             "Backend input: %d lambdas, %d native entries, %d class layouts",
             len(lambdas),
@@ -1616,6 +1783,163 @@ class ModuleGenerator:
         self.auxiliary.append("\n".join(builder.lines))
         return symbol
 
+    def unpacked_direct_call_helper(
+        self,
+        function: Function,
+        keywords: tuple[str | None, ...],
+        arity: int,
+        unpack_arity: int,
+        steps: tuple[tuple[EntryContext | None, tuple[ValueType | None, ...]], ...],
+        *,
+        proven: bool = False,
+    ) -> str:
+        step_key = tuple(
+            (None if ctx is None else ctx.id, needed) for ctx, needed in steps
+        )
+        key = (
+            "$call.direct.unpack",
+            function,
+            keywords,
+            arity,
+            unpack_arity,
+            step_key,
+            proven,
+        )
+        existing = self.protocol_helpers.get(key)
+        if existing is not None:
+            return existing
+        index = len(self.protocol_helpers)
+        symbol = _symbol(
+            f"mule.direct.unpack.{function.name}.{arity}.{unpack_arity}.{index}"
+        )
+        self.protocol_helpers[key] = symbol
+        order = function.call_order(keywords, arity)
+        params = [
+            "ptr %globals",
+            "ptr %callee",
+            *(f"ptr %arg.{i}" for i in range(arity)),
+            "ptr %tuple.out",
+        ]
+        builder = _HelperBuilder()
+        if proven:
+            builder.lines = [
+                f"define internal ptr {symbol}({', '.join(params)}) {{",
+                "entry:",
+            ]
+        else:
+            fallback_helper = (
+                self.keyword_call_helper(keywords, resolved=False)
+                if keywords
+                else self.positional_call_helper(arity)
+            )
+            fallback_args = ", ".join(
+                ["ptr %callee", *(f"ptr %arg.{i}" for i in range(arity))]
+            )
+            unpack_helper = self.unpack_helper(unpack_arity)
+            encoded_arity = (unpack_arity << 1) | 1
+            builder.lines = [
+                f"define internal ptr {symbol}({', '.join(params)}) {{",
+                "entry:",
+                f"  %matched = call i32 @mule_function_matches(ptr %callee, ptr {self.functions[function]}, ptr %globals)",
+                "  %matching = icmp ne i32 %matched, 0",
+                "  br i1 %matching, label %direct, label %fallback",
+                "direct:",
+            ]
+
+        def emit_invoke(context: EntryContext | None, tag: int) -> None:
+            entered = f"entered.{tag}"
+            builder.line("  %frame." + str(tag) + " = call i32 @mule_enter_frame()")
+            builder.line(f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0")
+            builder.line(f"  br i1 %rejected.{tag}, label %failed, label %{entered}")
+            builder.lines.append(f"{entered}:")
+            owned = []
+            for pos, idx in enumerate(order):
+                if idx >= 0:
+                    owned.append(f"%arg.{idx}")
+                else:
+                    builder.line(
+                        f"  %def.{tag}.{pos} = call ptr @mule_function_default(ptr %callee, i32 {-2 - idx})"
+                    )
+                    builder.line(
+                        f"  %own.{tag}.{pos} = call ptr @mule.fast.retain(ptr %def.{tag}.{pos})"
+                    )
+                    owned.append(f"%own.{tag}.{pos}")
+            closure_ops = []
+            if self.closure_of(function):
+                builder.line(
+                    f"  %closure.{tag} = call ptr @mule_function_closure_of(ptr %callee)"
+                )
+                closure_ops.append(f"ptr %closure.{tag}")
+            body = self.unpacked[function, None if context is None else context.id]
+            body_args = ", ".join(
+                [
+                    "ptr %globals",
+                    *closure_ops,
+                    *(f"ptr {v}" for v in owned),
+                    "ptr %tuple.out",
+                ]
+            )
+            builder.line(f"  %res.{tag} = call ptr {body}({body_args})")
+            builder.line("  call void @mule_leave_frame()")
+            builder.line(f"  ret ptr %res.{tag}")
+
+        for step_idx, (context, needed) in enumerate(steps):
+            guards = [
+                expected.accept(_ArgumentGuard(builder, f"%arg.{order[param_idx]}"))
+                for param_idx, expected in enumerate(needed)
+                if expected is not None
+            ]
+            if not guards:
+                emit_invoke(context, step_idx)
+                break
+            valid = guards[0]
+            for guard in guards[1:]:
+                valid = builder.operation(f"and i1 {valid}, {guard}")
+            typed = f"typed.{step_idx}"
+            next_label = f"next.{step_idx}"
+            builder.line(f"  br i1 {valid}, label %{typed}, label %{next_label}")
+            builder.lines.append(f"{typed}:")
+            emit_invoke(context, step_idx)
+            builder.lines.append(f"{next_label}:")
+
+        builder.lines.append("failed:")
+        for i in range(arity):
+            builder.line(f"  call void @mule.fast.release(ptr %arg.{i})")
+        builder.line("  ret ptr null")
+        if not proven:
+            builder.lines.extend(
+                [
+                    "fallback:",
+                    f"  %fallback.res = call ptr {fallback_helper}({fallback_args})",
+                    "  %fallback.null = icmp eq ptr %fallback.res, null",
+                    "  br i1 %fallback.null, label %fallback.err, label %fallback.unpack",
+                    "fallback.err:",
+                    "  ret ptr null",
+                    "fallback.unpack:",
+                    f"  %unpacked = call ptr {unpack_helper}(ptr %fallback.res, ptr inttoptr (i64 {encoded_arity} to ptr))",
+                    "  %unpacked.null = icmp eq ptr %unpacked, null",
+                    "  br i1 %unpacked.null, label %fallback.err, label %fallback.slots",
+                    "fallback.slots:",
+                ]
+            )
+            for slot_idx in range(unpack_arity):
+                builder.lines.extend(
+                    [
+                        f"  %slot.val.{slot_idx} = call ptr @mule_tuple_slot(ptr %unpacked, i64 {slot_idx})",
+                        f"  %slot.addr.{slot_idx} = getelementptr ptr, ptr %tuple.out, i64 {slot_idx}",
+                        f"  store ptr %slot.val.{slot_idx}, ptr %slot.addr.{slot_idx}",
+                    ]
+                )
+            builder.lines.extend(
+                [
+                    "  call void @mule.heap.release(ptr %unpacked)",
+                    "  ret ptr @mule.none",
+                ]
+            )
+        builder.lines.append("}")
+        self.auxiliary.append("\n".join(builder.lines))
+        return symbol
+
     def contexts(self, lambda_: Lambda):
         """The general entry context and the guarded variants."""
         facts = self.facts[lambda_]
@@ -1642,20 +1966,37 @@ class ModuleGenerator:
         program = self.program
         functions = []
         variants_by_key = {}
+        contexts_by_key = {}
         for lambda_ in program.lambdas:
             general, variants = self.contexts(lambda_)
+            contexts_by_key[lambda_, None] = (lambda_, general)
             functions.append(self.emit_body(lambda_, general))
             for variant in variants:
                 variants_by_key[lambda_, variant.id] = (lambda_, variant)
+                contexts_by_key[lambda_, variant.id] = (lambda_, variant)
         emitted_variants = set()
-        while (
-            pending := (self.specialized.requested & variants_by_key.keys())
-            - emitted_variants
-        ):
-            for key in sorted(pending, key=lambda item: (item[0].name, str(item[1]))):
+        emitted_unpacked = set()
+        while True:
+            pending_variants = (
+                self.specialized.requested & variants_by_key.keys()
+            ) - emitted_variants
+            pending_unpacked = (
+                self.unpacked.requested & contexts_by_key.keys()
+            ) - emitted_unpacked
+            if not pending_variants and not pending_unpacked:
+                break
+            for key in sorted(
+                pending_variants, key=lambda item: (item[0].name, str(item[1]))
+            ):
                 emitted_variants.add(key)
                 lambda_, variant = variants_by_key[key]
                 functions.append(self.emit_body(lambda_, variant))
+            for key in sorted(
+                pending_unpacked, key=lambda item: (item[0].name, str(item[1]))
+            ):
+                emitted_unpacked.add(key)
+                lambda_, context = contexts_by_key[key]
+                functions.append(self.emit_body(lambda_, context, unpacked=True))
         for lambda_, plan in self.native_plans.items():
             facts = self.facts[lambda_]
             context = EntryContext(
@@ -1982,13 +2323,15 @@ class ModuleGenerator:
         )
         return definitions
 
-    def emit_body(self, lambda_: Lambda, context: EntryContext) -> str:
+    def emit_body(
+        self, lambda_: Lambda, context: EntryContext, *, unpacked: bool = False
+    ) -> str:
         with phase(
             "LLVM body %s context %s", lambda_.name, context.id, level=logging.DEBUG
         ):
             component = compile_component(lambda_, context)
             with phase("VOP generation %s", lambda_.name, level=logging.DEBUG):
-                body = FunctionGenerator(self, component).emit()
+                body = FunctionGenerator(self, component, unpacked=unpacked).emit()
         logger.debug(
             "IR2 body %s context %s: %d blocks, %d TNs",
             lambda_.name,
@@ -2572,7 +2915,7 @@ def _block_local_last_vop(tn, positions, reads, writes):
 class FunctionGenerator:
     """Emit one LLVM function for one IR2 component (one body)."""
 
-    def __init__(self, module: ModuleGenerator, component):
+    def __init__(self, module: ModuleGenerator, component, *, unpacked: bool = False):
         self.module = module
         self._literal_emitter = vops.LiteralEmitter(module)
         self.component = component
@@ -2580,6 +2923,12 @@ class FunctionGenerator:
         self.context = component.context
         self.plan = self.context.plan
         self.raw = self.plan is not None
+        self.unpacked = unpacked
+        self.return_uses = (
+            module.return_tuple_uses.get(self.lambda_, frozenset())
+            if unpacked
+            else frozenset()
+        )
         self.environment = component.environment
         self.immortal_values: set[str] = set()
         self.heap_values: set[str] = set()
@@ -2588,10 +2937,22 @@ class FunctionGenerator:
         self.exception_target: str | None = None
         if self.raw:
             self.body = self.plan.entry
+        elif self.unpacked:
+            self.body = module.unpacked[self.lambda_, self.context.id]
         elif self.context.id is not None:
             self.body = module.specialized[self.lambda_, self.context.id]
         else:
             self.body = module.bodies[self.lambda_]
+        if self.unpacked:
+            for block in component.blocks:
+                for vop in block.vops:
+                    if (
+                        vop.node is not None
+                        and vop.node in self.return_uses
+                        and vop.results
+                    ):
+                        vop.results[0].tn.type = NONE_TYPE
+        self._find_unpacked_calls(component)
         self.local_slots: dict[str, str] = {}
         self.local_tns_by_name: dict[str, object] = {}
         self.value_tns = []
@@ -2620,7 +2981,8 @@ class FunctionGenerator:
                 # A variable's slot is loaded and stored by name, so an
                 # expression temporary stays in a slot, released when an
                 # exception transfers out of the expression.
-                self.value_tns.append(tn)
+                if tn not in self.unpacked_temp_tns:
+                    self.value_tns.append(tn)
             elif tn.leaf is None and not (
                 tn.name is not None and tn.name.startswith("$")
             ):
@@ -2677,6 +3039,191 @@ class FunctionGenerator:
                 var: f"%class.{index}"
                 for index, var in enumerate(self.plan.dependencies)
             }
+
+    def _find_unpacked_calls(self, component) -> None:
+        self.unpacked_calls: dict[object, int] = {}
+        self.unpacked_unpacks: set[object] = set()
+        self.unpacked_moves: set[object] = set()
+        self.unpacked_refs: dict[object, int] = {}
+        self.unpacked_discard_loads: set[object] = set()
+        self.unpacked_temp_tns: set[object] = set()
+        self.max_unpack_out = 0
+        if self.raw:
+            return
+        module = self.module
+        arities = module.return_tuple_arities
+        if not arities:
+            return
+        reads = component.reads
+        writes = component.writes
+        for block in component.blocks:
+            vops_list = block.vops
+            n_vops = len(vops_list)
+            idx = 0
+            while idx < n_vops:
+                call_vop = vops_list[idx]
+                if call_vop.info is not vops.FULL_CALL:
+                    idx += 1
+                    continue
+                site = call_vop.codegen_info
+                target = site.target
+                arity = arities.get(target) if target is not None else None
+                if (
+                    arity is None
+                    or target.call_order(site.keywords, len(call_vop.args) - 1) is None
+                    or idx + 3 >= n_vops
+                ):
+                    idx += 1
+                    continue
+                count_vop = vops_list[idx + 1]
+                unpack_vop = vops_list[idx + 2]
+                move_vop = vops_list[idx + 3]
+                if (
+                    count_vop.info is not vops.CONSTANT
+                    or unpack_vop.info.name != "structural-unpack"
+                    or unpack_vop.codegen_info.arity != arity
+                    or move_vop.info is not vops.MOVE
+                ):
+                    idx += 1
+                    continue
+                call_res_tn = call_vop.results[0].tn
+                count_tn = count_vop.results[0].tn
+                unpack_res_tn = unpack_vop.results[0].tn
+                temp_tn = move_vop.results[0].tn
+                if (
+                    unpack_vop.args[0].tn is not call_res_tn
+                    or unpack_vop.args[1].tn is not count_tn
+                    or move_vop.args[0].tn is not unpack_res_tn
+                    or len(writes.get(call_res_tn, ())) != 1
+                    or len(reads.get(call_res_tn, ())) != 1
+                    or len(writes.get(count_tn, ())) != 1
+                    or len(reads.get(count_tn, ())) != 1
+                    or len(writes.get(unpack_res_tn, ())) != 1
+                    or len(reads.get(unpack_res_tn, ())) != 1
+                    or temp_tn.leaf is None
+                    or not temp_tn.leaf.expression_temporary
+                    or temp_tn in self.unpacked_temp_tns
+                    or len(writes.get(temp_tn, ())) != 1
+                    or len(reads.get(temp_tn, ())) != arity + 1
+                ):
+                    idx += 1
+                    continue
+                cursor = idx + 4
+                ref_vops = []
+                matched = True
+                for slot_idx in range(arity):
+                    if cursor + 2 >= n_vops:
+                        matched = False
+                        break
+                    pos_vop = vops_list[cursor]
+                    ref_vop = vops_list[cursor + 1]
+                    if (
+                        pos_vop.info is not vops.CONSTANT
+                        or ref_vop.info.name != "unpack-ref"
+                        or ref_vop.codegen_info.index != slot_idx
+                        or not ref_vop.codegen_info.borrow_parent
+                        or ref_vop.args[0].tn is not temp_tn
+                        or ref_vop.args[1].tn is not pos_vop.results[0].tn
+                        or len(writes.get(pos_vop.results[0].tn, ())) != 1
+                        or len(reads.get(pos_vop.results[0].tn, ())) != 1
+                    ):
+                        matched = False
+                        break
+                    ref_res_tn = ref_vop.results[0].tn
+                    if (
+                        len(writes.get(ref_res_tn, ())) != 1
+                        or len(reads.get(ref_res_tn, ())) != 1
+                    ):
+                        matched = False
+                        break
+                    cursor += 2
+                    next_vop = vops_list[cursor]
+                    if next_vop.info is vops.TYPE_CHECK:
+                        check = next_vop.codegen_info
+                        actual = next_vop.args[0].tn.type or UNKNOWN
+                        if next_vop.args[0].tn is not ref_res_tn or (
+                            check.safety and not actual.fits(check.contract.fact)
+                        ):
+                            matched = False
+                            break
+                        ref_res_tn = next_vop.results[0].tn
+                        if (
+                            len(writes.get(ref_res_tn, ())) != 1
+                            or len(reads.get(ref_res_tn, ())) != 1
+                            or cursor + 1 >= n_vops
+                        ):
+                            matched = False
+                            break
+                        cursor += 1
+                    store_vop = vops_list[cursor]
+                    if (
+                        store_vop.info is not vops.MOVE
+                        or store_vop.args[0].tn is not ref_res_tn
+                        or store_vop.results[0].tn is temp_tn
+                    ):
+                        matched = False
+                        break
+                    ref_vops.append((slot_idx, ref_vop))
+                    cursor += 1
+                if not matched or cursor + 1 >= n_vops:
+                    idx += 1
+                    continue
+                discard_load_vop = vops_list[cursor]
+                discard_vop = vops_list[cursor + 1]
+                if (
+                    discard_load_vop.info is not vops.LOAD_LOCAL
+                    or discard_load_vop.args[0].tn is not temp_tn
+                    or not discard_load_vop.codegen_info.move
+                    or discard_vop.info is not vops.DISCARD
+                ):
+                    idx += 1
+                    continue
+                discard_tn = discard_load_vop.results[0].tn
+                if (
+                    discard_vop.args[0].tn is not discard_tn
+                    or len(writes.get(discard_tn, ())) != 1
+                    or len(reads.get(discard_tn, ())) != 1
+                ):
+                    idx += 1
+                    continue
+                self.unpacked_calls[call_vop] = arity
+                self.unpacked_unpacks.add(unpack_vop)
+                self.unpacked_moves.add(move_vop)
+                for slot_idx, ref_vop in ref_vops:
+                    self.unpacked_refs[ref_vop] = slot_idx
+                self.unpacked_discard_loads.add(discard_load_vop)
+                self.unpacked_temp_tns.add(temp_tn)
+                self.max_unpack_out = max(self.max_unpack_out, arity)
+                call_res_tn.type = NONE_TYPE
+                unpack_res_tn.type = NONE_TYPE
+                temp_tn.type = NONE_TYPE
+                discard_tn.type = NONE_TYPE
+                idx = cursor + 2
+
+    def is_unpacked_return_vop(self, vop) -> bool:
+        return self.unpacked and vop.node is not None and vop.node in self.return_uses
+
+    def unpacked_return_result(self, ref, values) -> None:
+        for index, value in enumerate(values):
+            slot = self.operation(f"getelementptr ptr, ptr %tuple.out, i64 {index}")
+            self.line(f"store ptr {value}, ptr {slot}")
+        self.immortal_values.add("@mule.none")
+        self.publish(ref, "@mule.none")
+
+    def unpacked_call_arity(self, vop) -> int | None:
+        return self.unpacked_calls.get(vop)
+
+    def is_unpacked_unpack(self, vop) -> bool:
+        return vop in self.unpacked_unpacks
+
+    def is_unpacked_move(self, vop) -> bool:
+        return vop in self.unpacked_moves
+
+    def unpacked_ref_slot(self, vop) -> int | None:
+        return self.unpacked_refs.get(vop)
+
+    def is_unpacked_discard_load(self, vop) -> bool:
+        return vop in self.unpacked_discard_loads
 
     # Text helpers
 
@@ -3162,6 +3709,21 @@ class FunctionGenerator:
             self.release(arguments[0])
             self.immortal_values.add(result)
             return result
+        if info.exact_text_find:
+            sub = arguments[0]
+            start = arguments[1] if len(arguments) >= 2 else "@mule.none"
+            end = arguments[2] if len(arguments) >= 3 else "@mule.none"
+            if len(arguments) < 3:
+                self.immortal_values.add("@mule.none")
+            reverse = 1 if info.name == "rfind" else 0
+            result = self.operation(
+                f"call ptr @mule_text_find(ptr {receiver}, ptr {sub}, ptr {start}, ptr {end}, i32 {reverse})"
+            )
+            self.release(receiver)
+            for arg in arguments:
+                self.release(arg)
+            self.immortal_values.add(result)
+            return result
         module = self.module
         candidates = module.method_targets.get(info.name, ())
         functions = tuple(
@@ -3198,7 +3760,15 @@ class FunctionGenerator:
         """Check representation/range without touching or invoking an object."""
         return expected.accept(_ArgumentGuard(self, value))
 
-    def call(self, site, callee: str, argument_refs, arguments) -> str:
+    def call(
+        self,
+        site,
+        callee: str,
+        argument_refs,
+        arguments,
+        *,
+        unpack_arity: int | None = None,
+    ) -> str:
         """Dispatch once, consuming owned arguments on every arm.
 
         Direct entries take parameter ownership. External fallback borrows the
@@ -3267,6 +3837,24 @@ class FunctionGenerator:
                 break
         else:
             steps.append((None, ()))
+        if unpack_arity is not None:
+            helper = module.unpacked_direct_call_helper(
+                function,
+                keywords,
+                len(arguments),
+                unpack_arity,
+                tuple(steps),
+                proven=site.proven and not keywords,
+            )
+            operands = ", ".join(
+                [
+                    "ptr %globals",
+                    f"ptr {callee}",
+                    *(f"ptr {value}" for value in arguments),
+                    "ptr %unpack.out",
+                ]
+            )
+            return self.operation(f"call ptr {helper}({operands})")
         helper = module.direct_call_helper(
             function,
             keywords,
@@ -3288,14 +3876,19 @@ class FunctionGenerator:
     def emit(self) -> str:
         if self.raw:
             return self.emit_raw()
-        wrapper = self.wrapper() if self.context.id is None else ""
+        wrapper = (
+            self.wrapper() if (self.context.id is None and not self.unpacked) else ""
+        )
         adapter = ""
         # Every object entry of a natively planned lambda, general or guarded,
         # becomes the adapter that checks the plan's boundaries and calls the
         # raw entry; its own body remains as the fallback.
         linkage = (
             ""
-            if self.module.program.exports and not self.raw and self.context.id is None
+            if self.module.program.exports
+            and not self.raw
+            and not self.unpacked
+            and self.context.id is None
             else "internal "
         )
         plan = self.module.native_plans.get(self.lambda_)
@@ -3309,6 +3902,7 @@ class FunctionGenerator:
             ["ptr %globals"]
             + (["ptr %closure"] if self.module.closure_of(lambda_) else [])
             + [f"ptr %parameter.{index}" for index in range(len(lambda_.vars))]
+            + (["ptr %tuple.out"] if self.unpacked else [])
         )
         attributes = ""
         if lambda_.policy.speed == 0 or (
@@ -3385,18 +3979,10 @@ class FunctionGenerator:
             for group in (*self.local_slot_groups, *self.value_slot_groups)
             if _needs_cleanup_release(group[0])
         ]
-        call_release = (
-            len(self.component.blocks) > 8
-            or len(cleanup_groups) > 8
-            or len(self.lines) > 250
-        )
         for group in cleanup_groups:
             tn = group[0]
             loaded = self.operation(f"load ptr, ptr {tn.slot}")
-            if call_release:
-                self.line(f"call void @mule_release(ptr {loaded})")
-            else:
-                self.release(loaded)
+            self.release(loaded)
         self.line("call void @mule_frame_pop()")
         value = self.operation("load ptr, ptr %return")
         self.line(f"ret ptr {value}")
@@ -3422,6 +4008,10 @@ class FunctionGenerator:
                     self.release(value)
             if self.live:
                 raise ValueError(f"{block!r} ends owning {list(self.live)!r}")
+        if self.max_unpack_out:
+            self.lines.insert(
+                self.entry_end, f"  %unpack.out = alloca [{self.max_unpack_out} x ptr]"
+            )
         if self.max_argv:
             self.lines.insert(
                 self.entry_end, f"  %argv = alloca [{self.max_argv} x ptr]"

@@ -1,0 +1,152 @@
+;;;; Simulate an LRU cache backed by a hash-table and an intrusive doubly-linked list.
+
+(declaim (optimize (speed 3) (safety 1) (debug 1)))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (load #.(merge-pathnames "perfutils/case.lisp"
+                           (or *compile-file-truename* *load-truename*))
+        :verbose nil :print nil))
+
+(defparameter *name* "lru_simulation")
+(defparameter *description* "Doubly-linked list and dict LRU cache simulation")
+(defparameter *default-size* 80000)
+(defparameter *default-seed* 42)
+
+(defclass lru-node ()
+  ((key :initarg :key :accessor node-key :type fixnum)
+   (value :initarg :value :accessor node-value :type fixnum)
+   (prev :initform nil :accessor node-prev)
+   (next :initform nil :accessor node-next)))
+
+(defclass lru-cache ()
+  ((capacity :initarg :capacity :accessor cache-capacity :type fixnum)
+   (table :initform (make-hash-table :test 'eql) :accessor cache-table :type hash-table)
+   (head :accessor cache-head :type lru-node)
+   (tail :accessor cache-tail :type lru-node)))
+
+(defun make-lru-cache (capacity)
+  (declare (type fixnum capacity))
+  (let ((cache (make-instance 'lru-cache :capacity capacity))
+        (head (make-instance 'lru-node :key -1 :value -1))
+        (tail (make-instance 'lru-node :key -1 :value -1)))
+    (setf (node-next head) tail
+          (node-prev tail) head
+          (cache-head cache) head
+          (cache-tail cache) tail)
+    cache))
+
+(defun cache-unlink (node)
+  (declare (type lru-node node))
+  (let ((prev-node (node-prev node))
+        (next-node (node-next node)))
+    (when prev-node
+      (setf (node-next (the lru-node prev-node)) next-node))
+    (when next-node
+      (setf (node-prev (the lru-node next-node)) prev-node))))
+
+(defun cache-push-front (cache node)
+  (declare (type lru-cache cache)
+           (type lru-node node))
+  (let* ((head (cache-head cache))
+         (first-node (node-next head)))
+    (setf (node-prev node) head
+          (node-next node) first-node
+          (node-next head) node)
+    (when first-node
+      (setf (node-prev (the lru-node first-node)) node))))
+
+(defun cache-get (cache key)
+  (declare (type lru-cache cache)
+           (type fixnum key))
+  (let ((node (gethash key (cache-table cache))))
+    (if (null node)
+        -1
+        (let ((n (the lru-node node)))
+          (cache-unlink n)
+          (cache-push-front cache n)
+          (the fixnum (node-value n))))))
+
+(defun cache-put (cache key value)
+  (declare (type lru-cache cache)
+           (type fixnum key value))
+  (let* ((table (cache-table cache))
+         (node (gethash key table)))
+    (when node
+      (let ((n (the lru-node node)))
+        (setf (node-value n) value)
+        (cache-unlink n)
+        (cache-push-front cache n)
+        (return-from cache-put 0)))
+    (let ((evicted 0))
+      (declare (type fixnum evicted))
+      (when (>= (hash-table-count table) (the fixnum (cache-capacity cache)))
+        (let ((victim (node-prev (cache-tail cache))))
+          (when (and victim (not (eq victim (cache-head cache))))
+            (let ((v (the lru-node victim)))
+              (cache-unlink v)
+              (remhash (node-key v) table)
+              (setf evicted (the fixnum (node-value v)))))))
+      (let ((fresh (make-instance 'lru-node :key key :value value)))
+        (setf (gethash key table) fresh)
+        (cache-push-front cache fresh)
+        evicted))))
+
+(defstruct (lru-op (:constructor make-lru-op (is-put key value)))
+  (is-put 0 :type fixnum)
+  (key 0 :type fixnum)
+  (value 0 :type fixnum))
+
+(defun prepare (size seed)
+  (declare (type fixnum size seed))
+  (when (< size 0)
+    (error "size must be nonnegative"))
+  (let ((state (logand seed #x7FFFFFFF))
+        (ops (make-array size)))
+    (declare (type fixnum state)
+             (type simple-vector ops))
+    (dotimes (i size ops)
+      (declare (type fixnum i))
+      (setf state (logand (+ (* state 1103515245) 12345) #x7FFFFFFF))
+      (let ((is-put (logand state 1))
+            (key (mod (ash state -4) 192))
+            (value (+ (mod (ash state -12) 1000) 1)))
+        (setf (svref ops i) (make-lru-op is-put key value))))))
+
+(defun run-kernel (data)
+  (declare (type simple-vector data))
+  (let* ((cache (make-lru-cache 64))
+         (n (length data))
+         (rounds (max 1 (floor n 330)))
+         (hits 0)
+         (evicted-sum 0)
+         (value-checksum 0))
+    (declare (type fixnum n rounds hits evicted-sum value-checksum))
+    (dotimes (round-idx rounds)
+      (declare (type fixnum round-idx))
+      (let ((shift (logand round-idx 31)))
+        (declare (type fixnum shift))
+        (dotimes (i n)
+          (declare (type fixnum i))
+          (let* ((op (the lru-op (svref data i)))
+                 (is-put (lru-op-is-put op))
+                 (key (lru-op-key op))
+                 (value (lru-op-value op))
+                 (adj-key (mod (the fixnum (+ key shift)) 192)))
+            (declare (type fixnum is-put key value adj-key))
+            (if (= is-put 1)
+                (setf evicted-sum
+                      (logand (the fixnum (+ evicted-sum (cache-put cache adj-key (the fixnum (+ value shift)))))
+                              #x3FFFFFFF))
+                (let ((found (cache-get cache adj-key)))
+                  (declare (type fixnum found))
+                  (when (>= found 0)
+                    (incf hits)
+                    (setf value-checksum
+                          (logand (the fixnum (+ value-checksum found)) #x3FFFFFFF)))))))))
+    (list hits evicted-sum value-checksum)))
+
+(defun main ()
+  (run-case *name* *description* *default-size* *default-seed* #'prepare #'run-kernel))
+
+(eval-when (:execute)
+  (main))

@@ -1,0 +1,155 @@
+;;;; Simulate a polymorphic account ledger with inheritance and call-next-method dispatch.
+
+(declaim (optimize (speed 3) (safety 1) (debug 1)))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (load #.(merge-pathnames "perfutils/case.lisp"
+                           (or *compile-file-truename* *load-truename*))
+        :verbose nil :print nil))
+
+(defparameter *name* "account_ledger")
+(defparameter *description* "Polymorphic class hierarchy with super() calls and slot updates")
+(defparameter *default-size* 100000)
+(defparameter *default-seed* 42)
+
+(defclass account ()
+  ((ident :initarg :ident :accessor account-ident :type fixnum)
+   (balance :initarg :balance :accessor account-balance :type fixnum)
+   (tx-count :initform 0 :accessor account-tx-count :type fixnum)))
+
+(defclass rewards-account (account)
+  ((rate :initarg :rate :accessor rewards-account-rate :type fixnum)
+   (points :initform 0 :accessor rewards-account-points :type fixnum)))
+
+(defclass vault-account (rewards-account)
+  ((floor-balance :initarg :floor-balance :accessor vault-account-floor :type fixnum)
+   (penalties :initform 0 :accessor vault-account-penalties :type fixnum)))
+
+(defgeneric deposit (acc amount))
+(defgeneric withdraw (acc amount))
+(defgeneric score (acc))
+
+(defmethod deposit ((acc account) (amount fixnum))
+  (let ((new-bal (the fixnum (+ (the fixnum (account-balance acc)) amount))))
+    (setf (account-balance acc) new-bal)
+    (setf (account-tx-count acc) (the fixnum (+ (the fixnum (account-tx-count acc)) 1)))
+    new-bal))
+
+(defmethod withdraw ((acc account) (amount fixnum))
+  (let* ((cur (the fixnum (account-balance acc)))
+         (new-bal (if (<= amount cur)
+                      (the fixnum (- cur amount))
+                      (the fixnum (- cur 1)))))
+    (setf (account-balance acc) new-bal)
+    (setf (account-tx-count acc) (the fixnum (+ (the fixnum (account-tx-count acc)) 1)))
+    new-bal))
+
+(defmethod score ((acc account))
+  (the fixnum
+       (+ (the fixnum (* (the fixnum (account-balance acc)) 3))
+          (the fixnum (* (the fixnum (account-tx-count acc)) 7))
+          (the fixnum (account-ident acc)))))
+
+(defmethod deposit ((acc rewards-account) (amount fixnum))
+  (let* ((bal (the fixnum (call-next-method)))
+         (pts (the fixnum
+                   (+ (the fixnum (rewards-account-points acc))
+                      (the fixnum (floor (the fixnum (* amount (the fixnum (rewards-account-rate acc)))) 10))))))
+    (setf (rewards-account-points acc) pts)
+    (the fixnum (+ bal pts))))
+
+(defmethod score ((acc rewards-account))
+  (the fixnum
+       (+ (the fixnum (call-next-method))
+          (the fixnum (* (the fixnum (rewards-account-points acc)) 5)))))
+
+(defmethod withdraw ((acc vault-account) (amount fixnum))
+  (if (< (the fixnum (- (the fixnum (account-balance acc)) amount))
+         (the fixnum (vault-account-floor acc)))
+      (progn
+        (setf (vault-account-penalties acc)
+              (the fixnum (+ (the fixnum (vault-account-penalties acc)) 1)))
+        (call-next-method acc 1))
+      (call-next-method acc amount)))
+
+(defmethod score ((acc vault-account))
+  (the fixnum
+       (- (the fixnum (call-next-method))
+          (the fixnum (* (the fixnum (vault-account-penalties acc)) 11)))))
+
+(defstruct (tx-op (:constructor make-tx-op (idx amount kind)))
+  (idx 0 :type fixnum)
+  (amount 0 :type fixnum)
+  (kind 0 :type fixnum))
+
+(defun prepare (size seed)
+  (declare (type fixnum size seed))
+  (when (< size 0)
+    (error "size must be nonnegative"))
+  (let ((state (logand seed #x7FFFFFFF))
+        (ops (make-array size)))
+    (declare (type fixnum state)
+             (type simple-vector ops))
+    (dotimes (i size ops)
+      (declare (type fixnum i))
+      (setf state (logand (+ (* state 1103515245) 12345) #x7FFFFFFF))
+      (let ((idx (logand (ash state -4) 63))
+            (amount (+ (mod (ash state -10) 97) 1))
+            (kind (logand state 3)))
+        (setf (svref ops i) (make-tx-op idx amount kind))))))
+
+(defun run-kernel (data)
+  (declare (type simple-vector data))
+  (let ((accounts (make-array 64)))
+    (declare (type simple-vector accounts))
+    (dotimes (i 64)
+      (declare (type fixnum i))
+      (let ((kind (mod i 3))
+            (initial (+ 500 (* i 10))))
+        (setf (svref accounts i)
+              (cond
+                ((= kind 0)
+                 (make-instance 'account :ident i :balance initial))
+                ((= kind 1)
+                 (make-instance 'rewards-account :ident i :balance initial :rate (+ (mod i 5) 1)))
+                (t
+                 (make-instance 'vault-account :ident i :balance initial :rate (+ (mod i 4) 1) :floor-balance 200))))))
+    (let* ((n (length data))
+           (rounds (max 1 (floor n 425)))
+           (rolling 0))
+      (declare (type fixnum n rounds rolling))
+      (dotimes (round-idx rounds)
+        (declare (type fixnum round-idx))
+        (let ((bonus (logand round-idx 7)))
+          (declare (type fixnum bonus))
+          (dotimes (j n)
+            (declare (type fixnum j))
+            (let* ((op (the tx-op (svref data j)))
+                   (idx (tx-op-idx op))
+                   (amount (tx-op-amount op))
+                   (kind (tx-op-kind op))
+                   (acc (svref accounts (logand (+ idx round-idx) 63)))
+                   (adj (the fixnum (+ amount bonus))))
+              (declare (type fixnum idx amount kind adj))
+              (cond
+                ((= kind 0)
+                 (setf rolling (logand (+ rolling (the fixnum (deposit acc adj))) #x3FFFFFFF)))
+                ((= kind 1)
+                 (setf rolling (logand (+ rolling (the fixnum (withdraw acc adj))) #x3FFFFFFF)))
+                (t
+                 (setf rolling (logand (+ rolling (the fixnum (score acc))) #x3FFFFFFF))))))))
+      (let ((final-score 0)
+            (tx-total 0))
+        (declare (type fixnum final-score tx-total))
+        (dotimes (i 64)
+          (declare (type fixnum i))
+          (let ((acc (svref accounts i)))
+            (incf final-score (the fixnum (score acc)))
+            (incf tx-total (the fixnum (account-tx-count acc)))))
+        (list rolling final-score tx-total)))))
+
+(defun main ()
+  (run-case *name* *description* *default-size* *default-seed* #'prepare #'run-kernel))
+
+(eval-when (:execute)
+  (main))

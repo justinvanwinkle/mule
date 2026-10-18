@@ -47,6 +47,7 @@ from .ctype import (
     TextType,
     TupleType,
     ValueType,
+    ValueTypeVisitor,
 )
 from .ir1util import block_exception_target, made_lambda
 from .node import (
@@ -198,14 +199,16 @@ _INTERNED_TEXTS = {
     **{chr(code): TextType(chr(code)) for code in range(256)},
 }
 _INTERNED_TEXT_FACTS = {s: Fact(vt) for s, vt in _INTERNED_TEXTS.items()}
-_CANONICAL_FACTS.update(
-    {id(fact.type): fact for fact in _INTERNED_TEXT_FACTS.values()}
-)
+_CANONICAL_FACTS.update({id(fact.type): fact for fact in _INTERNED_TEXT_FACTS.values()})
 
 
-def _tuple_fact(arity: int | None) -> Fact:
+def _tuple_fact(
+    arity: int | None, elements: tuple[ValueType, ...] | None = None
+) -> Fact:
     if arity is None:
         return _UNBOUNDED_TUPLE_FACT
+    if elements is not None and not all(el is UNKNOWN for el in elements):
+        return Fact(TupleType(arity, elements))
     if 0 <= arity < 16:
         return _SMALL_TUPLE_FACTS[arity]
     return Fact(TupleType(arity))
@@ -237,6 +240,10 @@ class _LiteralFacts(ast.Visitor):
 
     def visit_Tuple(self, node):
         arity = len(node.elements)
+        if 0 < arity <= 16:
+            elements = tuple(el.accept(self) for el in node.elements)
+            if not all(el is UNKNOWN for el in elements):
+                return TupleType(arity, elements)
         return _SMALL_TUPLES[arity] if arity < 16 else TupleType(arity)
 
 
@@ -397,7 +404,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 info.keywords,
             )
             if resolved is UNKNOWN and not info.keywords:
-                resolved = self.walk.builtin_return_type(node.fun, len(arg_types))
+                resolved = self.walk.builtin_return_type(node.fun, arg_types)
             fact = _fact(resolved)
             self.invalidate()
             return fact
@@ -408,20 +415,6 @@ class _Propagation(NodeVisitor, LeafVisitor):
         assert info is not None
         name = info.name
         args = node.args
-        if info.derive_type is not None:
-            value_type = info.derive_type(node)
-            if value_type is not None:
-                if info.may_call or info.unsafe:
-                    self.invalidate()
-                return _fact(value_type)
-        if name == "%build_tuple":
-            return _tuple_fact(len(args))
-        if name == "%build_list":
-            return LIST_FACT
-        if name == "%unpack":
-            self.invalidate()
-            arity = self.type_of(args[1]).exact_integer()
-            return _tuple_fact(arity if arity is not None and arity >= 0 else None)
         if name in _BINARY_OPERATORS:
             left, right = self.type_of(args[0]), self.type_of(args[1])
             fact = _fact(left.binary(_BINARY_OPERATORS[name], right))
@@ -444,6 +437,31 @@ class _Propagation(NodeVisitor, LeafVisitor):
             ) and (left.may_run_user_code or right.may_run_user_code):
                 self.invalidate()
             return fact
+        if info.derive_type is not None:
+            value_type = info.derive_type(node)
+            if value_type is not None:
+                if info.may_call or info.unsafe:
+                    self.invalidate()
+                return _fact(value_type)
+        if name == "%build_tuple":
+            arity = len(args)
+            elements = (
+                tuple(self.type_of(arg) for arg in args) if 0 < arity <= 16 else None
+            )
+            return _tuple_fact(arity, elements)
+        if name == "%build_list":
+            return LIST_FACT
+        if name == "%unpack":
+            self.invalidate()
+            arity = self.type_of(args[1]).exact_integer()
+            if arity is not None and arity >= 0:
+                seq_type = self.type_of(args[0])
+                if seq_type.fits_tuple(TupleType(arity)):
+                    return _fact(seq_type)
+                return _tuple_fact(arity)
+            return _UNBOUNDED_TUPLE_FACT
+        if name == "%unpack_ref":
+            return _fact(self.type_of(args[0]).getitem_type(self.type_of(args[1])))
         if name == "%make_function":
             lambda_ = made_lambda(node)
             definition = linked(node.info, node, "info")
@@ -584,11 +602,12 @@ _SWAPPED = {
 }
 
 
-def _loop_headers(entry, successors) -> frozenset:
+def _loop_headers(entry, successors) -> tuple[frozenset, frozenset]:
     """Blocks that are targets of DFS back edges, where intervals need widening."""
     colors = {entry: 1}
     stack = [(entry, iter(successors[entry]))]
     headers = set()
+    back_edges = set()
     while stack:
         block, edges = stack[-1]
         target = next(edges, None)
@@ -597,10 +616,11 @@ def _loop_headers(entry, successors) -> frozenset:
             stack.pop()
         elif colors.get(target) == 1:
             headers.add(target)
+            back_edges.add((block, target))
         elif target not in colors:
             colors[target] = 1
             stack.append((target, iter(successors[target])))
-    return frozenset(headers)
+    return frozenset(headers), frozenset(back_edges)
 
 
 @dataclass(slots=True)
@@ -615,6 +635,7 @@ class LambdaGraph:
     predecessors: dict
     consumers: dict
     headers: frozenset
+    back_edges: frozenset
     global_names: tuple
     indirect: tuple
     volatile_keys: tuple
@@ -664,7 +685,7 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
                     consumers[node] = dest_block
             node.accept(scan)
     predecessors = {block: tuple(predecessors_sets[block]) for block in blocks}
-    headers = _loop_headers(entry, successors)
+    headers, back_edges = _loop_headers(entry, successors)
     global_names = tuple(scan.global_names)
     call_nodes = tuple(scan.call_nodes)
     closure = (
@@ -684,6 +705,7 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
         predecessors=predecessors,
         consumers=consumers,
         headers=headers,
+        back_edges=back_edges,
         global_names=global_names,
         indirect=indirect,
         volatile_keys=volatile_keys,
@@ -742,6 +764,7 @@ class _Walk:
         self.predecessors = graph.predecessors
         self.consumers = graph.consumers
         self.headers = graph.headers
+        self.back_edges = graph.back_edges
         self.global_names = graph.global_names
         self.indirect = graph.indirect
         self.volatile_keys = graph.volatile_keys
@@ -783,7 +806,9 @@ class _Walk:
         }
         self.initial.update(invalidated_globals)
 
-    def builtin_return_type(self, fun_lvar, arity: int) -> ValueType:
+    def builtin_return_type(
+        self, fun_lvar, arg_types: tuple[ValueType, ...]
+    ) -> ValueType:
         if self.lambda_.policy.safety >= 3 or self.lambda_.name.startswith(
             (
                 "mule_sequences_",
@@ -795,12 +820,9 @@ class _Walk:
         ):
             return UNKNOWN
         name = fun_lvar.use().accept(_GLOBAL_CALLEE_NAME)
-        if (
-            name is None
-            or name in self.rebound_globals
-            or name in self.global_targets
-        ):
+        if name is None or name in self.rebound_globals or name in self.global_targets:
             return UNKNOWN
+        arity = len(arg_types)
         if name == "len" and arity == 1:
             return _LENGTH_TYPE
         if name == "int" and arity <= 2:
@@ -817,6 +839,50 @@ class _Walk:
             return LIST_TYPE
         if name == "tuple" and arity <= 1:
             return _UNBOUNDED_TUPLE
+        if name == "abs" and arity == 1:
+            arg = arg_types[0]
+            if arg.fits(PYTHON_INTEGER):
+                if arg.minimum is not None and arg.minimum >= 0:
+                    return IntegerType(arg.minimum, arg.maximum)
+                if arg.minimum is not None and arg.maximum is not None:
+                    lo = (
+                        0
+                        if arg.minimum <= 0 <= arg.maximum
+                        else min(abs(arg.minimum), abs(arg.maximum))
+                    )
+                    hi = max(abs(arg.minimum), abs(arg.maximum))
+                    return IntegerType(lo, hi)
+                return IntegerType(0, None)
+            if arg is FLOAT:
+                return FLOAT
+        if name == "max" and arity >= 2:
+            if all(arg.fits(PYTHON_INTEGER) for arg in arg_types):
+                mins = [arg.minimum for arg in arg_types if arg.minimum is not None]
+                lo = max(mins) if mins else None
+                hi = (
+                    max(arg.maximum for arg in arg_types)
+                    if all(arg.maximum is not None for arg in arg_types)
+                    else None
+                )
+                return IntegerType(lo, hi)
+            if all(arg.fits_text(TEXT_TYPE) for arg in arg_types):
+                return TEXT_TYPE
+            if all(arg is FLOAT for arg in arg_types):
+                return FLOAT
+        if name == "min" and arity >= 2:
+            if all(arg.fits(PYTHON_INTEGER) for arg in arg_types):
+                lo = (
+                    min(arg.minimum for arg in arg_types)
+                    if all(arg.minimum is not None for arg in arg_types)
+                    else None
+                )
+                maxs = [arg.maximum for arg in arg_types if arg.maximum is not None]
+                hi = min(maxs) if maxs else None
+                return IntegerType(lo, hi)
+            if all(arg.fits_text(TEXT_TYPE) for arg in arg_types):
+                return TEXT_TYPE
+            if all(arg is FLOAT for arg in arg_types):
+                return FLOAT
         return UNKNOWN
 
     def invalidate_globals(self, state):
@@ -826,8 +892,9 @@ class _Walk:
 
     def run(self) -> Body:
         incoming, edge_states = {}, {}
-        if self.propagate(incoming, edge_states, widening=True):
-            self.propagate(incoming, edge_states, widening=False)
+        widened_keys = defaultdict(set)
+        if self.propagate(incoming, edge_states, widened_keys, widening=True):
+            self.propagate(incoming, edge_states, widened_keys, widening=False)
         self.resolve_call = None
         returned = BOTTOM
         facts = self.facts
@@ -845,8 +912,9 @@ class _Walk:
                     returned = returned.join(facts.get(use, NO_FACT).type)
         return Body(facts, returned, calls)
 
-    def propagate(self, incoming, edge_states, *, widening: bool) -> bool:
+    def propagate(self, incoming, edge_states, widened_keys, *, widening: bool) -> bool:
         visits = defaultdict(int)
+        key_visits = defaultdict(int)
         did_widen = False
         initial = (
             [self.entry]
@@ -855,12 +923,14 @@ class _Walk:
         )
         pending, queued = deque(initial), set(initial)
         cross_changed = set()
+        visited_edges = set()
         predecessors = self.predecessors
         successors = self.successors
         block_nodes = self.block_nodes
         handlers = self.handlers
         consumers = self.consumers
         headers = self.headers
+        back_edges = self.back_edges
         facts = self.facts
         visitor = _Propagation(self, {}, {})
 
@@ -870,11 +940,24 @@ class _Walk:
             operand_changed = block in cross_changed
             if operand_changed:
                 cross_changed.remove(block)
-            parents = [
-                edge_states[parent, block]
-                for parent in predecessors[block]
-                if (parent, block) in edge_states
-            ]
+            if widening or block not in headers:
+                parents = [
+                    edge_states[parent, block]
+                    for parent in predecessors[block]
+                    if (parent, block) in edge_states
+                ]
+                stale_backs = None
+            else:
+                parents = []
+                stale_backs = []
+                for parent in predecessors[block]:
+                    edge_key = parent, block
+                    if edge_key not in edge_states:
+                        continue
+                    if edge_key in back_edges and edge_key not in visited_edges:
+                        stale_backs.append(edge_states[edge_key])
+                    else:
+                        parents.append(edge_states[edge_key])
             if block is self.entry:
                 parents.append(self.initial)
             if not parents:
@@ -882,6 +965,13 @@ class _Walk:
             state = parents[0]
             for parent in parents[1:]:
                 state, _ = join_states(state, parent)
+            if stale_backs:
+                w_keys = widened_keys.get(block)
+                if w_keys:
+                    state = state.copy()
+                    for back_state in stale_backs:
+                        for key in w_keys:
+                            state[key] = join_fact(state[key], back_state[key])
             previous = incoming.get(block)
             if widening:
                 if previous is None:
@@ -890,12 +980,32 @@ class _Walk:
                     state, changed = join_states(previous, state)
                 if changed:
                     visits[block] += 1
-                    if block in headers and block in incoming and visits[block] > 3:
+                    if block in headers and block in incoming:
                         old_in = incoming[block]
-                        widened = {
-                            key: widen_fact(old_in[key], val)
-                            for key, val in state.items()
-                        }
+                        widened = {}
+                        for key, val in state.items():
+                            old_val = old_in[key]
+                            if (
+                                val is not old_val
+                                and val != old_val
+                                and any(
+                                    (pred, block) in back_edges
+                                    and (pred, block) in edge_states
+                                    and join_fact(
+                                        old_val, edge_states[pred, block][key]
+                                    )
+                                    is not old_val
+                                    for pred in predecessors[block]
+                                )
+                            ):
+                                key_visits[block, key] += 1
+                                widened_keys[block].add(key)
+                                if key_visits[block, key] > 2:
+                                    widened[key] = widen_fact(old_val, val)
+                                else:
+                                    widened[key] = val
+                            else:
+                                widened[key] = val
                         if widened != state:
                             did_widen = True
                             state = widened
@@ -903,11 +1013,15 @@ class _Walk:
                 elif not operand_changed:
                     continue
             elif state != previous:
-                if visits[block] < 2:
+                if visits[block] < 3:
                     visits[block] += 1
                     incoming[block] = state
+                elif not operand_changed:
+                    continue
                 else:
                     state = previous
+            elif not operand_changed:
+                continue
             # The visitor updates its state in place.
             state = state.copy()
             handler = handlers[block]
@@ -943,6 +1057,8 @@ class _Walk:
                 else:
                     edge = self.constrain_edge(block, target, visitor, state)
                 key = block, target
+                if not widening:
+                    visited_edges.add(key)
                 old_edge = edge_states.get(key)
                 if old_edge is None or (old_edge is not edge and old_edge != edge):
                     edge_states[key] = edge
@@ -961,6 +1077,43 @@ class _Walk:
         return state
 
 
+class _NarrowTruthiness(ValueTypeVisitor):
+    """Narrow a value type along a direct truthiness branch edge."""
+
+    def __init__(self, truth: bool):
+        self.truth = truth
+
+    def visit_ValueType(self, fact):
+        if self.truth:
+            return fact.narrow_none(False)
+        return fact
+
+    def visit_BooleanType(self, fact):
+        if not fact.may_be_unbound:
+            return BOOLEAN_TRUE if self.truth else BOOLEAN_FALSE
+        return fact
+
+    def visit_IntegerType(self, fact):
+        if not fact.may_be_unbound:
+            if (
+                not self.truth
+                and fact.minimum is not None
+                and fact.minimum <= 0
+                and (fact.maximum is None or fact.maximum >= 0)
+            ):
+                return _SMALL_INTS[0]
+            if self.truth:
+                if fact.minimum == 0:
+                    return fact.narrow(ast.ComparisonOperator.GREATER, 0, True)
+                if fact.maximum == 0:
+                    return fact.narrow(ast.ComparisonOperator.LESS, 0, True)
+        return fact
+
+
+_TRUE_NARROWING = _NarrowTruthiness(True)
+_FALSE_NARROWING = _NarrowTruthiness(False)
+
+
 class _ConstrainEdge(NodeVisitor):
     """Only a two-way branch narrows its edges."""
 
@@ -976,9 +1129,26 @@ class _ConstrainEdge(NodeVisitor):
         if node.consequent is node.alternative:
             return None
         truth = self.target is node.consequent
-        return node.test.use().accept(
+        narrowed_edge = node.test.use().accept(
             _ConstrainComparison(self.visitor, self.state, truth)
         )
+        if narrowed_edge is not None:
+            return narrowed_edge
+        local = self.visitor.origins.get(node.test)
+        if local is not None and local in self.visitor.state:
+            current = self.visitor.state[local]
+            narrowed = current.type.accept(
+                _TRUE_NARROWING if truth else _FALSE_NARROWING
+            )
+            if narrowed != current.type:
+                edge = self.state.copy()
+                edge[local] = (
+                    _fact(narrowed)
+                    if current.target is None
+                    else Fact(narrowed, current.target, current.proven)
+                )
+                return edge
+        return None
 
 
 _NEGATED_COMPARISON = {

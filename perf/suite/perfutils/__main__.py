@@ -138,6 +138,7 @@ def expand(tokens, source, binary):
     substitutions = {
         "python": sys.executable,
         "source": str(source),
+        "lisp_source": str(source.with_suffix(".lisp")),
         "binary": str(binary),
     }
     return [token.format_map(substitutions) for token in tokens]
@@ -360,9 +361,15 @@ def main():
         "affinity": sorted(os.sched_getaffinity(0)),
         "options": options,
         "sources": {case: digest(available[case]) for case in cases},
+        "lisp_sources": {
+            case: digest(available[case].with_suffix(".lisp"))
+            for case in cases
+            if available[case].with_suffix(".lisp").is_file()
+        },
         "helpers": {
             path.name: digest(path)
-            for path in sorted(Path(__file__).parent.glob("*.py"))
+            for path in sorted(Path(__file__).parent.iterdir())
+            if path.is_file() and path.suffix in (".py", ".lisp")
         },
         "runtimes": runtimes,
         "builds": [],

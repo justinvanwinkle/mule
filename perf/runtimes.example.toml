@@ -17,5 +17,22 @@ command = ["{binary}"]
 build = ["{python}", "-m", "mule.compiler", "{source}", "-o", "{binary}", "-O", "2"]
 # Append "--lto" to this build command to enable full link-time optimization.
 
+[[runtime]]
+name = "sbcl"
+cwd = ".."
+command = ["{binary}"]
+build = [
+  "sbcl",
+  "--noinform",
+  "--no-sysinit",
+  "--no-userinit",
+  "--non-interactive",
+  "--eval",
+  "(let ((fasl (compile-file \"{lisp_source}\" :output-file \"{binary}.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+  "--eval",
+  "(sb-ext:save-lisp-and-die \"{binary}\" :toplevel #'main :executable t :save-runtime-options t)",
+]
+version_command = ["sbcl", "--version"]
+
 # A different Mule checkout should use its own compiler-host Python executable,
 # e.g. /absolute/path/to/other-checkout/.venv/bin/python, and that checkout's cwd.

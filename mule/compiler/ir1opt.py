@@ -22,24 +22,43 @@ import functools
 from mule import ast
 
 from . import fndb
+from .constraint import constant_type
+from .ctype import (
+    BOTTOM,
+    FUNCTION_TYPE,
+    UNKNOWN,
+    BooleanType,
+    IntegerType,
+    NoneType,
+    TextType,
+    ValueType,
+    ValueTypeVisitor,
+)
 from .ir1util import (
+    _FLUSH_DEAD_REFERENCE,
+    _flush_operand,
     aver,
-    delete_ref,
-    flush_dest,
+    flush_combination,
     reoptimize_lvar,
+    replace_combination_with_lvar,
+    retarget_known_combination,
     unlink_blocks,
     unlink_node,
 )
+from .knownfun import KNOWN, defoptimizer
 from .node import (
     CallKind,
+    Cast,
     Combination,
     Component,
     Constant,
     CtranKind,
     Exit,
+    GlobalVar,
     If,
-    KnownFunction,
     LeafVisitor,
+    Lvar,
+    Node,
     NodeVisitor,
     Ref,
     linked,
@@ -77,6 +96,83 @@ _UNARY_NAMES = {
 }
 # Folded integers stay within the bounds literal syntax reaches comfortably.
 _FOLD_LIMIT_BITS = 128
+
+
+class _DeriveNodeType(NodeVisitor, LeafVisitor):
+    def visit_Node(self, node):
+        return UNKNOWN
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return leaf.type if leaf.type is not None else UNKNOWN
+
+    def visit_Constant(self, leaf: Constant):
+        return constant_type(leaf.value)
+
+    def visit_Lambda(self, leaf):
+        return FUNCTION_TYPE
+
+    def visit_LambdaVar(self, leaf):
+        if leaf.type is not None:
+            return leaf.type
+        if leaf.optimistic_type is not None and leaf.optimistic_type is not BOTTOM:
+            return leaf.optimistic_type
+        return UNKNOWN
+
+    def visit_Cast(self, node: Cast):
+        if node.value is None:
+            return UNKNOWN
+        return node.contract.refine(lvar_type(node.value))
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is not None
+            and node.fun_info.derive_type is not None
+        ):
+            derived = node.fun_info.derive_type(node)
+            if derived is not None:
+                return derived
+        return fndb.derive_builtin_call_type(node)
+
+    def visit_Exit(self, node: Exit):
+        return lvar_type(node.value) if node.value is not None else UNKNOWN
+
+
+_DERIVE_NODE_TYPE = _DeriveNodeType()
+
+
+class _NodeDerivedType(NodeVisitor):
+    def visit_Node(self, node):
+        return UNKNOWN
+
+    def visit_ValuedNode(self, node):
+        if node.derived_type is None:
+            node.derived_type = node.accept(_DERIVE_NODE_TYPE)
+        return node.derived_type
+
+
+_NODE_DERIVED_TYPE = _NodeDerivedType()
+
+
+def node_derived_type(node: Node) -> ValueType:
+    """The derived value type of ``node``, computed and cached on demand."""
+    return node.accept(_NODE_DERIVED_TYPE)
+
+
+def lvar_type(lvar: Lvar) -> ValueType:
+    """The union of the derived types of ``lvar``'s producing nodes."""
+    if lvar.derived_type is not None:
+        return lvar.derived_type
+    if not lvar.uses:
+        return BOTTOM
+    derived = node_derived_type(lvar.uses[0])
+    for use in lvar.uses[1:]:
+        derived = derived.join(node_derived_type(use))
+    lvar.derived_type = derived
+    return derived
 
 
 def ir1_optimize_until_done(component: Component) -> bool:
@@ -130,21 +226,7 @@ class _MakeSliceProducer(NodeVisitor):
 _MAKE_SLICE_PRODUCER = _MakeSliceProducer()
 
 
-class _RetargetKnownRef(NodeVisitor):
-    def __init__(self, info):
-        self.info = info
-
-    def visit_Node(self, node):
-        return None
-
-    def visit_Ref(self, node: Ref):
-        if node in node.leaf.refs:
-            node.leaf.refs.remove(node)
-        leaf = KnownFunction(self.info)
-        node.leaf = leaf
-        leaf.refs.append(node)
-
-
+@defoptimizer("%getitem")
 def _optimize_getslice(node: Combination) -> bool:
     if len(node.args) != 2 or len(node.fun.uses) != 1:
         return False
@@ -162,20 +244,50 @@ def _optimize_getslice(node: Combination) -> bool:
     ):
         return False
     start_lvar, stop_lvar, step_lvar = slice_node.args
-    for arg in (start_lvar, stop_lvar, step_lvar):
-        arg.dest = node
-    node.args = [node.args[0], start_lvar, stop_lvar, step_lvar]
-    node.fun_info = fndb.GETSLICE
-    fun_ref.accept(_RetargetKnownRef(fndb.GETSLICE))
     slice_node.args = []
-    slice_node.lvar = None
-    slice_lvar.uses.clear()
-    slice_lvar.dest = None
+    retarget_known_combination(
+        node, fndb.GETSLICE, [node.args[0], start_lvar, stop_lvar, step_lvar]
+    )
     _flush_operand(slice_node.fun)
     unlink_node(slice_node)
-    if node.lvar is not None:
-        reoptimize_lvar(node.lvar)
     return True
+
+
+_PROTOCOL_PREFIXES = (
+    "mule_sequences_",
+    "mule_format_",
+    "mule_arguments_",
+    "mule_native_class_",
+    "mule_print_",
+)
+
+
+class _PredictableGlobalFunInfo(NodeVisitor, LeafVisitor):
+    """Return the ``FunInfo`` of an unmutated builtin global reference, or None."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        if node.lexenv.policy.safety >= 3:
+            return None
+        home = node.home_lambda
+        if home is not None and (
+            home.policy.safety >= 3 or home.name.startswith(_PROTOCOL_PREFIXES)
+        ):
+            return None
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        if leaf.sets:
+            return None
+        return KNOWN.get(leaf.name)
+
+
+_PREDICTABLE_GLOBAL_FUN_INFO = _PredictableGlobalFunInfo()
 
 
 class _OptimizeNode(NodeVisitor):
@@ -184,20 +296,57 @@ class _OptimizeNode(NodeVisitor):
     def visit_Node(self, node):
         return False
 
-    def visit_Combination(self, node):
+    def visit_Combination(self, node: Combination):
         if node.kind is not CallKind.KNOWN:
-            return False
-        if node.lvar is None and node.fun_info.flushable:
+            if (
+                node.kind not in (CallKind.FULL, CallKind.GUARDED)
+                or len(node.fun.uses) != 1
+                or (node.info is not None and node.info.keywords)
+                or node.lexenv.policy.safety >= 3
+            ):
+                return False
+            home = node.home_lambda
+            if home is not None and (
+                home.policy.safety >= 3 or home.name.startswith(_PROTOCOL_PREFIXES)
+            ):
+                return False
+            info = node.fun.uses[0].accept(_PREDICTABLE_GLOBAL_FUN_INFO)
+            if info is None:
+                return False
+            return self._run_transforms(node, info)
+        info = linked(node.fun_info, node, "function info")
+        if node.lvar is None and info.flushable:
             flush_combination(node)
             return True
-        if node.fun_info.name == "%getitem":
-            return _optimize_getslice(node)
-        if node.fun_info.name == "%build_tuple" and node.fun_info.foldable:
-            return _constant_fold_tuple(node)
-        if node.fun_info.name in _UNARY_NAMES:
-            return _constant_fold_unary(node)
-        if node.fun_info.name in _BINARY_NAMES or node.fun_info.name in _COMPARE_NAMES:
-            return _constant_fold(node)
+        if info.name == "%build_tuple" and info.foldable and _constant_fold_tuple(node):
+            return True
+        if info.name in _UNARY_NAMES and _constant_fold_unary(node):
+            return True
+        if (
+            info.name in _BINARY_NAMES or info.name in _COMPARE_NAMES
+        ) and _constant_fold(node):
+            return True
+        if info.optimizer is not None and info.optimizer(node):
+            return True
+        return self._run_transforms(node, info)
+
+    @staticmethod
+    def _run_transforms(node: Combination, info) -> bool:
+        for transform in info.transforms:
+            if transform.policy is not None and not transform.policy(node):
+                continue
+            if transform.arg_types is not None:
+                if len(node.args) != len(transform.arg_types):
+                    continue
+                if not all(
+                    lvar_type(arg).fits(expected)
+                    for arg, expected in zip(
+                        node.args, transform.arg_types, strict=True
+                    )
+                ):
+                    continue
+            if transform.fun(node):
+                return True
         return False
 
     def visit_If(self, node):
@@ -207,12 +356,53 @@ class _OptimizeNode(NodeVisitor):
 _OPTIMIZE_NODE = _OptimizeNode()
 
 
+class _PrepareNodeOptimize(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_ValuedNode(self, node):
+        old_type = node.derived_type
+        if node.reoptimize:
+            node.derived_type = None
+        return old_type
+
+
+_PREPARE_NODE_OPTIMIZE = _PrepareNodeOptimize()
+
+
+class _UpdateDerivedType(NodeVisitor):
+    def __init__(self, old_type: ValueType | None, force: bool):
+        self.old_type = old_type
+        self.force = force
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_ValuedNode(self, node):
+        if not self.force and node.derived_type is not None:
+            new_type = node.derived_type
+        else:
+            new_type = node.accept(_DERIVE_NODE_TYPE)
+            node.derived_type = new_type
+        if new_type != self.old_type and node.lvar is not None:
+            node.lvar.derived_type = None
+            reoptimize_lvar(node.lvar)
+
+
 def _optimize_block(block) -> bool:
     changed = False
     for node in list(block.nodes()):
         if node.prev is None:
             continue
+        was_reoptimize = node.reoptimize
+        old_type = node.accept(_PREPARE_NODE_OPTIMIZE)
+        node.reoptimize = False
         changed |= node.accept(_OPTIMIZE_NODE)
+        if node.prev is None:
+            continue
+        if was_reoptimize or node.reoptimize or old_type is None:
+            node.reoptimize = False
+            node.accept(_UpdateDerivedType(old_type, True))
     return changed
 
 
@@ -240,6 +430,49 @@ def constant_literal(lvar):
     if len(lvar.uses) != 1:
         return None
     return lvar.uses[0].accept(_CONSTANT_VALUE)
+
+
+class _SingletonLiteral(ValueTypeVisitor):
+    """The AST literal a singleton value type proves, or None."""
+
+    def visit_ValueType(self, fact: ValueType):
+        return None
+
+    def visit_IntegerType(self, fact: IntegerType):
+        exact = fact.exact_integer()
+        return ast.IntegerLiteral(exact) if exact is not None else None
+
+    def visit_BooleanType(self, fact: BooleanType):
+        if fact.may_be_unbound:
+            return None
+        if fact.minimum == 1 and fact.maximum == 1:
+            return ast.BooleanLiteral(True)
+        if fact.minimum == 0 and fact.maximum == 0:
+            return ast.BooleanLiteral(False)
+        return None
+
+    def visit_NoneType(self, fact: NoneType):
+        return None if fact.may_be_unbound else ast.NoneLiteral()
+
+    def visit_TextType(self, fact: TextType):
+        text = fact.interned_text()
+        if text is not None:
+            return ast.TextLiteral(text)
+        if not fact.may_be_unbound and fact.literal is not None:
+            return ast.TextLiteral(fact.literal)
+        return None
+
+
+_SINGLETON_LITERAL = _SingletonLiteral()
+
+
+def constant_lvar_value(lvar: Lvar):
+    """The constant literal ``lvar`` delivers, either from a single ``Constant``
+    reference or from a singleton derived type."""
+    literal = constant_literal(lvar)
+    if literal is not None:
+        return literal
+    return lvar_type(lvar).accept(_SINGLETON_LITERAL)
 
 
 class _ImmutableLiteral(ast.Visitor):
@@ -461,46 +694,13 @@ class _FoldDomainOf(ast.Visitor):
 _FOLD_DOMAIN_OF = _FoldDomainOf()
 
 
-class _FlushDeadReference(NodeVisitor, LeafVisitor):
-    """Deletes an unused reference whose evaluation has no effect."""
-
-    def visit_Ref(self, node):
-        if node.lvar is None and not node.final and node.leaf.accept(self):
-            delete_ref(node)
-            unlink_node(node)
-
-    def visit_Leaf(self, leaf):
-        return False
-
-    def visit_Constant(self, leaf):
-        return True
-
-    def visit_KnownFunction(self, leaf):
-        return True
-
-    def visit_Lambda(self, leaf):
-        return True
-
-
-_FLUSH_DEAD_REFERENCE = _FlushDeadReference()
-
-
-def _flush_operand(lvar) -> None:
-    if lvar is None:
-        return
-    uses = list(lvar.uses)
-    flush_dest(lvar)
-    for use in uses:
-        if use.prev is not None:
-            use.accept(_FLUSH_DEAD_REFERENCE)
-
-
 def replace_combination_with_constant(node: Combination, literal) -> None:
     """Substitute a constant reference for a combination and flush its
     operands (``replace-combination-with-constant``)."""
     lvar = linked(node.lvar, node, "lvar")
     leaf = Constant(literal)
     ref = Ref(node.lexenv, node.source, leaf)
+    ref.derived_type = constant_type(literal)
     leaf.refs.append(ref)
     node.lvar = None
     lvar.uses.remove(node)
@@ -522,14 +722,6 @@ def replace_combination_with_constant(node: Combination, literal) -> None:
     ref.lvar = lvar
     lvar.uses.append(ref)
     reoptimize_lvar(lvar)
-
-
-def flush_combination(node: Combination) -> None:
-    """Delete an unused flushable call and any constant references it consumed."""
-    _flush_operand(node.fun)
-    for arg in node.args:
-        _flush_operand(arg)
-    unlink_node(node)
 
 
 def _flush_dead_operands(block) -> None:
@@ -606,8 +798,14 @@ def _optimize_if(node: If) -> bool:
 
 __all__ = [
     "MAX_OPTIMIZE_ITERATIONS",
+    "constant_literal",
+    "constant_lvar_value",
     "flush_combination",
     "ir1_optimize",
     "ir1_optimize_until_done",
+    "lvar_type",
+    "node_derived_type",
     "replace_combination_with_constant",
+    "replace_combination_with_lvar",
+    "retarget_known_combination",
 ]

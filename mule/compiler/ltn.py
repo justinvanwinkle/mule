@@ -35,6 +35,7 @@ from .node import (
     Set,
     linked,
 )
+from .seqtran import is_predictable_len_call, known_length_primitive
 from .vmdef import operand_restriction_ok, primitive_type_ok, templates_for
 from .vop import (
     BOOLEAN_T,
@@ -120,6 +121,22 @@ def ltn_analyze(lambda_: Lambda, context: EntryContext) -> None:
             node.accept(visitor)
 
 
+class _PredictableLenCalleeDest(NodeVisitor):
+    def __init__(self, lvar, context: EntryContext):
+        self.lvar = lvar
+        self.context = context
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Combination(self, node: Combination) -> bool:
+        if node.fun is not self.lvar or not is_predictable_len_call(node):
+            return False
+        arg = node.args[0]
+        arg_type = self.context.type_of(arg.use()) if len(arg.uses) == 1 else UNKNOWN
+        return known_length_primitive(arg_type) is not None
+
+
 class _Annotate(NodeVisitor, LeafVisitor):
     def __init__(self, context: EntryContext):
         self.context = context
@@ -166,7 +183,16 @@ class _Annotate(NodeVisitor, LeafVisitor):
         self.annotate_1_value_lvar(self.lvar)
 
     def visit_Ref(self, node: Ref):
-        self.lvar = node.lvar
+        lvar = node.lvar
+        if (
+            self.context.plan is None
+            and lvar is not None
+            and lvar.dest is not None
+            and lvar.dest.accept(_PredictableLenCalleeDest(lvar, self.context))
+        ):
+            self.annotate_delayed(lvar)
+            return
+        self.lvar = lvar
         node.leaf.accept(self)
         self.lvar = None
 

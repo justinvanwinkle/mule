@@ -306,6 +306,7 @@ pub unsafe extern "C" fn mule_storage_write(
                 if let Some(slot) = values.get_mut(index) {
                     let old = *slot;
                     *slot = object::retain(replacement);
+                    object::track_if_needed(value, replacement);
                     object::release(old);
                     return object::none_value();
                 }
@@ -368,10 +369,17 @@ unsafe fn slice_bound(value: Value, default: i64, len: i64) -> Option<usize> {
             let adjusted = if raw < 0 { raw + len } else { raw };
             return Some(adjusted.clamp(0, len) as usize);
         }
-        if matches!(&(*value).data, Data::None) {
-            return Some(default as usize);
+        match &(*value).data {
+            Data::None => Some(default as usize),
+            Data::Bool(flag) => {
+                let raw = i64::from(*flag);
+                Some(raw.clamp(0, len) as usize)
+            }
+            Data::BigInt(bigint, ty, ..) if ty.is_null() => {
+                Some(if bigint.sign() < 0 { 0 } else { len as usize })
+            }
+            _ => None,
         }
-        None
     }
 }
 
@@ -404,6 +412,9 @@ pub unsafe extern "C" fn mule_fast_getslice(
                 else {
                     return null_mut();
                 };
+                if s == 0 && e >= text.len() {
+                    return object::retain(sequence);
+                }
                 object::text_slice_range(text, s, e)
             }
             Data::Bytes(values, ty, ..) if ty.is_null() => {
@@ -443,6 +454,51 @@ pub unsafe extern "C" fn mule_fast_getslice(
         }
     }
 }
+
+/// Fast path for `sequence[start:stop] == target` (or `!=` when `invert != 0`)
+/// when `sequence` and `target` are exact builtin `str` objects (`ty.is_null()`)
+/// and `start`/`stop` are `None` or fixnums. Compares the slice in-place
+/// without allocating a substring; falls back to `mule_fast_getslice` +
+/// `mule_compare` if any precondition is not met, or returns NULL when the
+/// general compiled `getslice` protocol is required.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_slice_eq(
+    sequence: Value,
+    start: Value,
+    stop: Value,
+    target: Value,
+    invert: i32,
+) -> Value {
+    unsafe {
+        if !sequence.is_null()
+            && !object::is_fixnum(sequence)
+            && !target.is_null()
+            && !object::is_fixnum(target)
+        {
+            if let (Data::Text(text, ty, ..), Data::Text(other, other_ty, ..)) =
+                (&(*sequence).data, &(*target).data)
+            {
+                if ty.is_null() && other_ty.is_null() {
+                    let len = text.len() as i64;
+                    if let (Some(s), Some(e)) =
+                        (slice_bound(start, 0, len), slice_bound(stop, len, len))
+                    {
+                        let matched = text.slice_eq(s, e, other);
+                        return object::bool_value(if invert != 0 { !matched } else { matched });
+                    }
+                }
+            }
+        }
+        let slice = mule_fast_getslice(sequence, start, stop, object::none_value());
+        if slice.is_null() {
+            return null_mut();
+        }
+        let op = if invert != 0 { 1 } else { 0 };
+        let result = object::compare(op, slice, target);
+        object::release(slice);
+        result
+    }
+}
 /// Fast path for `sequence[index] = item` when `sequence` is an exact builtin
 /// `list` (`ty.is_null()`) and `index` is an in-bounds fixnum. Returns 1 when
 /// handled (retaining `item` and releasing the old element), or 0 when the
@@ -462,6 +518,7 @@ pub unsafe extern "C" fn mule_fast_setitem(sequence: Value, index: Value, item: 
                     let slot = values.get_unchecked_mut(pos as usize);
                     let old = *slot;
                     *slot = object::retain(item);
+                    object::track_if_needed(sequence, item);
                     object::release(old);
                     return 1;
                 }
@@ -480,11 +537,105 @@ pub unsafe extern "C" fn mule_storage_append(value: Value, element: Value) -> Va
                     return null_mut();
                 }
                 values.push(object::retain(element));
+                object::track_if_needed(value, element);
                 return object::none_value();
             }
         }
         object::error("TypeError", "mutable list storage is required");
         null_mut()
+    }
+}
+/// Fast path for `str.find(sub[, start[, end]])` and `str.rfind(sub[, start[, end]])`
+/// when `receiver` and `sub` are proven strings and `start`/`end` are fixnums or `None`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_find(
+    receiver: Value,
+    sub: Value,
+    start: Value,
+    end: Value,
+    reverse: i32,
+) -> Value {
+    unsafe {
+        if !receiver.is_null()
+            && !object::is_fixnum(receiver)
+            && !sub.is_null()
+            && !object::is_fixnum(sub)
+        {
+            if let (Data::Text(text, ty, ..), Data::Text(sub_text, sub_ty, ..)) =
+                (&(*receiver).data, &(*sub).data)
+            {
+                if ty.is_null() && sub_ty.is_null() {
+                    let len = text.len() as i64;
+                    let s = if start.is_null() {
+                        Some(0usize)
+                    } else if object::is_fixnum(start) {
+                        let raw = object::fixnum(start);
+                        let adj = if raw < 0 {
+                            (raw + len).max(0)
+                        } else if raw > len {
+                            len + 1
+                        } else {
+                            raw
+                        };
+                        Some(adj as usize)
+                    } else if matches!(&(*start).data, Data::None) {
+                        Some(0usize)
+                    } else {
+                        None
+                    };
+                    let e = if end.is_null() {
+                        Some(text.len())
+                    } else if object::is_fixnum(end) {
+                        let raw = object::fixnum(end);
+                        let adj = if raw > len {
+                            len
+                        } else if raw < 0 {
+                            (raw + len).max(0)
+                        } else {
+                            raw
+                        };
+                        Some(adj as usize)
+                    } else if matches!(&(*end).data, Data::None) {
+                        Some(text.len())
+                    } else {
+                        None
+                    };
+                    if let (Some(s), Some(e)) = (s, e) {
+                        let found = if reverse != 0 {
+                            text.rfind(sub_text, s, e)
+                        } else {
+                            text.find(sub_text, s, e)
+                        };
+                        return object::small(found.map_or(-1, |pos| pos as i64));
+                    }
+                }
+            }
+        }
+        let mut bound = null_mut();
+        let attr = if reverse != 0 {
+            c"rfind".as_ptr()
+        } else {
+            c"find".as_ptr()
+        };
+        let method = crate::classes::mule_resolve_method(receiver, attr, null_mut(), &mut bound);
+        if method.is_null() {
+            return null_mut();
+        }
+        let s_arg = if start.is_null() {
+            object::none_value()
+        } else {
+            start
+        };
+        let e_arg = if end.is_null() {
+            object::none_value()
+        } else {
+            end
+        };
+        let args = [sub, s_arg, e_arg];
+        let result = crate::classes::mule_call_resolved(method, bound, 3, args.as_ptr());
+        object::release(bound);
+        object::release(method);
+        result
     }
 }
 /// Insert an element before a position no greater than the list's length.
@@ -509,6 +660,7 @@ pub unsafe extern "C" fn mule_storage_insert(
                     return null_mut();
                 }
                 values.insert(index, object::retain(element));
+                object::track_if_needed(value, element);
                 return object::none_value();
             }
         }

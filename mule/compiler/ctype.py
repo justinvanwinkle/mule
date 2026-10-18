@@ -1009,9 +1009,7 @@ class TextType(PrimitiveType):
     def interned_text(self) -> str | None:
         if self.may_be_unbound or self.literal is None:
             return None
-        if self.literal == "" or (
-            len(self.literal) == 1 and ord(self.literal) <= 0xFF
-        ):
+        if self.literal == "" or (len(self.literal) == 1 and ord(self.literal) <= 0xFF):
             return self.literal
         return None
 
@@ -1038,7 +1036,9 @@ class TextType(PrimitiveType):
 
     def widen(self, new):
         if new.fits_text(TEXT_TYPE) and self.literal != new.interned_text():
-            return TEXT_TYPE if not new.may_be_unbound else TextType(may_be_unbound=True)
+            return (
+                TEXT_TYPE if not new.may_be_unbound else TextType(may_be_unbound=True)
+            )
         return new
 
     def binary(self, operator, right):
@@ -1278,6 +1278,7 @@ class TupleType(ValueType):
     """
 
     arity: int | None = None
+    elements: tuple[ValueType, ...] | None = None
 
     def annotation_conflict(self, contract):
         return True
@@ -1295,13 +1296,38 @@ class TupleType(ValueType):
     def join_tuple(self, left):
         if left is self:
             return self
-        arity = self.arity if self.arity == left.arity else None
+        if self.arity is not None and self.arity == left.arity:
+            arity = self.arity
+            if (
+                self.elements is not None
+                and left.elements is not None
+                and len(self.elements) == len(left.elements)
+            ):
+                joined_elems = tuple(
+                    l_el.join(r_el) for l_el, r_el in zip(left.elements, self.elements)
+                )
+                elements = (
+                    None if all(el is UNKNOWN for el in joined_elems) else joined_elems
+                )
+            else:
+                elements = None
+        else:
+            arity = None
+            elements = None
         unbound = self.may_be_unbound or left.may_be_unbound
-        if arity == self.arity and unbound == self.may_be_unbound:
+        if (
+            arity == self.arity
+            and elements == self.elements
+            and unbound == self.may_be_unbound
+        ):
             return self
-        if arity == left.arity and unbound == left.may_be_unbound:
+        if (
+            arity == left.arity
+            and elements == left.elements
+            and unbound == left.may_be_unbound
+        ):
             return left
-        return TupleType(arity, may_be_unbound=unbound)
+        return TupleType(arity, elements, may_be_unbound=unbound)
 
     def binary(self, operator, right):
         if self.may_be_unbound:
@@ -1310,12 +1336,31 @@ class TupleType(ValueType):
 
     def binary_tuple(self, operator, left):
         if not left.may_be_unbound and operator == ast.BinaryOperator.ADD:
-            arity = (
-                left.arity + self.arity
-                if left.arity is not None and self.arity is not None
-                else None
-            )
-            return TupleType(arity)
+            if left.arity is not None and self.arity is not None:
+                elements = (
+                    left.elements + self.elements
+                    if left.elements is not None and self.elements is not None
+                    else None
+                )
+                return TupleType(left.arity + self.arity, elements)
+            return TupleType()
+        return UNKNOWN
+
+    def getitem_type(self, index):
+        if self.may_be_unbound or index.may_be_unbound:
+            return UNKNOWN
+        if self.elements is not None:
+            idx = index.exact_integer()
+            if idx is not None:
+                if idx < 0:
+                    idx += len(self.elements)
+                if 0 <= idx < len(self.elements):
+                    return self.elements[idx]
+            if len(self.elements) > 0 and index.fits(PYTHON_INTEGER):
+                joined = self.elements[0]
+                for element in self.elements[1:]:
+                    joined = joined.join(element)
+                return joined
         return UNKNOWN
 
     def accepts(self, actual):
@@ -1668,6 +1713,22 @@ def _integer_binary(operator, left, right, factory=IntegerType):
             and 0 <= rlo <= 256
         ):
             return IntegerType(lo << rlo, None)
+        if operator == ast.BinaryOperator.MODULO:
+            if rlo is not None and rlo > 0 and rhi is not None:
+                return factory(0, rhi - 1)
+            if rlo is not None and rhi is not None and rhi < 0:
+                return factory(rlo + 1, 0)
+        if (
+            operator == ast.BinaryOperator.FLOOR_DIVIDE
+            and lo is not None
+            and lo >= 0
+            and rlo is not None
+            and rlo > 0
+        ):
+            return factory(
+                lo // rhi if rhi is not None else 0,
+                hi // rlo if hi is not None else None,
+            )
         return INTEGER
     minimum = maximum = None
     if operator == ast.BinaryOperator.MULTIPLY:
@@ -1699,11 +1760,23 @@ def _integer_binary(operator, left, right, factory=IntegerType):
             else:
                 values = [lo >> rlo, lo >> rhi, hi >> rlo, hi >> rhi]
             minimum, maximum = min(values), max(values)
-    elif operator in {ast.BinaryOperator.FLOOR_DIVIDE, ast.BinaryOperator.MODULO}:
+    elif operator == ast.BinaryOperator.FLOOR_DIVIDE:
+        if rlo > 0 or rhi < 0:
+            values = [lo // rlo, lo // rhi, hi // rlo, hi // rhi]
+            minimum, maximum = min(values), max(values)
+    elif operator == ast.BinaryOperator.MODULO:
         if lo == hi and rlo == rhi and rlo != 0:
-            minimum = maximum = (
-                lo // rlo if operator == ast.BinaryOperator.FLOOR_DIVIDE else lo % rlo
-            )
+            minimum = maximum = lo % rlo
+        elif rlo > 0:
+            if lo >= 0 and hi < rlo:
+                minimum, maximum = lo, hi
+            else:
+                minimum, maximum = 0, rhi - 1
+        elif rhi < 0:
+            if hi <= 0 and lo > rhi:
+                minimum, maximum = lo, hi
+            else:
+                minimum, maximum = rlo + 1, 0
     elif operator == ast.BinaryOperator.POWER:
         if rhi <= 32 and max(abs(lo), abs(hi)).bit_length() <= 128:
             bases = {lo, hi} | {value for value in (-1, 0, 1) if lo <= value <= hi}

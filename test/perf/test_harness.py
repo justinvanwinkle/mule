@@ -182,3 +182,44 @@ def test_history_shows_failures_and_limits_runs(tmp_path):
     assert len(lines) == 3
     assert "build_failed" in lines[2]
     assert history.table([]) == ["no history"]
+
+
+def test_history_lists_all_candidate_runtimes_including_sbcl(tmp_path):
+    path = tmp_path / "history.jsonl"
+    report = _report(0.020)
+    report["runtimes"].append(
+        {
+            "name": "sbcl",
+            "revision": {
+                "commit": "0123456789abcdef",
+                "tracked_diff_sha256": history._CLEAN_DIFF,
+            },
+            "version": "SBCL 2.6.4\n",
+        }
+    )
+    report["rows"].append(
+        {
+            "case": "integer_accumulation",
+            "runtime": "sbcl",
+            "status": "ok",
+            "samples": [],
+            "summary": {
+                field: {"median": 0.002, "min": 0.002, "max": 0.002, "stdev": 0.0}
+                for field in (
+                    "kernel_seconds",
+                    "process_seconds",
+                    "preparation_seconds",
+                )
+            },
+            "speedup": {"kernel_seconds": 5.0, "process_seconds": 5.0},
+        }
+    )
+    history.record(report, path)
+    runs = history.load(path)
+    lines = history.table(runs)
+    assert len(lines) == 4
+    assert "mule" in lines[2] and "20 ms 0.5x" in lines[2]
+    assert "sbcl" in lines[3] and "2 ms 5x" in lines[3]
+    sbcl_only = history.table(runs, runtime_name="sbcl")
+    assert len(sbcl_only) == 3
+    assert "sbcl" in sbcl_only[2]

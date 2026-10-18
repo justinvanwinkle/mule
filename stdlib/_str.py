@@ -11,7 +11,6 @@ from _mule_native import bytes_from_values
 from _mule_native import byte_length
 from _mule_native import byte_copy
 from _mule_native import read_byte
-from _mule_native import text_from_codepoints
 from _descriptors import staticmethod
 from _slice import is_slice, positions
 from _unicode_data import (
@@ -100,52 +99,65 @@ def _matches_at(text, sub, position, size):
 
 def find_in(text, sub, start, end):
     """The first index of ``sub`` within clamped ``start:end``, or -1."""
-    if start < 0 or end < 0:
+    if start < 0 or end < 0 or end > _text_length(text):
         return -1
     size = _text_length(sub)
-    if end - start < size:
+    if start > end - size:
         return -1
     if size == 0:
         return start
     first = _text_codepoint(sub, 0)
     position = start
-    if size == 1:
+    if size <= 1:
         while position < end:
             if _text_codepoint(text, position) == first:
                 return position
             position += 1
         return -1
-    last = end - size
-    while position <= last:
-        if _text_codepoint(text, position) == first and _matches_at(
-            text, sub, position, size
-        ):
-            return position
+    limit = end - size + 1
+    while position < limit:
+        if _text_codepoint(text, position) == first:
+            offset = 1
+            cursor = position + 1
+            while offset < size and cursor < end:
+                if _text_codepoint(text, cursor) != _text_codepoint(sub, offset):
+                    break
+                offset += 1
+                cursor += 1
+            if offset == size:
+                return position
         position += 1
     return -1
 
 
 def rfind_in(text, sub, start, end):
-    if start < 0 or end < 0:
+    if start < 0 or end < 0 or end > _text_length(text):
         return -1
     size = _text_length(sub)
-    if end - start < size:
+    if start > end - size:
         return -1
     if size == 0:
         return end
     first = _text_codepoint(sub, 0)
-    position = end - size
-    if size == 1:
+    if size <= 1:
+        position = end - 1
         while position >= start:
             if _text_codepoint(text, position) == first:
                 return position
             position -= 1
         return -1
+    position = end - size
     while position >= start:
-        if _text_codepoint(text, position) == first and _matches_at(
-            text, sub, position, size
-        ):
-            return position
+        if _text_codepoint(text, position) == first:
+            offset = 1
+            cursor = position + 1
+            while offset < size and cursor < end:
+                if _text_codepoint(text, cursor) != _text_codepoint(sub, offset):
+                    break
+                offset += 1
+                cursor += 1
+            if offset == size:
+                return position
         position -= 1
     return -1
 
@@ -361,7 +373,7 @@ def _codec_name(encoding):
             code = 45
         codes.append(code)
         index += 1
-    name = text_from_codepoints(codes)
+    name = _text_from_codepoints(codes)
     if name == "utf-8" or name == "utf8" or name == "u8" or name == "utf":
         return "utf-8"
     if name == "ascii" or name == "us-ascii" or name == "646":
@@ -397,7 +409,7 @@ def _hex(value, width):
     while width > 0:
         width -= 1
         codes.append(_text_codepoint(_HEX_DIGITS, (value >> (width * 4)) & 15))
-    return text_from_codepoints(codes)
+    return _text_from_codepoints(codes)
 
 
 def _decimal(value):
@@ -407,7 +419,7 @@ def _decimal(value):
     while value > 0:
         codes.append(48 + value % 10)
         value //= 10
-    return text_from_codepoints(_reversed(codes))
+    return _text_from_codepoints(_reversed(codes))
 
 
 def _append_ascii(values, text):
@@ -591,7 +603,7 @@ def decode(data, encoding, errors):
             reason = "ordinal not in range(128)"
         _decode_failure(codes, codec, data, index, index + length, reason, errors)
         index += length
-    return text_from_codepoints(codes)
+    return _text_from_codepoints(codes)
 
 
 def _decode_failure(codes, codec, data, start, end, reason, errors):
@@ -689,7 +701,7 @@ def _unicode_escape_decode(data, errors='strict', final=False, raw=False):
                 digits += 1
             codes.append(code)
             if code > 255 and invalid is None:
-                invalid = text_from_codepoints([read_byte(data, position)
+                invalid = _text_from_codepoints([read_byte(data, position)
                                             for position in range(start + 1, index)])
             continue
         if byte in (120, 117, 85):
@@ -753,7 +765,7 @@ def _unicode_escape_decode(data, errors='strict', final=False, raw=False):
             continue
         codes.extend((92, byte))
         if invalid is None:
-            invalid = text_from_codepoints([byte])
+            invalid = _text_from_codepoints([byte])
     if invalid is not None:
         from _py_warnings import warn
 
@@ -761,7 +773,7 @@ def _unicode_escape_decode(data, errors='strict', final=False, raw=False):
         warn('"\\' + invalid + '" is an invalid ' + kind +
              ' sequence. Such sequences will not work in the future. ',
              DeprecationWarning, stacklevel=2)
-    return text_from_codepoints(codes), index
+    return _text_from_codepoints(codes), index
 
 
 def parse_specification(specification):
@@ -1082,7 +1094,7 @@ def representation(text):
         else:
             _append_ascii(codes, _escaped_character(code))
     codes.append(quote)
-    return text_from_codepoints(codes)
+    return _text_from_codepoints(codes)
 
 
 class _Missing:
@@ -1128,7 +1140,7 @@ def ascii(value, /):
         else:
             _append_ascii(codes, _escaped_character(code))
         index += 1
-    return text_from_codepoints(codes)
+    return _text_from_codepoints(codes)
 
 
 def format(value, format_spec="", /):
@@ -1162,7 +1174,7 @@ class TextStorage:
             while offset < count:
                 codes.append(_text_codepoint(self, start + offset * step))
                 offset += 1
-            return text_from_codepoints(codes)
+            return _text_from_codepoints(codes)
         size = _text_length(self)
         index = _index(index)
         if index < 0:
@@ -1452,12 +1464,19 @@ class TextStorage:
         return _text_join(pieces)
 
     def split(self, sep=None, maxsplit=-1):
-        maxsplit = _split_arguments(sep, maxsplit)
+        if _index_method(maxsplit) is not None:
+            maxsplit = _index(maxsplit)
+        else:
+            maxsplit = _integer_storage(maxsplit)
         if sep is None:
             return _split_whitespace(self, maxsplit)
+        if not _text_storage(sep):
+            _require_text(sep, "must be str or None")
+        size = _text_length(sep)
+        if size == 0:
+            raise ValueError("empty separator")
         result = []
         length = _text_length(self)
-        size = _text_length(sep)
         start = 0
         position = find_in(self, sep, 0, length)
         while position >= 0 and maxsplit != 0:
@@ -1469,11 +1488,18 @@ class TextStorage:
         return result
 
     def rsplit(self, sep=None, maxsplit=-1):
-        maxsplit = _split_arguments(sep, maxsplit)
+        if _index_method(maxsplit) is not None:
+            maxsplit = _index(maxsplit)
+        else:
+            maxsplit = _integer_storage(maxsplit)
         if sep is None:
             return _rsplit_whitespace(self, maxsplit)
-        result = []
+        if not _text_storage(sep):
+            _require_text(sep, "must be str or None")
         size = _text_length(sep)
+        if size == 0:
+            raise ValueError("empty separator")
+        result = []
         end = _text_length(self)
         position = rfind_in(self, sep, 0, end)
         while position >= 0 and maxsplit != 0:
@@ -1508,7 +1534,8 @@ class TextStorage:
         return result
 
     def partition(self, sep, /):
-        _require_text(sep, "must be str")
+        if not _text_storage(sep):
+            _require_text(sep, "must be str")
         size = _text_length(sep)
         if size == 0:
             raise ValueError("empty separator")
@@ -1523,7 +1550,8 @@ class TextStorage:
         )
 
     def rpartition(self, sep, /):
-        _require_text(sep, "must be str")
+        if not _text_storage(sep):
+            _require_text(sep, "must be str")
         size = _text_length(sep)
         if size == 0:
             raise ValueError("empty separator")
@@ -1553,7 +1581,30 @@ class TextStorage:
         return _text_join(pieces)
 
     def strip(self, chars=None, /):
-        return _strip(self, chars, True, True)
+        if chars is not None:
+            return _strip(self, chars, True, True)
+        length = _text_length(self)
+        start = 0
+        end = length
+        while start < end:
+            code = _text_codepoint(self, start)
+            if code < 128:
+                if code != 32 and (code < 9 or code > 13) and (code < 28 or code > 31):
+                    break
+            elif not is_space(code):
+                break
+            start += 1
+        while end > start:
+            code = _text_codepoint(self, end - 1)
+            if code < 128:
+                if code != 32 and (code < 9 or code > 13) and (code < 28 or code > 31):
+                    break
+            elif not is_space(code):
+                break
+            end -= 1
+        if start == 0 and end == length:
+            return self
+        return _text_slice(self, start, end)
 
     def lstrip(self, chars=None, /):
         return _strip(self, chars, True, False)
@@ -1562,22 +1613,58 @@ class TextStorage:
         return _strip(self, chars, False, True)
 
     def lower(self):
-        codes = []
-        index = 0
         length = _text_length(self)
+        if length == 0:
+            return ""
+        index = 0
         while index < length:
-            _lower_into(codes, self, index, length)
+            code = _text_codepoint(self, index)
+            if code >= 65 and (code <= 90 or code >= 128):
+                break
             index += 1
-        return text_from_codepoints(codes)
+        if index == length:
+            return self
+        codes = []
+        cursor = 0
+        while cursor < index:
+            _storage_append(codes, _text_codepoint(self, cursor))
+            cursor += 1
+        while index < length:
+            code = _text_codepoint(self, index)
+            if code < 128:
+                _storage_append(codes, code + 32 if 65 <= code <= 90 else code)
+            elif code == 0x3A3:
+                _storage_append(codes, _final_sigma(self, index, length))
+            else:
+                _extend_mapping(codes, lower_full(code))
+            index += 1
+        return _text_from_codepoints(codes)
 
     def upper(self):
-        codes = []
-        index = 0
         length = _text_length(self)
+        if length == 0:
+            return ""
+        index = 0
         while index < length:
-            _extend_mapping(codes, upper_full(_text_codepoint(self, index)))
+            code = _text_codepoint(self, index)
+            if code >= 97 and (code <= 122 or code >= 128):
+                break
             index += 1
-        return text_from_codepoints(codes)
+        if index == length:
+            return self
+        codes = []
+        cursor = 0
+        while cursor < index:
+            _storage_append(codes, _text_codepoint(self, cursor))
+            cursor += 1
+        while index < length:
+            code = _text_codepoint(self, index)
+            if code < 128:
+                _storage_append(codes, code - 32 if 97 <= code <= 122 else code)
+            else:
+                _extend_mapping(codes, upper_full(code))
+            index += 1
+        return _text_from_codepoints(codes)
 
     def casefold(self):
         codes = []
@@ -1586,7 +1673,7 @@ class TextStorage:
         while index < length:
             _extend_mapping(codes, fold_full(_text_codepoint(self, index)))
             index += 1
-        return text_from_codepoints(codes)
+        return _text_from_codepoints(codes)
 
     def capitalize(self):
         length = _text_length(self)
@@ -1598,7 +1685,7 @@ class TextStorage:
         while index < length:
             _lower_into(codes, self, index, length)
             index += 1
-        return text_from_codepoints(codes)
+        return _text_from_codepoints(codes)
 
     def title(self):
         codes = []
@@ -1613,7 +1700,7 @@ class TextStorage:
                 _extend_mapping(codes, title_full(code))
             previous_cased = is_cased(code)
             index += 1
-        return text_from_codepoints(codes)
+        return _text_from_codepoints(codes)
 
     def swapcase(self):
         codes = []
@@ -1628,7 +1715,7 @@ class TextStorage:
             else:
                 _storage_append(codes, code)
             index += 1
-        return text_from_codepoints(codes)
+        return _text_from_codepoints(codes)
 
     def isalpha(self):
         return _all_codepoints(self, is_alpha, False)
@@ -1773,7 +1860,7 @@ class TextStorage:
                 column += 1
                 if code == 10 or code == 13:
                     column = 0
-        return text_from_codepoints(codes)
+        return _text_from_codepoints(codes)
 
     def translate(self, table, /):
         codes = []
@@ -1802,7 +1889,7 @@ class TextStorage:
             if mapped < 0 or mapped > 0x10FFFF:
                 raise ValueError("character mapping must be in range(0x110000)")
             _storage_append(codes, mapped)
-        return text_from_codepoints(codes)
+        return _text_from_codepoints(codes)
 
     def format(self, *args, **keyws):
         return _expand(self, _Fields(args, keyws), 1)

@@ -82,23 +82,21 @@ def _revision(run, runtime_name):
     return runtime["commit"][:9] + ("+" if dirty else "")
 
 
-def _candidate(run):
-    """The runtime a run compares against its baseline: the first one that is
-    not the baseline, so a renamed runtime still lines up across runs."""
-    return next(
-        (
-            runtime["name"]
-            for runtime in run["runtimes"]
-            if runtime["name"] != run["baseline"]
-        ),
-        run["baseline"],
-    )
+def _candidates(run):
+    """The runtimes a run compares against its baseline: every runtime that is
+    not the baseline, so all non-baseline runtimes appear in the table."""
+    candidates = [
+        runtime["name"]
+        for runtime in run["runtimes"]
+        if runtime["name"] != run["baseline"]
+    ]
+    return candidates or [run["baseline"]]
 
 
 def table(runs, runtime_name=None, cases=None, limit=None):
-    """Lines of a text table: one row per run, one column per scenario, each
-    cell the kernel median and speedup of ``runtime_name`` (default: each
-    run's first runtime that is not the baseline) against the run's baseline."""
+    """Lines of a text table: one row per run/runtime, one column per scenario,
+    each cell the kernel median and speedup of ``runtime_name`` (default: each
+    run's non-baseline runtimes) against the run's baseline."""
     if limit is not None:
         runs = runs[-limit:]
     if not runs:
@@ -112,32 +110,33 @@ def table(runs, runtime_name=None, cases=None, limit=None):
     header = ["run (UTC)", "runtime", "revision", "samples", *cases]
     rows = []
     for run in runs:
-        selected = runtime_name or _candidate(run)
-        results = {
-            result["case"]: result
-            for result in run["results"]
-            if result["runtime"] == selected
-        }
-        cells = []
-        for case in cases:
-            result = results.get(case)
-            if result is None:
-                cells.append("-")
-            elif result["status"] != "ok":
-                cells.append(result["status"])
-            else:
-                speedup = result["kernel_speedup"]
-                ratio = f" {speedup:.3g}x" if speedup is not None else ""
-                cells.append(f"{result['kernel_ms']:.3g} ms{ratio}")
-        rows.append(
-            [
-                run["created_utc"],
-                selected,
-                _revision(run, selected),
-                str(run["options"]["samples"]),
-                *cells,
-            ]
-        )
+        selected_runtimes = [runtime_name] if runtime_name else _candidates(run)
+        for selected in selected_runtimes:
+            results = {
+                result["case"]: result
+                for result in run["results"]
+                if result["runtime"] == selected
+            }
+            cells = []
+            for case in cases:
+                result = results.get(case)
+                if result is None:
+                    cells.append("-")
+                elif result["status"] != "ok":
+                    cells.append(result["status"])
+                else:
+                    speedup = result["kernel_speedup"]
+                    ratio = f" {speedup:.3g}x" if speedup is not None else ""
+                    cells.append(f"{result['kernel_ms']:.3g} ms{ratio}")
+            rows.append(
+                [
+                    run["created_utc"],
+                    selected,
+                    _revision(run, selected),
+                    str(run["options"]["samples"]),
+                    *cells,
+                ]
+            )
     widths = [max(len(row[i]) for row in [header, *rows]) for i in range(len(header))]
     lines = [
         "kernel median and speedup of the runtime against the run's baseline",

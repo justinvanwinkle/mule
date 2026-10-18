@@ -105,12 +105,12 @@ unsafe extern "C" fn bool_(_: Value, args: Value) -> Value {
         object::truth(arg(args, 0)).map_or(std::ptr::null_mut(), |truth| object::bool_value(truth))
     }
 }
-unsafe extern "C" fn len(_: Value, args: Value) -> Value {
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_fast_len(value: Value) -> Value {
     unsafe {
-        if arity(args, 1, 1).is_none() {
+        if object::has_error() {
             return std::ptr::null_mut();
         }
-        let value = arg(args, 0);
         if value.is_null() || object::is_fixnum(value) {
             return fail("TypeError", "object has no len");
         }
@@ -135,6 +135,14 @@ unsafe extern "C" fn len(_: Value, args: Value) -> Value {
             _ => return fail("TypeError", "object has no len"),
         };
         numeric::integer_from_usize(length)
+    }
+}
+unsafe extern "C" fn len(_: Value, args: Value) -> Value {
+    unsafe {
+        if arity(args, 1, 1).is_none() {
+            return std::ptr::null_mut();
+        }
+        mule_fast_len(arg(args, 0))
     }
 }
 unsafe extern "C" fn input(_: Value, args: Value) -> Value {
@@ -246,6 +254,110 @@ unsafe fn parse_integer_value(bytes: &[u8], mut base: i32) -> Option<Value> {
     let result = if negative { result.neg() } else { result };
     Some(unsafe { numeric::integer_import(&result) })
 }
+unsafe fn parse_int_bytes_base10(bytes: &[u8]) -> Value {
+    let trimmed = bytes.trim_ascii();
+    let (negative, digits) = match trimmed.split_first() {
+        Some((&b'-', rest)) => (true, rest),
+        Some((&b'+', rest)) => (false, rest),
+        _ => (false, trimmed),
+    };
+    if !digits.is_empty() && digits.len() <= 18 {
+        let mut acc: i64 = 0;
+        let mut all_digits = true;
+        for &byte in digits {
+            let d = byte.wrapping_sub(b'0');
+            if d >= 10 {
+                all_digits = false;
+                break;
+            }
+            acc = acc * 10 + i64::from(d);
+        }
+        if all_digits {
+            return object::small(if negative { -acc } else { acc });
+        }
+    }
+    unsafe {
+        parse_integer_value(trimmed, 10)
+            .unwrap_or_else(|| fail("ValueError", "invalid literal for int"))
+    }
+}
+unsafe fn slice_bound_int(value: Value, default: i64, len: i64) -> Option<usize> {
+    unsafe {
+        if value.is_null() {
+            return None;
+        }
+        if object::is_fixnum(value) {
+            let raw = object::fixnum(value);
+            let adjusted = if raw < 0 { raw + len } else { raw };
+            return Some(adjusted.clamp(0, len) as usize);
+        }
+        match &(*value).data {
+            Data::None => Some(default as usize),
+            Data::Bool(flag) => Some(i64::from(*flag).clamp(0, len) as usize),
+            Data::BigInt(integer, ..) => {
+                if let Some(raw) = integer.to_i64() {
+                    let adjusted = if raw < 0 { raw.saturating_add(len) } else { raw };
+                    Some(adjusted.clamp(0, len) as usize)
+                } else if integer.sign() < 0 {
+                    Some(0)
+                } else {
+                    Some(len as usize)
+                }
+            }
+            _ => None,
+        }
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_parse_int_text(value: Value) -> Value {
+    unsafe {
+        if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::Text(text, ..) = &(*value).data {
+                if let Some(bytes) = text.as_latin1() {
+                    return parse_int_bytes_base10(bytes);
+                }
+                let bytes = text.to_wtf8();
+                return parse_int_bytes_base10(&bytes);
+            }
+        }
+        fail("TypeError", "int requires a number or string")
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_parse_int_slice(
+    sequence: Value,
+    start: Value,
+    stop: Value,
+) -> Value {
+    unsafe {
+        if !sequence.is_null() && !object::is_fixnum(sequence) {
+            if let Data::Text(text, ..) = &(*sequence).data {
+                let len = text.len() as i64;
+                let (Some(s), Some(e)) = (
+                    slice_bound_int(start, 0, len),
+                    slice_bound_int(stop, len, len),
+                ) else {
+                    return fail("TypeError", "slice indices must be integers or None");
+                };
+                if let Some(bytes) = text.as_latin1() {
+                    let slice = if s < e { &bytes[s..e] } else { &[] };
+                    return parse_int_bytes_base10(slice);
+                }
+                if s >= e {
+                    return parse_int_bytes_base10(&[]);
+                }
+                return match text.slice(s, e) {
+                    Ok(sub) => {
+                        let bytes = sub.to_wtf8();
+                        parse_int_bytes_base10(&bytes)
+                    }
+                    Err(_) => fail("MemoryError", "text storage allocation failed"),
+                };
+            }
+        }
+        fail("TypeError", "int requires a number or string")
+    }
+}
 unsafe extern "C" fn int(_: Value, args: Value) -> Value {
     unsafe {
         let Some(count) = arity(args, 0, 2) else {
@@ -276,6 +388,13 @@ unsafe extern "C" fn int(_: Value, args: Value) -> Value {
         if !value.is_null() && !object::is_fixnum(value) {
             match &(*value).data {
                 Data::Text(text, ..) => {
+                    if base == 10 {
+                        if let Some(bytes) = text.as_latin1() {
+                            return parse_int_bytes_base10(bytes);
+                        }
+                        let bytes = text.to_wtf8();
+                        return parse_int_bytes_base10(&bytes);
+                    }
                     let parsed = if let Some(bytes) = text.as_latin1() {
                         parse_integer_value(bytes, base)
                     } else {

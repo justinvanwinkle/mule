@@ -49,8 +49,18 @@ from .ctype import (
     IntegerType,
     ValueType,
 )
+from .fndb import LEN, flow_propagation
 from .ir1util import made_function
-from .node import CallKind, FunctionalKind, Lambda, LeafVisitor, NodeVisitor, Set, linked
+from .node import (
+    CallKind,
+    FunctionalKind,
+    Lambda,
+    LeafVisitor,
+    NodeVisitor,
+    Set,
+    linked,
+)
+from .seqtran import is_predictable_len_call, known_length_primitive
 
 _PROTOCOL_PREFIXES = (
     "mule_sequences_",
@@ -87,6 +97,7 @@ _NON_INTEGER_FIRST_OPERAND = frozenset(
         "_text_character",
         "_text_slice",
         "_text_join",
+        "_text_from_codepoints",
         "_storage_length",
         "_storage_read",
         "_storage_write",
@@ -196,6 +207,8 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
             return
         info = node.fun_info
         if info is None:
+            if is_predictable_len_call(node) and node.args and node.args[0] is lvar:
+                self.disqualified = True
             return
         name = info.name
         if name == "%resolve_method" and node.args and node.args[0] is lvar:
@@ -231,11 +244,7 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
             self.numeric = True
             self.text_disqualified = True
             return
-        if (
-            node.args
-            and node.args[0] is lvar
-            and name in {"%getitem", "%getslice"}
-        ):
+        if node.args and node.args[0] is lvar and name in {"%getitem", "%getslice"}:
             return
         if name in _NUMERIC_KNOWN:
             self.numeric = True
@@ -254,6 +263,13 @@ class _HasCombinationImprovement(NodeVisitor):
     def visit_Combination(self, node):
         if self.candidate.get(node) != self.general.get(node):
             self.improved = True
+            return
+        if is_predictable_len_call(node) and len(node.args[0].uses) == 1:
+            arg_use = node.args[0].uses[0]
+            if known_length_primitive(
+                self.candidate.get(arg_use, UNKNOWN)
+            ) is not known_length_primitive(self.general.get(arg_use, UNKNOWN)):
+                self.improved = True
 
 
 def _specializes_body(
@@ -431,30 +447,45 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
     argument_changes = defaultdict(int)
     bodies: dict[tuple[Lambda, str], Body] = {}
     # What each body's last propagation read: its parameters and, for every
-    # callee whose summary it consulted, that callee's contexts and summaries.
-    # A body whose inputs are unchanged would propagate identically.
+    # Each entry records ``(expected_parameters, consulted_calls, closure_types,
+    # consulted_targets)`` for the most recent propagation of ``key``. A body
+    # whose inputs and resolved call return types are unchanged would propagate
+    # identically.
     inputs: dict[tuple[Lambda, str], tuple] = {}
 
-    def callee_inputs(target, context_parameters, context_summaries):
-        return tuple(
-            (
-                context_parameters.get((target, context)),
-                context_summaries.get((target, context)),
-            )
-            for context in ("observed", "fixnum", "general")
+    def lookup_return_type(
+        target, arguments, context_parameters, context_summaries
+    ) -> ValueType:
+        obs = context_parameters.get((target, "observed"))
+        fix = context_parameters.get((target, "fixnum"))
+        order_contexts = (
+            ("fixnum", "observed", "general")
+            if obs is not None
+            and fix is not None
+            and not all(a.fits(b) for a, b in zip(obs, fix, strict=True))
+            else ("observed", "fixnum", "general")
         )
+        for context in order_contexts:
+            key = target, context
+            expected = context_parameters.get(key)
+            if expected is not None and all(
+                actual.fits(wanted)
+                for actual, wanted in zip(arguments, expected, strict=True)
+            ):
+                return context_summaries[key]
+        return UNKNOWN
 
     def closure_inputs(lambda_):
         if lambda_.environment is None:
             return ()
         return tuple(var.optimistic_type for var in lambda_.environment.closure)
 
-    # The callees whose summaries the current propagation consulted.
-    consulted: set[Lambda] = set()
+    # The canonical (callee, arguments) queries and return types consulted
+    # during the current propagation.
+    consulted: dict[tuple[Lambda, tuple], ValueType] = {}
 
     while True:
         changed = False
-        previous_summaries = dict(summaries)
         previous_parameters = dict(parameters)
 
         def resolve(
@@ -463,7 +494,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             location=None,
             keywords=(),
             context_parameters=previous_parameters,
-            context_summaries=previous_summaries,
+            context_summaries=summaries,
         ) -> ValueType:
             return callee.type.when_defined(
                 lambda: _with_defined_arguments(
@@ -487,7 +518,6 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             if not callee.proven or callee.target is None:
                 return UNKNOWN
             target = callee.target
-            consulted.add(target)
             order = target.call_order(keywords, len(arguments))
             if order is None:
                 return UNKNOWN
@@ -501,24 +531,11 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     annotations.check(
                         contract, actual, location, ("local", target, var.name)
                     )
-            obs = context_parameters.get((target, "observed"))
-            fix = context_parameters.get((target, "fixnum"))
-            order_contexts = (
-                ("fixnum", "observed", "general")
-                if obs is not None
-                and fix is not None
-                and not all(a.fits(b) for a, b in zip(obs, fix, strict=True))
-                else ("observed", "fixnum", "general")
+            result = lookup_return_type(
+                target, arguments, context_parameters, context_summaries
             )
-            for context in order_contexts:
-                key = target, context
-                expected = context_parameters.get(key)
-                if expected is not None and all(
-                    actual.fits(wanted)
-                    for actual, wanted in zip(arguments, expected, strict=True)
-                ):
-                    return context_summaries[key]
-            return UNKNOWN
+            consulted[target, arguments] = result
+            return result
 
         for key, expected in previous_parameters.items():
             lambda_ = key[0]
@@ -529,9 +546,9 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                 and recorded[0] == expected
                 and recorded[2] == current_closure
                 and all(
-                    callee_inputs(target, previous_parameters, previous_summaries)
-                    == state
-                    for target, state in recorded[1].items()
+                    lookup_return_type(target, args, previous_parameters, summaries)
+                    == result
+                    for (target, args), result in recorded[1].items()
                 )
             ):
                 body = bodies[key]
@@ -542,28 +559,25 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     if lambda_.kind is not FunctionalKind.TOPLEVEL
                     else frozenset()
                 )
-                body = propagate(
-                    lambda_,
-                    global_targets[lambda_.namespace],
-                    expected,
-                    resolve,
-                    annotations,
-                    graph=graphs[lambda_],
-                    proven_globals=proven_globals,
-                    rebound_globals=rebound_by_namespace.get(
-                        lambda_.namespace, frozenset()
-                    ),
-                )
+                with flow_propagation():
+                    body = propagate(
+                        lambda_,
+                        global_targets[lambda_.namespace],
+                        expected,
+                        resolve,
+                        annotations,
+                        graph=graphs[lambda_],
+                        proven_globals=proven_globals,
+                        rebound_globals=rebound_by_namespace.get(
+                            lambda_.namespace, frozenset()
+                        ),
+                    )
                 bodies[key] = body
                 inputs[key] = (
                     expected,
-                    {
-                        target: callee_inputs(
-                            target, previous_parameters, previous_summaries
-                        )
-                        for target in consulted
-                    },
+                    dict(consulted),
                     current_closure,
+                    frozenset(target for target, _ in consulted),
                 )
             returned = summaries[key].join(body.return_type)
             if returned != summaries[key]:
@@ -632,12 +646,17 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                         old.join(new)
                         for old, new in zip(seeds[target], domains, strict=True)
                     )
-        contexts_changed = False
+        narrowed_targets: set[Lambda] = set()
         for target, seed in seeds.items():
             key = target, "observed"
             old = parameters.get(key)
             if old is not None:
-                seed = tuple(a.join(b) for a, b in zip(old, seed, strict=True))
+                seed = tuple(
+                    b
+                    if a is UNKNOWN and b is not UNKNOWN and argument_changes[key] == 0
+                    else a.join(b)
+                    for a, b in zip(old, seed, strict=True)
+                )
                 if old != seed:
                     argument_changes[key] += 1
                     if argument_changes[key] > 3:
@@ -647,25 +666,40 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                             for a, b in zip(old, seed, strict=True)
                         )
             if old != seed:
+                if old is None or not all(
+                    a.fits(b) for a, b in zip(old, seed, strict=True)
+                ):
+                    narrowed_targets.add(target)
                 parameters[key] = seed
                 summaries.setdefault(key, BOTTOM)
                 changed = True
-                contexts_changed = True
-        if contexts_changed:
-            # A new, narrower callee context can replace a broad summary used
-            # provisionally by callers. Solve returns afresh for the current
-            # context graph rather than permanently retaining that broad type.
-            summaries = {
-                key: (
-                    bodies[key].return_type
-                    if (recorded := inputs.get(key)) is not None
-                    and recorded[0] == expected
-                    and not recorded[1]
-                    else BOTTOM
-                )
-                for key, expected in parameters.items()
-            }
-            return_changes.clear()
+        if narrowed_targets:
+            # Propagate invalidation transitively along the recorded call graph
+            # so only functions that transitively depend on a newly created or
+            # narrowed observed context reset their provisional return summary.
+            affected = set(narrowed_targets)
+            while True:
+                added = {
+                    key[0]
+                    for key, recorded in inputs.items()
+                    if key[0] not in affected and affected.intersection(recorded[3])
+                }
+                if not added:
+                    break
+                affected.update(added)
+            for key, expected in parameters.items():
+                if key == (key[0], "observed") and key[0] in narrowed_targets:
+                    summaries[key] = BOTTOM
+                    return_changes.pop(key, None)
+                elif key[0] in affected:
+                    recorded = inputs.get(key)
+                    if (
+                        recorded is None
+                        or recorded[0] != expected
+                        or affected.intersection(recorded[3])
+                    ):
+                        summaries[key] = BOTTOM
+                        return_changes.pop(key, None)
         if not changed:
             break
 
@@ -707,6 +741,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                 continue
             if (
                 identifier == "observed"
+                and not any(param.is_fixnum for param in parameters[key])
                 and not _specializes_body(graph, facts.types, candidate_types)
                 and ret_type == facts.return_type
             ):
@@ -731,7 +766,103 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
         facts.variants = tuple(entries)
         results[lambda_] = facts
         _mark_guarded_calls(graph, general)
+        _publish_derived_types(lambda_, graph, facts.types)
     return results
+
+
+def _lvar_current_type(lvar) -> ValueType | None:
+    if lvar.derived_type is not None:
+        return lvar.derived_type
+    if not lvar.uses or any(use.derived_type is None for use in lvar.uses):
+        return None
+    derived = lvar.uses[0].derived_type
+    for use in lvar.uses[1:]:
+        derived = derived.join(use.derived_type)
+    return derived
+
+
+def _recompute_lvar_type(lvar) -> ValueType:
+    if not lvar.uses:
+        lvar.derived_type = BOTTOM
+        return BOTTOM
+    derived = (
+        lvar.uses[0].derived_type if lvar.uses[0].derived_type is not None else UNKNOWN
+    )
+    for use in lvar.uses[1:]:
+        use_type = use.derived_type if use.derived_type is not None else UNKNOWN
+        derived = derived.join(use_type)
+    lvar.derived_type = derived
+    return derived
+
+
+class _PublishNodeTypes(NodeVisitor):
+    def __init__(self, types: dict[object, ValueType]):
+        self.types = types
+        self.old_lvar_types: dict[object, ValueType | None] = {}
+        self.lvars: list = []
+
+    def visit_ValuedNode(self, node):
+        lvar = node.lvar
+        if lvar is not None and lvar not in self.old_lvar_types:
+            self.old_lvar_types[lvar] = _lvar_current_type(lvar)
+            self.lvars.append(lvar)
+        node.derived_type = self.types.get(node, UNKNOWN)
+
+
+class _ReoptimizeNarrowedKnownCalls(NodeVisitor):
+    def __init__(
+        self,
+        lambda_: Lambda,
+        old_lvar_types: dict[object, ValueType | None],
+    ):
+        self.lambda_ = lambda_
+        self.old_lvar_types = old_lvar_types
+        self.reoptimized = False
+
+    def visit_Combination(self, node):
+        if node.kind is CallKind.KNOWN and node.fun_info is not None:
+            info = node.fun_info
+        elif is_predictable_len_call(node):
+            info = LEN
+        else:
+            return
+        if not (
+            info.transforms
+            or (
+                info.optimizer is not None
+                and info.optimizer.__name__ != "_optimize_getslice"
+            )
+        ):
+            return
+        if any(
+            (new_type := _recompute_lvar_type(arg)) != self.old_lvar_types.get(arg)
+            and new_type is not UNKNOWN
+            for arg in node.args
+        ):
+            node.reoptimize = True
+            node.block.reoptimize = True
+            if self.lambda_.component is not None:
+                self.lambda_.component.reoptimize = True
+            self.reoptimized = True
+
+
+def _publish_derived_types(
+    lambda_: Lambda, graph: LambdaGraph, types: dict[object, ValueType]
+) -> bool:
+    """Write ``general`` flow-derived types back onto IR1 nodes and lvars, and
+    request IR1 reoptimization when a known call with transforms receives a
+    narrowed operand."""
+    publisher = _PublishNodeTypes(types)
+    for block in graph.blocks:
+        for node in graph.block_nodes[block]:
+            node.accept(publisher)
+    for lvar in publisher.lvars:
+        _recompute_lvar_type(lvar)
+    reoptimizer = _ReoptimizeNarrowedKnownCalls(lambda_, publisher.old_lvar_types)
+    for block in graph.blocks:
+        for node in graph.block_nodes[block]:
+            node.accept(reoptimizer)
+    return reoptimizer.reoptimized
 
 
 def _mark_guarded_calls(graph: LambdaGraph, body: Body) -> None:

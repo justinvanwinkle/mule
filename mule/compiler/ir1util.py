@@ -10,6 +10,7 @@ depth-first block chain hanging off each component's head and tail.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 from .node import (
     BasicVar,
@@ -22,6 +23,7 @@ from .node import (
     Ctran,
     CtranKind,
     Exit,
+    KnownFunction,
     Lambda,
     Leaf,
     LeafVisitor,
@@ -34,6 +36,9 @@ from .node import (
     ValuedNode,
     linked,
 )
+
+if TYPE_CHECKING:
+    from .knownfun import FunInfo
 
 
 class IR1Error(Exception):
@@ -617,13 +622,100 @@ class _DeleteNode:
         pass
 
 
+class _FlushDeadReference(NodeVisitor, LeafVisitor):
+    """Deletes an unused reference whose evaluation has no effect."""
+
+    def visit_Ref(self, node):
+        if node.lvar is None and not node.final and node.leaf.accept(self):
+            delete_ref(node)
+            unlink_node(node)
+
+    def visit_Leaf(self, leaf):
+        return False
+
+    def visit_Constant(self, leaf):
+        return True
+
+    def visit_KnownFunction(self, leaf):
+        return True
+
+    def visit_Lambda(self, leaf):
+        return True
+
+
+_FLUSH_DEAD_REFERENCE = _FlushDeadReference()
+
+
+def _flush_operand(lvar: Lvar | None) -> None:
+    if lvar is None:
+        return
+    uses = list(lvar.uses)
+    flush_dest(lvar)
+    for use in uses:
+        if use.prev is not None:
+            use.accept(_FLUSH_DEAD_REFERENCE)
+
+
 def flush_combination(node: Combination) -> None:
     """Delete an unused flushable call: its operands' producers are flushed
     (and may be deleted in turn) and the node is unlinked."""
-    flush_dest(node.fun)
+    _flush_operand(node.fun)
     for arg in node.args:
-        flush_dest(arg)
+        _flush_operand(arg)
     unlink_node(node)
+
+
+def replace_combination_with_lvar(node: Combination, value: Lvar) -> None:
+    """Replace ``node`` with its operand ``value`` and flush its other operands."""
+    aver(value in node.args, f"{value!r} is not an argument of {node!r}")
+    result = node.lvar
+    delete_lvar_use(node)
+    value.dest = None
+    _flush_operand(node.fun)
+    for arg in node.args:
+        if arg is not value:
+            _flush_operand(arg)
+    node.args = []
+    if result is not None:
+        substitute_lvar_uses(result, value)
+    else:
+        _flush_operand(value)
+    unlink_node(node)
+
+
+class _RetargetKnownRef(NodeVisitor):
+    def __init__(self, info: FunInfo):
+        self.info = info
+
+    def visit_Ref(self, node: Ref):
+        if node in node.leaf.refs:
+            node.leaf.refs.remove(node)
+        leaf = KnownFunction(self.info)
+        node.leaf = leaf
+        leaf.refs.append(node)
+
+
+def retarget_known_combination(
+    node: Combination, info: FunInfo, args: list[Lvar]
+) -> None:
+    """Rewrite ``node`` in place to call known function ``info`` with ``args``."""
+    new_args = list(args)
+    for old_arg in list(node.args):
+        if all(old_arg is not arg for arg in new_args):
+            _flush_operand(old_arg)
+    for arg in new_args:
+        arg.dest = node
+    node.args = new_args
+    node.kind = CallKind.KNOWN
+    node.fun_info = info
+    node.info = None
+    node.predicted = None
+    node.proven = False
+    node.derived_type = None
+    node.reoptimize = True
+    for use in node.fun.uses:
+        use.accept(_RetargetKnownRef(info))
+    reoptimize_lvar(node.lvar)
 
 
 def insert_cast_before(next_node: Node, lvar: Lvar, cast_factory) -> Lvar:

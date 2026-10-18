@@ -488,40 +488,7 @@ unsafe extern "C" fn text_from_codepoints(_: Value, args: Value) -> Value {
         let Some([value]) = operands(args) else {
             return null_mut();
         };
-        if value.is_null() || object::is_fixnum(value) {
-            return fail(
-                "TypeError",
-                "text_from_codepoints requires list or tuple storage",
-            );
-        }
-        let (Data::List(values, ..) | Data::Args(values, ..)) = &(*value).data else {
-            return fail(
-                "TypeError",
-                "text_from_codepoints requires list or tuple storage",
-            );
-        };
-        let mut codes = Vec::new();
-        if codes.try_reserve_exact(values.len()).is_err() {
-            return fail("MemoryError", "text storage allocation failed");
-        }
-        for value in values {
-            let code = if object::is_fixnum(*value) {
-                u64::try_from(object::fixnum(*value)).ok()
-            } else {
-                let Some(integer) = numeric::integer_export(*value) else {
-                    return null_mut();
-                };
-                integer.to_u64()
-            };
-            let Some(code) = code.filter(|code| *code <= 0x10ffff) else {
-                return fail("ValueError", "text codepoint must be in range(0x110000)");
-            };
-            codes.push(code as u32);
-        }
-        match Text::from_codepoints(codes.into_iter()) {
-            Ok(text) => object::new_value(Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut())),
-            Err(_) => fail("MemoryError", "text storage allocation failed"),
-        }
+        object::mule_text_from_codepoints(value)
     }
 }
 

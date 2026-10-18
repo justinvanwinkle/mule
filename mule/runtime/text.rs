@@ -137,6 +137,18 @@ impl Text {
         Self::from_codepoints(codes.into_iter()).map_err(|_| "text storage allocation failed")
     }
 
+    pub fn from_latin1(units: Vec<u8>) -> Self {
+        Self::from_kind(Kind::Latin1(units))
+    }
+
+    pub fn from_ucs2(units: Vec<u16>) -> Self {
+        Self::from_kind(Kind::Ucs2(units))
+    }
+
+    pub fn from_ucs4(units: Vec<u32>) -> Self {
+        Self::from_kind(Kind::Ucs4(units))
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         match &self.kind {
@@ -198,6 +210,110 @@ impl Text {
         }
         .take(stop - start);
         Self::from_codepoints(codes)
+    }
+
+    /// Compare `self[start..stop]` with `other` in-place without allocating.
+    #[inline]
+    pub fn slice_eq(&self, start: usize, stop: usize, other: &Self) -> bool {
+        let stop = stop.min(self.len());
+        let start = start.min(stop);
+        let slice_len = stop - start;
+        if slice_len != other.len() {
+            return false;
+        }
+        if let (Some(left_bytes), Some(right_bytes)) = (self.as_latin1(), other.as_latin1()) {
+            return &left_bytes[start..stop] == right_bytes;
+        }
+        Codepoints {
+            text: self,
+            index: start,
+        }
+        .take(slice_len)
+        .eq(other.codepoints())
+    }
+
+    /// First codepoint index of `sub` within `start..end`, or `None`.
+    #[inline]
+    pub fn find(&self, sub: &Self, start: usize, end: usize) -> Option<usize> {
+        let end = end.min(self.len());
+        if start > end {
+            return None;
+        }
+        let sub_len = sub.len();
+        if sub_len == 0 {
+            return Some(start);
+        }
+        if sub_len > end - start || sub.kind() > self.kind() {
+            return None;
+        }
+        if let (Kind::Latin1(haystack), Kind::Latin1(needle)) = (&self.kind, &sub.kind) {
+            let slice = &haystack[start..end];
+            let first = needle[0];
+            if sub_len == 1 {
+                return slice.iter().position(|&b| b == first).map(|pos| start + pos);
+            }
+            let rest = &needle[1..];
+            let search_len = slice.len() - sub_len + 1;
+            let mut offset = 0;
+            while let Some(rel) = slice[offset..search_len].iter().position(|&b| b == first) {
+                let pos = offset + rel;
+                if &slice[pos + 1..pos + sub_len] == rest {
+                    return Some(start + pos);
+                }
+                offset = pos + 1;
+            }
+            return None;
+        }
+        let first = sub.get(0)?;
+        for pos in start..=(end - sub_len) {
+            if self.get(pos) == Some(first)
+                && (1..sub_len).all(|i| self.get(pos + i) == sub.get(i))
+            {
+                return Some(pos);
+            }
+        }
+        None
+    }
+
+    /// Last codepoint index of `sub` within `start..end`, or `None`.
+    #[inline]
+    pub fn rfind(&self, sub: &Self, start: usize, end: usize) -> Option<usize> {
+        let end = end.min(self.len());
+        if start > end {
+            return None;
+        }
+        let sub_len = sub.len();
+        if sub_len == 0 {
+            return Some(end);
+        }
+        if sub_len > end - start || sub.kind() > self.kind() {
+            return None;
+        }
+        if let (Kind::Latin1(haystack), Kind::Latin1(needle)) = (&self.kind, &sub.kind) {
+            let slice = &haystack[start..end];
+            let first = needle[0];
+            if sub_len == 1 {
+                return slice.iter().rposition(|&b| b == first).map(|pos| start + pos);
+            }
+            let rest = &needle[1..];
+            let mut limit = slice.len() - sub_len + 1;
+            while let Some(pos) = slice[..limit].iter().rposition(|&b| b == first) {
+                if &slice[pos + 1..pos + sub_len] == rest {
+                    return Some(start + pos);
+                }
+                limit = pos;
+            }
+            return None;
+        }
+        let first = sub.get(0)?;
+        for pos in (start..=(end - sub_len)).rev() {
+            if self.get(pos) == Some(first)
+                && (1..sub_len).all(|i| self.get(pos + i) == sub.get(i))
+            {
+                return Some(pos);
+            }
+        }
+        None
     }
 
     /// Concatenate pieces in order, allocating the result once.

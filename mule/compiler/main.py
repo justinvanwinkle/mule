@@ -15,7 +15,18 @@ from mule import ast
 from mule.diagnostics import annotation_warning_level, phase
 from mule.parser import parse
 
-from . import checkgen, ir1opt, locall, loop
+from . import (  # noqa: F401
+    checkgen,
+    containtran,
+    formattran,
+    ir1opt,
+    locall,
+    loop,
+    modarith,
+    seqtran,
+    srctran,
+    typetran,
+)
 from .annotation_types import AnnotationLedger
 from .debug import check_ir1_consistency
 from .dfo import find_dfo, find_initial_dfo
@@ -254,15 +265,19 @@ def _fold_protocol_constants(compilation: Compilation) -> bool:
 
 def _ir1_optimize_phase_1(compilation: Compilation) -> None:
     for iteration in range(REOPTIMIZE_LIMIT):
+        ir1_changed = False
         with phase("IR1 optimization round %d", iteration + 1, level=logging.DEBUG):
             for component in compilation.components:
-                ir1opt.ir1_optimize_until_done(component)
+                ir1_changed |= ir1opt.ir1_optimize_until_done(component)
                 if component.reanalyze:
                     find_dfo(component)
+                    ir1_changed = True
         if _fold_protocol_constants(compilation):
             continue
         if any(component.reoptimize for component in compilation.components):
             continue
+        if compilation.facts is not None and not ir1_changed:
+            return
         with phase("IR1 local-call and flow analysis", level=logging.DEBUG):
             compilation.facts = locall.analyze(
                 compilation.lambdas, compilation.annotations

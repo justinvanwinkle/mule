@@ -363,26 +363,43 @@ impl Data {
         }
     }
 
+    #[inline]
+    pub fn may_cycle(value: Value) -> bool {
+        !value.is_null()
+            && !is_fixnum(value)
+            && unsafe { (*value).tracked || matches!(&(*value).data, Self::List(..)) }
+    }
+
     pub fn cycle_candidate(&self) -> bool {
         match self {
             Self::BigInt(_, ty, attributes) | Self::Float(_, ty, attributes)
             | Self::Text(_, ty, attributes) | Self::Bytes(_, ty, attributes) => !ty.is_null() || !attributes.is_null(),
-            Self::Args(values, ty, attributes) => {
+            Self::Args(values, ty, attributes) | Self::List(values, ty, attributes) => {
                 !ty.is_null()
                     || !attributes.is_null()
-                    || values.iter().any(|&v| !v.is_null() && !is_fixnum(v) && unsafe { (*v).tracked })
+                    || values.iter().any(|&v| Self::may_cycle(v))
             }
             Self::BoundMethod { receiver, .. } => {
                 !receiver.is_null()
                     && !is_fixnum(*receiver)
                     && unsafe { (**receiver).tracked }
             }
-            Self::List(..) | Self::Namespace(_) | Self::Class(_) | Self::Instance { .. }
+            Self::Namespace(_) | Self::Class(_) | Self::Instance { .. }
             | Self::NativeInstance { .. } | Self::WeakHandle { .. } | Self::BufferLease { .. }
             | Self::Traceback { .. } | Self::Frame { .. } | Self::Function { .. } => true,
             Self::None | Self::Bool(_) | Self::DescriptorLease(_) | Self::ForeignPointerVector { .. } | Self::ForeignCString { .. }
             | Self::ArgumentView { .. } | Self::ReceiverArgs { .. } | Self::KeywordArgs { .. }
             | Self::Coroutine(_) | Self::Undefined => false,
+        }
+    }
+}
+
+#[inline]
+pub unsafe fn track_if_needed(container: Value, element: Value) {
+    unsafe {
+        if !(*container).tracked && Data::may_cycle(element) {
+            (*container).tracked = true;
+            crate::gc::track(container);
         }
     }
 }
@@ -718,6 +735,7 @@ pub unsafe fn list_append(list: Value, value: Value) -> bool {
         match &mut (*list).data {
             Data::List(values, ..) => {
                 values.push(retain(value));
+                track_if_needed(list, value);
                 true
             }
             _ => {
@@ -803,6 +821,10 @@ pub unsafe fn typed_attributes(value: Value, create: bool) -> Value {
         }
         if attributes.is_null() && create {
             *attributes = namespace();
+            if !(*value).tracked {
+                (*value).tracked = true;
+                crate::gc::track(value);
+            }
         }
         *attributes
     }
@@ -2170,7 +2192,29 @@ pub unsafe fn text_value(bytes: &[u8]) -> Value {
         }
     }
 }
+#[cold]
+#[inline(never)]
+fn text_storage_error() -> Value {
+    error("TypeError", "text storage is required");
+    std::ptr::null_mut()
+}
+
+#[cold]
+#[inline(never)]
+fn text_index_error() -> Value {
+    error("IndexError", "text storage index out of range");
+    std::ptr::null_mut()
+}
+
+#[cold]
+#[inline(never)]
+fn string_index_error() -> Value {
+    error("IndexError", "string index out of range");
+    std::ptr::null_mut()
+}
+
 /// Physical Unicode storage access for compiled Mule text algorithms.
+#[inline]
 pub unsafe fn text_storage<'a>(value: Value) -> Option<&'a Text> {
     unsafe {
         if !value.is_null() && !is_fixnum(value) {
@@ -2178,16 +2222,20 @@ pub unsafe fn text_storage<'a>(value: Value) -> Option<&'a Text> {
                 return Some(text);
             }
         }
-        error("TypeError", "text storage is required");
+        text_storage_error();
         None
     }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_text_length(value: Value) -> Value {
     unsafe {
-        text_storage(value).map_or(std::ptr::null_mut(), |text| {
-            numeric::integer_from_usize(text.len())
-        })
+        if value.is_null() || is_fixnum(value) {
+            return text_storage_error();
+        }
+        let Data::Text(text, ..) = &(*value).data else {
+            return text_storage_error();
+        };
+        small(text.len() as i64)
     }
 }
 unsafe fn text_position(value: Value, index: Value) -> Option<(&'static Text, usize)> {
@@ -2329,6 +2377,13 @@ pub unsafe extern "C" fn mule_text_slice(value: Value, start: Value, stop: Value
             error("IndexError", "text slice bounds must be nonnegative small integers");
             return std::ptr::null_mut();
         };
+        if start == 0 && stop >= text.len() {
+            if let Data::Text(_, ty, ..) = &(*value).data {
+                if ty.is_null() {
+                    return retain(value);
+                }
+            }
+        }
         text_slice_range(text, start, stop)
     }
 }
@@ -2369,6 +2424,101 @@ pub unsafe extern "C" fn mule_text_join(pieces: Value) -> Value {
         }
     }
 }
+
+/// Build a `str` from a list or tuple of codepoint integers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_from_codepoints(value: Value) -> Value {
+    unsafe {
+        let values = if !value.is_null() && !is_fixnum(value) {
+            match &(*value).data {
+                Data::List(values, ..) | Data::Args(values, ..) => Some(values.as_slice()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let Some(values) = values else {
+            error("TypeError", "text_from_codepoints requires list or tuple storage");
+            return std::ptr::null_mut();
+        };
+        if values.is_empty() {
+            return empty_text();
+        }
+        let mut widest = 0u32;
+        let mut all_fixnum = true;
+        for &item in values {
+            if is_fixnum(item) {
+                let code = fixnum(item);
+                if !(0..=0x10ffff).contains(&code) {
+                    error("ValueError", "text codepoint must be in range(0x110000)");
+                    return std::ptr::null_mut();
+                }
+                widest |= code as u32;
+            } else {
+                all_fixnum = false;
+                break;
+            }
+        }
+        if !all_fixnum {
+            let mut codes = Vec::new();
+            if codes.try_reserve_exact(values.len()).is_err() {
+                error("MemoryError", "text storage allocation failed");
+                return std::ptr::null_mut();
+            }
+            for &item in values {
+                let code = if is_fixnum(item) {
+                    u64::try_from(fixnum(item)).ok()
+                } else {
+                    let Some(integer) = numeric::integer_export(item) else {
+                        return std::ptr::null_mut();
+                    };
+                    integer.to_u64()
+                };
+                let Some(code) = code.filter(|code| *code <= 0x10ffff) else {
+                    error("ValueError", "text codepoint must be in range(0x110000)");
+                    return std::ptr::null_mut();
+                };
+                codes.push(code as u32);
+            }
+            return match Text::from_codepoints(codes.into_iter()) {
+                Ok(text) => new_value(Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut())),
+                Err(_) => {
+                    error("MemoryError", "text storage allocation failed");
+                    std::ptr::null_mut()
+                }
+            };
+        }
+        if values.len() == 1 && widest <= 0xff {
+            return latin1_character(widest as u8);
+        }
+        let text = if widest <= 0xff {
+            let mut units = Vec::new();
+            if units.try_reserve_exact(values.len()).is_err() {
+                error("MemoryError", "text storage allocation failed");
+                return std::ptr::null_mut();
+            }
+            units.extend(values.iter().map(|&v| fixnum(v) as u8));
+            Text::from_latin1(units)
+        } else if widest <= 0xffff {
+            let mut units = Vec::new();
+            if units.try_reserve_exact(values.len()).is_err() {
+                error("MemoryError", "text storage allocation failed");
+                return std::ptr::null_mut();
+            }
+            units.extend(values.iter().map(|&v| fixnum(v) as u16));
+            Text::from_ucs2(units)
+        } else {
+            let mut units = Vec::new();
+            if units.try_reserve_exact(values.len()).is_err() {
+                error("MemoryError", "text storage allocation failed");
+                return std::ptr::null_mut();
+            }
+            units.extend(values.iter().map(|&v| fixnum(v) as u32));
+            Text::from_ucs4(units)
+        };
+        new_value(Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut()))
+    }
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_text_codepoint(value: Value, index: Value) -> Value {
     unsafe {
@@ -2380,15 +2530,69 @@ pub unsafe extern "C" fn mule_text_codepoint(value: Value, index: Value) -> Valu
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_text_codepoint_at(value: Value, index: i64) -> Value {
     unsafe {
-        let Some(text) = text_storage(value) else {
-            return std::ptr::null_mut();
-        };
-        if let Some(code) = usize::try_from(index).ok().and_then(|idx| text.get(idx)) {
-            small(i64::from(code))
-        } else {
-            error("IndexError", "text storage index out of range");
-            std::ptr::null_mut()
+        if value.is_null() || is_fixnum(value) {
+            return text_storage_error();
         }
+        let Data::Text(text, ..) = &(*value).data else {
+            return text_storage_error();
+        };
+        if index >= 0 {
+            let idx = index as usize;
+            if let Some(bytes) = text.as_latin1() {
+                if idx < bytes.len() {
+                    return small(i64::from(*bytes.get_unchecked(idx)));
+                }
+            } else if let Some(code) = text.get(idx) {
+                return small(i64::from(code));
+            }
+        }
+        text_index_error()
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_codepoint_getitem(value: Value, index: Value) -> Value {
+    unsafe {
+        if value.is_null() || is_fixnum(value) {
+            return text_storage_error();
+        }
+        let Data::Text(text, ..) = &(*value).data else {
+            return text_storage_error();
+        };
+        let len = text.len();
+        let raw = if is_fixnum(index) {
+            fixnum(index)
+        } else if !index.is_null() {
+            match &(*index).data {
+                Data::Bool(flag) => i64::from(*flag),
+                Data::BigInt(number, ..) => {
+                    let Some(raw) = number.to_i64() else {
+                        return string_index_error();
+                    };
+                    raw
+                }
+                _ => return text_storage_error(),
+            }
+        } else {
+            return text_storage_error();
+        };
+        let idx = if (raw as usize) < len {
+            raw as usize
+        } else if raw < 0 {
+            let adjusted = raw.wrapping_add(len as i64);
+            if adjusted < 0 {
+                return string_index_error();
+            }
+            adjusted as usize
+        } else {
+            return string_index_error();
+        };
+        if let Some(bytes) = text.as_latin1() {
+            return small(i64::from(*bytes.get_unchecked(idx)));
+        }
+        if let Some(code) = text.get(idx) {
+            return small(i64::from(code));
+        }
+        string_index_error()
     }
 }
 /// The value of global `name` in `globals`, falling back to the builtins,

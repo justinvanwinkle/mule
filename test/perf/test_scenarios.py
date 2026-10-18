@@ -187,3 +187,40 @@ def test_invalid_cli_rejects_unknown_option(tmp_path):
     assert completed.returncode != 0
     assert "unknown option: --variant" in completed.stderr
     assert completed.stdout == ""
+
+
+@pytest.mark.parametrize("name", SCENARIOS)
+def test_sbcl_equivalent_matches_python(load_case, name, tmp_path):
+    lisp_source = SUITE / f"{name}.lisp"
+    assert lisp_source.is_file()
+    completed = subprocess.run(
+        [
+            "sbcl",
+            "--script",
+            str(lisp_source),
+            "--size",
+            "31",
+            "--seed",
+            "42",
+            "--loops",
+            "2",
+            "--warmups",
+            "1",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    lines = [line.split("\t", 1) for line in completed.stdout.splitlines()]
+    fields = dict(lines)
+    assert len(lines) == len(fields) == 7
+    assert fields["CASE"] == name
+    assert fields["SIZE"] == "31"
+    assert fields["SEED"] == "42"
+    assert fields["LOOPS"] == "2"
+    case = load_case(name)
+    assert fields["RESULT"] == repr(case.run(case.prepare(31, 42)))
+    assert float(fields["PREPARE"]) >= 0
+    assert float(fields["KERNEL"]) >= 0
+    assert completed.stderr == ""

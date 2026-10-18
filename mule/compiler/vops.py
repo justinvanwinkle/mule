@@ -154,18 +154,29 @@ def constant(gen, vop):
     if result.tn.sc in (SIGNED, BOOLEAN, NULL, DOUBLE):
         gen.store(result, literal.accept(_RawLiteral()))
         return
-    literal.accept(_BoxedConstant(gen, result))
+    literal.accept(_BoxedConstant(gen, result, vop))
 
 
 class _BoxedConstant(ast.Visitor):
     """Materialize constants using their compiled representation."""
 
-    def __init__(self, gen, result):
+    def __init__(self, gen, result, vop=None):
         self.gen = gen
         self.result = result
+        self.vop = vop
 
     def visit_Node(self, node):
         self.gen.pointer_result(self.result, self.gen.constant(node))
+
+    def visit_Tuple(self, node):
+        if self.vop is not None and self.gen.is_unpacked_return_vop(self.vop):
+            values = [
+                self.gen.operation(self.gen.constant(element))
+                for element in node.elements
+            ]
+            self.gen.unpacked_return_result(self.result, values)
+            return
+        self.visit_Node(node)
 
     def visit_NoneLiteral(self, node):
         self.gen.native_result(self.result, "@mule.none")
@@ -223,6 +234,10 @@ def double_constant(value: float) -> str:
 
 @define_vop("load-local", args=(None,), results=(None,))
 def load_local(gen, vop):
+    if gen.is_unpacked_discard_load(vop):
+        gen.immortal_values.add("@mule.none")
+        gen.publish(vop.results[0], "@mule.none")
+        return
     source, result = vop.args[0], vop.results[0]
     access = vop.codegen_info
     if source.tn.sc not in OBJECT:
@@ -268,6 +283,9 @@ def load_global(gen, vop):
 
 @define_vop("move", args=(None,), results=(None,))
 def move(gen, vop):
+    if gen.is_unpacked_move(vop):
+        gen.take(vop.args[0])
+        return
     value = gen.take(vop.args[0])
     gen.store(vop.results[0], value, release=vop.codegen_info is not False)
 
@@ -423,11 +441,41 @@ def full_call(gen, vop):
     function = gen.take(vop.args[0])
     arguments = vop.args[1:]
     values = [gen.take(argument) for argument in arguments]
-    value = gen.call(site, function, arguments, values)
+    value = gen.call(
+        site, function, arguments, values, unpack_arity=gen.unpacked_call_arity(vop)
+    )
     gen.publish(result, value)
     gen.release(function)
     gen.check_pointer(value)
     gen.refine(result.tn, value)
+
+
+@define_vop("fast-len", args=(OBJECT,), results=(OBJECT,))
+def fast_len(gen, vop):
+    value = gen.take(vop.args[0])
+    result = gen.operation(f"call ptr @mule_fast_len(ptr {value})")
+    gen.publish(vop.results[0], result)
+    gen.release(value)
+    gen.check_pointer(result)
+    gen.refine(vop.results[0].tn, result)
+
+
+@define_vop("parse-int-text", args=(OBJECT,), results=(OBJECT,))
+def parse_int_text(gen, vop):
+    value = gen.take(vop.args[0])
+    gen.pointer_result(
+        vop.results[0], f"call ptr @mule_parse_int_text(ptr {value})", (value,)
+    )
+
+
+@define_vop("parse-int-slice", args=(OBJECT, OBJECT, OBJECT), results=(OBJECT,))
+def parse_int_slice(gen, vop):
+    sequence, start, stop = (gen.take(operand) for operand in vop.args)
+    gen.pointer_result(
+        vop.results[0],
+        f"call ptr @mule_parse_int_slice(ptr {sequence}, ptr {start}, ptr {stop})",
+        (sequence, start, stop),
+    )
 
 
 TERMINATORS = frozenset(
@@ -786,7 +834,7 @@ def resolve_method(gen, vop):
     receiver = gen.take(vop.args[0])
     method, bound = vop.results
     info = vop.codegen_info
-    if info.exact_list_append:
+    if info.exact_list_append or info.exact_text_find:
         gen.immortal_values.add("@mule.none")
         gen.publish(method, "@mule.none")
         gen.publish(bound, receiver)
@@ -1057,6 +1105,9 @@ def build_list(gen, vop):
 @define_vop("build-tuple", translate=fndb.BUILD_TUPLE, results=(OBJECT,))
 def build_tuple(gen, vop):
     values = [gen.take(element) for element in vop.args]
+    if gen.is_unpacked_return_vop(vop):
+        gen.unpacked_return_result(vop.results[0], values)
+        return
     gen.argv(values)
     buf = "%argv" if values else "null"
     gen.pointer_result(
@@ -1181,6 +1232,11 @@ def _define_protocol(name, info):
 @define_vop("structural-unpack", translate=fndb.PROTOCOLS["unpack"], results=(OBJECT,))
 def structural_unpack(gen, vop):
     value, count = [gen.take(argument) for argument in vop.args]
+    if gen.is_unpacked_unpack(vop):
+        gen.immortal_values.add("@mule.none")
+        gen.publish(vop.results[0], "@mule.none")
+        gen.release(count)
+        return
     if vop.codegen_info.proved:
         gen.publish(vop.results[0], value)
         gen.refine(vop.results[0].tn, value)
@@ -1194,7 +1250,11 @@ def structural_unpack(gen, vop):
 def protocol_getitem(gen, vop):
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])
-    helper = gen.module.getitem_helper()
+    helper = (
+        "@mule_text_codepoint_getitem"
+        if vop.codegen_info is True
+        else gen.module.getitem_helper()
+    )
     result = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {index})")
     gen.release(sequence)
     gen.release(index)
@@ -1222,6 +1282,24 @@ def protocol_getslice(gen, vop):
     gen.refine(vop.results[0].tn, result)
 
 
+@define_vop(
+    "text-slice-compare",
+    args=(OBJECT, OBJECT, OBJECT, OBJECT),
+    results=(OBJECT,),
+)
+def text_slice_compare(gen, vop):
+    sequence = gen.take(vop.args[0])
+    start = gen.take(vop.args[1])
+    stop = gen.take(vop.args[2])
+    target = gen.take(vop.args[3])
+    invert = int(bool(vop.codegen_info))
+    boolean = gen.operation(
+        f"call ptr @mule_text_slice_eq(ptr {sequence}, ptr {start}, ptr {stop}, "
+        f"ptr {target}, i32 {invert})"
+    )
+    gen.native_result(vop.results[0], boolean, (sequence, start, stop, target))
+
+
 @define_vop("protocol-setitem", translate=fndb.PROTOCOLS["setitem"], results=(OBJECT,))
 def protocol_setitem(gen, vop):
     sequence = gen.take(vop.args[0])
@@ -1246,6 +1324,15 @@ for _name, _info in fndb.PROTOCOLS.items():
 
 @define_vop("unpack-ref", translate=fndb.UNPACK_REF, results=(OBJECT,))
 def unpack_ref(gen, vop):
+    slot_idx = gen.unpacked_ref_slot(vop)
+    if slot_idx is not None:
+        position = gen.take(vop.args[1])
+        slot = gen.operation(f"getelementptr ptr, ptr %unpack.out, i64 {slot_idx}")
+        result = gen.operation(f"load ptr, ptr {slot}")
+        gen.publish(vop.results[0], result)
+        gen.release(position)
+        gen.refine(vop.results[0].tn, result)
+        return
     access = vop.codegen_info
     parent = gen.load(vop.args[0]) if access.borrow_parent else gen.take(vop.args[0])
     position = gen.take(vop.args[1])
@@ -1352,7 +1439,9 @@ def text_access(function):
         if function == "mule_integer_storage":
             if arg_type.is_fixnum:
                 return values[0]
-            return gen.operation(f"call ptr @mule.fast.integer_storage(ptr {values[0]})")
+            return gen.operation(
+                f"call ptr @mule.fast.integer_storage(ptr {values[0]})"
+            )
         if function == "mule_text_storage" and arg_type.fits_text(arg_type):
             return "@mule.true"
         if function == "mule_text_codepoint" and len(vop.args) == 2:
@@ -2321,10 +2410,14 @@ STORE_GLOBAL = store_global
 UNBIND_GLOBAL = unbind_global
 DISCARD = discard
 TYPE_CHECK = type_check
+TEXT_SLICE_COMPARE = text_slice_compare
 BRANCH = branch
 JUMP = jump
 RETURN = return_
 FULL_CALL = full_call
+FAST_LEN = fast_len
+PARSE_INT_TEXT = parse_int_text
+PARSE_INT_SLICE = parse_int_slice
 RAW_CONSTRUCT = raw_construct
 
 __all__ = [
@@ -2333,6 +2426,7 @@ __all__ = [
     "COMPARE_OPCODES",
     "CONSTANT",
     "DISCARD",
+    "FAST_LEN",
     "FULL_CALL",
     "INSERT_SAFEPOINT",
     "JUMP",
@@ -2342,11 +2436,14 @@ __all__ = [
     "MOVE",
     "MOVE_ARGUMENT",
     "OBJECT",
+    "PARSE_INT_SLICE",
+    "PARSE_INT_TEXT",
     "RAW",
     "RAW_CONSTRUCT",
     "RETURN",
     "STORE_GLOBAL",
     "TERMINATORS",
+    "TEXT_SLICE_COMPARE",
     "TYPE_CHECK",
     "UNARY_OPCODES",
     "UNBIND_GLOBAL",
