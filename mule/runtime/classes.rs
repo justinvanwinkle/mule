@@ -3524,7 +3524,7 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 61] = [
+        let exports: [(&str, object::Native); 62] = [
             ("delete_instance_field", delete_instance_field),
             ("class_lookup_default", class_lookup_default),
             ("class_own_lookup_default", class_own_lookup_default),

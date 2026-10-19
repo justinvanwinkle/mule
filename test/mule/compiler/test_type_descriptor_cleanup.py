@@ -105,3 +105,65 @@ except TypeError:
     print('keyword only')
 """,
     )
+
+
+@pytest.mark.integration
+def test_dataclass_initializer_retains_definition_time_field_metadata(tmp_path):
+    compare(
+        tmp_path,
+        """
+from dataclasses import dataclass, field
+events = []
+def original_factory():
+    events.append('original')
+    return ['original']
+def hidden_factory():
+    events.append('hidden')
+    return ['hidden']
+def replacement_factory():
+    events.append('replacement')
+    return ['replacement']
+@dataclass
+class Value:
+    count: int = 7
+    items: list = field(default_factory=original_factory)
+    hidden: list = field(init=False, default_factory=hidden_factory)
+    keyword: int = field(kw_only=True, default=8)
+metadata = Value.__dataclass_fields__
+metadata['count'].name = 'renamed'
+metadata['count'].default = 99
+metadata['count'].init = False
+metadata['items'].default_factory = replacement_factory
+metadata['hidden'].default_factory = replacement_factory
+metadata['keyword'].name = 'renamed_keyword'
+metadata['keyword'].default = 88
+metadata['keyword'].kw_only = False
+first = Value()
+print(getattr(first, 'count', 'missing'), hasattr(first, 'renamed'))
+print(getattr(first, 'keyword', 'missing'), first.items, first.hidden, events)
+shared = []
+second = Value(4, shared, keyword=9)
+print(second.count, second.items is shared, second.keyword, second.hidden)
+try:
+    Value(4, shared, 9)
+except TypeError:
+    print('still keyword-only')
+""",
+    )
+
+
+@pytest.mark.integration
+def test_frozen_slot_dataclass_initializer_retains_definition_time_field_name(tmp_path):
+    compare(
+        tmp_path,
+        """
+from dataclasses import dataclass
+@dataclass(frozen=True, slots=True)
+class Value:
+    count: int = 7
+metadata = Value.__dataclass_fields__['count']
+metadata.name = 'renamed'
+metadata.default = 99
+print(Value().count, Value(4).count)
+""",
+    )

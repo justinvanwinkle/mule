@@ -435,3 +435,104 @@ print(Odd.method(receiver=instance))
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "caught\n7\n"
+
+
+def test_positional_variadic_calls_preserve_fresh_keyword_dictionaries(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        """
+def collect(first=7, *rest, flag='default', **options):
+    return first, rest, flag, options
+first = collect(1, 2, 3)
+second = collect()
+first[3]['saved'] = ['first']
+print(first, second, first[3] is second[3])
+print(collect(4, flag='keyword', extra=5))
+try:
+    collect(1, first=2)
+except TypeError:
+    print('duplicate')
+def keywords(**options):
+    return options
+left, right = keywords(), keywords()
+left['value'] = 9
+print(left, right, left is right)
+try:
+    keywords(1)
+except TypeError:
+    print('positional rejected')
+def required(first, *rest, flag, **options):
+    return first, rest, flag, options
+try:
+    required(1)
+except TypeError:
+    print('required keyword')
+print(required(1, 2, flag='supplied', extra=3))
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "(1, (2, 3), 'default', {'saved': ['first']}) (7, (), 'default', {}) False\n"
+        "(4, (), 'keyword', {'extra': 5})\nduplicate\n"
+        "{'value': 9} {} False\npositional rejected\nrequired keyword\n"
+        "(1, (2,), 'supplied', {'extra': 3})\n"
+    )
+
+
+def test_positional_variadic_constructor_keeps_argument_objects_independent(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        """
+class Capture:
+    def __init__(self, *args, **options):
+        self.args = args
+        self.options = options
+first, second = Capture(['first']), Capture(['second'])
+first.options['saved'] = first.args[0]
+print(first.args, first.options, second.args, second.options)
+print(first.options is second.options)
+print(Capture(['third'], supplied=['keyword']).options)
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "(['first'],) {'saved': ['first']} (['second'],) {}\n"
+        "False\n{'supplied': ['keyword']}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "signature, body, call, binding",
+    [
+        (
+            "first, *rest, **options",
+            "first, rest, options",
+            "capture(1)",
+            "i32 1, i32 1, i32 1",
+        ),
+        ("first, **options", "first, options", "capture(1)", "i32 1, i32 1, i32 0"),
+        ("**options", "options", "capture()", "i32 0, i32 0, i32 0"),
+        (
+            "first=7, *rest, flag='default', **options",
+            "first, rest, flag, options",
+            "capture()",
+            "i32 0, i32 1, i32 1",
+        ),
+    ],
+)
+def test_keyword_capture_signature_has_direct_positional_entry(
+    signature, body, call, binding
+):
+    from mule.compiler import emit_llvm
+
+    llvm = emit_llvm(f"def capture({signature}):\n    return {body}\n{call}\n")
+    entry = next(
+        entry
+        for entry in llvm.split("\ndefine ")[1:]
+        if entry.startswith('ptr @"mule_fn_capture.fn"(')
+    )
+    assert f"call i32 @mule_binding_positional(ptr %args, {binding})" in entry
+    assert 'call ptr @"mule.protocol.build_dict"(' in entry
+    assert 'call ptr @"mule_fn_capture.body"(' in entry
