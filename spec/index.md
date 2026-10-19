@@ -23,6 +23,8 @@ frontend coverage does not establish complete Python compatibility.
   evaluated list/tuple construction and compiled Python formatting protocols.
 - [Native implementation selection](native-lowering.md): implemented analysis,
   templates, representation selection, guarded calls, and their SBCL source references.
+- [Type inference and flow propagation](type-inference.md): optimization-only type charter,
+  open/closed-world compilation model, value-type lattice, constraint propagation, and local-call entry contexts.
 - [Optimization policies](optimization-policies.md): target class restrictions,
   native struct representation, safety checks, and debug levels.
 - [Compiled program performance](performance.md): runtime comparisons,
