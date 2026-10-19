@@ -5,6 +5,8 @@ execute as native Python functions and classes, in a private module namespace.
 """
 
 from _object import bool, complex, float, globals, int, isinstance, issubclass, object, type, vars
+from _object import _globals_dict as globals_dict
+from _object import locals as _builtin_locals
 from _object import _make_complex
 from _object import _bytes_special
 from _object import _index_integer
@@ -536,8 +538,11 @@ def raise_value(value):
     # An exception raised while another is being handled records it as its
     # context, unless it already has one or is that exception itself.
     active = _active_exception()
-    if active is not None and active is not instance and instance.__context__ is None:
-        instance.__context__ = active
+    if active is not None:
+        if active is instance:
+            instance._explicit_raise = True
+        elif instance.__context__ is None:
+            instance.__context__ = active
     return instance
 
 
@@ -2017,6 +2022,47 @@ def _hex_bytes(values, sep, bytes_per_sep):
     return ''.join(parts)
 
 
+def _hex_nibble(code):
+    if 48 <= code <= 57:
+        return code - 48
+    if 65 <= code <= 70:
+        return code - 55
+    if 97 <= code <= 102:
+        return code - 87
+    return -1
+
+
+def _fromhex_values(string):
+    if not _text_storage(string):
+        raise TypeError(f"fromhex() argument must be str, not {type_of(string).__name__}")
+    length = _text_length(string)
+    values = []
+    index = 0
+    while index < length:
+        code = _text_codepoint(string, index)
+        if code in (9, 10, 11, 12, 13, 32):
+            index += 1
+            continue
+        high = _hex_nibble(code)
+        if high < 0:
+            raise ValueError(
+                f"non-hexadecimal number found in fromhex() arg at position {index}"
+            )
+        index += 1
+        if index >= length:
+            raise ValueError(
+                f"non-hexadecimal number found in fromhex() arg at position {index}"
+            )
+        low = _hex_nibble(_text_codepoint(string, index))
+        if low < 0:
+            raise ValueError(
+                f"non-hexadecimal number found in fromhex() arg at position {index}"
+            )
+        _storage_append(values, (high << 4) | low)
+        index += 1
+    return values
+
+
 def _byte_padding(values, width, fillchar, alignment, method):
     width = _index_integer(width)
     if not -(1 << 63) <= width < 1 << 63:
@@ -2073,6 +2119,11 @@ class BytesStorage:
 
     def hex(self, sep=_HEX_MISSING, bytes_per_sep=1):
         return _hex_bytes(self, sep, bytes_per_sep)
+
+    @classmethod
+    def fromhex(cls, string, /):
+        value = bytes_from_values(_fromhex_values(string))
+        return cls(value) if cls is not bytes else value
 
     def join(self, iterable, /):
         return bytes_from_values(_bytes_joined_values(self, iterable))
@@ -2806,6 +2857,11 @@ class bytearray:
     def hex(self, sep=_HEX_MISSING, bytes_per_sep=1):
         return _hex_bytes(self.values, sep, bytes_per_sep)
 
+    @classmethod
+    def fromhex(cls, string, /):
+        value = bytearray(_fromhex_values(string))
+        return cls(value) if cls is not bytearray else value
+
     def join(self, iterable, /):
         return bytearray(_bytes_joined_values(self.values, iterable))
 
@@ -3504,6 +3560,7 @@ _install_builtin("complex", complex)
 _install_builtin("isinstance", isinstance)
 _install_builtin("issubclass", issubclass)
 _install_builtin("vars", vars)
+_install_builtin("locals", _builtin_locals)
 _install_builtin("globals", globals)
 _install_builtin("sorted", sorted)
 _install_builtin("dir", dir)
@@ -3682,6 +3739,12 @@ def cell_get(cell):
     return cell.value
 
 
+def cell_get_optional(cell):
+    if not cell.bound:
+        return _HEX_MISSING
+    return cell.value
+
+
 def cell_set(cell, value):
     cell.value = value
     cell.bound = True
@@ -3692,13 +3755,41 @@ def cell_clear(cell):
     cell.bound = False
 
 
+def snapshot_locals(names, values):
+    result = {}
+    count = _storage_length(names)
+    index = 0
+    while index < count:
+        value = _storage_read(values, index)
+        if value is not _HEX_MISSING:
+            result[_storage_read(names, index)] = value
+        index += 1
+    return result
+
+
+def call_with_locals(callee, snapshot):
+    if callee is _builtin_locals or callee is vars:
+        return snapshot
+    if callee is dir:
+        return sorted(snapshot)
+    return callee()
+
+
 # Generic aliases are created once the builtins they use are installed.
 from _template import Interpolation as _Interpolation  # noqa: E402
 from _template import build_template as _build_template  # noqa: E402
 from _generic_alias import class_getitem as _class_getitem  # noqa: E402
 from _generic_alias import type_or as _type_or  # noqa: E402
 from _generic_alias import type_ror as _type_ror  # noqa: E402
-from _exceptiongroup import BaseExceptionGroup, ExceptionGroup  # noqa: E402
+from _exceptiongroup import (  # noqa: E402
+    BaseExceptionGroup,
+    ExceptionGroup,
+    except_star_caught,
+    except_star_finish,
+    except_star_match,
+    except_star_matched,
+    except_star_start,
+)
 from _object import _install_code_fields  # noqa: E402
 from _object import _install_builtin_descriptors  # noqa: E402
 

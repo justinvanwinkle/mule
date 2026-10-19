@@ -76,6 +76,9 @@ class ValueTypeVisitor:
     def visit_UnboundType(self, fact):
         return self.visit_ValueType(fact)
 
+    def visit_OptionalIntegerType(self, fact):
+        return self.visit_ValueType(fact)
+
 
 @dataclass(frozen=True, slots=True)
 class ValueType:
@@ -117,6 +120,9 @@ class ValueType:
 
     def accept(self, visitor):
         return visitor.visit_ValueType(self)
+
+    def to_dict(self) -> dict:
+        return self.accept(_SERIALIZE_VALUE_TYPE)
 
     def as_bound(self):
         if not self.may_be_unbound:
@@ -320,7 +326,9 @@ class ValueType:
     def dict_values_iterator_type(self):
         return UNKNOWN
 
-    def method_return_type(self, name: str, arity: int, has_keywords: bool):
+    def method_return_type(
+        self, name: str, arity: int, has_keywords: bool, storage_methods=None
+    ):
         return UNKNOWN
 
     def fits(self, expected):
@@ -425,6 +433,9 @@ class ValueType:
 @dataclass(frozen=True, slots=True)
 class UnknownType(ValueType):
     may_be_unbound: bool = False
+
+    def accept(self, visitor):
+        return visitor.visit_UnknownType(self)
 
     def as_bound(self):
         return UNKNOWN
@@ -870,6 +881,18 @@ class BooleanType(IntegerType):
     def fixnum_domain(self):
         return None
 
+    def dispatch_domain(self):
+        return None if self.may_be_unbound else self
+
+    def dispatch_rank(self) -> int:
+        if self.may_be_unbound:
+            return 2**64
+        return (
+            self.maximum - self.minimum
+            if self.minimum is not None and self.maximum is not None
+            else 2
+        )
+
     def accepts(self, actual):
         return actual.fits_boolean(self)
 
@@ -1235,65 +1258,12 @@ class TextType(PrimitiveType):
     def annotation_conflict(self, contract):
         return False if self.may_be_unbound else contract.text_conflict(self)
 
-    def method_return_type(self, name: str, arity: int, has_keywords: bool):
-        if self.may_be_unbound:
+    def method_return_type(
+        self, name: str, arity: int, has_keywords: bool, storage_methods=None
+    ):
+        if self.may_be_unbound or storage_methods is None:
             return UNKNOWN
-        if name in {"find", "rfind", "index", "rindex", "count"}:
-            return IntegerType(-1, (1 << 60) - 1)
-        if name in {"partition", "rpartition"}:
-            if arity == 1 and not has_keywords:
-                return TupleType(3, (TEXT_TYPE, TEXT_TYPE, TEXT_TYPE))
-            return TupleType(3)
-        if name in {"split", "rsplit"}:
-            if arity <= 2:
-                return ListType(TEXT_TYPE)
-            return LIST_TYPE
-        if name == "splitlines":
-            if arity <= 1:
-                return ListType(TEXT_TYPE)
-            return LIST_TYPE
-        if name in {
-            "strip",
-            "lstrip",
-            "rstrip",
-            "lower",
-            "upper",
-            "casefold",
-            "capitalize",
-            "title",
-            "swapcase",
-            "replace",
-            "removeprefix",
-            "removesuffix",
-            "join",
-            "center",
-            "ljust",
-            "rjust",
-            "zfill",
-            "expandtabs",
-            "format",
-        }:
-            return TEXT_TYPE
-        if name in {
-            "startswith",
-            "endswith",
-            "isalpha",
-            "isdecimal",
-            "isdigit",
-            "isnumeric",
-            "isalnum",
-            "isspace",
-            "isprintable",
-            "isascii",
-            "isidentifier",
-            "islower",
-            "isupper",
-            "istitle",
-        }:
-            return BOOLEAN
-        if name == "encode":
-            return BYTES_TYPE
-        return UNKNOWN
+        return storage_methods.get(("TextStorage", name), UNKNOWN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1363,59 +1333,12 @@ class BytesType(PrimitiveType):
     def annotation_conflict(self, contract):
         return False if self.may_be_unbound else contract.bytes_conflict(self)
 
-    def method_return_type(self, name: str, arity: int, has_keywords: bool):
-        if self.may_be_unbound:
+    def method_return_type(
+        self, name: str, arity: int, has_keywords: bool, storage_methods=None
+    ):
+        if self.may_be_unbound or storage_methods is None:
             return UNKNOWN
-        if name in {"find", "rfind", "index", "rindex", "count"}:
-            return IntegerType(-1, (1 << 60) - 1)
-        if name in {"partition", "rpartition"}:
-            if arity == 1 and not has_keywords:
-                return TupleType(3, (BYTES_TYPE, BYTES_TYPE, BYTES_TYPE))
-            return TupleType(3)
-        if name in {"split", "rsplit"}:
-            if arity <= 2:
-                return ListType(BYTES_TYPE)
-            return LIST_TYPE
-        if name == "splitlines":
-            if arity <= 1:
-                return ListType(BYTES_TYPE)
-            return LIST_TYPE
-        if name in {
-            "strip",
-            "lstrip",
-            "rstrip",
-            "lower",
-            "upper",
-            "capitalize",
-            "title",
-            "swapcase",
-            "replace",
-            "removeprefix",
-            "removesuffix",
-            "join",
-            "center",
-            "ljust",
-            "rjust",
-            "zfill",
-            "expandtabs",
-        }:
-            return BYTES_TYPE
-        if name in {
-            "startswith",
-            "endswith",
-            "isalpha",
-            "isdigit",
-            "isalnum",
-            "isspace",
-            "isascii",
-            "islower",
-            "isupper",
-            "istitle",
-        }:
-            return BOOLEAN
-        if name in {"decode", "hex"}:
-            return TEXT_TYPE
-        return UNKNOWN
+        return storage_methods.get(("BytesStorage", name), UNKNOWN)
 
 
 @dataclass(frozen=True, slots=True)
