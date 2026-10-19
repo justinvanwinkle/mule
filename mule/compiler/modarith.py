@@ -28,7 +28,6 @@ from .ir1opt import (
     lvar_type,
 )
 from .ir1util import (
-    replace_combination_with_lvar,
     retarget_known_combination,
     unlink_node,
 )
@@ -36,73 +35,17 @@ from .knownfun import deftransform
 from .node import (
     CallKind,
     Combination,
-    Constant,
-    LeafVisitor,
     Lvar,
     NodeVisitor,
-    Ref,
+)
+from .srctran import (
+    _delete_unused_local_ref,
+    _exact_int_literal,
+    _replace_with_lvar_and_clean,
+    _rewrite_int_constant_lvar,
 )
 
 _MAX_COMBINED_SHIFT = 1024
-
-
-class _ExactIntLiteral(ast.Visitor):
-    def visit_Node(self, node):
-        return None
-
-    def visit_IntegerLiteral(self, node: ast.IntegerLiteral) -> int:
-        return node.value
-
-
-_EXACT_INT_LITERAL = _ExactIntLiteral()
-
-
-def _exact_int_literal(lvar: Lvar) -> int | None:
-    literal = constant_literal(lvar)
-    return literal.accept(_EXACT_INT_LITERAL) if literal is not None else None
-
-
-class _RewriteIntConstant(NodeVisitor, LeafVisitor):
-    def __init__(self, value: int):
-        self.value = value
-        self._ref: Ref | None = None
-
-    def visit_Node(self, node):
-        return False
-
-    def visit_Ref(self, node: Ref):
-        self._ref = node
-        ok = node.leaf.accept(self)
-        self._ref = None
-        return ok
-
-    def visit_Leaf(self, leaf):
-        return False
-
-    def visit_Constant(self, leaf: Constant):
-        ref = self._ref
-        if ref is None:
-            return False
-        literal = ast.IntegerLiteral(self.value, span=leaf.value.span)
-        if len(leaf.refs) == 1 and leaf.refs[0] is ref:
-            leaf.value = literal
-        else:
-            if ref in leaf.refs:
-                leaf.refs.remove(ref)
-            new_leaf = Constant(literal)
-            ref.leaf = new_leaf
-            new_leaf.refs.append(ref)
-        ref.derived_type = IntegerType(self.value, self.value)
-        return True
-
-
-def _rewrite_int_constant_lvar(lvar: Lvar, value: int) -> bool:
-    if len(lvar.uses) != 1:
-        return False
-    if not lvar.uses[0].accept(_RewriteIntConstant(value)):
-        return False
-    lvar.derived_type = IntegerType(value, value)
-    return True
 
 
 class _KnownBinaryProducer(NodeVisitor):
@@ -171,7 +114,7 @@ def _replace_assoc_binary(
     inner_node.args = []
     retarget_known_combination(node, target_info, [x_lvar, right_lvar])
     _flush_operand(inner_node.fun)
-    _flush_operand(c1_lvar)
+    _delete_unused_local_ref(c1_lvar)
     unlink_node(inner_node)
     return True
 
@@ -189,10 +132,9 @@ def _collapse_assoc_to_lvar(
     node.args = [x_lvar, right_lvar]
     _flush_operand(left_lvar)
     _flush_operand(inner_node.fun)
-    _flush_operand(c1_lvar)
+    _delete_unused_local_ref(c1_lvar)
     unlink_node(inner_node)
-    replace_combination_with_lvar(node, x_lvar)
-    return True
+    return _replace_with_lvar_and_clean(node, x_lvar)
 
 
 def _is_redundant_bitmask(val_lvar: Lvar, mask_lvar: Lvar) -> bool:
@@ -224,11 +166,9 @@ _LSHIFT_NAMES = frozenset({"%left_shift"})
 def _transform_bit_and_modarith(node: Combination) -> bool:
     left, right = node.args
     if _is_redundant_bitmask(left, right):
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     if _is_redundant_bitmask(right, left):
-        replace_combination_with_lvar(node, right)
-        return True
+        return _replace_with_lvar_and_clean(node, right)
     matched = _match_assoc_int_binary(node, _BIT_AND_NAMES)
     if matched is None:
         return False

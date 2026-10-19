@@ -248,3 +248,56 @@ def test_locall_feedback_terminates_cleanly_when_transform_declines():
         assert div_call.lvar.derived_type == IntegerType(6, 6)
         assert calls == 1
         check_ir1_consistency(compilation.components)
+
+
+def test_locall_feedback_triggers_srctran_and_modarith_on_flow_proven_locals():
+    compilation = compile_source(
+        "import mule\n"
+        "def f(x: mule.int64, raw):\n"
+        " s = 'yes' if raw else 'no'\n"
+        " flag = bool(raw)\n"
+        " zero = 0\n"
+        " one = 1\n"
+        " stride = 8\n"
+        " mask = 255\n"
+        " empty = ''\n"
+        " false_flag = False\n"
+        " a = (x + zero) * one\n"
+        " b = x * stride\n"
+        " c = x // stride\n"
+        " d = (x & 15) & mask\n"
+        " e = (x + stride) - stride\n"
+        " t = s + empty\n"
+        " g = flag | false_flag\n"
+        " return a, b, c, d, e, t, g\n"
+    )
+    fn = compilation.lambdas[1]
+    assert list(known_calls(fn, "%add")) == []
+    assert list(known_calls(fn, "%subtract")) == []
+    assert list(known_calls(fn, "%multiply")) == []
+    assert list(known_calls(fn, "%floor_divide")) == []
+    assert list(known_calls(fn, "%bit_or")) == []
+    assert len(list(known_calls(fn, "%left_shift"))) == 1
+    assert len(list(known_calls(fn, "%right_shift"))) == 1
+    assert len(list(known_calls(fn, "%bit_and"))) == 1
+    check_ir1_consistency(compilation.components)
+
+
+def test_locall_feedback_triggers_str_transform_and_preserves_local_call_type():
+    compilation = compile_source(
+        "import mule\n"
+        "def f(x: mule.int64, items, flag):\n"
+        " def step(a: mule.int64) -> mule.int64:\n"
+        "  return a\n"
+        " s = 'yes' if flag else 'no'\n"
+        " n = len(items)\n"
+        " zero = 0\n"
+        " return str(s), str(n), step(x + zero) + zero\n"
+    )
+    fn = next(lam for lam in compilation.lambdas if lam.source_name == "f")
+    # step(x + zero) + zero reduces both `+ zero` operations without losing
+    # `step`'s flow-derived INTEGER return type when `x + zero -> x` reoptimizes `step(...)`.
+    assert list(known_calls(fn, "%add")) == []
+    # `str(n)` retargets to `_decimal_protocol(n)` and `str(s)` reduces to `s`.
+    assert len(list(known_calls(fn, "_decimal_protocol"))) == 1
+    check_ir1_consistency(compilation.components)

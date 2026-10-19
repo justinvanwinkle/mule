@@ -1,0 +1,22 @@
+# Run from the repository root:
+# uv run python -m perf.pyperformance run --config perf/pyperformance/runtimes.toml
+# Use --runtime mule-o2 or --runtime mule-o3 to select a subset of candidate runtimes.
+baseline = "cpython-3.15t"
+
+[[runtime]]
+name = "cpython-3.15t"
+cwd = "../.."
+command = ["{python}", "{source}"]
+version_command = ["{python}", "--version"]
+
+[[runtime]]
+name = "mule-o2"
+cwd = "../.."
+command = ["{binary}"]
+build = ["{python}", "-m", "mule.compiler", "{source}", "-o", "{binary}", "-O", "2"]
+
+[[runtime]]
+name = "mule-o3"
+cwd = "../.."
+command = ["{binary}"]
+build = ["{python}", "-m", "mule.compiler", "{source}", "-o", "{binary}", "-O", "3"]

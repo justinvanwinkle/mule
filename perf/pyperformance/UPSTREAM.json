@@ -1,0 +1,1143 @@
+{
+  "source_url": "https://github.com/python/pyperformance",
+  "commit": "ccc0aeb7ad46d65b6dcd4160e0fdda4d885852dd",
+  "retrieved_on": "2026-10-18",
+  "selection": "All 52 standard-library benchmark directories (those without third-party PyPI requirements.txt), MANIFEST, and COPYING. Source and data bytes are unchanged.",
+  "files": [
+    {
+      "upstream_path": "COPYING",
+      "path": "COPYING",
+      "sha256": "6eb6aa6a2f338578b10f3bd929857690ad257284dfcd21c9d5e279d0b30b102b"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/MANIFEST",
+      "path": "benchmarks/MANIFEST",
+      "sha256": "4eba9fa28412004079ac05b6d162f12c081bbb39690e08eb5d2f28049c29d0f5"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/data/2to3/README.txt",
+      "path": "benchmarks/bm_2to3/data/2to3/README.txt",
+      "sha256": "65e01e2c47dd45ea601df7635634e0246204b9d9f9ba1b70ab767998f1a5c384"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/data/2to3/__init__.py.txt",
+      "path": "benchmarks/bm_2to3/data/2to3/__init__.py.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/data/2to3/context_processors.py.txt",
+      "path": "benchmarks/bm_2to3/data/2to3/context_processors.py.txt",
+      "sha256": "96a01bf79f4037e4f4ea127dc5c0a1bab04ec8aac2b9f6fd1ef253d24998156c"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/data/2to3/exceptions.py.txt",
+      "path": "benchmarks/bm_2to3/data/2to3/exceptions.py.txt",
+      "sha256": "0e679828a855a35e644782886fb5edb26740a1b5766ddcad6fc4cb0e7a13caf0"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/data/2to3/mail.py.txt",
+      "path": "benchmarks/bm_2to3/data/2to3/mail.py.txt",
+      "sha256": "eb1df0bf2d057a02a13e11cd28896ee367754cac2ee2b086227cf2cccfc1fd90"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/data/2to3/paginator.py.txt",
+      "path": "benchmarks/bm_2to3/data/2to3/paginator.py.txt",
+      "sha256": "06f4d4a24624e0ed1e277ca5236ae98e3e72beded940e1c5b546665742b2b145"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/data/2to3/signals.py.txt",
+      "path": "benchmarks/bm_2to3/data/2to3/signals.py.txt",
+      "sha256": "55551ddf9fca13891791175ba23e6fc1a3e5c5d6e84c9537af04060d09e489c9"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/data/2to3/template_loader.py.txt",
+      "path": "benchmarks/bm_2to3/data/2to3/template_loader.py.txt",
+      "sha256": "c3f9584ca851f6a29412f4c7e40a12b35c328c10504f6662de848c5da8f8e06c"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/data/2to3/urlresolvers.py.txt",
+      "path": "benchmarks/bm_2to3/data/2to3/urlresolvers.py.txt",
+      "sha256": "0b27c9c04a88903c3157c00b5c6bd68107ae1088e797214f6a374e52cd9c2b06"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/data/2to3/xheaders.py.txt",
+      "path": "benchmarks/bm_2to3/data/2to3/xheaders.py.txt",
+      "sha256": "12082a253a2fb67092d329286f73953868cc96c22b88fca6cf03ba8253543131"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/pyproject.toml",
+      "path": "benchmarks/bm_2to3/pyproject.toml",
+      "sha256": "12e747f2ffdadb542451fa69b53d058d9040d545e61aad1a2a31ef03d7c8710a"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/run_benchmark.py",
+      "path": "benchmarks/bm_2to3/run_benchmark.py",
+      "sha256": "a491c6dfe070a073cae07fc07f903afcc6d795207f2c70ab96f0ac0d9363d916"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/LICENSE.txt",
+      "path": "benchmarks/bm_2to3/vendor/LICENSE.txt",
+      "sha256": "bb27f2829b315447199ab930b6d0e0ae6716754ebfa4ccf81f6eb7738b0f963a"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/pyproject.toml",
+      "path": "benchmarks/bm_2to3/vendor/pyproject.toml",
+      "sha256": "b6c3286a9004ea4ab40575294647d640a6a8178cfae31a67b9f0eac2d502dde5"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/Grammar.txt",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/Grammar.txt",
+      "sha256": "508e62e787dd756eb0a4eb1b8d128320ca02cd246ab14cc8ce0a476dc88cc5b6"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/PatternGrammar.txt",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/PatternGrammar.txt",
+      "sha256": "ee5ba5db3b6722a0e2fbe2560ebc1c883e72328ef9c3b4da1c7c5d1cc649bce3"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/__init__.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/__main__.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/__main__.py",
+      "sha256": "c7b09f90e66dea194ad63dc02c6425dff977d16f1f21a157b7475905c219a707"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/btm_matcher.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/btm_matcher.py",
+      "sha256": "a1aa5d35558acf4b6016054963285cb145f97a764926bea07cbd674563f3248d"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/btm_utils.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/btm_utils.py",
+      "sha256": "c0653eb497a1a48195dd9c4ecbbf87e4eab31188be29ab1640e353209741588c"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixer_base.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixer_base.py",
+      "sha256": "c795a53ca849c42212c8ec33a74284e0377df852eb4ea599aba62d5af1df282a"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixer_util.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixer_util.py",
+      "sha256": "306d0b2ea8169bdca711c6a31c0b1a3ce710d38ae2b6568ef519aa38451af608"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/__init__.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/__init__.py",
+      "sha256": "836cdb388117cf81e78d9fa2a141cca1b14b0179733322e710067749a1b16fe9"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_apply.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_apply.py",
+      "sha256": "b5171e32758a78450854f40867775d4aca58665bc920ebece04fcfcc153af02a"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_asserts.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_asserts.py",
+      "sha256": "4c77972812cb5ec0a72afbce3e1d618c27ef7b239329c5c952c2bcbe77dba5dd"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_basestring.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_basestring.py",
+      "sha256": "d041443d6499a735bb78fec9da1bf33b3d034b5192c98bc273b16a44692fc88f"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_buffer.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_buffer.py",
+      "sha256": "2da37b49c30d6a0b4db43146ebb4ac8e5ffcb9814816b4742e464cb856977883"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_dict.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_dict.py",
+      "sha256": "38f460596ebfb64046aab3d9a65935bd4c76a470118fb7d10a088dc0ecdc53ea"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_except.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_except.py",
+      "sha256": "7ff6f560c3c3d7a5d9ceef5ba31c556341f7ce1bc1b52d96b063f6c2c4765651"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_exec.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_exec.py",
+      "sha256": "9e0893327205dea12004e88d18c580286e7977e081b5eda7baf5b7bc93bc6c52"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_execfile.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_execfile.py",
+      "sha256": "6ff65db1192099457cb3d9f2618a893c6ac430028550284f3a34d5c08042b0eb"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_exitfunc.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_exitfunc.py",
+      "sha256": "ef4f18f651d32410c43644c27590903d41e38e763b0e108e6c685a3412a7d29c"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_filter.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_filter.py",
+      "sha256": "2c7f0121193395750eab2b2abf5059d9a3b1a61f81763f52511265d7bca5cb21"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_funcattrs.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_funcattrs.py",
+      "sha256": "111df53fac6a121d61abe33883a68e731820ddc4864b0a4c1000cf2ac5f019cd"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_future.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_future.py",
+      "sha256": "baba8cafb48dd9181a0e1f7b0f20b585ce2925e8f347e00b87407a256bb16663"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_getcwdu.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_getcwdu.py",
+      "sha256": "5bc5252f683a401e7d81c5911617c4af1a1bcdf99a51c4bf1cfccb00446ff220"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_has_key.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_has_key.py",
+      "sha256": "32943d3b921c1c3f0d3776d19e5120806990b817bc99a7e22799847abfda1f63"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_idioms.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_idioms.py",
+      "sha256": "600e34faf36e14307e59d55088e3979881d497b8fc9d77659e77709f9e8bafd7"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_import.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_import.py",
+      "sha256": "803baf96f9603c957eb974f252b0ad9829c889a293e0ce6829db1bce3da6dd4e"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_imports.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_imports.py",
+      "sha256": "cdf7ee6d85e2b148230984cfc4ea3f193be458958ea42ef290854a9672a64370"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_imports2.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_imports2.py",
+      "sha256": "b6f3c628839ffe7fd72569dd6ca2210e18edae3e180002747ea011b76b7ec0ef"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_input.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_input.py",
+      "sha256": "10c5ef3b45a4ee7e88af8852181916a788aae2bea52b08f3473815c1c43598d1"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_intern.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_intern.py",
+      "sha256": "8d29a162536b99c91bd2f9259dda7f39fec751949d6354d2c1f2e5d070c87d66"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_isinstance.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_isinstance.py",
+      "sha256": "8408c92b99f50d8c4978b47a2b2155588e315f2ebbe58c160dcdcdcb89e19914"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_itertools.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_itertools.py",
+      "sha256": "578a51b9935020b03a510de15ece55fcd02c9474f37a54c158fb97ba5fd15af1"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_itertools_imports.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_itertools_imports.py",
+      "sha256": "2e419cfbd7f2a326ae7fa10873aa377112ebec32545238fdf988acb088c3cdb7"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_long.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_long.py",
+      "sha256": "306b80e0a72c0d16dd934b7d51ab0c9a4224f83be5d6cbad8a7158a0a5d73551"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_map.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_map.py",
+      "sha256": "b82c0762c44adf2af7745c030afe291e2badfe360925046c8e58d85340717696"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_metaclass.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_metaclass.py",
+      "sha256": "45a30c866aa2ff69e089da147ed09986aad4516b5e5dd943f8dfcb7d3946a3e1"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_methodattrs.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_methodattrs.py",
+      "sha256": "8d60082f98ce52ee4955099bfd447cbadfa0e9b24ccb8d135cecc833168d44e8"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_ne.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_ne.py",
+      "sha256": "4f9cb1388ba86f29422d20979d3423fdf3541ba35a17ed44d6f4a517ff784ecd"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_next.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_next.py",
+      "sha256": "5c7d86d9f81b2498486d626c7feced1b92f23171cf9e42881abb78de1a93bccd"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_nonzero.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_nonzero.py",
+      "sha256": "c2cd7e3ba44508643a20eec4ea4c19f2f1adfd36f6b974d7c143e449571ae736"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_numliterals.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_numliterals.py",
+      "sha256": "1c4dd0f7881999abde6cf4d232836fa3e55fc41a7d5aa2b9866092f65707db7f"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_operator.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_operator.py",
+      "sha256": "023872fe9f03a25387cf2c17fc950cf0f990353df66e603c3a1cd3199dbccd86"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_paren.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_paren.py",
+      "sha256": "53734f1d7778ad28a4ec3ab4415923e2da8f230de4cd527589829f570e9f254d"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_print.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_print.py",
+      "sha256": "cf2690f1b502249289f52cd544190db0b94d59df5eca139829cd2bf0742e9dba"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_raise.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_raise.py",
+      "sha256": "c38ffec5862597ee8f9dac50385af943ee312bfc394366be08b2fc12563ca1a5"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_raw_input.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_raw_input.py",
+      "sha256": "ce04cbaa76d414949afc230360dd9a29ff579bd868cc7f8805230d126ac9ce9b"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_reduce.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_reduce.py",
+      "sha256": "9a03910a6c183586e1db01863fcde6417d06745fb3e63032333d71c5e82e7919"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_reload.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_reload.py",
+      "sha256": "17570148167e43b2155b6e1c814a3cca9e3ef53750c504932a9c7d62a8b68a3f"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_renames.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_renames.py",
+      "sha256": "8b71472317bf3adabf819e665c725d03e3064baa45f6ffbfd78cca83eaa46e8d"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_repr.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_repr.py",
+      "sha256": "d16930b7ef8577747cfef602aba854c64ce85d4ae1e54a18a456eaa202643e3d"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_set_literal.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_set_literal.py",
+      "sha256": "33f2c0b6e16357e083c3a98877e7317abe1578a44c288e5979c9d96fb5aa6727"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_standarderror.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_standarderror.py",
+      "sha256": "ce7eb37bc7fb29aa138b1cec6656ae8b4886cbfa700e119a1bb8484284cb717a"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_sys_exc.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_sys_exc.py",
+      "sha256": "0143830586d09d702ca3eeaa8f86698e5fd18af69fd28147e71a1a77600d356a"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_throw.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_throw.py",
+      "sha256": "fec731ed523d5cdfa21893833b52b2844eabfd1549792c1c9f8ceac2d0e8e901"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_tuple_params.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_tuple_params.py",
+      "sha256": "f3307d4750d0657d9c42b857d5f37bdb5824f9358939da7d16d13f61eb8abc72"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_types.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_types.py",
+      "sha256": "a0a133cfc78e82e1f71ce628408e7d10a38552ba3e3228ebd113838c1ce44484"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_unicode.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_unicode.py",
+      "sha256": "01b2a9b1084b6a0424f27eec488c761f75f053a409608ec36a9ee0ede0d38097"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_urllib.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_urllib.py",
+      "sha256": "3d1c04d976ff4d2841025a785aaab0cc4ee06c9c9b4e09d1e2456949fa273856"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_ws_comma.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_ws_comma.py",
+      "sha256": "5e7a16daec0b2619110516804bf90cac459a4d0315198fd4eff69c36c54378dd"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_xrange.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_xrange.py",
+      "sha256": "60d8ce92db6f399606d2e40a3c631ba566127e8cd637ebbf35b822672139cab2"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_xreadlines.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_xreadlines.py",
+      "sha256": "e8c2f19f7047bfc7539fd78839929004d8fe0efba1fbcbd9d712d285e43834ba"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_zip.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/fixes/fix_zip.py",
+      "sha256": "55ce115556c7513dd967364dc6a40c39210c874e8168cf090ddd6dc606df34cb"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/main.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/main.py",
+      "sha256": "8f5dfa77b8c8b375daba8bb88aaa195395674311e2513b29575a70821e3aa0b8"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/patcomp.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/patcomp.py",
+      "sha256": "a033a3eb91a39f96747d4300aa3394965e529c71896cd6503dd27e6b685eede5"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/__init__.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/__init__.py",
+      "sha256": "858eb0f50533bd3bd16fe32815f77fabfed92ede885070b6cb15827ec66ea500"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/conv.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/conv.py",
+      "sha256": "e2946a686c12e02248fafb1a57e7514e0c22bdb2b4a66e644215c86fedc37bff"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/driver.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/driver.py",
+      "sha256": "57af5e220cd6c6b75e8dead2cea395ead2297dd98e398ad705ca2bce0e9e6594"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/grammar.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/grammar.py",
+      "sha256": "4898d446d6ae73f7259a3f91839eca1a3380670a9f378b80780707f714fad17c"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/literals.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/literals.py",
+      "sha256": "84bc9d5387a2e20fab844e530358571afa39fa3fc0e8024270b5f7d8ac5a595a"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/parse.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/parse.py",
+      "sha256": "e245e005e524ab445a570df31f70c6fd7b901ee3b0b68bd3bcf4b41b37fa7bb6"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/pgen.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/pgen.py",
+      "sha256": "8fe2ac7e0303f0110d75832d746e6661fcd5373fa498d929163f557fd1027434"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/token.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/token.py",
+      "sha256": "7ee05616410d46d8caed0cb0755bf780c62cccf17e3c93c8ccb8dcaaa1e7094c"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/tokenize.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/pgen2/tokenize.py",
+      "sha256": "aaa0b98f6a65e08e9f8e34358198e329d29554a0d4b5f5059924a252eeb0f5c4"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/pygram.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/pygram.py",
+      "sha256": "b49d77876a9d1822ff6be04daf464341a8e4c0c3414240abf519254de2a97a48"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/pytree.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/pytree.py",
+      "sha256": "e53689352fb4fc83d85a09369650389ee01db802ad872a8abfc0bf6603ec38b9"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_2to3/vendor/src/lib2to3/refactor.py",
+      "path": "benchmarks/bm_2to3/vendor/src/lib2to3/refactor.py",
+      "sha256": "6e9a4262fb65cd4d277f009df73ffa5748f5fe3b963d3c5395c160d5f88b089b"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_argparse/bm_argparse_subparsers.toml",
+      "path": "benchmarks/bm_argparse/bm_argparse_subparsers.toml",
+      "sha256": "4cb4b424659ee5d6c08880086ab99d6974fdebb2c8353240654b0ace776d8406"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_argparse/pyproject.toml",
+      "path": "benchmarks/bm_argparse/pyproject.toml",
+      "sha256": "628a3cd4367da6863b8a4c07a75b6dee05661674d135fd2cb1c02dc72d3c6395"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_argparse/run_benchmark.py",
+      "path": "benchmarks/bm_argparse/run_benchmark.py",
+      "sha256": "5bd097964f1ffa03824056f500b841e2bd9a3ae97637812bc8c040bed86e4723"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_generators/pyproject.toml",
+      "path": "benchmarks/bm_async_generators/pyproject.toml",
+      "sha256": "90d9e156160d523ec19f57f9ab917528a0314497dd60851be5e4a0a36f6e249c"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_generators/run_benchmark.py",
+      "path": "benchmarks/bm_async_generators/run_benchmark.py",
+      "sha256": "0441979a5ffc49c1e44539f5cb5a082bb70fcef5627619872feb4f3901351de5"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_cpu_io_mixed.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_cpu_io_mixed.toml",
+      "sha256": "53efaa39b0759368c34d4c9408a133b3d04d54261111691f9b0ee9561ad8c241"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_cpu_io_mixed_tg.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_cpu_io_mixed_tg.toml",
+      "sha256": "fbbad30b19b2499a20ebfd6e256ca3ca19e5b8686104b2333826d48cc76db073"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_eager.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_eager.toml",
+      "sha256": "8016419e244ea05ef1a651ea7a714c0595505497366d96660a8eec66aeb1ede5"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_eager_cpu_io_mixed.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_eager_cpu_io_mixed.toml",
+      "sha256": "935157195f5c491bdd6d1277529350e92dc6de85e04d3565e26bdabef6fd0489"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_eager_cpu_io_mixed_tg.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_eager_cpu_io_mixed_tg.toml",
+      "sha256": "609242be739048e2122a4ebc4fb494728c2a00277827ec6599e7181256a22740"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_eager_io.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_eager_io.toml",
+      "sha256": "6854594cfed2bb7273a29808d0804da104e0b5fddbf4d3e8c375fa0643c782f9"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_eager_io_tg.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_eager_io_tg.toml",
+      "sha256": "19cf54a89ba2d90ba875531f497ad7c085c63fe098c270b6a8ec60d6829334cc"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_eager_memoization.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_eager_memoization.toml",
+      "sha256": "366593d2f51082f11e6ebfae3288bf09ffacab16c2100064c8fe71445b426092"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_eager_memoization_tg.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_eager_memoization_tg.toml",
+      "sha256": "110c1db9f5c51a9e7e182355cba1c693fcb9071f5c55091864ad9762bc787c3b"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_eager_tg.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_eager_tg.toml",
+      "sha256": "a5b9635de3002e74a9681226d73937b60a092b8e17729a6b9309fe16a96d9565"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_io.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_io.toml",
+      "sha256": "3d5694d2bd8f982452a369991ad4dea0d099911c52caee6ac82fb38902c2f628"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_io_tg.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_io_tg.toml",
+      "sha256": "4edf44b6c04cd7c75f0e25dfd1f5ef2a88da75c5d97fd0538b4d28f6c62cbd78"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_memoization.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_memoization.toml",
+      "sha256": "addf9823297c7840c0030a54b7fccb6fddce48abab98df940a050f0f6be94bba"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_memoization_tg.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_memoization_tg.toml",
+      "sha256": "d6d5e73f3cdfd313d927c0835062f8442b064e3e0cce7b9347b042c65c4bf28a"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/bm_async_tree_tg.toml",
+      "path": "benchmarks/bm_async_tree/bm_async_tree_tg.toml",
+      "sha256": "b4715aad06c227b6b99daf4f084937c38774f31b95098bed41029fcfe5e97244"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/pyproject.toml",
+      "path": "benchmarks/bm_async_tree/pyproject.toml",
+      "sha256": "2fea2b135417a93a4d6b659423f3fcfea1525880131bdc999cf5acd0448b0664"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_async_tree/run_benchmark.py",
+      "path": "benchmarks/bm_async_tree/run_benchmark.py",
+      "sha256": "7c1493bc27c5c41f70f51cbf46a33c77b791915364ce619231461441f042178b"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_asyncio_tcp/bm_asyncio_tcp_ssl.toml",
+      "path": "benchmarks/bm_asyncio_tcp/bm_asyncio_tcp_ssl.toml",
+      "sha256": "0e21812f39afbfae1cbd3e1144cab622d18950f5fdbcfa0b6d39d197a750e012"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_asyncio_tcp/pyproject.toml",
+      "path": "benchmarks/bm_asyncio_tcp/pyproject.toml",
+      "sha256": "8452a091dc7e00099d32aabdcd2a9406ba105d2a8114ab1e55072f484639d6e6"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_asyncio_tcp/run_benchmark.py",
+      "path": "benchmarks/bm_asyncio_tcp/run_benchmark.py",
+      "sha256": "fa993861ad75dcd724d282442e671095ad708a9dcb87e4314831d04006ad4a23"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_asyncio_tcp/ssl_cert.pem",
+      "path": "benchmarks/bm_asyncio_tcp/ssl_cert.pem",
+      "sha256": "ee4c90b3e38f21c46787d33a153c6be9b2315e8d6713932f5f8c32e52250b6e6"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_asyncio_tcp/ssl_key.pem",
+      "path": "benchmarks/bm_asyncio_tcp/ssl_key.pem",
+      "sha256": "7c371f54360f268521754635e89e0181dc07da4954f1d451a1a6784ff8dc05e2"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_barnes_hut/pyproject.toml",
+      "path": "benchmarks/bm_barnes_hut/pyproject.toml",
+      "sha256": "ba1e42826bc43fb1f811e5055fb96a10c8dfa786659156d9fadb349909c9b79a"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_barnes_hut/run_benchmark.py",
+      "path": "benchmarks/bm_barnes_hut/run_benchmark.py",
+      "sha256": "802a1c170b82a5d82ea69b7a893f09d4b50b4f232e20a8e1c1bb8b2c04e6af1d"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_base64/pyproject.toml",
+      "path": "benchmarks/bm_base64/pyproject.toml",
+      "sha256": "5fdc1b6561db0a525e0ab8dcaa4604714c0b56b3d8cfcdcee8e695f1ccab8fd0"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_base64/run_benchmark.py",
+      "path": "benchmarks/bm_base64/run_benchmark.py",
+      "sha256": "e2f1e7d4dbfbb2c722833081496497344550e4367f85f67f373fb8aa22cd35ed"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_bpe_tokeniser/data/frankenstein_intro.txt",
+      "path": "benchmarks/bm_bpe_tokeniser/data/frankenstein_intro.txt",
+      "sha256": "6607193e67b7b459d082f5f2aea724e470615643d63ad2e205123b3076223da4"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_bpe_tokeniser/pyproject.toml",
+      "path": "benchmarks/bm_bpe_tokeniser/pyproject.toml",
+      "sha256": "58450dd6f80216bc656394e43734212d5116dc52dc7bee74b179d311bb8b7087"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_bpe_tokeniser/run_benchmark.py",
+      "path": "benchmarks/bm_bpe_tokeniser/run_benchmark.py",
+      "sha256": "c7255345499e118181785370b0996e8cc1056491b9678b3fbeb02421e3f9b2df"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_btree/bm_btree.toml",
+      "path": "benchmarks/bm_btree/bm_btree.toml",
+      "sha256": "082c2ba0b9230689d5f3ec7cf34679e0232dedbf7e870d1d42fa65680715c491"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_btree/bm_btree_gc_only.toml",
+      "path": "benchmarks/bm_btree/bm_btree_gc_only.toml",
+      "sha256": "4564e0c131b5fc6edd18b8dee4ffbb5339d08ddc93c31edca0709a11be351e59"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_btree/pyproject.toml",
+      "path": "benchmarks/bm_btree/pyproject.toml",
+      "sha256": "334d2f0138ae75f8bca4183e8c490e11896387d0630bebd3283e4d72760314b4"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_btree/run_benchmark.py",
+      "path": "benchmarks/bm_btree/run_benchmark.py",
+      "sha256": "3f1b0c6dff85bd37e6ef80c91a6c93b6519c48f5bf7dfa40da1d00e2e0a518d1"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_chaos/pyproject.toml",
+      "path": "benchmarks/bm_chaos/pyproject.toml",
+      "sha256": "a2d5d73cd3dbc565e52df6be1d80de8157aa11332d54209b38752c2d572f88be"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_chaos/run_benchmark.py",
+      "path": "benchmarks/bm_chaos/run_benchmark.py",
+      "sha256": "5d20fd29c8ea89e0ebe4040ae4c05f26f1a620cd2a7fc654d9d7f8cb205651ac"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_comprehensions/pyproject.toml",
+      "path": "benchmarks/bm_comprehensions/pyproject.toml",
+      "sha256": "a87ca439d961ccf20440a34585c83ffd8af97d20fb1e9163221b362333b29602"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_comprehensions/run_benchmark.py",
+      "path": "benchmarks/bm_comprehensions/run_benchmark.py",
+      "sha256": "6047efc06287a24a646f00fc8a8d47429f7cdeab3e942230e13cf6d7cefa6343"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_concurrent_imap/pyproject.toml",
+      "path": "benchmarks/bm_concurrent_imap/pyproject.toml",
+      "sha256": "01b23d4e1c30cbb434d7efeccff20e4812841581203e280c5438331fb985525f"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_concurrent_imap/run_benchmark.py",
+      "path": "benchmarks/bm_concurrent_imap/run_benchmark.py",
+      "sha256": "d5bfb854e7a1d754f3033132dca397704ea7ed2aabfd6d625396b61b82a9e316"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_coroutines/pyproject.toml",
+      "path": "benchmarks/bm_coroutines/pyproject.toml",
+      "sha256": "6328a1f3fc0c4bda4638bccad8f44a81c2c8d3eeb89c508a58a074937342c917"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_coroutines/run_benchmark.py",
+      "path": "benchmarks/bm_coroutines/run_benchmark.py",
+      "sha256": "9358a7d967ed16859b5a163a4e416d897d6f104b3603c56ad77903791211fc7f"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_decimal_factorial/pyproject.toml",
+      "path": "benchmarks/bm_decimal_factorial/pyproject.toml",
+      "sha256": "5b95b9bda21954e3c9c4003b2f6fd9fd61f4fce73a7713dd3b8069aea2f51651"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_decimal_factorial/run_benchmark.py",
+      "path": "benchmarks/bm_decimal_factorial/run_benchmark.py",
+      "sha256": "0b88119beb7a2151ef59f0d7d969e655850d9aeef143426efd0e0a656b2bbcc6"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_decimal_pi/pyproject.toml",
+      "path": "benchmarks/bm_decimal_pi/pyproject.toml",
+      "sha256": "ed23704dd26051c4315f1c0447a230f634949853727661c8a3ad1221176aa5cb"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_decimal_pi/run_benchmark.py",
+      "path": "benchmarks/bm_decimal_pi/run_benchmark.py",
+      "sha256": "eb3974785e602143f16fcfbd07ffd8b742b326096d9fd914c59a79531175104c"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_deepcopy/pyproject.toml",
+      "path": "benchmarks/bm_deepcopy/pyproject.toml",
+      "sha256": "85d3fe3d3e3535becd85288ed978ea784fd3809f339a195ee959780d110a98ed"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_deepcopy/run_benchmark.py",
+      "path": "benchmarks/bm_deepcopy/run_benchmark.py",
+      "sha256": "9e1550442cbccfaff8a4988936487c091ac18bcc9c8ebdc41c1cb747c14ea078"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_deltablue/pyproject.toml",
+      "path": "benchmarks/bm_deltablue/pyproject.toml",
+      "sha256": "2e15fe97e2acf192bf3d2cfdb2645e18257e71c2065a2e25b1a58db3c357e42b"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_deltablue/run_benchmark.py",
+      "path": "benchmarks/bm_deltablue/run_benchmark.py",
+      "sha256": "70da5e16cd5b14f2f398ccc066794b83a30d997c2d91150695b8f938f934dc30"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_fannkuch/pyproject.toml",
+      "path": "benchmarks/bm_fannkuch/pyproject.toml",
+      "sha256": "7e654c293af19b961ca1b7e2167059d4961e8faae3c893c097ddff37933bc5ed"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_fannkuch/run_benchmark.py",
+      "path": "benchmarks/bm_fannkuch/run_benchmark.py",
+      "sha256": "2a8e4bc4c5e7e8ac605a4ca8246cc4baeab5336ac986d976e33657162750e8bf"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_float/pyproject.toml",
+      "path": "benchmarks/bm_float/pyproject.toml",
+      "sha256": "ca24f0d692cf0b7014fe7ff388f66d950c0b69e1be298144c02ccf348a74a7cf"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_float/run_benchmark.py",
+      "path": "benchmarks/bm_float/run_benchmark.py",
+      "sha256": "b4f61a0978f5b0af2c0d07544ae26422868992e62b8f40e2967e3c694fc1b9a9"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_gc_collect/pyproject.toml",
+      "path": "benchmarks/bm_gc_collect/pyproject.toml",
+      "sha256": "04d264bd0e1433f64412ea6a7eff5748826b9b74b6a8938057d172667cd82521"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_gc_collect/run_benchmark.py",
+      "path": "benchmarks/bm_gc_collect/run_benchmark.py",
+      "sha256": "7886042f07e517abb79c58643a4b488710f3079936c6990522624bfb9c2acb9b"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_gc_traversal/pyproject.toml",
+      "path": "benchmarks/bm_gc_traversal/pyproject.toml",
+      "sha256": "9e340f5dfdacc8e7ec67fb2474cb313ebcbf862674ff7435e9bd821523f1ef93"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_gc_traversal/run_benchmark.py",
+      "path": "benchmarks/bm_gc_traversal/run_benchmark.py",
+      "sha256": "0798ab87ca12687c68e101d14ae9ac0c50eaa9b4f14ecee3882f7e499191828f"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_generators/pyproject.toml",
+      "path": "benchmarks/bm_generators/pyproject.toml",
+      "sha256": "073cc831ba385aa3300dc2cf283650992d8550c0e3960170fe299593a8aeaa17"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_generators/run_benchmark.py",
+      "path": "benchmarks/bm_generators/run_benchmark.py",
+      "sha256": "46c59dc44cb63b2c0fed75e6d82875daa237a92d03c87861078513c7b10d4621"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_go/pyproject.toml",
+      "path": "benchmarks/bm_go/pyproject.toml",
+      "sha256": "f9a4aa7676950937fd3513c87eb9e841f29188c6d8484859b6c152237860ab1a"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_go/run_benchmark.py",
+      "path": "benchmarks/bm_go/run_benchmark.py",
+      "sha256": "ea4c0ebaf32515f8549c64c9291ab13d47bb802e01a82203c37b5066d1bfb463"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_hexiom/pyproject.toml",
+      "path": "benchmarks/bm_hexiom/pyproject.toml",
+      "sha256": "cc1f03c5c8317fbed54cec0075cf1228907166a2e39cabaeb67349f999730905"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_hexiom/run_benchmark.py",
+      "path": "benchmarks/bm_hexiom/run_benchmark.py",
+      "sha256": "d7518220380d27449b8951bc9ca2e19593569d9bd9f5cb6d86867f354f22e115"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_json_dumps/pyproject.toml",
+      "path": "benchmarks/bm_json_dumps/pyproject.toml",
+      "sha256": "3b54f74b6f266c478b7453d09dd1752745b109cf683d5a4c164527cffeb9a9dd"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_json_dumps/run_benchmark.py",
+      "path": "benchmarks/bm_json_dumps/run_benchmark.py",
+      "sha256": "023c991ff827fdcbfcfb2b7e3cadf023352a61d1903643d8af0ef302a0db1bf7"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_json_loads/pyproject.toml",
+      "path": "benchmarks/bm_json_loads/pyproject.toml",
+      "sha256": "3cef31a7c3fc1c7e59bc491450f7b93fee6b65721f1cf5c7de465e08beecf4dc"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_json_loads/run_benchmark.py",
+      "path": "benchmarks/bm_json_loads/run_benchmark.py",
+      "sha256": "16c41ff06bf3173d30158c767340d389c459a656e997e306719891d50f09646f"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_logging/pyproject.toml",
+      "path": "benchmarks/bm_logging/pyproject.toml",
+      "sha256": "884aeed201c334dbe99d7d45da905d763a31f8f4bcc6ca884f7aa45f2f25f7c4"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_logging/run_benchmark.py",
+      "path": "benchmarks/bm_logging/run_benchmark.py",
+      "sha256": "6ff62fdc4c6b520b01475407b526ed609299402ed8ad8d344038b559a120159a"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_mdp/pyproject.toml",
+      "path": "benchmarks/bm_mdp/pyproject.toml",
+      "sha256": "a29cb7e20eafb981a470a0b4063b4f27478e383e5cba5b55544fcdfe3c96fa75"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_mdp/run_benchmark.py",
+      "path": "benchmarks/bm_mdp/run_benchmark.py",
+      "sha256": "3db5bfb8c9e2602f181cee809c24b2bd61e7c088e89e8e22867b8d46c4d0fcf1"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_meteor_contest/pyproject.toml",
+      "path": "benchmarks/bm_meteor_contest/pyproject.toml",
+      "sha256": "ded10f578c076a05679ad8d45423f416b95e9755f61fdf67edcfa90e3e2c2ac9"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_meteor_contest/run_benchmark.py",
+      "path": "benchmarks/bm_meteor_contest/run_benchmark.py",
+      "sha256": "b616f5f87e129a6b35650452951f40a7812cf22efff5a0777e51287da13c2f48"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_nbody/pyproject.toml",
+      "path": "benchmarks/bm_nbody/pyproject.toml",
+      "sha256": "806f36092bb771e26aecf135de446888c2c97f3e1ffc1571b80160f312cfdd7e"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_nbody/run_benchmark.py",
+      "path": "benchmarks/bm_nbody/run_benchmark.py",
+      "sha256": "d1385e816d7cfea361b7915e2cf70138cd6b84f40df8bd5152638851f7bcac2b"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_nqueens/pyproject.toml",
+      "path": "benchmarks/bm_nqueens/pyproject.toml",
+      "sha256": "d8f34328ce71c3a460d14cd6975d6c04bd6dbeb1a40ce9efc5a3e0123fc4c602"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_nqueens/run_benchmark.py",
+      "path": "benchmarks/bm_nqueens/run_benchmark.py",
+      "sha256": "f50ef0d82036790c99f5469b9cffc368e097de860231b328caa6652183af059e"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pathlib/pyproject.toml",
+      "path": "benchmarks/bm_pathlib/pyproject.toml",
+      "sha256": "21c788d6bd2ae757639dc2554d52779fd8ab2441cb4af3b677f9dce363657fa1"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pathlib/run_benchmark.py",
+      "path": "benchmarks/bm_pathlib/run_benchmark.py",
+      "sha256": "113a1cbbec13165dfdb84db649d8114279460110733957a3749ffb9c9527612d"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pickle/bm_pickle_dict.toml",
+      "path": "benchmarks/bm_pickle/bm_pickle_dict.toml",
+      "sha256": "2b65736703ff8149238571b265308ab9eb896a1dd5f4d50680b6b9da06f45987"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pickle/bm_pickle_list.toml",
+      "path": "benchmarks/bm_pickle/bm_pickle_list.toml",
+      "sha256": "af9a8a63d725c7615af399fe48327b6bcf083873e9020bdd5543cb8990315c02"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pickle/bm_pickle_pure_python.toml",
+      "path": "benchmarks/bm_pickle/bm_pickle_pure_python.toml",
+      "sha256": "846f31a4f830d4b2ab044917d3b3e6b036ace3647445d770c8980f1f5b158c21"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pickle/bm_unpickle.toml",
+      "path": "benchmarks/bm_pickle/bm_unpickle.toml",
+      "sha256": "718ac7f3372db65cfb3da8c04e6fa1b3c9faf21c6895552ac790ac7e8e8014dc"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pickle/bm_unpickle_list.toml",
+      "path": "benchmarks/bm_pickle/bm_unpickle_list.toml",
+      "sha256": "bee6eceec3c595f6c9ed8d5f8c48bcdbafa8611a0ef06e7608e9388ea8c2cb00"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pickle/bm_unpickle_pure_python.toml",
+      "path": "benchmarks/bm_pickle/bm_unpickle_pure_python.toml",
+      "sha256": "e2b92ab135c89de2fc46d3720ec2fa8d58370b7cbf3c7341effe52118f861f13"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pickle/pyproject.toml",
+      "path": "benchmarks/bm_pickle/pyproject.toml",
+      "sha256": "2aea6b72654454b278734adc19a0b50ff0826f4d72c5ce38c9d82afde86d2413"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pickle/run_benchmark.py",
+      "path": "benchmarks/bm_pickle/run_benchmark.py",
+      "sha256": "50675fd89a9af6d48dbae33eb9a5a18a1ee8814e3a91976031b78385f6c999c6"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pidigits/pyproject.toml",
+      "path": "benchmarks/bm_pidigits/pyproject.toml",
+      "sha256": "9f30d94d784cb87ca5ad237a5498a4d19d37f86c231fe32c90cd92320aad99a0"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pidigits/run_benchmark.py",
+      "path": "benchmarks/bm_pidigits/run_benchmark.py",
+      "sha256": "4bf89183acb8651623676ece6e10787b6c71eec549fe53ce17a62a812ef7447d"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pprint/pyproject.toml",
+      "path": "benchmarks/bm_pprint/pyproject.toml",
+      "sha256": "4ec97c723d72d771ff93c07b6c7149de48d3bee762384aa73be73916bedc9dd6"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pprint/run_benchmark.py",
+      "path": "benchmarks/bm_pprint/run_benchmark.py",
+      "sha256": "07ef57201c7919aedf9e340c7fb1561a40dfee698818c9694930f3e427091d6d"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pyflate/data/interpreter.tar.bz2",
+      "path": "benchmarks/bm_pyflate/data/interpreter.tar.bz2",
+      "sha256": "81101162ee7fc7a3db86d1a87e0c86781304eb9026aca4078432004a1383c51a"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pyflate/pyproject.toml",
+      "path": "benchmarks/bm_pyflate/pyproject.toml",
+      "sha256": "ea7eb22536c8fd9aa822abf9d60192b4787de2a2258f059a363e99d8598bdcac"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_pyflate/run_benchmark.py",
+      "path": "benchmarks/bm_pyflate/run_benchmark.py",
+      "sha256": "ec5347c7045af86ba33e1b2c6f64bc4b506d0ade3b77391d7e41863fe25fb464"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_python_startup/bm_python_startup_no_site.toml",
+      "path": "benchmarks/bm_python_startup/bm_python_startup_no_site.toml",
+      "sha256": "f148d7a0104a9275a77bfe48c533debab2d75846f0749aafed746fc9f339f373"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_python_startup/pyproject.toml",
+      "path": "benchmarks/bm_python_startup/pyproject.toml",
+      "sha256": "0bc14c5b7cd363880c6bd757a37baae991db593cb6c32ba8fe6b25a6f5015d51"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_python_startup/run_benchmark.py",
+      "path": "benchmarks/bm_python_startup/run_benchmark.py",
+      "sha256": "4cc396c9fe32d633a5e902c8ca738391a4cfe80b6d7658a9d9048989fc796d0c"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_raytrace/pyproject.toml",
+      "path": "benchmarks/bm_raytrace/pyproject.toml",
+      "sha256": "b003d38fa3d472ac4a67a0e692160ba3e87c0b2dc60b94737767a79da45f159c"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_raytrace/run_benchmark.py",
+      "path": "benchmarks/bm_raytrace/run_benchmark.py",
+      "sha256": "88ef4d9060d8e8f6ce40f376477aaf89cc808fa44813225a3071a05a1467f017"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_regex_compile/bm_regex_effbot.py",
+      "path": "benchmarks/bm_regex_compile/bm_regex_effbot.py",
+      "sha256": "0823b6507f8babea2238847562d9c9af31000ea57cbb695e5d47053321ea68c7"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_regex_compile/bm_regex_v8.py",
+      "path": "benchmarks/bm_regex_compile/bm_regex_v8.py",
+      "sha256": "37133ec6c383183a95ee640deffce54b42cbad4dbfa24415e46ad656127c56aa"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_regex_compile/pyproject.toml",
+      "path": "benchmarks/bm_regex_compile/pyproject.toml",
+      "sha256": "de7a086c3b0298d8c7c88360d14f73dfca6f7dac9916aee7b2fefa6f2b3a4ee5"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_regex_compile/run_benchmark.py",
+      "path": "benchmarks/bm_regex_compile/run_benchmark.py",
+      "sha256": "cdbc509e515840e469209ed5fc77ca3fe352278203cc1a7dad874db4e863dc6c"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_regex_dna/pyproject.toml",
+      "path": "benchmarks/bm_regex_dna/pyproject.toml",
+      "sha256": "1c5cfc8c32ace103f6e95925698eeb8e289f0e234fad7b57c534d5398114eb66"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_regex_dna/run_benchmark.py",
+      "path": "benchmarks/bm_regex_dna/run_benchmark.py",
+      "sha256": "d820dbdf12262cd11a543ae3dc3fd85793a20220d5a15ef687d8ef57a75c97c6"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_regex_effbot/pyproject.toml",
+      "path": "benchmarks/bm_regex_effbot/pyproject.toml",
+      "sha256": "0f99caced09439d2cd9a4cfb9e6229e8daa855ccce9741c1af1f83fa56b1c6cf"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_regex_effbot/run_benchmark.py",
+      "path": "benchmarks/bm_regex_effbot/run_benchmark.py",
+      "sha256": "0823b6507f8babea2238847562d9c9af31000ea57cbb695e5d47053321ea68c7"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_regex_v8/pyproject.toml",
+      "path": "benchmarks/bm_regex_v8/pyproject.toml",
+      "sha256": "0cb6ea8c4b22194e65a5b0f36a3a67e34b241865b61fc3077ece31a7ff439148"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_regex_v8/run_benchmark.py",
+      "path": "benchmarks/bm_regex_v8/run_benchmark.py",
+      "sha256": "c22f820cb9a031a892ec0341eecca81c758dc25ee5413613d18eddfdff54a491"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_richards/pyproject.toml",
+      "path": "benchmarks/bm_richards/pyproject.toml",
+      "sha256": "17964837e1e0a05f5e3ada4917f903e9ab09e432d036e6ae9571883792ac023a"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_richards/run_benchmark.py",
+      "path": "benchmarks/bm_richards/run_benchmark.py",
+      "sha256": "a4512668525331960c54043b5150a3fff92badaeaba850a941893ac69a1028d8"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_richards_super/pyproject.toml",
+      "path": "benchmarks/bm_richards_super/pyproject.toml",
+      "sha256": "7d28fb52c319c4b1a466df1bd0ce0bda182cf3e43cb9dcff6d15d3eec725e1ae"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_richards_super/run_benchmark.py",
+      "path": "benchmarks/bm_richards_super/run_benchmark.py",
+      "sha256": "665b3d5551171e147c127b6f8671edc9a7703c736d317cc4a991bb00f599dc36"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_scimark/pyproject.toml",
+      "path": "benchmarks/bm_scimark/pyproject.toml",
+      "sha256": "94acfa8534545f42037a7b104c131c690c2b8a6987f1df2d23b2b3a843f400cb"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_scimark/run_benchmark.py",
+      "path": "benchmarks/bm_scimark/run_benchmark.py",
+      "sha256": "427b21b8a3802418ea3c2fe584335658a6c91c7f74fce4df9410efa60cd84d6e"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_spectral_norm/pyproject.toml",
+      "path": "benchmarks/bm_spectral_norm/pyproject.toml",
+      "sha256": "434d6f695e61d649d169d785cb5be8db2141daed4617236e5ed8a909ed3948a5"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_spectral_norm/run_benchmark.py",
+      "path": "benchmarks/bm_spectral_norm/run_benchmark.py",
+      "sha256": "a3390ec6d75606fec30c4b59ad5f77d5292cd8e36f445197232a34560a880b18"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_sqlite_synth/pyproject.toml",
+      "path": "benchmarks/bm_sqlite_synth/pyproject.toml",
+      "sha256": "50f67d58867d25ecfd023d5aefcc131d732eb2bf0fe37730006d38cf9ebf890e"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_sqlite_synth/run_benchmark.py",
+      "path": "benchmarks/bm_sqlite_synth/run_benchmark.py",
+      "sha256": "dcba7a6889e66f08480f4332860208d624678fc42a03be5c8f3b6f1f894231fd"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_stdlib_startup/pyproject.toml",
+      "path": "benchmarks/bm_stdlib_startup/pyproject.toml",
+      "sha256": "afe05c093e5951a12c94a7051a513731fe2f830a3a5c8239873a7742b4e39d6d"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_stdlib_startup/requirements.txt",
+      "path": "benchmarks/bm_stdlib_startup/requirements.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_stdlib_startup/run_benchmark.py",
+      "path": "benchmarks/bm_stdlib_startup/run_benchmark.py",
+      "sha256": "53dae070c80c63ecd6d05c9feb4f8eccd84983f8a8b0ae6d04d37f68e48b3354"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_telco/data/telco-bench.b",
+      "path": "benchmarks/bm_telco/data/telco-bench.b",
+      "sha256": "421380256393f8b92c8e17d4d7606b5ebc4b9b5efb7245078199ea3f486a1c6f"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_telco/pyproject.toml",
+      "path": "benchmarks/bm_telco/pyproject.toml",
+      "sha256": "306340d854cdc154235a6e2cb2448fb2b4ef17b5ba3145fde063eb2c34262e96"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_telco/run_benchmark.py",
+      "path": "benchmarks/bm_telco/run_benchmark.py",
+      "sha256": "a3acb202b3d4eb750aca977ce354f8ecc1f6adae17a695ed2e5be615e4797605"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_typing_runtime_protocols/pyproject.toml",
+      "path": "benchmarks/bm_typing_runtime_protocols/pyproject.toml",
+      "sha256": "5c82f50d30b36e2e56acb9652bef13d2a4ddcbb59afe673c4f6fbd50ca517952"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_typing_runtime_protocols/run_benchmark.py",
+      "path": "benchmarks/bm_typing_runtime_protocols/run_benchmark.py",
+      "sha256": "dfc0cbd25f2968ee6982ff93adde92a1fa2a56ffbed6dde2d1f9cb853c340961"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_unpack_sequence/pyproject.toml",
+      "path": "benchmarks/bm_unpack_sequence/pyproject.toml",
+      "sha256": "0298ede5c60fa50415efe7fb222a6acfd9baaae6c7a89d83618572b077c45651"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_unpack_sequence/run_benchmark.py",
+      "path": "benchmarks/bm_unpack_sequence/run_benchmark.py",
+      "sha256": "0dafe97531abc4a5baf30fe011db7acb3bf1e64cd4e41acb0c7db2bb141a8382"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_xml_etree/pyproject.toml",
+      "path": "benchmarks/bm_xml_etree/pyproject.toml",
+      "sha256": "50efb4f332c2d3f7f958c499d51e0c7b1319bad2fb589461ebc74c34a8d70f7c"
+    },
+    {
+      "upstream_path": "pyperformance/data-files/benchmarks/bm_xml_etree/run_benchmark.py",
+      "path": "benchmarks/bm_xml_etree/run_benchmark.py",
+      "sha256": "1d824c4d4dd92a7598e085dbdf7beed3809a75e4d6972c90377822c78f73477c"
+    }
+  ]
+}

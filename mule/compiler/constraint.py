@@ -55,7 +55,7 @@ from .ctype import (
     ValueType,
     ValueTypeVisitor,
 )
-from .ir1util import block_exception_target, made_lambda
+from .ir1util import block_exception_target, made_function, made_lambda
 from .node import (
     CallKind,
     Cast,
@@ -141,6 +141,7 @@ def _fact(value_type: ValueType) -> Fact:
 class CallSite:
     target: Lambda | None
     arguments: tuple[ValueType, ...]
+    proven: bool = False
 
 
 @dataclass(slots=True)
