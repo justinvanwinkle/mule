@@ -95,6 +95,26 @@ success and failure; no intermediate normalized-argument tuple is allocated.
 Keyword names and values remain in original evaluation order until binding.
 All argument expressions execute before binding errors are raised.
 
+Resolved method calls predict compiled method bodies for both receiver shapes.
+A bound call supplies its receiver separately; an explicit class access such as
+`property.__set__(descriptor, instance, value)` supplies every parameter in the
+argument list. Attribute and descriptor resolution still runs first. The
+generated helper selects the receiver shape once, then checks the resulting
+callable's actual entry against only candidates that accept that shape, retaining
+their original order. A shape with no eligible candidates enters the general
+path without checking entries. The matched body receives that callable's actual
+namespace, captures and defaults. Missing captured defaults,
+an unsuitable argument shape or another callable entry retain the general call
+path. Parameters transfer ownership once, whether the receiver was separate or
+an explicit argument; frame rejection releases the original owned operands.
+
+SBCL `src/compiler/locall.lisp`, `make-xep-lambda-expression` and
+`convert-more-call`, similarly arrange known argument shapes for a main entry
+while preserving external entry checking for other calls. Python's additional
+adaptation is the receiver selected by descriptor lookup: class access must not
+insert another implicit receiver. This optimization does not establish a class
+layout or bypass user descriptors, metaclass calls or initializer protocols.
+
 Keyword constructor calls use a compiled Python allocation/initialization
 protocol, backed by physical instance allocation and forwarding of the borrowed
 argument view. Existing positional native constructor callbacks retain their

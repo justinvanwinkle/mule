@@ -94,6 +94,34 @@ def test_late_assignment_classifies_all_function_reads_as_local():
     )
 
 
+@pytest.mark.parametrize(
+    ("declaration", "expression", "asynchronous"),
+    [
+        ("def", "(x for x in items)", False),
+        ("def", "(x async for x in items)", True),
+        ("async def", "(await transform(x) for x in items)", True),
+        ("def", "((x async for x in items) for _ in (0,))", False),
+        ("async def", "((x for x in await obtain()) for _ in items)", True),
+        ("async def", "(lambda x=await obtain(): x for _ in items)", True),
+        ("def", "(lambda: (x async for x in items) for _ in (0,))", False),
+        ("def", "([x async for x in items] for _ in (0,))", True),
+    ],
+)
+def test_generator_expression_async_flag_respects_expression_scope(
+    declaration, expression, asynchronous
+):
+    compilation = lower(f"{declaration} make(items):\n return {expression}\n")
+    generators = [
+        fn
+        for fn in compilation.lambdas
+        if fn.source_name == "<genexpr>" and fn.code.flags & (32 | 512)
+    ]
+    outer = min(generators, key=lambda fn: len(fn.code.qualname))
+
+    assert bool(outer.code.flags & 512) is asynchronous
+    assert bool(outer.code.flags & 32) is not asynchronous
+
+
 def class_definitions(lambda_):
     return [
         node.info

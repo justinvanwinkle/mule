@@ -532,7 +532,7 @@ class FunctionConverter:
         scope = _ScopeVisitor(self)
         for statement in statements:
             statement.accept(scope)
-        self.seen_names = scope.all_seen
+        self.seen_names = scope.seen
         if not self.is_module:
             collector = _LocalBindings(self)
             for statement in statements:
@@ -1745,7 +1745,7 @@ class _Expressions(ast.Visitor):
                     clause.target, source, body, is_async=clause.is_async, span=span
                 )
             ]
-        is_async = any(stmt.accept(_CONTAINS_ASYNC) for stmt in body)
+        is_async = any(stmt.accept(_ContainsAsync()) for stmt in body)
         # Assignment expressions bind in the enclosing scope (PEP 572).
         assigned = _comprehension_assignments(node)
         if assigned:
@@ -5554,6 +5554,48 @@ class _SlotDeclaration(_SlotName):
         return tuple(
             name for element in node.elements for name in element.accept(_SlotName())
         )
+
+
+class _ContainsAsync(ast.Visitor):
+    """Whether evaluation in this scope can suspend, including eager
+    comprehensions but excluding deferred lambda and generator bodies."""
+
+    def visit_Node(self, node):
+        return any(child.accept(self) for child in node.children())
+
+    def visit_Await(self, node):
+        return True
+
+    def visit_For(self, node):
+        return node.is_async or self.visit_Node(node)
+
+    def visit_With(self, node):
+        return node.is_async or self.visit_Node(node)
+
+    def visit_ComprehensionClause(self, node):
+        return node.is_async or self.visit_Node(node)
+
+    def visit_Comprehension(self, node):
+        if node.kind == ast.ComprehensionKind.GENERATOR:
+            return node.clauses[0].iterable.accept(self)
+        return self.visit_Node(node)
+
+    def defaults(self, parameters):
+        return any(
+            parameter.default is not None and parameter.default.accept(self)
+            for parameter in parameters
+        )
+
+    def visit_Lambda(self, node):
+        return self.defaults(node.parameters)
+
+    def visit_FunctionDefinition(self, node):
+        return any(
+            decorator.accept(self) for decorator in node.decorators
+        ) or self.defaults(node.parameters)
+
+    def visit_ClassDefinition(self, node):
+        return any(child.accept(self) for child in (*node.decorators, *node.arguments))
 
 
 class _ContainsYield(ast.Visitor):
