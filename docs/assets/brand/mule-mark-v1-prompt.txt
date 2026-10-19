@@ -1,0 +1,13 @@
+Mule standalone logo mark
+
+Generated with the built-in image_gen tool.
+Reference: mule-stride-v1.png
+Output: mule-mark-v1.png, transparent raster PNG, 1254 x 1254.
+
+Use case: logo-brand.
+Asset type: standalone primary logo symbol for the Mule native Python compiler, suited to a square repository avatar and favicon.
+Input image: reference image, the approved horizontal striding-mule wordmark. Use the MULE ANIMAL ONLY as identity reference.
+Primary request: transform this into a refined standalone compact emblem, with absolutely no text or letters. Retain the reference's right-facing blue mule, upright long ears, blunt equine muzzle, short mane, golden saddle-like body accent, sturdy four-leg forward stride, and small tufted tail. Preserve its friendly determined character and recognizable blue-and-gold identity. Improve silhouette cohesion and optical balance into a compact nearly square footprint. Simplify the mane, legs and tail for small-size recognition. The animal itself is the logo; no enclosing circle, shield, badge, rounded-square tile, scenery, or decoration.
+Style: exceptionally clean flat vector-style logo, smooth deliberate curves, two solid color fills blue #3776AB and gold #FFD343; transparent negative-space eye. No gradients, shading, textures, outlines, 3D, glossy effects or shadows. Professional open-source compiler identity. Prefer a few bold shapes and generous negative space over illustration detail. No snakes or Python emblem geometry.
+Composition: one single centered mule symbol, square canvas, all ears legs and tail fully visible, balanced clear space about 10% around the silhouette. Actual transparent background. NO WORDMARK. NO TEXT.
+

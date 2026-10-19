@@ -1,0 +1,8 @@
+Generated with the built-in image_gen tool. Output: mule-red-eye-v1.png, transparent raster PNG.
+
+Use case: logo-brand.
+Asset type: standalone mascot logo emblem for Mule, an experimental native Python compiler.
+Primary request from user: "just an insane red eyed mule head".
+Create ONE absolutely unhinged mule HEAD ONLY, facing forward with a slight three-quarter tilt, extremely long asymmetric mule ears, chunky broad equine muzzle, short wildly spiked dark mane, blazing vivid RED EYES, crazed determined expression, raised brow and a wild slightly crooked toothy grin. Character should be memorably manic, mischievous, stubborn, and a little feral. Funny intensity, readable professional logo design. Unmistakable mule anatomy, not a rabbit or demon: long face, heavy muzzle, long equine ears. Blue #3776AB head with golden yellow #FFD343 muzzle and ear accents to connect with the Mule project identity. Deep charcoal #202832 mane, facial accents and thick clean outer contour; red #FF202C eyes are the striking focal point, use solid red and simple sharp highlight shapes for apparent glow. Eyes symmetrical enough to read as a deliberate crazed expression.
+Style: bold flat vector-like esports/software mascot emblem, substantial flowing shapes, crisp contours, compact square silhouette, intentional negative space. Restrained detail, strong at avatar size. No body, shoulders, neck badge, snakes, circle, shield, frame, tools, smoke, flames, text, lettering, wordmark, extra heads, or mockup. No gore. No photorealism, 3D, gradients, shadows, grain or fur texture. Actual transparent background. Square canvas, head centered and fills about 82% with all ears and mane inside the frame.
+
