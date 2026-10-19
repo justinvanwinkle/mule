@@ -1246,7 +1246,9 @@ class _LoadLeaf(LeafVisitor):
             source = environment.copies.get(leaf) or converter.var_tn(leaf)
             types = converter.component.context.types
             bound = leaf in environment.copies or (
-                node in types and not types[node].may_be_unbound
+                not node.allow_unbound
+                and node in types
+                and not types[node].may_be_unbound
             )
             converter.emit(
                 vops.LOAD_LOCAL,

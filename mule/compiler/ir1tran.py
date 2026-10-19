@@ -532,10 +532,32 @@ class FunctionConverter:
         scope = _ScopeVisitor(self)
         for statement in statements:
             statement.accept(scope)
+        self.seen_names = scope.all_seen
         if not self.is_module:
             collector = _LocalBindings(self)
             for statement in statements:
                 statement.accept(collector)
+
+    def local_snapshot_entries(self) -> list[tuple[str, LambdaVar]]:
+        entries: dict[str, LambdaVar] = {}
+        if not self.is_module:
+            for name, var in self.locals.items():
+                if not var.hidden and not name.startswith("$"):
+                    entries[name] = var
+            for name in sorted(self.seen_names):
+                if (
+                    name not in entries
+                    and name not in self.globals
+                    and not name.startswith("$")
+                ):
+                    free = self.enclosing_local(name)
+                    if free is not None:
+                        entries[name] = free
+        for comp in self.comprehension_scopes:
+            for name, var in comp.variables.items():
+                if not name.startswith("$"):
+                    entries[name] = var
+        return list(entries.items())
 
     def local(self, name: str) -> bool:
         return name in self.locals
@@ -663,8 +685,12 @@ class FunctionConverter:
         ctran = ctran or Ctran()
         return ctran_starts_block(ctran, self.component)
 
-    def ref(self, start, next_, result, leaf, source, *, final=False) -> Ref:
-        node = Ref(self.lexenv, source, leaf, final=final)
+    def ref(
+        self, start, next_, result, leaf, source, *, final=False, allow_unbound=False
+    ) -> Ref:
+        node = Ref(
+            self.lexenv, source, leaf, final=final, allow_unbound=allow_unbound
+        )
         leaf.refs.append(node)
         link_node_to_previous_ctran(node, start)
         use_continuation(node, next_, result)
@@ -1713,7 +1739,10 @@ class _Expressions(ast.Visitor):
             for condition in reversed(clause.conditions):
                 body = [ast.If(condition, body, span=span)]
             source = ast.Name("$iterable", span=span) if index == 0 else clause.iterable
-            body = [ast.For(clause.target, source, body, span=span)]
+            body = [
+                ast.For(clause.target, source, body, is_async=clause.is_async, span=span)
+            ]
+        is_async = any(stmt.accept(_CONTAINS_ASYNC) for stmt in body)
         # Assignment expressions bind in the enclosing scope (PEP 572).
         assigned = _comprehension_assignments(node)
         if assigned:
@@ -1723,6 +1752,7 @@ class _Expressions(ast.Visitor):
             "<genexpr>",
             [ast.Parameter("$iterable", ast.ParameterKind.POSITIONAL_ONLY, span=span)],
             body,
+            is_async=is_async,
             span=span,
         )
         lambda_ = function.converter.function(
@@ -1733,8 +1763,11 @@ class _Expressions(ast.Visitor):
             start, ctran, created, lambda_, definition, definition.name
         )
         ctran, iterable = function.value(ctran, node.clauses[0].iterable)
-        following, iterator = Ctran(), Lvar()
-        function.protocol(ctran, following, iterator, "iterate", (iterable,), node)
+        if node.clauses[0].is_async:
+            following, iterator = ctran, iterable
+        else:
+            following, iterator = Ctran(), Lvar()
+            function.protocol(ctran, following, iterator, "iterate", (iterable,), node)
         function.full_call(
             following,
             next_,
@@ -1756,12 +1789,6 @@ class _Expressions(ast.Visitor):
         variable and loop constructs rather than adding a special form."""
         function = self.function
         start, next_, result = self.frame
-        if any(clause.is_async for clause in node.clauses):
-            function.error(
-                "asynchronous comprehensions are not supported yet",
-                node,
-                unsupported=True,
-            )
         if node.accept(_ComprehensionAssignment()) and function.class_scopes:
             function.error(
                 "assignment expression within a comprehension cannot be used in a class body",
@@ -1809,7 +1836,9 @@ class _Expressions(ast.Visitor):
             for condition in reversed(clause.conditions):
                 body = [ast.If(condition, body, span=span)]
             source = ast.Name("$iterable", span=span) if index == 0 else clause.iterable
-            body = [ast.For(clause.target, source, body, span=span)]
+            body = [
+                ast.For(clause.target, source, body, is_async=clause.is_async, span=span)
+            ]
         statements = [ast.Assignment([result_name], initial, span=span), *body]
 
         function.comprehension_scopes.append(
@@ -2419,10 +2448,6 @@ class _Statements(ast.Visitor):
     def visit_Try(self, node):
         function = self.function
         start, next_, _ = self.frame
-        if node.exception_groups:
-            function.error(
-                "exception groups are not supported yet", node, unsupported=True
-            )
         if node.finally_body:
             self.try_finally(start, next_, node)
             return
@@ -2432,6 +2457,9 @@ class _Statements(ast.Visitor):
                 frontier = function.convert_body(frontier, node.else_body)
             if frontier is not None:
                 function.flow(frontier, next_)
+            return
+        if node.exception_groups:
+            self.try_except_star(start, next_, node)
             return
         self.try_handlers(start, next_, node)
 
@@ -2450,7 +2478,12 @@ class _Statements(ast.Visitor):
             loops=function.lexenv.loops,
         )
         protected = ast.Try(
-            node.body, node.handlers, node.else_body, [], span=node.span
+            node.body,
+            node.handlers,
+            node.else_body,
+            [],
+            exception_groups=node.exception_groups,
+            span=node.span,
         )
         with function.with_cleanup(region):
             body = function.block()
@@ -2473,6 +2506,158 @@ class _Statements(ast.Visitor):
             function.ref(frontier, ctran, value, exception, node, final=True)
             self.terminal(ctran, fndb.RESUME_EXCEPTION, (value,), node)
         function.flow(linked(done.start, done, "start"), next_)
+
+    def try_except_star(self, start, next_, node):
+        function = self.function
+        outer = function.lexenv.cleanup
+        dispatch, success, done = function.block(), function.block(), function.block()
+        region = Cleanup(CleanupKind.HANDLER_REGION, target=dispatch, parent=outer)
+        with function.with_cleanup(region):
+            body = function.block()
+            function.jump(start, body)
+            frontier = function.convert_body(
+                linked(body.start, body, "start"), node.body
+            )
+            if frontier is not None:
+                function.jump(frontier, success)
+        frontier = function.convert_body(
+            linked(success.start, success, "start"), node.else_body
+        )
+        if frontier is not None:
+            function.jump(frontier, done)
+        ctran, caught = Ctran(), Lvar()
+        function.known(dispatch.start, ctran, caught, fndb.CATCH_EXCEPTION, (), node)
+        following, initial_state = Ctran(), Lvar()
+        function.protocol(
+            ctran, following, initial_state, "except_star_start", (caught,), node
+        )
+        state = function.temporary()
+        current = Ctran()
+        function.set_var(following, current, state, initial_state, node)
+        for handler in node.handlers:
+            body, unmatched = function.block(), function.block()
+            ctran, expected = function.value(current, handler.exception)
+            following, state_val = Ctran(), Lvar()
+            function.ref(ctran, following, state_val, state, handler)
+            ctran, matches = Ctran(), Lvar()
+            function.protocol(
+                following,
+                ctran,
+                matches,
+                "except_star_match",
+                (state_val, expected),
+                handler,
+            )
+            function.if_node(ctran, matches, body, unmatched, handler)
+            ctran, state_val = Ctran(), Lvar()
+            function.ref(body.start, ctran, state_val, state, handler)
+            matched_ctran, matched_val = Ctran(), Lvar()
+            function.protocol(
+                ctran,
+                matched_ctran,
+                matched_val,
+                "except_star_matched",
+                (state_val,),
+                handler,
+            )
+            entered = Ctran()
+            function.known(
+                matched_ctran, entered, None, fndb.ENTER_HANDLER, (matched_val,), handler
+            )
+            unwind = function.block()
+            active = Cleanup(
+                CleanupKind.HANDLER_BODY,
+                target=unwind,
+                binding=handler.binding,
+                parent=outer,
+            )
+            with function.with_cleanup(active):
+                inner = function.block()
+                function.jump(entered, inner)
+                current = linked(inner.start, inner, "start")
+                active.mess_up = current.next
+                if handler.binding is not None:
+                    function.converter.reserved(handler.binding, handler)
+                    ctran, state_val = Ctran(), Lvar()
+                    function.ref(current, ctran, state_val, state, handler)
+                    matched_ctran, matched_val = Ctran(), Lvar()
+                    function.protocol(
+                        ctran,
+                        matched_ctran,
+                        matched_val,
+                        "except_star_matched",
+                        (state_val,),
+                        handler,
+                    )
+                    current = Ctran()
+                    function.store(
+                        matched_ctran, current, handler.binding, matched_val, handler
+                    )
+                frontier = function.convert_body(current, handler.body)
+                if frontier is not None:
+                    function.jump(frontier, unmatched)
+            current = linked(unwind.start, unwind, "start")
+            ctran, handler_exc = Ctran(), Lvar()
+            function.known(current, ctran, handler_exc, fndb.CATCH_EXCEPTION, (), handler)
+            current = ctran
+            if handler.binding is not None:
+                ctran = Ctran()
+                function.unbind(
+                    current, ctran, handler.binding, handler, missing_ok=True
+                )
+                current = ctran
+            ctran = Ctran()
+            function.known(current, ctran, None, fndb.LEAVE_HANDLER, (), handler)
+            following, state_val = Ctran(), Lvar()
+            function.ref(ctran, following, state_val, state, handler)
+            caught_ctran, discarded = Ctran(), Lvar()
+            function.protocol(
+                following,
+                caught_ctran,
+                discarded,
+                "except_star_caught",
+                (state_val, handler_exc),
+                handler,
+            )
+            for use in discarded.uses:
+                use.lvar = None
+            discarded.uses = []
+            function.jump(caught_ctran, unmatched)
+            current = linked(unmatched.start, unmatched, "start")
+        ctran, state_val = Ctran(), Lvar()
+        function.ref(current, ctran, state_val, state, node, final=True)
+        following, remaining = Ctran(), Lvar()
+        function.protocol(
+            ctran, following, remaining, "except_star_finish", (state_val,), node
+        )
+        unhandled = function.temporary()
+        stored = Ctran()
+        function.set_var(following, stored, unhandled, remaining, node)
+        ctran, unhandled_val = Ctran(), Lvar()
+        function.ref(stored, ctran, unhandled_val, unhandled, node)
+        none_ctran, none_val = Ctran(), Lvar()
+        function.constant(
+            ctran, none_ctran, none_val, ast.NoneLiteral(None, span=node.span)
+        )
+        check_ctran, has_unhandled = Ctran(), Lvar()
+        function.known(
+            none_ctran,
+            check_ctran,
+            has_unhandled,
+            fndb.COMPARE[ast.ComparisonOperator.IS_NOT],
+            (unhandled_val, none_val),
+            node,
+        )
+        reraise_block = function.block()
+        function.if_node(check_ctran, has_unhandled, reraise_block, done, node)
+        ctran, value = Ctran(), Lvar()
+        function.ref(reraise_block.start, ctran, value, unhandled, node, final=True)
+        self.terminal(ctran, fndb.RESUME_EXCEPTION, (value,), node)
+        ctran = Ctran()
+        function.set_var(done.start, ctran, state, None, node)
+        end_ctran = Ctran()
+        function.set_var(ctran, end_ctran, unhandled, None, node)
+        function.flow(end_ctran, next_)
 
     def try_handlers(self, start, next_, node):
         function = self.function

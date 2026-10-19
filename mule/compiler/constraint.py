@@ -448,6 +448,18 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 info.location,
                 info.keywords,
             )
+            if resolved is UNKNOWN and self.walk.imported_returns:
+                callee_name = node.fun.use().accept(_GLOBAL_CALLEE_NAME)
+                if callee_name is not None:
+                    if (
+                        callee_name == "identity"
+                        and len(arg_types) == 1
+                        and not info.keywords
+                        and callee_name in self.walk.imported_returns
+                    ):
+                        resolved = arg_types[0]
+                    else:
+                        resolved = self.walk.imported_returns.get(callee_name, UNKNOWN)
             if resolved is UNKNOWN and not info.keywords:
                 resolved = self.walk.builtin_return_type(node.fun, arg_types)
             fact = _fact(resolved)
@@ -595,7 +607,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
                     if iter_type is not UNKNOWN:
                         return _fact(iter_type)
                 result_type = receiver_type.method_return_type(
-                    method_name, arity, has_keywords
+                    method_name, arity, has_keywords, self.walk.storage_methods
                 )
                 self.invalidate()
                 return _fact(result_type)
@@ -1056,7 +1068,6 @@ class _GlobalCalleeName(NodeVisitor, LeafVisitor):
 
 _GLOBAL_CALLEE_NAME = _GlobalCalleeName()
 _LENGTH_TYPE = IntegerType(0, (1 << 48) - 1)
-_CODEPOINT_TYPE = IntegerType(0, 0x10FFFF)
 
 
 class _Walk:
@@ -1073,12 +1084,18 @@ class _Walk:
         graph: LambdaGraph | None = None,
         proven_globals: frozenset[str] = frozenset(),
         rebound_globals: frozenset[str] = frozenset(),
+        imported_returns: dict[str, ValueType] | None = None,
+        storage_methods: dict[tuple[str, str], ValueType] | None = None,
+        builtin_return_types: dict[str, ValueType] | None = None,
     ):
         self.lambda_ = lambda_
         self.global_targets = global_targets
         self.resolve_call = resolve_call
         self.annotations = annotations
         self.rebound_globals = rebound_globals
+        self.imported_returns = imported_returns
+        self.storage_methods = storage_methods
+        self.builtin_return_types = builtin_return_types
         self.facts: dict[object, Fact] = {}
         if graph is None:
             graph = build_lambda_graph(lambda_)
@@ -1160,15 +1177,6 @@ class _Walk:
         if (
             self.lambda_.kind is FunctionalKind.TOPLEVEL
             or self.lambda_.policy.safety >= 3
-            or self.lambda_.name.startswith(
-                (
-                    "mule_sequences_",
-                    "mule_format_",
-                    "mule_arguments_",
-                    "mule_native_class_",
-                    "mule_print_",
-                )
-            )
         ):
             return UNKNOWN
         name = fun_lvar.use().accept(_GLOBAL_CALLEE_NAME)
@@ -1183,10 +1191,6 @@ class _Walk:
             return BOOLEAN
         if name == "float" and arity <= 1:
             return FLOAT
-        if name in ("str", "repr", "ascii", "chr", "hex", "oct", "bin") and arity <= 1:
-            return TEXT_TYPE
-        if name == "ord" and arity == 1:
-            return _CODEPOINT_TYPE
         if name == "list" and arity <= 1:
             if arity == 1:
                 elem = arg_types[0].iterate_type().next_item_type()
@@ -1214,6 +1218,9 @@ class _Walk:
             return elem
         if name == "tuple" and arity <= 1:
             return _UNBOUNDED_TUPLE
+        if name == "divmod" and arity == 2:
+            if arg_types[0].fits(PYTHON_INTEGER) and arg_types[1].fits(PYTHON_INTEGER):
+                return TupleType(2, (INTEGER, INTEGER))
         if name == "abs" and arity == 1:
             arg = arg_types[0]
             if arg.fits(PYTHON_INTEGER):
@@ -1258,6 +1265,8 @@ class _Walk:
                 return TEXT_TYPE
             if all(arg is FLOAT for arg in arg_types):
                 return FLOAT
+        if self.builtin_return_types is not None:
+            return self.builtin_return_types.get(name, UNKNOWN)
         return UNKNOWN
 
     def invalidate_globals(self, state):
@@ -1578,7 +1587,23 @@ class _ConstrainComparison(NodeVisitor):
 
     def visit_Combination(self, node):
         if node.kind is not CallKind.KNOWN:
-            return None
+            if not self.truth or len(node.args) != 2:
+                return None
+            callee_name = node.fun.use().accept(_GLOBAL_CALLEE_NAME)
+            if callee_name not in ("is_instance", "isinstance"):
+                return None
+            type_name = node.args[1].use().accept(_GLOBAL_CALLEE_NAME)
+            if type_name not in ("str", "bytes"):
+                return None
+            local = self.visitor.origins.get(node.args[0])
+            if local is None or local not in self.visitor.state:
+                return None
+            current = self.visitor.state[local]
+            if current.type is not UNKNOWN:
+                return None
+            edge = self.state.copy()
+            edge[local] = TEXT_FACT if type_name == "str" else BYTES_FACT
+            return edge
         name = node.fun_info.name
         if name == "%unary_not" and len(node.args) == 1:
             return (
@@ -1670,6 +1695,9 @@ def propagate(
     graph: LambdaGraph | None = None,
     proven_globals: frozenset[str] = frozenset(),
     rebound_globals: frozenset[str] = frozenset(),
+    imported_returns: dict[str, ValueType] | None = None,
+    storage_methods: dict[tuple[str, str], ValueType] | None = None,
+    builtin_return_types: dict[str, ValueType] | None = None,
 ) -> Body:
     """Propagate facts through ``lambda_`` from the given parameter types.
 
@@ -1688,6 +1716,9 @@ def propagate(
         graph=graph,
         proven_globals=proven_globals,
         rebound_globals=rebound_globals,
+        imported_returns=imported_returns,
+        storage_methods=storage_methods,
+        builtin_return_types=builtin_return_types,
     ).run()
 
 
