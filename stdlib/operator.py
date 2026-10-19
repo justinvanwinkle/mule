@@ -418,6 +418,31 @@ def ixor(a, b):
     return a
 
 
+def _compare_digest(a, b):
+    if isinstance(a, str) and isinstance(b, str):
+        if not a.isascii() or not b.isascii():
+            raise TypeError("comparing strings with non-ASCII characters is not supported")
+        left = a.encode("ascii")
+        right = b.encode("ascii")
+    else:
+        try:
+            left = memoryview(a).tobytes()
+            right = memoryview(b).tobytes()
+        except TypeError:
+            raise TypeError(
+                "unsupported operand types(s) or combination of types: "
+                f"'{type(a).__name__}' and '{type(b).__name__}'"
+            ) from None
+    result = len(left) ^ len(right)
+    if len(left) == len(right):
+        for x, y in zip(left, right):
+            result |= x ^ y
+    else:
+        for x in left:
+            result |= x ^ x
+    return result == 0
+
+
 # All of these "__func__ = func" assignments have to happen after importing
 # from _operator to make sure they're set to the right function
 # CPython's operator services are builtin callables without function binding.

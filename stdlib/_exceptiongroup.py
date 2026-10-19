@@ -118,3 +118,115 @@ class ExceptionGroup(BaseExceptionGroup, Exception):
 
 BaseExceptionGroup.__module__ = "builtins"
 ExceptionGroup.__module__ = "builtins"
+
+
+def _validate_except_star_target(target):
+    if isinstance(target, type):
+        if not issubclass(target, BaseException):
+            raise TypeError(
+                "catching classes that do not inherit from BaseException is not allowed"
+            )
+        if issubclass(target, BaseExceptionGroup):
+            raise TypeError("catching BaseExceptionGroup with except* is not allowed")
+        return
+    if isinstance(target, tuple):
+        for item in target:
+            _validate_except_star_target(item)
+        return
+    raise TypeError(
+        "catching classes that do not inherit from BaseException is not allowed"
+    )
+
+
+def _collect_leaves(exc, leaves):
+    if isinstance(exc, BaseExceptionGroup):
+        for child in exc.exceptions:
+            _collect_leaves(child, leaves)
+    elif exc is not None:
+        leaves.add(id(exc))
+
+
+class _ExceptStarState:
+    def __init__(self, exc):
+        self.original = exc
+        self.remaining = exc
+        self.matched = None
+        self.raised = []
+        self.reraised_leaves = set()
+
+
+def except_star_start(exc):
+    return _ExceptStarState(exc)
+
+
+def except_star_match(state, targets):
+    try:
+        _validate_except_star_target(targets)
+    except BaseException as err:
+        err.__context__ = state.original
+        raise
+    state.matched = None
+    rem = state.remaining
+    if rem is None:
+        return False
+    if isinstance(rem, BaseExceptionGroup):
+        matched, state.remaining = rem.split(targets)
+        state.matched = matched
+        return matched is not None
+    if isinstance(rem, targets):
+        cls = ExceptionGroup if isinstance(rem, Exception) else BaseExceptionGroup
+        matched = cls("", (rem,))
+        matched.__traceback__ = rem.__traceback__
+        matched.__cause__ = rem.__cause__
+        matched.__context__ = rem.__context__
+        matched.__suppress_context__ = rem.__suppress_context__
+        state.matched = matched
+        state.remaining = None
+        return True
+    return False
+
+
+def except_star_matched(state):
+    return state.matched
+
+
+def except_star_caught(state, exc):
+    if exc is state.matched and not getattr(exc, "_explicit_raise", False):
+        if isinstance(state.original, BaseExceptionGroup):
+            _collect_leaves(exc, state.reraised_leaves)
+        else:
+            state.raised.append(exc)
+    else:
+        if exc is not state.matched and exc.__context__ is None:
+            exc.__context__ = state.matched
+        state.raised.append(exc)
+
+
+def except_star_finish(state):
+    if (
+        not state.raised
+        and not state.reraised_leaves
+        and state.remaining is state.original
+    ):
+        return state.original
+    result = list(state.raised)
+    if isinstance(state.original, BaseExceptionGroup):
+        leaves = set(state.reraised_leaves)
+        if state.remaining is not None:
+            _collect_leaves(state.remaining, leaves)
+        if leaves:
+            merged = state.original.subgroup(lambda e: id(e) in leaves)
+            if merged is not None:
+                result.append(merged)
+    elif state.remaining is not None:
+        result.append(state.remaining)
+    if not result:
+        return None
+    if len(result) == 1:
+        return result[0]
+    group = BaseExceptionGroup("", result)
+    group.__cause__ = state.original.__cause__
+    group.__context__ = state.original.__context__
+    group.__suppress_context__ = state.original.__suppress_context__
+    return group
+

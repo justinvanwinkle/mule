@@ -324,6 +324,7 @@ class ForeignFunction:
     parameters: tuple[str, ...]
     signature: Signature
     takes_closure: bool
+    return_type: ValueType = UNKNOWN
 
     def call_order(self, keywords, count, *, receiver=False):
         return self.signature.call_order(
