@@ -384,14 +384,11 @@ class _RewriteIntConstant(NodeVisitor, LeafVisitor):
         if ref is None:
             return False
         literal = ast.IntegerLiteral(self.value, span=leaf.value.span)
-        if len(leaf.refs) == 1 and leaf.refs[0] is ref:
-            leaf.value = literal
-        else:
-            if ref in leaf.refs:
-                leaf.refs.remove(ref)
-            new_leaf = Constant(literal)
-            ref.leaf = new_leaf
-            new_leaf.refs.append(ref)
+        if ref in leaf.refs:
+            leaf.refs.remove(ref)
+        new_leaf = Constant(literal)
+        ref.leaf = new_leaf
+        new_leaf.refs.append(ref)
         ref.derived_type = IntegerType(self.value, self.value)
         return True
 

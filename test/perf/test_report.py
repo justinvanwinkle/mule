@@ -7,83 +7,132 @@ from perf.suite.perfutils.report import chart, dashboard
 NS = {"svg": "http://www.w3.org/2000/svg"}
 
 
-def report(ratios=(0.25, 1.0, 4.0)):
+def report(seconds=(0.010, 0.020, 0.040)):
+    runtimes = ("cpython", "mule-o2", "sbcl")
     return {
         "baseline": "cpython",
         "created_utc": "20261019T011706.939668Z",
         "platform": "Linux & x86-64",
         "options": {"samples": 5, "seed": 42},
-        "runtimes": [{"name": "cpython"}, {"name": "mule-o2"}],
+        "runtimes": [{"name": name} for name in runtimes],
         "rows": [
             {
-                "case": f"scenario_{index}",
-                "runtime": "mule-o2",
+                "case": "scenario_one",
+                "runtime": name,
                 "status": "ok",
-                "speedup": {"kernel_seconds": ratio},
+                "summary": {"kernel_seconds": {"median": value}},
+                "speedup": {"kernel_seconds": 999},
             }
-            for index, ratio in enumerate(ratios)
+            for name, value in zip(runtimes, seconds, strict=False)
         ],
     }
 
 
-def test_log_plot_places_equal_ratio_steps_at_equal_distances():
+def bars(root):
+    return root.findall(".//svg:rect[@data-ms]", NS)
+
+
+def test_vertical_bars_include_baseline_and_scale_linearly_from_zero():
     root = ET.fromstring(chart(report(), "kernel_seconds"))
-    points = root.findall(".//*[@data-ratio]")
-    xs = [float(point.attrib["cx"]) for point in points]
-    assert len(xs) == 3
-    assert xs[0] < xs[1] < xs[2]
-    assert xs[1] - xs[0] == pytest.approx(xs[2] - xs[1], abs=0.02)
-    baseline = root.find(".//*[@id='baseline']")
-    assert baseline is not None
-    assert float(baseline.attrib["x1"]) == pytest.approx(xs[1], abs=0.02)
+    plotted = bars(root)
+    assert [bar.attrib["data-runtime"] for bar in plotted] == [
+        "cpython",
+        "mule-o2",
+        "sbcl",
+    ]
+    heights = [float(bar.attrib["height"]) for bar in plotted]
+    assert heights[1] == pytest.approx(2 * heights[0], abs=0.02)
+    assert heights[2] == pytest.approx(4 * heights[0], abs=0.02)
+    zero = root.find(".//*[@data-zero-y]")
+    assert zero is not None
+    for bar in plotted:
+        assert float(bar.attrib["y"]) + float(bar.attrib["height"]) == pytest.approx(
+            float(zero.attrib["data-zero-y"]), abs=0.02
+        )
+    assert [float(bar.attrib["data-ms"]) for bar in plotted] == [10, 20, 40]
+    assert "10 ms" in " ".join(root.itertext())
 
 
-@pytest.mark.parametrize("ratio", [0, -1, float("nan"), float("inf"), None])
-def test_invalid_ratios_remain_visible_without_plotted_values(ratio):
-    root = ET.fromstring(chart(report((ratio,)), "kernel_seconds"))
-    assert root.findall(".//*[@data-ratio]") == []
-    text = " ".join(root.itertext())
-    assert "scenario 0" in text
-    assert "not available" in text
+def test_equal_times_have_equal_heights_and_runtime_labels_below_bars():
+    root = ET.fromstring(chart(report((0.1, 0.1, 0.1)), "kernel_seconds"))
+    assert len({bar.attrib["height"] for bar in bars(root)}) == 1
+    labels = root.findall(".//svg:text[@data-runtime]", NS)
+    assert len(labels) == 3
+    for label, bar in zip(labels, bars(root), strict=True):
+        assert float(label.attrib["y"]) > float(bar.attrib["y"]) + float(
+            bar.attrib["height"]
+        )
 
 
-def test_failed_comparison_never_contributes_a_mark_even_with_stale_ratio():
-    source = report((100,))
+@pytest.mark.parametrize("seconds", [-1, float("nan"), float("inf"), None])
+def test_invalid_times_remain_visible_without_misleading_bars(seconds):
+    root = ET.fromstring(chart(report((seconds,)), "kernel_seconds"))
+    assert bars(root) == []
+    assert "not available" in " ".join(root.itertext())
+
+
+def test_zero_elapsed_time_is_a_zero_height_bar():
+    root = ET.fromstring(chart(report((0,)), "kernel_seconds"))
+    assert float(bars(root)[0].attrib["height"]) == 0
+
+
+def test_failed_comparison_never_plots_stale_timing():
+    source = report((0.1,))
     source["rows"][0]["status"] = "incorrect_result"
     root = ET.fromstring(chart(source, "kernel_seconds"))
-    assert root.findall(".//*[@data-ratio]") == []
+    assert bars(root) == []
     assert "incorrect_result" in " ".join(root.itertext())
 
 
-def test_svg_escapes_labels_and_removes_redundant_baseline_points():
-    source = report((2,))
-    source["rows"][0]["case"] = 'parse <tag> & "value"'
-    source["rows"].append(
-        {
-            "case": "baseline",
-            "runtime": "cpython",
-            "status": "ok",
-            "speedup": {"kernel_seconds": 1},
-        }
-    )
+def test_scenarios_use_independent_scales_with_consistent_runtime_order():
+    source = report()
+    source["rows"] += [
+        dict(
+            row,
+            case="scenario_two",
+            summary={
+                "kernel_seconds": {
+                    "median": row["summary"]["kernel_seconds"]["median"] * 100
+                }
+            },
+        )
+        for row in reversed(source["rows"])
+    ]
     root = ET.fromstring(chart(source, "kernel_seconds"))
-    assert len(root.findall(".//*[@data-ratio]")) == 1
+    panels = root.findall(".//svg:g[@data-case]", NS)
+    assert len(panels) == 2
+    first, second = [bars(panel) for panel in panels]
+    assert [bar.attrib["data-runtime"] for bar in first] == [
+        bar.attrib["data-runtime"] for bar in second
+    ]
+    assert [bar.attrib["height"] for bar in first] == [
+        bar.attrib["height"] for bar in second
+    ]
+    assert [bar.attrib["fill"] for bar in first] == [
+        bar.attrib["fill"] for bar in second
+    ]
+
+
+def test_svg_escapes_labels_and_contains_accessible_descriptions():
+    source = report((0.1,))
+    source["rows"][0]["case"] = 'parse <tag> & "value"'
+    root = ET.fromstring(chart(source, "kernel_seconds"))
     assert 'parse <tag> & "value"' in " ".join(root.itertext())
     assert root.find("svg:title", NS) is not None
     assert root.find("svg:desc", NS) is not None
 
 
-@pytest.mark.parametrize("baseline_only", [False, True])
-def test_empty_and_baseline_only_reports_render_without_candidate_points(baseline_only):
-    source = report(())
-    if baseline_only:
-        source["rows"] = [{"case": "one", "runtime": "cpython", "status": "ok"}]
+def test_empty_report_and_missing_runtime_rows_render_without_bars():
+    root = ET.fromstring(chart(report(()), "kernel_seconds"))
+    assert bars(root) == []
+    source = report((0.1,))
     root = ET.fromstring(chart(source, "kernel_seconds"))
-    assert root.findall(".//*[@data-ratio]") == []
+    assert len(bars(root)) == 1
+    assert "missing" in " ".join(root.itertext())
 
 
 def test_dashboard_escapes_failure_details_and_provenance():
-    source = report((2,))
+    source = report((0.1,))
     source["rows"][0].update(status="build_failed", error="<script>bad()</script>")
     source["runtimes"][1]["version"] = "<version & build>"
     page = dashboard(source)

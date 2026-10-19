@@ -18,14 +18,14 @@ th{background:#eeeee6}small{display:block;color:#596564}pre{font:12px/1.6 ui-mon
 <p>Linux-7.2.8+deb14-amd64-x86_64-with-glibc2.43<br>20261019T011706.939668Z</p>
 <span class="pill">Baseline: cpython</span><span class="pill">42 validated / 42 comparisons</span>
 <p><a href="results.json">Raw results &amp; provenance</a> · <a href="kernel.svg">Kernel SVG</a> · <a href="process.svg">Process SVG</a></p></header>
-<section aria-labelledby="reading"><h2 id="reading">How to read this report</h2><p>Each dot compares median times for the same scenario and input. Ratios above 1× mean faster than the baseline.
-The logarithmic axis gives equal space to equal multiplicative changes. Each runtime has its own lane within each scenario.
-Baseline points are implicit at 1×. Failures contribute no speedup.</p><p>Preparation, warmups, output, and result checks are excluded from kernel time. Whole-process time includes
-startup, preparation, warmups, and measured calls; compilation is separate. Each ratio compares
-the same scenario and input. σ describes sample variation, not a confidence interval.
+<section aria-labelledby="reading"><h2 id="reading">How to read this report</h2><p>Vertical bars show median elapsed time in milliseconds for the same scenario and input. Shorter bars mean faster execution.
+Each scenario has an independent linear vertical scale starting at zero. Compare runtimes within a panel, not bar heights across panels.
+The baseline appears alongside every other runtime. Unavailable or failed results have no bar.</p><p>Preparation, warmups, output, and result checks are excluded from kernel time. Whole-process time includes
+startup, preparation, warmups, measured calls, and output; compilation is separate.
+σ describes sample variation, not a confidence interval.
 Short kernels can be dominated by measurement overhead; increase workload size before drawing conclusions.</p><p>4 concurrent scenario jobs; timings may include contention.</p></section>
-<section aria-label="Kernel comparison"><figure><div class="chart" role="region" aria-label="Scrollable kernel chart" tabindex="0"><img src="kernel.svg" alt="Kernel ratios by scenario and runtime. Exact timings appear in the table below."></div><figcaption>Kernel medians. Preparation and compilation are excluded.</figcaption></figure></section>
-<section aria-label="Whole-process comparison"><figure><div class="chart" role="region" aria-label="Scrollable whole-process chart" tabindex="0"><img src="process.svg" alt="Whole-process ratios by scenario and runtime. Exact timings appear in the table below."></div><figcaption>Whole-process medians. Includes startup and setup, not compilation.</figcaption></figure></section>
+<section aria-label="Kernel comparison"><figure><div class="chart" role="region" aria-label="Scrollable kernel chart" tabindex="0"><img src="kernel.svg" alt="Vertical bars compare median kernel milliseconds for each runtime within each scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Kernel elapsed medians. Preparation and compilation are excluded. Each scenario has its own scale.</figcaption></figure></section>
+<section aria-label="Whole-process comparison"><figure><div class="chart" role="region" aria-label="Scrollable whole-process chart" tabindex="0"><img src="process.svg" alt="Vertical bars compare median whole-process milliseconds by runtime and scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Whole-process elapsed medians. Includes startup and setup, not compilation. Each scenario has its own scale.</figcaption></figure></section>
 <section aria-labelledby="measurements"><h2 id="measurements">Every measurement</h2><div class="table" role="region" aria-label="Scrollable results table" tabindex="0"><table><thead><tr><th scope="col">Scenario</th><th scope="col">Runtime</th><th scope="col">Status</th>
 <th scope="col">Kernel median</th><th scope="col">Process median</th><th scope="col">Kernel ratio</th></tr></thead><tbody><tr><td>account_ledger</td><td>cpython</td><td>ok</td><td>4344.127 ms <small>σ 513.995</small></td><td>8646.497 ms <small>σ 1239.387</small></td><td>1×</td></tr>
 <tr><td>account_ledger</td><td>mule-o2</td><td>ok</td><td>2149.212 ms <small>σ 196.358</small></td><td>4306.492 ms <small>σ 394.148</small></td><td>2.02×</td></tr>

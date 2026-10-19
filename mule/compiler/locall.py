@@ -46,6 +46,8 @@ from .constraint import (
 )
 from .ctype import (
     BOOLEAN,
+    BOOLEAN_FALSE,
+    BOOLEAN_TRUE,
     BOTTOM,
     FIXNUM_MAX,
     FIXNUM_MIN,
@@ -363,30 +365,44 @@ class _PredictableGlobalFunInfo(NodeVisitor, LeafVisitor):
 _PREDICTABLE_GLOBAL_FUN_INFO = _PredictableGlobalFunInfo()
 
 
-class _HasCombinationImprovement(NodeVisitor):
-    """Whether ``candidate`` narrowed any combination's type or transform
-    operands over ``general``."""
+class _SpecializesBody(NodeVisitor):
+    """Whether ``candidate`` narrows a numeric operation, branch, or transform
+    over ``general``."""
 
     def __init__(
         self, general: dict[object, ValueType], candidate: dict[object, ValueType]
     ):
         self.general = general
         self.candidate = candidate
-        self.improved = False
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_If(self, node):
+        if len(node.test.uses) != 1:
+            return False
+        test_use = node.test.uses[0]
+        return self.candidate.get(test_use, UNKNOWN) in (
+            BOOLEAN_TRUE,
+            BOOLEAN_FALSE,
+        ) and self.general.get(test_use, UNKNOWN) not in (
+            BOOLEAN_TRUE,
+            BOOLEAN_FALSE,
+        )
 
     def visit_Combination(self, node):
         cand_type = self.candidate.get(node, UNKNOWN)
         gen_type = self.general.get(node, UNKNOWN)
-        if cand_type != gen_type and not gen_type.fits(cand_type):
-            self.improved = True
-            return
+        if cand_type != gen_type and (
+            cand_type.is_fixnum or cand_type.fits(BOOLEAN) or cand_type.fits_float
+        ):
+            return True
         if is_predictable_len_call(node) and len(node.args[0].uses) == 1:
             arg_use = node.args[0].uses[0]
             if known_length_primitive(
                 self.candidate.get(arg_use, UNKNOWN)
             ) is not known_length_primitive(self.general.get(arg_use, UNKNOWN)):
-                self.improved = True
-                return
+                return True
         if (
             node.kind is CallKind.KNOWN
             and node.fun_info is not None
@@ -408,38 +424,27 @@ class _HasCombinationImprovement(NodeVisitor):
             if cand_recv != gen_recv and (
                 cand_recv.is_exact_list or cand_recv.fits_text(TEXT_TYPE)
             ):
-                self.improved = True
-                return
-        if node.kind is CallKind.KNOWN and node.fun_info is not None:
-            info = node.fun_info
-        elif (
+                return True
+        if (
             node.kind in (CallKind.FULL, CallKind.GUARDED)
             and len(node.fun.uses) == 1
             and not (node.info is not None and node.info.keywords)
             and node.lexenv.policy.safety < 3
         ):
             info = node.fun.uses[0].accept(_PREDICTABLE_GLOBAL_FUN_INFO)
-        else:
-            info = None
-        if info is not None and (
-            info.transforms
-            or (
-                info.optimizer is not None
-                and info.optimizer.__name__ != "_optimize_getslice"
-            )
-        ):
-            for arg in node.args:
-                if len(arg.uses) == 1:
-                    arg_use = arg.uses[0]
-                    cand_arg = self.candidate.get(arg_use, UNKNOWN)
-                    gen_arg = self.general.get(arg_use, UNKNOWN)
-                    if (
-                        cand_arg != gen_arg
-                        and cand_arg is not UNKNOWN
-                        and not gen_arg.fits(cand_arg)
-                    ):
-                        self.improved = True
-                        return
+            if info is not None and info.transforms:
+                for arg in node.args:
+                    if len(arg.uses) == 1:
+                        arg_use = arg.uses[0]
+                        cand_arg = self.candidate.get(arg_use, UNKNOWN)
+                        gen_arg = self.general.get(arg_use, UNKNOWN)
+                        if (
+                            cand_arg != gen_arg
+                            and cand_arg is not UNKNOWN
+                            and not gen_arg.fits(cand_arg)
+                        ):
+                            return True
+        return False
 
 
 def _specializes_body(
@@ -447,11 +452,10 @@ def _specializes_body(
     general: dict[object, ValueType],
     candidate: dict[object, ValueType],
 ) -> bool:
-    visitor = _HasCombinationImprovement(general, candidate)
+    visitor = _SpecializesBody(general, candidate)
     for block in graph.blocks:
         for node in graph.block_nodes[block]:
-            node.accept(visitor)
-            if visitor.improved:
+            if node.accept(visitor):
                 return True
     return False
 
@@ -659,6 +663,7 @@ class _GlobalConstantStores(NodeVisitor, LeafVisitor):
         if (
             home.policy.safety < 3
             and leaf.name.startswith("_")
+            and leaf.name.isupper()
             and not vtype.fits_none(NONE_TYPE)
         ):
             self.constants[leaf] = _widen_user_constant_type(vtype)

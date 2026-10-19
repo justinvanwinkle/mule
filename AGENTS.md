@@ -51,11 +51,12 @@ optimization level 3. See the [command and build reference](spec/native-compiler
 
 The chart below includes **all 14 workloads** from the recorded October 19,
 2026 suite run. It compares Mule `-O2` without LTO and SBCL with CPython 3.15.0.
-Ratios above **1×** mean faster than CPython on that workload; ratios below
-**1×** mean slower. These are kernel timings, not compilation or end-to-end
-application timings.
+Each panel shows median elapsed **milliseconds** for CPython, Mule, and SBCL.
+**Shorter bars mean faster execution.** Every panel uses its own linear scale
+starting at zero. Compare bar heights within a workload, not across panels.
+These are kernel timings, not compilation or end-to-end application timings.
 
-![Kernel speedups for Mule and SBCL across all 14 recorded workloads, relative to CPython. Results include both faster and slower workloads.](docs/assets/kernel.svg)
+![Grouped vertical bars show median kernel milliseconds for CPython, Mule, and SBCL across all 14 workloads. Shorter bars are faster. Each workload has its own zero-based linear scale.](docs/assets/kernel.svg)
 
 Five samples per runtime and workload, one warmup, seed 42. Inputs use each
 scenario's default size. The run used four concurrent scenario jobs, so timings
