@@ -560,14 +560,15 @@ unsafe fn direct_class(bases: &[Value], namespace: Value, keywords: Value) -> bo
                 return false;
             }
         }
-        // `object` itself is created before the compiled class protocol exists.
-        if builtin_type(Builtin::Object).is_null() {
+        // Bootstrap classes are created before the compiled class protocol is ready.
+        if builtin_type(Builtin::Tuple).is_null() {
             return true;
         }
-        // Implicit class methods and __set_name__ are applied by type.__new__.
+        // Implicit class/static methods and __set_name__ are applied by type.__new__.
         !bindings.iter().any(|(name, value)| {
             name == "__init_subclass__"
                 || name == "__class_getitem__"
+                || name == "__new__"
                 || layout_of_class(class_of_value(value))
                     .is_some_and(|layout| layout.find("__set_name__").is_some())
         })
@@ -3371,6 +3372,27 @@ unsafe extern "C" fn function_attributes(_: Value, args: Value) -> Value {
     }
 }
 
+/// The globals namespace of a function.
+unsafe extern "C" fn function_globals(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([function]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        if function.is_null() || object::is_fixnum(function) {
+            object::error("TypeError", "a function is required");
+            return std::ptr::null_mut();
+        }
+        let Data::Function { globals, .. } = &(*function).data else {
+            object::error("TypeError", "a function is required");
+            return std::ptr::null_mut();
+        };
+        if globals.is_null() {
+            return object::none_value();
+        }
+        object::retain(*globals)
+    }
+}
+
 /// `typed_value(value, class)`: record `class` on a freshly created int,
 /// float or str storage value, making it an instance of that subclass.
 unsafe extern "C" fn typed_value(_: Value, args: Value) -> Value {
@@ -3564,6 +3586,7 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("instance_field", instance_field),
             ("typed_value", typed_value),
             ("function_attributes", function_attributes),
+            ("function_globals", function_globals),
         ];
         for (name, entry) in exports {
             let function = object::function(std::ptr::null_mut(), entry, name);

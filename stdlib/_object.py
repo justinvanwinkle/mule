@@ -57,6 +57,7 @@ from _mule_native import set_class_name
 from _mule_native import type_of
 from _mule_native import typed_value
 from _mule_native import function_attributes
+from _mule_native import function_globals
 from _mule_native import code_metadata
 from _mule_native import code_cache
 from _mule_native import set_code_cache
@@ -475,11 +476,13 @@ class type(object):
             value = namespace[key]
             if key == "__mule_fields__":
                 continue
-            # These hooks are implicit class methods (CPython's type_new).
+            # These hooks are implicit class/static methods (CPython's type_new).
             if key in ("__init_subclass__", "__class_getitem__") and is_instance(
                 value, function
             ):
                 value = classmethod(value)
+            elif key == "__new__" and is_instance(value, function):
+                value = staticmethod(value)
             names.append(key)
             values.append(value)
         if "__qualname__" not in namespace:
@@ -668,6 +671,10 @@ class _InstanceDict(object):
         for key in keywords:
             self[key] = keywords[key]
 
+    def clear(self):
+        for name, value in instance_items(self._owner):
+            instance_delete_binding(self._owner, name)
+
     def copy(self):
         return dict(instance_items(self._owner))
 
@@ -678,27 +685,58 @@ class _InstanceDict(object):
         return repr(self.copy())
 
 
+_GLOBALS_DICTS = {}
+
+
+def _globals_dict(namespace):
+    if namespace is None:
+        return None
+    if namespace_items(namespace) is None:
+        return namespace
+    key = identity_hash(namespace)
+    bucket = _GLOBALS_DICTS.get(key)
+    if bucket is not None:
+        for owner, wrapper in bucket:
+            if owner is namespace:
+                return wrapper
+    wrapper = _GlobalsDict(namespace)
+    if bucket is None:
+        _GLOBALS_DICTS[key] = [(namespace, wrapper)]
+    else:
+        bucket.append((namespace, wrapper))
+    return wrapper
+
+
 def _object_dictionary(owner):
     namespace = storage_dictionary(owner)
     if namespace is None:
         return _InstanceDict(owner)
-    return _GlobalsDict(namespace)
+    return _globals_dict(namespace)
 
 
 object.__dict__ = property(_object_dictionary)
 
 
 def vars(*args):
+    if len(args) > 1:
+        raise TypeError(f"vars() takes at most 1 argument ({len(args)} given)")
     if not args:
         raise TypeError("vars() without an argument is not supported yet")
-    return args[0].__dict__
+    try:
+        return args[0].__dict__
+    except AttributeError:
+        raise TypeError("vars() argument must have __dict__ attribute") from None
 
 
 def globals(namespace):
     # The compiler supplies the calling function's namespace as the one
     # argument, as it supplies the implicit arguments of super(); see
     # _CallTarget.visit_Name in the compiler.
-    return _GlobalsDict(namespace)
+    return _globals_dict(namespace)
+
+
+def locals():
+    raise RuntimeError("locals() requires a frame")
 
 
 class _GlobalsDict(object):
@@ -774,8 +812,18 @@ class _GlobalsDict(object):
         for key in keywords:
             self[key] = keywords[key]
 
+    def clear(self):
+        for name, value in namespace_items(self._namespace):
+            namespace_unbind(self._namespace, name)
+
     def copy(self):
         return dict(namespace_items(self._namespace))
+
+    def __getattr__(self, name):
+        value = namespace_binding(self._namespace, name, _MISSING)
+        if value is not _MISSING:
+            return value
+        raise AttributeError(f"'_GlobalsDict' object has no attribute {name!r}")
 
     def __eq__(self, other):
         return self.copy() == other
@@ -1503,7 +1551,7 @@ class function(object):
     # to name the descriptor types.
     @property
     def __globals__(self):
-        return generic_get_attribute(self, "__globals__")
+        return _globals_dict(function_globals(self))
 
     @property
     def __closure__(self):
@@ -1675,6 +1723,11 @@ def _install_builtin_descriptors():
     _slot_descriptors_ready = True
     from _descriptors import _enable_metadata
     _enable_metadata()
+    for owner in (object, type, int, bool, float, method, str, bytes, bytearray, tuple, list, dict, set, frozenset, memoryview):
+        if "__new__" in class_own_names(owner):
+            value = class_lookup(owner, "__new__")
+            if is_instance(value, function):
+                setattr(owner, "__new__", staticmethod(value))
     for owner, names in (
         (object, ("__class__", "__dict__")),
         (type, ("__name__", "__base__", "__bases__", "__mro__", "__dict__", "__annotations__")),
@@ -1747,7 +1800,7 @@ class module(object):
     def __dict__(self):
         if namespace_items(self) is None:
             return _InstanceDict(self)
-        return _GlobalsDict(self)
+        return _globals_dict(self)
 
     def __dir__(self):
         namespace = self.__dict__
@@ -1794,7 +1847,7 @@ class frame(object):
 
     @property
     def f_globals(self):
-        return _GlobalsDict(traceback_field(self, 2))
+        return _globals_dict(traceback_field(self, 2))
 
     @property
     def f_back(self):

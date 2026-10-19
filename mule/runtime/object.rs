@@ -1144,7 +1144,6 @@ pub unsafe fn function_attribute(function: Value, attribute: &str) -> Value {
                 retain(if module.is_null() { none_value() } else { module })
             }
             "__doc__" => none_value(),
-            "__globals__" if !globals.is_null() => retain(*globals),
             "__closure__" => closure_cells_of(*closure, *closure_cells),
             _ => std::ptr::null_mut(),
         }
