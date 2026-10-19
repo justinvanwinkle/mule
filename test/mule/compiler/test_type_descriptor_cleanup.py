@@ -167,3 +167,88 @@ metadata.default = 99
 print(Value().count, Value(4).count)
 """,
     )
+
+
+@pytest.mark.integration
+def test_dataclass_initializer_orders_effects_and_binds_before_initialization(tmp_path):
+    compare(
+        tmp_path,
+        """
+from dataclasses import dataclass, field
+events = []
+class Required:
+    def __get__(self, instance, owner):
+        if instance is None:
+            raise AttributeError('required')
+        return instance._first
+    def __set__(self, instance, value):
+        events.append('first:' + str(value))
+        instance._first = value
+class Default:
+    def __get__(self, instance, owner):
+        return 5 if instance is None else instance._last
+    def __set__(self, instance, value):
+        events.append('last:' + str(value))
+        instance._last = value
+def hidden_factory():
+    events.append('hidden')
+    return []
+def later_factory():
+    events.append('later')
+    return []
+@dataclass
+class Value:
+    first: int = Required()
+    second: int
+    hidden: list = field(init=False, default_factory=hidden_factory)
+    last: int = Default()
+    later: list = field(default_factory=later_factory)
+events.clear()
+value = Value(1, 2)
+print(value.first, value.second, value.last, events)
+for invoke in (lambda: Value(1), lambda: Value(1, 2, first=3),
+               lambda: Value(1, 2, unknown=3)):
+    events.clear()
+    try:
+        invoke()
+    except TypeError:
+        print('rejected', events)
+""",
+    )
+
+
+@pytest.mark.integration
+def test_dataclass_subclass_snapshots_shared_metadata_and_preserves_default_identity(tmp_path):
+    compare(
+        tmp_path,
+        """
+from dataclasses import dataclass, field
+@dataclass
+class Base:
+    value: int = 7
+metadata = Base.__dataclass_fields__['value']
+metadata.default = 11
+@dataclass
+class Child(Base):
+    pass
+metadata.default = 99
+metadata.name = 'renamed'
+print(Base().value, Child().value)
+print(hasattr(Base(), 'renamed'), hasattr(Child(), 'renamed'))
+class Marker:
+    pass
+marker = Marker()
+counter = [0]
+def factory():
+    counter[0] += 1
+    return counter[0]
+@dataclass
+class Identity:
+    value: object = marker
+    generated: int = field(default_factory=factory)
+Identity.__dataclass_fields__['value'].default = Marker()
+first, second = Identity(), Identity()
+print(first.value is marker, second.value is marker)
+print(first.generated, second.generated)
+""",
+    )

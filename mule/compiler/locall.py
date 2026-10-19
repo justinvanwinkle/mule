@@ -49,6 +49,7 @@ from .ctype import (
     BOOLEAN_FALSE,
     BOOLEAN_TRUE,
     BOTTOM,
+    DICT_TYPE,
     FIXNUM_MAX,
     FIXNUM_MIN,
     INTEGER,
@@ -888,6 +889,12 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
     var_changes = defaultdict(int)
     full = IntegerType(FIXNUM_MIN, FIXNUM_MAX)
     parameters: dict[tuple[Lambda, str], tuple[ValueType, ...]] = {}
+    # External entries construct these exact containers before entering the
+    # body; their contents and, for tuples, arity remain unknown.
+    binding_types = {
+        ast.ParameterKind.VAR_POSITIONAL: TupleType(),
+        ast.ParameterKind.VAR_KEYWORD: DICT_TYPE,
+    }
     for lambda_ in lambdas:
         signature = lambda_.signature
         if lambda_.vars and not signature.variadic:
@@ -921,7 +928,9 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                 if any(param is not UNKNOWN for param in partial_params):
                     parameters[lambda_, "fixnum"] = partial_params
         else:
-            parameters[lambda_, "general"] = (UNKNOWN,) * len(lambda_.vars)
+            parameters[lambda_, "general"] = tuple(
+                binding_types.get(kind, UNKNOWN) for kind in signature.kinds
+            )
     summaries: dict[tuple[Lambda, str], ValueType] = dict.fromkeys(parameters, BOTTOM)
     return_changes = defaultdict(int)
     argument_changes = defaultdict(int)

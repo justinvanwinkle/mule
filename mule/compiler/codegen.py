@@ -4491,9 +4491,25 @@ class FunctionGenerator:
             index: offset
             for offset, index in enumerate(lambda_.signature.default_parameters)
         }
-        # A call without keywords binds here when every parameter it leaves
-        # unsupplied has a default; only ``**kwargs`` needs the general binder.
-        fast = ast.ParameterKind.VAR_KEYWORD not in kinds and all(
+        rest_idx = next(
+            (
+                index
+                for index, kind in enumerate(kinds)
+                if kind == ast.ParameterKind.VAR_POSITIONAL
+            ),
+            None,
+        )
+        keywords_idx = next(
+            (
+                index
+                for index, kind in enumerate(kinds)
+                if kind == ast.ParameterKind.VAR_KEYWORD
+            ),
+            None,
+        )
+        # Without supplied keywords, optional keyword-only parameters use
+        # their captured defaults and ``**kwargs`` receives a fresh dictionary.
+        fast = all(
             index in default_offsets
             for index, kind in enumerate(kinds)
             if kind == ast.ParameterKind.KEYWORD_ONLY
@@ -4503,15 +4519,15 @@ class FunctionGenerator:
             f"define ptr {module.functions[lambda_]}(ptr %globals, ptr %args) {{",
             "entry:",
         ]
+        plain_pred = "plain"
         if fast:
             lines += [
-                f"  %plain.count = call i32 @mule_binding_positional(ptr %args, i32 {required}, i32 {positional}, i32 {int(lambda_.signature.variadic)})",
+                f"  %plain.count = call i32 @mule_binding_positional(ptr %args, i32 {required}, i32 {positional}, i32 {int(rest_idx is not None)})",
                 "  %fits = icmp sge i32 %plain.count, 0",
                 "  br i1 %fits, label %plain, label %binding",
                 "plain:",
             ]
-            if lambda_.signature.variadic:
-                rest_idx = kinds.index(ast.ParameterKind.VAR_POSITIONAL)
+            if rest_idx is not None:
                 lines += [
                     f"  %rest.more = icmp sgt i32 %plain.count, {positional}",
                     f"  %rest.start = select i1 %rest.more, i32 {positional}, i32 %plain.count",
@@ -4520,8 +4536,33 @@ class FunctionGenerator:
                     "  br i1 %plain.missing, label %failed, label %plain.ok",
                     "plain.ok:",
                 ]
+                plain_pred = "plain.ok"
+            if keywords_idx is not None:
+                build_dict = module.protocol_helper("build_dict", 1)
+                lines += [
+                    f"  %plain.empty = {module.constant_tuple(ast.Tuple([]))}",
+                    "  %plain.empty.missing = icmp eq ptr %plain.empty, null",
+                    "  br i1 %plain.empty.missing, label %plain.cleanup, label %plain.dictionary",
+                    "plain.dictionary:",
+                    f"  %plain.{keywords_idx} = call ptr {build_dict}(ptr %plain.empty)",
+                    f"  %plain.dictionary.missing = icmp eq ptr %plain.{keywords_idx}, null",
+                    "  br i1 %plain.dictionary.missing, label %plain.cleanup, label %plain.ready",
+                    "plain.cleanup:",
+                ]
+                if rest_idx is not None:
+                    lines.append(
+                        f"  call void @mule.fast.release(ptr %plain.{rest_idx})"
+                    )
+                lines += [
+                    "  br label %failed",
+                    "plain.ready:",
+                ]
+                plain_pred = "plain.ready"
             for index, kind in enumerate(kinds):
-                if kind == ast.ParameterKind.VAR_POSITIONAL:
+                if kind in (
+                    ast.ParameterKind.VAR_POSITIONAL,
+                    ast.ParameterKind.VAR_KEYWORD,
+                ):
                     continue
                 if kind == ast.ParameterKind.KEYWORD_ONLY:
                     lines.append(
@@ -4560,7 +4601,6 @@ class FunctionGenerator:
             "  br label %invoke",
             "invoke:",
         ]
-        plain_pred = "plain.ok" if (fast and lambda_.signature.variadic) else "plain"
         for index in range(count):
             if fast:
                 lines.append(
