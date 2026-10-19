@@ -272,6 +272,9 @@ def load_local(gen, vop):
             value = gen.retain(value)
         gen.publish(result, value)
         return
+    if access.allow_unbound:
+        gen.pointer_result(result, f"call ptr @mule.fast.local.optional(ptr {value})")
+        return
     helper = (
         "local.move"
         if access.move or not result.tn.sc.owned or not source.tn.sc.owned
@@ -2151,6 +2154,18 @@ loaded:
 slow:
   %error = call ptr @mule_load_local(ptr null, ptr %name)
   ret ptr %error
+}
+
+define internal ptr @mule.fast.local.optional(ptr %value) alwaysinline {
+entry:
+  %missing = icmp eq ptr %value, null
+  br i1 %missing, label %unbound, label %loaded
+loaded:
+  %owned = call ptr @mule.fast.retain(ptr %value)
+  ret ptr %owned
+unbound:
+  %sentinel = call ptr @mule_binding_missing()
+  ret ptr %sentinel
 }"""
 
 

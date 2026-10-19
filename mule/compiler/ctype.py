@@ -1539,6 +1539,13 @@ class TupleType(ValueType):
     def proves_tuple_index(self, index):
         return not self.may_be_unbound and self.arity is not None and index < self.arity
 
+    def method_return_type(
+        self, name: str, arity: int, has_keywords: bool, storage_methods=None
+    ):
+        if self.may_be_unbound or storage_methods is None:
+            return UNKNOWN
+        return storage_methods.get(("TupleStorage", name), UNKNOWN)
+
 
 @dataclass(frozen=True, slots=True)
 class ListType(ValueType):
@@ -1711,19 +1718,22 @@ class ListType(ValueType):
             return ListType(self.element)
         return UNKNOWN
 
-    def method_return_type(self, name: str, arity: int, has_keywords: bool):
+    def method_return_type(
+        self, name: str, arity: int, has_keywords: bool, storage_methods=None
+    ):
         if self.may_be_unbound:
             return UNKNOWN
-        if name == "append" and arity == 1 and not has_keywords:
-            return NONE_TYPE
-        if name in {"clear", "reverse", "insert", "extend", "remove", "sort"}:
-            return NONE_TYPE
-        if name == "copy":
-            return LIST_TYPE if self.element is UNKNOWN else ListType(self.element)
-        if name == "pop" and arity <= 1 and not has_keywords:
-            return UNKNOWN if self.element is BOTTOM else self.element
-        if name in {"index", "count"}:
-            return IntegerType(0, (1 << 60) - 1)
+        if name == "copy" and self.element is not UNKNOWN:
+            return ListType(self.element)
+        if (
+            name == "pop"
+            and arity <= 1
+            and not has_keywords
+            and self.element is not BOTTOM
+        ):
+            return self.element
+        if storage_methods is not None:
+            return storage_methods.get(("ListStorage", name), UNKNOWN)
         return UNKNOWN
 
 
@@ -1868,21 +1878,28 @@ class DictType(ValueType):
         v = UNKNOWN if self.value is BOTTOM else self.value
         return IteratorType(TupleType(2, (k, v)))
 
-    def method_return_type(self, name: str, arity: int, has_keywords: bool):
+    def method_return_type(
+        self, name: str, arity: int, has_keywords: bool, storage_methods=None
+    ):
         if self.may_be_unbound:
             return UNKNOWN
         if name == "get" and arity == 1 and not has_keywords:
             return self.dict_get_type(NONE_TYPE)
-        if name in {"clear", "update"} and not has_keywords:
-            return NONE_TYPE
         if name == "copy" and arity == 0 and not has_keywords:
             return (
                 DICT_TYPE
                 if (self.key is UNKNOWN and self.value is UNKNOWN)
                 else DictType(self.key, self.value)
             )
-        if name == "pop" and arity == 1 and not has_keywords:
-            return UNKNOWN if self.value is BOTTOM else self.value
+        if (
+            name == "pop"
+            and arity == 1
+            and not has_keywords
+            and self.value is not BOTTOM
+        ):
+            return self.value
+        if storage_methods is not None:
+            return storage_methods.get(("dict", name), UNKNOWN)
         return UNKNOWN
 
 
@@ -1981,6 +1998,9 @@ class IteratorType(ValueType):
 class BottomType(ValueType):
     may_be_unbound: bool = False
 
+    def accept(self, visitor):
+        return visitor.visit_BottomType(self)
+
     @property
     def needs_release(self):
         return False
@@ -2051,6 +2071,9 @@ class BottomType(ValueType):
 class UnboundType(ValueType):
     may_be_unbound: bool = True
 
+    def accept(self, visitor):
+        return visitor.visit_UnboundType(self)
+
     @property
     def needs_release(self):
         return False
@@ -2091,6 +2114,9 @@ class UnboundType(ValueType):
 class OptionalIntegerType(ValueType):
     integer: IntegerType = field(default_factory=IntegerType)
     may_be_unbound: bool = False
+
+    def accept(self, visitor):
+        return visitor.visit_OptionalIntegerType(self)
 
     @property
     def is_immortal(self):
@@ -2345,3 +2371,198 @@ def _integer_binary(operator, left, right, factory=IntegerType):
             ]
             minimum, maximum = min(values), max(values)
     return factory(minimum, maximum)
+
+
+class _SerializeValueType(ValueTypeVisitor):
+    def visit_ValueType(self, fact):
+        return {"kind": "unknown", "unbound": fact.may_be_unbound}
+
+    def visit_UnknownType(self, fact):
+        return {"kind": "unknown", "unbound": fact.may_be_unbound}
+
+    def visit_IntegerType(self, fact):
+        return {
+            "kind": "int",
+            "min": fact.minimum,
+            "max": fact.maximum,
+            "unbound": fact.may_be_unbound,
+        }
+
+    def visit_PythonIntegerType(self, fact):
+        return {
+            "kind": "py_int",
+            "min": fact.minimum,
+            "max": fact.maximum,
+            "unbound": fact.may_be_unbound,
+        }
+
+    def visit_BooleanType(self, fact):
+        return {
+            "kind": "bool",
+            "min": fact.minimum,
+            "max": fact.maximum,
+            "unbound": fact.may_be_unbound,
+        }
+
+    def visit_FloatType(self, fact):
+        return {"kind": "float", "unbound": fact.may_be_unbound}
+
+    def visit_RealType(self, fact):
+        return {"kind": "real", "unbound": fact.may_be_unbound}
+
+    def visit_ImmortalType(self, fact):
+        return {"kind": "immortal", "unbound": fact.may_be_unbound}
+
+    def visit_NoneType(self, fact):
+        return {"kind": "none", "unbound": fact.may_be_unbound}
+
+    def visit_TextType(self, fact):
+        return {
+            "kind": "text",
+            "literal": fact.literal,
+            "unbound": fact.may_be_unbound,
+        }
+
+    def visit_BytesType(self, fact):
+        return {"kind": "bytes", "unbound": fact.may_be_unbound}
+
+    def visit_FunctionType(self, fact):
+        return {"kind": "function", "unbound": fact.may_be_unbound}
+
+    def visit_TupleType(self, fact):
+        return {
+            "kind": "tuple",
+            "arity": fact.arity,
+            "elements": (
+                None
+                if fact.elements is None
+                else [el.to_dict() for el in fact.elements]
+            ),
+            "unbound": fact.may_be_unbound,
+        }
+
+    def visit_ListType(self, fact):
+        return {
+            "kind": "list",
+            "element": fact.element.to_dict(),
+            "unbound": fact.may_be_unbound,
+        }
+
+    def visit_DictType(self, fact):
+        return {
+            "kind": "dict",
+            "key": fact.key.to_dict(),
+            "value": fact.value.to_dict(),
+            "unbound": fact.may_be_unbound,
+        }
+
+    def visit_IteratorType(self, fact):
+        return {
+            "kind": "iterator",
+            "element": fact.element.to_dict(),
+            "unbound": fact.may_be_unbound,
+        }
+
+    def visit_BottomType(self, fact):
+        return {"kind": "bottom", "unbound": fact.may_be_unbound}
+
+    def visit_UnboundType(self, fact):
+        return {"kind": "unbound"}
+
+    def visit_OptionalIntegerType(self, fact):
+        return {
+            "kind": "opt_int",
+            "integer": fact.integer.to_dict(),
+            "unbound": fact.may_be_unbound,
+        }
+
+
+_SERIALIZE_VALUE_TYPE = _SerializeValueType()
+
+
+def value_type_from_dict(data: dict | None) -> ValueType:
+    if not data:
+        return UNKNOWN
+    kind = data.get("kind", "unknown")
+    unbound = bool(data.get("unbound", False))
+    if kind == "unknown":
+        return UNKNOWN_UNBOUND if unbound else UNKNOWN
+    if kind == "int":
+        lo = data.get("min")
+        hi = data.get("max")
+        if lo is None and hi is None and not unbound:
+            return INTEGER
+        return IntegerType(lo, hi, may_be_unbound=unbound)
+    if kind == "py_int":
+        lo = data.get("min")
+        hi = data.get("max")
+        if lo is None and hi is None and not unbound:
+            return PYTHON_INTEGER
+        return PythonIntegerType(lo, hi, may_be_unbound=unbound)
+    if kind == "bool":
+        lo = data.get("min", 0)
+        hi = data.get("max", 1)
+        if lo == 0 and hi == 1 and not unbound:
+            return BOOLEAN
+        if lo == 0 and hi == 0 and not unbound:
+            return BOOLEAN_FALSE
+        if lo == 1 and hi == 1 and not unbound:
+            return BOOLEAN_TRUE
+        return BooleanType(lo, hi, may_be_unbound=unbound)
+    if kind == "float":
+        return FloatType(may_be_unbound=unbound) if unbound else FLOAT
+    if kind == "real":
+        return RealType(may_be_unbound=unbound) if unbound else REAL
+    if kind == "immortal":
+        return IMMORTAL_UNBOUND if unbound else IMMORTAL
+    if kind == "none":
+        return NoneType(may_be_unbound=unbound) if unbound else NONE_TYPE
+    if kind == "text":
+        lit = data.get("literal")
+        if lit is None and not unbound:
+            return TEXT_TYPE
+        return TextType(lit, may_be_unbound=unbound)
+    if kind == "bytes":
+        return BytesType(may_be_unbound=unbound) if unbound else BYTES_TYPE
+    if kind == "function":
+        return FunctionType(may_be_unbound=unbound) if unbound else FUNCTION_TYPE
+    if kind == "tuple":
+        arity = data.get("arity")
+        raw_elements = data.get("elements")
+        elements = (
+            None
+            if raw_elements is None
+            else tuple(value_type_from_dict(el) for el in raw_elements)
+        )
+        return TupleType(arity, elements, may_be_unbound=unbound)
+    if kind == "list":
+        elem = value_type_from_dict(data.get("element"))
+        if elem is UNKNOWN and not unbound:
+            return LIST_TYPE
+        if elem is BOTTOM and not unbound:
+            return EMPTY_LIST_TYPE
+        return ListType(elem, may_be_unbound=unbound)
+    if kind == "dict":
+        key = value_type_from_dict(data.get("key"))
+        value = value_type_from_dict(data.get("value"))
+        if key is UNKNOWN and value is UNKNOWN and not unbound:
+            return DICT_TYPE
+        if key is BOTTOM and value is BOTTOM and not unbound:
+            return EMPTY_DICT_TYPE
+        return DictType(key, value, may_be_unbound=unbound)
+    if kind == "iterator":
+        elem = value_type_from_dict(data.get("element"))
+        if elem is UNKNOWN and not unbound:
+            return ITERATOR_TYPE
+        return IteratorType(elem, may_be_unbound=unbound)
+    if kind == "bottom":
+        return BOTTOM
+    if kind == "unbound":
+        return UNBOUND
+    if kind == "opt_int":
+        inner = value_type_from_dict(data.get("integer"))
+        return OptionalIntegerType(
+            IntegerType(inner.minimum, inner.maximum), may_be_unbound=unbound
+        )
+    return UNKNOWN
+

@@ -395,6 +395,8 @@ class _Propagation(NodeVisitor, LeafVisitor):
             return UNKNOWN_FACT
         fact = state[leaf]
         ref = linked(self._current_ref, leaf, "reference")
+        if ref.allow_unbound and fact.type.may_be_unbound:
+            return UNKNOWN_FACT
         if ref.final:
             self.forget_origin(leaf)
             self.assign(leaf, UNBOUND_FACT)

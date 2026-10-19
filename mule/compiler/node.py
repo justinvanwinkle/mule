@@ -169,12 +169,15 @@ class Ref(ValuedNode):
     temporary's extent; the binding is dead afterwards. User variables never
     carry it; lifetime analysis replaces it when IR2 exists."""
 
-    __slots__ = ("final", "leaf")
+    __slots__ = ("allow_unbound", "final", "leaf")
 
-    def __init__(self, lexenv, source, leaf: Leaf, *, final=False):
+    def __init__(
+        self, lexenv, source, leaf: Leaf, *, final=False, allow_unbound=False
+    ):
         super().__init__(lexenv, source)
         self.leaf = leaf
         self.final = final
+        self.allow_unbound = allow_unbound
         self.reoptimize = False
 
     def accept(self, visitor):

@@ -87,6 +87,7 @@ class LocalAccess:
     move: bool
     bound: bool = False
     borrow: bool = False
+    allow_unbound: bool = False
 
 
 _BORROWING_VOPS = frozenset(
@@ -1234,8 +1235,9 @@ class _LoadLeaf(LeafVisitor):
         environment = converter.environment
         if leaf in environment.cells:
             cell = converter.cell(node, leaf)
+            protocol = "cell_get_optional" if node.allow_unbound else "cell_get"
             converter.emit(
-                templates_for(fndb.PROTOCOLS["cell_get"])[0],
+                templates_for(fndb.PROTOCOLS[protocol])[0],
                 node,
                 args=(cell,),
                 results=(result,),
@@ -1251,7 +1253,9 @@ class _LoadLeaf(LeafVisitor):
                 node,
                 args=(source,),
                 results=(result,),
-                info=LocalAccess(leaf.name, node.final, bound),
+                info=LocalAccess(
+                    leaf.name, node.final, bound, allow_unbound=node.allow_unbound
+                ),
             )
         if discard:
             converter.emit_discard(node, result)

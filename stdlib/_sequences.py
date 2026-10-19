@@ -5,7 +5,7 @@ execute as native Python functions and classes, in a private module namespace.
 """
 
 from _object import bool, complex, float, globals, int, isinstance, issubclass, object, type, vars
-from _object import _globals_dict as globals_dict
+from _object import _globals_dict
 from _object import locals as _builtin_locals
 from _object import _make_complex
 from _object import _bytes_special
@@ -3775,6 +3775,10 @@ def call_with_locals(callee, snapshot):
     return callee()
 
 
+def globals_dict(namespace):
+    return _globals_dict(namespace)
+
+
 # Generic aliases are created once the builtins they use are installed.
 from _template import Interpolation as _Interpolation  # noqa: E402
 from _template import build_template as _build_template  # noqa: E402
@@ -3784,14 +3788,35 @@ from _generic_alias import type_ror as _type_ror  # noqa: E402
 from _exceptiongroup import (  # noqa: E402
     BaseExceptionGroup,
     ExceptionGroup,
-    except_star_caught,
-    except_star_finish,
-    except_star_match,
-    except_star_matched,
-    except_star_start,
+    except_star_caught as _except_star_caught,
+    except_star_finish as _except_star_finish,
+    except_star_match as _except_star_match,
+    except_star_matched as _except_star_matched,
+    except_star_start as _except_star_start,
 )
 from _object import _install_code_fields  # noqa: E402
 from _object import _install_builtin_descriptors  # noqa: E402
+
+
+def except_star_start(exc):
+    return _except_star_start(exc)
+
+
+def except_star_match(state, targets):
+    return _except_star_match(state, targets)
+
+
+def except_star_matched(state):
+    return _except_star_matched(state)
+
+
+def except_star_caught(state, exc):
+    return _except_star_caught(state, exc)
+
+
+def except_star_finish(state):
+    return _except_star_finish(state)
+
 
 _install_code_fields()
 _install_builtin_descriptors()
