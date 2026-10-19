@@ -376,6 +376,9 @@ class Program:
     # initializes the unit before running the module body.
     module_import: ImportInfo | None = None
     search_paths: tuple[str, ...] = ()
+    exported_types: dict[tuple[str, str], ValueType] = field(default_factory=dict)
+    storage_methods: dict[tuple[str, str], ValueType] = field(default_factory=dict)
+    builtin_return_types: dict[str, ValueType] = field(default_factory=dict)
 
 
 # Every protocol (``$mule.*`` compilation namespaces) runs under the one

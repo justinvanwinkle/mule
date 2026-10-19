@@ -449,17 +449,9 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 info.keywords,
             )
             if resolved is UNKNOWN and self.walk.imported_returns:
-                callee_name = node.fun.use().accept(_GLOBAL_CALLEE_NAME)
+                callee_name = node.fun.use().accept(_IMPORTED_CALLEE_NAME)
                 if callee_name is not None:
-                    if (
-                        callee_name == "identity"
-                        and len(arg_types) == 1
-                        and not info.keywords
-                        and callee_name in self.walk.imported_returns
-                    ):
-                        resolved = arg_types[0]
-                    else:
-                        resolved = self.walk.imported_returns.get(callee_name, UNKNOWN)
+                    resolved = self.walk.imported_returns.get(callee_name, UNKNOWN)
             if resolved is UNKNOWN and not info.keywords:
                 resolved = self.walk.builtin_return_type(node.fun, arg_types)
             fact = _fact(resolved)
@@ -622,6 +614,8 @@ class _Propagation(NodeVisitor, LeafVisitor):
         if name == "%getitem":
             receiver_type = self.type_of(args[0])
             index_type = self.type_of(args[1])
+            if receiver_type is BOTTOM or index_type is BOTTOM:
+                return NO_FACT
             if receiver_type.may_run_user_code or index_type.may_run_user_code:
                 self.invalidate()
             return _fact(receiver_type.getitem_type(index_type))
@@ -701,7 +695,17 @@ class _Propagation(NodeVisitor, LeafVisitor):
         elif name == "_storage_read" and len(args) == 2:
             recv_type = self.type_of(args[0])
             idx_type = self.type_of(args[1])
+            if recv_type == EMPTY_LIST_TYPE and idx_type.fits(PYTHON_INTEGER):
+                return NO_FACT
             return _fact(recv_type.getitem_type(idx_type))
+        elif name == "_allocate_instance" and len(args) == 1:
+            cls_name = (
+                args[0].use().accept(_GLOBAL_CALLEE_NAME)
+                if len(args[0].uses) == 1
+                else None
+            )
+            if cls_name == "dict":
+                return _fact(EMPTY_DICT_TYPE)
         elif (
             name
             in (
@@ -1066,7 +1070,15 @@ class _GlobalCalleeName(NodeVisitor, LeafVisitor):
         return leaf.name
 
 
+class _ImportedCalleeName(_GlobalCalleeName):
+    def visit_LambdaVar(self, leaf):
+        if len(leaf.sets) == 1 and (leaf.home is None or leaf not in leaf.home.vars):
+            return leaf.name
+        return None
+
+
 _GLOBAL_CALLEE_NAME = _GlobalCalleeName()
+_IMPORTED_CALLEE_NAME = _ImportedCalleeName()
 _LENGTH_TYPE = IntegerType(0, (1 << 48) - 1)
 
 
@@ -1218,9 +1230,13 @@ class _Walk:
             return elem
         if name == "tuple" and arity <= 1:
             return _UNBOUNDED_TUPLE
-        if name == "divmod" and arity == 2:
-            if arg_types[0].fits(PYTHON_INTEGER) and arg_types[1].fits(PYTHON_INTEGER):
-                return TupleType(2, (INTEGER, INTEGER))
+        if (
+            name == "divmod"
+            and arity == 2
+            and arg_types[0].fits(PYTHON_INTEGER)
+            and arg_types[1].fits(PYTHON_INTEGER)
+        ):
+            return TupleType(2, (INTEGER, INTEGER))
         if name == "abs" and arity == 1:
             arg = arg_types[0]
             if arg.fits(PYTHON_INTEGER):
@@ -1574,6 +1590,42 @@ def _comparison_bound(
     return None
 
 
+_EXACT_TYPE_FACTS = {
+    "int": INTEGER_FACT,
+    "bool": BOOLEAN_FACT,
+    "float": FLOAT_FACT,
+    "str": TEXT_FACT,
+    "bytes": BYTES_FACT,
+    "list": _fact(LIST_TYPE),
+    "tuple": _fact(TupleType()),
+    "dict": _fact(DICT_TYPE),
+}
+
+
+class _TypeOfArg(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if len(node.args) != 1:
+            return None
+        if node.kind is CallKind.KNOWN and node.fun_info is not None:
+            if node.fun_info.name == "_type_of":
+                return node.args[0]
+            return None
+        callee = (
+            node.fun.use().accept(_GLOBAL_CALLEE_NAME)
+            if len(node.fun.uses) == 1
+            else None
+        )
+        if callee in ("type_of", "type"):
+            return node.args[0]
+        return None
+
+
+_TYPE_OF_ARG = _TypeOfArg()
+
+
 class _ConstrainComparison(NodeVisitor):
     """A known comparison of a local against an integer interval narrows the local."""
 
@@ -1590,10 +1642,21 @@ class _ConstrainComparison(NodeVisitor):
             if not self.truth or len(node.args) != 2:
                 return None
             callee_name = node.fun.use().accept(_GLOBAL_CALLEE_NAME)
-            if callee_name not in ("is_instance", "isinstance"):
+            if callee_name not in (
+                "is_instance",
+                "isinstance",
+                "is_subclass",
+                "issubclass",
+            ):
                 return None
             type_name = node.args[1].use().accept(_GLOBAL_CALLEE_NAME)
-            if type_name not in ("str", "bytes"):
+            if callee_name in ("is_instance", "is_subclass"):
+                target_fact = _EXACT_TYPE_FACTS.get(type_name)
+            elif type_name in ("str", "bytes"):
+                target_fact = _EXACT_TYPE_FACTS[type_name]
+            else:
+                target_fact = None
+            if target_fact is None:
                 return None
             local = self.visitor.origins.get(node.args[0])
             if local is None or local not in self.visitor.state:
@@ -1602,7 +1665,7 @@ class _ConstrainComparison(NodeVisitor):
             if current.type is not UNKNOWN:
                 return None
             edge = self.state.copy()
-            edge[local] = TEXT_FACT if type_name == "str" else BYTES_FACT
+            edge[local] = target_fact
             return edge
         name = node.fun_info.name
         if name == "%unary_not" and len(node.args) == 1:
@@ -1611,7 +1674,7 @@ class _ConstrainComparison(NodeVisitor):
                 .use()
                 .accept(_ConstrainComparison(self.visitor, self.state, not self.truth))
             )
-        if name in ("_text_storage", "_bytes_storage") and len(node.args) == 1:
+        if name in ("_text_storage", "_bytes_storage", "_tuple_storage") and len(node.args) == 1:
             if not self.truth:
                 return None
             local = self.visitor.origins.get(node.args[0])
@@ -1621,13 +1684,38 @@ class _ConstrainComparison(NodeVisitor):
             if current.type is not UNKNOWN:
                 return None
             edge = self.state.copy()
-            edge[local] = TEXT_FACT if name == "_text_storage" else BYTES_FACT
+            edge[local] = (
+                TEXT_FACT
+                if name == "_text_storage"
+                else (BYTES_FACT if name == "_bytes_storage" else _fact(TupleType()))
+            )
             return edge
         operator = _COMPARISON_OPERATORS.get(name)
         if operator is None:
             return None
         visitor = self.visitor
         left, right = node.args
+        if operator in (ast.ComparisonOperator.IS, ast.ComparisonOperator.IS_NOT):
+            is_identity = (operator is ast.ComparisonOperator.IS) == self.truth
+            if is_identity:
+                for type_call, cls_lvar in ((left, right), (right, left)):
+                    if len(type_call.uses) != 1 or len(cls_lvar.uses) != 1:
+                        continue
+                    subject = type_call.uses[0].accept(_TYPE_OF_ARG)
+                    if subject is None:
+                        continue
+                    cls_name = cls_lvar.uses[0].accept(_GLOBAL_CALLEE_NAME)
+                    target_fact = _EXACT_TYPE_FACTS.get(cls_name)
+                    if target_fact is None:
+                        continue
+                    local = visitor.origins.get(subject)
+                    if local is None or local not in visitor.state:
+                        continue
+                    if visitor.state[local].type is not UNKNOWN:
+                        continue
+                    edge = self.state.copy()
+                    edge[local] = target_fact
+                    return edge
         swapped = _SWAPPED.get(
             operator,
             operator

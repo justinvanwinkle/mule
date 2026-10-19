@@ -64,6 +64,9 @@ class Compilation:
     converter: Converter
     facts: dict[Lambda, locall.LambdaFacts] | None = None
     annotations: AnnotationLedger = field(default_factory=AnnotationLedger)
+    imported_function_types: dict[tuple[str, str], object] | None = None
+    storage_methods: dict[tuple[str, str], object] | None = None
+    builtin_return_types: dict[str, object] | None = None
 
     @property
     def converters(self):
@@ -284,7 +287,11 @@ def _ir1_optimize_phase_1(compilation: Compilation) -> None:
             return
         with phase("IR1 local-call and flow analysis", level=logging.DEBUG):
             compilation.facts = locall.analyze(
-                compilation.lambdas, compilation.annotations
+                compilation.lambdas,
+                compilation.annotations,
+                imported_function_types=compilation.imported_function_types,
+                storage_methods=compilation.storage_methods,
+                builtin_return_types=compilation.builtin_return_types,
             )
             facts_stale = False
         if not any(component.reoptimize for component in compilation.components):
@@ -292,7 +299,11 @@ def _ir1_optimize_phase_1(compilation: Compilation) -> None:
     if facts_stale:
         with phase("IR1 local-call and flow analysis", level=logging.DEBUG):
             compilation.facts = locall.analyze(
-                compilation.lambdas, compilation.annotations
+                compilation.lambdas,
+                compilation.annotations,
+                imported_function_types=compilation.imported_function_types,
+                storage_methods=compilation.storage_methods,
+                builtin_return_types=compilation.builtin_return_types,
             )
     logger.debug("IR1 reoptimization reached its %d-round limit", REOPTIMIZE_LIMIT)
 
@@ -406,5 +417,16 @@ def compile_source(
             namespace=namespace,
             primitives=primitives,
         )
+        if imports is not None:
+            compilation.imported_function_types = imports.exported_types
+            compilation.storage_methods = imports.storage_methods
+            compilation.builtin_return_types = imports.builtin_return_types
+        elif not prefix.startswith(locall._PROTOCOL_PREFIXES):
+            from .sequence_protocol import stdlib_type_summary
+
+            exported, methods, builtins = stdlib_type_summary()
+            compilation.imported_function_types = exported
+            compilation.storage_methods = methods
+            compilation.builtin_return_types = builtins
         ir1_phases(compilation)
     return compilation

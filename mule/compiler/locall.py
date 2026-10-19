@@ -49,6 +49,7 @@ from .ctype import (
     BOOLEAN_FALSE,
     BOOLEAN_TRUE,
     BOTTOM,
+    BYTES_TYPE,
     DICT_TYPE,
     FIXNUM_MAX,
     FIXNUM_MIN,
@@ -89,6 +90,28 @@ _PROTOCOL_PREFIXES = (
     "mule_native_class_",
     "mule_print_",
 )
+
+_MULE_NATIVE_RETURN_TYPES: dict[str, ValueType] = {
+    "text_from_codepoints": TEXT_TYPE,
+    "bytes_from_values": BYTES_TYPE,
+    "byte_copy": BYTES_TYPE,
+    "byte_length": IntegerType(0, (1 << 48) - 1),
+    "read_byte": IntegerType(0, 255),
+    "identity": INTEGER,
+    "is_class": BOOLEAN,
+    "is_subclass": BOOLEAN,
+    "is_instance": BOOLEAN,
+    "overriding_new": BOOLEAN,
+    "buffer_exports": IntegerType(0, (1 << 48) - 1),
+}
+
+_STORAGE_SELF_TYPES: dict[str, ValueType] = {
+    "TextStorage.": TEXT_TYPE,
+    "BytesStorage.": BYTES_TYPE,
+    "TupleStorage.": TupleType(),
+    "ListStorage.": LIST_TYPE,
+    "dict.": DICT_TYPE,
+}
 
 _NUMERIC_KNOWN = (
     frozenset(_BINARY_OPERATORS)
@@ -823,7 +846,120 @@ def _collect_closed_lambdas(lambdas) -> dict[Lambda, tuple[Ref, ...]]:
     return closed
 
 
-def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]:
+class _ImportedModuleOrigin(NodeVisitor, LeafVisitor):
+    """Resolve the module name an imported module object lvar originates from."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if node.kind is not CallKind.KNOWN or node.fun_info is None:
+            return None
+        if node.fun_info.name == "%import":
+            return linked(node.info, node, "info").module_name
+        if node.fun_info.name == "%import_module":
+            return node.info
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if len(leaf.sets) != 1:
+            return None
+        val = leaf.sets[0].value
+        if val is None or len(val.uses) != 1:
+            return None
+        return val.uses[0].accept(self)
+
+
+_IMPORTED_MODULE_ORIGIN = _ImportedModuleOrigin()
+
+
+class _ImportBindingStores(NodeVisitor, LeafVisitor):
+    """Collect ``from mod import orig as name`` global bindings in module bodies."""
+
+    def __init__(self, imports: dict[str, tuple[str, str]]):
+        self.imports = imports
+        self._store: Set | None = None
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Set(self, node: Set):
+        self._store = node
+        node.var.accept(self)
+        self._store = None
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        store = self._store
+        self._store = None
+        if store is None or store.value is None or len(leaf.sets) != 1:
+            return
+        if leaf.sets[0] is not store:
+            return
+        home = store.home_lambda
+        if home is None or home.kind is not FunctionalKind.TOPLEVEL:
+            return
+        if len(store.value.uses) != 1:
+            return
+        origin = store.value.uses[0].accept(self)
+        if origin is not None:
+            self.imports[leaf.name] = origin
+
+    def visit_Combination(self, node: Combination):
+        if node.kind is not CallKind.KNOWN or node.fun_info is None:
+            return None
+        if node.fun_info.name == "%getattr" and len(node.args) == 1:
+            if len(node.args[0].uses) != 1:
+                return None
+            mod_name = node.args[0].uses[0].accept(_IMPORTED_MODULE_ORIGIN)
+            if mod_name is not None:
+                return mod_name, linked(node.info, node, "info").name
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        store = self._store
+        self._store = None
+        if store is not None:
+            if (
+                store.value is None
+                or len(leaf.sets) != 1
+                or leaf.sets[0] is not store
+                or (leaf.home is not None and leaf in leaf.home.vars)
+            ):
+                return None
+            if len(store.value.uses) != 1:
+                return None
+            origin = store.value.uses[0].accept(self)
+            if origin is not None:
+                self.imports[leaf.name] = origin
+            return None
+        if len(leaf.sets) != 1:
+            return None
+        val = leaf.sets[0].value
+        if val is None or len(val.uses) != 1:
+            return None
+        return val.uses[0].accept(self)
+
+
+def analyze(
+    lambdas,
+    annotations: AnnotationLedger,
+    *,
+    imported_function_types: dict[tuple[str, str], ValueType] | None = None,
+    storage_methods: dict[tuple[str, str], ValueType] | None = None,
+    builtin_return_types: dict[str, ValueType] | None = None,
+) -> dict[Lambda, LambdaFacts]:
     """Solve local-call arguments and results, then publish entry contexts.
 
     General entries model externally supplied values. Observed integer
@@ -851,14 +987,28 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                 ref.derived_type = vtype
     global_targets = defaultdict(dict)
     global_counts: dict[str, dict[str, int]] = defaultdict(dict)
+    import_bindings_by_ns: dict[str, dict[str, tuple[str, str]]] = defaultdict(dict)
     for lambda_ in lambdas:
         visitor = _GlobalFunctionStores(
             global_targets[lambda_.namespace], global_counts[lambda_.namespace]
         )
+        imp_visitor = _ImportBindingStores(import_bindings_by_ns[lambda_.namespace])
         graph = graphs[lambda_]
         for block in graph.blocks:
             for node in graph.block_nodes[block]:
                 node.accept(visitor)
+                node.accept(imp_visitor)
+    imported_returns_by_ns: dict[str, dict[str, ValueType]] = defaultdict(dict)
+    for ns, bindings in import_bindings_by_ns.items():
+        ns_returns = imported_returns_by_ns[ns]
+        for local_name, (mod_name, orig_name) in bindings.items():
+            if mod_name == "_mule_native" and orig_name in _MULE_NATIVE_RETURN_TYPES:
+                ns_returns[local_name] = _MULE_NATIVE_RETURN_TYPES[orig_name]
+            elif (
+                imported_function_types is not None
+                and (mod_name, orig_name) in imported_function_types
+            ):
+                ns_returns[local_name] = imported_function_types[mod_name, orig_name]
     proven_by_namespace: dict[str, frozenset[str]] = {
         ns: frozenset(
             name
@@ -898,7 +1048,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
     for lambda_ in lambdas:
         signature = lambda_.signature
         if lambda_.vars and not signature.variadic:
-            parameters[lambda_, "general"] = tuple(
+            gen_params = [
                 _ParameterUse(var).general_type(lambda_.local_annotations.get(var.name))
                 if contract is None
                 and ("local", lambda_, var.name) not in annotations.ignored
@@ -906,7 +1056,18 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                 for var, contract in zip(
                     lambda_.vars, signature.annotations, strict=True
                 )
-            )
+            ]
+            if (
+                lambda_.name.startswith(_PROTOCOL_PREFIXES)
+                and lambda_.vars[0].name == "self"
+                and gen_params[0] is UNKNOWN
+            ):
+                qualname = lambda_.code.qualname
+                for prefix, self_type in _STORAGE_SELF_TYPES.items():
+                    if qualname.startswith(prefix):
+                        gen_params[0] = self_type
+                        break
+            parameters[lambda_, "general"] = tuple(gen_params)
             spec_params = tuple(
                 _ParameterUse(var).analyze(contract, full)
                 for var, contract in zip(
@@ -928,9 +1089,21 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                 if any(param is not UNKNOWN for param in partial_params):
                     parameters[lambda_, "fixnum"] = partial_params
         else:
-            parameters[lambda_, "general"] = tuple(
+            gen_params = [
                 binding_types.get(kind, UNKNOWN) for kind in signature.kinds
-            )
+            ]
+            if (
+                lambda_.vars
+                and lambda_.name.startswith(_PROTOCOL_PREFIXES)
+                and lambda_.vars[0].name == "self"
+                and gen_params[0] is UNKNOWN
+            ):
+                qualname = lambda_.code.qualname
+                for prefix, self_type in _STORAGE_SELF_TYPES.items():
+                    if qualname.startswith(prefix):
+                        gen_params[0] = self_type
+                        break
+            parameters[lambda_, "general"] = tuple(gen_params)
     summaries: dict[tuple[Lambda, str], ValueType] = dict.fromkeys(parameters, BOTTOM)
     return_changes = defaultdict(int)
     argument_changes = defaultdict(int)
@@ -1022,6 +1195,12 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             target = callee.target
             order = target.call_order(keywords, len(arguments))
             if order is None:
+                if target.signature.variadic:
+                    gen = context_parameters.get((target, "general"))
+                    if gen is not None:
+                        result = context_summaries.get((target, "general"), UNKNOWN)
+                        consulted[target, gen] = result
+                        return result
                 return UNKNOWN
             arguments = tuple(
                 arguments[index] if index >= 0 else UNKNOWN for index in order
@@ -1082,6 +1261,14 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                         rebound_globals=rebound_by_namespace.get(
                             lambda_.namespace, frozenset()
                         ),
+                        imported_returns=(
+                            imported_returns_by_ns.get(lambda_.namespace)
+                            if lambda_.kind is not FunctionalKind.TOPLEVEL
+                            and lambda_.policy.safety < 3
+                            else None
+                        ),
+                        storage_methods=storage_methods,
+                        builtin_return_types=builtin_return_types,
                     )
                 bodies[key] = body
                 inputs[key] = (
@@ -1238,6 +1425,8 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                                 parameters[target, "general"] = tuple(updated)
                                 narrowed_targets.add(target)
                                 changed = True
+                if not call.proven and target not in closed_lambdas:
+                    continue
                 raw_domains = tuple(
                     domain
                     if (domain := type_.dispatch_domain()) is not None
