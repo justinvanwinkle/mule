@@ -451,7 +451,15 @@ class _Propagation(NodeVisitor, LeafVisitor):
             if resolved is UNKNOWN and self.walk.imported_returns:
                 callee_name = node.fun.use().accept(_IMPORTED_CALLEE_NAME)
                 if callee_name is not None:
-                    resolved = self.walk.imported_returns.get(callee_name, UNKNOWN)
+                    if (
+                        callee_name == "typed_value"
+                        and len(arg_types) == 2
+                        and not info.keywords
+                        and callee_name in self.walk.imported_returns
+                    ):
+                        resolved = arg_types[0]
+                    else:
+                        resolved = self.walk.imported_returns.get(callee_name, UNKNOWN)
             if resolved is UNKNOWN and not info.keywords:
                 resolved = self.walk.builtin_return_type(node.fun, arg_types)
             fact = _fact(resolved)
@@ -605,6 +613,23 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 return _fact(result_type)
             self.invalidate()
             return UNKNOWN_FACT
+        if name in ("%call_with", "%call_expanded_positional") and args:
+            callee_lvar = args[0]
+            arg_types = tuple(self.type_of(arg) for arg in args[1:])
+            resolved = self.walk.resolve_call(
+                self.fact_of(callee_lvar),
+                arg_types,
+                node.source,
+                ("*" * len(arg_types),),
+            )
+            if resolved is UNKNOWN and self.walk.imported_returns:
+                callee_name = callee_lvar.use().accept(_IMPORTED_CALLEE_NAME)
+                if callee_name is not None:
+                    resolved = self.walk.imported_returns.get(callee_name, UNKNOWN)
+            if resolved is UNKNOWN:
+                resolved = self.walk.builtin_return_type(callee_lvar, arg_types)
+            self.invalidate()
+            return _fact(resolved)
         if name in ("%import", "%catch_exception"):
             self.invalidate()
             return UNKNOWN_FACT
@@ -1220,9 +1245,7 @@ class _Walk:
                 stop = arg_types[0]
                 if stop.maximum is not None and stop.maximum >= 1:
                     return IteratorType(IntegerType(0, stop.maximum - 1))
-                return IteratorType(INTEGER)
-            if all(arg.fits(PYTHON_INTEGER) for arg in arg_types):
-                return IteratorType(INTEGER)
+            return IteratorType(INTEGER)
         if name == "next" and 1 <= arity <= 2:
             elem = arg_types[0].next_item_type()
             if arity == 2:
@@ -1674,7 +1697,10 @@ class _ConstrainComparison(NodeVisitor):
                 .use()
                 .accept(_ConstrainComparison(self.visitor, self.state, not self.truth))
             )
-        if name in ("_text_storage", "_bytes_storage", "_tuple_storage") and len(node.args) == 1:
+        if (
+            name in ("_text_storage", "_bytes_storage", "_tuple_storage")
+            and len(node.args) == 1
+        ):
             if not self.truth:
                 return None
             local = self.visitor.origins.get(node.args[0])

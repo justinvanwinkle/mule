@@ -98,6 +98,7 @@ _MULE_NATIVE_RETURN_TYPES: dict[str, ValueType] = {
     "byte_length": IntegerType(0, (1 << 48) - 1),
     "read_byte": IntegerType(0, 255),
     "identity": INTEGER,
+    "typed_value": UNKNOWN,
     "is_class": BOOLEAN,
     "is_subclass": BOOLEAN,
     "is_instance": BOOLEAN,
@@ -1107,9 +1108,7 @@ def analyze(
                 if any(param is not UNKNOWN for param in partial_params):
                     parameters[lambda_, "fixnum"] = partial_params
         else:
-            gen_params = [
-                binding_types.get(kind, UNKNOWN) for kind in signature.kinds
-            ]
+            gen_params = [binding_types.get(kind, UNKNOWN) for kind in signature.kinds]
             if (
                 lambda_.vars
                 and lambda_.name.startswith(_PROTOCOL_PREFIXES)
@@ -1443,8 +1442,6 @@ def analyze(
                                 parameters[target, "general"] = tuple(updated)
                                 narrowed_targets.add(target)
                                 changed = True
-                if not call.proven and target not in closed_lambdas:
-                    continue
                 raw_domains = tuple(
                     domain
                     if (domain := type_.dispatch_domain()) is not None

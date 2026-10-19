@@ -881,18 +881,6 @@ class BooleanType(IntegerType):
     def fixnum_domain(self):
         return None
 
-    def dispatch_domain(self):
-        return None if self.may_be_unbound else self
-
-    def dispatch_rank(self) -> int:
-        if self.may_be_unbound:
-            return 2**64
-        return (
-            self.maximum - self.minimum
-            if self.minimum is not None and self.maximum is not None
-            else 2
-        )
-
     def accepts(self, actual):
         return actual.fits_boolean(self)
 
@@ -2565,4 +2553,3 @@ def value_type_from_dict(data: dict | None) -> ValueType:
             IntegerType(inner.minimum, inner.maximum), may_be_unbound=unbound
         )
     return UNKNOWN
-
