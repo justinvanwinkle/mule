@@ -2097,25 +2097,27 @@ def _byte_padding(values, width, fillchar, alignment, method):
     return result
 
 
+def _bytes_padding_result(source, values):
+    if type_of(source) is bytes and _storage_length(source) == _storage_length(values):
+        return source
+    return bytes_from_values(values)
+
+
+def _bytes_slice_result(source, start, end):
+    if type_of(source) is bytes and start == 0 and end == _storage_length(source):
+        return source
+    return byte_copy(source, start, end - start)
+
+
 class BytesStorage:
-    def _padding_result(self, values):
-        if type_of(self) is bytes and _storage_length(self) == _storage_length(values):
-            return self
-        return bytes_from_values(values)
-
-    def _slice_result(self, start, end):
-        if type_of(self) is bytes and start == 0 and end == _storage_length(self):
-            return self
-        return byte_copy(self, start, end - start)
-
     def ljust(self, width, fillchar=b" ", /):
-        return BytesStorage._padding_result(self, _byte_padding(self, width, fillchar, 0, "ljust"))
+        return _bytes_padding_result(self, _byte_padding(self, width, fillchar, 0, "ljust"))
 
     def rjust(self, width, fillchar=b" ", /):
-        return BytesStorage._padding_result(self, _byte_padding(self, width, fillchar, 1, "rjust"))
+        return _bytes_padding_result(self, _byte_padding(self, width, fillchar, 1, "rjust"))
 
     def center(self, width, fillchar=b" ", /):
-        return BytesStorage._padding_result(self, _byte_padding(self, width, fillchar, 2, "center"))
+        return _bytes_padding_result(self, _byte_padding(self, width, fillchar, 2, "center"))
 
     def hex(self, sep=_HEX_MISSING, bytes_per_sep=1):
         return _hex_bytes(self, sep, bytes_per_sep)
@@ -2176,39 +2178,39 @@ class BytesStorage:
 
     def strip(self, chars=None, /):
         start, end = _bytes_strip_bounds(self, chars, True, True)
-        return BytesStorage._slice_result(self, start, end)
+        return _bytes_slice_result(self, start, end)
 
     def lstrip(self, chars=None, /):
         start, end = _bytes_strip_bounds(self, chars, True, False)
-        return BytesStorage._slice_result(self, start, end)
+        return _bytes_slice_result(self, start, end)
 
     def rstrip(self, chars=None, /):
         start, end = _bytes_strip_bounds(self, chars, False, True)
-        return BytesStorage._slice_result(self, start, end)
+        return _bytes_slice_result(self, start, end)
 
     def removeprefix(self, prefix, /):
         start, end = _bytes_removeprefix_bounds(self, prefix)
-        return BytesStorage._slice_result(self, start, end)
+        return _bytes_slice_result(self, start, end)
 
     def removesuffix(self, suffix, /):
         start, end = _bytes_removesuffix_bounds(self, suffix)
-        return BytesStorage._slice_result(self, start, end)
+        return _bytes_slice_result(self, start, end)
 
     def split(self, sep=None, maxsplit=-1):
         return [
-            BytesStorage._slice_result(self, start, end)
+            _bytes_slice_result(self, start, end)
             for start, end in _bytes_split_spans(self, sep, maxsplit, False)
         ]
 
     def rsplit(self, sep=None, maxsplit=-1):
         return [
-            BytesStorage._slice_result(self, start, end)
+            _bytes_slice_result(self, start, end)
             for start, end in _bytes_split_spans(self, sep, maxsplit, True)
         ]
 
     def splitlines(self, keepends=False):
         return [
-            BytesStorage._slice_result(self, start, end)
+            _bytes_slice_result(self, start, end)
             for start, end in _bytes_splitlines_spans(self, keepends)
         ]
 
@@ -2220,7 +2222,7 @@ class BytesStorage:
         length = _storage_length(self)
         position = _bytes_find_values(self, needle, 0, length)
         if position < 0:
-            return (BytesStorage._slice_result(self, 0, length), b"", b"")
+            return (_bytes_slice_result(self, 0, length), b"", b"")
         return (
             byte_copy(self, 0, position),
             sep if is_instance(sep, bytes) else bytes_from_values(needle),
@@ -2235,7 +2237,7 @@ class BytesStorage:
         length = _storage_length(self)
         position = _bytes_rfind_values(self, needle, 0, length)
         if position < 0:
-            return (b"", b"", BytesStorage._slice_result(self, 0, length))
+            return (b"", b"", _bytes_slice_result(self, 0, length))
         return (
             byte_copy(self, 0, position),
             sep if is_instance(sep, bytes) else bytes_from_values(needle),
@@ -2245,7 +2247,7 @@ class BytesStorage:
     def replace(self, old, new, count=-1, /):
         replaced = _bytes_replaced(self, old, new, count)
         if replaced is None:
-            return BytesStorage._slice_result(self, 0, _storage_length(self))
+            return _bytes_slice_result(self, 0, _storage_length(self))
         return bytes_from_values(replaced)
 
     def translate(self, table, delete=b""):
