@@ -14,7 +14,7 @@ html { scroll-padding-top: 2rem; }
 body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--sans); font-size: 1rem; line-height: 1.65; -webkit-font-smoothing: antialiased; }
 a { color: inherit; text-underline-offset: .22em; }
 a:hover { color: var(--accent); }
-a:focus-visible { outline: 3px solid var(--accent); outline-offset: 5px; }
+a:focus-visible, [tabindex]:focus-visible { outline: 3px solid var(--accent); outline-offset: 5px; }
 ::selection { color: var(--paper); background: var(--accent); }
 h1, h2, h3, p, figure { margin: 0; }
 h1, h2, h3 { line-height: 1.08; }
@@ -67,7 +67,8 @@ h1 { max-width: 1100px; margin-top: 2rem; font-size: clamp(3.8rem, 7.7vw, 6.7rem
 .section-heading { display: grid; grid-template-columns: 1.4fr 1fr; gap: 5rem; align-items: end; }
 .section-heading > p { max-width: 27rem; font-size: .91rem; color: var(--muted); }
 .performance-chart { margin-top: 2.5rem; border: 1px solid var(--line); background: #fffdf8; }
-.performance-chart > a { display: block; padding: 1rem; }
+.chart-scroll { overflow-x: auto; }
+.chart-scroll > a { display: block; padding: 1rem; min-width: 900px; }
 .performance-chart img { display: block; width: 100%; height: auto; min-height: 10rem; color: var(--muted); font-size: .9rem; }
 .performance-chart figcaption { padding: 1.2rem 1.5rem; border-top: 1px solid var(--line); font-size: .75rem; color: var(--muted); }
 .measurement-note { margin-top: 1.2rem; max-width: 60rem; font-size: .76rem; color: var(--muted); }
@@ -131,7 +132,7 @@ pre { margin: 0; overflow-x: auto; padding-bottom: .4rem; font-size: .72rem; lin
   .status-note { grid-template-columns: 1fr; gap: .8rem; padding: 1.4rem 0 1.4rem 1.1rem; margin-bottom: 3.5rem; }
   .status-note .text-link { grid-column: 1; }
   .performance-chart { margin-top: 1.8rem; }
-  .performance-chart > a { padding: .35rem; }
+  .chart-scroll > a { padding: .35rem; }
   .performance-chart figcaption { padding: 1rem; }
   .measurement-links { gap: .8rem 1.5rem; }
   .terminal-heading, .terminal-body { padding: 1rem; }

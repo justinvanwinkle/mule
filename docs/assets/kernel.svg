@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 1283" role="img" aria-labelledby="title description">
+<title id="title">Performance relative to cpython</title>
+<desc id="description">Logarithmic ratios. Values above one mean faster. Each scenario has one lane per candidate runtime. Failures have no plotted point.</desc>
+<rect width="1120" height="1283" fill="#faf8f3"/>
+<g font-family="system-ui,sans-serif" font-size="14" fill="#202b2b">
+<text x="36" y="37" font-size="11" font-weight="700" letter-spacing="2" fill="#c14c32">MULE / PERFORMANCE</text>
+<text x="36" y="77" font-size="30" font-weight="650">Kernel performance</text>
+<text x="36" y="105" fill="#596564">20261019T011706.939668Z · 5 samples per comparison</text>
+<text x="36" y="132" fill="#596564">Baseline: cpython = 1× · Larger ratios are faster</text>
+<circle cx="42" cy="155" r="5" fill="#c14c32"/><text x="56" y="159" fill="#c14c32" font-weight="650">mule-o2</text>
+<circle cx="340" cy="155" r="5" fill="#267a77"/><text x="354" y="159" fill="#267a77" font-weight="650">sbcl</text>
+<line x1="300.00" y1="180" x2="300.00" y2="1198" stroke="#dedfd8"/>
+<text x="300.00" y="1223" text-anchor="middle" font-size="12" fill="#596564">0.125×</text>
+<line x1="368.89" y1="180" x2="368.89" y2="1198" stroke="#dedfd8"/>
+<text x="368.89" y="1223" text-anchor="middle" font-size="12" fill="#596564">0.25×</text>
+<line x1="437.78" y1="180" x2="437.78" y2="1198" stroke="#dedfd8"/>
+<text x="437.78" y="1223" text-anchor="middle" font-size="12" fill="#596564">0.5×</text>
+<line x1="506.67" y1="180" x2="506.67" y2="1198" stroke="#dedfd8"/>
+<text x="506.67" y="1223" text-anchor="middle" font-size="12" fill="#596564">1×</text>
+<line x1="575.56" y1="180" x2="575.56" y2="1198" stroke="#dedfd8"/>
+<text x="575.56" y="1223" text-anchor="middle" font-size="12" fill="#596564">2×</text>
+<line x1="644.44" y1="180" x2="644.44" y2="1198" stroke="#dedfd8"/>
+<text x="644.44" y="1223" text-anchor="middle" font-size="12" fill="#596564">4×</text>
+<line x1="713.33" y1="180" x2="713.33" y2="1198" stroke="#dedfd8"/>
+<text x="713.33" y="1223" text-anchor="middle" font-size="12" fill="#596564">8×</text>
+<line x1="782.22" y1="180" x2="782.22" y2="1198" stroke="#dedfd8"/>
+<text x="782.22" y="1223" text-anchor="middle" font-size="12" fill="#596564">16×</text>
+<line x1="851.11" y1="180" x2="851.11" y2="1198" stroke="#dedfd8"/>
+<text x="851.11" y="1223" text-anchor="middle" font-size="12" fill="#596564">32×</text>
+<line x1="920.00" y1="180" x2="920.00" y2="1198" stroke="#dedfd8"/>
+<text x="920.00" y="1223" text-anchor="middle" font-size="12" fill="#596564">64×</text>
+<line id="baseline" x1="506.67" y1="180" x2="506.67" y2="1198" stroke="#687775" stroke-width="1.5"/>
+<rect x="24" y="190" width="1072" height="72" fill="#202b2b" opacity=".025"/>
+<text x="36" y="231.0" font-weight="550">account ledger</text>
+<line x1="506.67" y1="213" x2="576.61" y2="213" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="2.02126519781" data-runtime="mule-o2" cx="576.61" cy="213" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 2.02×</title></circle>
+<text x="938" y="218" fill="#c14c32" font-weight="650">2.02×</text>
+<line x1="506.67" y1="239" x2="692.54" y2="239" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="6.4899860827" data-runtime="sbcl" cx="692.54" cy="239" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 6.49×</title></circle>
+<text x="938" y="244" fill="#267a77" font-weight="650">6.49×</text>
+<text x="36" y="303.0" font-weight="550">closure pipeline</text>
+<line x1="506.67" y1="285" x2="513.89" y2="285" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="1.07534401148" data-runtime="mule-o2" cx="513.89" cy="285" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 1.08×</title></circle>
+<text x="938" y="290" fill="#c14c32" font-weight="650">1.08×</text>
+<line x1="506.67" y1="311" x2="780.50" y2="311" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="15.7243632886" data-runtime="sbcl" cx="780.50" cy="311" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 15.7×</title></circle>
+<text x="938" y="316" fill="#267a77" font-weight="650">15.7×</text>
+<rect x="24" y="334" width="1072" height="72" fill="#202b2b" opacity=".025"/>
+<text x="36" y="375.0" font-weight="550">exception validation</text>
+<line x1="506.67" y1="357" x2="545.04" y2="357" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="1.4712093655" data-runtime="mule-o2" cx="545.04" cy="357" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 1.47×</title></circle>
+<text x="938" y="362" fill="#c14c32" font-weight="650">1.47×</text>
+<line x1="506.67" y1="383" x2="698.59" y2="383" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="6.89695513058" data-runtime="sbcl" cx="698.59" cy="383" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 6.9×</title></circle>
+<text x="938" y="388" fill="#267a77" font-weight="650">6.9×</text>
+<text x="36" y="447.0" font-weight="550">expression tree</text>
+<line x1="506.67" y1="429" x2="398.94" y2="429" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="0.338273912138" data-runtime="mule-o2" cx="398.94" cy="429" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 0.338×</title></circle>
+<text x="938" y="434" fill="#c14c32" font-weight="650">0.338×</text>
+<line x1="506.67" y1="455" x2="605.64" y2="455" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="2.70703383406" data-runtime="sbcl" cx="605.64" cy="455" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 2.71×</title></circle>
+<text x="938" y="460" fill="#267a77" font-weight="650">2.71×</text>
+<rect x="24" y="478" width="1072" height="72" fill="#202b2b" opacity=".025"/>
+<text x="36" y="519.0" font-weight="550">graph paths</text>
+<line x1="506.67" y1="501" x2="492.65" y2="501" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="0.868503962106" data-runtime="mule-o2" cx="492.65" cy="501" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 0.869×</title></circle>
+<text x="938" y="506" fill="#c14c32" font-weight="650">0.869×</text>
+<line x1="506.67" y1="527" x2="611.35" y2="527" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="2.86721279761" data-runtime="sbcl" cx="611.35" cy="527" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 2.87×</title></circle>
+<text x="938" y="532" fill="#267a77" font-weight="650">2.87×</text>
+<text x="36" y="591.0" font-weight="550">http routing</text>
+<line x1="506.67" y1="573" x2="426.02" y2="573" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="0.444191975359" data-runtime="mule-o2" cx="426.02" cy="573" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 0.444×</title></circle>
+<text x="938" y="578" fill="#c14c32" font-weight="650">0.444×</text>
+<line x1="506.67" y1="599" x2="502.71" y2="599" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="0.960956515119" data-runtime="sbcl" cx="502.71" cy="599" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 0.961×</title></circle>
+<text x="938" y="604" fill="#267a77" font-weight="650">0.961×</text>
+<rect x="24" y="622" width="1072" height="72" fill="#202b2b" opacity=".025"/>
+<text x="36" y="663.0" font-weight="550">integer accumulation</text>
+<line x1="506.67" y1="645" x2="653.66" y2="645" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="4.3884212713" data-runtime="mule-o2" cx="653.66" cy="645" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 4.39×</title></circle>
+<text x="938" y="650" fill="#c14c32" font-weight="650">4.39×</text>
+<line x1="506.67" y1="671" x2="730.35" y2="671" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="9.49431435887" data-runtime="sbcl" cx="730.35" cy="671" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 9.49×</title></circle>
+<text x="938" y="676" fill="#267a77" font-weight="650">9.49×</text>
+<text x="36" y="735.0" font-weight="550">interval merging</text>
+<line x1="506.67" y1="717" x2="682.27" y2="717" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="5.85289401232" data-runtime="mule-o2" cx="682.27" cy="717" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 5.85×</title></circle>
+<text x="938" y="722" fill="#c14c32" font-weight="650">5.85×</text>
+<line x1="506.67" y1="743" x2="744.27" y2="743" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="10.9209973286" data-runtime="sbcl" cx="744.27" cy="743" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 10.9×</title></circle>
+<text x="938" y="748" fill="#267a77" font-weight="650">10.9×</text>
+<rect x="24" y="766" width="1072" height="72" fill="#202b2b" opacity=".025"/>
+<text x="36" y="807.0" font-weight="550">json tokenizer</text>
+<line x1="506.67" y1="789" x2="655.31" y2="789" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="4.46191497743" data-runtime="mule-o2" cx="655.31" cy="789" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 4.46×</title></circle>
+<text x="938" y="794" fill="#c14c32" font-weight="650">4.46×</text>
+<line x1="506.67" y1="815" x2="743.20" y2="815" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="10.8047976356" data-runtime="sbcl" cx="743.20" cy="815" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 10.8×</title></circle>
+<text x="938" y="820" fill="#267a77" font-weight="650">10.8×</text>
+<text x="36" y="879.0" font-weight="550">kv record parse</text>
+<line x1="506.67" y1="861" x2="603.84" y2="861" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="2.65846431734" data-runtime="mule-o2" cx="603.84" cy="861" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 2.66×</title></circle>
+<text x="938" y="866" fill="#c14c32" font-weight="650">2.66×</text>
+<line x1="506.67" y1="887" x2="569.53" y2="887" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="1.88243127418" data-runtime="sbcl" cx="569.53" cy="887" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 1.88×</title></circle>
+<text x="938" y="892" fill="#267a77" font-weight="650">1.88×</text>
+<rect x="24" y="910" width="1072" height="72" fill="#202b2b" opacity=".025"/>
+<text x="36" y="951.0" font-weight="550">log aggregation</text>
+<line x1="506.67" y1="933" x2="361.94" y2="933" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="0.233124208302" data-runtime="mule-o2" cx="361.94" cy="933" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 0.233×</title></circle>
+<text x="938" y="938" fill="#c14c32" font-weight="650">0.233×</text>
+<line x1="506.67" y1="959" x2="616.79" y2="959" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="3.0285007422" data-runtime="sbcl" cx="616.79" cy="959" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 3.03×</title></circle>
+<text x="938" y="964" fill="#267a77" font-weight="650">3.03×</text>
+<text x="36" y="1023.0" font-weight="550">lru simulation</text>
+<line x1="506.67" y1="1005" x2="430.78" y2="1005" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="0.465997846195" data-runtime="mule-o2" cx="430.78" cy="1005" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 0.466×</title></circle>
+<text x="938" y="1010" fill="#c14c32" font-weight="650">0.466×</text>
+<line x1="506.67" y1="1031" x2="595.37" y2="1031" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="2.4412899768" data-runtime="sbcl" cx="595.37" cy="1031" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 2.44×</title></circle>
+<text x="938" y="1036" fill="#267a77" font-weight="650">2.44×</text>
+<rect x="24" y="1054" width="1072" height="72" fill="#202b2b" opacity=".025"/>
+<text x="36" y="1095.0" font-weight="550">matrix multiply</text>
+<line x1="506.67" y1="1077" x2="692.92" y2="1077" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="6.51447068674" data-runtime="mule-o2" cx="692.92" cy="1077" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 6.51×</title></circle>
+<text x="938" y="1082" fill="#c14c32" font-weight="650">6.51×</text>
+<line x1="506.67" y1="1103" x2="909.37" y2="1103" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="57.5107061344" data-runtime="sbcl" cx="909.37" cy="1103" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 57.5×</title></circle>
+<text x="938" y="1108" fill="#267a77" font-weight="650">57.5×</text>
+<text x="36" y="1167.0" font-weight="550">word frequency</text>
+<line x1="506.67" y1="1149" x2="380.07" y2="1149" stroke="#c14c32" stroke-width="2" opacity=".4"/>
+<circle data-ratio="0.279775344691" data-runtime="mule-o2" cx="380.07" cy="1149" r="5.5" fill="#c14c32" stroke="#faf8f3" stroke-width="1.5"><title>mule-o2: 0.28×</title></circle>
+<text x="938" y="1154" fill="#c14c32" font-weight="650">0.28×</text>
+<line x1="506.67" y1="1175" x2="528.00" y2="1175" stroke="#267a77" stroke-width="2" opacity=".4"/>
+<circle data-ratio="1.23941191822" data-runtime="sbcl" cx="528.00" cy="1175" r="5.5" fill="#267a77" stroke="#faf8f3" stroke-width="1.5"><title>sbcl: 1.24×</title></circle>
+<text x="938" y="1180" fill="#267a77" font-weight="650">1.24×</text>
+<text x="300" y="1251" font-size="10" letter-spacing="1.5" fill="#596564">SLOWER</text>
+<text x="920" y="1251" font-size="10" letter-spacing="1.5" text-anchor="end" fill="#596564">FASTER</text>
+<text x="36" y="1271" font-size="11" fill="#596564">Median ratios · log₂ scale · failures are not timings</text>
+</g></svg>

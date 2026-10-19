@@ -16,20 +16,33 @@ def _ratio(row, metric):
 
 def chart(report, metric):
     rows = [row for row in report["rows"] if row["runtime"] != report["baseline"]]
-    runtime_names = [runtime["name"] for runtime in report["runtimes"] if runtime["name"] != report["baseline"]]
+    runtime_names = [
+        runtime["name"]
+        for runtime in report["runtimes"]
+        if runtime["name"] != report["baseline"]
+    ]
     groups = {}
     for row in rows:
         groups.setdefault(row["case"], []).append(row)
         if row["runtime"] not in runtime_names:
             runtime_names.append(row["runtime"])
-    colors = {name: COLORS[0] if name.lower().startswith("mule") else COLORS[1] if name.lower().startswith("sbcl") else COLORS[2 + index % 2] for index, name in enumerate(runtime_names)}
+    colors = {
+        name: COLORS[0]
+        if name.lower().startswith("mule")
+        else COLORS[1]
+        if name.lower().startswith("sbcl")
+        else COLORS[2 + index % 2]
+        for index, name in enumerate(runtime_names)
+    }
     width = max(1120, max((len(case) for case in groups), default=20) * 8 + 850)
     left, right = width - 820, 200
     top = 190 + max(0, len(runtime_names) - 2) * 24
     group_height = max(64, len(runtime_names) * 26 + 20)
     bottom = top + max(1, len(groups)) * group_height
     height = bottom + 85
-    values = [math.log2(value) for row in rows if (value := _ratio(row, metric)) is not None]
+    values = [
+        math.log2(value) for row in rows if (value := _ratio(row, metric)) is not None
+    ]
     step = max(1, math.ceil((max([1.0, *values]) - min([-1.0, *values])) / 8))
     low = math.floor(min([-1.0, *values]) / step) * step
     high = math.ceil(max([1.0, *values]) / step) * step
@@ -42,17 +55,23 @@ def chart(report, metric):
             f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
             'role="img" aria-labelledby="title description">'
         ),
-        '<title id="title">Performance relative to ' + html.escape(report["baseline"]) + '</title>',
+        '<title id="title">Performance relative to '
+        + html.escape(report["baseline"])
+        + "</title>",
         '<desc id="description">Logarithmic ratios. Values above one mean faster. Each scenario has one lane per candidate runtime. Failures have no plotted point.</desc>',
         f'<rect width="{width}" height="{height}" fill="#faf8f3"/>',
         '<g font-family="system-ui,sans-serif" font-size="14" fill="#202b2b">',
         '<text x="36" y="37" font-size="11" font-weight="700" letter-spacing="2" fill="#c14c32">MULE / PERFORMANCE</text>',
         '<text x="36" y="77" font-size="30" font-weight="650">'
-        + ("Kernel performance" if metric == "kernel_seconds" else "Whole-process performance")
+        + (
+            "Kernel performance"
+            if metric == "kernel_seconds"
+            else "Whole-process performance"
+        )
         + "</text>",
         (
             f'<text x="36" y="105" fill="#596564">{html.escape(report["created_utc"])} · '
-            f'{report.get("options", {}).get("samples", "?")} samples per comparison</text>'
+            f"{report.get('options', {}).get('samples', '?')} samples per comparison</text>"
         ),
         f'<text x="36" y="132" fill="#596564">Baseline: {html.escape(report["baseline"])} = 1× · Larger ratios are faster</text>',
     ]
@@ -60,34 +79,62 @@ def chart(report, metric):
     for index, name in enumerate(runtime_names):
         lx = 42 if index != 1 else 340
         ly = 159 + max(0, index - 1) * 24
-        svg.append(f'<circle cx="{lx}" cy="{ly - 4}" r="5" fill="{colors[name]}"/><text x="{lx + 14}" y="{ly}" fill="{colors[name]}" font-weight="650">{html.escape(name)}</text>')
+        svg.append(
+            f'<circle cx="{lx}" cy="{ly - 4}" r="5" fill="{colors[name]}"/><text x="{lx + 14}" y="{ly}" fill="{colors[name]}" font-weight="650">{html.escape(name)}</text>'
+        )
     for tick in range(low, high + 1, step):
         position = x(tick)
-        svg.append(f'<line x1="{position:.2f}" y1="{top - 10}" x2="{position:.2f}" y2="{bottom}" stroke="#dedfd8"/>')
-        svg.append(f'<text x="{position:.2f}" y="{bottom + 25}" text-anchor="middle" font-size="12" fill="#596564">{2.0 ** tick:.3g}×</text>')
-    svg.append(f'<line id="baseline" x1="{zero:.2f}" y1="{top - 10}" x2="{zero:.2f}" y2="{bottom}" stroke="#687775" stroke-width="1.5"/>')
+        svg.append(
+            f'<line x1="{position:.2f}" y1="{top - 10}" x2="{position:.2f}" y2="{bottom}" stroke="#dedfd8"/>'
+        )
+        svg.append(
+            f'<text x="{position:.2f}" y="{bottom + 25}" text-anchor="middle" font-size="12" fill="#596564">{2.0**tick:.3g}×</text>'
+        )
+    svg.append(
+        f'<line id="baseline" x1="{zero:.2f}" y1="{top - 10}" x2="{zero:.2f}" y2="{bottom}" stroke="#687775" stroke-width="1.5"/>'
+    )
     for index, (case, case_rows) in enumerate(groups.items()):
         gy = top + index * group_height
         if index % 2 == 0:
-            svg.append(f'<rect x="24" y="{gy}" width="{width - 48}" height="{group_height}" fill="#202b2b" opacity=".025"/>')
-        svg.append(f'<text x="36" y="{gy + group_height / 2 + 5}" font-weight="550">{html.escape(case.replace("_", " "))}</text>')
+            svg.append(
+                f'<rect x="24" y="{gy}" width="{width - 48}" height="{group_height}" fill="#202b2b" opacity=".025"/>'
+            )
+        svg.append(
+            f'<text x="36" y="{gy + group_height / 2 + 5}" font-weight="550">{html.escape(case.replace("_", " "))}</text>'
+        )
         for row in case_rows:
             y = gy + 23 + runtime_names.index(row["runtime"]) * 26
             value = _ratio(row, metric)
             color = colors[row["runtime"]]
             if value is None:
                 status = row["status"] if row["status"] != "ok" else "not available"
-                svg.append(f'<text x="{width - right + 18}" y="{y + 4}" font-size="12" fill="#8d4232">{html.escape(status)}</text>')
+                svg.append(
+                    f'<text x="{width - right + 18}" y="{y + 4}" font-size="12" fill="#8d4232">{html.escape(status)}</text>'
+                )
                 continue
             endpoint = x(math.log2(value))
-            svg.append(f'<line x1="{zero:.2f}" y1="{y}" x2="{endpoint:.2f}" y2="{y}" stroke="{color}" stroke-width="2" opacity=".4"/>')
-            svg.append(f'<circle data-ratio="{value:.12g}" data-runtime="{html.escape(row["runtime"])}" cx="{endpoint:.2f}" cy="{y}" r="5.5" fill="{color}" stroke="#faf8f3" stroke-width="1.5"><title>{html.escape(row["runtime"])}: {value:.3g}×</title></circle>')
-            svg.append(f'<text x="{width - right + 18}" y="{y + 5}" fill="{color}" font-weight="650">{value:.3g}×</text>')
+            svg.append(
+                f'<line x1="{zero:.2f}" y1="{y}" x2="{endpoint:.2f}" y2="{y}" stroke="{color}" stroke-width="2" opacity=".4"/>'
+            )
+            svg.append(
+                f'<circle data-ratio="{value:.12g}" data-runtime="{html.escape(row["runtime"])}" cx="{endpoint:.2f}" cy="{y}" r="5.5" fill="{color}" stroke="#faf8f3" stroke-width="1.5"><title>{html.escape(row["runtime"])}: {value:.3g}×</title></circle>'
+            )
+            svg.append(
+                f'<text x="{width - right + 18}" y="{y + 5}" fill="{color}" font-weight="650">{value:.3g}×</text>'
+            )
     if not rows:
-        svg.append(f'<text x="36" y="{top + 35}">No candidate comparisons in this report.</text>')
-    svg.append(f'<text x="{left}" y="{bottom + 53}" font-size="10" letter-spacing="1.5" fill="#596564">SLOWER</text>')
-    svg.append(f'<text x="{width - right}" y="{bottom + 53}" font-size="10" letter-spacing="1.5" text-anchor="end" fill="#596564">FASTER</text>')
-    svg.append(f'<text x="36" y="{height - 12}" font-size="11" fill="#596564">Median ratios · log₂ scale · failures are not timings</text>')
+        svg.append(
+            f'<text x="36" y="{top + 35}">No candidate comparisons in this report.</text>'
+        )
+    svg.append(
+        f'<text x="{left}" y="{bottom + 53}" font-size="10" letter-spacing="1.5" fill="#596564">SLOWER</text>'
+    )
+    svg.append(
+        f'<text x="{width - right}" y="{bottom + 53}" font-size="10" letter-spacing="1.5" text-anchor="end" fill="#596564">FASTER</text>'
+    )
+    svg.append(
+        f'<text x="36" y="{height - 12}" font-size="11" fill="#596564">Median ratios · log₂ scale · failures are not timings</text>'
+    )
     svg.append("</g></svg>")
     return "\n".join(svg)
 
@@ -121,14 +168,25 @@ def dashboard(report):
     baseline = html.escape(report["baseline"])
     stamp = html.escape(report["created_utc"])
     platform = html.escape(report["platform"])
-    context = {key: report[key] for key in ("platform", "harness_python", "affinity", "options") if key in report}
+    context = {
+        key: report[key]
+        for key in ("platform", "harness_python", "affinity", "options")
+        if key in report
+    }
     provenance = "".join(
-        '<article><h3>' + html.escape(runtime["name"]) + '</h3><pre>'
-        + html.escape(json.dumps(runtime, indent=2)) + '</pre></article>'
+        "<article><h3>"
+        + html.escape(runtime["name"])
+        + "</h3><pre>"
+        + html.escape(json.dumps(runtime, indent=2))
+        + "</pre></article>"
         for runtime in report["runtimes"]
     )
     jobs = report.get("options", {}).get("jobs", 1)
-    concurrency = f'{jobs} concurrent scenario jobs; timings may include contention.' if jobs > 1 else 'One scenario job.'
+    concurrency = (
+        f"{jobs} concurrent scenario jobs; timings may include contention."
+        if jobs > 1
+        else "One scenario job."
+    )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mule performance · {stamp}</title>

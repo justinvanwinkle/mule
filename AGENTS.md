@@ -67,7 +67,8 @@ Lisp implementations, not the Python sources.
 was `2d5e473ee` with uncommitted tracked changes. Mule still trails CPython on
 several workloads. Raw samples, variation, commands, input sizes, hashes, and
 revision identity are in the [published results](docs/assets/results.json).
-The [full report](docs/assets/index.html) also includes whole-process timings.
+The [report HTML source](docs/assets/index.html) also includes whole-process timings.
+Use the [local site preview](docs/README.md#preview-locally) to view the rendered report.
 
 Reproduce the comparison or inspect the recorded history:
 

@@ -59,8 +59,12 @@ def test_svg_escapes_labels_and_removes_redundant_baseline_points():
     source = report((2,))
     source["rows"][0]["case"] = 'parse <tag> & "value"'
     source["rows"].append(
-        {"case": "baseline", "runtime": "cpython", "status": "ok",
-         "speedup": {"kernel_seconds": 1}}
+        {
+            "case": "baseline",
+            "runtime": "cpython",
+            "status": "ok",
+            "speedup": {"kernel_seconds": 1},
+        }
     )
     root = ET.fromstring(chart(source, "kernel_seconds"))
     assert len(root.findall(".//*[@data-ratio]")) == 1
