@@ -849,6 +849,9 @@ def _collect_closed_lambdas(lambdas) -> dict[Lambda, tuple[Ref, ...]]:
 class _ImportedModuleOrigin(NodeVisitor, LeafVisitor):
     """Resolve the module name an imported module object lvar originates from."""
 
+    def __init__(self):
+        self._active_aliases: set[LambdaVar] = set()
+
     def visit_Node(self, node):
         return None
 
@@ -868,15 +871,20 @@ class _ImportedModuleOrigin(NodeVisitor, LeafVisitor):
         return node.leaf.accept(self)
 
     def visit_LambdaVar(self, leaf: LambdaVar):
+        if leaf.home is not None and leaf in leaf.home.vars:
+            return None
+        if leaf in self._active_aliases:
+            return None
         if len(leaf.sets) != 1:
             return None
         val = leaf.sets[0].value
         if val is None or len(val.uses) != 1:
             return None
-        return val.uses[0].accept(self)
-
-
-_IMPORTED_MODULE_ORIGIN = _ImportedModuleOrigin()
+        self._active_aliases.add(leaf)
+        try:
+            return val.uses[0].accept(self)
+        finally:
+            self._active_aliases.remove(leaf)
 
 
 class _ImportBindingStores(NodeVisitor, LeafVisitor):
@@ -885,6 +893,7 @@ class _ImportBindingStores(NodeVisitor, LeafVisitor):
     def __init__(self, imports: dict[str, tuple[str, str]]):
         self.imports = imports
         self._store: Set | None = None
+        self._active_aliases: set[LambdaVar] = set()
 
     def visit_Node(self, node):
         return None
@@ -919,7 +928,7 @@ class _ImportBindingStores(NodeVisitor, LeafVisitor):
         if node.fun_info.name == "%getattr" and len(node.args) == 1:
             if len(node.args[0].uses) != 1:
                 return None
-            mod_name = node.args[0].uses[0].accept(_IMPORTED_MODULE_ORIGIN)
+            mod_name = node.args[0].uses[0].accept(_ImportedModuleOrigin())
             if mod_name is not None:
                 return mod_name, linked(node.info, node, "info").name
         return None
@@ -930,26 +939,35 @@ class _ImportBindingStores(NodeVisitor, LeafVisitor):
     def visit_LambdaVar(self, leaf: LambdaVar):
         store = self._store
         self._store = None
-        if store is not None:
-            if (
-                store.value is None
-                or len(leaf.sets) != 1
-                or leaf.sets[0] is not store
-                or (leaf.home is not None and leaf in leaf.home.vars)
-            ):
+        # Parameter stores may be annotation assertions of the incoming value,
+        # not definitions. Alias cycles likewise establish no import origin.
+        if leaf.home is not None and leaf in leaf.home.vars:
+            return None
+        if leaf in self._active_aliases:
+            return None
+        self._active_aliases.add(leaf)
+        try:
+            if store is not None:
+                if (
+                    store.value is None
+                    or len(leaf.sets) != 1
+                    or leaf.sets[0] is not store
+                ):
+                    return None
+                if len(store.value.uses) != 1:
+                    return None
+                origin = store.value.uses[0].accept(self)
+                if origin is not None:
+                    self.imports[leaf.name] = origin
                 return None
-            if len(store.value.uses) != 1:
+            if len(leaf.sets) != 1:
                 return None
-            origin = store.value.uses[0].accept(self)
-            if origin is not None:
-                self.imports[leaf.name] = origin
-            return None
-        if len(leaf.sets) != 1:
-            return None
-        val = leaf.sets[0].value
-        if val is None or len(val.uses) != 1:
-            return None
-        return val.uses[0].accept(self)
+            val = leaf.sets[0].value
+            if val is None or len(val.uses) != 1:
+                return None
+            return val.uses[0].accept(self)
+        finally:
+            self._active_aliases.remove(leaf)
 
 
 def analyze(

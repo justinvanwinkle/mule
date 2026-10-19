@@ -10,6 +10,7 @@ optimizer proves operand types.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from threading import local
 
 from mule import ast
 
@@ -35,7 +36,13 @@ from .ctype import (
 from .knownfun import defknown, fun_info
 from .node import CallKind, GlobalVar, LeafVisitor, NodeVisitor, Ref
 
-_FLOW_PROPAGATION = False
+
+class _DerivationMode(local):
+    def __init__(self):
+        self.active = False
+
+
+_DERIVATION_MODE = _DerivationMode()
 _PROTOCOL_PREFIXES = (
     "mule_sequences_",
     "mule_format_",
@@ -49,13 +56,12 @@ _PROTOCOL_PREFIXES = (
 def flow_propagation():
     """Defer operand-dependent ``derive_type`` hooks while ``constraint.py``
     propagates per-context flow facts and user-code invalidation."""
-    global _FLOW_PROPAGATION
-    previous = _FLOW_PROPAGATION
-    _FLOW_PROPAGATION = True
+    previous = _DERIVATION_MODE.active
+    _DERIVATION_MODE.active = True
     try:
         yield
     finally:
-        _FLOW_PROPAGATION = previous
+        _DERIVATION_MODE.active = previous
 
 
 class _UnmutatedIntRef(NodeVisitor, LeafVisitor):
@@ -77,7 +83,7 @@ _UNMUTATED_INT_REF = _UnmutatedIntRef()
 
 def derive_builtin_call_type(node) -> ValueType:
     """Return ``INTEGER`` for an unmutated ``int(...)`` call outside flow propagation."""
-    if _FLOW_PROPAGATION:
+    if _DERIVATION_MODE.active:
         return UNKNOWN
     if node.kind not in (CallKind.FULL, CallKind.GUARDED):
         return UNKNOWN
@@ -195,7 +201,7 @@ def _arg_type(lvar) -> ValueType:
 
 
 def _derive_getslice(node) -> ValueType | None:
-    if _FLOW_PROPAGATION:
+    if _DERIVATION_MODE.active:
         return None
     receiver_type = _arg_type(node.args[0])
     if any(_arg_type(arg).may_be_unbound for arg in node.args):
@@ -210,7 +216,7 @@ def _derive_getslice(node) -> ValueType | None:
 
 
 def _derive_build_list(node) -> ValueType | None:
-    if _FLOW_PROPAGATION:
+    if _DERIVATION_MODE.active:
         return None
     result: ValueType = EMPTY_LIST_TYPE
     for arg in node.args:
@@ -219,7 +225,7 @@ def _derive_build_list(node) -> ValueType | None:
 
 
 def _derive_build_tuple(node) -> ValueType | None:
-    if _FLOW_PROPAGATION:
+    if _DERIVATION_MODE.active:
         return None
     arity = len(node.args)
     if 0 < arity <= 64:
@@ -230,7 +236,7 @@ def _derive_build_tuple(node) -> ValueType | None:
 
 
 def _derive_unpack(node) -> ValueType | None:
-    if _FLOW_PROPAGATION:
+    if _DERIVATION_MODE.active:
         return None
     arity = _arg_type(node.args[1]).exact_integer()
     if arity is not None and arity >= 0:
@@ -248,7 +254,7 @@ BINARY = {
         "call",
         derive_type=lambda node, op=operator: (
             None
-            if _FLOW_PROPAGATION
+            if _DERIVATION_MODE.active
             else _arg_type(node.args[0]).binary(op, _arg_type(node.args[1]))
         ),
     )
@@ -261,7 +267,7 @@ INPLACE_BINARY = {
         "unsafe",
         derive_type=lambda node, op=operator: (
             None
-            if _FLOW_PROPAGATION
+            if _DERIVATION_MODE.active
             else _arg_type(node.args[0]).binary(op, _arg_type(node.args[1]))
         ),
     )
@@ -272,7 +278,7 @@ UNARY = {
         f"%unary_{operator.name.lower()}",
         "call",
         derive_type=lambda node, op=operator: (
-            None if _FLOW_PROPAGATION else _arg_type(node.args[0]).unary(op)
+            None if _DERIVATION_MODE.active else _arg_type(node.args[0]).unary(op)
         ),
     )
     for operator in ast.UnaryOperator
@@ -283,7 +289,7 @@ COMPARE = {
         "call",
         derive_type=lambda node, op=operator: (
             None
-            if _FLOW_PROPAGATION
+            if _DERIVATION_MODE.active
             else _arg_type(node.args[0]).comparison(op, _arg_type(node.args[1]))
         ),
     )
@@ -330,7 +336,7 @@ UNPACK_REF = defknown(
     "%unpack_ref",
     derive_type=lambda node: (
         None
-        if _FLOW_PROPAGATION
+        if _DERIVATION_MODE.active
         else _arg_type(node.args[0]).getitem_type(_arg_type(node.args[1]))
     ),
 )
@@ -338,7 +344,8 @@ FORMAT = defknown("%format", "call", derive_type=lambda node: TEXT_TYPE)
 
 # Guarded counted iteration over a builtin range.
 RANGE_PREPARE = defknown(
-    "%range_prepare", derive_type=lambda node: None if _FLOW_PROPAGATION else BOOLEAN
+    "%range_prepare",
+    derive_type=lambda node: None if _DERIVATION_MODE.active else BOOLEAN,
 )
 RANGE_AVAILABLE = defknown(
     "%range_available", "flushable", derive_type=lambda node: BOOLEAN
@@ -347,7 +354,7 @@ RANGE_ADVANCE = defknown("%range_advance", "unsafe")
 SEQUENCE_AVAILABLE = defknown(
     "%sequence_available",
     "unsafe",
-    derive_type=lambda node: None if _FLOW_PROPAGATION else BOOLEAN,
+    derive_type=lambda node: None if _DERIVATION_MODE.active else BOOLEAN,
 )
 GETSLICE = defknown("%getslice", "call", "unsafe", derive_type=_derive_getslice)
 LEN = defknown("len", "call", "unsafe")
@@ -355,7 +362,7 @@ LEN = defknown("len", "call", "unsafe")
 _PROTOCOL_DERIVE_TYPES = {
     "getitem": lambda node: (
         None
-        if _FLOW_PROPAGATION
+        if _DERIVATION_MODE.active
         else _arg_type(node.args[0]).getitem_type(_arg_type(node.args[1]))
     ),
     "setitem": lambda node: NONE_TYPE,

@@ -5625,43 +5625,6 @@ class _ContainsYield(ast.Visitor):
         return node.clauses[0].iterable.accept(self)
 
 
-class _ContainsAsync(ast.Visitor):
-    """Whether an expanded generator-expression body awaits or iterates
-    asynchronously, making the generator expression an async generator."""
-
-    def visit_Node(self, node):
-        for child in node.children():
-            if child.accept(self):
-                return True
-        return False
-
-    def visit_Await(self, node):
-        return True
-
-    def visit_For(self, node):
-        return node.is_async or self.visit_Node(node)
-
-    def visit_With(self, node):
-        return node.is_async or self.visit_Node(node)
-
-    def visit_FunctionDefinition(self, node):
-        return False
-
-    def visit_Lambda(self, node):
-        return False
-
-    def visit_ClassDefinition(self, node):
-        return False
-
-    def visit_Comprehension(self, node):
-        if node.kind == ast.ComprehensionKind.GENERATOR:
-            return node.clauses[0].iterable.accept(self)
-        return any(clause.is_async for clause in node.clauses) or self.visit_Node(node)
-
-
-_CONTAINS_ASYNC = _ContainsAsync()
-
-
 def _comprehension_assignments(node):
     """Names assignment expressions in a comprehension bind."""
     collector = _AssignmentExpressionNames()

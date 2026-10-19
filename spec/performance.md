@@ -110,6 +110,42 @@ before and after. Inclusive regions overlap and cannot be added. These counts
 support continuing with ordinary-class constructor and descriptor-aware field
 specialization rather than attributing the remaining cost to cursor arithmetic.
 
+## Guarded unbound method calls, 2026-10-19
+
+Resolved class-qualified calls such as `property.__set__(descriptor, instance,
+value)` now use guarded internal entries as bound method calls already did.
+The helper chooses the receiver shape once and checks only candidates whose
+signature accepts that shape. Attribute resolution remains observable; the
+guard checks the actual resulting callable and passes its actual namespace,
+closure and defaults. This is invocation specialization, not direct slot access.
+
+Both controlled builds include the preceding constructor staging and the
+worker-local type-derivation mode repair described in `compiler-gaps.md`.
+Only guarded unbound-call lowering and its shape-partitioned dispatch differ.
+The input sets, five-sample methodology, CPU affinity, `-O3` and no-LTO settings
+match the experiment above. Median seconds per complete input pass are:
+
+| Input group | Before seconds | After seconds | Before / after |
+| --- | ---: | ---: | ---: |
+| Small-program corpus | 0.200366 | 0.198532 | 1.009 |
+| Parser modules | 0.764915 | 0.751739 | 1.018 |
+| Compiler modules | 9.732363 | 9.370380 | 1.039 |
+
+A separate one-million-call `Base.step(instance, value)` probe produced the
+validated result 1,000,000 in every run. Its five alternating process samples
+had kernel medians of 0.171629 seconds before and 0.160023 seconds after
+(1.073 times as fast). This isolates one invocation shape, not a whole parser
+or SBCL comparison. GDB also confirmed internal-body entry through a real
+member-descriptor assignment chain, and native AST traversal still matched the
+hosted parser across all 98 inputs for node kinds, order and source spans.
+
+An earlier mixed-candidate dispatch improved that isolated call probe but did
+not improve parser timings. It was replaced by separate eligible bound and
+unbound candidate chains before these final measurements. Raw final samples,
+input hashes and executable hashes are in
+`/tmp/mule-method-flow-fixed-measurement.json`. The small corpus difference is
+not a broad performance claim; class/descriptor lookup remains a larger gap.
+
 ## Initial observations, 2026-10-14
 
 Host: AMD Ryzen 9 9955HX, Linux x86-64, CPython 3.14.7 free-threading build,

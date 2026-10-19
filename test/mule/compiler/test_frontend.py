@@ -14,6 +14,7 @@ from mule.compiler.node import (
     NodeVisitor,
     Ref,
 )
+from test.mule.compiler.test_exception_groups import compare
 
 
 def lower(source, filename="<unknown>"):
@@ -120,6 +121,37 @@ def test_generator_expression_async_flag_respects_expression_scope(
 
     assert bool(outer.code.flags & 512) is asynchronous
     assert bool(outer.code.flags & 32) is not asynchronous
+
+
+def test_async_generator_lambda_default_runs_in_enclosing_scope(tmp_path):
+    compare(
+        tmp_path,
+        """
+events = []
+async def obtain():
+    events.append('default')
+    return len(events)
+async def make():
+    return (lambda value=await obtain(): events.append('body') or value
+            for _ in (0, 1))
+try:
+    make().send(None)
+except StopIteration as done:
+    generator = done.value
+print(events)
+for _ in (0, 1):
+    try:
+        generator.__anext__().send(None)
+    except StopIteration as done:
+        function = done.value
+    print(events)
+    print(function(), events)
+try:
+    generator.__anext__().send(None)
+except StopAsyncIteration:
+    print('finished')
+""",
+    )
 
 
 def class_definitions(lambda_):
