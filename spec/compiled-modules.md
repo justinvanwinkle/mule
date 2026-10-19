@@ -429,6 +429,43 @@ builtin implementation classes reject the operation. SBCL
 inherited layout metadata; Python requires this additional namespace cleanup
 when decorators replace a class. Descriptor mutation remains compiled Python.
 
+### Dataclass initializer staging
+
+`dataclasses._init_fn` captures parameter and field-initialization metadata when
+each decorator runs. The installed compiled Python initializer reads immutable
+tuples of field names, parameter positions, defaults, factories and initialization
+roles rather than rereading public mutable `Field` objects for every instance.
+Replacing a `Field` attribute afterward does not rewrite an existing initializer.
+A newly decorated subclass takes its own snapshot of its effective fields,
+including inherited fields as they exist at that decoration.
+
+Default objects and factory callables retain their identities; defaults are not
+copied and factories still run for each construction that needs them. Argument
+binding completes before any factory or setter runs. Both the positional and
+keyword paths execute field initialization in declaration order, including
+interleaved non-init factories. Frozen assignment still invokes the captured
+`object.__setattr__`, ordinary assignment still invokes `setattr`, and descriptors
+and `__post_init__` retain their observable effects. InitVars are passed to
+post-init rather than stored as instance fields.
+
+SBCL `src/pcl/ctor.lisp`, `constructor-function-form` and `slot-init-forms`,
+computes an initialization operation from class, argument and slot metadata,
+retaining custom initialization and slot-access methods. Mule performs this
+first staging step in compiled Python: its ahead-of-time compiler does not yet
+generate a new fixed-signature initializer from the runtime decorator result.
+The installed closure therefore still binds general calls and iterates its
+captured initialization tuples. This is not direct-layout constructor
+specialization or a Rust dataclass implementation.
+
+The canonical globals-wrapper cache in `_object` is allocated on its first
+actual use, after validating the namespace. `_sequences` imports `_object`
+before its dictionary-construction protocol is bound, so allocating that cache
+as a module-level dictionary would create an import-initialization cycle.
+SBCL `src/pcl/ctor.lisp`, `constructor-function-form`, likewise delays its
+standard initialization-method cache until the required generic functions
+exist. Mule's adaptation delays only the existing cache allocation; it adds no
+environment-dependent path or second cache.
+
 ### Unicode character names
 
 `unicodedata.lookup` searches generated Unicode 16 canonical names, formal

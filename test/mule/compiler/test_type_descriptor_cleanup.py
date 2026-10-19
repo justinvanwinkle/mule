@@ -218,7 +218,9 @@ for invoke in (lambda: Value(1), lambda: Value(1, 2, first=3),
 
 
 @pytest.mark.integration
-def test_dataclass_subclass_snapshots_shared_metadata_and_preserves_default_identity(tmp_path):
+def test_dataclass_subclass_snapshots_shared_metadata_and_preserves_default_identity(
+    tmp_path,
+):
     compare(
         tmp_path,
         """
@@ -250,5 +252,58 @@ Identity.__dataclass_fields__['value'].default = Marker()
 first, second = Identity(), Identity()
 print(first.value is marker, second.value is marker)
 print(first.generated, second.generated)
+""",
+    )
+
+
+@pytest.mark.integration
+def test_dataclass_subclass_captures_generated_default_binding_after_metadata_mutation(
+    tmp_path,
+):
+    compare(
+        tmp_path,
+        """
+import dataclasses
+from dataclasses import dataclass
+events = []
+def factory():
+    events.append('factory')
+    return 13
+@dataclass
+class Base:
+    value: int = 7
+Base.__dataclass_fields__['value'].default_factory = factory
+@dataclass
+class Child(Base):
+    pass
+print(Child().value is factory, Child(value=7).value, events)
+print(Child(dataclasses._HAS_DEFAULT_FACTORY).value, events)
+""",
+    )
+
+
+@pytest.mark.integration
+def test_dataclass_initializer_retains_initvars_and_factory_sentinel_behavior(tmp_path):
+    compare(
+        tmp_path,
+        """
+import dataclasses
+from dataclasses import dataclass, field, InitVar
+events = []
+def factory():
+    events.append('factory')
+    return len(events)
+@dataclass
+class Value:
+    generated: int = field(default_factory=factory)
+    seed: InitVar[int] = 3
+    keyword: InitVar[str] = field(kw_only=True, default='default')
+    def __post_init__(self, seed, keyword):
+        self.seen = seed, keyword
+Value.__dataclass_fields__['seed']._field_type = dataclasses._FIELD
+Value.__dataclass_fields__['keyword'].default = 'changed'
+first = Value()
+second = Value(dataclasses._HAS_DEFAULT_FACTORY, 4, keyword='supplied')
+print(first.generated, first.seen, second.generated, second.seen, events)
 """,
     )

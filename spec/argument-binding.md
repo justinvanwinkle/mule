@@ -83,17 +83,17 @@ argument view. Existing positional native constructor callbacks retain their
 fast path for complete fixed signatures. Optional or variadic constructors must
 use the general binding path rather than incorrectly applying a fixed count.
 
-This batch covers defaults, explicit keyword calls, positional-only and
-keyword-only parameters, and positional rest parameters. Call-site iterable and
-mapping expansion and `**kwargs` parameters remain explicit unsupported boundaries
-until the mapping and call-expansion protocols are implemented.
+Binding covers defaults, explicit keyword calls, positional-only and keyword-only
+parameters, positional rest parameters, and `**kwargs` collection. The external
+entry accepts the borrowed argument view after call-site expansion; expansion
+itself is a separate sequence/mapping operation.
 
 ## Implemented boundaries and checks
 
 Generated binders support fixed positional-only, positional-or-keyword, required
-and optional keyword-only, and positional rest parameters. Both positional and
-keyword defaults are captured on each function object. Failed default evaluation
-does not publish a replacement definition. Captured values are owned and released
+and optional keyword-only, positional rest, and keyword rest parameters. Both
+positional and keyword defaults are captured on each function object. Failed
+default evaluation does not publish a replacement definition. Captured values are owned and released
 with the function, including partial-definition failure and repeated definitions.
 Unknown names, duplicate binding, too many positional arguments, and missing
 required parameters raise catchable TypeError before the function body executes.
@@ -114,11 +114,11 @@ before the internal body. Missing optional arguments are fetched from the actual
 callable only on the identity-guarded branch. Those calls avoid the normalized
 argument tuple. Direct calls with omitted defaults currently use the unspecialized
 internal entry rather than inferring specialized ranges from captured values.
-General and variadic calls use the compiled binder and directly invoke the
-internal body. Only a positional rest parameter requires a new tuple, as required
-by Python's observable rest-argument semantics. General binding happens before
-annotation checks in the body; statically known annotation
-contradictions in defaults and proven keyword calls also produce compile errors.
+Calls that do not fit the generated positional entry use the compiled binder
+and directly invoke the internal body. Positional rest parameters receive a tuple;
+keyword rest parameters receive a fresh dictionary, including for keyword-free
+calls. General binding happens before annotation checks in the body; statically
+known annotation contradictions in defaults and proven keyword calls also produce compile errors.
 
 Tests cover source evaluation order, mutable captured defaults, None defaults,
 repeated definitions, binding errors, positional rest tuples, imported functions,
