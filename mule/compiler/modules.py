@@ -1,5 +1,7 @@
 """Statically link Python modules, preserving separate runtime namespaces."""
 
+import os
+import sys
 import tomllib
 from collections import deque
 from dataclasses import dataclass
@@ -18,8 +20,8 @@ from .ctype import (
 from .inputs import directory_entries, directory_exists, read_source, source_exists
 from .ir1opt import constant_literal
 from .ir1tran_lambda import lambda_blocks
-from .ir1util import class_method_definitions, known_calls, made_lambda
-from .locall import _ImportBindingStores, _PROTOCOL_PREFIXES, global_bindings
+from .ir1util import class_method_definitions, known_calls
+from .locall import _PROTOCOL_PREFIXES, _ImportBindingStores, global_bindings
 from .main import Compilation, compile_toplevel, ir1_phases
 from .node import Combination, GlobalVar, LeafVisitor, NodeVisitor, Ref, linked
 

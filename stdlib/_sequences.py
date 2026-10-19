@@ -2231,7 +2231,7 @@ class BytesStorage:
             return (_bytes_slice_result(self, 0, length), b"", b"")
         return (
             byte_copy(self, 0, position),
-            sep if is_instance(sep, bytes) else bytes_from_values(needle),
+            sep,
             byte_copy(self, position + size, length - position - size),
         )
 
@@ -2246,7 +2246,7 @@ class BytesStorage:
             return (b"", b"", _bytes_slice_result(self, 0, length))
         return (
             byte_copy(self, 0, position),
-            sep if is_instance(sep, bytes) else bytes_from_values(needle),
+            sep,
             byte_copy(self, position + size, length - position - size),
         )
 

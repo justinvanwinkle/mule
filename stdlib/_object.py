@@ -87,11 +87,11 @@ def _bytes_special(value):
     owner = type_of(value)
     method = class_lookup_default(owner, "__bytes__", missing)
     if method is missing:
-        return False, None
+        return False, b""
     try:
         method = bind_instance_attribute(method, value, owner)
     except AttributeError:
-        return False, None
+        return False, b""
     result = method()
     if not is_instance(result, bytes):
         raise TypeError(f"__bytes__ returned non-bytes (type {type_of(result).__name__})")

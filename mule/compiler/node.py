@@ -171,9 +171,7 @@ class Ref(ValuedNode):
 
     __slots__ = ("allow_unbound", "final", "leaf")
 
-    def __init__(
-        self, lexenv, source, leaf: Leaf, *, final=False, allow_unbound=False
-    ):
+    def __init__(self, lexenv, source, leaf: Leaf, *, final=False, allow_unbound=False):
         super().__init__(lexenv, source)
         self.leaf = leaf
         self.final = final

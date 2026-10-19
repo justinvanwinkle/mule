@@ -98,6 +98,7 @@ _MULE_NATIVE_RETURN_TYPES: dict[str, ValueType] = {
     "byte_length": IntegerType(0, (1 << 48) - 1),
     "read_byte": IntegerType(0, 255),
     "identity": INTEGER,
+    "typed_value": UNKNOWN,
     "is_class": BOOLEAN,
     "is_subclass": BOOLEAN,
     "is_instance": BOOLEAN,
@@ -849,6 +850,9 @@ def _collect_closed_lambdas(lambdas) -> dict[Lambda, tuple[Ref, ...]]:
 class _ImportedModuleOrigin(NodeVisitor, LeafVisitor):
     """Resolve the module name an imported module object lvar originates from."""
 
+    def __init__(self):
+        self._seen: set[LambdaVar] = set()
+
     def visit_Node(self, node):
         return None
 
@@ -868,15 +872,16 @@ class _ImportedModuleOrigin(NodeVisitor, LeafVisitor):
         return node.leaf.accept(self)
 
     def visit_LambdaVar(self, leaf: LambdaVar):
-        if len(leaf.sets) != 1:
+        if len(leaf.sets) != 1 or leaf in self._seen:
             return None
         val = leaf.sets[0].value
         if val is None or len(val.uses) != 1:
             return None
-        return val.uses[0].accept(self)
-
-
-_IMPORTED_MODULE_ORIGIN = _ImportedModuleOrigin()
+        self._seen.add(leaf)
+        try:
+            return val.uses[0].accept(self)
+        finally:
+            self._seen.discard(leaf)
 
 
 class _ImportBindingStores(NodeVisitor, LeafVisitor):
@@ -885,6 +890,7 @@ class _ImportBindingStores(NodeVisitor, LeafVisitor):
     def __init__(self, imports: dict[str, tuple[str, str]]):
         self.imports = imports
         self._store: Set | None = None
+        self._seen: set[LambdaVar] = set()
 
     def visit_Node(self, node):
         return None
@@ -919,7 +925,7 @@ class _ImportBindingStores(NodeVisitor, LeafVisitor):
         if node.fun_info.name == "%getattr" and len(node.args) == 1:
             if len(node.args[0].uses) != 1:
                 return None
-            mod_name = node.args[0].uses[0].accept(_IMPORTED_MODULE_ORIGIN)
+            mod_name = node.args[0].uses[0].accept(_ImportedModuleOrigin())
             if mod_name is not None:
                 return mod_name, linked(node.info, node, "info").name
         return None
@@ -940,16 +946,24 @@ class _ImportBindingStores(NodeVisitor, LeafVisitor):
                 return None
             if len(store.value.uses) != 1:
                 return None
-            origin = store.value.uses[0].accept(self)
+            self._seen.add(leaf)
+            try:
+                origin = store.value.uses[0].accept(self)
+            finally:
+                self._seen.discard(leaf)
             if origin is not None:
                 self.imports[leaf.name] = origin
             return None
-        if len(leaf.sets) != 1:
+        if len(leaf.sets) != 1 or leaf in self._seen:
             return None
         val = leaf.sets[0].value
         if val is None or len(val.uses) != 1:
             return None
-        return val.uses[0].accept(self)
+        self._seen.add(leaf)
+        try:
+            return val.uses[0].accept(self)
+        finally:
+            self._seen.discard(leaf)
 
 
 def analyze(
@@ -1089,9 +1103,7 @@ def analyze(
                 if any(param is not UNKNOWN for param in partial_params):
                     parameters[lambda_, "fixnum"] = partial_params
         else:
-            gen_params = [
-                binding_types.get(kind, UNKNOWN) for kind in signature.kinds
-            ]
+            gen_params = [binding_types.get(kind, UNKNOWN) for kind in signature.kinds]
             if (
                 lambda_.vars
                 and lambda_.name.startswith(_PROTOCOL_PREFIXES)
@@ -1425,8 +1437,6 @@ def analyze(
                                 parameters[target, "general"] = tuple(updated)
                                 narrowed_targets.add(target)
                                 changed = True
-                if not call.proven and target not in closed_lambdas:
-                    continue
                 raw_domains = tuple(
                     domain
                     if (domain := type_.dispatch_domain()) is not None
