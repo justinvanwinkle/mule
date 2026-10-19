@@ -1701,35 +1701,55 @@ class ModuleGenerator:
             *(f"ptr %arg.{i}" for i in range(arity)),
         ]
         fallback_args = ", ".join(params)
+        chains = []
+        for bound, shape in ((True, "bound"), (False, "unbound")):
+            candidates = []
+            for function in functions:
+                order = function.call_order(keywords, arity, receiver=bound)
+                if order is not None:
+                    candidates.append((function, order))
+            chains.append((bound, shape, candidates))
+        targets = tuple(
+            f"resolve.{shape}" if candidates else "fallback"
+            for _bound, shape, candidates in chains
+        )
         lines = [
             f"define internal ptr {symbol}({', '.join(params)}) {{",
             "entry:",
             "  %fn.globals.slot = alloca ptr",
             "  %bound = icmp ne ptr %receiver, null",
-            "  br i1 %bound, label %resolve, label %fallback",
-            "resolve:",
-            "  %entry.fn = call ptr @mule_method_entry(ptr %callable, ptr %fn.globals.slot)",
-            "  br label %check.0",
+            f"  br i1 %bound, label %{targets[0]}, label %{targets[1]}",
         ]
         need_failed_block = False
-        for candidate_index, function in enumerate(functions):
-            order = function.call_order(keywords, arity, receiver=True)
-            next_label = (
-                f"check.{candidate_index + 1}"
-                if candidate_index + 1 < len(functions)
-                else "fallback"
-            )
-            direct_label = f"direct.{candidate_index}"
-            lines.extend(
-                [
-                    f"check.{candidate_index}:",
-                    f"  %match.{candidate_index} = icmp eq ptr %entry.fn, {self.functions[function]}",
-                    f"  br i1 %match.{candidate_index}, label %{direct_label}, label %{next_label}",
-                    f"{direct_label}:",
-                ]
-            )
+
+        def emit_invoke(function, order, variant_index, bound):
+            nonlocal need_failed_block
+            lines.append(f"direct.{variant_index}:")
+            available = []
+            for pos, idx in enumerate(order):
+                if idx < -1:
+                    lines.extend(
+                        [
+                            f"  %def.{variant_index}.{pos} = call ptr @mule_function_default(ptr %callable, i32 {-2 - idx})",
+                            f"  %def.available.{variant_index}.{pos} = icmp ne ptr %def.{variant_index}.{pos}, null",
+                        ]
+                    )
+                    available.append(f"%def.available.{variant_index}.{pos}")
+            if available:
+                ready = available[0]
+                for offset, present in enumerate(available[1:]):
+                    combined = f"%defaults.available.{variant_index}.{offset}"
+                    lines.append(f"  {combined} = and i1 {ready}, {present}")
+                    ready = combined
+                lines.extend(
+                    [
+                        f"  br i1 {ready}, label %defaults.ready.{variant_index}, label %fallback",
+                        f"defaults.ready.{variant_index}:",
+                    ]
+                )
             if (
-                function.name == "mule_sequences_mule_fn_ListStorage.append"
+                bound
+                and function.name == "mule_sequences_mule_fn_ListStorage.append"
                 and order
                 == (
                     -1,
@@ -1738,34 +1758,35 @@ class ModuleGenerator:
             ):
                 lines.extend(
                     [
-                        f"  %append.res.{candidate_index} = call ptr @mule_storage_append(ptr %receiver, ptr %arg.0)",
+                        f"  %append.res.{variant_index} = call ptr @mule_storage_append(ptr %receiver, ptr %arg.0)",
                         "  call void @mule.fast.release(ptr %receiver)",
                         "  call void @mule.fast.release(ptr %arg.0)",
-                        f"  ret ptr %append.res.{candidate_index}",
+                        f"  ret ptr %append.res.{variant_index}",
                     ]
                 )
-                continue
-            if function.name == "mule_sequences_mule_fn_ListStorage.pop" and order == (
-                -1,
-                -2,
+                return
+            if (
+                bound
+                and function.name == "mule_sequences_mule_fn_ListStorage.pop"
+                and order == (-1, -2)
             ):
                 lines.extend(
                     [
-                        f"  %pop.res.{candidate_index} = call ptr @mule_storage_pop(ptr %receiver)",
+                        f"  %pop.res.{variant_index} = call ptr @mule_storage_pop(ptr %receiver)",
                         "  call void @mule.fast.release(ptr %receiver)",
-                        f"  ret ptr %pop.res.{candidate_index}",
+                        f"  ret ptr %pop.res.{variant_index}",
                     ]
                 )
-                continue
+                return
             need_failed_block = True
-            entered_label = f"entered.{candidate_index}"
+            entered_label = f"entered.{variant_index}"
             lines.extend(
                 [
-                    f"  %frame.{candidate_index} = call i32 @mule_enter_frame()",
-                    f"  %rejected.{candidate_index} = icmp slt i32 %frame.{candidate_index}, 0",
-                    f"  br i1 %rejected.{candidate_index}, label %failed, label %{entered_label}",
+                    f"  %frame.{variant_index} = call i32 @mule_enter_frame()",
+                    f"  %rejected.{variant_index} = icmp slt i32 %frame.{variant_index}, 0",
+                    f"  br i1 %rejected.{variant_index}, label %failed, label %{entered_label}",
                     f"{entered_label}:",
-                    f"  %globals.{candidate_index} = load ptr, ptr %fn.globals.slot",
+                    f"  %globals.{variant_index} = load ptr, ptr %fn.globals.slot",
                 ]
             )
             owned = []
@@ -1776,32 +1797,55 @@ class ModuleGenerator:
                     owned.append(f"%arg.{idx}")
                 else:
                     lines.append(
-                        f"  %def.{candidate_index}.{pos} = call ptr @mule_function_default(ptr %callable, i32 {-2 - idx})"
+                        f"  %own.{variant_index}.{pos} = call ptr @mule.fast.retain(ptr %def.{variant_index}.{pos})"
                     )
-                    lines.append(
-                        f"  %own.{candidate_index}.{pos} = call ptr @mule.fast.retain(ptr %def.{candidate_index}.{pos})"
-                    )
-                    owned.append(f"%own.{candidate_index}.{pos}")
+                    owned.append(f"%own.{variant_index}.{pos}")
             closure_ops = []
             if self.closure_of(function):
                 lines.append(
-                    f"  %closure.{candidate_index} = call ptr @mule_function_closure_of(ptr %callable)"
+                    f"  %closure.{variant_index} = call ptr @mule_function_closure_of(ptr %callable)"
                 )
-                closure_ops.append(f"ptr %closure.{candidate_index}")
+                closure_ops.append(f"ptr %closure.{variant_index}")
             body_args = ", ".join(
                 [
-                    f"ptr %globals.{candidate_index}",
+                    f"ptr %globals.{variant_index}",
                     *closure_ops,
                     *(f"ptr {v}" for v in owned),
                 ]
             )
             lines.extend(
                 [
-                    f"  %direct.res.{candidate_index} = call ptr {self.bodies[function]}({body_args})",
+                    f"  %direct.res.{variant_index} = call ptr {self.bodies[function]}({body_args})",
                     "  call void @mule_leave_frame()",
-                    f"  ret ptr %direct.res.{candidate_index}",
+                    f"  ret ptr %direct.res.{variant_index}",
                 ]
             )
+
+        for chain_index, (bound, shape, candidates) in enumerate(chains):
+            if not candidates:
+                continue
+            lines.extend(
+                [
+                    f"resolve.{shape}:",
+                    f"  %entry.{shape} = call ptr @mule_method_entry(ptr %callable, ptr %fn.globals.slot)",
+                    f"  br label %check.{shape}.0",
+                ]
+            )
+            for candidate_index, (function, order) in enumerate(candidates):
+                variant_index = 2 * candidate_index + chain_index
+                next_label = (
+                    f"check.{shape}.{candidate_index + 1}"
+                    if candidate_index + 1 < len(candidates)
+                    else "fallback"
+                )
+                lines.extend(
+                    [
+                        f"check.{shape}.{candidate_index}:",
+                        f"  %match.{shape}.{candidate_index} = icmp eq ptr %entry.{shape}, {self.functions[function]}",
+                        f"  br i1 %match.{shape}.{candidate_index}, label %direct.{variant_index}, label %{next_label}",
+                    ]
+                )
+                emit_invoke(function, order, variant_index, bound)
         if need_failed_block:
             lines.extend(
                 [
@@ -4057,8 +4101,11 @@ class FunctionGenerator:
         functions = tuple(
             target
             for target in candidates
-            if target.call_order(info.keywords, len(arguments), receiver=True)
-            is not None
+            if any(
+                target.call_order(info.keywords, len(arguments), receiver=bound)
+                is not None
+                for bound in (True, False)
+            )
         )
         if not functions:
             if not info.keywords:
