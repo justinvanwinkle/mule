@@ -103,7 +103,10 @@ class _DeriveNodeType(NodeVisitor, LeafVisitor):
         return UNKNOWN
 
     def visit_Ref(self, node: Ref):
-        return node.leaf.accept(self)
+        derived = node.leaf.accept(self)
+        if derived is UNKNOWN and node.derived_type is not None:
+            return node.derived_type
+        return derived
 
     def visit_Leaf(self, leaf):
         return leaf.type if leaf.type is not None else UNKNOWN
@@ -135,7 +138,14 @@ class _DeriveNodeType(NodeVisitor, LeafVisitor):
             derived = node.fun_info.derive_type(node)
             if derived is not None:
                 return derived
-        return fndb.derive_builtin_call_type(node)
+        derived = fndb.derive_builtin_call_type(node)
+        if (
+            derived is UNKNOWN
+            and node.kind is not CallKind.KNOWN
+            and node.derived_type is not None
+        ):
+            return node.derived_type
+        return derived
 
     def visit_Exit(self, node: Exit):
         return lvar_type(node.value) if node.value is not None else UNKNOWN
@@ -361,10 +371,7 @@ class _PrepareNodeOptimize(NodeVisitor):
         return None
 
     def visit_ValuedNode(self, node):
-        old_type = node.derived_type
-        if node.reoptimize:
-            node.derived_type = None
-        return old_type
+        return node.derived_type
 
 
 _PREPARE_NODE_OPTIMIZE = _PrepareNodeOptimize()

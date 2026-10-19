@@ -60,6 +60,7 @@ from .ctype import (
 )
 from .fndb import LEN, flow_propagation
 from .ir1util import made_function
+from .knownfun import KNOWN
 from .node import (
     CallKind,
     FunctionalKind,
@@ -67,6 +68,7 @@ from .node import (
     Lambda,
     LeafVisitor,
     NodeVisitor,
+    Ref,
     Set,
     linked,
 )
@@ -1196,6 +1198,32 @@ class _PublishNodeTypes(NodeVisitor):
         node.derived_type = self.types.get(node, UNKNOWN)
 
 
+class _PredictableGlobalFunInfo(NodeVisitor, LeafVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        if node.lexenv.policy.safety >= 3:
+            return None
+        home = node.home_lambda
+        if home is not None and (
+            home.policy.safety >= 3 or home.name.startswith(_PROTOCOL_PREFIXES)
+        ):
+            return None
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        if leaf.sets:
+            return None
+        return KNOWN.get(leaf.name)
+
+
+_PREDICTABLE_GLOBAL_FUN_INFO = _PredictableGlobalFunInfo()
+
+
 class _ReoptimizeNarrowedKnownCalls(NodeVisitor):
     def __init__(
         self,
@@ -1211,6 +1239,15 @@ class _ReoptimizeNarrowedKnownCalls(NodeVisitor):
             info = node.fun_info
         elif is_predictable_len_call(node):
             info = LEN
+        elif (
+            node.kind in (CallKind.FULL, CallKind.GUARDED)
+            and len(node.fun.uses) == 1
+            and not (node.info is not None and node.info.keywords)
+            and node.lexenv.policy.safety < 3
+        ):
+            info = node.fun.uses[0].accept(_PREDICTABLE_GLOBAL_FUN_INFO)
+            if info is None:
+                return
         else:
             return
         if not (

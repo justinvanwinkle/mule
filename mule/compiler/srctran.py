@@ -119,17 +119,42 @@ _EXACT_BYTES_LITERAL = _ExactBytesLiteral()
 
 def _exact_int_literal(lvar: Lvar) -> int | None:
     literal = constant_literal(lvar)
-    return literal.accept(_EXACT_INT_LITERAL) if literal is not None else None
+    if literal is not None:
+        return literal.accept(_EXACT_INT_LITERAL)
+    if not _is_pure_bound_ref(lvar):
+        return None
+    vtype = lvar_type(lvar)
+    if not vtype.fits(INTEGER):
+        return None
+    return vtype.exact_integer()
 
 
 def _exact_bool_literal(lvar: Lvar) -> bool | None:
     literal = constant_literal(lvar)
-    return literal.accept(_EXACT_BOOL_LITERAL) if literal is not None else None
+    if literal is not None:
+        return literal.accept(_EXACT_BOOL_LITERAL)
+    if not _is_pure_bound_ref(lvar):
+        return None
+    vtype = lvar_type(lvar)
+    if not vtype.fits(BOOLEAN):
+        return None
+    if vtype.minimum == 1 and vtype.maximum == 1:
+        return True
+    if vtype.minimum == 0 and vtype.maximum == 0:
+        return False
+    return None
 
 
 def _exact_text_literal(lvar: Lvar) -> str | None:
     literal = constant_literal(lvar)
-    return literal.accept(_EXACT_TEXT_LITERAL) if literal is not None else None
+    if literal is not None:
+        return literal.accept(_EXACT_TEXT_LITERAL)
+    if not _is_pure_bound_ref(lvar):
+        return None
+    vtype = lvar_type(lvar)
+    if not vtype.fits(TEXT_TYPE):
+        return None
+    return vtype.literal
 
 
 def _exact_bytes_literal(lvar: Lvar) -> bytes | None:
@@ -323,13 +348,18 @@ def _replace_with_constant_and_clean_locals(
     return True
 
 
-def _replace_with_left_and_clean_right(node: Combination) -> bool:
-    left, right = node.args
-    _delete_unused_local_ref(right)
-    replace_combination_with_lvar(node, left)
-    if node.lvar is None and left.dest is None:
-        _delete_unused_local_ref(left)
+def _replace_with_lvar_and_clean(node: Combination, value: Lvar) -> bool:
+    for arg in node.args:
+        if arg is not value:
+            _delete_unused_local_ref(arg)
+    replace_combination_with_lvar(node, value)
+    if node.lvar is None and value.dest is None:
+        _delete_unused_local_ref(value)
     return True
+
+
+def _replace_with_left_and_clean_right(node: Combination) -> bool:
+    return _replace_with_lvar_and_clean(node, node.args[0])
 
 
 class _RewriteIntConstant(NodeVisitor, LeafVisitor):
@@ -362,6 +392,21 @@ class _RewriteIntConstant(NodeVisitor, LeafVisitor):
             new_leaf = Constant(literal)
             ref.leaf = new_leaf
             new_leaf.refs.append(ref)
+        ref.derived_type = IntegerType(self.value, self.value)
+        return True
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        ref = self._ref
+        if ref is None or ref.final:
+            return False
+        if any(s.value is None for s in leaf.sets):
+            return False
+        if ref in leaf.refs:
+            leaf.refs.remove(ref)
+        span = ref.source.span if ref.source is not None else None
+        new_leaf = Constant(ast.IntegerLiteral(self.value, span=span))
+        ref.leaf = new_leaf
+        new_leaf.refs.append(ref)
         ref.derived_type = IntegerType(self.value, self.value)
         return True
 
@@ -433,11 +478,9 @@ def _reduce_unary_involution(node: Combination, name: str) -> bool:
 def _transform_add_int(node: Combination) -> bool:
     left, right = node.args
     if _exact_int_literal(right) == 0:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     if _exact_int_literal(left) == 0:
-        replace_combination_with_lvar(node, right)
-        return True
+        return _replace_with_lvar_and_clean(node, right)
     return False
 
 
@@ -445,11 +488,9 @@ def _transform_add_int(node: Combination) -> bool:
 def _transform_add_text(node: Combination) -> bool:
     left, right = node.args
     if _exact_text_literal(right) == "":
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     if _exact_text_literal(left) == "":
-        replace_combination_with_lvar(node, right)
-        return True
+        return _replace_with_lvar_and_clean(node, right)
     return False
 
 
@@ -457,11 +498,9 @@ def _transform_add_text(node: Combination) -> bool:
 def _transform_add_bytes(node: Combination) -> bool:
     left, right = node.args
     if _exact_bytes_literal(right) == b"":
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     if _exact_bytes_literal(left) == b"":
-        replace_combination_with_lvar(node, right)
-        return True
+        return _replace_with_lvar_and_clean(node, right)
     return False
 
 
@@ -469,8 +508,7 @@ def _transform_add_bytes(node: Combination) -> bool:
 def _transform_subtract_int(node: Combination) -> bool:
     left, right = node.args
     if _exact_int_literal(right) == 0:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     if _same_bound_local(left, right) is not None:
         return _replace_with_constant_and_clean_locals(node, ast.IntegerLiteral(0))
     return False
@@ -482,19 +520,19 @@ def _transform_multiply_int(node: Combination) -> bool:
     left_val = _exact_int_literal(left)
     right_val = _exact_int_literal(right)
     if right_val == 1:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     if left_val == 1:
-        replace_combination_with_lvar(node, right)
-        return True
+        return _replace_with_lvar_and_clean(node, right)
     if right_val == 0 and left_val is None and _is_pure_bound_ref(left):
         return _replace_with_zero_and_cleanup(node, left)
     if left_val == 0 and right_val is None and _is_pure_bound_ref(right):
         return _replace_with_zero_and_cleanup(node, right)
     if right_val == -1 and left_val is None and len(right.uses) == 1:
+        _delete_unused_local_ref(right)
         retarget_known_combination(node, fndb.UNARY[ast.UnaryOperator.NEGATIVE], [left])
         return True
     if left_val == -1 and right_val is None and len(left.uses) == 1:
+        _delete_unused_local_ref(left)
         retarget_known_combination(
             node, fndb.UNARY[ast.UnaryOperator.NEGATIVE], [right]
         )
@@ -526,8 +564,7 @@ def _transform_multiply_int(node: Combination) -> bool:
 def _transform_multiply_text_int(node: Combination) -> bool:
     left, right = node.args
     if _exact_int_literal(right) == 1:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     return False
 
 
@@ -535,8 +572,7 @@ def _transform_multiply_text_int(node: Combination) -> bool:
 def _transform_multiply_int_text(node: Combination) -> bool:
     left, right = node.args
     if _exact_int_literal(left) == 1:
-        replace_combination_with_lvar(node, right)
-        return True
+        return _replace_with_lvar_and_clean(node, right)
     return False
 
 
@@ -544,8 +580,7 @@ def _transform_multiply_int_text(node: Combination) -> bool:
 def _transform_multiply_bytes_int(node: Combination) -> bool:
     left, right = node.args
     if _exact_int_literal(right) == 1:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     return False
 
 
@@ -553,8 +588,7 @@ def _transform_multiply_bytes_int(node: Combination) -> bool:
 def _transform_multiply_int_bytes(node: Combination) -> bool:
     left, right = node.args
     if _exact_int_literal(left) == 1:
-        replace_combination_with_lvar(node, right)
-        return True
+        return _replace_with_lvar_and_clean(node, right)
     return False
 
 
@@ -563,9 +597,9 @@ def _transform_floor_divide_int(node: Combination) -> bool:
     left, right = node.args
     divisor = _exact_int_literal(right)
     if divisor == 1:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     if divisor == -1 and _exact_int_literal(left) is None and len(right.uses) == 1:
+        _delete_unused_local_ref(right)
         retarget_known_combination(node, fndb.UNARY[ast.UnaryOperator.NEGATIVE], [left])
         return True
     exponent = _power_of_two_exponent(divisor)
@@ -586,6 +620,7 @@ def _transform_modulo_int(node: Combination) -> bool:
         and _exact_int_literal(left) is None
         and _is_pure_bound_ref(left)
     ):
+        _delete_unused_local_ref(right)
         return _replace_with_zero_and_cleanup(node, left)
     exponent = _power_of_two_exponent(divisor)
     if (
@@ -604,8 +639,7 @@ def _transform_modulo_int(node: Combination) -> bool:
 def _transform_power_int(node: Combination) -> bool:
     left, right = node.args
     if _exact_int_literal(right) == 1:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     return False
 
 
@@ -613,11 +647,9 @@ def _transform_power_int(node: Combination) -> bool:
 def _transform_bit_or_int(node: Combination) -> bool:
     left, right = node.args
     if _exact_int_literal(right) == 0:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     if _exact_int_literal(left) == 0:
-        replace_combination_with_lvar(node, right)
-        return True
+        return _replace_with_lvar_and_clean(node, right)
     if _same_bound_local(left, right) is not None:
         return _replace_with_left_and_clean_right(node)
     return False
@@ -627,11 +659,9 @@ def _transform_bit_or_int(node: Combination) -> bool:
 def _transform_bit_or_bool(node: Combination) -> bool:
     left, right = node.args
     if _exact_bool_literal(right) is False:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     if _exact_bool_literal(left) is False:
-        replace_combination_with_lvar(node, right)
-        return True
+        return _replace_with_lvar_and_clean(node, right)
     if _same_bound_local(left, right) is not None:
         return _replace_with_left_and_clean_right(node)
     return False
@@ -641,11 +671,9 @@ def _transform_bit_or_bool(node: Combination) -> bool:
 def _transform_bit_xor_int(node: Combination) -> bool:
     left, right = node.args
     if _exact_int_literal(right) == 0:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     if _exact_int_literal(left) == 0:
-        replace_combination_with_lvar(node, right)
-        return True
+        return _replace_with_lvar_and_clean(node, right)
     if _same_bound_local(left, right) is not None:
         return _replace_with_constant_and_clean_locals(node, ast.IntegerLiteral(0))
     return False
@@ -655,11 +683,9 @@ def _transform_bit_xor_int(node: Combination) -> bool:
 def _transform_bit_xor_bool(node: Combination) -> bool:
     left, right = node.args
     if _exact_bool_literal(right) is False:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     if _exact_bool_literal(left) is False:
-        replace_combination_with_lvar(node, right)
-        return True
+        return _replace_with_lvar_and_clean(node, right)
     if _same_bound_local(left, right) is not None:
         return _replace_with_constant_and_clean_locals(node, ast.BooleanLiteral(False))
     return False
@@ -671,14 +697,14 @@ def _transform_bit_and_int(node: Combination) -> bool:
     left_val = _exact_int_literal(left)
     right_val = _exact_int_literal(right)
     if right_val == -1:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     if left_val == -1:
-        replace_combination_with_lvar(node, right)
-        return True
+        return _replace_with_lvar_and_clean(node, right)
     if right_val == 0 and left_val is None and _is_pure_bound_ref(left):
+        _delete_unused_local_ref(right)
         return _replace_with_zero_and_cleanup(node, left)
     if left_val == 0 and right_val is None and _is_pure_bound_ref(right):
+        _delete_unused_local_ref(left)
         return _replace_with_zero_and_cleanup(node, right)
     if _same_bound_local(left, right) is not None:
         return _replace_with_left_and_clean_right(node)
@@ -689,11 +715,9 @@ def _transform_bit_and_int(node: Combination) -> bool:
 def _transform_bit_and_bool(node: Combination) -> bool:
     left, right = node.args
     if _exact_bool_literal(right) is True:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     if _exact_bool_literal(left) is True:
-        replace_combination_with_lvar(node, right)
-        return True
+        return _replace_with_lvar_and_clean(node, right)
     if _same_bound_local(left, right) is not None:
         return _replace_with_left_and_clean_right(node)
     return False
@@ -703,8 +727,7 @@ def _transform_bit_and_bool(node: Combination) -> bool:
 def _transform_left_shift_int(node: Combination) -> bool:
     left, right = node.args
     if _exact_int_literal(right) == 0:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     return False
 
 
@@ -712,8 +735,7 @@ def _transform_left_shift_int(node: Combination) -> bool:
 def _transform_right_shift_int(node: Combination) -> bool:
     left, right = node.args
     if _exact_int_literal(right) == 0:
-        replace_combination_with_lvar(node, left)
-        return True
+        return _replace_with_lvar_and_clean(node, left)
     return False
 
 
