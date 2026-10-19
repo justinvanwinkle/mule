@@ -65,7 +65,7 @@ timer. Each result was checked against CPython. SBCL runs corresponding Common
 Lisp implementations, not the Python sources.
 
 **This is a measured snapshot, not a general speed claim.** The measured checkout
-was `2d5e473ee` with uncommitted tracked changes. Mule still trails CPython on
+was `ae24f3227` with uncommitted tracked changes. Mule still trails CPython on
 several workloads. Raw samples, variation, commands, input sizes, hashes, and
 revision identity are in the [published results](docs/assets/results.json).
 The [report HTML source](docs/assets/index.html) also includes whole-process timings.

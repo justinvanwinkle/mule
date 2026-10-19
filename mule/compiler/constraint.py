@@ -305,6 +305,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
         self.walk = walk
         self.state = state
         self.origins = origins
+        self.parent_origins: dict[object, object] = {}
         self.handler_state: dict[object, Fact] | None = None
         # Keys assigned since the handler state last absorbed the state.
         self.changed = set()
@@ -313,6 +314,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
     def reset(self, state: dict[object, Fact], has_handler: bool) -> None:
         self.state = state
         self.origins.clear()
+        self.parent_origins.clear()
         self.changed.clear()
         self.handler_state = state.copy() if has_handler else None
 
@@ -337,6 +339,82 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 for lvar, origin in self.origins.items()
                 if origin is not var
             }
+
+    def record_alias(self, target_var, source_var):
+        if source_var is None or source_var is target_var:
+            return
+        aliases = self.walk.aliases
+        group = aliases[source_var] | aliases[target_var] | {source_var, target_var}
+        for member in group:
+            aliases[member] = group - {member}
+
+    def record_container_child(self, parent_var, child_var):
+        if parent_var is None or child_var is None or parent_var is child_var:
+            return
+        parents = self.walk.parent_containers
+        for member in {child_var} | self.walk.aliases.get(child_var, set()):
+            if member is not parent_var:
+                parents[member].add(parent_var)
+
+    def mutate_list(self, recv_var, recv_type: ValueType, elem_type: ValueType):
+        if recv_var is not None and recv_var not in self.walk.indirect:
+            if self.state.get(recv_var) is not UNBOUND_FACT:
+                self.assign(recv_var, _fact(recv_type.with_element(elem_type)))
+            all_vars = {recv_var} | self.walk.aliases.get(recv_var, set())
+            for alias_var in all_vars - {recv_var}:
+                if alias_var in self.state and alias_var not in self.walk.indirect:
+                    alias_type = self.state[alias_var].type
+                    if alias_type.fits_list(LIST_TYPE):
+                        self.assign(
+                            alias_var, _fact(alias_type.with_element(elem_type))
+                        )
+            parents = set()
+            for member in all_vars:
+                parents.update(self.walk.parent_containers.get(member, ()))
+            for parent_var in parents:
+                if parent_var in self.state and parent_var not in self.walk.indirect:
+                    current_fact = self.state[parent_var]
+                    updated_nested = current_fact.type.update_nested_lists(elem_type)
+                    if updated_nested != current_fact.type:
+                        self.assign(parent_var, _fact(updated_nested))
+
+    def mutate_dict(
+        self, recv_var, recv_type: ValueType, key_type: ValueType, val_type: ValueType
+    ):
+        if recv_var is not None and recv_var not in self.walk.indirect:
+            if self.state.get(recv_var) is not UNBOUND_FACT:
+                self.assign(recv_var, _fact(recv_type.with_entry(key_type, val_type)))
+            all_vars = {recv_var} | self.walk.aliases.get(recv_var, set())
+            for alias_var in all_vars - {recv_var}:
+                if alias_var in self.state and alias_var not in self.walk.indirect:
+                    alias_type = self.state[alias_var].type
+                    if alias_type.fits_dict(DICT_TYPE):
+                        self.assign(
+                            alias_var,
+                            _fact(alias_type.with_entry(key_type, val_type)),
+                        )
+            parents = set()
+            for member in all_vars:
+                parents.update(self.walk.parent_containers.get(member, ()))
+            for parent_var in parents:
+                if parent_var in self.state and parent_var not in self.walk.indirect:
+                    current_fact = self.state[parent_var]
+                    updated_nested = current_fact.type.update_nested_dicts(
+                        key_type, val_type
+                    )
+                    if updated_nested != current_fact.type:
+                        self.assign(parent_var, _fact(updated_nested))
+
+    def widen_escaped_container(self, var):
+        if var is None or var not in self.state or var in self.walk.indirect:
+            return
+        targets = {var} | self.walk.aliases.get(var, set())
+        for member in targets:
+            if member in self.state and member not in self.walk.indirect:
+                cur = self.state[member].type
+                widened = cur.widen_mutable_containers()
+                if widened != cur:
+                    self.assign(member, _fact(widened))
 
     def note_handler_state(self):
         """Join the state after a node into what an error edge carries.
@@ -400,7 +478,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
         if ref.final:
             self.forget_origin(leaf)
             self.assign(leaf, UNBOUND_FACT)
-        elif ref.lvar is not None:
+        if ref.lvar is not None:
             self.origins[ref.lvar] = leaf
         return fact
 
@@ -425,6 +503,12 @@ class _Propagation(NodeVisitor, LeafVisitor):
                         if fact.target is None
                         else Fact(refined, fact.target, fact.proven)
                     )
+            src_var = self.origins.get(node.value)
+            if src_var is not None and src_var in self.state:
+                self.record_alias(key, src_var)
+            parent_var = self.parent_origins.get(node.value)
+            if parent_var is not None and parent_var in self.state:
+                self.record_container_child(parent_var, key)
             self.assign(key, fact)
         # Origins are locals, so this changes nothing for a global.
         self.forget_origin(node.var)
@@ -460,8 +544,13 @@ class _Propagation(NodeVisitor, LeafVisitor):
                         resolved = arg_types[0]
                     else:
                         resolved = self.walk.imported_returns.get(callee_name, UNKNOWN)
+            builtin_type = UNKNOWN
             if resolved is UNKNOWN and not info.keywords:
-                resolved = self.walk.builtin_return_type(node.fun, arg_types)
+                builtin_type = self.walk.builtin_return_type(node.fun, arg_types)
+                resolved = builtin_type
+            if builtin_type is UNKNOWN:
+                for arg in node.args:
+                    self.widen_escaped_container(self.origins.get(arg))
             fact = _fact(resolved)
             self.invalidate()
             return fact
@@ -568,20 +657,35 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 receiver_type = self.type_of(receiver_lvar)
                 has_keywords = bool(linked(node.info, node, "info").keywords)
                 arity = len(args) - 1
+                recv_var = self.origins.get(receiver_lvar)
                 if method_name == "append" and arity == 1 and not has_keywords:
                     elem_type = self.type_of(args[1])
-                    recv_var = self.origins.get(receiver_lvar)
-                    if recv_var is not None and not recv_var.indirect:
-                        self.assign(
-                            recv_var, _fact(receiver_type.with_element(elem_type))
-                        )
+                    self.record_container_child(recv_var, self.origins.get(args[1]))
+                    self.mutate_list(recv_var, receiver_type, elem_type)
                     if (
                         not receiver_type.may_be_unbound
                         and receiver_type.fits(LIST_TYPE)
                         and not elem_type.may_be_unbound
                     ):
                         return NONE_FACT
+                if method_name == "insert" and arity == 2 and not has_keywords:
+                    elem_type = self.type_of(args[2])
+                    self.record_container_child(recv_var, self.origins.get(args[2]))
+                    self.mutate_list(recv_var, receiver_type, elem_type)
+                if method_name == "extend" and arity == 1 and not has_keywords:
+                    elem_type = self.type_of(args[1]).iterate_type().next_item_type()
+                    self.mutate_list(recv_var, receiver_type, elem_type)
+                if method_name == "setdefault" and arity in (1, 2) and not has_keywords:
+                    key_type = self.type_of(args[1])
+                    default_type = self.type_of(args[2]) if arity == 2 else NONE_TYPE
+                    if arity == 2:
+                        self.record_container_child(recv_var, self.origins.get(args[2]))
+                    if recv_var is not None and node.lvar is not None:
+                        self.parent_origins[node.lvar] = recv_var
+                    self.mutate_dict(recv_var, receiver_type, key_type, default_type)
                 if method_name == "get" and arity in (1, 2) and not has_keywords:
+                    if recv_var is not None and node.lvar is not None:
+                        self.parent_origins[node.lvar] = recv_var
                     default_type = self.type_of(args[2]) if arity == 2 else NONE_TYPE
                     res_type = receiver_type.dict_get_type(default_type)
                     if res_type is not UNKNOWN:
@@ -626,8 +730,13 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 callee_name = callee_lvar.use().accept(_IMPORTED_CALLEE_NAME)
                 if callee_name is not None:
                     resolved = self.walk.imported_returns.get(callee_name, UNKNOWN)
+            builtin_type = UNKNOWN
             if resolved is UNKNOWN:
-                resolved = self.walk.builtin_return_type(callee_lvar, arg_types)
+                builtin_type = self.walk.builtin_return_type(callee_lvar, arg_types)
+                resolved = builtin_type
+            if builtin_type is UNKNOWN:
+                for arg in args[1:]:
+                    self.widen_escaped_container(self.origins.get(arg))
             self.invalidate()
             return _fact(resolved)
         if name in ("%import", "%catch_exception"):
@@ -637,6 +746,9 @@ class _Propagation(NodeVisitor, LeafVisitor):
             self.invalidate()
             return TEXT_FACT
         if name == "%getitem":
+            recv_var = self.origins.get(args[0])
+            if recv_var is not None and node.lvar is not None:
+                self.parent_origins[node.lvar] = recv_var
             receiver_type = self.type_of(args[0])
             index_type = self.type_of(args[1])
             if receiver_type is BOTTOM or index_type is BOTTOM:
@@ -646,23 +758,22 @@ class _Propagation(NodeVisitor, LeafVisitor):
             return _fact(receiver_type.getitem_type(index_type))
         if name == "%setitem" and len(args) == 3:
             recv_var = self.origins.get(args[0])
+            val_var = self.origins.get(args[2])
+            self.record_container_child(recv_var, val_var)
             recv_type = self.type_of(args[0])
             key_type = self.type_of(args[1])
             val_type = self.type_of(args[2])
             if not recv_type.fits_list(LIST_TYPE) or key_type.may_run_user_code:
                 self.invalidate()
-            if recv_var is not None and not recv_var.indirect:
-                if recv_type.fits_list(LIST_TYPE):
-                    updated = (
-                        recv_type.with_element(val_type)
-                        if key_type.fits(PYTHON_INTEGER)
-                        else recv_type.with_element(
-                            val_type.iterate_type().next_item_type()
-                        )
-                    )
-                else:
-                    updated = recv_type.with_entry(key_type, val_type)
-                self.assign(recv_var, _fact(updated))
+            if recv_type.fits_list(LIST_TYPE):
+                elem_type = (
+                    val_type
+                    if key_type.fits(PYTHON_INTEGER)
+                    else val_type.iterate_type().next_item_type()
+                )
+                self.mutate_list(recv_var, recv_type, elem_type)
+            else:
+                self.mutate_dict(recv_var, recv_type, key_type, val_type)
             return _fact(NONE_TYPE)
         if name == "%iterate" and len(args) == 1:
             operand_type = self.type_of(args[0])
@@ -701,22 +812,14 @@ class _Propagation(NodeVisitor, LeafVisitor):
             recv_var = self.origins.get(args[0])
             recv_type = self.type_of(args[0])
             elem_type = self.type_of(args[1])
-            if (
-                recv_var is not None
-                and not recv_var.indirect
-                and recv_type.fits_list(LIST_TYPE)
-            ):
-                self.assign(recv_var, _fact(recv_type.with_element(elem_type)))
+            if recv_type.fits_list(LIST_TYPE):
+                self.mutate_list(recv_var, recv_type, elem_type)
         elif name == "_storage_write" and len(args) == 3:
             recv_var = self.origins.get(args[0])
             recv_type = self.type_of(args[0])
             elem_type = self.type_of(args[2])
-            if (
-                recv_var is not None
-                and not recv_var.indirect
-                and recv_type.fits_list(LIST_TYPE)
-            ):
-                self.assign(recv_var, _fact(recv_type.with_element(elem_type)))
+            if recv_type.fits_list(LIST_TYPE):
+                self.mutate_list(recv_var, recv_type, elem_type)
         elif name == "_storage_read" and len(args) == 2:
             recv_type = self.type_of(args[0])
             idx_type = self.type_of(args[1])
@@ -1149,6 +1252,8 @@ class _Walk:
         self.global_names = graph.global_names
         self.indirect = graph.indirect
         self.volatile_keys = graph.volatile_keys
+        self.aliases: dict[object, set[object]] = defaultdict(set)
+        self.parent_containers: dict[object, set[object]] = defaultdict(set)
         self.local_contracts = {
             var: contract
             for var in lambda_.locals
@@ -1510,6 +1615,9 @@ class _NarrowTruthiness(ValueTypeVisitor):
     def visit_ValueType(self, fact):
         if self.truth:
             return fact.narrow_none(False)
+        return fact
+
+    def visit_NoneType(self, fact):
         return fact
 
     def visit_BooleanType(self, fact):

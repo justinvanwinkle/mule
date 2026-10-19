@@ -22,11 +22,14 @@ from mule.compiler.ctype import (
     IntegerType,
     IteratorType,
     ListType,
+    OptionalIntegerType,
+    OptionalValueType,
     TextType,
     TupleType,
     ValueTypeVisitor,
     widen_fact,
 )
+from mule.compiler.main import compile_source
 
 
 def test_parameterized_list_type():
@@ -87,8 +90,14 @@ def test_parameterized_dict_type():
     assert EMPTY_DICT_TYPE.getitem_type(TEXT_TYPE) is UNKNOWN
 
     assert d.dict_get_type(IntegerType(0, 0)) == IntegerType(0, 1)
-    assert d.dict_get_type(NONE_TYPE) is UNKNOWN
+    assert d.dict_get_type(NONE_TYPE) == OptionalIntegerType(IntegerType(1, 1))
     assert EMPTY_DICT_TYPE.dict_get_type(IntegerType(0, 0)) == IntegerType(0, 0)
+
+    d_list = EMPTY_DICT_TYPE.with_entry(TEXT_TYPE, ListType(IntegerType(0, 0)))
+    opt_list = d_list.dict_get_type(NONE_TYPE)
+    assert opt_list == OptionalValueType(ListType(IntegerType(0, 0)))
+    assert opt_list.narrow_none(False) == ListType(IntegerType(0, 0))
+    assert opt_list.narrow_none(True) is NONE_TYPE
 
     assert d.iterate_type() == IteratorType(TEXT_TYPE)
     assert d.iterate_type().next_item_type() is TEXT_TYPE
@@ -177,3 +186,29 @@ def test_visitor_hooks_for_dict_and_iterator():
     assert DICT_TYPE.accept(visitor) == "dict"
     assert ITERATOR_TYPE.accept(visitor) == "iterator"
     assert LIST_TYPE.accept(visitor) == "other"
+
+
+def test_nested_list_in_dict_mutation_widens_element_type():
+    comp = compile_source(
+        """
+def aggregate(items: list):
+    routes = {}
+    for route, latency in items:
+        group = routes.get(route)
+        if group is None:
+            group = [0, 0, 0]
+            routes[route] = group
+        group[0] += 1
+        group[1] += 5
+    total = 0
+    for route, group in routes.items():
+        total += group[0]
+    return total
+"""
+    )
+    lam = comp.lambdas[1]
+    routes_var = next(v for v in lam.locals if v.name == "routes")
+    last_routes_ref = routes_var.refs[-1]
+    assert last_routes_ref.derived_type == DictType(
+        UNKNOWN, ListType(IntegerType(0, None))
+    )

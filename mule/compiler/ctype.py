@@ -79,6 +79,9 @@ class ValueTypeVisitor:
     def visit_OptionalIntegerType(self, fact):
         return self.visit_ValueType(fact)
 
+    def visit_OptionalValueType(self, fact):
+        return self.visit_ValueType(fact)
+
 
 @dataclass(frozen=True, slots=True)
 class ValueType:
@@ -202,6 +205,16 @@ class ValueType:
     def join_iterator(self, left):
         return self.join_unknown(left)
 
+    def join_optional_integer(self, left):
+        return self.join_unknown(left)
+
+    def join_optional_value(self, left):
+        joined = left.inner.join(self)
+        unbound = left.may_be_unbound or self.may_be_unbound
+        if joined is UNKNOWN:
+            return UNKNOWN_UNBOUND if unbound else UNKNOWN
+        return OptionalValueType(joined, unbound)
+
     def join_unbound(self, left):
         return self.with_unbound()
 
@@ -223,7 +236,34 @@ class ValueType:
     def widen_iterator(self, old):
         return self
 
+    def widen_optional_integer(self, old):
+        return self
+
+    def widen_optional_value(self, old):
+        return self
+
     def widen_constant(self):
+        return self
+
+    def as_optional(self, may_be_unbound: bool = False):
+        return UNKNOWN_UNBOUND if (self.may_be_unbound or may_be_unbound) else UNKNOWN
+
+    def update_nested_lists(self, elem_type):
+        return self
+
+    def _update_as_nested_list(self, elem_type):
+        return self.update_nested_lists(elem_type)
+
+    def update_nested_dicts(self, key_type, val_type):
+        return self
+
+    def _update_as_nested_dict(self, key_type, val_type):
+        return self.update_nested_dicts(key_type, val_type)
+
+    def widen_mutable_containers(self):
+        return self
+
+    def limit_container_depth(self, max_depth: int = 3):
         return self
 
     def binary(self, operator, right):
@@ -578,6 +618,17 @@ class IntegerType(PrimitiveType):
     def join_python_integer(self, left):
         return _join_python_integer(left, self)
 
+    def join_optional_integer(self, left):
+        joined = left.integer.join_integer(self.as_bound())
+        return OptionalIntegerType(
+            joined, may_be_unbound=left.may_be_unbound or self.may_be_unbound
+        )
+
+    def as_optional(self, may_be_unbound: bool = False):
+        return OptionalIntegerType(
+            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
+        )
+
     def widen(self, new):
         return new.widen_integer(self)
 
@@ -766,6 +817,14 @@ class PythonIntegerType(IntegerType):
     join_integer = join_python_integer
     join_boolean = join_python_integer
 
+    def join_optional_integer(self, left):
+        return self.join_unknown(left)
+
+    def as_optional(self, may_be_unbound: bool = False):
+        return OptionalValueType(
+            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
+        )
+
     def widen_constant(self):
         return (
             PythonIntegerType(may_be_unbound=True)
@@ -844,6 +903,12 @@ class BooleanType(IntegerType):
 
     def join_immortal(self, left):
         return _join_immortal(self, left)
+
+    def join_optional_integer(self, left):
+        return self.join_unknown(left)
+
+    def as_optional(self, may_be_unbound: bool = False):
+        return IMMORTAL_UNBOUND if (self.may_be_unbound or may_be_unbound) else IMMORTAL
 
     def widen(self, new):
         return new
@@ -934,6 +999,11 @@ class FloatType(PrimitiveType):
             FloatType(may_be_unbound=True)
             if left.may_be_unbound or self.may_be_unbound
             else FLOAT
+        )
+
+    def as_optional(self, may_be_unbound: bool = False):
+        return OptionalValueType(
+            FLOAT, may_be_unbound=self.may_be_unbound or may_be_unbound
         )
 
     def binary(self, operator, right):
@@ -1096,6 +1166,11 @@ class NoneType(PrimitiveType):
     def accept(self, visitor):
         return visitor.visit_NoneType(self)
 
+    def narrow_none(self, is_none: bool):
+        if self.may_be_unbound:
+            return self
+        return NONE_TYPE if is_none else BOTTOM
+
     def join(self, other):
         return other.join_none(self)
 
@@ -1111,6 +1186,18 @@ class NoneType(PrimitiveType):
 
     def join_immortal(self, left):
         return _join_immortal(self, left)
+
+    def join_optional_integer(self, left):
+        unbound = left.may_be_unbound or self.may_be_unbound
+        if unbound == left.may_be_unbound:
+            return left
+        return OptionalIntegerType(left.integer, unbound)
+
+    def join_optional_value(self, left):
+        unbound = left.may_be_unbound or self.may_be_unbound
+        if unbound == left.may_be_unbound:
+            return left
+        return OptionalValueType(left.inner, unbound)
 
     def accepts(self, actual):
         return actual.fits_none(self)
@@ -1188,6 +1275,11 @@ class TextType(PrimitiveType):
 
     def widen_constant(self):
         return TextType(may_be_unbound=True) if self.may_be_unbound else TEXT_TYPE
+
+    def as_optional(self, may_be_unbound: bool = False):
+        return OptionalValueType(
+            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
+        )
 
     def binary(self, operator, right):
         if self.may_be_unbound:
@@ -1273,6 +1365,11 @@ class BytesType(PrimitiveType):
             BytesType(may_be_unbound=True)
             if self.may_be_unbound or left.may_be_unbound
             else BYTES_TYPE
+        )
+
+    def as_optional(self, may_be_unbound: bool = False):
+        return OptionalValueType(
+            BYTES_TYPE, may_be_unbound=self.may_be_unbound or may_be_unbound
         )
 
     def binary(self, operator, right):
@@ -1396,7 +1493,8 @@ class TupleType(ValueType):
                 and len(self.elements) == len(left.elements)
             ):
                 joined_elems = tuple(
-                    l_el.join(r_el) for l_el, r_el in zip(left.elements, self.elements)
+                    l_el.join(r_el).limit_container_depth(2)
+                    for l_el, r_el in zip(left.elements, self.elements)
                 )
                 elements = (
                     None if all(el is UNKNOWN for el in joined_elems) else joined_elems
@@ -1433,7 +1531,7 @@ class TupleType(ValueType):
             and len(self.elements) == len(old.elements)
         ):
             widened_elems = tuple(
-                widen_fact(o_el, n_el)
+                widen_fact(o_el, n_el).limit_container_depth(2)
                 for o_el, n_el in zip(old.elements, self.elements)
             )
             elements = (
@@ -1453,6 +1551,53 @@ class TupleType(ValueType):
             else tuple(el.widen_constant() for el in self.elements),
             self.may_be_unbound,
         )
+
+    def as_optional(self, may_be_unbound: bool = False):
+        return OptionalValueType(
+            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
+        )
+
+    def limit_container_depth(self, max_depth: int = 3):
+        if self.elements is None:
+            return self
+        if max_depth <= 0:
+            return TupleType(self.arity, None, self.may_be_unbound)
+        limited = tuple(el.limit_container_depth(max_depth - 1) for el in self.elements)
+        if all(el is UNKNOWN for el in limited):
+            return TupleType(self.arity, None, self.may_be_unbound)
+        if limited == self.elements:
+            return self
+        return TupleType(self.arity, limited, self.may_be_unbound)
+
+    def update_nested_lists(self, elem_type):
+        if self.elements is None:
+            return self
+        new_elems = tuple(
+            el._update_as_nested_list(elem_type).limit_container_depth(2)
+            for el in self.elements
+        )
+        if new_elems == self.elements:
+            return self
+        return TupleType(self.arity, new_elems, self.may_be_unbound)
+
+    def update_nested_dicts(self, key_type, val_type):
+        if self.elements is None:
+            return self
+        new_elems = tuple(
+            el._update_as_nested_dict(key_type, val_type).limit_container_depth(2)
+            for el in self.elements
+        )
+        if new_elems == self.elements:
+            return self
+        return TupleType(self.arity, new_elems, self.may_be_unbound)
+
+    def widen_mutable_containers(self):
+        if self.elements is None:
+            return self
+        new_elems = tuple(el.widen_mutable_containers() for el in self.elements)
+        if new_elems == self.elements:
+            return self
+        return TupleType(self.arity, new_elems, self.may_be_unbound)
 
     def binary(self, operator, right):
         if self.may_be_unbound:
@@ -1571,6 +1716,54 @@ class ListType(ValueType):
             return self
         return ListType(self.element, True)
 
+    def as_optional(self, may_be_unbound: bool = False):
+        return OptionalValueType(
+            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
+        )
+
+    def limit_container_depth(self, max_depth: int = 3):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        if max_depth <= 0:
+            return LIST_TYPE if not self.may_be_unbound else ListType(UNKNOWN, True)
+        limited = self.element.limit_container_depth(max_depth - 1)
+        if limited is UNKNOWN and not self.may_be_unbound:
+            return LIST_TYPE
+        if limited == self.element:
+            return self
+        return ListType(limited, self.may_be_unbound)
+
+    def update_nested_lists(self, elem_type):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        new_elem = self.element._update_as_nested_list(elem_type).limit_container_depth(
+            2
+        )
+        if new_elem == self.element:
+            return self
+        return ListType(new_elem, self.may_be_unbound)
+
+    def _update_as_nested_list(self, elem_type):
+        return self.update_nested_lists(elem_type).with_element(elem_type)
+
+    def update_nested_dicts(self, key_type, val_type):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        new_elem = self.element._update_as_nested_dict(
+            key_type, val_type
+        ).limit_container_depth(2)
+        if new_elem == self.element:
+            return self
+        return ListType(new_elem, self.may_be_unbound)
+
+    def widen_mutable_containers(self):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        new_elem = self.element.widen_constant().widen_mutable_containers()
+        if new_elem == self.element:
+            return self
+        return ListType(new_elem, self.may_be_unbound)
+
     def join(self, other):
         return other.join_list(self)
 
@@ -1583,7 +1776,7 @@ class ListType(ValueType):
         elif self.element is BOTTOM:
             element = left.element
         else:
-            element = left.element.join(self.element)
+            element = left.element.join(self.element).limit_container_depth(2)
         if element is UNKNOWN and not may_be_unbound:
             return LIST_TYPE
         if element == self.element and may_be_unbound == self.may_be_unbound:
@@ -1596,7 +1789,7 @@ class ListType(ValueType):
         return new.widen_list(self)
 
     def widen_list(self, old):
-        element = widen_fact(old.element, self.element)
+        element = widen_fact(old.element, self.element).limit_container_depth(2)
         may_be_unbound = old.may_be_unbound or self.may_be_unbound
         if element == self.element and may_be_unbound == self.may_be_unbound:
             return self
@@ -1662,8 +1855,12 @@ class ListType(ValueType):
         return TupleType(arity)
 
     def with_element(self, element):
-        elem = element.as_bound()
-        new_elem = elem if self.element is BOTTOM else self.element.join(elem)
+        elem = element.as_bound().limit_container_depth(2)
+        new_elem = (
+            elem
+            if self.element is BOTTOM
+            else self.element.join(elem).limit_container_depth(2)
+        )
         return ListType(new_elem, self.may_be_unbound)
 
     def binary(self, operator, right):
@@ -1755,6 +1952,74 @@ class DictType(ValueType):
             return self
         return DictType(self.key, self.value, True)
 
+    def as_optional(self, may_be_unbound: bool = False):
+        return OptionalValueType(
+            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
+        )
+
+    def limit_container_depth(self, max_depth: int = 3):
+        if self.key is UNKNOWN and self.value is UNKNOWN:
+            return self
+        if max_depth <= 0:
+            return (
+                DICT_TYPE
+                if not self.may_be_unbound
+                else DictType(UNKNOWN, UNKNOWN, True)
+            )
+        lk = (
+            self.key
+            if self.key is BOTTOM
+            else self.key.limit_container_depth(max_depth - 1)
+        )
+        lv = (
+            self.value
+            if self.value is BOTTOM
+            else self.value.limit_container_depth(max_depth - 1)
+        )
+        if lk is UNKNOWN and lv is UNKNOWN and not self.may_be_unbound:
+            return DICT_TYPE
+        if lk == self.key and lv == self.value:
+            return self
+        return DictType(lk, lv, self.may_be_unbound)
+
+    def update_nested_lists(self, elem_type):
+        if self.value is BOTTOM or self.value is UNKNOWN:
+            return self
+        new_val = self.value._update_as_nested_list(elem_type).limit_container_depth(2)
+        if new_val == self.value:
+            return self
+        return DictType(self.key, new_val, self.may_be_unbound)
+
+    def update_nested_dicts(self, key_type, val_type):
+        if self.value is BOTTOM or self.value is UNKNOWN:
+            return self
+        new_val = self.value._update_as_nested_dict(
+            key_type, val_type
+        ).limit_container_depth(2)
+        if new_val == self.value:
+            return self
+        return DictType(self.key, new_val, self.may_be_unbound)
+
+    def _update_as_nested_dict(self, key_type, val_type):
+        return self.update_nested_dicts(key_type, val_type).with_entry(
+            key_type, val_type
+        )
+
+    def widen_mutable_containers(self):
+        new_key = (
+            self.key
+            if self.key is BOTTOM or self.key is UNKNOWN
+            else self.key.widen_constant().widen_mutable_containers()
+        )
+        new_val = (
+            self.value
+            if self.value is BOTTOM or self.value is UNKNOWN
+            else self.value.widen_constant().widen_mutable_containers()
+        )
+        if new_key == self.key and new_val == self.value:
+            return self
+        return DictType(new_key, new_val, self.may_be_unbound)
+
     def join(self, other):
         return other.join_dict(self)
 
@@ -1767,13 +2032,13 @@ class DictType(ValueType):
         elif self.key is BOTTOM:
             key = left.key
         else:
-            key = left.key.join(self.key)
+            key = left.key.join(self.key).limit_container_depth(2)
         if left.value is BOTTOM:
             value = self.value
         elif self.value is BOTTOM:
             value = left.value
         else:
-            value = left.value.join(self.value)
+            value = left.value.join(self.value).limit_container_depth(2)
         if key is UNKNOWN and value is UNKNOWN and not may_be_unbound:
             return DICT_TYPE
         if (
@@ -1794,8 +2059,8 @@ class DictType(ValueType):
         return new.widen_dict(self)
 
     def widen_dict(self, old):
-        key = widen_fact(old.key, self.key)
-        value = widen_fact(old.value, self.value)
+        key = widen_fact(old.key, self.key).limit_container_depth(2)
+        value = widen_fact(old.value, self.value).limit_container_depth(2)
         may_be_unbound = old.may_be_unbound or self.may_be_unbound
         if (
             key == self.key
@@ -1826,10 +2091,12 @@ class DictType(ValueType):
         return key_ok and val_ok
 
     def with_entry(self, key, value):
-        k = key.as_bound()
-        v = value.as_bound()
-        new_key = k if self.key is BOTTOM else self.key.join(k)
-        new_val = v if self.value is BOTTOM else self.value.join(v)
+        k = key.as_bound().limit_container_depth(2)
+        v = value.as_bound().limit_container_depth(2)
+        new_key = k if self.key is BOTTOM else self.key.join(k).limit_container_depth(2)
+        new_val = (
+            v if self.value is BOTTOM else self.value.join(v).limit_container_depth(2)
+        )
         return DictType(new_key, new_val, self.may_be_unbound)
 
     def getitem_type(self, index):
@@ -1844,7 +2111,14 @@ class DictType(ValueType):
             return UNKNOWN
         if self.value is BOTTOM:
             return default
-        return self.value.join(default)
+        joined = self.value.join(default)
+        if (
+            joined is UNKNOWN
+            and default.fits_none(NONE_TYPE)
+            and self.value is not UNKNOWN
+        ):
+            return self.value.as_optional()
+        return joined
 
     def iterate_type(self):
         if self.may_be_unbound:
@@ -1926,6 +2200,50 @@ class IteratorType(ValueType):
             return self
         return IteratorType(self.element, True)
 
+    def limit_container_depth(self, max_depth: int = 3):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        if max_depth <= 0:
+            return (
+                ITERATOR_TYPE
+                if not self.may_be_unbound
+                else IteratorType(UNKNOWN, True)
+            )
+        limited = self.element.limit_container_depth(max_depth - 1)
+        if limited is UNKNOWN and not self.may_be_unbound:
+            return ITERATOR_TYPE
+        if limited == self.element:
+            return self
+        return IteratorType(limited, self.may_be_unbound)
+
+    def update_nested_lists(self, elem_type):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        new_elem = self.element._update_as_nested_list(elem_type).limit_container_depth(
+            2
+        )
+        if new_elem == self.element:
+            return self
+        return IteratorType(new_elem, self.may_be_unbound)
+
+    def update_nested_dicts(self, key_type, val_type):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        new_elem = self.element._update_as_nested_dict(
+            key_type, val_type
+        ).limit_container_depth(2)
+        if new_elem == self.element:
+            return self
+        return IteratorType(new_elem, self.may_be_unbound)
+
+    def widen_mutable_containers(self):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        new_elem = self.element.widen_mutable_containers()
+        if new_elem == self.element:
+            return self
+        return IteratorType(new_elem, self.may_be_unbound)
+
     def join(self, other):
         return other.join_iterator(self)
 
@@ -1938,7 +2256,7 @@ class IteratorType(ValueType):
         elif self.element is BOTTOM:
             element = left.element
         else:
-            element = left.element.join(self.element)
+            element = left.element.join(self.element).limit_container_depth(2)
         if element is UNKNOWN and not may_be_unbound:
             return ITERATOR_TYPE
         if element == self.element and may_be_unbound == self.may_be_unbound:
@@ -1951,7 +2269,7 @@ class IteratorType(ValueType):
         return new.widen_iterator(self)
 
     def widen_iterator(self, old):
-        element = widen_fact(old.element, self.element)
+        element = widen_fact(old.element, self.element).limit_container_depth(2)
         may_be_unbound = old.may_be_unbound or self.may_be_unbound
         if element == self.element and may_be_unbound == self.may_be_unbound:
             return self
@@ -2019,6 +2337,8 @@ class BottomType(ValueType):
     join_list = join_unknown
     join_dict = join_unknown
     join_iterator = join_unknown
+    join_optional_integer = join_unknown
+    join_optional_value = join_unknown
     join_unbound = join_unknown
 
     def normalized_bottom(self):
@@ -2095,6 +2415,8 @@ class UnboundType(ValueType):
     join_list = join_unknown
     join_dict = join_unknown
     join_iterator = join_unknown
+    join_optional_integer = join_unknown
+    join_optional_value = join_unknown
     join_unbound = join_unknown
 
 
@@ -2118,14 +2440,157 @@ class OptionalIntegerType(ValueType):
     def may_run_user_code(self):
         return False
 
+    def as_bound(self):
+        if not self.may_be_unbound:
+            return self
+        return OptionalIntegerType(self.integer, False)
+
+    def with_unbound(self):
+        if self.may_be_unbound:
+            return self
+        return OptionalIntegerType(self.integer, True)
+
+    def join(self, other):
+        return other.join_optional_integer(self)
+
+    def join_optional_integer(self, left):
+        if left is self:
+            return self
+        joined = left.integer.join_integer(self.integer)
+        unbound = left.may_be_unbound or self.may_be_unbound
+        return OptionalIntegerType(joined, unbound)
+
+    def join_integer(self, left):
+        joined = left.as_bound().join_integer(self.integer)
+        unbound = left.may_be_unbound or self.may_be_unbound
+        return OptionalIntegerType(joined, unbound)
+
+    def join_none(self, left):
+        unbound = left.may_be_unbound or self.may_be_unbound
+        if unbound == self.may_be_unbound:
+            return self
+        return OptionalIntegerType(self.integer, unbound)
+
+    def widen(self, new):
+        return new.widen_optional_integer(self)
+
+    def widen_optional_integer(self, old):
+        integer = widen_fact(old.integer, self.integer)
+        unbound = old.may_be_unbound or self.may_be_unbound
+        if integer == self.integer and unbound == self.may_be_unbound:
+            return self
+        return OptionalIntegerType(integer, unbound)
+
     def narrow_none(self, is_none: bool):
         if self.may_be_unbound:
             return self
         return NONE_TYPE if is_none else self.integer
 
 
+@dataclass(frozen=True, slots=True)
+class OptionalValueType(ValueType):
+    inner: ValueType = UNKNOWN
+    may_be_unbound: bool = False
+
+    def accept(self, visitor):
+        return visitor.visit_OptionalValueType(self)
+
+    @property
+    def may_run_user_code(self):
+        return self.may_be_unbound or self.inner.may_run_user_code
+
+    def as_bound(self):
+        if not self.may_be_unbound:
+            return self
+        return OptionalValueType(self.inner, False)
+
+    def with_unbound(self):
+        if self.may_be_unbound:
+            return self
+        return OptionalValueType(self.inner, True)
+
+    def narrow_none(self, is_none: bool):
+        if self.may_be_unbound:
+            return self
+        return NONE_TYPE if is_none else self.inner
+
+    def join(self, other):
+        return other.join_optional_value(self)
+
+    def join_optional_value(self, left):
+        if left is self:
+            return self
+        joined = left.inner.join(self.inner)
+        unbound = left.may_be_unbound or self.may_be_unbound
+        if joined is UNKNOWN:
+            return UNKNOWN_UNBOUND if unbound else UNKNOWN
+        return OptionalValueType(joined, unbound)
+
+    def join_none(self, left):
+        unbound = left.may_be_unbound or self.may_be_unbound
+        if unbound == self.may_be_unbound:
+            return self
+        return OptionalValueType(self.inner, unbound)
+
+    def _join_with_inner(self, left):
+        joined = left.as_bound().join(self.inner)
+        unbound = left.may_be_unbound or self.may_be_unbound
+        if joined is UNKNOWN:
+            return UNKNOWN_UNBOUND if unbound else UNKNOWN
+        return OptionalValueType(joined, unbound)
+
+    join_float = _join_with_inner
+    join_text = _join_with_inner
+    join_bytes = _join_with_inner
+    join_tuple = _join_with_inner
+    join_list = _join_with_inner
+    join_dict = _join_with_inner
+    join_iterator = _join_with_inner
+    join_python_integer = _join_with_inner
+
+    def widen(self, new):
+        return new.widen_optional_value(self)
+
+    def widen_optional_value(self, old):
+        inner = widen_fact(old.inner, self.inner)
+        unbound = old.may_be_unbound or self.may_be_unbound
+        if inner == self.inner and unbound == self.may_be_unbound:
+            return self
+        if inner is UNKNOWN:
+            return UNKNOWN_UNBOUND if unbound else UNKNOWN
+        return OptionalValueType(inner, unbound)
+
+    def limit_container_depth(self, max_depth: int = 3):
+        limited = self.inner.limit_container_depth(max_depth)
+        if limited == self.inner:
+            return self
+        return OptionalValueType(limited, self.may_be_unbound)
+
+    def update_nested_lists(self, elem_type):
+        new_inner = self.inner._update_as_nested_list(elem_type).limit_container_depth(
+            3
+        )
+        if new_inner == self.inner:
+            return self
+        return OptionalValueType(new_inner, self.may_be_unbound)
+
+    def update_nested_dicts(self, key_type, val_type):
+        new_inner = self.inner._update_as_nested_dict(
+            key_type, val_type
+        ).limit_container_depth(3)
+        if new_inner == self.inner:
+            return self
+        return OptionalValueType(new_inner, self.may_be_unbound)
+
+    def widen_mutable_containers(self):
+        new_inner = self.inner.widen_mutable_containers()
+        if new_inner == self.inner:
+            return self
+        return OptionalValueType(new_inner, self.may_be_unbound)
+
+
 def widen_fact(previous: ValueType, current: ValueType) -> ValueType:
-    return previous.widen(previous.join(current))
+    return previous.widen(previous.join(current)).limit_container_depth(3)
 
 
 INTEGER = IntegerType()
@@ -2464,6 +2929,13 @@ class _SerializeValueType(ValueTypeVisitor):
             "unbound": fact.may_be_unbound,
         }
 
+    def visit_OptionalValueType(self, fact):
+        return {
+            "kind": "opt_val",
+            "inner": fact.inner.to_dict(),
+            "unbound": fact.may_be_unbound,
+        }
+
 
 _SERIALIZE_VALUE_TYPE = _SerializeValueType()
 
@@ -2552,4 +3024,9 @@ def value_type_from_dict(data: dict | None) -> ValueType:
         return OptionalIntegerType(
             IntegerType(inner.minimum, inner.maximum), may_be_unbound=unbound
         )
+    if kind == "opt_val":
+        inner = value_type_from_dict(data.get("inner"))
+        if inner is UNKNOWN:
+            return UNKNOWN_UNBOUND if unbound else UNKNOWN
+        return OptionalValueType(inner, may_be_unbound=unbound)
     return UNKNOWN

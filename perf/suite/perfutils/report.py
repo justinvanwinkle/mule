@@ -3,6 +3,10 @@
 import html
 import json
 import math
+import re
+from datetime import datetime
+
+from . import history
 
 COLORS = ("#c14c32", "#267a77", "#71558a", "#a47116")
 
@@ -241,3 +245,100 @@ def write_report(report, directory):
     (directory / "kernel.svg").write_text(chart(report, "kernel_seconds"))
     (directory / "process.svg").write_text(chart(report, "process_seconds"))
     (directory / "index.html").write_text(dashboard(report))
+
+
+def _measured_revision(report):
+    for runtime in report.get("runtimes", ()):
+        if runtime.get("name", "").lower().startswith("mule") and runtime.get(
+            "revision"
+        ):
+            return runtime["revision"]
+    for runtime in report.get("runtimes", ()):
+        if runtime.get("revision"):
+            return runtime["revision"]
+    return None
+
+
+def update_site(report, root):
+    """Update the local GitHub Pages site assets and dated snapshot captions."""
+    assets = root / "docs/assets"
+    if assets.is_dir():
+        write_report(report, assets)
+    stamp = report["created_utc"]
+    dt = datetime.strptime(stamp, "%Y%m%dT%H%M%S.%fZ")
+    month_day = f"{dt.strftime('%B')} {dt.day}"
+    year = f"{dt.year}"
+    date_label = f"{month_day}, {year}"
+    rev = _measured_revision(report)
+    short_commit = rev["commit"][:9] if rev and rev.get("commit") else None
+    dirty = (
+        rev.get("tracked_diff_sha256") not in (None, history._CLEAN_DIFF)
+        if rev
+        else False
+    )
+
+    index_html = root / "docs/index.html"
+    if index_html.is_file():
+        text = index_html.read_text(encoding="utf-8")
+        text = re.sub(
+            r"<figcaption>[A-Za-z]+ \d+, \d{4} · ",
+            f"<figcaption>{date_label} · ",
+            text,
+            count=1,
+        )
+        if short_commit:
+            suffix = " with uncommitted tracked changes." if dirty else "."
+            text = re.sub(
+                r"Measured checkout: <code>[0-9a-f]+</code>(?: with uncommitted tracked changes)?\.",
+                f"Measured checkout: <code>{short_commit}</code>{suffix}",
+                text,
+                count=1,
+            )
+        index_html.write_text(text, encoding="utf-8")
+
+    docs_readme = root / "docs/README.md"
+    if docs_readme.is_file():
+        text = docs_readme.read_text(encoding="utf-8")
+        text = re.sub(
+            r"(preserves the complete recorded suite run from\n)`[0-9TZ.]+`\.",
+            rf"\1`{stamp}`.",
+            text,
+            count=1,
+        )
+        if short_commit:
+            readme_checkout = (
+                f"The measured checkout was `{short_commit}` with\n"
+                "uncommitted tracked changes, identified by its recorded diff digest."
+                if dirty
+                else f"The measured checkout was `{short_commit}`."
+            )
+            text = re.sub(
+                r"The measured checkout was `[0-9a-f]+`(?: with\nuncommitted tracked changes, identified by its recorded diff digest)?\.",
+                readme_checkout,
+                text,
+                count=1,
+            )
+        docs_readme.write_text(text, encoding="utf-8")
+
+    agents_md = root / "AGENTS.md"
+    if agents_md.is_file():
+        text = agents_md.read_text(encoding="utf-8")
+        text = re.sub(
+            r"from the recorded [A-Za-z]+ \d+,\n\d{4} suite run\.",
+            f"from the recorded {month_day},\n{year} suite run.",
+            text,
+            count=1,
+        )
+        if short_commit:
+            agents_checkout = (
+                f"The measured checkout\nwas `{short_commit}` with uncommitted tracked changes."
+                if dirty
+                else f"The measured checkout\nwas `{short_commit}`."
+            )
+            text = re.sub(
+                r"The measured checkout\nwas `[0-9a-f]+`(?: with uncommitted tracked changes)?\.",
+                agents_checkout,
+                text,
+                count=1,
+            )
+        agents_md.write_text(text, encoding="utf-8")

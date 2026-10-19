@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import history
-from .report import write_report
+from .report import update_site, write_report
 
 SUITE = Path(__file__).resolve().parents[1]
 ROOT = SUITE.parents[1]
@@ -454,6 +454,9 @@ def main():
     if complete:
         history.record(report, args.history)
         print(f"Recorded in {args.history}")
+        if args.history.resolve() == (ROOT / "perf/history.jsonl").resolve():
+            update_site(report, ROOT)
+            print(f"Updated {ROOT / 'docs'}")
     return int(any(row["status"] != "ok" for row in report["rows"]))
 
 

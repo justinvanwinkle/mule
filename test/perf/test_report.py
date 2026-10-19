@@ -2,7 +2,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from perf.suite.perfutils.report import chart, dashboard
+from perf.suite.perfutils.report import chart, dashboard, update_site
 
 NS = {"svg": "http://www.w3.org/2000/svg"}
 
@@ -139,3 +139,45 @@ def test_dashboard_escapes_failure_details_and_provenance():
     assert "&lt;script&gt;bad()&lt;/script&gt;" in page
     assert "&lt;version &amp; build&gt;" in page
     assert "<script>" not in page
+
+
+def test_update_site_writes_assets_and_updates_captions(tmp_path):
+    (tmp_path / "docs/assets").mkdir(parents=True)
+    (tmp_path / "docs/index.html").write_text(
+        "<figcaption>October 18, 2026 · 14 workloads</figcaption>\n"
+        "<p>Measured checkout: <code>2d5e473ee</code> with uncommitted tracked changes.</p>\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs/README.md").write_text(
+        "preserves the complete recorded suite run from\n"
+        "`20261018T000000.000000Z`. The measured checkout was `2d5e473ee` with\n"
+        "uncommitted tracked changes, identified by its recorded diff digest.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "AGENTS.md").write_text(
+        "from the recorded October 18,\n"
+        "2026 suite run.\n"
+        "The measured checkout\n"
+        "was `2d5e473ee` with uncommitted tracked changes.\n",
+        encoding="utf-8",
+    )
+    source = report((0.1, 0.2, 0.3))
+    source["created_utc"] = "20261019T173501.070793Z"
+    source["runtimes"][1]["revision"] = {
+        "commit": "ae24f3227abcdef0123456789",
+        "tracked_diff_sha256": "dirty",
+    }
+    for row in source["rows"]:
+        row["summary"]["process_seconds"] = {"median": 0.1, "stdev": 0.01}
+        row["summary"]["kernel_seconds"]["stdev"] = 0.01
+    update_site(source, tmp_path)
+    assert (tmp_path / "docs/assets/results.json").is_file()
+    assert (tmp_path / "docs/assets/kernel.svg").is_file()
+    assert (tmp_path / "docs/assets/process.svg").is_file()
+    assert (tmp_path / "docs/assets/index.html").is_file()
+    assert "October 19, 2026 · " in (tmp_path / "docs/index.html").read_text()
+    assert "<code>ae24f3227</code>" in (tmp_path / "docs/index.html").read_text()
+    assert "20261019T173501.070793Z" in (tmp_path / "docs/README.md").read_text()
+    assert "`ae24f3227`" in (tmp_path / "docs/README.md").read_text()
+    assert "October 19,\n2026 suite run." in (tmp_path / "AGENTS.md").read_text()
+    assert "was `ae24f3227`" in (tmp_path / "AGENTS.md").read_text()
