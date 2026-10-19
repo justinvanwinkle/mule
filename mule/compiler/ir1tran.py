@@ -688,9 +688,7 @@ class FunctionConverter:
     def ref(
         self, start, next_, result, leaf, source, *, final=False, allow_unbound=False
     ) -> Ref:
-        node = Ref(
-            self.lexenv, source, leaf, final=final, allow_unbound=allow_unbound
-        )
+        node = Ref(self.lexenv, source, leaf, final=final, allow_unbound=allow_unbound)
         leaf.refs.append(node)
         link_node_to_previous_ctran(node, start)
         use_continuation(node, next_, result)
@@ -1720,7 +1718,10 @@ class _Expressions(ast.Visitor):
     def visit_Await(self, node):
         function = self.function
         start, next_, result = self.frame
-        if function.body_kind not in ("coroutine", "async_generator"):
+        if (
+            function.body_kind not in ("coroutine", "async_generator")
+            or function.class_scopes
+        ):
             function.error("'await' outside async function", node)
         function.protocol(start, next_, result, "await_value", (node.value,), node)
 
@@ -1740,7 +1741,9 @@ class _Expressions(ast.Visitor):
                 body = [ast.If(condition, body, span=span)]
             source = ast.Name("$iterable", span=span) if index == 0 else clause.iterable
             body = [
-                ast.For(clause.target, source, body, is_async=clause.is_async, span=span)
+                ast.For(
+                    clause.target, source, body, is_async=clause.is_async, span=span
+                )
             ]
         is_async = any(stmt.accept(_CONTAINS_ASYNC) for stmt in body)
         # Assignment expressions bind in the enclosing scope (PEP 572).
@@ -1837,7 +1840,9 @@ class _Expressions(ast.Visitor):
                 body = [ast.If(condition, body, span=span)]
             source = ast.Name("$iterable", span=span) if index == 0 else clause.iterable
             body = [
-                ast.For(clause.target, source, body, is_async=clause.is_async, span=span)
+                ast.For(
+                    clause.target, source, body, is_async=clause.is_async, span=span
+                )
             ]
         statements = [ast.Assignment([result_name], initial, span=span), *body]
 
@@ -2562,7 +2567,12 @@ class _Statements(ast.Visitor):
             )
             entered = Ctran()
             function.known(
-                matched_ctran, entered, None, fndb.ENTER_HANDLER, (matched_val,), handler
+                matched_ctran,
+                entered,
+                None,
+                fndb.ENTER_HANDLER,
+                (matched_val,),
+                handler,
             )
             unwind = function.block()
             active = Cleanup(
@@ -2598,7 +2608,9 @@ class _Statements(ast.Visitor):
                     function.jump(frontier, unmatched)
             current = linked(unwind.start, unwind, "start")
             ctran, handler_exc = Ctran(), Lvar()
-            function.known(current, ctran, handler_exc, fndb.CATCH_EXCEPTION, (), handler)
+            function.known(
+                current, ctran, handler_exc, fndb.CATCH_EXCEPTION, (), handler
+            )
             current = ctran
             if handler.binding is not None:
                 ctran = Ctran()
@@ -2752,7 +2764,10 @@ class _Statements(ast.Visitor):
         function = self.function
         start, next_, _ = self.frame
         if node.is_async:
-            if function.body_kind not in ("coroutine", "async_generator"):
+            if (
+                function.body_kind not in ("coroutine", "async_generator")
+                or function.class_scopes
+            ):
                 function.error("'async with' outside async function", node)
             self.expanded(start, next_, _async_with(function, node))
             return
@@ -2882,7 +2897,10 @@ class _Statements(ast.Visitor):
         function = self.function
         start, next_, _ = self.frame
         if node.is_async:
-            if function.body_kind not in ("coroutine", "async_generator"):
+            if (
+                function.body_kind not in ("coroutine", "async_generator")
+                or function.class_scopes
+            ):
                 function.error("'async for' outside async function", node)
             self.expanded(start, next_, _async_for(function, node))
             return
@@ -4926,6 +4944,108 @@ class _CallTarget(ast.Visitor):
                 CallInfo((), function.converter.location(self.call)),
             )
             return
+        if (
+            node.identifier in ("locals", "vars", "dir")
+            and not self.call.arguments
+            and not function.local(node.identifier)
+            and function.comprehension_variable(node.identifier) is None
+            and function.enclosing_local(node.identifier) is None
+        ):
+            ctran, callee = function.value(self.start, node)
+            if function.class_scopes and (
+                not function.comprehension_scopes
+                or function.comprehension_scopes[-1].class_depth
+                < len(function.class_scopes)
+            ):
+                after_ns, namespace = Ctran(), Lvar()
+                function.ref(
+                    ctran,
+                    after_ns,
+                    namespace,
+                    function.class_scopes[-1].namespace,
+                    node,
+                )
+                after_snapshot, snapshot = Ctran(), Lvar()
+                function.protocol(
+                    after_ns,
+                    after_snapshot,
+                    snapshot,
+                    "globals_dict",
+                    (namespace,),
+                    node,
+                )
+            elif function.is_module and not function.comprehension_scopes:
+                after_globals, namespace = Ctran(), Lvar()
+                function.known(
+                    ctran, after_globals, namespace, fndb.CURRENT_GLOBALS, (), node
+                )
+                after_snapshot, snapshot = Ctran(), Lvar()
+                function.protocol(
+                    after_globals,
+                    after_snapshot,
+                    snapshot,
+                    "globals_dict",
+                    (namespace,),
+                    node,
+                )
+            else:
+                entries = function.local_snapshot_entries()
+                name_lvars = []
+                value_lvars = []
+                for name, var in entries:
+                    after_name, name_lvar = Ctran(), Lvar()
+                    function.constant(
+                        ctran, after_name, name_lvar, ast.TextLiteral(name)
+                    )
+                    ctran = after_name
+                    name_lvars.append(name_lvar)
+                    after_val, val_lvar = Ctran(), Lvar()
+                    function.ref(
+                        ctran,
+                        after_val,
+                        val_lvar,
+                        var,
+                        node,
+                        allow_unbound=True,
+                    )
+                    ctran = after_val
+                    value_lvars.append(val_lvar)
+                after_names, names_tuple = Ctran(), Lvar()
+                function.known(
+                    ctran,
+                    after_names,
+                    names_tuple,
+                    fndb.BUILD_TUPLE,
+                    tuple(name_lvars),
+                    node,
+                )
+                after_values, values_tuple = Ctran(), Lvar()
+                function.known(
+                    after_names,
+                    after_values,
+                    values_tuple,
+                    fndb.BUILD_TUPLE,
+                    tuple(value_lvars),
+                    node,
+                )
+                after_snapshot, snapshot = Ctran(), Lvar()
+                function.protocol(
+                    after_values,
+                    after_snapshot,
+                    snapshot,
+                    "snapshot_locals",
+                    (names_tuple, values_tuple),
+                    node,
+                )
+            function.protocol(
+                after_snapshot,
+                self.next,
+                self.result,
+                "call_with_locals",
+                (callee, snapshot),
+                self.call,
+            )
+            return
         if node.identifier != "super" or self.call.arguments:
             return self.visit_Node(node)
         parameters = function.lambda_.vars
@@ -5463,6 +5583,43 @@ class _ContainsYield(ast.Visitor):
         return node.clauses[0].iterable.accept(self)
 
 
+class _ContainsAsync(ast.Visitor):
+    """Whether an expanded generator-expression body awaits or iterates
+    asynchronously, making the generator expression an async generator."""
+
+    def visit_Node(self, node):
+        for child in node.children():
+            if child.accept(self):
+                return True
+        return False
+
+    def visit_Await(self, node):
+        return True
+
+    def visit_For(self, node):
+        return node.is_async or self.visit_Node(node)
+
+    def visit_With(self, node):
+        return node.is_async or self.visit_Node(node)
+
+    def visit_FunctionDefinition(self, node):
+        return False
+
+    def visit_Lambda(self, node):
+        return False
+
+    def visit_ClassDefinition(self, node):
+        return False
+
+    def visit_Comprehension(self, node):
+        if node.kind == ast.ComprehensionKind.GENERATOR:
+            return node.clauses[0].iterable.accept(self)
+        return any(clause.is_async for clause in node.clauses) or self.visit_Node(node)
+
+
+_CONTAINS_ASYNC = _ContainsAsync()
+
+
 def _comprehension_assignments(node):
     """Names assignment expressions in a comprehension bind."""
     collector = _AssignmentExpressionNames()
@@ -5655,9 +5812,11 @@ class _ScopeVisitor(_ImportNames):
     def __init__(self, function):
         self.function = function
         self.seen = set(function.lambda_.parameters)
+        self.all_seen = set(function.lambda_.parameters)
 
     def imported_name(self, name, node):
         self.seen.add(name)
+        self.all_seen.add(name)
 
     def visit_Node(self, node):
         for child in node.children():
@@ -5665,6 +5824,7 @@ class _ScopeVisitor(_ImportNames):
 
     def visit_Name(self, node):
         self.seen.add(node.identifier)
+        self.all_seen.add(node.identifier)
 
     def visit_AnnotatedAssignment(self, node):
         node.target.accept(self)
@@ -5674,6 +5834,10 @@ class _ScopeVisitor(_ImportNames):
     def visit_Comprehension(self, node):
         # Only the first iterable is evaluated in this scope.
         node.clauses[0].iterable.accept(self)
+        if node.kind != ast.ComprehensionKind.GENERATOR:
+            saved = set(self.seen)
+            self.visit_Node(node)
+            self.seen = saved
 
     def visit_Lambda(self, node):
         # Only defaults run in this scope; the body is another scope.
@@ -5683,11 +5847,13 @@ class _ScopeVisitor(_ImportNames):
 
     def visit_FunctionDefinition(self, node):
         self.seen.add(node.name)
+        self.all_seen.add(node.name)
 
     def visit_ClassDefinition(self, node):
         for child in (*node.decorators, *node.arguments):
             child.accept(self)
         self.seen.add(node.name)
+        self.all_seen.add(node.name)
 
     def visit_Global(self, node):
         for name in node.identifiers:

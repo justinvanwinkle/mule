@@ -36,6 +36,7 @@ from .artifacts import (
     tool_identity,
 )
 from .codegen import ForeignFunction, Program, generate
+from .ctype import UNKNOWN, ValueType, value_type_from_dict
 from .inputs import file_digest, read_source
 from .ir1opt import constant_literal
 from .ir1tran_lambda import lambda_blocks
@@ -85,6 +86,9 @@ class BuiltinsInterface:
     entries: dict[str, str | None]
     modules: dict[str, CompiledModule]
     builtins: list[str]
+    exported_types: dict[tuple[str, str], ValueType]
+    storage_methods: dict[tuple[str, str], ValueType]
+    builtin_return_types: dict[str, ValueType]
 
     def to_json(self) -> str:
         return json.dumps(
@@ -96,6 +100,7 @@ class BuiltinsInterface:
                         "defaults": list(function.signature.default_parameters),
                         "variadic": function.signature.variadic,
                         "closure": function.takes_closure,
+                        "return_type": function.return_type.to_dict(),
                     }
                     for name, function in self.functions.items()
                 },
@@ -103,6 +108,18 @@ class BuiltinsInterface:
                 "sequence_functions": self.sequence_functions,
                 "entries": self.entries,
                 "builtins": self.builtins,
+                "exported_types": {
+                    f"{mod}:{fn}": vtype.to_dict()
+                    for (mod, fn), vtype in self.exported_types.items()
+                },
+                "storage_methods": {
+                    f"{cls}.{meth}": vtype.to_dict()
+                    for (cls, meth), vtype in self.storage_methods.items()
+                },
+                "builtin_return_types": {
+                    name: vtype.to_dict()
+                    for name, vtype in self.builtin_return_types.items()
+                },
                 "modules": {
                     name: {
                         **asdict(module),
@@ -128,6 +145,9 @@ class BuiltinsInterface:
                     variadic=entry["variadic"],
                 ),
                 entry["closure"],
+                value_type_from_dict(entry["return_type"])
+                if "return_type" in entry
+                else UNKNOWN,
             )
             for name, entry in data["functions"].items()
         }
@@ -143,6 +163,18 @@ class BuiltinsInterface:
             )
             for name, entry in data["modules"].items()
         }
+        exported_types = {
+            tuple(key.split(":", 1)): value_type_from_dict(val)
+            for key, val in data.get("exported_types", {}).items()
+        }
+        storage_methods = {
+            tuple(key.split(".", 1)): value_type_from_dict(val)
+            for key, val in data.get("storage_methods", {}).items()
+        }
+        builtin_return_types = {
+            key: value_type_from_dict(val)
+            for key, val in data.get("builtin_return_types", {}).items()
+        }
         return cls(
             functions,
             data["methods"],
@@ -150,6 +182,9 @@ class BuiltinsInterface:
             data["entries"],
             modules,
             data["builtins"],
+            exported_types,
+            storage_methods,
+            builtin_return_types,
         )
 
 
@@ -189,7 +224,11 @@ def _builtin_method_rank(target_name: str) -> int:
 def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
     functions = {
         lambda_.name: ForeignFunction(
-            lambda_.name, lambda_.parameters, lambda_.signature, lambda_.takes_closure
+            lambda_.name,
+            lambda_.parameters,
+            lambda_.signature,
+            lambda_.takes_closure,
+            unit.facts[lambda_].return_type if lambda_ in unit.facts else UNKNOWN,
         )
         for lambda_ in unit.lambdas
     }
@@ -219,6 +258,9 @@ def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
         },
         dict(modules),
         installed_builtins(unit),
+        dict(unit.exported_types),
+        dict(unit.storage_methods),
+        dict(unit.builtin_return_types),
     )
 
 
@@ -428,6 +470,9 @@ def import_resolver(
     compiler = ModuleCompiler(filename, roots=roots, package=package)
     compiler.configure_project()
     compiler.modules.update(interface.modules)
+    compiler.exported_types.update(interface.exported_types)
+    compiler.storage_methods.update(interface.storage_methods)
+    compiler.builtin_return_types.update(interface.builtin_return_types)
     if module is not None:
         compiler.modules[module.name] = module
     return compiler

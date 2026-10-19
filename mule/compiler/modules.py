@@ -7,8 +7,16 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
+from mule import ast
+
+from .ctype import UNKNOWN, ValueType
 from .inputs import directory_entries, directory_exists, read_source, source_exists
-from .main import compile_source
+from .ir1opt import constant_literal
+from .ir1tran_lambda import lambda_blocks
+from .ir1util import class_method_definitions, known_calls, made_lambda
+from .locall import _ImportBindingStores, _PROTOCOL_PREFIXES, global_bindings
+from .main import Compilation, compile_toplevel, ir1_phases
+from .node import Combination, GlobalVar, LeafVisitor, NodeVisitor, Ref, linked
 
 STDLIB = Path(__file__).resolve().parents[2] / "stdlib"
 NATIVE_MODULES = {
@@ -17,6 +25,45 @@ NATIVE_MODULES = {
     "_time": "mule_time_module_init",
     "builtins": "mule_builtins_module_init",
 }
+
+
+class _BuiltinNameLiteral(ast.Visitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_TextLiteral(self, node: ast.TextLiteral):
+        return node.value
+
+
+class _GlobalVarName(NodeVisitor, LeafVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        return leaf.name
+
+
+class _ImportedModuleName(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if node.fun_info is not None and node.fun_info.name == "%import":
+            return node.info.module_name
+        if node.fun_info is not None and node.fun_info.name == "%import_module":
+            return node.info
+        return None
+
+
+_BUILTIN_NAME_LITERAL = _BuiltinNameLiteral()
+_GLOBAL_VAR_NAME = _GlobalVarName()
+_IMPORTED_MODULE_NAME = _ImportedModuleName()
 
 
 @dataclass(frozen=True)
@@ -107,6 +154,9 @@ class ModuleCompiler:
         # Lambdas and facts of every imported module, in compilation order.
         self.lambdas = []
         self.facts = {}
+        self.exported_types: dict[tuple[str, str], ValueType] = {}
+        self.storage_methods: dict[tuple[str, str], ValueType] = {}
+        self.builtin_return_types: dict[str, ValueType] = {}
         # Imported modules awaiting compilation. An importer needs only the
         # descriptor, so modules compile one after another rather than nested
         # inside their importer, and stack depth does not grow with import
@@ -285,11 +335,74 @@ class ModuleCompiler:
                     if file is not None or locations:
                         self.resolve(candidate, None, None)
 
+    def record_types(self, namespace: str, compilation: Compilation) -> None:
+        facts = compilation.facts
+        if facts is None:
+            return
+        for pub_name, lam in (
+            global_bindings([compilation.entry]).get(namespace, {}).items()
+        ):
+            if lam in facts:
+                ret_type = facts[lam].return_type
+                if ret_type is not UNKNOWN:
+                    self.exported_types[namespace, pub_name] = ret_type
+        class_names = {
+            linked(call.info, call, "class definition").identity: linked(
+                call.info, call, "class definition"
+            ).public_name
+            for call in known_calls(compilation.entry, "%make_class")
+        }
+        for class_id, methods in class_method_definitions(compilation.entry).items():
+            class_name = class_names.get(class_id, class_id)
+            for method_name, target in methods.items():
+                if target in facts:
+                    ret_type = facts[target].return_type
+                    if ret_type is not UNKNOWN:
+                        self.storage_methods[class_name, method_name] = ret_type
+        import_bindings: dict[str, tuple[str, str]] = {}
+        imp_visitor = _ImportBindingStores(import_bindings)
+        for block in lambda_blocks(compilation.entry):
+            for node in block.nodes():
+                node.accept(imp_visitor)
+        for call in known_calls(compilation.entry, "_install_builtin"):
+            if len(call.args) != 2:
+                continue
+            literal = constant_literal(call.args[0])
+            builtin_name = (
+                None if literal is None else literal.accept(_BUILTIN_NAME_LITERAL)
+            )
+            target_name = (
+                call.args[1].use().accept(_GLOBAL_VAR_NAME)
+                if len(call.args[1].uses) == 1
+                else None
+            )
+            if builtin_name is None or target_name is None:
+                continue
+            ret_type = self.exported_types.get((namespace, target_name), UNKNOWN)
+            if ret_type is UNKNOWN and target_name in import_bindings:
+                ret_type = self.exported_types.get(
+                    import_bindings[target_name], UNKNOWN
+                )
+            if ret_type is not UNKNOWN:
+                self.builtin_return_types[builtin_name] = ret_type
+
     def compile_pending(self):
         """Compile every module imported so far, and those they import."""
+        if (
+            not self.storage_methods
+            and self.primitives is None
+            and not self.prefix.startswith(_PROTOCOL_PREFIXES)
+        ):
+            from .sequence_protocol import stdlib_type_summary
+
+            exported, methods, builtins = stdlib_type_summary()
+            self.exported_types.update(exported)
+            self.storage_methods.update(methods)
+            self.builtin_return_types.update(builtins)
+        pending_compilations: list[tuple[CompiledModule, Compilation]] = []
         while self.pending:
             descriptor = self.pending.popleft()
-            compilation = compile_source(
+            compilation = compile_toplevel(
                 descriptor.source(),
                 str(descriptor.path),
                 imports=self,
@@ -297,8 +410,47 @@ class ModuleCompiler:
                 namespace=descriptor.name,
                 primitives=self.primitives,
             )
+            pending_compilations.append((descriptor, compilation))
+        if not pending_compilations:
+            return
+        by_name = {desc.name: (desc, comp) for desc, comp in pending_compilations}
+        deps: dict[str, list[str]] = {}
+        for desc, comp in pending_compilations:
+            mod_deps: list[str] = []
+            for lam in comp.lambdas:
+                for block in lambda_blocks(lam):
+                    for node in block.nodes():
+                        imp_name = node.accept(_IMPORTED_MODULE_NAME)
+                        if (
+                            imp_name is not None
+                            and imp_name in by_name
+                            and imp_name != desc.name
+                            and imp_name not in mod_deps
+                        ):
+                            mod_deps.append(imp_name)
+            deps[desc.name] = mod_deps
+        visited: set[str] = set()
+        ordered: list[tuple[CompiledModule, Compilation]] = []
+
+        def visit(name: str) -> None:
+            if name in visited:
+                return
+            visited.add(name)
+            for dep in deps.get(name, ()):
+                visit(dep)
+            ordered.append(by_name[name])
+
+        for desc, _ in pending_compilations:
+            visit(desc.name)
+        for descriptor, compilation in ordered:
+            compilation.imported_function_types = self.exported_types
+            compilation.storage_methods = self.storage_methods
+            compilation.builtin_return_types = self.builtin_return_types
+            ir1_phases(compilation)
             if compilation.facts is None:
                 raise RuntimeError(f"{descriptor.path} was not analyzed")
+            self.record_types(descriptor.name, compilation)
+        for descriptor, compilation in pending_compilations:
             self.lambdas.extend(compilation.lambdas)
             self.facts.update(compilation.facts)
 
@@ -306,8 +458,24 @@ class ModuleCompiler:
         """Compile the main module and every module it imports; imported
         modules accumulate on the compiler. Returns the main module's
         ``Compilation``."""
-        compilation = compile_source(source, filename, imports=self)
+        if (
+            not self.storage_methods
+            and self.primitives is None
+            and not self.prefix.startswith(_PROTOCOL_PREFIXES)
+        ):
+            from .sequence_protocol import stdlib_type_summary
+
+            exported, methods, builtins = stdlib_type_summary()
+            self.exported_types.update(exported)
+            self.storage_methods.update(methods)
+            self.builtin_return_types.update(builtins)
+        compilation = compile_toplevel(source, filename, imports=self)
         self.compile_pending()
+        compilation.imported_function_types = self.exported_types
+        compilation.storage_methods = self.storage_methods
+        compilation.builtin_return_types = self.builtin_return_types
+        ir1_phases(compilation)
+        self.record_types("__main__", compilation)
         return compilation
 
 

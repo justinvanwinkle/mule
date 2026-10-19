@@ -685,14 +685,17 @@ class _InstanceDict(object):
         return repr(self.copy())
 
 
-_GLOBALS_DICTS = {}
+_GLOBALS_DICTS = None
 
 
 def _globals_dict(namespace):
+    global _GLOBALS_DICTS
     if namespace is None:
         return None
     if namespace_items(namespace) is None:
         return namespace
+    if _GLOBALS_DICTS is None:
+        _GLOBALS_DICTS = {}
     key = identity_hash(namespace)
     bucket = _GLOBALS_DICTS.get(key)
     if bucket is not None:
