@@ -1,8 +1,16 @@
 # Mule website
 
 This directory is a dependency-free static GitHub Pages site. It uses local
-styles and SVG graphics, without a JavaScript bundle, external fonts, or a build
+styles, SVG graphics, and transparent PNG branding, without a JavaScript bundle, external fonts, or a build
 service. `index.html` and `style.css` define the landing page.
+
+## Branding
+
+The selected artwork lives in `assets/brand/`: `mule-stride-v1.png` is the
+header wordmark, `mule-sly-red-eye-v1.png` is the hero mascot and site icon,
+and `mule-mark-v1.png` is the standalone mule used in the footer. These are
+transparent raster images; the original generation prompts are saved beside
+them. The other concepts in that directory are not used by the page.
 
 ## Preview locally
 

@@ -1,0 +1,9 @@
+Generated with the built-in image_gen tool. Output: mule-cute-red-eye-v1.png, transparent raster PNG.
+
+Use case: logo-brand.
+Asset type: simple standalone Mule compiler logo, transparent background.
+User feedback: previous red-eyed mule was too much like a college football team mascot. They want a SIMPLIFIED, CUTE, INSANE RED-EYED MULE HEAD.
+Create a fresh minimalist symbol: ONE front-facing cute little mule head, built from about a dozen broad rounded shapes. Soft blue #3776AB head, two absurdly long round-ended ears, one ear perked up and the other tipped outward, tiny single rounded hair tuft, big golden yellow #FFD343 oval muzzle with two tiny charcoal nostril dots. Very simple wide white eyes with small vivid RED irises and tiny dark pinprick pupils, slightly uneven and looking in slightly different directions: a goofy, sleep-deprived, delightfully unhinged stare. Little crooked smile with ONE tiny square tooth. Overall adorable, daft and chaotic, with a warm approachable expression. Think charming minimal open-source software icon drawn with simple soft geometry. Broad blunt equine muzzle and long mule ears must clearly read as a mule.
+Extreme visual economy: plain filled shapes, almost no internal linework, smooth curves, no fur detail. Blue/gold are solid color fields, eyes are the tiny vivid red accent. Cohesive compact head silhouette, readable at 32 pixels. Keep facial features bold enough to survive reduction.
+No angry slanted eyebrows, snarling, aggressive cheek muscles, bared sharp teeth, jagged fur, sharp mane, heavy black contour, sports emblem treatment, esports illustration, shield, badge, border, horns, body, shoulders, text, letters, neck crest, or intersecting heads. No shading, gradients, highlights on the blue/gold surfaces, shadows, texture, 3D or realism. No repeated logos or presentation sheet. One centered logo only, square canvas, all ears visible, even 12% clear space, genuinely transparent background.
+

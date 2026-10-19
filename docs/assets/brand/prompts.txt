@@ -1,0 +1,32 @@
+Mule logo concepts
+
+Generated with the built-in image_gen tool.
+Reference: https://www.python.org/community/logos/
+Transparent raster PNG concept lockups; these are not vector masters.
+Palette requested: blue #3776AB, gold #FFD343, charcoal #343A40.
+
+mule-head-v1.png
+
+Use case: logo-brand.
+Asset type: original primary logo for Mule, an ahead-of-time Python compiler. Create one polished horizontal logo lockup, generously spaced, on a genuinely transparent background.
+Primary request: Python Software Foundation visual warmth and recognizably friendly blue-and-gold palette, but an original distinctly MULISH identity. A single minimalist front-facing mule head with two tall slightly asymmetric long ears, broad rounded muzzle, short mane, and small confident eyes. Build the head from two or three substantial rounded geometric fields, rich medium blue #3776AB and warm golden yellow #FFD343. Blue and gold cooperate as face and muzzle, with clever negative space. Distinct compact silhouette, subtle stubborn personality. Original outline and arrangement; no snakes, no interlocking serpents, no Python emblem tracing.
+Composition: icon at left, exact lowercase wordmark "mule" at right in charcoal #343A40, soft rounded geometric sans typography with open counters. Icon about same visual height as wordmark plus ears. Excellent optical balance. Asset fills canvas with sensible clear space. Flat vector-style artwork with crisp edges, no thin detail, no gradients or shadows, no 3D, no sticker outline, no extra wording or specimens. Design credible for a serious open-source compiler, readable at small sizes. Exact text: "mule".
+
+---
+
+mule-monogram-v1.png
+
+Use case: logo-brand.
+Asset type: original alternate horizontal Mule compiler logo, transparent background.
+Primary request: capture the friendly rounded geometry, blue and yellow warmth and lowercase typography associated with the Python Software Foundation, through an entirely new mule monogram. Design a bold lowercase letter m whose two upright rounded stems also read as a mule's long ears, with a simple slightly protruding golden muzzle integrated below. One very small negative-space eye is enough. Clever, minimal, immediately reads mule, not rabbit, not horse. Two substantial smooth shapes in rich blue #3776AB and warm yellow #FFD343, no Python snake emblem, no coiled or interlocking snake-like shapes. Architectural clarity and subtle stubborn energy.
+Composition: single horizontal lockup: compact monogram symbol at left, exact word "mule" at right in charcoal #343A40 using warm rounded lowercase geometric sans typography. Keep consistent visual weight. Large asset with modest clear space. Flat vector-like logo, crisp geometry, clean negative space, no border, no rendering effects, no gradients, no shadows, no mockup, no additional text. Actual transparent background.
+
+---
+
+mule-stride-v1.png
+
+Use case: logo-brand.
+Asset type: original alternate horizontal logo for Mule native Python compiler, transparent background.
+Primary request: approachable open-source language brand inspired by Python Software Foundation's rounded blue and golden palette, distinctly mulish. Draw one compact forward-moving full-body mule side silhouette facing right. Long upright ears, short mane, broad blunt muzzle, sturdy body and four simplified stocky legs, small tufted tail. Friendly determined stance, not cartoon mascot art. Stylize into very few smooth chunky geometric shapes with rich blue #3776AB body and warm golden yellow #FFD343 saddle-shaped accent integrated into body. Strong memorable silhouette, no detail clutter, credible software logo.
+Composition: icon at left, exact lowercase wordmark "mule" at right in charcoal #343A40, rounded geometric sans with open counters, carefully balanced. One logo lockup only. Broad horizontal canvas, generous but not excessive clear space. Flat vector-like graphic with clean edges and solid colors. No gradients, shadows, 3D, scenery, border, mockup, watermark, or other text. Original geometry, no Python snakes or Python emblem. Background genuinely transparent.
+

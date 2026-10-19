@@ -1,0 +1,9 @@
+Generated with the built-in image_gen tool. Output: mule-sly-red-eye-v1.png, transparent raster PNG.
+Reference: mule-cute-red-eye-v1.png.
+
+Use case: logo-brand / precise-object-edit.
+Asset type: standalone Mule compiler logo symbol.
+Edit the attached blue-and-gold mule head into a CUTE, CLEVER, slightly UNHINGED mule with vivid red eyes. Preserve the very simple rounded geometric style, blue #3776AB head, golden #FFD343 broad muzzle, head-only composition, and transparent background.
+Specific corrections: BOTH ears upright, long and rounded with gold inner shapes, slightly splayed. BOTH eyes the same size and level, pupils aligned and looking directly at the viewer with alert intent. Make eyes smaller and half-lidded, with vivid red irises, dark centered pupils, and minimal white sclera. Expression: knowing, mischievous, dangerously pleased with its own clever idea. One eyebrow raised just slightly. A small closed-mouth asymmetric smirk. REMOVE the single protruding tooth entirely. No teeth or tongue. Replace the babyish appearance with confident sly charm. Keep the face broad and appealing, short simple hair tuft, rounded cheeks, tiny nostril dots. Slightly manic intelligence expressed by the intense red gaze and sly smile, not by mismatched features.
+Keep it extremely simple: clean bold flat fills, few shapes, almost no linework, absolutely no sports/team mascot styling, heavy outlines, fur texture, muscle definition, aggressive snarl, jagged spikes or sharp teeth. No crossed eyes, wandering pupils, oversized white eyeballs, floppy ears, buck teeth or vacant expression. No gradients, shading, glow effects, 3D, badge, border, text, body or neck. One centered logo on a square canvas, all ears fully visible with balanced clear space. Genuine transparent background.
+
