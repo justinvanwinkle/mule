@@ -63,6 +63,53 @@ Mule implementation against CPython's hashing implementation. These broader
 cases supplement the small diagnostic kernels; results from a numeric loop
 alone do not establish application performance.
 
+## Parser construction staging, 2026-10-19
+
+The Python-hosted parser and the native parser remain separate measurements.
+This experiment compares two native executables built at LLVM `-O3`, with the
+Rust runtime at level 3 and no LTO, on the Intel Core i7-1370P host. Both use
+the same preloaded source strings and run on CPU 0. Imports, source-file reads
+and compilation are outside the parser timer. Five samples per executable and
+input group produce these median times for one complete pass over the group:
+
+| Input group | Files | Before seconds | After seconds | Before / after |
+| --- | ---: | ---: | ---: | ---: |
+| Small-program corpus | 44 | 0.257052 | 0.200906 | 1.279 |
+| Parser modules | 7 | 1.024453 | 0.744841 | 1.375 |
+| Compiler modules | 47 | 12.952870 | 9.677561 | 1.338 |
+
+The baseline source is revision `da5316f2cd4ebe1028e2bdcc2bebc972316349a1`.
+Both isolated source snapshots include the same globals-wrapper cache
+initialization-order repair described in `compiled-modules.md`. The changed
+snapshot adds only positional binding for keyword-free `**kwargs` calls,
+binding-derived collecting-parameter types, and dataclass initialization
+metadata staging. Unrelated concurrent compiler changes were excluded. Runtime
+order reverses for the middle input group; samples within each executable are
+consecutive. These are one-host results, not an SBCL parser comparison.
+
+The installed dataclass initializer still iterates a per-class initialization
+plan and invokes descriptor-aware setters. This is not full known-constructor
+specialization: ordinary class/layout facts, direct initializer target proofs,
+and ownership analysis remain needed to approach SBCL's specialized construction
+paths. Source identifiers, raw samples and executable hashes for this local
+experiment are recorded in `/tmp/mule-constructor-measurement.json`; the
+temporary before/after source trees and benchmark harness are under `/tmp/`.
+
+Native traversal of all 98 input ASTs matched Python-hosted Mule for node kinds,
+preorder traversal and source spans. This comparison checks those properties,
+not complete AST payload equivalence or complete Python parser conformance.
+
+Callgrind collection around one warmed parse of `mule/parser/core.py` recorded
+905,726,362 instructions before and 644,946,477 after, a 28.8% reduction. Imports
+and the caller's final destruction of the returned tree are outside that
+collection. Both parses entered the dataclass initializer 6,845 times; calls
+from that entry into the general binder fell from 6,845 to 123. The initializer
+and its callees still account for 57.4% of the changed parse's instructions.
+`object.__setattr__` and its callees account for 24.2%, with the same 14,824 calls
+before and after. Inclusive regions overlap and cannot be added. These counts
+support continuing with ordinary-class constructor and descriptor-aware field
+specialization rather than attributing the remaining cost to cursor arithmetic.
+
 ## Initial observations, 2026-10-14
 
 Host: AMD Ryzen 9 9955HX, Linux x86-64, CPython 3.14.7 free-threading build,

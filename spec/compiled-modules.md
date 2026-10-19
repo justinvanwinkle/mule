@@ -433,7 +433,7 @@ when decorators replace a class. Descriptor mutation remains compiled Python.
 
 `dataclasses._init_fn` captures parameter and field-initialization metadata when
 each decorator runs. The installed compiled Python initializer reads immutable
-tuples of field names, parameter positions, defaults, factories and initialization
+tuples of field identifiers, parameter positions, defaults, factories and initialization
 roles rather than rereading public mutable `Field` objects for every instance.
 Replacing a `Field` attribute afterward does not rewrite an existing initializer.
 A newly decorated subclass takes its own snapshot of its effective fields,
