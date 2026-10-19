@@ -1,10 +1,13 @@
 """Argument binding supplies exact collecting-container facts to IR1."""
 
+import logging
+
 import pytest
 
 from mule.compiler.ctype import DICT_TYPE, TEXT_TYPE, UNKNOWN, IntegerType, TupleType
 from mule.compiler.ir1util import known_calls
 from mule.compiler.main import compile_source
+from test.mule.compiler.test_native import run_native
 
 
 @pytest.mark.parametrize(
@@ -66,3 +69,41 @@ def test_varargs_length_selects_direct_storage_primitive():
     function = compilation.lambdas[1]
 
     assert list(known_calls(function, "_storage_length"))
+
+
+@pytest.mark.parametrize("parameter", ["*values: int", "**values: int"])
+def test_collecting_value_annotation_is_not_discarded(parameter, caplog):
+    compilation = compile_source(f"def collect({parameter}):\n return values\n")
+
+    assert not compilation.annotations.ignored
+    assert not [
+        record
+        for record in caplog.records
+        if record.name == "mule.compiler.main" and record.levelno >= logging.WARNING
+    ]
+
+
+@pytest.mark.parametrize(
+    ("safety", "expected"),
+    [(0, "42\nunchecked\n"), (3, "42\nvalue-type\n")],
+)
+def test_kwargs_annotation_checks_values_without_casting_keys_or_container(
+    tmp_path, safety, expected
+):
+    result = run_native(
+        tmp_path,
+        "from mule import optimize\n"
+        f"@optimize(safety={safety})\n"
+        "def collect(**named: int):\n"
+        " return named\n"
+        "valid = collect(left=20, right=22)\n"
+        "print(valid['left'] + valid['right'])\n"
+        "try:\n"
+        " collect(left=str(20), right=22)\n"
+        " print('unchecked')\n"
+        "except TypeError:\n"
+        " print('value-type')\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected

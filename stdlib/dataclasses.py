@@ -641,10 +641,17 @@ def _init_fn(fields, std_fields, kw_only_fields, frozen, has_post_init,
     # Generated initializers capture these values at decoration time. Field
     # objects remain public and mutable, but changing them must not rewrite
     # an already installed initializer.
-    std_params = tuple((f.name, f.default, f.default_factory)
-                       for f in std_fields if f.init)
-    kw_params = tuple((f.name, f.default, f.default_factory)
-                      for f in kw_only_fields if f.init)
+    def parameter_values(f):
+        default, factory = f.default, f.default_factory
+        # Source generation uses the same captured name for a factory and a
+        # default. Shared inherited Field metadata can contain both after
+        # mutation; the factory then supplies that name's value, not a call.
+        if default is not MISSING and factory is not MISSING:
+            default = factory
+        return f.name, default, factory
+
+    std_params = tuple(parameter_values(f) for f in std_fields if f.init)
+    kw_params = tuple(parameter_values(f) for f in kw_only_fields if f.init)
     kw_names = tuple(name for name, default, factory in kw_params)
     positions = {name: index for index, (name, default, factory)
                  in enumerate(std_params)}
@@ -661,8 +668,9 @@ def _init_fn(fields, std_fields, kw_only_fields, frozen, has_post_init,
         elif not f.init and f.default_factory is MISSING and not (
                 slots and f.default is not MISSING):
             continue
-        plan.append((f.name, positions.get(f.name, -1), f.default,
-                     f.default_factory, initvar, f.init))
+        name, default, factory = parameter_values(f)
+        plan.append((name, positions.get(name, -1), default,
+                     factory, initvar, f.init))
     plan = tuple(plan)
     object_setattr = object.__setattr__
 
@@ -715,6 +723,8 @@ def _init_fn(fields, std_fields, kw_only_fields, frozen, has_post_init,
                 if plain:
                     if position < count:
                         value = args[position]
+                    elif default is not MISSING:
+                        value = default
                     elif factory is not MISSING:
                         value = _HAS_DEFAULT_FACTORY
                     else:

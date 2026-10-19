@@ -175,12 +175,21 @@ def convert_function(
         ):
             if contract is None:
                 continue
-            if parameter.kind == ast.ParameterKind.VAR_POSITIONAL:
+            if parameter.kind in (
+                ast.ParameterKind.VAR_POSITIONAL,
+                ast.ParameterKind.VAR_KEYWORD,
+            ):
                 element = function.temporary()
                 function.annotations[element.name] = (contract, parameter)
+                values = ast.Name(parameter.name, span=parameter.span)
+                if parameter.kind == ast.ParameterKind.VAR_KEYWORD:
+                    values = ast.Call(
+                        ast.Attribute(values, "values", span=parameter.span),
+                        span=parameter.span,
+                    )
                 loop = ast.For(
                     ast.Name(element.name, span=parameter.span),
-                    ast.Name(parameter.name, span=parameter.span),
+                    values,
                     [],
                     span=parameter.span,
                 )

@@ -694,6 +694,7 @@ def _globals_dict(namespace):
         return None
     if namespace_items(namespace) is None:
         return namespace
+    # _object loads before the dictionary protocol it depends on.
     if _GLOBALS_DICTS is None:
         _GLOBALS_DICTS = {}
     key = identity_hash(namespace)
