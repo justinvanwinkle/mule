@@ -638,107 +638,102 @@ def _init_fn(fields, std_fields, kw_only_fields, frozen, has_post_init,
                 raise TypeError(f'non-default argument {f.name!r} '
                                 f'follows default argument {seen_default.name!r}')
 
-    std_params = tuple(f for f in std_fields if f.init)
-    kw_params = tuple(f for f in kw_only_fields if f.init)
-    has_initvars = any(f._field_type is _FIELD_INITVAR for f in fields)
-    non_init_fields = tuple(
-        f
-        for f in fields
-        if not f.init
-        and f._field_type is not _FIELD_INITVAR
-        and (f.default_factory is not MISSING or (slots and f.default is not MISSING))
-    )
+    # Generated initializers capture these values at decoration time. Field
+    # objects remain public and mutable, but changing them must not rewrite
+    # an already installed initializer.
+    std_params = tuple((f.name, f.default, f.default_factory)
+                       for f in std_fields if f.init)
+    kw_params = tuple((f.name, f.default, f.default_factory)
+                      for f in kw_only_fields if f.init)
+    kw_names = tuple(name for name, default, factory in kw_params)
+    positions = {name: index for index, (name, default, factory)
+                 in enumerate(std_params)}
+    required = sum(default is MISSING and factory is MISSING
+                   for name, default, factory in std_params)
+    plan = []
+    has_initvars = False
+    for f in fields:
+        initvar = f._field_type is _FIELD_INITVAR
+        if initvar:
+            if not f.init:
+                continue
+            has_initvars = True
+        elif not f.init and f.default_factory is MISSING and not (
+                slots and f.default is not MISSING):
+            continue
+        plan.append((f.name, positions.get(f.name, -1), f.default,
+                     f.default_factory, initvar, f.init))
+    plan = tuple(plan)
     object_setattr = object.__setattr__
 
     def __init__(self, *args, **kwargs):
-        if not kwargs and not kw_params and not has_initvars and len(args) <= len(std_params):
-            setter = object_setattr if frozen else setattr
+        count = len(args)
+        plain = not kwargs and not kw_params and required <= count <= len(std_params)
+        if not plain:
+            cls_name = type(self).__name__
+            if count > len(std_params):
+                raise TypeError(
+                    f'{cls_name}.__init__() takes {len(std_params) + 1} '
+                    f'positional arguments but {count + 1} were given')
+            values = {}
             index = 0
-            while index < len(args):
-                setter(self, std_params[index].name, args[index])
+            while index < count:
+                values[std_params[index][0]] = args[index]
                 index += 1
-            while index < len(std_params):
-                f = std_params[index]
-                if f.default is not MISSING:
-                    value = f.default
-                elif f.default_factory is not MISSING:
-                    value = f.default_factory()
+            for name, default, factory in std_params[count:] + kw_params:
+                if name in kwargs:
+                    values[name] = kwargs.pop(name)
+                elif default is not MISSING:
+                    values[name] = default
+                elif factory is not MISSING:
+                    values[name] = _HAS_DEFAULT_FACTORY
+                elif name in kw_names:
+                    raise TypeError(
+                        f"{cls_name}.__init__() missing 1 required "
+                        f"keyword-only argument: '{name}'")
                 else:
                     raise TypeError(
-                        f"{type(self).__name__}.__init__() missing 1 required "
-                        f"positional argument: '{f.name}'"
-                    )
-                setter(self, f.name, value)
-                index += 1
-            for f in non_init_fields:
-                value = (
-                    f.default_factory()
-                    if f.default_factory is not MISSING
-                    else f.default
-                )
-                setter(self, f.name, value)
-            if has_post_init:
-                getattr(self, _POST_INIT_NAME)()
-            return
-        cls_name = type(self).__name__
-        if len(args) > len(std_params):
-            raise TypeError(
-                f'{cls_name}.__init__() takes {len(std_params) + 1} '
-                f'positional arguments but {len(args) + 1} were given')
-        values = {}
-        index = 0
-        while index < len(args):
-            values[std_params[index].name] = args[index]
-            index += 1
-        for f in std_params[len(args):] + kw_params:
-            if f.name in kwargs:
-                values[f.name] = kwargs.pop(f.name)
-            elif f.default is not MISSING:
-                values[f.name] = f.default
-            elif f.default_factory is not MISSING:
-                values[f.name] = _HAS_DEFAULT_FACTORY
-            elif f in kw_params:
+                        f"{cls_name}.__init__() missing 1 required "
+                        f"positional argument: '{name}'")
+            for name, default, factory in std_params[:count]:
+                if name in kwargs:
+                    raise TypeError(
+                        f"{cls_name}.__init__() got multiple values "
+                        f"for argument '{name}'")
+            if kwargs:
+                key = next(iter(kwargs))
                 raise TypeError(
-                    f"{cls_name}.__init__() missing 1 required "
-                    f"keyword-only argument: '{f.name}'")
+                    f"{cls_name}.__init__() got an unexpected "
+                    f"keyword argument '{key}'")
+        setter = object_setattr if frozen else setattr
+        initvars = [] if has_initvars else None
+        # Binding above is complete before factories or descriptors can run.
+        # One declaration-order plan also keeps non-init factories interleaved
+        # with ordinary field assignments, just like generated source.
+        for name, position, default, factory, initvar, init in plan:
+            if init:
+                if plain:
+                    if position < count:
+                        value = args[position]
+                    elif factory is not MISSING:
+                        value = _HAS_DEFAULT_FACTORY
+                    else:
+                        value = default
+                else:
+                    value = values[name]
+                if factory is not MISSING and value is _HAS_DEFAULT_FACTORY:
+                    value = factory()
             else:
-                raise TypeError(
-                    f"{cls_name}.__init__() missing 1 required "
-                    f"positional argument: '{f.name}'")
-        # A keyword naming an already-bound parameter is an error,
-        # as is any argument that is not a parameter at all.
-        for f in std_params[:len(args)]:
-            if f.name in kwargs:
-                raise TypeError(
-                    f"{cls_name}.__init__() got multiple values "
-                    f"for argument '{f.name}'")
-        if kwargs:
-            key = next(iter(kwargs))
-            raise TypeError(
-                f"{cls_name}.__init__() got an unexpected "
-                f"keyword argument '{key}'")
-        initvars = []
-        for f in fields:
-            if f._field_type is _FIELD_INITVAR:
-                initvars.append(values.get(f.name))
+                value = factory() if factory is not MISSING else default
+            if initvar:
+                initvars.append(value)
                 continue
-            if f.init:
-                value = values[f.name]
-                if value is _HAS_DEFAULT_FACTORY:
-                    value = f.default_factory()
-            elif f.default_factory is not MISSING:
-                value = f.default_factory()
-            elif slots and f.default is not MISSING:
-                value = f.default
-            else:
-                # The class attribute holds the default, if any.
-                continue
-            if frozen:
-                object_setattr(self, f.name, value)
-            else:
-                setattr(self, f.name, value)
+            setter(self, name, value)
         if has_post_init:
-            getattr(self, _POST_INIT_NAME)(*initvars)
+            if has_initvars:
+                getattr(self, _POST_INIT_NAME)(*initvars)
+            else:
+                getattr(self, _POST_INIT_NAME)()
 
     func_builder.add_fn('__init__', __init__)
 
