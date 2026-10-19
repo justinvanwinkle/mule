@@ -154,7 +154,10 @@ PRIMITIVES = {
     name: defknown(
         name,
         *(() if name in _RESULT_TYPES else ("call", "unsafe")),
-        derive_type=_RESULT_TYPES.get(name),
+        derive_type=_RESULT_TYPES.get(
+            name,
+            (lambda node: TEXT_TYPE) if name in _COMPILED_CALLS else None,
+        ),
     )
     for name in _EMITTERS
 }

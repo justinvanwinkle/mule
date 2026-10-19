@@ -302,12 +302,15 @@ def _pad(text, left, right, fill):
 
 
 def _reversed(values):
-    result = []
-    index = _storage_length(values) - 1
-    while index >= 0:
-        _storage_append(result, _storage_read(values, index))
-        index -= 1
-    return result
+    left = 0
+    right = _storage_length(values) - 1
+    while left < right:
+        item = _storage_read(values, left)
+        _storage_write(values, left, _storage_read(values, right))
+        _storage_write(values, right, item)
+        left += 1
+        right -= 1
+    return values
 
 
 def _split_whitespace(text, maxsplit):
@@ -339,7 +342,8 @@ def _rsplit_whitespace(text, maxsplit):
         while index >= 0 and is_space(_text_codepoint(text, index)):
             index -= 1
         if index < 0:
-            return _reversed(result)
+            _reversed(result)
+            return result
         end = index + 1
         index -= 1
         while index >= 0 and not is_space(_text_codepoint(text, index)):
@@ -350,7 +354,8 @@ def _rsplit_whitespace(text, maxsplit):
         index -= 1
     if index >= 0:
         _storage_append(result, _text_slice(text, 0, index + 1))
-    return _reversed(result)
+    _reversed(result)
+    return result
 
 
 def _split_arguments(sep, maxsplit):
@@ -1511,7 +1516,8 @@ class TextStorage:
             maxsplit -= 1
             position = rfind_in(self, sep, 0, end)
         _storage_append(result, _text_slice(self, 0, end))
-        return _reversed(result)
+        _reversed(result)
+        return result
 
     def splitlines(self, keepends=False):
         result = []
