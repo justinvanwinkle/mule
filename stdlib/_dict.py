@@ -936,7 +936,9 @@ def _empty_table(cls):
 
 
 def _empty_dict():
-    return _empty_table(dict)
+    result = _allocate_instance(dict)
+    _table_clear(result)
+    return result
 
 
 def build_dict(flat):

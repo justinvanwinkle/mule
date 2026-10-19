@@ -97,7 +97,7 @@ _MULE_NATIVE_RETURN_TYPES: dict[str, ValueType] = {
     "byte_copy": BYTES_TYPE,
     "byte_length": IntegerType(0, (1 << 48) - 1),
     "read_byte": IntegerType(0, 255),
-    "identity": UNKNOWN,
+    "identity": INTEGER,
     "is_class": BOOLEAN,
     "is_subclass": BOOLEAN,
     "is_instance": BOOLEAN,
@@ -108,6 +108,7 @@ _MULE_NATIVE_RETURN_TYPES: dict[str, ValueType] = {
 _STORAGE_SELF_TYPES: dict[str, ValueType] = {
     "TextStorage.": TEXT_TYPE,
     "BytesStorage.": BYTES_TYPE,
+    "TupleStorage.": TupleType(),
     "ListStorage.": LIST_TYPE,
     "dict.": DICT_TYPE,
 }
@@ -927,6 +928,22 @@ class _ImportBindingStores(NodeVisitor, LeafVisitor):
         return node.leaf.accept(self)
 
     def visit_LambdaVar(self, leaf: LambdaVar):
+        store = self._store
+        self._store = None
+        if store is not None:
+            if (
+                store.value is None
+                or len(leaf.sets) != 1
+                or leaf.sets[0] is not store
+                or (leaf.home is not None and leaf in leaf.home.vars)
+            ):
+                return None
+            if len(store.value.uses) != 1:
+                return None
+            origin = store.value.uses[0].accept(self)
+            if origin is not None:
+                self.imports[leaf.name] = origin
+            return None
         if len(leaf.sets) != 1:
             return None
         val = leaf.sets[0].value
@@ -975,17 +992,12 @@ def analyze(
         visitor = _GlobalFunctionStores(
             global_targets[lambda_.namespace], global_counts[lambda_.namespace]
         )
-        imp_visitor = (
-            _ImportBindingStores(import_bindings_by_ns[lambda_.namespace])
-            if lambda_.kind is FunctionalKind.TOPLEVEL
-            else None
-        )
+        imp_visitor = _ImportBindingStores(import_bindings_by_ns[lambda_.namespace])
         graph = graphs[lambda_]
         for block in graph.blocks:
             for node in graph.block_nodes[block]:
                 node.accept(visitor)
-                if imp_visitor is not None:
-                    node.accept(imp_visitor)
+                node.accept(imp_visitor)
     imported_returns_by_ns: dict[str, dict[str, ValueType]] = defaultdict(dict)
     for ns, bindings in import_bindings_by_ns.items():
         ns_returns = imported_returns_by_ns[ns]
@@ -1183,6 +1195,12 @@ def analyze(
             target = callee.target
             order = target.call_order(keywords, len(arguments))
             if order is None:
+                if target.signature.variadic:
+                    gen = context_parameters.get((target, "general"))
+                    if gen is not None:
+                        result = context_summaries.get((target, "general"), UNKNOWN)
+                        consulted[target, gen] = result
+                        return result
                 return UNKNOWN
             arguments = tuple(
                 arguments[index] if index >= 0 else UNKNOWN for index in order
@@ -1407,6 +1425,8 @@ def analyze(
                                 parameters[target, "general"] = tuple(updated)
                                 narrowed_targets.add(target)
                                 changed = True
+                if not call.proven and target not in closed_lambdas:
+                    continue
                 raw_domains = tuple(
                     domain
                     if (domain := type_.dispatch_domain()) is not None

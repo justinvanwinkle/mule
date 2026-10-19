@@ -715,7 +715,7 @@ def _object_dictionary(owner):
     namespace = storage_dictionary(owner)
     if namespace is None:
         return _InstanceDict(owner)
-    return _globals_dict(namespace)
+    return _GlobalsDict(namespace)
 
 
 object.__dict__ = property(_object_dictionary)
@@ -824,9 +824,9 @@ class _GlobalsDict(object):
         return dict(namespace_items(self._namespace))
 
     def __getattr__(self, name):
-        value = namespace_binding(self._namespace, name, _MISSING)
-        if value is not _MISSING:
-            return value
+        for key, value in namespace_items(self._namespace):
+            if key == name:
+                return value
         raise AttributeError(f"'_GlobalsDict' object has no attribute {name!r}")
 
     def __eq__(self, other):
@@ -1931,7 +1931,7 @@ def isinstance(obj, classinfo, /):
         raise TypeError(
             "isinstance() arg 2 must be a type, a tuple of types, or a union"
         )
-    return bool(check(classinfo, obj))
+    return True if check(classinfo, obj) else False
 
 
 def issubclass(cls, classinfo, /):
@@ -1949,4 +1949,4 @@ def issubclass(cls, classinfo, /):
         raise TypeError(
             "issubclass() arg 2 must be a class, a tuple of classes, or a union"
         )
-    return bool(check(classinfo, cls))
+    return True if check(classinfo, cls) else False

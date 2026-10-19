@@ -1,7 +1,5 @@
 """Statically link Python modules, preserving separate runtime namespaces."""
 
-import os
-import sys
 import tomllib
 from collections import deque
 from dataclasses import dataclass
@@ -9,7 +7,14 @@ from pathlib import Path
 
 from mule import ast
 
-from .ctype import UNKNOWN, ValueType
+from .ctype import (
+    DICT_TYPE,
+    EMPTY_DICT_TYPE,
+    EMPTY_LIST_TYPE,
+    LIST_TYPE,
+    UNKNOWN,
+    ValueType,
+)
 from .inputs import directory_entries, directory_exists, read_source, source_exists
 from .ir1opt import constant_literal
 from .ir1tran_lambda import lambda_blocks
@@ -344,6 +349,10 @@ class ModuleCompiler:
         ):
             if lam in facts:
                 ret_type = facts[lam].return_type
+                if ret_type == EMPTY_LIST_TYPE:
+                    ret_type = LIST_TYPE
+                elif ret_type == EMPTY_DICT_TYPE:
+                    ret_type = DICT_TYPE
                 if ret_type is not UNKNOWN:
                     self.exported_types[namespace, pub_name] = ret_type
         class_names = {
@@ -357,6 +366,10 @@ class ModuleCompiler:
             for method_name, target in methods.items():
                 if target in facts:
                     ret_type = facts[target].return_type
+                    if ret_type == EMPTY_LIST_TYPE:
+                        ret_type = LIST_TYPE
+                    elif ret_type == EMPTY_DICT_TYPE:
+                        ret_type = DICT_TYPE
                     if ret_type is not UNKNOWN:
                         self.storage_methods[class_name, method_name] = ret_type
         import_bindings: dict[str, tuple[str, str]] = {}
@@ -383,6 +396,11 @@ class ModuleCompiler:
                 ret_type = self.exported_types.get(
                     import_bindings[target_name], UNKNOWN
                 )
+            if (
+                ret_type is UNKNOWN
+                and (target_name, "__init__") not in self.storage_methods
+            ):
+                ret_type = self.storage_methods.get((target_name, "__new__"), UNKNOWN)
             if ret_type is not UNKNOWN:
                 self.builtin_return_types[builtin_name] = ret_type
 

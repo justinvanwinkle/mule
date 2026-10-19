@@ -826,6 +826,8 @@ def round(number, ndigits=None):
 
 
 def _digits(value, base, prefix):
+    if not _text_storage(prefix):
+        return ""
     value = integer_index(value)
     if value == 0:
         return prefix + "0"
@@ -866,7 +868,7 @@ def id(obj, /):
 
 
 def sorted(iterable, /, *, key=None, reverse=False):
-    result = list(iterable)
+    result = _make_list(iterable)
     result.sort(key=key, reverse=reverse)
     return result
 
@@ -1649,6 +1651,8 @@ def _bytes_bounds(length, start, end):
         start += length
         if start < 0:
             start = 0
+    elif start > length:
+        start = length + 1
     if end is None:
         end = length
     else:
@@ -2098,14 +2102,16 @@ def _byte_padding(values, width, fillchar, alignment, method):
 
 
 def _bytes_padding_result(source, values):
-    if type_of(source) is bytes and _storage_length(source) == _storage_length(values):
-        return source
+    if type_of(source) is bytes:
+        if _storage_length(source) == _storage_length(values):
+            return source
     return bytes_from_values(values)
 
 
 def _bytes_slice_result(source, start, end):
-    if type_of(source) is bytes and start == 0 and end == _storage_length(source):
-        return source
+    if type_of(source) is bytes:
+        if start == 0 and end == _storage_length(source):
+            return source
     return byte_copy(source, start, end - start)
 
 
