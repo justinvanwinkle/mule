@@ -301,3 +301,45 @@ def test_locall_feedback_triggers_str_transform_and_preserves_local_call_type():
     # `str(n)` retargets to `_decimal_protocol(n)` and `str(s)` reduces to `s`.
     assert len(list(known_calls(fn, "_decimal_protocol"))) == 1
     check_ir1_consistency(compilation.components)
+
+
+def test_closed_local_function_promotes_caller_types_and_triggers_ir1_transforms():
+    compilation = compile_source(
+        "import mule\n"
+        "def outer(n: mule.int64, raw):\n"
+        " def helper(x, stride, s):\n"
+        "  return (x + 0) * stride, str(s)\n"
+        " label = 'yes' if raw else 'no'\n"
+        " return helper(n, 8, label)\n"
+    )
+    helper = next(lam for lam in compilation.lambdas if lam.source_name == "helper")
+    assert list(known_calls(helper, "%add")) == []
+    assert list(known_calls(helper, "%multiply")) == []
+    assert len(list(known_calls(helper, "%left_shift"))) == 1
+    check_ir1_consistency(compilation.components)
+
+
+def test_entry_context_runs_specialized_ir1_transforms_without_mutating_general():
+    from mule.compiler import emit_llvm
+
+    source = "def f(x, s):\n return (x + 0) * 8, str(s)\nprint(f(7, 'hello'))\n"
+    compilation = compile_source(source)
+    fn = next(lam for lam in compilation.lambdas if lam.source_name == "f")
+    # General IR1 keeps %add and %multiply because f is an unannotated top-level function.
+    assert len(list(known_calls(fn, "%add"))) == 1
+    assert len(list(known_calls(fn, "%multiply"))) == 1
+
+    llvm = emit_llvm(source)
+    spec_start = llvm.index('define internal ptr @"mule_fn_f.spec.0"')
+    spec_end = llvm.index("\n}", spec_start)
+    spec_body = llvm[spec_start:spec_end]
+    # In spec.0 (observed x=7, s=TEXT_TYPE), IR1 folds (7 + 0) * 8 -> 56 and str(s) -> s!
+    assert "mule.fast.binary" not in spec_body
+    assert "@mule.call.1" not in spec_body
+    assert "store ptr %parameter.1" in spec_body
+    # General body still has the general operations intact.
+    gen_start = llvm.index('define internal ptr @"mule_fn_f.body"')
+    gen_end = llvm.index("\n}", gen_start)
+    gen_body = llvm[gen_start:gen_end]
+    assert "mule.fast.binary" in gen_body
+    assert "@mule.call.1" in gen_body

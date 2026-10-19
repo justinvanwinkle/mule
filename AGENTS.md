@@ -1,45 +1,128 @@
 # Mule
 
-Mule compiles a small Python subset to native executables through LLVM. It uses
-a handwritten parser, a custom syntax tree, a control-flow IR, and Mule's own
-native runtime. Functions and control flow become native code;
-the compiler does not delegate program execution to a source or bytecode evaluator.
-The required architecture is a beat-by-beat clone of SBCL's compiler, historically
-called Python, adapted to Python semantics and an LLVM backend. See
-`spec/native-compiler.md` for the implemented subset and target.
+**Python, compiled to native code.**
 
-This file is both the project overview and repository guidance for coding agents.
-`README.md` is a relative symlink to `AGENTS.md`; edit this file, not a separate
-README copy.
+Mule is an experimental ahead-of-time Python compiler with an LLVM backend.
+It turns supported Python programs into native Linux executables, with its own
+runtime and no dependency on a CPython installation. No bytecode evaluator.
+No interpreter fallback.
 
-## Setup and use
+[Quick start](#quick-start) · [Performance](#performance) ·
+[Architecture](#architecture) · [Specifications](spec/index.md) ·
+[Website source](docs/index.html)
 
-Use free-threaded Python 3.15 and `uv`. `.python-version` selects 3.15t;
-`pyproject.toml` requires Python >=3.15. The conformance oracle stays CPython
-3.14, the release of the vendored standard library (`test/python_host.py`). Python package dependencies are currently empty. Development
-dependencies are pytest and Ruff, resolved in `uv.lock`.
+> **Early-stage compiler, not a drop-in Python replacement.** The parser targets
+> Python 3.14 syntax; native compilation supports a smaller subset. Unsupported
+> compiler syntax is rejected rather than executed through CPython. See the
+> [implemented contracts](spec/native-compiler.md) and
+> [compatibility tests and gaps](conformance/README.md).
 
-Native builds additionally require Clang, Rust with its bundled LLVM LLD linker,
-64-bit Linux, and the GMP shared library. The Rust runtime uses handwritten GMP
-bindings without external crates. Generated LLVM is optimized at level 1 by
-default; the Rust runtime always uses optimization level 3. Full cross-language
-link-time optimization is separately enabled with `--lto`.
-Small integers use Mule's tagged native values;
-arbitrary-precision integers use the approved GMP dependency. Executables do not
-depend on a Python runtime installation.
+## Quick start
+
+Build on **64-bit Linux** with **uv**, **Clang**, **Rust with its bundled LLVM
+LLD linker**, and the **GMP shared library** installed. The compiler host uses
+free-threaded Python **3.15t**, selected by `.python-version`.
 
 ```sh
+git clone https://github.com/justinvanwinkle/mule.git
+cd mule
 uv sync
+uv run mule -c 'print(40 + 2)'
+```
+
+The first run compiles and caches a native executable. Subsequent runs reuse it
+while its compiler and source inputs remain unchanged.
+
+Run a file, or build an executable explicitly:
+
+```sh
+uv run mule examples/factorial.py
+uv run python -m mule.compiler examples/factorial.py \
+  -o build/factorial --emit-llvm build/factorial.ll
+./build/factorial
+```
+
+The command also supports `-m module` and source from stdin. Ordinary builds use
+LLVM `-O1`; select `-O3` for maximum optimization and `--lto` separately for
+cross-language link-time optimization. Rust runtime primitives always use
+optimization level 3. See the [command and build reference](spec/native-compiler.md).
+
+## Performance
+
+The chart below includes **all 14 workloads** from the recorded October 19,
+2026 suite run. It compares Mule `-O2` without LTO and SBCL with CPython 3.15.0.
+Ratios above **1×** mean faster than CPython on that workload; ratios below
+**1×** mean slower. These are kernel timings, not compilation or end-to-end
+application timings.
+
+![Kernel speedups for Mule and SBCL across all 14 recorded workloads, relative to CPython. Results include both faster and slower workloads.](docs/assets/kernel.svg)
+
+Five samples per runtime and workload, one warmup, seed 42. Inputs use each
+scenario's default size. The run used four concurrent scenario jobs, so timings
+may include contention. Preparation and result validation are outside the kernel
+timer. Each result was checked against CPython. SBCL runs corresponding Common
+Lisp implementations, not the Python sources.
+
+**This is a measured snapshot, not a general speed claim.** The measured checkout
+was `2d5e473ee` with uncommitted tracked changes. Mule still trails CPython on
+several workloads. Raw samples, variation, commands, input sizes, hashes, and
+revision identity are in the [published results](docs/assets/results.json).
+The [full report](docs/assets/index.html) also includes whole-process timings.
+
+Reproduce the comparison or inspect the recorded history:
+
+```sh
+uv run python -m perf.suite.perfutils run \
+  --config perf/runtimes.example.toml --samples 5
+uv run python -m perf.suite.perfutils history --last 10
+```
+
+The comparison additionally requires SBCL. Builds finish before timing starts;
+runtime order rotates between samples. See the [suite methodology](perf/README.md)
+and [performance investigation](spec/performance.md) for scope and limitations.
+
+## Architecture
+
+Mule follows SBCL's compiler architecture, historically called **Python**, adapted
+to Python semantics and an LLVM backend. The pipeline is explicit:
+
+![Python source passes through Mule's handwritten parser, AST, IR1 analysis and optimization, IR2 representation selection, and LLVM to produce a native executable.](docs/assets/pipeline.svg)
+
+- **Specialize from evidence.** Known calls, inferred types, declared contracts,
+  and representation proofs enable direct calls and native operations.
+- **Keep Python independent.** The parser constructs Mule's own syntax tree.
+  Generated programs do not link CPython or delegate execution to it.
+- **Compile the language implementation.** Runtime protocols are moving into
+  Mule Python. Rust supplies low-level primitives; existing language-level Rust
+  implementations remain bootstrap work to migrate.
+
+Start with the [SBCL source reference](spec/sbcl-compiler.md),
+[native lowering](spec/native-lowering.md), and
+[remaining compiler work](spec/compiler-gaps.md).
+
+## Explore and contribute
+
+| Area | Start here |
+| --- | --- |
+| Language and executable support | [Native compiler](spec/native-compiler.md) |
+| Syntax tree and parser API | [Parser](spec/parser.md) · [AST](spec/ast.md) |
+| Python compatibility | [Conformance suite](conformance/README.md) |
+| Benchmarks and recorded runs | [Performance suite](perf/README.md) · [History](perf/history.jsonl) |
+| Design and implementation contracts | [Specification index](spec/index.md) |
+| Initial GitHub Pages site | [Site files and publishing instructions](docs/README.md) |
+
+```sh
 uv run pytest
 uv run ruff check mule test
 uv run ruff format --check mule test
-uv run python -m mule.compiler examples/factorial.py -o build/factorial --emit-llvm build/factorial.ll
-./build/factorial
-uv run mule examples/factorial.py
 ```
 
-`uv sync` installs the project editable with a `mule` console command that runs
-programs like `python` does; see `spec/native-compiler.md`.
+The default test run excludes expensive integration suites. Run
+`uv run pytest -m integration` when changing the behavior they cover.
+The conformance oracle uses CPython 3.14, matching the vendored standard library;
+it is separate from the compiler host and the baseline in the performance chart.
+
+The parser is also available independently:
 
 ```python
 from mule.parser import parse
@@ -49,6 +132,15 @@ expression = parse("40 + 2", mode="eval")
 ```
 
 Parsing returns Mule AST objects; it does not execute the source.
+
+---
+
+<details>
+<summary><strong>Contributor and coding-agent reference</strong></summary>
+
+This file is both the project overview and repository guidance for coding agents.
+`README.md` is a relative symlink to `AGENTS.md`; edit this file, not a separate
+README copy. The instructions below apply whether this section is expanded or not.
 
 ## Repository map
 
@@ -204,12 +296,12 @@ uv run python -m mule.compiler examples/benchmarks-game/nbody/nbody.py \
   -o build/benchmarks-game/nbody-mule --emit-llvm build/benchmarks-game/nbody-mule.ll
 ```
 
-There is no validated Mule timing result for this program yet. An initial
-compiled `sys.argv` implementation is in `stdlib/sys.py`; its native startup
-boundary and remaining compatibility gaps are documented in
-`spec/compiled-modules.md`. Other compiler and standard-library prerequisites
-remain. Once a reference program compiles, validate the executable against the
-same upstream output before including it in comparisons.
+Historical Mule nbody measurements are recorded in `spec/performance.md`.
+They are separate from the standalone performance suite above. The compiled
+`sys.argv` implementation is in `stdlib/sys.py`; its native startup boundary and
+remaining compatibility gaps are documented in `spec/compiled-modules.md`.
+Validate every new executable against the same upstream output before including
+it in comparisons.
 
 ## Performance design goal
 
@@ -388,3 +480,5 @@ contracts from proposals, and do not describe future compilation stages as avail
 Start with `spec/index.md`. The files describe the current frontend and native
 compiler, document SBCL's architecture, and record requirements for later stages.
 They do not establish complete Python or C extension compatibility.
+
+</details>

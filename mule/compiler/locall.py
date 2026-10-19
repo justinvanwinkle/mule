@@ -46,8 +46,6 @@ from .constraint import (
 )
 from .ctype import (
     BOOLEAN,
-    BOOLEAN_FALSE,
-    BOOLEAN_TRUE,
     BOTTOM,
     FIXNUM_MAX,
     FIXNUM_MIN,
@@ -63,7 +61,7 @@ from .ctype import (
     ValueTypeVisitor,
 )
 from .dfo import find_dfo
-from .fndb import LEN, flow_propagation
+from .fndb import LEN, MAKE_FUNCTION, flow_propagation
 from .ir1util import clone_lambda_component, join_blocks_if_possible, made_function
 from .knownfun import KNOWN
 from .node import (
@@ -71,14 +69,12 @@ from .node import (
     Combination,
     FunctionalKind,
     GlobalVar,
-    If,
     Lambda,
     LambdaVar,
     LeafVisitor,
     NodeVisitor,
     Ref,
     Set,
-    ValuedNode,
     linked,
 )
 from .seqtran import is_predictable_len_call, known_length_primitive
@@ -961,9 +957,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                         actual.fits(wanted)
                         for actual, wanted in zip(arguments, gen, strict=True)
                     )
-                    and all(
-                        g.fits(e) for g, e in zip(gen, expected, strict=True)
-                    )
+                    and all(g.fits(e) for g, e in zip(gen, expected, strict=True))
                 ):
                     return context_summaries[target, "general"]
                 return context_summaries[key]
@@ -1147,9 +1141,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     external_calls.extend(matching)
             if missing_external or not external_calls:
                 continue
-            source_calls = (
-                external_calls if target not in closed_seeded else all_calls
-            )
+            source_calls = external_calls if target not in closed_seeded else all_calls
             joined_args = source_calls[0].arguments
             for call in source_calls[1:]:
                 joined_args = tuple(
@@ -1165,11 +1157,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                 target.vars,
                 strict=True,
             ):
-                if (
-                    arg_type is BOTTOM
-                    or arg_type is UNBOUND
-                    or arg_type.may_be_unbound
-                ):
+                if arg_type is BOTTOM or arg_type is UNBOUND or arg_type.may_be_unbound:
                     arg_type = UNKNOWN
                 if contract is not None and contract.contradicts(arg_type):
                     arg_type = UNKNOWN
@@ -1201,9 +1189,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                             for a, b in zip(old_gen, merged_gen, strict=True)
                         )
             if merged_gen != old_gen:
-                if not all(
-                    a.fits(b) for a, b in zip(old_gen, merged_gen, strict=True)
-                ):
+                if not all(a.fits(b) for a, b in zip(old_gen, merged_gen, strict=True)):
                     narrowed_targets.add(target)
                 parameters[gen_key] = merged_gen
                 changed = True
@@ -1504,9 +1490,7 @@ def _publish_derived_types(
     return reoptimizer.reoptimized
 
 
-def _would_reoptimize_for_context(
-    lambda_: Lambda, context: EntryContext
-) -> bool:
+def _would_reoptimize_for_context(lambda_: Lambda, context: EntryContext) -> bool:
     component = lambda_.component
     if component is None or context.id not in ("fixnum", "observed"):
         return False
@@ -1587,13 +1571,20 @@ class _CollectNodeTypesAndTargets(NodeVisitor):
             self.targets[node] = node.predicted
 
 
+_ACTIVE_SPECIALIZED_CONTEXTS: set[tuple[Lambda, object]] = set()
+
+
 @contextmanager
 def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
     """Run entry-context-specific IR1 optimization on a cloned component for
     ``context`` and restore the canonical IR1 component on exit."""
-    if not _would_reoptimize_for_context(lambda_, context):
+    active_key = (lambda_, context.id)
+    if active_key in _ACTIVE_SPECIALIZED_CONTEXTS or not _would_reoptimize_for_context(
+        lambda_, context
+    ):
         yield
         return
+    _ACTIVE_SPECIALIZED_CONTEXTS.add(active_key)
     cloned_component, node_map, restore = clone_lambda_component(lambda_)
     old_types = context.types
     old_targets = context.targets
@@ -1620,6 +1611,7 @@ def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
         context.targets = cloned_targets
         yield
     finally:
+        _ACTIVE_SPECIALIZED_CONTEXTS.discard(active_key)
         context.types = old_types
         context.targets = old_targets
         restore()

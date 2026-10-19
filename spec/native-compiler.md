@@ -5,7 +5,7 @@ is a real executable before broader language support or optimization.
 
 ## Build and run
 
-Run from the repository with Python 3.14 and `uv`:
+Run from the repository with free-threaded Python 3.15t and `uv`:
 
 ```sh
 uv run python -m mule.compiler examples/factorial.py -o build/factorial --emit-llvm build/factorial.ll

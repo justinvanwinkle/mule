@@ -1579,8 +1579,10 @@ class _ConstrainComparison(NodeVisitor):
             return None
         name = node.fun_info.name
         if name == "%unary_not" and len(node.args) == 1:
-            return node.args[0].use().accept(
-                _ConstrainComparison(self.visitor, self.state, not self.truth)
+            return (
+                node.args[0]
+                .use()
+                .accept(_ConstrainComparison(self.visitor, self.state, not self.truth))
             )
         if name in ("_text_storage", "_bytes_storage") and len(node.args) == 1:
             if not self.truth:

@@ -1,7 +1,8 @@
 # Remaining SBCL compiler and IR1 transform gaps
 
 Status: **implemented** for general-context flow-type feedback into IR1
-transforms (Section 1A); **proposed** for Sections 1B–5.
+transforms (Section 1A) and entry-context IR1 specialization / closed-call
+parameter promotion (Section 1B); **proposed** for Sections 1C–5.
 
 This document records the remaining architectural and transform gaps between
 SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`),
@@ -34,31 +35,29 @@ staged implementation plan for each area.
     variables proven constant by flow analysis, while unlinking dead
     `Ref(LambdaVar)` nodes.
 
-### 1B. Entry-context IR1 specialization and local inlining (proposed)
+### 1B. Entry-context IR1 specialization and closed-call parameter promotion (implemented)
 
-- **SBCL reference**: `locall-analyze-component`, `convert-more-call`,
-  `expand-local-inline` (`src/compiler/locall.lisp`, `src/compiler/ir1opt.lisp`).
-  In SBCL, local calls to known functions or inline functions clone or
-  specialize the IR1 lambda graph so that parameter types from call sites flow
-  into `ir1-optimize` and `deftransform` inside the specialized body.
-- **Current Mule state**: `locall.analyze` (`mule/compiler/locall.py`) solves
-  per-entry-context types (`general`, `fixnum`, `observed`) and `ir2tran.py`
-  emits separate IR2/LLVM bodies per `EntryContext`. However, `Lambda` owns a
-  single IR1 graph whose `node.derived_type` reflects only the `general` entry
-  context. Consequently, IR1 `@deftransform`s cannot rewrite the IR1 graph using
-  `fixnum`- or `observed`-only parameter facts unless duplicated in IR2.
-- **Proposed plan**:
-  1. **Closed-call promotion to `general`**: When a nested `Lambda` does not
-     escape (`envanal.py` / `locall.py` proves all references are direct call
-     sites and the function object is never stored, returned, or passed as a
-     value), seed its `general` parameter types directly from the join of its
-     callers' argument types so IR1 `@deftransform`s fire directly on its IR1
-     graph.
-  2. **IR1 cloning for specialized entry contexts and small local helpers**:
-     Add an IR1 lambda cloner in `ir1util.py` / `locall.py` (following SBCL's
-     inline expansion) for specialized `EntryContext`s that unlock IR1
-     transforms and for small non-recursive local functions (`LET` conversion /
-     local inlining).
+- **SBCL reference**: `locall-analyze-component`, `propagate-to-args`,
+  `convert-more-call` (`src/compiler/locall.lisp`, `src/compiler/ir1opt.lisp`).
+- **Mule implementation**:
+  1. **Closed-call promotion to `general`**: `_collect_closed_lambdas` and the
+     fixpoint solver in `locall.analyze` (`mule/compiler/locall.py`) identify
+     non-escaping nested `Lambda`s whose function object is bound once to a
+     local variable and referenced only as the callee of direct positional
+     calls (`CallSite.proven` in `mule/compiler/constraint.py`), including
+     across recursive calls and local calls that cannot mutate uncaptured outer
+     locals. Their `general` parameter types are seeded and widened from the
+     join of their callers' `general`-context argument types, allowing IR1
+     `@deftransform`s to fire directly on their canonical IR1 graph.
+  2. **Per-`EntryContext` IR1 cloning and reoptimization**: `clone_lambda_component`
+     (`mule/compiler/ir1util.py`) and `specialized_ir1_context`
+     (`mule/compiler/locall.py`, wired into `compile_component` and `emit_body`
+     in `mule/compiler/codegen.py`) clone a `Lambda`'s IR1 `Component` whenever
+     a specialized `EntryContext` (`fixnum` or `observed`) narrows arguments to
+     operations with IR1 transforms, run `_publish_derived_types` +
+     `ir1opt.ir1_optimize_until_done` + `join_blocks_if_possible` + `find_dfo`
+     + `loop.analyze` on the cloned component for that entry context's IR2/LLVM
+     emission, and restore the canonical IR1 component afterward.
 
 ### 1C. Sequence, string, and container transforms (`seqtran.py` vs `seqtran.lisp`) (proposed)
 

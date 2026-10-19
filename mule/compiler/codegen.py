@@ -48,6 +48,7 @@ from .ctype import (
 )
 from .ir1util import block_exception_target, made_function
 from .ir2tran import ir2_convert
+from .locall import specialized_ir1_context
 from .ltn import EntryContext, ltn_analyze
 from .node import (
     CallKind,
@@ -609,20 +610,24 @@ def generate(program: Program) -> str:
 def compile_component(lambda_: Lambda, context: EntryContext):
     """Run the IR2 phases for one body (``compile-component`` for a backend
     whose register allocation LLVM performs)."""
-    with phase("LTN %s context %s", lambda_.name, context.id, level=logging.DEBUG):
-        ltn_analyze(lambda_, context)
-    with phase(
-        "IR2 conversion %s context %s", lambda_.name, context.id, level=logging.DEBUG
-    ):
-        component = ir2_convert(lambda_, context)
-    with phase(
-        "representation selection %s context %s",
-        lambda_.name,
-        context.id,
-        level=logging.DEBUG,
-    ):
-        select_representations(component)
-    return component
+    with specialized_ir1_context(lambda_, context):
+        with phase("LTN %s context %s", lambda_.name, context.id, level=logging.DEBUG):
+            ltn_analyze(lambda_, context)
+        with phase(
+            "IR2 conversion %s context %s",
+            lambda_.name,
+            context.id,
+            level=logging.DEBUG,
+        ):
+            component = ir2_convert(lambda_, context)
+        with phase(
+            "representation selection %s context %s",
+            lambda_.name,
+            context.id,
+            level=logging.DEBUG,
+        ):
+            select_representations(component)
+        return component
 
 
 class _ConstantKey(ast.Visitor):
@@ -2488,8 +2493,14 @@ class ModuleGenerator:
     def emit_body(
         self, lambda_: Lambda, context: EntryContext, *, unpacked: bool = False
     ) -> str:
-        with phase(
-            "LLVM body %s context %s", lambda_.name, context.id, level=logging.DEBUG
+        with (
+            phase(
+                "LLVM body %s context %s",
+                lambda_.name,
+                context.id,
+                level=logging.DEBUG,
+            ),
+            specialized_ir1_context(lambda_, context),
         ):
             component = compile_component(lambda_, context)
             with phase("VOP generation %s", lambda_.name, level=logging.DEBUG):
@@ -3093,11 +3104,15 @@ class FunctionGenerator:
         self.plan = self.context.plan
         self.raw = self.plan is not None
         self.unpacked = unpacked
-        self.return_uses = (
-            module.return_tuple_uses.get(self.lambda_, frozenset())
-            if unpacked
-            else frozenset()
-        )
+        if unpacked:
+            info = _return_tuple_info(self.lambda_)
+            self.return_uses = (
+                info[1]
+                if info is not None
+                else module.return_tuple_uses.get(self.lambda_, frozenset())
+            )
+        else:
+            self.return_uses = frozenset()
         self.environment = component.environment
         self.immortal_values: set[str] = set()
         self.heap_values: set[str] = set()

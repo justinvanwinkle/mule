@@ -1075,9 +1075,7 @@ class _LinkClonedExits(NodeVisitor):
 
     def visit_Entry(self, node: Entry):
         cloned = self.node_map[node]
-        cloned.exits = [
-            self.node_map[ex] for ex in node.exits if ex in self.node_map
-        ]
+        cloned.exits = [self.node_map[ex] for ex in node.exits if ex in self.node_map]
 
     def visit_Exit(self, node: Exit):
         cloned = self.node_map[node]
@@ -1217,4 +1215,3 @@ class _DetachClonedLeafRefs(NodeVisitor):
     def visit_Set(self, node: Set):
         if node.var not in self.saved_sets and node in node.var.sets:
             node.var.sets.remove(node)
-
