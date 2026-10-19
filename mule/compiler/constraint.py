@@ -30,11 +30,15 @@ from .ctype import (
     BOOLEAN_TRUE,
     BOTTOM,
     BYTES_TYPE,
+    DICT_TYPE,
+    EMPTY_DICT_TYPE,
+    EMPTY_LIST_TYPE,
     FLOAT,
     FUNCTION_TYPE,
     IMMORTAL,
     IMMORTAL_UNBOUND,
     INTEGER,
+    ITERATOR_TYPE,
     LIST_TYPE,
     NONE_TYPE,
     PYTHON_INTEGER,
@@ -44,6 +48,8 @@ from .ctype import (
     UNKNOWN,
     UNKNOWN_UNBOUND,
     IntegerType,
+    IteratorType,
+    ListType,
     TextType,
     TupleType,
     ValueType,
@@ -87,8 +93,15 @@ REAL_FACT = Fact(REAL)
 INTEGER_FACT = Fact(INTEGER)
 PYTHON_INTEGER_FACT = Fact(PYTHON_INTEGER)
 LIST_FACT = Fact(LIST_TYPE)
+EMPTY_LIST_FACT = Fact(EMPTY_LIST_TYPE)
+DICT_FACT = Fact(DICT_TYPE)
+EMPTY_DICT_FACT = Fact(EMPTY_DICT_TYPE)
 IMMORTAL_FACT = Fact(IMMORTAL)
 IMMORTAL_UNBOUND_FACT = Fact(IMMORTAL_UNBOUND)
+_EMPTY_ITERATOR_TYPE = IteratorType(BOTTOM)
+_EMPTY_ITERATOR_FACT = Fact(_EMPTY_ITERATOR_TYPE)
+_EMPTY_DICT_ITEMS_ITERATOR_TYPE = IteratorType(TupleType(2, (BOTTOM, BOTTOM)))
+_EMPTY_DICT_ITEMS_ITERATOR_FACT = Fact(_EMPTY_DICT_ITEMS_ITERATOR_TYPE)
 
 _CANONICAL_FACTS: dict[int, Fact] = {
     id(fact.type): fact
@@ -108,8 +121,13 @@ _CANONICAL_FACTS: dict[int, Fact] = {
         INTEGER_FACT,
         PYTHON_INTEGER_FACT,
         LIST_FACT,
+        EMPTY_LIST_FACT,
+        DICT_FACT,
+        EMPTY_DICT_FACT,
         IMMORTAL_FACT,
         IMMORTAL_UNBOUND_FACT,
+        _EMPTY_ITERATOR_FACT,
+        _EMPTY_DICT_ITEMS_ITERATOR_FACT,
     )
 }
 
@@ -241,7 +259,7 @@ class _LiteralFacts(ast.Visitor):
 
     def visit_Tuple(self, node):
         arity = len(node.elements)
-        if 0 < arity <= 16:
+        if 0 < arity <= 64:
             elements = tuple(el.accept(self) for el in node.elements)
             if not all(el is UNKNOWN for el in elements):
                 return TupleType(arity, elements)
@@ -350,6 +368,19 @@ class _Propagation(NodeVisitor, LeafVisitor):
 
     def visit_GlobalVar(self, leaf):
         fact = self.state[(_GLOBAL, leaf.name)]
+        ref = self._current_ref
+        if (
+            fact.type is UNKNOWN
+            and ref is not None
+            and ref.derived_type is not None
+            and ref.derived_type is not UNKNOWN
+            and self.walk.lambda_.policy.safety < 3
+            and ref.lexenv.policy.safety < 3
+        ):
+            target = fact.target or self.walk.global_targets.get(leaf.name)
+            if target is not None:
+                return Fact(ref.derived_type, target, fact.proven)
+            return _fact(ref.derived_type)
         if fact.target is None:
             target = self.walk.global_targets.get(leaf.name)
             if target is not None:
@@ -381,7 +412,17 @@ class _Propagation(NodeVisitor, LeafVisitor):
         if node.value is None:
             self.assign(key, UNBOUND_FACT)
         else:
-            self.assign(key, self.fact_of(node.value))
+            fact = self.fact_of(node.value)
+            contract = self.walk.local_contracts.get(key)
+            if contract is not None and not contract.contradicts(fact.type):
+                refined = contract.refine(fact.type)
+                if refined is not fact.type:
+                    fact = (
+                        _fact(refined)
+                        if fact.target is None
+                        else Fact(refined, fact.target, fact.proven)
+                    )
+            self.assign(key, fact)
         # Origins are locals, so this changes nothing for a global.
         self.forget_origin(node.var)
         return old
@@ -438,31 +479,54 @@ class _Propagation(NodeVisitor, LeafVisitor):
             ) and (left.may_run_user_code or right.may_run_user_code):
                 self.invalidate()
             return fact
-        if info.derive_type is not None:
-            value_type = info.derive_type(node)
-            if value_type is not None:
-                if info.may_call or info.unsafe:
-                    self.invalidate()
-                return _fact(value_type)
         if name == "%build_tuple":
             arity = len(args)
             elements = (
-                tuple(self.type_of(arg) for arg in args) if 0 < arity <= 16 else None
+                tuple(self.type_of(arg) for arg in args) if 0 < arity <= 64 else None
             )
             return _tuple_fact(arity, elements)
         if name == "%build_list":
-            return LIST_FACT
+            if not args:
+                return EMPTY_LIST_FACT
+            list_type = EMPTY_LIST_TYPE
+            for arg in args:
+                list_type = list_type.with_element(self.type_of(arg))
+            return _fact(list_type)
+        if name == "%build_dict":
+            if not args:
+                return EMPTY_DICT_FACT
+            if len(args) == 1:
+                dict_type, may_call = self.type_of(args[0]).accept(_BUILD_DICT_TYPE)
+                if may_call:
+                    self.invalidate()
+                return _fact(dict_type)
+            dict_type = EMPTY_DICT_TYPE
+            for key_arg, val_arg in zip(args[0::2], args[1::2], strict=True):
+                dict_type = dict_type.with_entry(
+                    self.type_of(key_arg), self.type_of(val_arg)
+                )
+            if any(self.type_of(key_arg).may_run_user_code for key_arg in args[0::2]):
+                self.invalidate()
+            return _fact(dict_type)
+        if name == "%range_prepare":
+            if self.is_proven_fixnum_range(node):
+                return BOOLEAN_TRUE_FACT
+            return BOOLEAN_FACT
         if name == "%unpack":
             self.invalidate()
             arity = self.type_of(args[1]).exact_integer()
             if arity is not None and arity >= 0:
                 seq_type = self.type_of(args[0])
-                if seq_type.fits_tuple(TupleType(arity)):
-                    return _fact(seq_type)
-                return _tuple_fact(arity)
+                if seq_type is BOTTOM:
+                    return NO_FACT
+                unpacked = seq_type.unpacked_tuple_type(arity)
+                return _tuple_fact(unpacked.arity, unpacked.elements)
             return _UNBOUNDED_TUPLE_FACT
         if name == "%unpack_ref":
-            return _fact(self.type_of(args[0]).getitem_type(self.type_of(args[1])))
+            seq_type = self.type_of(args[0])
+            if seq_type is BOTTOM:
+                return NO_FACT
+            return _fact(seq_type.getitem_type(self.type_of(args[1])))
         if name == "%make_function":
             lambda_ = made_lambda(node)
             definition = linked(node.info, node, "info")
@@ -479,19 +543,108 @@ class _Propagation(NodeVisitor, LeafVisitor):
                     )
             return Fact(FUNCTION_TYPE, lambda_, True)
         if name == "%call_resolved":
-            resolved = args[0].use().accept(_RESOLVED_METHOD)
+            resolved = (
+                args[0].uses[0].accept(_RESOLVED_METHOD)
+                if len(args[0].uses) == 1
+                else None
+            )
             if resolved is not None:
                 receiver_lvar, method_name = resolved
                 receiver_type = self.type_of(receiver_lvar)
                 has_keywords = bool(linked(node.info, node, "info").keywords)
                 arity = len(args) - 1
+                if method_name == "append" and arity == 1 and not has_keywords:
+                    elem_type = self.type_of(args[1])
+                    recv_var = self.origins.get(receiver_lvar)
+                    if recv_var is not None and not recv_var.indirect:
+                        self.assign(
+                            recv_var, _fact(receiver_type.with_element(elem_type))
+                        )
+                    if (
+                        not receiver_type.may_be_unbound
+                        and receiver_type.fits(LIST_TYPE)
+                        and not elem_type.may_be_unbound
+                    ):
+                        return NONE_FACT
+                if method_name == "get" and arity in (1, 2) and not has_keywords:
+                    default_type = self.type_of(args[2]) if arity == 2 else NONE_TYPE
+                    res_type = receiver_type.dict_get_type(default_type)
+                    if res_type is not UNKNOWN:
+                        if self.type_of(args[1]).may_run_user_code:
+                            self.invalidate()
+                        return _fact(res_type)
+                if method_name == "items" and arity == 0 and not has_keywords:
+                    if receiver_type == EMPTY_DICT_TYPE:
+                        return _EMPTY_DICT_ITEMS_ITERATOR_FACT
+                    iter_type = receiver_type.dict_items_iterator_type()
+                    if iter_type is not UNKNOWN:
+                        return _fact(iter_type)
+                if method_name == "keys" and arity == 0 and not has_keywords:
+                    if receiver_type == EMPTY_DICT_TYPE:
+                        return _EMPTY_ITERATOR_FACT
+                    iter_type = receiver_type.dict_keys_iterator_type()
+                    if iter_type is not UNKNOWN:
+                        return _fact(iter_type)
+                if method_name == "values" and arity == 0 and not has_keywords:
+                    if receiver_type == EMPTY_DICT_TYPE:
+                        return _EMPTY_ITERATOR_FACT
+                    iter_type = receiver_type.dict_values_iterator_type()
+                    if iter_type is not UNKNOWN:
+                        return _fact(iter_type)
                 if (
-                    receiver_type.is_exact_list
-                    and method_name == "append"
-                    and arity == 1
+                    method_name
+                    in ("heappush", "heappop", "heapreplace", "heappushpop", "heapify")
                     and not has_keywords
+                    and arity >= 1
+                    and self.walk.lambda_.policy.safety < 3
                 ):
-                    return NONE_FACT
+                    recv_name = receiver_lvar.use().accept(_GLOBAL_CALLEE_NAME)
+                    if (
+                        recv_name == "heapq"
+                        and recv_name not in self.walk.rebound_globals
+                        and recv_name not in self.walk.global_targets
+                    ):
+                        heap_lvar = args[1]
+                        heap_type = self.type_of(heap_lvar)
+                        heap_var = self.origins.get(heap_lvar)
+                        if method_name == "heappush" and arity == 2:
+                            elem_type = self.type_of(args[2])
+                            if heap_var is not None and not heap_var.indirect:
+                                self.assign(
+                                    heap_var, _fact(heap_type.with_element(elem_type))
+                                )
+                            if (
+                                not heap_type.may_be_unbound
+                                and heap_type.fits(LIST_TYPE)
+                                and not elem_type.may_be_unbound
+                            ):
+                                return NONE_FACT
+                        elif method_name == "heappop" and arity == 1:
+                            if not heap_type.may_be_unbound and heap_type.fits(
+                                LIST_TYPE
+                            ):
+                                return _fact(heap_type.getitem_type(_SMALL_INTS[0]))
+                        elif (
+                            method_name in ("heapreplace", "heappushpop") and arity == 2
+                        ):
+                            elem_type = self.type_of(args[2])
+                            if heap_var is not None and not heap_var.indirect:
+                                self.assign(
+                                    heap_var, _fact(heap_type.with_element(elem_type))
+                                )
+                            if not heap_type.may_be_unbound and heap_type.fits(
+                                LIST_TYPE
+                            ):
+                                return _fact(
+                                    heap_type.getitem_type(_SMALL_INTS[0]).join(
+                                        elem_type
+                                    )
+                                )
+                        elif method_name == "heapify" and arity == 1:
+                            if not heap_type.may_be_unbound and heap_type.fits(
+                                LIST_TYPE
+                            ):
+                                return NONE_FACT
                 result_type = receiver_type.method_return_type(
                     method_name, arity, has_keywords
                 )
@@ -511,6 +664,44 @@ class _Propagation(NodeVisitor, LeafVisitor):
             if receiver_type.may_run_user_code or index_type.may_run_user_code:
                 self.invalidate()
             return _fact(receiver_type.getitem_type(index_type))
+        if name == "%setitem" and len(args) == 3:
+            recv_var = self.origins.get(args[0])
+            recv_type = self.type_of(args[0])
+            key_type = self.type_of(args[1])
+            val_type = self.type_of(args[2])
+            if not recv_type.fits_list(LIST_TYPE) or key_type.may_run_user_code:
+                self.invalidate()
+            if recv_var is not None and not recv_var.indirect:
+                if recv_type.fits_list(LIST_TYPE):
+                    updated = (
+                        recv_type.with_element(val_type)
+                        if key_type.fits(PYTHON_INTEGER)
+                        else LIST_TYPE
+                    )
+                else:
+                    updated = recv_type.with_entry(key_type, val_type)
+                self.assign(recv_var, _fact(updated))
+            return _fact(NONE_TYPE)
+        if name == "%iterate" and len(args) == 1:
+            operand_type = self.type_of(args[0])
+            if operand_type.may_run_user_code:
+                self.invalidate()
+            if operand_type == EMPTY_LIST_TYPE or operand_type == EMPTY_DICT_TYPE:
+                return _EMPTY_ITERATOR_FACT
+            return _fact(operand_type.iterate_type())
+        if name == "%next_item":
+            iterator_var = _loop_iterator_var(node.block)
+            if iterator_var is not None and iterator_var in self.state:
+                iter_type = self.state[iterator_var].type
+                if iter_type == _EMPTY_ITERATOR_TYPE:
+                    return NO_FACT
+                item_type = iter_type.next_item_type()
+                if iter_type.may_run_user_code:
+                    self.invalidate()
+                if item_type is not UNKNOWN:
+                    return _fact(item_type)
+            self.invalidate()
+            return UNKNOWN_FACT
         if name == "%getslice":
             receiver_type = self.type_of(args[0])
             if receiver_type.may_run_user_code or any(
@@ -521,14 +712,19 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 return TEXT_FACT
             if receiver_type is BYTES_TYPE:
                 return BYTES_FACT
-            if receiver_type is LIST_TYPE:
-                return LIST_FACT
+            if receiver_type.fits_list(LIST_TYPE):
+                return _fact(receiver_type)
             return UNKNOWN_FACT
+        if info.derive_type is not None:
+            value_type = info.derive_type(node)
+            if value_type is not None:
+                if info.may_call or info.unsafe:
+                    self.invalidate()
+                return _fact(value_type)
         if info.protocol is not None:
             self.invalidate()
             return UNKNOWN_FACT
         if name in (
-            "%range_prepare",
             "%range_available",
             "%sequence_available",
             "%has_binding",
@@ -540,6 +736,35 @@ class _Propagation(NodeVisitor, LeafVisitor):
         if info.result:
             return UNKNOWN_FACT
         return None
+
+    def is_proven_fixnum_range(self, node: Combination) -> bool:
+        if (
+            self.walk.lambda_.policy.safety >= 3
+            or node.lexenv.policy.safety >= 3
+            or "range" in self.walk.rebound_globals
+            or "range" in self.walk.global_targets
+            or not node.args
+            or len(node.args[0].uses) != 1
+            or not node.args[0].uses[0].accept(_UNMUTATED_RANGE_REF)
+        ):
+            return False
+        state = linked(node.info, node, "info")
+        if not (1 <= len(state.arguments) <= 3):
+            return False
+        arg_types = [self.type_of(arg) for arg in state.arguments]
+        if not all(
+            not arg_t.may_be_unbound and arg_t.fits(PYTHON_INTEGER) and arg_t.is_fixnum
+            for arg_t in arg_types
+        ):
+            return False
+        if len(arg_types) == 3:
+            step = arg_types[2]
+            if not (
+                (step.minimum is not None and step.minimum > 0)
+                or (step.maximum is not None and step.maximum < 0)
+            ):
+                return False
+        return True
 
     def range_type(self, state) -> IntegerType:
         minimum, maximum = state.minimum, state.maximum
@@ -583,6 +808,92 @@ class _ResolvedMethod(NodeVisitor):
 
 
 _RESOLVED_METHOD = _ResolvedMethod()
+
+
+class _BuildDictType(ValueTypeVisitor):
+    def visit_ValueType(self, fact):
+        return DICT_TYPE, True
+
+    def visit_TupleType(self, fact):
+        if fact.may_be_unbound:
+            return DICT_TYPE, True
+        if fact.arity == 0:
+            return EMPTY_DICT_TYPE, False
+        if fact.elements is not None and len(fact.elements) % 2 == 0:
+            dict_type = EMPTY_DICT_TYPE
+            may_call = False
+            for key_t, val_t in zip(
+                fact.elements[0::2], fact.elements[1::2], strict=True
+            ):
+                dict_type = dict_type.with_entry(key_t, val_t)
+                if key_t.may_run_user_code:
+                    may_call = True
+            return dict_type, may_call
+        return DICT_TYPE, True
+
+
+_BUILD_DICT_TYPE = _BuildDictType()
+
+
+class _SequenceIteratorVar(NodeVisitor, LeafVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.fun_info is not None
+            and node.fun_info.name == "%sequence_available"
+            and len(node.args) == 1
+            and len(node.args[0].uses) == 1
+        ):
+            return node.args[0].uses[0].accept(self)
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_LambdaVar(self, leaf):
+        return leaf
+
+
+_SEQUENCE_ITERATOR_VAR = _SequenceIteratorVar()
+
+
+def _loop_iterator_var(block):
+    for pred in block.pred:
+        for pred_node in pred.nodes():
+            var = pred_node.accept(_SEQUENCE_ITERATOR_VAR)
+            if var is not None:
+                return var
+    return None
+
+
+class _UnmutatedRangeRef(NodeVisitor, LeafVisitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return False
+
+    def visit_GlobalVar(self, leaf):
+        return leaf.name == "range" and not leaf.sets
+
+    def visit_LambdaVar(self, leaf):
+        if len(leaf.sets) != 1:
+            return False
+        value = leaf.sets[0].value
+        if value is None or len(value.uses) != 1:
+            return False
+        return value.uses[0].accept(self)
+
+
+_UNMUTATED_RANGE_REF = _UnmutatedRangeRef()
 
 
 _BINARY_OPERATORS = {
@@ -646,9 +957,10 @@ class LambdaGraph:
 class _GraphScan(NodeVisitor, LeafVisitor):
     """Collects global variable names and full/guarded call sites for a lambda."""
 
-    def __init__(self):
+    def __init__(self, consumers):
         self.global_names: set[str] = set()
         self.call_nodes: list[tuple[object, Combination]] = []
+        self.consumers = consumers
         self.block = None
 
     def visit_Ref(self, node):
@@ -663,6 +975,11 @@ class _GraphScan(NodeVisitor, LeafVisitor):
     def visit_Combination(self, node):
         if node.kind in (CallKind.FULL, CallKind.GUARDED) and not node.info.keywords:
             self.call_nodes.append((self.block, node))
+        if node.kind is CallKind.KNOWN and node.args:
+            for arg in node.args:
+                for use in arg.uses:
+                    if use.block is not self.block:
+                        self.consumers[use].add(self.block)
 
 
 def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
@@ -672,8 +989,8 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
     entry = linked(lambda_.bind, lambda_, "bind").block
     successors = {block: tuple(_successors(block, handlers[block])) for block in blocks}
     predecessors_sets = defaultdict(set)
-    consumers = {}
-    scan = _GraphScan()
+    consumers = defaultdict(set)
+    scan = _GraphScan(consumers)
     for block in blocks:
         scan.block = block
         for target in successors[block]:
@@ -683,8 +1000,9 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
             if lvar is not None and lvar.dest is not None:
                 dest_block = lvar.dest.block
                 if dest_block is not block:
-                    consumers[node] = dest_block
+                    consumers[node].add(dest_block)
             node.accept(scan)
+    consumers = {node: tuple(blocks_set) for node, blocks_set in consumers.items()}
     predecessors = {block: tuple(predecessors_sets[block]) for block in blocks}
     headers, back_edges = _loop_headers(entry, successors)
     global_names = tuple(scan.global_names)
@@ -729,7 +1047,7 @@ class _GlobalCalleeName(NodeVisitor, LeafVisitor):
 
 
 _GLOBAL_CALLEE_NAME = _GlobalCalleeName()
-_LENGTH_TYPE = IntegerType(0, (1 << 60) - 1)
+_LENGTH_TYPE = IntegerType(0, (1 << 48) - 1)
 _CODEPOINT_TYPE = IntegerType(0, 0x10FFFF)
 
 
@@ -769,6 +1087,12 @@ class _Walk:
         self.global_names = graph.global_names
         self.indirect = graph.indirect
         self.volatile_keys = graph.volatile_keys
+        self.local_contracts = {
+            var: contract
+            for var in lambda_.locals
+            if (contract := lambda_.local_annotations.get(var.name)) is not None
+            and ("local", lambda_, var.name) not in annotations.ignored
+        }
         parameter_facts = dict(zip(lambda_.vars, parameters, strict=True))
         self.initial: dict[object, Fact] = {
             var: _fact(parameter_facts[var]) if var in parameter_facts else UNBOUND_FACT
@@ -841,7 +1165,30 @@ class _Walk:
         if name == "ord" and arity == 1:
             return _CODEPOINT_TYPE
         if name == "list" and arity <= 1:
+            if arity == 1:
+                elem = arg_types[0].iterate_type().next_item_type()
+                if elem is not UNKNOWN:
+                    return ListType(elem)
             return LIST_TYPE
+        if name == "iter" and arity == 1:
+            it_type = arg_types[0].iterate_type()
+            return ITERATOR_TYPE if it_type is UNKNOWN else it_type
+        if name == "reversed" and arity == 1:
+            it_type = arg_types[0].iterate_type()
+            return ITERATOR_TYPE if it_type is UNKNOWN else it_type
+        if name == "range" and 1 <= arity <= 3:
+            if arity == 1 and arg_types[0].fits(PYTHON_INTEGER):
+                stop = arg_types[0]
+                if stop.maximum is not None and stop.maximum >= 1:
+                    return IteratorType(IntegerType(0, stop.maximum - 1))
+                return IteratorType(INTEGER)
+            if all(arg.fits(PYTHON_INTEGER) for arg in arg_types):
+                return IteratorType(INTEGER)
+        if name == "next" and 1 <= arity <= 2:
+            elem = arg_types[0].next_item_type()
+            if arity == 2:
+                return elem.join(arg_types[1])
+            return elem
         if name == "tuple" and arity <= 1:
             return _UNBOUNDED_TUPLE
         if name == "abs" and arity == 1:
@@ -1047,8 +1394,7 @@ class _Walk:
                         )
                     if changed:
                         facts[node] = updated
-                        consumer = consumers.get(node)
-                        if consumer is not None:
+                        for consumer in consumers.get(node, ()):
                             cross_changed.add(consumer)
                             if consumer not in queued:
                                 pending.append(consumer)
@@ -1061,6 +1407,8 @@ class _Walk:
                     self.invalidate_globals(edge)
                 else:
                     edge = self.constrain_edge(block, target, visitor, state)
+                    if edge is None:
+                        continue
                 key = block, target
                 if not widening:
                     visited_edges.add(key)
@@ -1073,12 +1421,11 @@ class _Walk:
         return did_widen
 
     def constrain_edge(self, block, target, visitor, state):
-        """Narrow an integer local on a branch edge tested against a constant."""
+        """Narrow an integer local on a branch edge tested against a constant,
+        or return ``None`` when a constant boolean test makes the edge dead."""
         last = block.last
-        if last is not None and visitor.origins:
-            narrowed = last.accept(_ConstrainEdge(target, visitor, state))
-            if narrowed is not None:
-                return narrowed
+        if last is not None:
+            return last.accept(_ConstrainEdge(target, visitor, state))
         return state
 
 
@@ -1128,12 +1475,19 @@ class _ConstrainEdge(NodeVisitor):
         self.state = state
 
     def visit_Node(self, node):
-        return None
+        return self.state
 
     def visit_If(self, node):
         if node.consequent is node.alternative:
-            return None
+            return self.state
         truth = self.target is node.consequent
+        test_type = self.visitor.type_of(node.test)
+        if (truth and test_type is BOOLEAN_FALSE) or (
+            not truth and test_type is BOOLEAN_TRUE
+        ):
+            return None
+        if not self.visitor.origins:
+            return self.state
         narrowed_edge = node.test.use().accept(
             _ConstrainComparison(self.visitor, self.state, truth)
         )
@@ -1153,7 +1507,7 @@ class _ConstrainEdge(NodeVisitor):
                     else Fact(narrowed, current.target, current.proven)
                 )
                 return edge
-        return None
+        return self.state
 
 
 _NEGATED_COMPARISON = {

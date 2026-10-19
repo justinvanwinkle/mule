@@ -13,8 +13,11 @@ from mule import ast
 
 from . import fndb
 from .ctype import (
+    BOOLEAN_TRUE,
+    PYTHON_INTEGER,
     UNKNOWN,
     BytesType,
+    IntegerType,
     ListType,
     TextType,
     TupleType,
@@ -28,13 +31,18 @@ from .ir1opt import (
     replace_combination_with_constant,
 )
 from .ir1util import (
+    add_lvar_use,
     delete_lvar_use,
     delete_ref,
     delete_set,
+    insert_node_after,
+    insert_node_before,
+    reoptimize_lvar,
     replace_combination_with_lvar,
     retarget_known_combination,
     substitute_lvar_uses,
     unlink_node,
+    use_lvar,
 )
 from .knownfun import KNOWN, FunInfo, deftransform
 from .node import (
@@ -42,6 +50,7 @@ from .node import (
     Combination,
     Constant,
     GlobalVar,
+    If,
     KnownFunction,
     Lambda,
     LambdaVar,
@@ -727,8 +736,394 @@ class _KnownLengthPrimitive(ValueTypeVisitor):
 _KNOWN_LENGTH_PRIMITIVE = _KnownLengthPrimitive()
 
 
+class _ConcatLengthKind(ValueTypeVisitor):
+    """Select the length primitive for a bound text or bytes concatenation."""
+
+    def visit_ValueType(self, fact: ValueType) -> FunInfo | None:
+        return None
+
+    def visit_TextType(self, fact: TextType) -> FunInfo | None:
+        if fact.may_be_unbound:
+            return None
+        return KNOWN["_text_length"]
+
+    def visit_BytesType(self, fact: BytesType) -> FunInfo | None:
+        if fact.may_be_unbound:
+            return None
+        return KNOWN["_storage_length"]
+
+
+_CONCAT_LENGTH_KIND = _ConcatLengthKind()
+
+
+class _ConstantConcatLength(ast.Visitor):
+    """Extract the length of a constant text or bytes literal, or None."""
+
+    def visit_Node(self, node) -> int | None:
+        return None
+
+    def visit_TextLiteral(self, node: ast.TextLiteral) -> int:
+        return len(node.value)
+
+    def visit_BytesLiteral(self, node: ast.BytesLiteral) -> int:
+        return len(node.value)
+
+
+_CONSTANT_CONCAT_LENGTH = _ConstantConcatLength()
+
+
+class _RetargetConstantRef(NodeVisitor):
+    """Replace a constant ``Ref``'s literal in place."""
+
+    def __init__(self, literal: ast.IntegerLiteral, vtype: ValueType):
+        self.literal = literal
+        self.vtype = vtype
+
+    def visit_Ref(self, node: Ref) -> None:
+        if node in node.leaf.refs:
+            node.leaf.refs.remove(node)
+        leaf = Constant(self.literal)
+        node.leaf = leaf
+        leaf.refs.append(node)
+        node.derived_type = self.vtype
+
+
+class _ConcatAddProducer(NodeVisitor):
+    """Return ``node`` when it is a known ``%add`` concatenation for ``primitive``."""
+
+    def __init__(self, primitive: FunInfo, block):
+        self.primitive = primitive
+        self.block = block
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is not CallKind.KNOWN
+            or node.fun_info is not fndb.BINARY[ast.BinaryOperator.ADD]
+            or node.lvar is None
+            or len(node.args) != 2
+            or node.args[0] is node.args[1]
+            or len(node.fun.uses) != 1
+            or node.prev is None
+            or node.block is not self.block
+            or node.lexenv.policy.safety >= 3
+        ):
+            return None
+        left, right = node.args
+        if (
+            lvar_type(left).accept(_CONCAT_LENGTH_KIND) is not self.primitive
+            or lvar_type(right).accept(_CONCAT_LENGTH_KIND) is not self.primitive
+        ):
+            return None
+        if any(use.prev is None for use in (*left.uses, *right.uses)):
+            return None
+        return node
+
+
+class _LocalConcatVarRef(NodeVisitor, LeafVisitor):
+    """Match a non-final ``Ref`` to an unannotated local ``LambdaVar``."""
+
+    def __init__(self, home_lambda: Lambda | None):
+        self.home_lambda = home_lambda
+        self._ref: Ref | None = None
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        if node.final:
+            return None
+        self._ref = node
+        var = node.leaf.accept(self)
+        if var is None:
+            return None
+        return node, var
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if (
+            leaf.indirect
+            or leaf.home is not self.home_lambda
+            or leaf.home is None
+            or leaf in leaf.home.vars
+            or leaf.name in leaf.home.local_annotations
+            or leaf.type is not None
+        ):
+            return None
+        return leaf
+
+
+def _match_concat_local_store(
+    arg_lvar: Lvar,
+    call: Combination,
+    positions: dict[Node, int],
+    block_nodes: list[Node],
+) -> tuple[LambdaVar, Set, Ref, bool] | None:
+    if len(arg_lvar.uses) != 1:
+        return None
+    local_info = arg_lvar.uses[0].accept(_LocalConcatVarRef(call.home_lambda))
+    if local_info is None:
+        return None
+    arg_use, var = local_info
+    if arg_use not in positions:
+        return None
+    if not var.sets or not var.refs:
+        return None
+    for store in var.sets:
+        if store.value is None or store.lvar is not None or store.prev is None:
+            return None
+    for ref in var.refs:
+        if ref.prev is None or ref.final:
+            return None
+
+    var_sets = set(var.sets)
+    var_refs = set(var.refs)
+    blocks = {s.block for s in var.sets} | {r.block for r in var.refs}
+    matched_store: Set | None = None
+    for blk in blocks:
+        active_store: Set | None = None
+        active_ref: Ref | None = None
+        for node in blk.nodes():
+            if node in var_sets:
+                active_store = node
+                active_ref = None
+            elif node in var_refs:
+                if active_store is None or active_ref is not None:
+                    return None
+                active_ref = node
+                if node is arg_use:
+                    matched_store = active_store
+
+    if matched_store is None or matched_store not in positions:
+        return None
+    store_pos = positions[matched_store]
+    ref_pos = positions[arg_use]
+    call_pos = positions[call]
+    if not (store_pos < ref_pos < call_pos):
+        return None
+
+    fun_use = call.fun.uses[0]
+    intervening = block_nodes[store_pos + 1 : call_pos]
+    only_safe_refs = all(
+        node is arg_use
+        or node is fun_use
+        or (node.value_lvar is not None and _is_safe_dropped_element(node.value_lvar))
+        for node in intervening
+    )
+    if only_safe_refs:
+        return var, matched_store, arg_use, True
+    if len(var.sets) == 1 and len(var.refs) == 1:
+        return var, matched_store, arg_use, False
+    return None
+
+
+def _wrap_lvar_in_length_primitive(
+    add_node: Combination,
+    operand_lvar: Lvar,
+    primitive: FunInfo,
+    positions: dict[Node, int],
+) -> None:
+    orig_type = lvar_type(operand_lvar)
+    value = Lvar()
+    for use in list(operand_lvar.uses):
+        operand_lvar.uses.remove(use)
+        use.lvar = None
+        add_lvar_use(use, value)
+    value.derived_type = orig_type
+
+    fun_leaf = KnownFunction(primitive)
+    fun_ref = Ref(add_node.lexenv, add_node.source, fun_leaf)
+    fun_leaf.refs.append(fun_ref)
+    fun_lvar = Lvar()
+    use_lvar(fun_ref, fun_lvar)
+
+    len_call = Combination(add_node.lexenv, add_node.source, fun_lvar)
+    len_call.kind = CallKind.KNOWN
+    len_call.fun_info = primitive
+    fun_lvar.dest = len_call
+    len_call.args = [value]
+    value.dest = len_call
+
+    if (
+        len(value.uses) == 1
+        and value.uses[0] in positions
+        and positions[value.uses[0]] < positions[add_node]
+    ):
+        producer = value.uses[0]
+        insert_node_after(producer, fun_ref)
+        insert_node_after(fun_ref, len_call)
+    else:
+        insert_node_before(add_node, fun_ref)
+        insert_node_before(add_node, len_call)
+
+    use_lvar(len_call, operand_lvar)
+    len_type = (
+        primitive.derive_type(len_call)
+        if primitive.derive_type is not None
+        else UNKNOWN
+    )
+    len_call.derived_type = len_type
+    operand_lvar.derived_type = len_type
+
+
+def _fuse_concat_length(call: Combination, primitive: FunInfo) -> bool:
+    """Rewrite ``len(a + b)`` on proven ``str`` or ``bytes`` into
+    ``_text_length(a) + _text_length(b)`` (or ``_storage_length``)."""
+    if (
+        call.lvar is None
+        or len(call.args) != 1
+        or len(call.fun.uses) != 1
+        or call.prev is None
+        or call.lexenv.policy.safety >= 3
+    ):
+        return False
+    home = call.home_lambda
+    if home is not None and (
+        home.policy.safety >= 3 or home.name.startswith(_PROTOCOL_PREFIXES)
+    ):
+        return False
+    arg_lvar = call.args[0]
+    if lvar_type(arg_lvar).accept(_CONCAT_LENGTH_KIND) is not primitive:
+        return False
+
+    block = call.block
+    block_nodes = list(block.nodes())
+    positions = {node: idx for idx, node in enumerate(block_nodes)}
+    adder = _ConcatAddProducer(primitive, block)
+
+    local_match: tuple[LambdaVar, Set, Ref, bool] | None = None
+    root_add: Combination | None = None
+    root_lvar: Lvar | None = None
+
+    if len(arg_lvar.uses) == 1:
+        direct_add = arg_lvar.uses[0].accept(adder)
+        if direct_add is not None:
+            root_add = direct_add
+            root_lvar = arg_lvar
+
+    if root_add is None:
+        local_match = _match_concat_local_store(arg_lvar, call, positions, block_nodes)
+        if local_match is None:
+            return False
+        _, matched_store, _, _ = local_match
+        store_val = linked(matched_store.value, matched_store, "value")
+        if len(store_val.uses) != 1:
+            return False
+        cand_add = store_val.uses[0].accept(adder)
+        if cand_add is None:
+            return False
+        root_add = cand_add
+        root_lvar = store_val
+
+    assert root_add is not None and root_lvar is not None
+    add_nodes_postorder: list[Combination] = []
+    leaf_operands: list[tuple[Combination, Lvar]] = []
+    seen_adds: set[Combination] = set()
+
+    def collect(add_node: Combination, limit_pos: int) -> bool:
+        if add_node in seen_adds:
+            return False
+        node_pos = positions.get(add_node)
+        if node_pos is None or node_pos >= limit_pos:
+            return False
+        seen_adds.add(add_node)
+        for operand_lvar in add_node.args:
+            if operand_lvar.dest is not add_node or not operand_lvar.uses:
+                return False
+            if len(operand_lvar.uses) == 1:
+                child_add = operand_lvar.uses[0].accept(adder)
+                if child_add is not None:
+                    if not collect(child_add, node_pos):
+                        return False
+                    continue
+                use_pos = positions.get(operand_lvar.uses[0])
+                if use_pos is not None and use_pos >= node_pos:
+                    return False
+            leaf_operands.append((add_node, operand_lvar))
+        add_nodes_postorder.append(add_node)
+        return True
+
+    bound_pos = (
+        positions[local_match[1]] if local_match is not None else positions[call]
+    )
+    if not collect(root_add, bound_pos):
+        return False
+
+    for add_node, operand_lvar in leaf_operands:
+        if len(operand_lvar.uses) == 1 and operand_lvar.uses[0] in positions:
+            literal = constant_literal(operand_lvar)
+            if literal is not None:
+                const_len = literal.accept(_CONSTANT_CONCAT_LENGTH)
+                if const_len is not None:
+                    int_lit = ast.IntegerLiteral(const_len, span=literal.span)
+                    int_type = IntegerType(const_len, const_len)
+                    operand_lvar.uses[0].accept(_RetargetConstantRef(int_lit, int_type))
+                    operand_lvar.derived_type = int_type
+                    reoptimize_lvar(operand_lvar)
+                    continue
+        _wrap_lvar_in_length_primitive(add_node, operand_lvar, primitive, positions)
+
+    for add_node in add_nodes_postorder:
+        left_type = lvar_type(add_node.args[0])
+        right_type = lvar_type(add_node.args[1])
+        new_type = left_type.binary(ast.BinaryOperator.ADD, right_type)
+        add_node.derived_type = new_type
+        add_node.reoptimize = True
+        if add_node.lvar is not None:
+            add_node.lvar.derived_type = new_type
+            reoptimize_lvar(add_node.lvar)
+
+    if local_match is not None:
+        var, matched_store, arg_use, eliminate_store = local_match
+        if eliminate_store:
+            matched_store.value = None
+            root_lvar.dest = None
+            delete_set(matched_store)
+            unlink_node(matched_store)
+            delete_lvar_use(arg_use)
+            delete_ref(arg_use)
+            unlink_node(arg_use)
+            substitute_lvar_uses(arg_lvar, root_lvar)
+            home_locals = call.home_lambda.locals
+            if not var.refs and not var.sets and var in home_locals:
+                home_locals.remove(var)
+        else:
+            new_root_type = lvar_type(root_lvar)
+            matched_store.derived_type = new_root_type
+            arg_use.derived_type = new_root_type
+            arg_lvar.derived_type = new_root_type
+
+    replace_combination_with_lvar(call, arg_lvar)
+    return True
+
+
+_LENGTH_PRIMITIVE_TRANSFORMS_REGISTERED = False
+
+
+def _transform_known_length_primitive(node: Combination) -> bool:
+    if node.kind is not CallKind.KNOWN or node.fun_info is None:
+        return False
+    return _fuse_concat_length(node, node.fun_info)
+
+
+def _ensure_length_primitive_transforms() -> None:
+    global _LENGTH_PRIMITIVE_TRANSFORMS_REGISTERED
+    if _LENGTH_PRIMITIVE_TRANSFORMS_REGISTERED:
+        return
+    if "_text_length" not in KNOWN or "_storage_length" not in KNOWN:
+        return
+    deftransform("_text_length", fun=_transform_known_length_primitive)
+    deftransform("_storage_length", fun=_transform_known_length_primitive)
+    _LENGTH_PRIMITIVE_TRANSFORMS_REGISTERED = True
+
+
 def known_length_primitive(vtype: ValueType) -> FunInfo | None:
     """Return the direct length primitive for ``vtype``, or None."""
+    _ensure_length_primitive_transforms()
     return vtype.accept(_KNOWN_LENGTH_PRIMITIVE)
 
 
@@ -762,6 +1157,7 @@ _PREDICTABLE_LEN_GLOBAL = _PredictableLenGlobal()
 
 def is_predictable_len_call(node: Combination) -> bool:
     """Whether ``node`` is a 1-argument positional call to builtin ``len``."""
+    _ensure_length_primitive_transforms()
     if (
         node.kind not in (CallKind.FULL, CallKind.GUARDED)
         or len(node.args) != 1
@@ -786,6 +1182,119 @@ def _transform_len(node: Combination) -> bool:
     if primitive is None:
         return False
     retarget_known_combination(node, primitive, [node.args[0]])
+    _fuse_concat_length(node, primitive)
+    return True
+
+
+class _IfTestingLvar(NodeVisitor):
+    """Return ``node`` when it is an ``If`` testing ``test``."""
+
+    def __init__(self, test: Lvar):
+        self.test = test
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_If(self, node: If) -> If | None:
+        if node.test is self.test:
+            return node
+        return None
+
+
+class _UnmutatedRangeGlobalRef(NodeVisitor, LeafVisitor):
+    """Match a ``Ref`` to an unmutated ``GlobalVar('range')``."""
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Ref(self, node: Ref) -> bool:
+        if node.lexenv.policy.safety >= 3:
+            return False
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf) -> bool:
+        return False
+
+    def visit_GlobalVar(self, leaf: GlobalVar) -> bool:
+        return leaf.name == "range" and not leaf.sets
+
+
+_UNMUTATED_RANGE_GLOBAL_REF = _UnmutatedRangeGlobalRef()
+
+
+class _PredictableRangeCalleeRef(NodeVisitor, LeafVisitor):
+    """Match a ``Ref`` to a single-assignment ``LambdaVar`` bound to builtin ``range``."""
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Ref(self, node: Ref) -> bool:
+        if node.lexenv.policy.safety >= 3:
+            return False
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf) -> bool:
+        return False
+
+    def visit_LambdaVar(self, leaf: LambdaVar) -> bool:
+        if len(leaf.sets) != 1:
+            return False
+        store = leaf.sets[0]
+        if store.value is None or len(store.value.uses) != 1:
+            return False
+        return store.value.uses[0].accept(_UNMUTATED_RANGE_GLOBAL_REF)
+
+
+_PREDICTABLE_RANGE_CALLEE_REF = _PredictableRangeCalleeRef()
+
+
+@deftransform("%range_prepare")
+def _transform_range_prepare(node: Combination) -> bool:
+    if (
+        node.lvar is None
+        or len(node.lvar.uses) != 1
+        or len(node.args) != 2
+        or node.lexenv.policy.safety >= 3
+    ):
+        return False
+    home = node.home_lambda
+    if home is not None and (
+        home.policy.safety >= 3 or home.name.startswith(_PROTOCOL_PREFIXES)
+    ):
+        return False
+    dest = node.lvar.dest
+    if dest is None:
+        return False
+    if_node = dest.accept(_IfTestingLvar(node.lvar))
+    if if_node is None or if_node.prev is None:
+        return False
+    callee_lvar = node.args[0]
+    if len(callee_lvar.uses) != 1 or not callee_lvar.uses[0].accept(
+        _PREDICTABLE_RANGE_CALLEE_REF
+    ):
+        return False
+    state = node.info
+    if state is None or not (1 <= len(state.arguments) <= 3):
+        return False
+    for arg in state.arguments:
+        arg_type = lvar_type(arg)
+        if not (
+            arg_type.fits(PYTHON_INTEGER)
+            and arg_type.is_fixnum
+            and not arg_type.may_be_unbound
+        ):
+            return False
+
+    span = node.source.span if node.source is not None else None
+    leaf = Constant(ast.BooleanLiteral(True, span=span))
+    true_ref = Ref(node.lexenv, node.source, leaf)
+    true_ref.derived_type = BOOLEAN_TRUE
+    leaf.refs.append(true_ref)
+    insert_node_before(if_node, true_ref)
+    test_lvar = node.lvar
+    delete_lvar_use(node)
+    use_lvar(true_ref, test_lvar)
+    reoptimize_lvar(test_lvar)
     return True
 
 
@@ -793,6 +1302,7 @@ __all__ = [
     "_transform_constant_getslice",
     "_transform_empty_container_not",
     "_transform_len",
+    "_transform_range_prepare",
     "_transform_tuple_getitem",
     "_transform_unpack",
     "is_predictable_len_call",

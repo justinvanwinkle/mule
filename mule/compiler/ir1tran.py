@@ -38,7 +38,7 @@ from typing import NoReturn
 from mule import ast
 
 from . import fndb
-from .annotation_types import BUILTINS, EXPORTS
+from .annotation_types import BUILTINS, DECLARATIONS, EXPORTS, ListContract
 from .ir1util import (
     aver,
     change_block_successor,
@@ -282,6 +282,7 @@ class Converter:
         # The module's ``__name__`` as a literal while the module never
         # rebinds it, so ``if __name__ == "__main__":`` folds at compile time.
         self.module_name_literal: ast.TextLiteral | None = None
+        self.module_file_literal: ast.TextLiteral | None = None
         self.class_definitions = 0
         self.class_fields = {}
         self.module_annotation_shadows = set()
@@ -340,6 +341,11 @@ class Converter:
         return expression.accept(_AnnotationReference(self, scope)).annotation(
             self, expression
         )
+
+    def declared_contract(self, expression, scope=None):
+        return expression.accept(
+            _DeclaredAnnotationReference(self, scope)
+        ).declared_contract(self, expression)
 
     def policy(self, decorators, inherited):
         """Apply the definition's ``mule.optimize`` directives. They are
@@ -500,6 +506,14 @@ class FunctionConverter:
         for var in lambda_.vars:
             self.locals[var.name] = var
         self._bindings(statements)
+        if not is_module:
+            for var, expr in zip(
+                lambda_.vars, lambda_.signature.annotation_expressions
+            ):
+                if expr is not None and var.name not in lambda_.local_annotations:
+                    declared = converter.declared_contract(expr, parent)
+                    if declared is not None:
+                        lambda_.local_annotations[var.name] = declared
         self.lexenv = Lexenv(vars=self.locals, lambda_=lambda_, policy=lambda_.policy)
         self.expressions: _Expressions | None = None
         self.statements_visitor: _Statements | None = None
@@ -672,6 +686,15 @@ class FunctionConverter:
             return self.constant(
                 start, next_, result, replace(literal, span=source.span)
             )
+        file_literal = self.converter.module_file_literal
+        if (
+            file_literal is not None
+            and name == "__file__"
+            and var.accept(_IS_GLOBAL_VAR)
+        ):
+            return self.constant(
+                start, next_, result, replace(file_literal, span=source.span)
+            )
         return self.ref(start, next_, result, var, source, final=final)
 
     def class_reader(self, name) -> ClassScope | None:
@@ -786,8 +809,10 @@ class FunctionConverter:
         else:
             use_continuation(node, next_, result)
 
-    def protocol(self, start, next_, result, name, operands, source):
-        return self.known(start, next_, result, fndb.PROTOCOLS[name], operands, source)
+    def protocol(self, start, next_, result, name, operands, source, data=None):
+        return self.known(
+            start, next_, result, fndb.PROTOCOLS[name], operands, source, data
+        )
 
     def if_node(self, start, test: Lvar, consequent: Block, alternative: Block, source):
         node = If(self.lexenv, source, test, consequent, alternative)
@@ -2788,7 +2813,7 @@ class _Statements(ast.Visitor):
         ctran, dummy = Ctran(), Lvar()
         function.constant(loop.start, ctran, dummy, ast.NoneLiteral(None))
         following, item = Ctran(), Lvar()
-        function.protocol(ctran, following, item, "next_item", (dummy,), node)
+        function.protocol(ctran, following, item, "next_item", (dummy,), node, iterator)
         assigned = Ctran()
         node.target.accept(_AssignmentTarget(function, item, following, assigned))
         with function.with_loop(LoopTarget(test, done, function.lexenv.cleanup)):
@@ -4133,6 +4158,13 @@ class _AnnotationTarget(ast.Visitor):
             annotations[node.identifier] = (contract, self.assignment)
             if function.local(node.identifier):
                 function.lambda_.local_annotations[node.identifier] = contract
+        elif function.local(node.identifier):
+            declared = converter.declared_contract(self.assignment.annotation, function)
+            if (
+                declared is not None
+                and node.identifier not in function.lambda_.local_annotations
+            ):
+                function.lambda_.local_annotations[node.identifier] = declared
         if self.assignment.value is not None:
             ctran, value = function.value(self.start, self.assignment.value)
             function.store(ctran, self.next, node.identifier, value, node)
@@ -4167,6 +4199,12 @@ class _CompilerBinding:
     def annotation(self, converter, node):
         return None
 
+    def declared_contract(self, converter, node):
+        return self.annotation(converter, node)
+
+    def subscript_binding(self, element_binding):
+        return _OPAQUE_BINDING
+
     def policy(self, converter, decorator, policy):
         """The policy after ``decorator``, which calls this binding; only
         the ``mule.optimize`` directive changes it."""
@@ -4196,6 +4234,23 @@ class _NumericBinding(_CompilerBinding):
 
     def annotation(self, converter, node):
         return self.contract
+
+
+class _DeclaredTypeBinding(_CompilerBinding):
+    def __init__(self, contract):
+        self.contract = contract
+
+    def declared_contract(self, converter, node):
+        return self.contract
+
+
+class _ListTypeBinding(_CompilerBinding):
+    def declared_contract(self, converter, node):
+        return ListContract()
+
+    def subscript_binding(self, element_binding):
+        element_contract = element_binding.declared_contract(None, None)
+        return _DeclaredTypeBinding(ListContract("list", element_contract))
 
 
 class _OptimizeBinding(_CompilerBinding):
@@ -4229,6 +4284,12 @@ _MODULE_BINDING = _ModuleBinding()
 _OPAQUE_BINDING = _CompilerBinding()
 _BUILTIN_BINDINGS = {
     name: _NumericBinding(contract) for name, contract in BUILTINS.items()
+}
+_DECLARATION_BINDINGS: dict[str, _CompilerBinding] = {
+    **_BUILTIN_BINDINGS,
+    "str": _DeclaredTypeBinding(DECLARATIONS["str"]),
+    "bytes": _DeclaredTypeBinding(DECLARATIONS["bytes"]),
+    "list": _ListTypeBinding(),
 }
 
 
@@ -4311,6 +4372,25 @@ class _AnnotationReference(ast.Visitor):
 
     def visit_Attribute(self, node):
         return node.value.accept(self).member(node.attribute, self.converter, node)
+
+
+class _DeclaredAnnotationReference(_AnnotationReference):
+    def visit_Name(self, node):
+        name = node.identifier
+        binding = self.converter.active_compiler_bindings.get(name)
+        if binding is not None:
+            return binding
+        shadows = self.converter.module_annotation_shadows
+        if (
+            name in shadows
+            or "*" in shadows
+            or (self.scope is not None and self.scope.local(name))
+        ):
+            return _OPAQUE_BINDING
+        return _DECLARATION_BINDINGS.get(name, _OPAQUE_BINDING)
+
+    def visit_Subscript(self, node):
+        return node.value.accept(self).subscript_binding(node.index.accept(self))
 
 
 # The module-level assignments that set a module's policy, and the quality

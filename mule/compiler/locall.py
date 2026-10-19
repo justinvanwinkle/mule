@@ -25,6 +25,8 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
+from mule import ast
+
 from .annotation_types import AnnotationLedger
 from .constraint import (
     _BINARY_OPERATORS,
@@ -35,25 +37,33 @@ from .constraint import (
     Fact,
     LambdaGraph,
     build_lambda_graph,
+    constant_type,
     join_fact,
     propagate,
     widen_fact,
 )
 from .ctype import (
+    BOOLEAN,
     BOTTOM,
     FIXNUM_MAX,
     FIXNUM_MIN,
+    INTEGER,
+    LIST_TYPE,
+    NONE_TYPE,
     TEXT_TYPE,
     UNBOUND,
     UNKNOWN,
     IntegerType,
+    TupleType,
     ValueType,
+    ValueTypeVisitor,
 )
 from .fndb import LEN, flow_propagation
 from .ir1util import made_function
 from .node import (
     CallKind,
     FunctionalKind,
+    GlobalVar,
     Lambda,
     LeafVisitor,
     NodeVisitor,
@@ -156,6 +166,20 @@ _TEXT_METHODS = frozenset(
 )
 
 
+_LIST_METHODS = frozenset(
+    {
+        "append",
+        "extend",
+        "insert",
+        "pop",
+        "remove",
+        "clear",
+        "reverse",
+        "sort",
+    }
+)
+
+
 class _ParameterUse(NodeVisitor, LeafVisitor):
     """Classifies how one parameter (and local copies of it) is used."""
 
@@ -166,10 +190,17 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         self.disqualified = False
         self.text = False
         self.text_disqualified = False
+        self.list_seq = False
+        self.list_disqualified = False
+        self.sequence_disqualified = False
+        self.has_len = False
+        self.has_getitem = False
         self.current = None
 
     def analyze(self, contract, full: ValueType) -> ValueType:
-        while self.queue and not (self.disqualified and self.text_disqualified):
+        while self.queue and not (
+            self.disqualified and self.text_disqualified and self.list_disqualified
+        ):
             var = self.queue.pop()
             for ref in var.refs:
                 if ref.dest is not None and ref.lvar is not None:
@@ -188,7 +219,31 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
             and (contract is None or not contract.contradicts(TEXT_TYPE))
         ):
             return TEXT_TYPE
+        if (
+            (self.list_seq or (self.has_len and self.has_getitem))
+            and not self.list_disqualified
+            and not self.numeric
+            and not self.text
+            and (contract is None or not contract.contradicts(LIST_TYPE))
+        ):
+            return LIST_TYPE
         return UNKNOWN
+
+    def general_type(self, declared) -> ValueType:
+        if declared is None:
+            return UNKNOWN
+        candidate = declared.general_parameter_type()
+        if candidate is UNKNOWN:
+            return UNKNOWN
+        while self.queue and not (self.numeric or self.sequence_disqualified):
+            var = self.queue.pop()
+            for ref in var.refs:
+                if ref.dest is not None and ref.lvar is not None:
+                    self.current = ref.lvar
+                    ref.dest.accept(self)
+        if self.numeric or self.sequence_disqualified:
+            return UNKNOWN
+        return candidate
 
     def visit_Set(self, node):
         if node.value is self.current:
@@ -204,30 +259,53 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         if node.fun is lvar:
             self.disqualified = True
             self.text_disqualified = True
+            self.list_disqualified = True
+            self.sequence_disqualified = True
             return
         info = node.fun_info
         if info is None:
             if is_predictable_len_call(node) and node.args and node.args[0] is lvar:
                 self.disqualified = True
+                self.has_len = True
             return
         name = info.name
         if name == "%resolve_method" and node.args and node.args[0] is lvar:
             self.disqualified = True
-            if linked(node.info, node, "info").name in _TEXT_METHODS:
+            method_name = linked(node.info, node, "info").name
+            if method_name in _TEXT_METHODS:
                 self.text = True
             else:
                 self.text_disqualified = True
+            if method_name in _LIST_METHODS:
+                self.list_seq = True
+            elif method_name not in {"copy", "index", "count"}:
+                self.list_disqualified = True
             return
         if node.args and node.args[0] is lvar and name in {"%setitem", "%delitem"}:
             self.disqualified = True
             self.text_disqualified = True
+            self.list_seq = True
+            return
+        if (
+            node.args
+            and node.args[0] is lvar
+            and name in {"%getattr", "%setattr", "%delattr"}
+        ):
+            self.disqualified = True
+            self.list_disqualified = True
             return
         if node.args and node.args[0] is lvar and name in _NON_INTEGER_FIRST_OPERAND:
             self.disqualified = True
+            if name in {"%getitem", "%getslice"}:
+                self.has_getitem = True
+            elif name == "_storage_length":
+                self.has_len = True
             return
         if name == "%resolve_super_method" and lvar in node.args:
             self.disqualified = True
             self.text_disqualified = True
+            self.list_disqualified = True
+            self.sequence_disqualified = True
             return
         if (
             len(node.args) > 1
@@ -243,8 +321,10 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         ):
             self.numeric = True
             self.text_disqualified = True
+            self.list_disqualified = True
             return
         if node.args and node.args[0] is lvar and name in {"%getitem", "%getslice"}:
+            self.has_getitem = True
             return
         if name in _NUMERIC_KNOWN:
             self.numeric = True
@@ -269,6 +349,29 @@ class _HasCombinationImprovement(NodeVisitor):
             if known_length_primitive(
                 self.candidate.get(arg_use, UNKNOWN)
             ) is not known_length_primitive(self.general.get(arg_use, UNKNOWN)):
+                self.improved = True
+                return
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is not None
+            and node.fun_info.name
+            in {
+                "%getitem",
+                "%getslice",
+                "%setitem",
+                "%delitem",
+                "%resolve_method",
+                "%iterate",
+            }
+            and node.args
+            and len(node.args[0].uses) == 1
+        ):
+            arg_use = node.args[0].uses[0]
+            cand_recv = self.candidate.get(arg_use, UNKNOWN)
+            gen_recv = self.general.get(arg_use, UNKNOWN)
+            if cand_recv != gen_recv and (
+                cand_recv.is_exact_list or cand_recv.fits_text(TEXT_TYPE)
+            ):
                 self.improved = True
 
 
@@ -330,6 +433,36 @@ class _GlobalFunctionStores(NodeVisitor):
         node.var.accept(_GlobalFunctionStore(self.namespace, self.counts, node))
 
 
+class _IsImportCall(NodeVisitor, LeafVisitor, ast.Visitor):
+    def __init__(self, expected: str):
+        self.expected = expected
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node):
+        return (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is not None
+            and node.fun_info.name == "%import"
+            and len(node.args) == 1
+            and len(node.args[0].uses) == 1
+            and node.args[0].use().accept(self)
+        )
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return False
+
+    def visit_Constant(self, leaf):
+        return leaf.value.accept(self)
+
+    def visit_TextLiteral(self, node: ast.TextLiteral):
+        return node.value == self.expected
+
+
 class _GlobalFunctionStore(LeafVisitor):
     """Records a store of a fresh function object into a module global; a
     store into a local binds no module name."""
@@ -346,12 +479,193 @@ class _GlobalFunctionStore(LeafVisitor):
 
     def visit_GlobalVar(self, leaf):
         if self.counts is not None:
+            if (
+                leaf.name == "heapq"
+                and len(leaf.sets) == 1
+                and self.store.value is not None
+                and self.store.value.use().accept(_IsImportCall("heapq"))
+            ):
+                return
             self.counts[leaf.name] = self.counts.get(leaf.name, 0) + 1
         if self.store.value is None:
             return
         lambda_ = made_function(self.store.value.use())
         if lambda_ is not None:
             self.namespace[leaf.name] = lambda_
+
+
+class _FoldUnaryConstant(ast.Visitor):
+    def __init__(self, name: str):
+        self.name = name
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_IntegerLiteral(self, node: ast.IntegerLiteral):
+        if self.name == "%unary_negative":
+            return ast.IntegerLiteral(-node.value)
+        if self.name == "%unary_positive":
+            return ast.IntegerLiteral(+node.value)
+        if self.name == "%unary_invert":
+            return ast.IntegerLiteral(~node.value)
+        return None
+
+
+class _MadeConstant(NodeVisitor, LeafVisitor):
+    """The constant literal an lvar or node evaluates to, or None."""
+
+    def __init__(self):
+        self.visited = set()
+
+    def visit_Lvar(self, lvar):
+        return lvar.uses[0].accept(self) if len(lvar.uses) == 1 else None
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(self)
+
+    def visit_Constant(self, leaf):
+        return leaf.value
+
+    def visit_LambdaVar(self, leaf):
+        if leaf in self.visited or len(leaf.sets) != 1:
+            return None
+        self.visited.add(leaf)
+        value = leaf.sets[0].value
+        return (
+            value.uses[0].accept(self)
+            if value is not None and len(value.uses) == 1
+            else None
+        )
+
+    def visit_Combination(self, node):
+        if node.kind is not CallKind.KNOWN or node.fun_info is None:
+            return None
+        name = node.fun_info.name
+        if name in ("%unary_negative", "%unary_positive", "%unary_invert"):
+            if len(node.args) != 1 or len(node.args[0].uses) != 1:
+                return None
+            operand = node.args[0].uses[0].accept(self)
+            if operand is None:
+                return None
+            return operand.accept(_FoldUnaryConstant(name))
+        if name == "%build_tuple":
+            elements = []
+            for arg in node.args:
+                if len(arg.uses) != 1:
+                    return None
+                item = arg.uses[0].accept(self)
+                if item is None:
+                    return None
+                elements.append(item)
+            return ast.Tuple(elements)
+        return None
+
+
+class _WidenUserConstantType(ValueTypeVisitor):
+    def visit_ValueType(self, fact):
+        return fact
+
+    def visit_BooleanType(self, fact):
+        return BOOLEAN
+
+    def visit_IntegerType(self, fact):
+        return IntegerType(FIXNUM_MIN, FIXNUM_MAX) if fact.is_fixnum else INTEGER
+
+    def visit_TextType(self, fact):
+        return TEXT_TYPE
+
+    def visit_TupleType(self, fact):
+        return TupleType(
+            fact.arity,
+            None
+            if fact.elements is None
+            else tuple(el.accept(self) for el in fact.elements),
+        )
+
+
+_WIDEN_USER_CONSTANT_TYPE = _WidenUserConstantType()
+
+
+def _widen_user_constant_type(vtype: ValueType) -> ValueType:
+    return vtype.accept(_WIDEN_USER_CONSTANT_TYPE)
+
+
+class _GlobalConstantStores(NodeVisitor, LeafVisitor):
+    def __init__(self, constants: dict[GlobalVar, ValueType], *, is_protocol: bool):
+        self.constants = constants
+        self.is_protocol = is_protocol
+        self._store: Set | None = None
+
+    def visit_Set(self, node: Set):
+        self._store = node
+        node.var.accept(self)
+        self._store = None
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        store = self._store
+        if store is None or store.value is None or len(leaf.sets) != 1:
+            return
+        if leaf.sets[0] is not store:
+            return
+        home = store.home_lambda
+        if home is None or home.kind is not FunctionalKind.TOPLEVEL:
+            return
+        literal = store.value.accept(_MadeConstant())
+        if literal is None:
+            return
+        vtype = constant_type(literal)
+        if vtype is UNKNOWN:
+            return
+        if self.is_protocol:
+            if leaf.name.startswith("_"):
+                self.constants[leaf] = vtype
+            return
+        if (
+            home.policy.safety < 3
+            and leaf.name.startswith("_")
+            and leaf.name.isupper()
+            and not vtype.fits_none(NONE_TYPE)
+        ):
+            self.constants[leaf] = _widen_user_constant_type(vtype)
+
+
+def collect_global_constants(target) -> dict[GlobalVar, ValueType]:
+    """Unreassigned module-level private constant globals and their value types."""
+    try:
+        lambdas = list(target)
+    except TypeError:
+        lambdas = list(target.lambdas)
+    seen = set(lambdas)
+    for lambda_ in list(lambdas):
+        current = lambda_
+        while current.refs:
+            parent = current.refs[0].home_lambda
+            if parent is None or parent in seen:
+                break
+            seen.add(parent)
+            lambdas.append(parent)
+            current = parent
+    is_protocol = any(
+        lambda_.name.startswith(_PROTOCOL_PREFIXES) for lambda_ in lambdas
+    )
+    constants: dict[GlobalVar, ValueType] = {}
+    visitor = _GlobalConstantStores(constants, is_protocol=is_protocol)
+    visited_components = set()
+    for lambda_ in lambdas:
+        component = lambda_.component
+        if component is None or component in visited_components:
+            continue
+        visited_components.add(component)
+        for block in component.blocks():
+            for node in block.nodes():
+                node.accept(visitor)
+    return constants
 
 
 def _noop():
@@ -378,6 +692,19 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
     graphs: dict[Lambda, LambdaGraph] = {
         lambda_: build_lambda_graph(lambda_) for lambda_ in lambdas
     }
+    global_constants = collect_global_constants(lambdas)
+    old_constant_ref_types: dict[object, ValueType | None] = {}
+    for leaf, vtype in global_constants.items():
+        for ref in leaf.refs:
+            home = ref.home_lambda
+            if (
+                home is not None
+                and home.kind is not FunctionalKind.TOPLEVEL
+                and home.policy.safety < 3
+                and ref.lexenv.policy.safety < 3
+            ):
+                old_constant_ref_types[ref] = ref.derived_type
+                ref.derived_type = vtype
     global_targets = defaultdict(dict)
     global_counts: dict[str, dict[str, int]] = defaultdict(dict)
     for lambda_ in lambdas:
@@ -419,9 +746,17 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
     full = IntegerType(FIXNUM_MIN, FIXNUM_MAX)
     parameters: dict[tuple[Lambda, str], tuple[ValueType, ...]] = {}
     for lambda_ in lambdas:
-        parameters[lambda_, "general"] = (UNKNOWN,) * len(lambda_.vars)
         signature = lambda_.signature
         if lambda_.vars and not signature.variadic:
+            parameters[lambda_, "general"] = tuple(
+                _ParameterUse(var).general_type(lambda_.local_annotations.get(var.name))
+                if contract is None
+                and ("local", lambda_, var.name) not in annotations.ignored
+                else UNKNOWN
+                for var, contract in zip(
+                    lambda_.vars, signature.annotations, strict=True
+                )
+            )
             spec_params = tuple(
                 _ParameterUse(var).analyze(contract, full)
                 for var, contract in zip(
@@ -442,6 +777,8 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                 )
                 if any(param is not UNKNOWN for param in partial_params):
                     parameters[lambda_, "fixnum"] = partial_params
+        else:
+            parameters[lambda_, "general"] = (UNKNOWN,) * len(lambda_.vars)
     summaries: dict[tuple[Lambda, str], ValueType] = dict.fromkeys(parameters, BOTTOM)
     return_changes = defaultdict(int)
     argument_changes = defaultdict(int)
@@ -462,6 +799,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             ("fixnum", "observed", "general")
             if obs is not None
             and fix is not None
+            and all(a.fits(b) or a is UNKNOWN for a, b in zip(obs, fix, strict=True))
             and not all(a.fits(b) for a, b in zip(obs, fix, strict=True))
             else ("observed", "fixnum", "general")
         )
@@ -524,13 +862,22 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             arguments = tuple(
                 arguments[index] if index >= 0 else UNKNOWN for index in order
             )
-            for actual, contract, var in zip(
-                arguments, target.signature.annotations, target.vars, strict=True
+            for index, (actual, contract, var) in enumerate(
+                zip(arguments, target.signature.annotations, target.vars, strict=True)
             ):
                 if contract is not None:
                     annotations.check(
                         contract, actual, location, ("local", target, var.name)
                     )
+                else:
+                    declared = target.local_annotations.get(var.name)
+                    if declared is not None and declared.contradicts(actual):
+                        annotations.ignored.add(("local", target, var.name))
+                        gen = parameters.get((target, "general"))
+                        if gen is not None and gen[index] is not UNKNOWN:
+                            updated = list(gen)
+                            updated[index] = UNKNOWN
+                            parameters[target, "general"] = tuple(updated)
             result = lookup_return_type(
                 target, arguments, context_parameters, context_summaries
             )
@@ -616,6 +963,7 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
         # that broad interval. Propagate observations through general/observed
         # entries, including recursive calls, independently of that context.
         seeds: dict[Lambda, tuple] = {}
+        narrowed_targets: set[Lambda] = set()
         for key, body in bodies.items():
             if key[1] == "fixnum":
                 continue
@@ -628,17 +976,50 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                     or len(call.arguments) != len(target.vars)
                 ):
                     continue
-                domains = tuple(
+                for index, (actual, contract, var) in enumerate(
+                    zip(
+                        call.arguments,
+                        target.signature.annotations,
+                        target.vars,
+                        strict=True,
+                    )
+                ):
+                    if contract is None:
+                        declared = target.local_annotations.get(var.name)
+                        if declared is not None and declared.contradicts(actual):
+                            annotations.ignored.add(("local", target, var.name))
+                            gen = parameters.get((target, "general"))
+                            if gen is not None and gen[index] is not UNKNOWN:
+                                updated = list(gen)
+                                updated[index] = UNKNOWN
+                                parameters[target, "general"] = tuple(updated)
+                                narrowed_targets.add(target)
+                                changed = True
+                raw_domains = tuple(
                     domain
                     if (domain := type_.dispatch_domain()) is not None
                     and (contract is None or not contract.contradicts(domain))
                     else UNKNOWN
                     for type_, contract in zip(
-                        call.arguments, target.signature.annotations, strict=True
+                        call.arguments,
+                        target.signature.annotations,
+                        strict=True,
                     )
                 )
-                if all(domain is UNKNOWN for domain in domains):
+                if all(domain is UNKNOWN for domain in raw_domains):
                     continue
+                fix_params = parameters.get((target, "fixnum"))
+                domains = tuple(
+                    domain
+                    if domain is not UNKNOWN
+                    else (
+                        fix_param
+                        if fix_params is not None
+                        and (fix_param := fix_params[idx]) in (LIST_TYPE, TEXT_TYPE)
+                        else UNKNOWN
+                    )
+                    for idx, domain in enumerate(raw_domains)
+                )
                 if target not in seeds:
                     seeds[target] = domains
                 else:
@@ -646,7 +1027,6 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
                         old.join(new)
                         for old, new in zip(seeds[target], domains, strict=True)
                     )
-        narrowed_targets: set[Lambda] = set()
         for target, seed in seeds.items():
             key = target, "observed"
             old = parameters.get(key)
@@ -709,6 +1089,9 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
         else:
             var.optimistic_type = var.optimistic_type.normalized_bottom()
 
+    for ref, old_type in old_constant_ref_types.items():
+        ref.derived_type = old_type
+
     results: dict[Lambda, LambdaFacts] = {}
     for lambda_ in lambdas:
         graph = graphs[lambda_]
@@ -725,6 +1108,10 @@ def analyze(lambdas, annotations: AnnotationLedger) -> dict[Lambda, LambdaFacts]
             ("fixnum", "observed")
             if obs_params is not None
             and fix_params is not None
+            and all(
+                a.fits(b) or a is UNKNOWN
+                for a, b in zip(obs_params, fix_params, strict=True)
+            )
             and not all(a.fits(b) for a, b in zip(obs_params, fix_params, strict=True))
             else ("observed", "fixnum")
         )
@@ -892,4 +1279,11 @@ class _MarkGuardedCall(NodeVisitor):
         node.proven = fact.proven
 
 
-__all__ = ["EntryContext", "LambdaFacts", "analyze", "global_bindings", "join_fact"]
+__all__ = [
+    "EntryContext",
+    "LambdaFacts",
+    "analyze",
+    "collect_global_constants",
+    "global_bindings",
+    "join_fact",
+]

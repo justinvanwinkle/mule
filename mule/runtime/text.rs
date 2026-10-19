@@ -9,8 +9,14 @@
 use std::cmp::Ordering;
 use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
 
+const INLINE_LATIN1_CAP: usize = 24;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Kind {
+    InlineLatin1 {
+        len: u8,
+        words: [u64; 3],
+    },
     Latin1(Vec<u8>),
     Ucs2(Vec<u16>),
     Ucs4(Vec<u32>),
@@ -32,8 +38,28 @@ impl Clone for Text {
 }
 
 impl PartialEq for Text {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.kind == other.kind
+        match (&self.kind, &other.kind) {
+            (
+                Kind::InlineLatin1 {
+                    len: len_a,
+                    words: words_a,
+                },
+                Kind::InlineLatin1 {
+                    len: len_b,
+                    words: words_b,
+                },
+            ) => {
+                len_a == len_b
+                    && words_a[0] == words_b[0]
+                    && (*len_a <= 8 || (words_a[1] == words_b[1] && words_a[2] == words_b[2]))
+            }
+            (Kind::Latin1(a), Kind::Latin1(b)) => a == b,
+            (Kind::Ucs2(a), Kind::Ucs2(b)) => a == b,
+            (Kind::Ucs4(a), Kind::Ucs4(b)) => a == b,
+            _ => false,
+        }
     }
 }
 
@@ -51,6 +77,52 @@ fn reserve<T>(length: usize) -> Result<Vec<T>, AllocationError> {
     Ok(values)
 }
 
+#[inline]
+fn pack_inline_latin1(slice: &[u8]) -> Kind {
+    let len = slice.len();
+    debug_assert!(len <= INLINE_LATIN1_CAP);
+    let ptr = slice.as_ptr();
+    let mut words = [0u64; 3];
+    unsafe {
+        if len >= 4 {
+            if len <= 8 {
+                let lo = u64::from(ptr.cast::<u32>().read_unaligned());
+                let hi = u64::from(ptr.add(len - 4).cast::<u32>().read_unaligned());
+                words[0] = lo | (hi << ((len - 4) * 8));
+            } else if len <= 16 {
+                words[0] = ptr.cast::<u64>().read_unaligned();
+                let tail = ptr.add(len - 8).cast::<u64>().read_unaligned();
+                words[1] = tail >> ((16 - len) * 8);
+            } else {
+                words[0] = ptr.cast::<u64>().read_unaligned();
+                words[1] = ptr.add(8).cast::<u64>().read_unaligned();
+                let tail = ptr.add(len - 8).cast::<u64>().read_unaligned();
+                words[2] = tail >> ((24 - len) * 8);
+            }
+        } else if len >= 2 {
+            let lo = u64::from(ptr.cast::<u16>().read_unaligned());
+            let hi = u64::from(*ptr.add(len - 1));
+            words[0] = lo | (hi << ((len - 1) * 8));
+        } else if len == 1 {
+            words[0] = u64::from(*ptr);
+        }
+    }
+    Kind::InlineLatin1 {
+        len: len as u8,
+        words,
+    }
+}
+
+#[inline]
+fn latin1_kind_from_slice(slice: &[u8]) -> Result<Kind, AllocationError> {
+    if slice.len() <= INLINE_LATIN1_CAP {
+        return Ok(pack_inline_latin1(slice));
+    }
+    let mut values = reserve(slice.len())?;
+    values.extend_from_slice(slice);
+    Ok(Kind::Latin1(values))
+}
+
 impl Text {
     const fn from_kind(kind: Kind) -> Self {
         Self {
@@ -60,7 +132,15 @@ impl Text {
     }
 
     pub const fn empty() -> Self {
-        Self::from_kind(Kind::Latin1(Vec::new()))
+        Self::from_kind(Kind::InlineLatin1 {
+            len: 0,
+            words: [0u64; 3],
+        })
+    }
+
+    #[inline]
+    pub const fn is_inline(&self) -> bool {
+        matches!(self.kind, Kind::InlineLatin1 { .. })
     }
 
     /// Store validated codepoints (each at most U+10FFFF) at their canonical width.
@@ -70,9 +150,17 @@ impl Text {
         let length = codes.len();
         let widest = codes.clone().max().unwrap_or(0);
         let kind = if widest <= 0xff {
-            let mut values = reserve(length)?;
-            values.extend(codes.map(|code| code as u8));
-            Kind::Latin1(values)
+            if length <= INLINE_LATIN1_CAP {
+                let mut bytes = [0u8; INLINE_LATIN1_CAP];
+                for (slot, code) in bytes.iter_mut().zip(codes) {
+                    *slot = code as u8;
+                }
+                pack_inline_latin1(&bytes[..length])
+            } else {
+                let mut values = reserve(length)?;
+                values.extend(codes.map(|code| code as u8));
+                Kind::Latin1(values)
+            }
         } else if widest <= 0xffff {
             let mut values = reserve(length)?;
             values.extend(codes.map(|code| code as u16));
@@ -87,9 +175,9 @@ impl Text {
 
     pub fn from_rust_str(text: &str) -> Self {
         if text.is_ascii() {
-            let mut values = reserve(text.len()).expect("decoded text already fits in memory");
-            values.extend_from_slice(text.as_bytes());
-            return Self::from_kind(Kind::Latin1(values));
+            let kind =
+                latin1_kind_from_slice(text.as_bytes()).expect("decoded text already fits in memory");
+            return Self::from_kind(kind);
         }
         let codes: Vec<u32> = text.chars().map(u32::from).collect();
         Self::from_codepoints(codes.into_iter()).expect("decoded text already fits in memory")
@@ -99,9 +187,9 @@ impl Text {
     /// literals use this form so that `"\ud800"` survives code generation.
     pub fn from_wtf8(data: &[u8]) -> Result<Self, &'static str> {
         if data.is_ascii() {
-            let mut values = reserve(data.len()).map_err(|_| "text storage allocation failed")?;
-            values.extend_from_slice(data);
-            return Ok(Self::from_kind(Kind::Latin1(values)));
+            let kind =
+                latin1_kind_from_slice(data).map_err(|_| "text storage allocation failed")?;
+            return Ok(Self::from_kind(kind));
         }
         let mut codes = Vec::with_capacity(data.len());
         let mut offset = 0;
@@ -137,7 +225,15 @@ impl Text {
         Self::from_codepoints(codes.into_iter()).map_err(|_| "text storage allocation failed")
     }
 
+    #[inline]
+    pub fn from_latin1_slice(bytes: &[u8]) -> Result<Self, AllocationError> {
+        Ok(Self::from_kind(latin1_kind_from_slice(bytes)?))
+    }
+
     pub fn from_latin1(units: Vec<u8>) -> Self {
+        if units.len() <= INLINE_LATIN1_CAP {
+            return Self::from_kind(pack_inline_latin1(&units));
+        }
         Self::from_kind(Kind::Latin1(units))
     }
 
@@ -152,6 +248,7 @@ impl Text {
     #[inline]
     pub fn len(&self) -> usize {
         match &self.kind {
+            Kind::InlineLatin1 { len, .. } => usize::from(*len),
             Kind::Latin1(values) => values.len(),
             Kind::Ucs2(values) => values.len(),
             Kind::Ucs4(values) => values.len(),
@@ -165,7 +262,7 @@ impl Text {
     /// Bytes per codepoint: 1, 2, or 4, as `PyUnicode_KIND` reports.
     pub fn kind(&self) -> usize {
         match &self.kind {
-            Kind::Latin1(_) => 1,
+            Kind::InlineLatin1 { .. } | Kind::Latin1(_) => 1,
             Kind::Ucs2(_) => 2,
             Kind::Ucs4(_) => 4,
         }
@@ -174,6 +271,11 @@ impl Text {
     #[inline]
     pub fn as_latin1(&self) -> Option<&[u8]> {
         match &self.kind {
+            Kind::InlineLatin1 { len, words } => unsafe {
+                let n = usize::from(*len);
+                std::hint::assert_unchecked(n <= INLINE_LATIN1_CAP);
+                Some(std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), n))
+            },
             Kind::Latin1(values) => Some(values),
             _ => None,
         }
@@ -182,6 +284,13 @@ impl Text {
     #[inline]
     pub fn get(&self, index: usize) -> Option<u32> {
         match &self.kind {
+            Kind::InlineLatin1 { len, words } => {
+                if index < usize::from(*len) {
+                    Some(u32::from(unsafe { *words.as_ptr().cast::<u8>().add(index) }))
+                } else {
+                    None
+                }
+            }
             Kind::Latin1(values) => values.get(index).map(|code| u32::from(*code)),
             Kind::Ucs2(values) => values.get(index).map(|code| u32::from(*code)),
             Kind::Ucs4(values) => values.get(index).copied(),
@@ -196,14 +305,15 @@ impl Text {
     }
 
     /// Copy the codepoints in `start..stop`, narrowing to the canonical width.
+    #[inline]
     pub fn slice(&self, start: usize, stop: usize) -> Result<Self, AllocationError> {
+        if let Some(values) = self.as_latin1() {
+            let stop = stop.min(values.len());
+            let start = start.min(stop);
+            return Self::from_latin1_slice(&values[start..stop]);
+        }
         let stop = stop.min(self.len());
         let start = start.min(stop);
-        if let Kind::Latin1(values) = &self.kind {
-            let mut result = reserve(stop - start)?;
-            result.extend_from_slice(&values[start..stop]);
-            return Ok(Self::from_kind(Kind::Latin1(result)));
-        }
         let codes = Codepoints {
             text: self,
             index: start,
@@ -215,14 +325,16 @@ impl Text {
     /// Compare `self[start..stop]` with `other` in-place without allocating.
     #[inline]
     pub fn slice_eq(&self, start: usize, stop: usize, other: &Self) -> bool {
+        if let (Some(left_bytes), Some(right_bytes)) = (self.as_latin1(), other.as_latin1()) {
+            let stop = stop.min(left_bytes.len());
+            let start = start.min(stop);
+            return &left_bytes[start..stop] == right_bytes;
+        }
         let stop = stop.min(self.len());
         let start = start.min(stop);
         let slice_len = stop - start;
         if slice_len != other.len() {
             return false;
-        }
-        if let (Some(left_bytes), Some(right_bytes)) = (self.as_latin1(), other.as_latin1()) {
-            return &left_bytes[start..stop] == right_bytes;
         }
         Codepoints {
             text: self,
@@ -235,19 +347,19 @@ impl Text {
     /// First codepoint index of `sub` within `start..end`, or `None`.
     #[inline]
     pub fn find(&self, sub: &Self, start: usize, end: usize) -> Option<usize> {
-        let end = end.min(self.len());
-        if start > end {
-            return None;
-        }
-        let sub_len = sub.len();
-        if sub_len == 0 {
-            return Some(start);
-        }
-        if sub_len > end - start || sub.kind() > self.kind() {
-            return None;
-        }
-        if let (Kind::Latin1(haystack), Kind::Latin1(needle)) = (&self.kind, &sub.kind) {
+        if let (Some(haystack), Some(needle)) = (self.as_latin1(), sub.as_latin1()) {
+            let end = end.min(haystack.len());
+            if start > end {
+                return None;
+            }
+            let sub_len = needle.len();
+            if sub_len == 0 {
+                return Some(start);
+            }
             let slice = &haystack[start..end];
+            if sub_len > slice.len() {
+                return None;
+            }
             let first = needle[0];
             if sub_len == 1 {
                 return slice.iter().position(|&b| b == first).map(|pos| start + pos);
@@ -264,6 +376,17 @@ impl Text {
             }
             return None;
         }
+        let end = end.min(self.len());
+        if start > end {
+            return None;
+        }
+        let sub_len = sub.len();
+        if sub_len == 0 {
+            return Some(start);
+        }
+        if sub_len > end - start || sub.kind() > self.kind() {
+            return None;
+        }
         let first = sub.get(0)?;
         for pos in start..=(end - sub_len) {
             if self.get(pos) == Some(first)
@@ -278,19 +401,19 @@ impl Text {
     /// Last codepoint index of `sub` within `start..end`, or `None`.
     #[inline]
     pub fn rfind(&self, sub: &Self, start: usize, end: usize) -> Option<usize> {
-        let end = end.min(self.len());
-        if start > end {
-            return None;
-        }
-        let sub_len = sub.len();
-        if sub_len == 0 {
-            return Some(end);
-        }
-        if sub_len > end - start || sub.kind() > self.kind() {
-            return None;
-        }
-        if let (Kind::Latin1(haystack), Kind::Latin1(needle)) = (&self.kind, &sub.kind) {
+        if let (Some(haystack), Some(needle)) = (self.as_latin1(), sub.as_latin1()) {
+            let end = end.min(haystack.len());
+            if start > end {
+                return None;
+            }
+            let sub_len = needle.len();
+            if sub_len == 0 {
+                return Some(end);
+            }
             let slice = &haystack[start..end];
+            if sub_len > slice.len() {
+                return None;
+            }
             let first = needle[0];
             if sub_len == 1 {
                 return slice.iter().rposition(|&b| b == first).map(|pos| start + pos);
@@ -303,6 +426,17 @@ impl Text {
                 }
                 limit = pos;
             }
+            return None;
+        }
+        let end = end.min(self.len());
+        if start > end {
+            return None;
+        }
+        let sub_len = sub.len();
+        if sub_len == 0 {
+            return Some(end);
+        }
+        if sub_len > end - start || sub.kind() > self.kind() {
             return None;
         }
         let first = sub.get(0)?;
@@ -326,13 +460,25 @@ impl Text {
         }
         let storage = match kind {
             1 => {
-                let mut values = reserve(length)?;
-                for piece in pieces {
-                    if let Kind::Latin1(piece) = &piece.kind {
-                        values.extend_from_slice(piece);
+                if length <= INLINE_LATIN1_CAP {
+                    let mut bytes = [0u8; INLINE_LATIN1_CAP];
+                    let mut cursor = 0;
+                    for piece in pieces {
+                        if let Some(slice) = piece.as_latin1() {
+                            bytes[cursor..cursor + slice.len()].copy_from_slice(slice);
+                            cursor += slice.len();
+                        }
                     }
+                    pack_inline_latin1(&bytes[..length])
+                } else {
+                    let mut values = reserve(length)?;
+                    for piece in pieces {
+                        if let Some(slice) = piece.as_latin1() {
+                            values.extend_from_slice(slice);
+                        }
+                    }
+                    Kind::Latin1(values)
                 }
-                Kind::Latin1(values)
             }
             2 => {
                 let mut values = reserve(length)?;
@@ -354,7 +500,7 @@ impl Text {
 
     /// Encode as UTF-8, failing at the first lone surrogate.
     pub fn to_utf8(&self) -> Result<Vec<u8>, usize> {
-        if let Kind::Latin1(values) = &self.kind {
+        if let Some(values) = self.as_latin1() {
             if values.is_ascii() {
                 let mut bytes = Vec::with_capacity(values.len());
                 bytes.extend_from_slice(values);
@@ -372,7 +518,7 @@ impl Text {
 
     /// Encode as generalized UTF-8, preserving lone surrogates.
     pub fn to_wtf8(&self) -> Vec<u8> {
-        if let Kind::Latin1(values) = &self.kind {
+        if let Some(values) = self.as_latin1() {
             if values.is_ascii() {
                 let mut bytes = Vec::with_capacity(values.len());
                 bytes.extend_from_slice(values);
@@ -400,34 +546,31 @@ impl Text {
                 state ^= u64::from(byte);
                 state = state.wrapping_mul(0x0000_0100_0000_01b3);
             };
-            match &self.kind {
-                Kind::Latin1(values) => {
-                    for &code in values {
-                        if code < 0x80 {
-                            feed(code);
-                        } else {
-                            feed(0xc0 | (code >> 6));
-                            feed(0x80 | (code & 0x3f));
-                        }
+            if let Some(values) = self.as_latin1() {
+                for &code in values {
+                    if code < 0x80 {
+                        feed(code);
+                    } else {
+                        feed(0xc0 | (code >> 6));
+                        feed(0x80 | (code & 0x3f));
                     }
                 }
-                _ => {
-                    for code in self.codepoints() {
-                        if code < 0x80 {
-                            feed(code as u8);
-                        } else if code < 0x800 {
-                            feed((0xc0 | (code >> 6)) as u8);
-                            feed((0x80 | (code & 0x3f)) as u8);
-                        } else if code < 0x10000 {
-                            feed((0xe0 | (code >> 12)) as u8);
-                            feed((0x80 | ((code >> 6) & 0x3f)) as u8);
-                            feed((0x80 | (code & 0x3f)) as u8);
-                        } else {
-                            feed((0xf0 | (code >> 18)) as u8);
-                            feed((0x80 | ((code >> 12) & 0x3f)) as u8);
-                            feed((0x80 | ((code >> 6) & 0x3f)) as u8);
-                            feed((0x80 | (code & 0x3f)) as u8);
-                        }
+            } else {
+                for code in self.codepoints() {
+                    if code < 0x80 {
+                        feed(code as u8);
+                    } else if code < 0x800 {
+                        feed((0xc0 | (code >> 6)) as u8);
+                        feed((0x80 | (code & 0x3f)) as u8);
+                    } else if code < 0x10000 {
+                        feed((0xe0 | (code >> 12)) as u8);
+                        feed((0x80 | ((code >> 6) & 0x3f)) as u8);
+                        feed((0x80 | (code & 0x3f)) as u8);
+                    } else {
+                        feed((0xf0 | (code >> 18)) as u8);
+                        feed((0x80 | ((code >> 12) & 0x3f)) as u8);
+                        feed((0x80 | ((code >> 6) & 0x3f)) as u8);
+                        feed((0x80 | (code & 0x3f)) as u8);
                     }
                 }
             }
@@ -450,15 +593,13 @@ impl Ord for Text {
     /// Lexicographic codepoint order, as Python compares `str`.
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
-        match (&self.kind, &other.kind) {
-            (Kind::Latin1(left), Kind::Latin1(right)) => {
-                if left.len() == 1 && right.len() == 1 {
-                    return left[0].cmp(&right[0]);
-                }
-                left.cmp(right)
+        if let (Some(left), Some(right)) = (self.as_latin1(), other.as_latin1()) {
+            if left.len() == 1 && right.len() == 1 {
+                return left[0].cmp(&right[0]);
             }
-            _ => self.codepoints().cmp(other.codepoints()),
+            return left.cmp(right);
         }
+        self.codepoints().cmp(other.codepoints())
     }
 }
 

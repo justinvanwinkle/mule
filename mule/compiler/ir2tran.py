@@ -31,6 +31,7 @@ from mule import ast
 
 from . import fndb, vops
 from .ctype import (
+    BOOLEAN,
     NONE_TYPE,
     PYTHON_INTEGER,
     TEXT_TYPE,
@@ -62,7 +63,9 @@ from .node import (
 from .seqtran import is_predictable_len_call, known_length_primitive
 from .vmdef import templates_for
 from .vop import (
+    BOOLEAN_T,
     FIXNUM,
+    IMMORTAL_T,
     RANGE_T,
     VOP,
     IR2Block,
@@ -110,6 +113,7 @@ _BORROWING_VOPS = frozenset(
         "compare-greater_equal",
         "compare-is",
         "compare-is_not",
+        "binary-matrix_multiply",
         "binary-divide",
         "binary-floor_divide",
         "binary-power",
@@ -127,6 +131,7 @@ _BORROWING_VOPS = frozenset(
         "inplace-bit_xor",
         "inplace-bit_or",
         "sequence-available",
+        "protocol-iterate",
         "protocol-getitem",
         "protocol-getslice",
         "protocol-setitem",
@@ -156,6 +161,14 @@ _PURE_FIXNUM_VOPS = frozenset(
         "binary-bit_xor",
         "binary-left_shift",
         "binary-right_shift",
+        "inplace-add",
+        "inplace-subtract",
+        "inplace-multiply",
+        "inplace-bit_and",
+        "inplace-bit_or",
+        "inplace-bit_xor",
+        "inplace-left_shift",
+        "inplace-right_shift",
     }
 )
 
@@ -175,23 +188,85 @@ _NON_BORROWING_PRIMITIVES = frozenset(
 )
 
 
-def _borrows_operand(vop: VOP, ref: TNRef) -> bool:
+class _BorrowableConstant(ast.Visitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_TextLiteral(self, node):
+        return True
+
+    def visit_BytesLiteral(self, node):
+        return True
+
+    def visit_FloatLiteral(self, node):
+        return True
+
+    def visit_IntegerLiteral(self, node):
+        return True
+
+    def visit_Tuple(self, node):
+        return all(element.accept(self) for element in node.elements)
+
+
+_BORROWABLE_CONSTANT = _BorrowableConstant()
+
+
+def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
     name = vop.info.name
     if name in _BORROWING_VOPS:
         return True
+    if (
+        name in ("binary-add", "binary-subtract", "binary-multiply")
+        and len(vop.args) == 2
+        and ref is vop.args[0]
+    ):
+        lhs_type = ref.tn.type or UNKNOWN
+        return lhs_type.is_fixnum or lhs_type.fits_text(TEXT_TYPE)
     if name in _RIGHT_BORROWING_VOPS and len(vop.args) == 2 and ref is vop.args[1]:
-        return True
+        info = vop.codegen_info
+        return (
+            info is None
+            or source is None
+            or source.leaf is None
+            or info.reuse_local != source.leaf.name
+        )
     if name == "full-call" and vop.args and ref is vop.args[0]:
         return True
+    if name == "call-resolved":
+        info = vop.codegen_info
+        if (
+            info.exact_text_find
+            or info.exact_text_split
+            or info.exact_text_partition
+            or info.exact_text_affix
+        ):
+            return True
     return name.startswith("primitive-") and name not in _NON_BORROWING_PRIMITIVES
 
 
 def _safe_borrow_step(step: VOP, source) -> bool:
+    if source is not None and any(ref.tn is source for ref in step.results):
+        return False
     name = step.info.name
+    if name in vops.TERMINATORS or name == "coroutine-yield":
+        return False
+    if name == "load-local":
+        return not (
+            source is not None and step.args[0].tn is source and step.codegen_info.move
+        )
+    if (
+        source is not None
+        and source.leaf is not None
+        and not source.leaf.indirect
+        and not source.leaf.expression_temporary
+    ):
+        if name.startswith(("inplace-", "boxed-float-")):
+            info = step.codegen_info
+            if info is not None and info.reuse_local == source.leaf.name:
+                return False
+        return True
     if name == "constant":
         return True
-    if name == "load-local":
-        return not (step.args[0].tn is source and step.codegen_info.move)
     if name in _PURE_FIXNUM_VOPS and step.results:
         return (step.results[0].tn.type or UNKNOWN).is_fixnum and all(
             (arg.tn.type or UNKNOWN).is_fixnum for arg in step.args
@@ -228,7 +303,22 @@ class CallSite:
 class MethodResolution:
     name: str
     exact_list_append: bool = False
+    exact_list_pop: bool = False
     exact_text_find: bool = False
+    exact_text_split: bool = False
+    exact_text_partition: bool = False
+    exact_text_affix: bool = False
+
+    @property
+    def is_exact(self) -> bool:
+        return (
+            self.exact_list_append
+            or self.exact_list_pop
+            or self.exact_text_find
+            or self.exact_text_split
+            or self.exact_text_partition
+            or self.exact_text_affix
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,7 +326,11 @@ class MethodCall:
     keywords: tuple
     name: str
     exact_list_append: bool = False
+    exact_list_pop: bool = False
     exact_text_find: bool = False
+    exact_text_split: bool = False
+    exact_text_partition: bool = False
+    exact_text_affix: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,7 +369,9 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
     _fuse_text_codepoint_comparisons(component)
     _mark_last_local_reads(component)
     _fuse_text_slice_compares(component)
+    _mark_boolean_comparisons(component)
     _mark_borrowed_local_reads(component)
+    _specialize_list_getitems(component)
     _clear_lvar_info(lambda_)
     return component
 
@@ -740,20 +836,63 @@ def _fuse_text_slice_compares(component: IR2Component) -> None:
             ]
 
 
+def _mark_boolean_comparisons(component: IR2Component) -> None:
+    """Mark rich-comparison VOPs whose result is only tested for truthiness so
+    the slow path coerces custom comparison results to ``bool`` once."""
+    if component.context.plan is not None:
+        return
+    reads = component.reads
+    writes = component.writes
+    for block in component.blocks:
+        for vop in block.vops:
+            if vop.info.name not in _CODEPOINT_COMPARISON_VOPS or not vop.results:
+                continue
+            res_tn = vop.results[0].tn
+            if res_tn.leaf is not None:
+                continue
+            res_writes = writes.get(res_tn)
+            res_reads = reads.get(res_tn)
+            if (
+                res_writes is None
+                or len(res_writes) != 1
+                or not res_reads
+                or not all(
+                    reader.info is vops.BRANCH or reader.info.name == "unary-not"
+                    for reader, _ in res_reads
+                )
+            ):
+                continue
+            vop.codegen_info = True
+            res_tn.type = BOOLEAN
+            res_tn.primitive_type = BOOLEAN_T
+
+
 def _mark_borrowed_local_reads(component: IR2Component) -> None:
-    """Mark bound ``LOAD_LOCAL`` VOPs whose single block-local consumer only
-    borrows the value while the local slot still retains it."""
+    """Mark bound ``LOAD_LOCAL`` and cached ``CONSTANT`` VOPs whose single
+    block-local consumer only borrows the value while the slot retains it."""
     reads = component.reads
     writes = component.writes
     for block in component.blocks:
         positions: dict[VOP, int] | None = None
         for index, vop in enumerate(block.vops):
-            if vop.info is not vops.LOAD_LOCAL:
+            is_load = vop.info is vops.LOAD_LOCAL
+            is_const = vop.info is vops.CONSTANT
+            if not is_load and not is_const:
                 continue
-            access = vop.codegen_info
-            if not access.bound or access.move:
-                continue
-            source = vop.args[0].tn
+            if is_load:
+                access = vop.codegen_info
+                if not access.bound or access.move:
+                    continue
+                source = vop.args[0].tn
+            else:
+                result_tn = vop.results[0].tn
+                if (
+                    result_tn.leaf is not None
+                    or result_tn.primitive_type is not T
+                    or not vop.codegen_info.accept(_BORROWABLE_CONSTANT)
+                ):
+                    continue
+                source = None
             result = vop.results[0].tn
             result_reads = reads.get(result)
             result_writes = writes.get(result)
@@ -770,13 +909,10 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
             reader_index = positions.get(reader)
             if reader_index is None or reader_index <= index:
                 continue
-            if not _borrows_operand(reader, reader_ref):
+            if not _borrows_operand(reader, reader_ref, source):
                 continue
             end_index = reader_index
-            if reader.info.name == "resolve-method" and (
-                reader.codegen_info.exact_list_append
-                or reader.codegen_info.exact_text_find
-            ):
+            if reader.info.name == "resolve-method" and reader.codegen_info.is_exact:
                 bound = reader.results[1].tn
                 bound_reads = reads.get(bound)
                 bound_writes = writes.get(bound)
@@ -796,7 +932,119 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
                 for step in block.vops[index + 1 : end_index]
             ):
                 continue
-            vop.codegen_info = replace(access, borrow=True)
+            if is_load:
+                vop.codegen_info = replace(vop.codegen_info, borrow=True)
+            else:
+                result.primitive_type = IMMORTAL_T
+
+
+_BORROWED_LIST_GETITEM_READERS = _CODEPOINT_COMPARISON_VOPS | frozenset(
+    {
+        "compare-is",
+        "compare-is_not",
+        "protocol-iterate",
+        "fast-len",
+        "primitive-_storage_length",
+        "primitive-_text_length",
+    }
+)
+
+
+def _safe_list_borrow_step(step: VOP, seq_local) -> bool:
+    if any(ref.tn is seq_local for ref in step.results):
+        return False
+    name = step.info.name
+    if name == "constant":
+        return True
+    if name == "load-local":
+        return bool(step.codegen_info.bound) and not (
+            step.args[0].tn is seq_local and step.codegen_info.move
+        )
+    if name in _PURE_FIXNUM_VOPS and step.results:
+        return (step.results[0].tn.type or UNKNOWN).is_fixnum and all(
+            (arg.tn.type or UNKNOWN).is_fixnum for arg in step.args
+        )
+    if name == "protocol-getitem" and len(step.args) == 2:
+        return (step.args[0].tn.type or UNKNOWN).is_exact_list and (
+            step.args[1].tn.type or UNKNOWN
+        ).is_fixnum
+    return False
+
+
+def _specialize_list_getitems(component: IR2Component) -> None:
+    """Specialize ``protocol-getitem`` on proven exact lists with fixnum
+    indices, and borrow the element when its single block-local consumer only
+    borrows it while the list local stays untouched."""
+    if component.context.plan is not None:
+        return
+    reads = component.reads
+    writes = component.writes
+    for block in component.blocks:
+        positions: dict[VOP, int] | None = None
+        for index, vop in enumerate(block.vops):
+            if (
+                vop.info.name != "protocol-getitem"
+                or vop.codegen_info is not None
+                or len(vop.args) != 2
+                or not vop.results
+            ):
+                continue
+            seq_type = vop.args[0].tn.type or UNKNOWN
+            idx_type = vop.args[1].tn.type or UNKNOWN
+            if not (seq_type.is_exact_list and idx_type.is_fixnum):
+                continue
+            vop.codegen_info = "list_owned"
+            res_tn = vop.results[0].tn
+            if res_tn.leaf is not None or (
+                res_tn.name is not None and res_tn.name.startswith("$")
+            ):
+                continue
+            res_writes = writes.get(res_tn)
+            res_reads = reads.get(res_tn)
+            if (
+                res_writes is None
+                or len(res_writes) != 1
+                or res_reads is None
+                or len(res_reads) != 1
+            ):
+                continue
+            seq_tn = vop.args[0].tn
+            seq_writes = writes.get(seq_tn)
+            if seq_writes is None or len(seq_writes) != 1:
+                continue
+            seq_writer, _ = seq_writes[0]
+            if (
+                seq_writer.info is not vops.LOAD_LOCAL
+                or not seq_writer.codegen_info.bound
+                or seq_writer.codegen_info.move
+            ):
+                continue
+            seq_local = seq_writer.args[0].tn
+            if (
+                seq_local.leaf is None
+                or seq_local.leaf.indirect
+                or seq_local.leaf.expression_temporary
+            ):
+                continue
+            if positions is None:
+                positions = {step: pos for pos, step in enumerate(block.vops)}
+            writer_index = positions.get(seq_writer)
+            reader, _ = res_reads[0]
+            reader_index = positions.get(reader)
+            if (
+                writer_index is None
+                or writer_index >= index
+                or reader_index is None
+                or reader_index <= index
+                or reader.info.name not in _BORROWED_LIST_GETITEM_READERS
+            ):
+                continue
+            if any(
+                step is not vop and not _safe_list_borrow_step(step, seq_local)
+                for step in block.vops[writer_index + 1 : reader_index]
+            ):
+                continue
+            vop.codegen_info = "list_borrow"
 
 
 def _mark_last_local_reads(component: IR2Component) -> None:
@@ -1104,6 +1352,21 @@ class _ExactListAppendCall(NodeVisitor):
         )
 
 
+class _ExactListPopCall(NodeVisitor):
+    """Whether the consumer of a resolved method is a 0-argument positional call."""
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        return (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is fndb.CALL_RESOLVED
+            and len(node.args) == 1
+            and not linked(node.info, node, "call info").keywords
+        )
+
+
 class _ExactTextFindCall(NodeVisitor):
     """Whether the consumer of a resolved ``str.find``/``str.rfind`` method is
     a 1-, 2-, or 3-argument positional call with exact ``str`` substring and
@@ -1129,6 +1392,106 @@ class _ExactTextFindCall(NodeVisitor):
             else UNKNOWN
         )
         if not sub.fits_text(TEXT_TYPE):
+            return False
+        for bound_arg in node.args[2:]:
+            bound = (
+                self.context.type_of(bound_arg.uses[0])
+                if len(bound_arg.uses) == 1
+                else UNKNOWN
+            )
+            if not (bound.is_fixnum or bound.fits_none(NONE_TYPE)):
+                return False
+        return True
+
+
+class _ExactTextSplitCall(NodeVisitor):
+    """Whether the consumer of a resolved ``str.split`` method is a 1- or
+    2-argument positional call with exact ``str`` separator and optional integer
+    ``maxsplit``."""
+
+    def __init__(self, context: EntryContext):
+        self.context = context
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is not CallKind.KNOWN
+            or node.fun_info is not fndb.CALL_RESOLVED
+            or not (2 <= len(node.args) <= 3)
+            or linked(node.info, node, "call info").keywords
+        ):
+            return False
+        sep = (
+            self.context.type_of(node.args[1].uses[0])
+            if len(node.args[1].uses) == 1
+            else UNKNOWN
+        )
+        if not sep.fits_text(TEXT_TYPE):
+            return False
+        if len(node.args) == 3:
+            maxsplit = (
+                self.context.type_of(node.args[2].uses[0])
+                if len(node.args[2].uses) == 1
+                else UNKNOWN
+            )
+            if not maxsplit.fits_python_integer(PYTHON_INTEGER):
+                return False
+        return True
+
+
+class _ExactTextPartitionCall(NodeVisitor):
+    """Whether the consumer of a resolved ``str.partition``/``str.rpartition``
+    method is a 1-argument positional call with exact ``str`` separator."""
+
+    def __init__(self, context: EntryContext):
+        self.context = context
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is not CallKind.KNOWN
+            or node.fun_info is not fndb.CALL_RESOLVED
+            or len(node.args) != 2
+            or linked(node.info, node, "call info").keywords
+        ):
+            return False
+        sep = (
+            self.context.type_of(node.args[1].uses[0])
+            if len(node.args[1].uses) == 1
+            else UNKNOWN
+        )
+        return sep.fits_text(TEXT_TYPE)
+
+
+class _ExactTextAffixCall(NodeVisitor):
+    """Whether the consumer of a resolved ``str.startswith``/``str.endswith``
+    method is a 1-, 2-, or 3-argument positional call with exact ``str`` or
+    tuple affix and fixnum or ``None`` bounds."""
+
+    def __init__(self, context: EntryContext):
+        self.context = context
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is not CallKind.KNOWN
+            or node.fun_info is not fndb.CALL_RESOLVED
+            or not (2 <= len(node.args) <= 4)
+            or linked(node.info, node, "call info").keywords
+        ):
+            return False
+        affix = (
+            self.context.type_of(node.args[1].uses[0])
+            if len(node.args[1].uses) == 1
+            else UNKNOWN
+        )
+        if not (affix.fits_text(TEXT_TYPE) or affix.fits_tuple(TupleType())):
             return False
         for bound_arg in node.args[2:]:
             bound = (
@@ -1223,6 +1586,7 @@ _CLEAR_LVAR_INFO = _ClearLvarInfo()
 _INTEGER_INDEX = _IntegerIndex()
 _CONSTANT_INDEX = _ConstantIndex()
 _EXACT_LIST_APPEND_CALL = _ExactListAppendCall()
+_EXACT_LIST_POP_CALL = _ExactListPopCall()
 _UNMUTATED_INT_REF = _UnmutatedIntRef()
 _NONE_LITERAL_CHECK = _NoneLiteralCheck()
 _NONE_CONSTANT_REF = _NoneConstantRef()
@@ -1728,6 +2092,18 @@ class _Converter(NodeVisitor):
             and call.accept(_EXACT_LIST_APPEND_CALL)
         )
 
+    def is_exact_list_pop(self, resolve: Combination, call) -> bool:
+        if resolve.fun_info is not fndb.RESOLVE_METHOD:
+            return False
+        receiver = self.context.type_of(resolve.args[0].use())
+        info = linked(resolve.info, resolve, "method info")
+        return (
+            receiver.is_exact_list
+            and info.name == "pop"
+            and call is not None
+            and call.accept(_EXACT_LIST_POP_CALL)
+        )
+
     def is_exact_text_find(self, resolve: Combination, call) -> bool:
         if resolve.fun_info is not fndb.RESOLVE_METHOD:
             return False
@@ -1740,28 +2116,77 @@ class _Converter(NodeVisitor):
             and call.accept(_ExactTextFindCall(self.context))
         )
 
+    def is_exact_text_split(self, resolve: Combination, call) -> bool:
+        if resolve.fun_info is not fndb.RESOLVE_METHOD:
+            return False
+        receiver = self.context.type_of(resolve.args[0].use())
+        info = linked(resolve.info, resolve, "method info")
+        return (
+            receiver.fits_text(TEXT_TYPE)
+            and info.name == "split"
+            and call is not None
+            and call.accept(_ExactTextSplitCall(self.context))
+        )
+
+    def is_exact_text_partition(self, resolve: Combination, call) -> bool:
+        if resolve.fun_info is not fndb.RESOLVE_METHOD:
+            return False
+        receiver = self.context.type_of(resolve.args[0].use())
+        info = linked(resolve.info, resolve, "method info")
+        return (
+            receiver.fits_text(TEXT_TYPE)
+            and info.name in ("partition", "rpartition")
+            and call is not None
+            and call.accept(_ExactTextPartitionCall(self.context))
+        )
+
+    def is_exact_text_affix(self, resolve: Combination, call) -> bool:
+        if resolve.fun_info is not fndb.RESOLVE_METHOD:
+            return False
+        receiver = self.context.type_of(resolve.args[0].use())
+        info = linked(resolve.info, resolve, "method info")
+        return (
+            receiver.fits_text(TEXT_TYPE)
+            and info.name in ("startswith", "endswith")
+            and call is not None
+            and call.accept(_ExactTextAffixCall(self.context))
+        )
+
     def convert_resolve_method(self, node: Combination):
         args = tuple(self.lvar_tn(arg) for arg in node.args)
         lvar = node.lvar
         if lvar is None:
             raise ValueError("a resolved method is always consumed by its call")
         exact_list_append = self.is_exact_list_append(node, lvar.dest)
+        exact_list_pop = self.is_exact_list_pop(node, lvar.dest)
         exact_text_find = self.is_exact_text_find(node, lvar.dest)
+        exact_text_split = self.is_exact_text_split(node, lvar.dest)
+        exact_text_partition = self.is_exact_text_partition(node, lvar.dest)
+        exact_text_affix = self.is_exact_text_affix(node, lvar.dest)
         method = self.lvar_tn(lvar)
         bound = self.component.tn(T, name="receiver")
-        if exact_list_append or exact_text_find:
+        info = linked(node.info, node, "method info")
+        resolution = MethodResolution(
+            info.name,
+            exact_list_append,
+            exact_list_pop,
+            exact_text_find,
+            exact_text_split,
+            exact_text_partition,
+            exact_text_affix,
+        )
+        if resolution.is_exact:
             method.type = NoneType()
             bound.type = args[0].type
         else:
             bound.type = UNKNOWN
         linked(lvar.info, lvar, "LTN annotation").locs.append(bound)
-        info = linked(node.info, node, "method info")
         self.emit(
             node.template,
             node,
             args=args,
             results=(method, bound),
-            info=MethodResolution(info.name, exact_list_append, exact_text_find),
+            info=resolution,
         )
 
     def convert_call_resolved(self, node: Combination):
@@ -1770,7 +2195,11 @@ class _Converter(NodeVisitor):
         resolve = resolved.use().accept(_MethodResolution(resolved))
         info = linked(node.info, node, "call info")
         exact_list_append = self.is_exact_list_append(resolve, node)
+        exact_list_pop = self.is_exact_list_pop(resolve, node)
         exact_text_find = self.is_exact_text_find(resolve, node)
+        exact_text_split = self.is_exact_text_split(resolve, node)
+        exact_text_partition = self.is_exact_text_partition(resolve, node)
+        exact_text_affix = self.is_exact_text_affix(resolve, node)
         result, discard = self.result_tn(node)
         self.emit(
             node.template,
@@ -1781,7 +2210,11 @@ class _Converter(NodeVisitor):
                 info.keywords,
                 linked(resolve.info, resolve, "method info").name,
                 exact_list_append,
+                exact_list_pop,
                 exact_text_find,
+                exact_text_split,
+                exact_text_partition,
+                exact_text_affix,
             ),
         )
         if discard:

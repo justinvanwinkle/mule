@@ -16,6 +16,7 @@ from mule.compiler.ctype import (
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
+    ListType,
     TupleType,
 )
 from mule.compiler.debug import check_ir1_consistency
@@ -176,7 +177,7 @@ def test_locall_publishes_derived_types_to_all_valued_nodes_and_lvars():
     assert returned_tuple.fun_info is fndb.BUILD_TUPLE
     assert returned_tuple.args[0].derived_type == IntegerType(30, 40)
     assert returned_tuple.args[1].derived_type == TupleType(
-        2, (IntegerType(10, 10), LIST_TYPE)
+        2, (IntegerType(10, 10), ListType(IntegerType(10, 20)))
     )
 
 

@@ -23,7 +23,8 @@ from _generators import await_value as _await_value
 from _generators import coroutine as _coroutine
 from _dict import build_dict as _build_dict
 from _dict import build_set as _build_set
-from _dict import _tuple_hash, dict, frozenset, hash, set
+from _dict import _MISSING as _DICT_MISSING
+from _dict import _table_insert, _table_lookup, _table_remove, _tuple_hash, dict, frozenset, hash, set
 from _mule_native import bytes_from_values
 from _mule_native import byte_length
 from _mule_native import read_byte
@@ -603,7 +604,7 @@ def chr(value, /):
 def getitem(value, index):
     cls = _type_of(value)
     if cls is dict:
-        entry = value._lookup(index)
+        entry = _table_lookup(value, index)
         if entry >= 0:
             return _storage_read(value._values, entry)
         raise KeyError(index)
@@ -623,7 +624,8 @@ def getitem(value, index):
 
 def delitem(value, index):
     if _type_of(value) is dict:
-        dict.__delitem__(value, index)
+        if _table_remove(value, index) is _DICT_MISSING:
+            raise KeyError(index)
         return
     method = _delitem_method(value)
     if method is None:
@@ -632,6 +634,14 @@ def delitem(value, index):
 
 
 def any(iterable, /):
+    if _type_of(iterable) is list or _type_of(iterable) is tuple:
+        index = 0
+        length = _storage_length(iterable)
+        while index < length:
+            if _storage_read(iterable, index):
+                return True
+            index += 1
+        return False
     for item in iterable:
         if item:
             return True
@@ -639,6 +649,14 @@ def any(iterable, /):
 
 
 def all(iterable, /):
+    if _type_of(iterable) is list or _type_of(iterable) is tuple:
+        index = 0
+        length = _storage_length(iterable)
+        while index < length:
+            if not _storage_read(iterable, index):
+                return False
+            index += 1
+        return True
     for item in iterable:
         if not item:
             return False
@@ -1105,7 +1123,7 @@ def _list_set_slice(target, index, value):
 def setitem(value, index, item):
     cls = _type_of(value)
     if cls is dict:
-        value._insert(index, item)
+        _table_insert(value, index, item)
         return
     if cls is list and is_slice(index):
         _list_set_slice(value, index, item)
@@ -1340,7 +1358,11 @@ class _OrderedSequence:
         return a >= b
 
     def __iter__(self):
-        return StorageIterator(self)
+        iterator = _allocate_instance(StorageIterator)
+        iterator.sequence = self
+        iterator.index = 0
+        iterator.exhausted = False
+        return iterator
 
     def count(self, value):
         found = 0
@@ -1428,8 +1450,7 @@ class ListStorage(_OrderedSequence):
     def extend(self, iterable):
         if iterable is self:
             iterable = self.copy()
-        for item in iterable:
-            _storage_append(self, item)
+        extend_arguments(self, iterable)
 
     def insert(self, index, value):
         _storage_insert(self, _list_position(self, index), value)
@@ -1478,8 +1499,11 @@ class ListStorage(_OrderedSequence):
         keys = items
         if key is not None:
             keys = []
-            for item in items:
-                _storage_append(keys, key(item))
+            index = 0
+            length = _storage_length(items)
+            while index < length:
+                _storage_append(keys, key(_storage_read(items, index)))
+                index += 1
         items = _merge_sort(items, keys)
         if reverse:
             _reverse_in_place(items)
@@ -1511,9 +1535,17 @@ class TupleStorage(_OrderedSequence):
             raise TypeError(
                 f'can only concatenate tuple (not "{_type_name(other)}") to tuple'
             )
-        result = list(self)
-        for item in other:
-            _storage_append(result, item)
+        result = []
+        index = 0
+        left_length = _storage_length(self)
+        while index < left_length:
+            _storage_append(result, _storage_read(self, index))
+            index += 1
+        index = 0
+        right_length = _storage_length(other)
+        while index < right_length:
+            _storage_append(result, _storage_read(other, index))
+            index += 1
         return _storage_tuple(result)
 
     def __mul__(self, count):
@@ -2254,7 +2286,7 @@ def _iteration_error(value, membership):
 def contains(container, item):
     owner = _type_of(container)
     if owner is dict or owner is set or owner is frozenset:
-        return container._lookup(item) >= 0
+        return _table_lookup(container, item) >= 0
     if owner is str:
         return TextStorage.__contains__(container, item)
     if owner is list or owner is tuple:
@@ -2312,13 +2344,21 @@ def next_item(value):
 
 def unpack(value, count):
     count = _integer_storage(count)
-    if _type_of(value) is tuple:
+    owner = _type_of(value)
+    if owner is tuple:
         length = _storage_length(value)
         if length < count:
             raise ValueError("not enough values to unpack")
         if length > count:
             raise ValueError("too many values to unpack")
         return value
+    if owner is list:
+        length = _storage_length(value)
+        if length < count:
+            raise ValueError("not enough values to unpack")
+        if length > count:
+            raise ValueError("too many values to unpack")
+        return _storage_tuple(value)
     iterator = iterate(value)
     result = []
     index = 0
@@ -2530,12 +2570,15 @@ def _make_list(*args):
         raise TypeError("list expects at most one argument")
     result = []
     if count == 1:
-        for value in _storage_read(args, 0):
-            _storage_append(result, value)
+        extend_arguments(result, _storage_read(args, 0))
     return result
 
 
 def _make_tuple(*args):
+    if _storage_length(args) == 1:
+        arg = _storage_read(args, 0)
+        if _type_of(arg) is tuple:
+            return arg
     return _storage_tuple(list_from_arguments(args))
 
 
@@ -2545,8 +2588,7 @@ def list_from_arguments(args):
         raise TypeError("tuple expects at most one argument")
     result = []
     if count == 1:
-        for value in _storage_read(args, 0):
-            _storage_append(result, value)
+        extend_arguments(result, _storage_read(args, 0))
     return result
 
 
@@ -2627,18 +2669,16 @@ class list(ListStorage):
             raise TypeError(f'list expected at most 1 argument, got {count}')
         _storage_delete(self, 0, _storage_length(self))
         if count:
-            for value in _storage_read(args, 0):
-                _storage_append(self, value)
+            extend_arguments(self, _storage_read(args, 0))
 
 
 class tuple(TupleStorage):
     __slots__ = ()
 
     def __new__(cls, *args):
-        value = _make_tuple(*args)
         if cls is not tuple:
-            return typed_value(value, cls)
-        return value
+            return typed_value(_storage_tuple(list_from_arguments(args)), cls)
+        return _make_tuple(*args)
 
 
 class str(TextStorage):

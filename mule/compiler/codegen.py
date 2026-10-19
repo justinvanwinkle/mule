@@ -113,6 +113,11 @@ declare ptr @mule_text_codepoint_at(ptr, i64)
 declare ptr @mule_text_codepoint_getitem(ptr, ptr)
 declare ptr @mule_text_slice(ptr, ptr, ptr)
 declare ptr @mule_text_find(ptr, ptr, ptr, ptr, i32)
+declare i32 @mule_text_eq(ptr, ptr)
+declare i32 @mule_text_partition_into(ptr, ptr, i32, ptr)
+declare ptr @mule_text_partition(ptr, ptr, i32)
+declare ptr @mule_text_split(ptr, ptr, ptr)
+declare ptr @mule_text_affix(ptr, ptr, ptr, ptr, i32)
 declare ptr @mule_text_join(ptr)
 declare ptr @mule_text_from_codepoints(ptr)
 declare ptr @mule_storage_hash(ptr)
@@ -123,8 +128,10 @@ declare ptr @mule_load_local(ptr, ptr)
 declare ptr @mule_binary_reuse(i32, ptr, ptr, i32, ptr)
 declare ptr @mule_unary(i32, ptr)
 declare ptr @mule_compare(i32, ptr, ptr)
+declare ptr @mule_compare_bool(i32, ptr, ptr)
 declare i32 @mule_truth(ptr)
 declare ptr @mule_call(ptr, i64, ptr)
+declare ptr @mule_call_owned(ptr, i64, ptr)
 declare ptr @mule_call_keywords(ptr, ptr, i64, ptr, i64, ptr, ptr)
 declare ptr @mule_function_defaults(ptr, ptr, ptr, ptr)
 declare ptr @mule_function_default(ptr, i32)
@@ -175,6 +182,7 @@ declare i32 @mule_set_attr_cached(ptr, ptr, ptr, ptr)
 declare ptr @mule_resolve_method(ptr, ptr, ptr, ptr)
 declare ptr @mule_resolve_super_method(ptr, ptr, ptr, ptr, ptr, ptr)
 declare ptr @mule_call_resolved(ptr, ptr, i64, ptr)
+declare ptr @mule_call_resolved_owned(ptr, ptr, i64, ptr)
 declare i32 @mule_check_args(ptr, i32)
 declare i32 @mule_assert_integer(ptr, ptr, ptr, ptr)
 declare i32 @mule_assert_float(ptr, ptr)
@@ -204,17 +212,27 @@ declare ptr @mule_storage_length(ptr)
 declare ptr @mule_storage_read(ptr, ptr)
 declare ptr @mule_storage_write(ptr, ptr, ptr)
 declare ptr @mule_fast_getitem(ptr, ptr)
+declare ptr @mule_list_getitem(ptr, ptr)
+declare ptr @mule_list_getitem_borrow(ptr, ptr)
 declare ptr @mule_fast_getslice(ptr, ptr, ptr, ptr)
 declare ptr @mule_text_slice_eq(ptr, ptr, ptr, ptr, i32)
 declare i32 @mule_fast_setitem(ptr, ptr, ptr)
+declare i32 @mule_fast_setitem_move(ptr, ptr, ptr)
 declare i32 @mule_fast_next_item(ptr, ptr)
+declare i32 @mule_fast_next_unpack(ptr, i64, ptr, ptr)
+declare ptr @mule_fast_iterate(ptr)
+declare ptr @mule_fast_iterate_move(ptr)
+declare i32 @mule_fast_unpack(ptr, i64, ptr)
 declare ptr @mule_storage_append(ptr, ptr)
+declare ptr @mule_storage_append_move(ptr, ptr)
 declare ptr @mule_storage_insert(ptr, ptr, ptr)
 declare ptr @mule_storage_delete(ptr, ptr, ptr)
+declare ptr @mule_storage_pop(ptr)
 declare ptr @mule_storage_tuple(ptr)
 declare ptr @mule_tuple_storage(ptr)
 declare i32 @mule_tuple_shape_matches(ptr, i64)
 declare i32 @mule_list_shape_matches(ptr, i64)
+declare i32 @mule_exact_list(ptr)
 declare nonnull ptr @mule_tuple_slot(ptr, i64)
 declare ptr @mule_storage_compatible(ptr, ptr)
 declare ptr @mule_integer_storage(ptr)
@@ -688,6 +706,7 @@ class TupleConstant:
     literal: ast.Tuple
     slot: str
     entry: str
+    borrowed_entry: str = ""
 
 
 class ModuleGenerator:
@@ -1056,63 +1075,85 @@ class ModuleGenerator:
     def text(self, value: str) -> str:
         return self.literal_data(value.encode("utf-8"))
 
-    def constant_float(self, literal: ast.FloatLiteral) -> str:
+    def constant_float(
+        self, literal: ast.FloatLiteral, *, borrowed: bool = False
+    ) -> str:
         """A unit-owned immutable float, pooled by its exact binary64 bits."""
         key = struct.pack(">d", literal.value)
         existing = self.float_constants.get(key)
-        if existing is not None:
-            return existing[1]
-        index = len(self.float_constants)
-        slot = f"@mule.literal.float.slot.{index}"
-        entry = (
-            f"call ptr @mule.cached.float(ptr {slot}, "
-            f"double {vops.double_constant(literal.value)})"
-        )
-        self.float_constants[key] = slot, entry
-        self.auxiliary.append(f"{slot} = internal global ptr null")
+        if existing is None:
+            index = len(self.float_constants)
+            slot = f"@mule.literal.float.slot.{index}"
+            entry = (
+                f"call ptr @mule.cached.float(ptr {slot}, "
+                f"double {vops.double_constant(literal.value)})"
+            )
+            self.float_constants[key] = slot, entry
+            self.auxiliary.append(f"{slot} = internal global ptr null")
+        else:
+            slot, entry = existing
+        if borrowed:
+            return (
+                f"call ptr @mule.borrowed.float(ptr {slot}, "
+                f"double {vops.double_constant(literal.value)})"
+            )
         return entry
 
-    def constant_text(self, literal: ast.TextLiteral) -> str:
+    def constant_text(self, literal: ast.TextLiteral, *, borrowed: bool = False) -> str:
         """A unit-owned immutable str, pooled by its WTF-8 byte representation."""
         encoded = literal.value.encode("utf-8", "surrogatepass")
         existing = self.text_constants.get(encoded)
-        if existing is not None:
-            return existing[1]
-        index = len(self.text_constants)
-        slot = f"@mule.literal.text.slot.{index}"
-        data = self.literal_data(encoded)
-        entry = (
-            f"call ptr @mule.cached.text(ptr {slot}, ptr {data}, i64 {len(encoded)})"
-        )
-        self.text_constants[encoded] = slot, entry
-        self.auxiliary.append(f"{slot} = internal global ptr null")
+        if existing is None:
+            index = len(self.text_constants)
+            slot = f"@mule.literal.text.slot.{index}"
+            data = self.literal_data(encoded)
+            entry = f"call ptr @mule.cached.text(ptr {slot}, ptr {data}, i64 {len(encoded)})"
+            self.text_constants[encoded] = slot, entry
+            self.auxiliary.append(f"{slot} = internal global ptr null")
+        else:
+            slot, entry = existing
+        if borrowed:
+            data = self.literal_data(encoded)
+            return f"call ptr @mule.borrowed.text(ptr {slot}, ptr {data}, i64 {len(encoded)})"
         return entry
 
-    def constant_bytes(self, literal: ast.BytesLiteral) -> str:
+    def constant_bytes(
+        self, literal: ast.BytesLiteral, *, borrowed: bool = False
+    ) -> str:
         """A unit-owned immutable bytes object, pooled by its byte sequence."""
         value = literal.value
         existing = self.bytes_constants.get(value)
-        if existing is not None:
-            return existing[1]
-        index = len(self.bytes_constants)
-        slot = f"@mule.literal.bytes.slot.{index}"
-        data = self.literal_data(value)
-        entry = f"call ptr @mule.cached.bytes(ptr {slot}, ptr {data}, i64 {len(value)})"
-        self.bytes_constants[value] = slot, entry
-        self.auxiliary.append(f"{slot} = internal global ptr null")
+        if existing is None:
+            index = len(self.bytes_constants)
+            slot = f"@mule.literal.bytes.slot.{index}"
+            data = self.literal_data(value)
+            entry = (
+                f"call ptr @mule.cached.bytes(ptr {slot}, ptr {data}, i64 {len(value)})"
+            )
+            self.bytes_constants[value] = slot, entry
+            self.auxiliary.append(f"{slot} = internal global ptr null")
+        else:
+            slot, entry = existing
+        if borrowed:
+            data = self.literal_data(value)
+            return f"call ptr @mule.borrowed.bytes(ptr {slot}, ptr {data}, i64 {len(value)})"
         return entry
 
-    def constant_bigint(self, value: int) -> str:
+    def constant_bigint(self, value: int, *, borrowed: bool = False) -> str:
         """A unit-owned immutable arbitrary-precision int literal."""
         existing = self.bigint_constants.get(value)
-        if existing is not None:
-            return existing[1]
-        index = len(self.bigint_constants)
-        slot = f"@mule.literal.int.slot.{index}"
-        text = self.text(vops.decimal(value))
-        entry = f"call ptr @mule.cached.int(ptr {slot}, ptr {text})"
-        self.bigint_constants[value] = slot, entry
-        self.auxiliary.append(f"{slot} = internal global ptr null")
+        if existing is None:
+            index = len(self.bigint_constants)
+            slot = f"@mule.literal.int.slot.{index}"
+            text = self.text(vops.decimal(value))
+            entry = f"call ptr @mule.cached.int(ptr {slot}, ptr {text})"
+            self.bigint_constants[value] = slot, entry
+            self.auxiliary.append(f"{slot} = internal global ptr null")
+        else:
+            slot, entry = existing
+        if borrowed:
+            text = self.text(vops.decimal(value))
+            return f"call ptr @mule.borrowed.int(ptr {slot}, ptr {text})"
         return entry
 
     def tuple_pack_helper(self, count: int) -> str:
@@ -1139,12 +1180,12 @@ class ModuleGenerator:
         )
         return symbol
 
-    def constant_tuple(self, literal: ast.Tuple) -> str:
+    def constant_tuple(self, literal: ast.Tuple, *, borrowed: bool = False) -> str:
         """Register dependencies before their parent, sharing only typed values."""
         key = literal.accept(_CONSTANT_KEY)
         existing = self.tuple_constants.get(key)
         if existing is not None:
-            return existing.entry
+            return existing.borrowed_entry if borrowed else existing.entry
         nested = _NestedTuples(self)
         for element in literal.elements:
             element.accept(nested)
@@ -1156,6 +1197,9 @@ class ModuleGenerator:
         self.auxiliary.append(f"{slot} = internal global ptr null")
         if not elements:
             entry = f"call ptr @mule.cached.tuple(ptr {slot}, i64 0, ptr null)"
+            borrowed_entry = (
+                f"call ptr @mule.borrowed.tuple(ptr {slot}, i64 0, ptr null)"
+            )
         elif not any(operation.startswith("call ") for operation in operations):
             items = f"@mule.literal.items.{len(self.auxiliary)}"
             encoded = ", ".join(
@@ -1168,13 +1212,17 @@ class ModuleGenerator:
                 f"{items} = private unnamed_addr constant [{len(elements)} x ptr] [{encoded}]"
             )
             entry = f"call ptr @mule.cached.tuple(ptr {slot}, i64 {len(elements)}, ptr {items})"
+            borrowed_entry = f"call ptr @mule.borrowed.tuple(ptr {slot}, i64 {len(elements)}, ptr {items})"
         else:
             symbol = f"@mule.literal.tuple.{index}"
             entry = f"call ptr {symbol}()"
+            borrowed_entry = (
+                f"call ptr @mule.borrowed.tuple.fn(ptr {slot}, ptr {symbol})"
+            )
             self.auxiliary.append(self.tuple_constant_builder(symbol, slot, operations))
-        constant = TupleConstant(literal, slot, entry)
+        constant = TupleConstant(literal, slot, entry, borrowed_entry)
         self.tuple_constants[key] = constant
-        return constant.entry
+        return constant.borrowed_entry if borrowed else constant.entry
 
     def tuple_constant_builder(
         self, symbol: str, slot: str, operations: list[str]
@@ -1249,7 +1297,7 @@ class ModuleGenerator:
         self.protocol_helpers["$getitem.fast"] = symbol
         slow = self.protocol_helper("getitem", 2)
         self.auxiliary.append(
-            f"define internal ptr {symbol}(ptr %sequence, ptr %index) {{\n"
+            f"define internal ptr {symbol}(ptr %sequence, ptr %index) alwaysinline {{\n"
             "entry:\n"
             "  %fast = call ptr @mule_fast_getitem(ptr %sequence, ptr %index)\n"
             "  %matched = icmp ne ptr %fast, null\n"
@@ -1298,17 +1346,23 @@ class ModuleGenerator:
         )
         return symbol
 
-    def setitem_helper(self) -> str:
-        existing = self.protocol_helpers.get("$setitem.fast")
+    def setitem_helper(self, *, move: bool = False) -> str:
+        key = "$setitem.fast.move" if move else "$setitem.fast"
+        existing = self.protocol_helpers.get(key)
         if existing is not None:
             return existing
-        symbol = "@mule.fast.setitem"
-        self.protocol_helpers["$setitem.fast"] = symbol
+        symbol = "@mule.fast.setitem.move" if move else "@mule.fast.setitem"
+        self.protocol_helpers[key] = symbol
         slow = self.protocol_helper("setitem", 3)
+        fast_fn = "@mule_fast_setitem_move" if move else "@mule_fast_setitem"
+        item_setup = (
+            "" if move else "  %owned.item = call ptr @mule.fast.retain(ptr %item)\n"
+        )
+        item_arg = "%item" if move else "%owned.item"
         self.auxiliary.append(
-            f"define internal ptr {symbol}(ptr %sequence, ptr %index, ptr %item) {{\n"
+            f"define internal ptr {symbol}(ptr %sequence, ptr %index, ptr %item) alwaysinline {{\n"
             "entry:\n"
-            "  %matched = call i32 @mule_fast_setitem(ptr %sequence, ptr %index, ptr %item)\n"
+            f"  %matched = call i32 {fast_fn}(ptr %sequence, ptr %index, ptr %item)\n"
             "  %valid = icmp ne i32 %matched, 0\n"
             "  br i1 %valid, label %hit, label %slow\n"
             "hit:\n"
@@ -1316,8 +1370,37 @@ class ModuleGenerator:
             "slow:\n"
             "  %owned.seq = call ptr @mule.fast.retain(ptr %sequence)\n"
             "  %owned.idx = call ptr @mule.fast.retain(ptr %index)\n"
-            "  %owned.item = call ptr @mule.fast.retain(ptr %item)\n"
-            f"  %result = call ptr {slow}(ptr %owned.seq, ptr %owned.idx, ptr %owned.item)\n"
+            f"{item_setup}"
+            f"  %result = call ptr {slow}(ptr %owned.seq, ptr %owned.idx, ptr {item_arg})\n"
+            "  ret ptr %result\n"
+            "}"
+        )
+        return symbol
+
+    def iterate_helper(self, *, move: bool = False) -> str:
+        key = "$iterate.fast.move" if move else "$iterate.fast"
+        existing = self.protocol_helpers.get(key)
+        if existing is not None:
+            return existing
+        symbol = "@mule.fast.iterate.move" if move else "@mule.fast.iterate"
+        self.protocol_helpers[key] = symbol
+        slow = self.protocol_helper("iterate", 1)
+        fast_fn = "@mule_fast_iterate_move" if move else "@mule_fast_iterate"
+        slow_setup = (
+            "" if move else "  %owned = call ptr @mule.fast.retain(ptr %sequence)\n"
+        )
+        slow_arg = "%sequence" if move else "%owned"
+        self.auxiliary.append(
+            f"define internal ptr {symbol}(ptr %sequence) alwaysinline {{\n"
+            "entry:\n"
+            f"  %fast = call ptr {fast_fn}(ptr %sequence)\n"
+            "  %ok = icmp ne ptr %fast, null\n"
+            "  br i1 %ok, label %hit, label %slow\n"
+            "hit:\n"
+            "  ret ptr %fast\n"
+            "slow:\n"
+            f"{slow_setup}"
+            f"  %result = call ptr {slow}(ptr {slow_arg})\n"
             "  ret ptr %result\n"
             "}"
         )
@@ -1331,7 +1414,7 @@ class ModuleGenerator:
         self.protocol_helpers["$next_item.fast"] = symbol
         slow = self.protocol_helper("next_item", 1)
         self.auxiliary.append(
-            f"define internal i32 {symbol}(ptr %iterator, ptr %out) {{\n"
+            f"define internal i32 {symbol}(ptr %iterator, ptr %out) alwaysinline {{\n"
             "entry:\n"
             "  %status = call i32 @mule_fast_next_item(ptr %iterator, ptr %out)\n"
             "  %handled = icmp sge i32 %status, 0\n"
@@ -1345,6 +1428,77 @@ class ModuleGenerator:
             "  %failed = icmp eq ptr %item, null\n"
             "  %result = select i1 %failed, i32 -1, i32 1\n"
             "  ret i32 %result\n"
+            "}"
+        )
+        return symbol
+
+    def next_unpack_helper(self, arity: int) -> str:
+        key = f"$next_unpack.fast.{arity}"
+        existing = self.protocol_helpers.get(key)
+        if existing is not None:
+            return existing
+        symbol = f"@mule.fast.next_unpack.{arity}"
+        self.protocol_helpers[key] = symbol
+        slow = self.protocol_helper("next_item", 1)
+        self.auxiliary.append(
+            f"define internal i32 {symbol}(ptr %iterator, ptr %unpack.out, ptr %out) alwaysinline {{\n"
+            "entry:\n"
+            f"  %status = call i32 @mule_fast_next_unpack(ptr %iterator, i64 {arity}, ptr %unpack.out, ptr %out)\n"
+            "  %handled = icmp sge i32 %status, 0\n"
+            "  br i1 %handled, label %fast, label %slow\n"
+            "fast:\n"
+            "  ret i32 %status\n"
+            "slow:\n"
+            "  %owned = call ptr @mule.fast.retain(ptr %iterator)\n"
+            f"  %item = call ptr {slow}(ptr %owned)\n"
+            "  store ptr %item, ptr %out\n"
+            "  %failed = icmp eq ptr %item, null\n"
+            "  %result = select i1 %failed, i32 -1, i32 1\n"
+            "  ret i32 %result\n"
+            "}"
+        )
+        return symbol
+
+    def unpack_slots_helper(self, arity: int) -> str:
+        key = f"$unpack.slots.{arity}"
+        existing = self.protocol_helpers.get(key)
+        if existing is not None:
+            return existing
+        symbol = f"@mule.fast.unpack.slots.{arity}"
+        self.protocol_helpers[key] = symbol
+        slow = self.protocol_helper("unpack", 2)
+        copies = []
+        for idx in range(arity):
+            copies.extend(
+                [
+                    f"  %elem.{idx} = call ptr @mule_tuple_slot(ptr %tuple, i64 {idx})",
+                    f"  %slot.{idx} = getelementptr ptr, ptr %out, i64 {idx}",
+                    f"  store ptr %elem.{idx}, ptr %slot.{idx}",
+                ]
+            )
+        copies_block = "\n".join(copies)
+        self.auxiliary.append(
+            f"define internal ptr {symbol}(ptr %value, ptr %count, ptr %out) alwaysinline {{\n"
+            "entry:\n"
+            "  %already = icmp eq ptr %value, null\n"
+            "  br i1 %already, label %fast.done, label %check\n"
+            "check:\n"
+            f"  %matched = call i32 @mule_fast_unpack(ptr %value, i64 {arity}, ptr %out)\n"
+            "  %valid = icmp ne i32 %matched, 0\n"
+            "  br i1 %valid, label %fast.done, label %slow\n"
+            "fast.done:\n"
+            "  call void @mule.fast.release(ptr %count)\n"
+            "  ret ptr @mule.none\n"
+            "slow:\n"
+            f"  %tuple = call ptr {slow}(ptr %value, ptr %count)\n"
+            "  %bad = icmp eq ptr %tuple, null\n"
+            "  br i1 %bad, label %failed, label %copy\n"
+            "failed:\n"
+            "  ret ptr null\n"
+            "copy:\n"
+            f"{copies_block}\n"
+            "  call void @mule.heap.release(ptr %tuple)\n"
+            "  ret ptr @mule.none\n"
             "}"
         )
         return symbol
@@ -1429,10 +1583,8 @@ class ModuleGenerator:
         else:
             buf = "null"
         lines.append(
-            f"  %result = call ptr @mule_call(ptr %callee, i64 {arity}, ptr {buf})"
+            f"  %result = call ptr @mule_call_owned(ptr %callee, i64 {arity}, ptr {buf})"
         )
-        for i in range(arity):
-            lines.append(f"  call void @mule.fast.release(ptr %arg.{i})")
         lines.extend(["  ret ptr %result", "}"])
         self.auxiliary.append("\n".join(lines))
         return symbol
@@ -1463,11 +1615,8 @@ class ModuleGenerator:
         else:
             buf = "null"
         lines.append(
-            f"  %result = call ptr @mule_call_resolved(ptr %callable, ptr %receiver, i64 {arity}, ptr {buf})"
+            f"  %result = call ptr @mule_call_resolved_owned(ptr %callable, ptr %receiver, i64 {arity}, ptr {buf})"
         )
-        lines.append("  call void @mule.fast.release(ptr %receiver)")
-        for i in range(arity):
-            lines.append(f"  call void @mule.fast.release(ptr %arg.{i})")
         lines.extend(["  ret ptr %result", "}"])
         self.auxiliary.append("\n".join(lines))
         return symbol
@@ -1587,6 +1736,18 @@ class ModuleGenerator:
                         "  call void @mule.fast.release(ptr %receiver)",
                         "  call void @mule.fast.release(ptr %arg.0)",
                         f"  ret ptr %append.res.{candidate_index}",
+                    ]
+                )
+                continue
+            if function.name == "mule_sequences_mule_fn_ListStorage.pop" and order == (
+                -1,
+                -2,
+            ):
+                lines.extend(
+                    [
+                        f"  %pop.res.{candidate_index} = call ptr @mule_storage_pop(ptr %receiver)",
+                        "  call void @mule.fast.release(ptr %receiver)",
+                        f"  ret ptr %pop.res.{candidate_index}",
                     ]
                 )
                 continue
@@ -2823,6 +2984,12 @@ class _ArgumentGuard(ValueTypeVisitor):
         matched = self.gen.operation(f"call ptr @mule_text_storage(ptr {self.value})")
         return self.gen.operation(f"icmp eq ptr {matched}, @mule.true")
 
+    def visit_ListType(self, fact: ValueType) -> str:
+        if fact.element != UNKNOWN or fact.may_be_unbound:
+            return self.visit_ValueType(fact)
+        matched = self.gen.operation(f"call i32 @mule_exact_list(ptr {self.value})")
+        return self.gen.operation(f"icmp ne i32 {matched}, 0")
+
     def visit_NoneType(self, fact: ValueType) -> str:
         return self.gen.operation(f"icmp eq ptr {self.value}, @mule.none")
 
@@ -2919,6 +3086,7 @@ class FunctionGenerator:
     def __init__(self, module: ModuleGenerator, component, *, unpacked: bool = False):
         self.module = module
         self._literal_emitter = vops.LiteralEmitter(module)
+        self._borrowed_literal_emitter = vops.BorrowedLiteralEmitter(module)
         self.component = component
         self.lambda_ = component.lambda_
         self.context = component.context
@@ -3044,17 +3212,18 @@ class FunctionGenerator:
     def _find_unpacked_calls(self, component) -> None:
         self.unpacked_calls: dict[object, int] = {}
         self.unpacked_unpacks: set[object] = set()
+        self.unpacked_slot_unpacks: dict[object, int] = {}
+        self.unpacked_sequence_available: dict[object, int] = {}
         self.unpacked_moves: set[object] = set()
         self.unpacked_refs: dict[object, int] = {}
+        self.unpacked_immortal_refs: set[object] = set()
+        self.unpacked_dead_refs: set[object] = set()
         self.unpacked_discard_loads: set[object] = set()
         self.unpacked_temp_tns: set[object] = set()
         self.max_unpack_out = 0
         if self.raw:
             return
-        module = self.module
-        arities = module.return_tuple_arities
-        if not arities:
-            return
+        arities = self.module.return_tuple_arities
         reads = component.reads
         writes = component.writes
         for block in component.blocks:
@@ -3062,41 +3231,54 @@ class FunctionGenerator:
             n_vops = len(vops_list)
             idx = 0
             while idx < n_vops:
-                call_vop = vops_list[idx]
-                if call_vop.info is not vops.FULL_CALL:
-                    idx += 1
-                    continue
-                site = call_vop.codegen_info
-                target = site.target
-                arity = arities.get(target) if target is not None else None
-                if (
-                    arity is None
-                    or target.call_order(site.keywords, len(call_vop.args) - 1) is None
-                    or idx + 3 >= n_vops
-                ):
-                    idx += 1
-                    continue
-                count_vop = vops_list[idx + 1]
-                unpack_vop = vops_list[idx + 2]
-                move_vop = vops_list[idx + 3]
+                if idx + 2 >= n_vops:
+                    break
+                count_vop = vops_list[idx]
+                unpack_vop = vops_list[idx + 1]
+                move_vop = vops_list[idx + 2]
                 if (
                     count_vop.info is not vops.CONSTANT
                     or unpack_vop.info.name != "structural-unpack"
-                    or unpack_vop.codegen_info.arity != arity
                     or move_vop.info is not vops.MOVE
                 ):
                     idx += 1
                     continue
-                call_res_tn = call_vop.results[0].tn
+                arity = unpack_vop.codegen_info.arity
+                if arity is None or not (1 <= arity <= 8):
+                    idx += 1
+                    continue
+                call_vop = None
+                is_partition_call = False
+                if idx >= 1 and vops_list[idx - 1].info is vops.FULL_CALL:
+                    candidate = vops_list[idx - 1]
+                    site = candidate.codegen_info
+                    target = site.target
+                    call_arity = arities.get(target) if target is not None else None
+                    if (
+                        call_arity == arity
+                        and target.call_order(site.keywords, len(candidate.args) - 1)
+                        is not None
+                        and unpack_vop.args[0].tn is candidate.results[0].tn
+                    ):
+                        call_vop = candidate
+                elif (
+                    idx >= 1
+                    and vops_list[idx - 1].info.name == "call-resolved"
+                    and vops_list[idx - 1].codegen_info.exact_text_partition
+                    and arity == 3
+                    and unpack_vop.args[0].tn is vops_list[idx - 1].results[0].tn
+                ):
+                    call_vop = vops_list[idx - 1]
+                    is_partition_call = True
+                val_tn = unpack_vop.args[0].tn
                 count_tn = count_vop.results[0].tn
                 unpack_res_tn = unpack_vop.results[0].tn
                 temp_tn = move_vop.results[0].tn
                 if (
-                    unpack_vop.args[0].tn is not call_res_tn
-                    or unpack_vop.args[1].tn is not count_tn
+                    unpack_vop.args[1].tn is not count_tn
                     or move_vop.args[0].tn is not unpack_res_tn
-                    or len(writes.get(call_res_tn, ())) != 1
-                    or len(reads.get(call_res_tn, ())) != 1
+                    or len(writes.get(val_tn, ())) != 1
+                    or len(reads.get(val_tn, ())) != 1
                     or len(writes.get(count_tn, ())) != 1
                     or len(reads.get(count_tn, ())) != 1
                     or len(writes.get(unpack_res_tn, ())) != 1
@@ -3109,7 +3291,7 @@ class FunctionGenerator:
                 ):
                     idx += 1
                     continue
-                cursor = idx + 4
+                cursor = idx + 3
                 ref_vops = []
                 matched = True
                 for slot_idx in range(arity):
@@ -3139,7 +3321,9 @@ class FunctionGenerator:
                         break
                     cursor += 2
                     next_vop = vops_list[cursor]
+                    has_type_check = False
                     if next_vop.info is vops.TYPE_CHECK:
+                        has_type_check = True
                         check = next_vop.codegen_info
                         actual = next_vop.args[0].tn.type or UNKNOWN
                         if next_vop.args[0].tn is not ref_res_tn or (
@@ -3164,7 +3348,7 @@ class FunctionGenerator:
                     ):
                         matched = False
                         break
-                    ref_vops.append((slot_idx, ref_vop))
+                    ref_vops.append((slot_idx, ref_vop, store_vop, has_type_check))
                     cursor += 1
                 if not matched or cursor + 1 >= n_vops:
                     idx += 1
@@ -3187,15 +3371,67 @@ class FunctionGenerator:
                 ):
                     idx += 1
                     continue
-                self.unpacked_calls[call_vop] = arity
-                self.unpacked_unpacks.add(unpack_vop)
+                sep_is_immortal = (
+                    call_vop is not None
+                    and is_partition_call
+                    and (call_vop.args[2].tn.type or UNKNOWN).is_immortal
+                )
+                if call_vop is not None:
+                    self.unpacked_calls[call_vop] = arity
+                    self.unpacked_unpacks.add(unpack_vop)
+                    val_tn.type = NONE_TYPE
+                elif (
+                    idx == 2
+                    and vops_list[0].info is vops.CONSTANT
+                    and vops_list[1].info.name == "protocol-next_item"
+                    and vops_list[1].args[0].tn is vops_list[0].results[0].tn
+                    and val_tn is vops_list[1].results[0].tn
+                    and len(block.block.pred) == 1
+                    and (pred_ir2 := component.ir2_blocks.get(block.block.pred[0]))
+                    is not None
+                    and len(pred_ir2.vops) >= 2
+                    and pred_ir2.vops[-2].info.name == "sequence-available"
+                    and pred_ir2.vops[-1].info is vops.BRANCH
+                    and pred_ir2.vops[-1].codegen_info.consequent == block.label
+                ):
+                    self.unpacked_slot_unpacks[unpack_vop] = arity
+                    self.unpacked_sequence_available[pred_ir2.vops[-2]] = arity
+                elif (
+                    idx >= 1
+                    and vops_list[idx - 1].info.name == "call-resolved"
+                    and val_tn is vops_list[idx - 1].results[0].tn
+                ):
+                    self.unpacked_slot_unpacks[unpack_vop] = arity
+                else:
+                    idx += 1
+                    continue
                 self.unpacked_moves.add(move_vop)
-                for slot_idx, ref_vop in ref_vops:
+                for slot_idx, ref_vop, store_vop, has_type_check in ref_vops:
                     self.unpacked_refs[ref_vop] = slot_idx
+                    if sep_is_immortal and slot_idx == 1:
+                        self.unpacked_immortal_refs.add(ref_vop)
+                    target_tn = store_vop.results[0].tn
+                    if (
+                        not has_type_check
+                        and not reads.get(target_tn)
+                        and len(writes.get(target_tn, ())) == 1
+                        and target_tn.leaf is not None
+                        and not target_tn.leaf.indirect
+                        and (
+                            self.environment is None
+                            or (
+                                target_tn.leaf not in self.environment.cells
+                                and target_tn.leaf not in self.environment.copies
+                            )
+                        )
+                    ):
+                        self.unpacked_dead_refs.add(ref_vop)
+                        self.unpacked_moves.add(store_vop)
+                        self.unpacked_temp_tns.add(target_tn)
+                        target_tn.type = NONE_TYPE
                 self.unpacked_discard_loads.add(discard_load_vop)
                 self.unpacked_temp_tns.add(temp_tn)
                 self.max_unpack_out = max(self.max_unpack_out, arity)
-                call_res_tn.type = NONE_TYPE
                 unpack_res_tn.type = NONE_TYPE
                 temp_tn.type = NONE_TYPE
                 discard_tn.type = NONE_TYPE
@@ -3217,11 +3453,23 @@ class FunctionGenerator:
     def is_unpacked_unpack(self, vop) -> bool:
         return vop in self.unpacked_unpacks
 
+    def unpacked_slot_arity(self, vop) -> int | None:
+        return self.unpacked_slot_unpacks.get(vop)
+
+    def unpacked_sequence_available_arity(self, vop) -> int | None:
+        return self.unpacked_sequence_available.get(vop)
+
     def is_unpacked_move(self, vop) -> bool:
         return vop in self.unpacked_moves
 
     def unpacked_ref_slot(self, vop) -> int | None:
         return self.unpacked_refs.get(vop)
+
+    def is_unpacked_immortal_ref(self, vop) -> bool:
+        return vop in self.unpacked_immortal_refs
+
+    def is_unpacked_dead_ref(self, vop) -> bool:
+        return vop in self.unpacked_dead_refs
 
     def is_unpacked_discard_load(self, vop) -> bool:
         return vop in self.unpacked_discard_loads
@@ -3574,6 +3822,9 @@ class FunctionGenerator:
     def constant(self, literal) -> str:
         return literal.accept(self._literal_emitter)
 
+    def borrowed_constant(self, literal) -> str:
+        return literal.accept(self._borrowed_literal_emitter)
+
     def truth(self, tn, value: str) -> str:
         """An ``i1`` for the truth of a value in ``tn``'s representation."""
         sc = tn.sc
@@ -3700,15 +3951,30 @@ class FunctionGenerator:
         self.check_pointer(built)
         return self.load(result)
 
-    def call_method(self, info, callable_value, receiver, arguments) -> str:
+    def call_method(
+        self,
+        info,
+        callable_value,
+        receiver,
+        arguments,
+        unpack_arity: int | None = None,
+    ) -> str:
         """Consume receiver/arguments on direct, fallback, and rejected arms."""
         if info.exact_list_append:
-            result = self.operation(
-                f"call ptr @mule_storage_append(ptr {receiver}, ptr {arguments[0]})"
+            arg = arguments[0]
+            move_arg = arg not in self.immortal_values and arg != receiver
+            append_fn = (
+                "@mule_storage_append_move" if move_arg else "@mule_storage_append"
             )
+            result = self.operation(f"call ptr {append_fn}(ptr {receiver}, ptr {arg})")
             self.release(receiver)
-            self.release(arguments[0])
+            if not move_arg:
+                self.release(arg)
             self.immortal_values.add(result)
+            return result
+        if info.exact_list_pop:
+            result = self.operation(f"call ptr @mule_storage_pop(ptr {receiver})")
+            self.release(receiver)
             return result
         if info.exact_text_find:
             sub = arguments[0]
@@ -3725,6 +3991,51 @@ class FunctionGenerator:
                 self.release(arg)
             self.immortal_values.add(result)
             return result
+        if info.exact_text_split:
+            sep = arguments[0]
+            maxsplit = arguments[1] if len(arguments) >= 2 else "null"
+            result = self.operation(
+                f"call ptr @mule_text_split(ptr {receiver}, ptr {sep}, ptr {maxsplit})"
+            )
+            self.release(receiver)
+            for arg in arguments:
+                self.release(arg)
+            return result
+        if info.exact_text_partition:
+            sep = arguments[0]
+            reverse = 1 if info.name == "rpartition" else 0
+            if unpack_arity == 3:
+                status = self.operation(
+                    f"call i32 @mule_text_partition_into(ptr {receiver}, ptr {sep}, i32 {reverse}, ptr %unpack.out)"
+                )
+                self.release(receiver)
+                self.release(sep)
+                self.immortal_values.add("@mule.none")
+                ok = self.operation(f"icmp ne i32 {status}, 0")
+                result = self.operation(f"select i1 {ok}, ptr @mule.none, ptr null")
+                self.immortal_values.add(result)
+                return result
+            result = self.operation(
+                f"call ptr @mule_text_partition(ptr {receiver}, ptr {sep}, i32 {reverse})"
+            )
+            self.release(receiver)
+            self.release(sep)
+            return result
+        if info.exact_text_affix:
+            affix = arguments[0]
+            start = arguments[1] if len(arguments) >= 2 else "@mule.none"
+            end = arguments[2] if len(arguments) >= 3 else "@mule.none"
+            if len(arguments) < 3:
+                self.immortal_values.add("@mule.none")
+            is_end = 1 if info.name == "endswith" else 0
+            result = self.operation(
+                f"call ptr @mule_text_affix(ptr {receiver}, ptr {affix}, ptr {start}, ptr {end}, i32 {is_end})"
+            )
+            self.release(receiver)
+            for arg in arguments:
+                self.release(arg)
+            self.immortal_values.add(result)
+            return result
         module = self.module
         candidates = module.method_targets.get(info.name, ())
         functions = tuple(
@@ -3734,11 +4045,13 @@ class FunctionGenerator:
             is not None
         )
         if not functions:
-            helper = (
-                module.keyword_call_helper(info.keywords, resolved=True)
-                if info.keywords
-                else module.resolved_call_helper(len(arguments))
-            )
+            if not info.keywords:
+                self.argv(arguments)
+                buf = "%argv" if arguments else "null"
+                return self.operation(
+                    f"call ptr @mule_call_resolved_owned(ptr {callable_value}, ptr {receiver}, i64 {len(arguments)}, ptr {buf})"
+                )
+            helper = module.keyword_call_helper(info.keywords, resolved=True)
             operands = ", ".join(
                 [
                     f"ptr {callable_value}",
@@ -4088,26 +4401,49 @@ class FunctionGenerator:
             and module.native_plans.get(lambda_) is None
             and fixnum_variant is not None
         ):
+            builder = _HelperBuilder()
             combined = None
+            guard_ok = None
             for index, (name, expected) in enumerate(
                 zip(param_names, fixnum_variant.parameters, strict=True)
             ):
-                if not expected.is_fixnum:
+                if expected is UNKNOWN:
                     continue
-                bits = f"%fix.bits.{index}"
-                lines.append(f"  {bits} = ptrtoint ptr {name} to i64")
-                if combined is None:
-                    combined = bits
-                else:
-                    next_combined = f"%fix.tags.{index}"
-                    lines.append(f"  {next_combined} = and i64 {combined}, {bits}")
-                    combined = next_combined
+                if (
+                    expected.is_fixnum
+                    and expected.minimum == FIXNUM_MIN
+                    and expected.maximum == FIXNUM_MAX
+                ):
+                    bits = f"%fix.bits.{index}"
+                    builder.line(f"{bits} = ptrtoint ptr {name} to i64")
+                    if combined is None:
+                        combined = bits
+                    else:
+                        next_combined = f"%fix.tags.{index}"
+                        builder.line(f"{next_combined} = and i64 {combined}, {bits}")
+                        combined = next_combined
+                    continue
+                checked = expected.accept(_ArgumentGuard(builder, name))
+                if checked == "true":
+                    continue
+                guard_ok = (
+                    checked
+                    if guard_ok is None
+                    else builder.operation(f"and i1 {guard_ok}, {checked}")
+                )
             if combined is not None:
+                builder.line(f"%fix.tag = and i64 {combined}, 1")
+                builder.line("%fix.ok = icmp ne i64 %fix.tag, 0")
+                guard_ok = (
+                    "%fix.ok"
+                    if guard_ok is None
+                    else builder.operation(f"and i1 %fix.ok, {guard_ok}")
+                )
+            if guard_ok is not None:
+                lines.extend(builder.lines)
                 lines.extend(
                     [
-                        f"  %fix.tag = and i64 {combined}, 1",
-                        "  %fix.ok = icmp ne i64 %fix.tag, 0",
-                        "  br i1 %fix.ok, label %invoke.fixnum, label %invoke.general",
+                        f"  br i1 {guard_ok}, label %invoke.fixnum, label %invoke.general",
                         "invoke.fixnum:",
                         f"  %result.fixnum = call ptr {module.specialized[lambda_, 'fixnum']}({arguments})",
                         "  ret ptr %result.fixnum",

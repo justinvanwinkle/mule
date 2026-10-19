@@ -62,3 +62,36 @@ source = [[1, 2], [3, 4]]
 print(a, b, c, d)
 """,
     )
+
+
+def test_graph_paths_patterns_specialize_list_repeat_sift_and_resolved_unpack():
+    llvm = emit_llvm(
+        """
+def sift(heap, pos):
+    end = len(heap)
+    item = heap[pos]
+    while pos < end:
+        heap[pos] = item
+        pos += 1
+
+def step(graph: list[list[tuple[int, int]]], mod):
+    inf = len(graph) * 97 + 1
+    distances = [inf] * len(graph)
+    pending = [(0, 0)]
+    sift(pending, 0)
+    d, u = mod.pop(pending)
+    for v, w in graph[u]:
+        if d + w < distances[v]:
+            distances[v] = d + w
+            pending.append((d + w, v))
+    return distances[0]
+
+def main(mod):
+    return step([[(0, 1)]], mod)
+"""
+    )
+    assert "call ptr @mule_list_getitem" in llvm
+    assert "call ptr @mule_storage_length" in llvm
+    assert "call ptr @mule_storage_append_move" in llvm
+    assert "call ptr @mule_fast_iterate_move" in llvm
+    assert "call ptr @mule.fast.unpack.slots.2" in llvm

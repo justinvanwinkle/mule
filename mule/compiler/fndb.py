@@ -19,6 +19,7 @@ from .ctype import (
     BOOLEAN_TRUE,
     BOTTOM,
     BYTES_TYPE,
+    EMPTY_LIST_TYPE,
     FLOAT,
     FUNCTION_TYPE,
     INTEGER,
@@ -120,7 +121,7 @@ class _LiteralType(ast.Visitor):
 
     def visit_Tuple(self, node):
         arity = len(node.elements)
-        if 0 < arity <= 16:
+        if 0 < arity <= 64:
             elements = tuple(el.accept(self) for el in node.elements)
             if not all(el is UNKNOWN for el in elements):
                 return TupleType(arity, elements)
@@ -203,16 +204,25 @@ def _derive_getslice(node) -> ValueType | None:
         return TEXT_TYPE
     if receiver_type is BYTES_TYPE:
         return BYTES_TYPE
-    if receiver_type is LIST_TYPE:
-        return LIST_TYPE
+    if receiver_type.fits_list(LIST_TYPE):
+        return receiver_type
     return UNKNOWN
+
+
+def _derive_build_list(node) -> ValueType | None:
+    if _FLOW_PROPAGATION:
+        return None
+    result: ValueType = EMPTY_LIST_TYPE
+    for arg in node.args:
+        result = result.with_element(_arg_type(arg))
+    return result
 
 
 def _derive_build_tuple(node) -> ValueType | None:
     if _FLOW_PROPAGATION:
         return None
     arity = len(node.args)
-    if 0 < arity <= 16:
+    if 0 < arity <= 64:
         elements = tuple(_arg_type(arg) for arg in node.args)
         if not all(el is UNKNOWN for el in elements):
             return TupleType(arity, elements)
@@ -309,7 +319,7 @@ CURRENT_GLOBALS = defknown("%current_globals", "flushable")
 YIELD = defknown("%yield", "call", "unsafe")
 
 # Displays and formatting.
-BUILD_LIST = defknown("%build_list", "flushable", derive_type=lambda node: LIST_TYPE)
+BUILD_LIST = defknown("%build_list", "flushable", derive_type=_derive_build_list)
 BUILD_TUPLE = defknown(
     "%build_tuple",
     "flushable",
@@ -327,7 +337,9 @@ UNPACK_REF = defknown(
 FORMAT = defknown("%format", "call", derive_type=lambda node: TEXT_TYPE)
 
 # Guarded counted iteration over a builtin range.
-RANGE_PREPARE = defknown("%range_prepare", derive_type=lambda node: BOOLEAN)
+RANGE_PREPARE = defknown(
+    "%range_prepare", derive_type=lambda node: None if _FLOW_PROPAGATION else BOOLEAN
+)
 RANGE_AVAILABLE = defknown(
     "%range_available", "flushable", derive_type=lambda node: BOOLEAN
 )
@@ -346,6 +358,7 @@ _PROTOCOL_DERIVE_TYPES = {
         if _FLOW_PROPAGATION
         else _arg_type(node.args[0]).getitem_type(_arg_type(node.args[1]))
     ),
+    "setitem": lambda node: NONE_TYPE,
     "unpack": _derive_unpack,
 }
 

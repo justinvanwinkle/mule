@@ -25,6 +25,7 @@ from .ctype import REAL, UNKNOWN
 from .vmdef import define_vop
 from .vop import (
     BOOLEAN,
+    BOOLEAN_T,
     BOXED_FLOAT,
     CLASS,
     DESCRIPTOR,
@@ -166,7 +167,18 @@ class _BoxedConstant(ast.Visitor):
         self.vop = vop
 
     def visit_Node(self, node):
+        if not self.result.tn.sc.owned:
+            self.gen.pointer_result(self.result, self.gen.borrowed_constant(node))
+            return
         self.gen.pointer_result(self.result, self.gen.constant(node))
+
+    def visit_TextLiteral(self, node):
+        if not self.result.tn.sc.owned or (self.result.tn.type or UNKNOWN).is_immortal:
+            self.gen.native_result(
+                self.result, self.gen.operation(self.gen.borrowed_constant(node))
+            )
+            return
+        self.visit_Node(node)
 
     def visit_Tuple(self, node):
         if self.vop is not None and self.gen.is_unpacked_return_vop(self.vop):
@@ -496,13 +508,25 @@ def _binary_generic(gen, vop, opcode, *, inplace):
         gen.check_pointer(value)
         gen.refine(result.tn, value)
         return
-    fixnums = left_type.is_fixnum and (right.tn.type or UNKNOWN).is_fixnum
+    right_type = right.tn.type or UNKNOWN
+    fixnums = left_type.is_fixnum and right_type.is_fixnum
     result_type = result.tn.type or UNKNOWN
-    if fixnums and result_type.is_fixnum and opcode in _PRIMITIVE_BINARY:
-        a, b = gen.decode(lhs), gen.decode(rhs)
-        integer = gen.operation(f"{_PRIMITIVE_BINARY[opcode]} i64 {a}, {b}")
-        gen.native_result(result, gen.encode(integer), (lhs, rhs))
-        return
+    if fixnums and result_type.is_fixnum:
+        prim_op = _PRIMITIVE_BINARY.get(opcode)
+        if (
+            prim_op is None
+            and opcode in (8, 9)
+            and right_type.minimum is not None
+            and right_type.maximum is not None
+            and 0 <= right_type.minimum
+            and right_type.maximum <= 62
+        ):
+            prim_op = "shl" if opcode == 8 else "ashr"
+        if prim_op is not None:
+            a, b = gen.decode(lhs), gen.decode(rhs)
+            integer = gen.operation(f"{prim_op} i64 {a}, {b}")
+            gen.native_result(result, gen.encode(integer), (lhs, rhs))
+            return
     prefix = "fixnum" if fixnums else "fast"
     reuse = "null"
     reuse_slot = "null"
@@ -705,6 +729,13 @@ def _define_unary(operator, opcode):
             )
             gen.native_result(result, boolean, (value,))
             return
+        if operand.tn.primitive_type is BOOLEAN_T and opcode == 3:
+            is_false = gen.operation(f"icmp eq ptr {value}, @mule.false")
+            boolean = gen.operation(
+                f"select i1 {is_false}, ptr @mule.true, ptr @mule.false"
+            )
+            gen.native_result(result, boolean, (value,))
+            return
         if opcode < 3 and not operand_type.fits(REAL):
             tagged = gen.operation(f"ptrtoint ptr {value} to i64")
             tag = gen.operation(f"and i64 {tagged}, 1")
@@ -756,6 +787,14 @@ def _define_compare(operator, opcode):
             gen.check_pointer(value)
             gen.refine(result.tn, value)
             return
+        if opcode in (6, 7):
+            predicate = "eq" if opcode == 6 else "ne"
+            condition = gen.operation(f"icmp {predicate} ptr {lhs}, {rhs}")
+            boolean = gen.operation(
+                f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
+            )
+            gen.native_result(result, boolean, (lhs, rhs))
+            return
         left_type = left.tn.type or UNKNOWN
         right_type = right.tn.type or UNKNOWN
         if opcode < 6 and left_type.is_fixnum and right_type.is_fixnum:
@@ -781,11 +820,24 @@ def _define_compare(operator, opcode):
                 boolean = gen.operation(
                     f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
                 )
+            elif opcode in (0, 1):
+                matched = gen.operation(f"call i32 @mule_text_eq(ptr {lhs}, ptr {rhs})")
+                predicate = "ne" if opcode == 0 else "eq"
+                condition = gen.operation(f"icmp {predicate} i32 {matched}, 0")
+                boolean = gen.operation(
+                    f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
+                )
             else:
                 boolean = gen.operation(
                     f"call ptr @mule_compare(i32 {opcode}, ptr {lhs}, ptr {rhs})"
                 )
             gen.native_result(result, boolean, (lhs, rhs))
+            return
+        if vop.codegen_info is True and opcode < 6:
+            operation = (
+                f"call ptr @mule.fast.compare.bool.{opcode}(ptr {lhs}, ptr {rhs})"
+            )
+            gen.pointer_result(result, operation, (lhs, rhs))
             return
         operation = (
             f"call ptr @mule.fast.compare.{opcode}(ptr {lhs}, ptr {rhs})"
@@ -834,7 +886,7 @@ def resolve_method(gen, vop):
     receiver = gen.take(vop.args[0])
     method, bound = vop.results
     info = vop.codegen_info
-    if info.exact_list_append or info.exact_text_find:
+    if info.is_exact:
         gen.immortal_values.add("@mule.none")
         gen.publish(method, "@mule.none")
         gen.publish(bound, receiver)
@@ -884,7 +936,13 @@ def call_resolved(gen, vop):
     function = gen.take(method)
     receiver = gen.take(bound)
     values = [gen.take(argument) for argument in arguments]
-    value = gen.call_method(vop.codegen_info, function, receiver, values)
+    value = gen.call_method(
+        vop.codegen_info,
+        function,
+        receiver,
+        values,
+        unpack_arity=gen.unpacked_call_arity(vop),
+    )
     gen.publish(vop.results[0], value)
     gen.release(function)
     gen.check_pointer(value)
@@ -1194,8 +1252,15 @@ def range_advance(gen, vop):
 def sequence_available(gen, vop):
     iterator = gen.load(vop.args[0])
     out = gen.out_pointer()
-    helper = gen.module.next_item_helper()
-    status = gen.operation(f"call i32 {helper}(ptr {iterator}, ptr {out})")
+    unpack_arity = gen.unpacked_sequence_available_arity(vop)
+    if unpack_arity is not None:
+        helper = gen.module.next_unpack_helper(unpack_arity)
+        status = gen.operation(
+            f"call i32 {helper}(ptr {iterator}, ptr %unpack.out, ptr {out})"
+        )
+    else:
+        helper = gen.module.next_item_helper()
+        status = gen.operation(f"call i32 {helper}(ptr {iterator}, ptr {out})")
     gen.check_status(status)
     available = gen.operation(f"icmp ne i32 {status}, 0")
     result = gen.operation(f"select i1 {available}, ptr @mule.true, ptr @mule.false")
@@ -1219,6 +1284,19 @@ def protocol_next_item(gen, vop):
     gen.refine(vop.results[0].tn, result)
 
 
+@define_vop("protocol-iterate", translate=fndb.PROTOCOLS["iterate"], results=(OBJECT,))
+def protocol_iterate(gen, vop):
+    sequence = gen.take(vop.args[0])
+    move = sequence not in gen.immortal_values
+    helper = gen.module.iterate_helper(move=move)
+    result = gen.operation(f"call ptr {helper}(ptr {sequence})")
+    if not move:
+        gen.release(sequence)
+    gen.publish(vop.results[0], result)
+    gen.check_pointer(result)
+    gen.refine(vop.results[0].tn, result)
+
+
 def _define_protocol(name, info):
     @define_vop(f"protocol-{name}", translate=info, results=(OBJECT,))
     def protocol(gen, vop):
@@ -1237,6 +1315,14 @@ def structural_unpack(gen, vop):
         gen.publish(vop.results[0], "@mule.none")
         gen.release(count)
         return
+    slot_arity = gen.unpacked_slot_arity(vop)
+    if slot_arity is not None:
+        helper = gen.module.unpack_slots_helper(slot_arity)
+        gen.pointer_result(
+            vop.results[0],
+            f"call ptr {helper}(ptr {value}, ptr {count}, ptr %unpack.out)",
+        )
+        return
     if vop.codegen_info.proved:
         gen.publish(vop.results[0], value)
         gen.refine(vop.results[0].tn, value)
@@ -1250,12 +1336,18 @@ def structural_unpack(gen, vop):
 def protocol_getitem(gen, vop):
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])
-    helper = (
-        "@mule_text_codepoint_getitem"
-        if vop.codegen_info is True
-        else gen.module.getitem_helper()
-    )
+    info = vop.codegen_info
+    if info is True:
+        helper = "@mule_text_codepoint_getitem"
+    elif info == "list_borrow":
+        helper = "@mule_list_getitem_borrow"
+    elif info == "list_owned":
+        helper = "@mule_list_getitem"
+    else:
+        helper = gen.module.getitem_helper()
     result = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {index})")
+    if info == "list_borrow":
+        gen.immortal_values.add(result)
     gen.release(sequence)
     gen.release(index)
     gen.publish(vop.results[0], result)
@@ -1305,20 +1397,23 @@ def protocol_setitem(gen, vop):
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])
     item = gen.take(vop.args[2])
-    helper = gen.module.setitem_helper()
+    move_item = item not in gen.immortal_values and item != sequence and item != index
+    helper = gen.module.setitem_helper(move=move_item)
     result = gen.operation(
         f"call ptr {helper}(ptr {sequence}, ptr {index}, ptr {item})"
     )
+    gen.immortal_values.add(result)
     gen.release(sequence)
     gen.release(index)
-    gen.release(item)
+    if not move_item:
+        gen.release(item)
     gen.publish(vop.results[0], result)
     gen.check_pointer(result)
     gen.refine(vop.results[0].tn, result)
 
 
 for _name, _info in fndb.PROTOCOLS.items():
-    if _name not in ("unpack", "getitem", "setitem", "next_item"):
+    if _name not in ("unpack", "getitem", "setitem", "next_item", "iterate"):
         _define_protocol(_name, _info)
 
 
@@ -1329,6 +1424,14 @@ def unpack_ref(gen, vop):
         position = gen.take(vop.args[1])
         slot = gen.operation(f"getelementptr ptr, ptr %unpack.out, i64 {slot_idx}")
         result = gen.operation(f"load ptr, ptr {slot}")
+        if gen.is_unpacked_immortal_ref(vop):
+            gen.immortal_values.add(result)
+        if gen.is_unpacked_dead_ref(vop):
+            gen.release(result)
+            gen.release(position)
+            gen.immortal_values.add("@mule.none")
+            gen.publish(vop.results[0], "@mule.none")
+            return
         gen.publish(vop.results[0], result)
         gen.release(position)
         gen.refine(vop.results[0].tn, result)
@@ -1868,7 +1971,10 @@ entry:
 check:
   %refs = load i64, ptr %value
   %immortal = icmp eq i64 %refs, -1
-  br i1 %immortal, label %done, label %heap
+  br i1 %immortal, label %done, label %check_unique
+check_unique:
+  %unique = icmp eq i64 %refs, 1
+  br i1 %unique, label %free, label %heap
 heap:
   %prev = atomicrmw sub ptr %value, i64 1 release
   %last = icmp eq i64 %prev, 1
@@ -1902,7 +2008,10 @@ entry:
 check:
   %refs = load i64, ptr %value
   %immortal = icmp eq i64 %refs, -1
-  br i1 %immortal, label %done, label %heap
+  br i1 %immortal, label %done, label %check_unique
+check_unique:
+  %unique = icmp eq i64 %refs, 1
+  br i1 %unique, label %free, label %heap
 heap:
   %prev = atomicrmw sub ptr %value, i64 1 release
   %last = icmp eq i64 %prev, 1
@@ -1942,7 +2051,7 @@ slow:
 
 
 def _truth() -> str:
-    return """define internal i32 @mule.fast.truth(ptr %value) {
+    return """define internal i32 @mule.fast.truth(ptr %value) alwaysinline {
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
@@ -2217,6 +2326,26 @@ slow:
 }}"""
 
 
+def _compare_bool_helper(op: int) -> str:
+    predicate = ("eq", "ne", "slt", "sle", "sgt", "sge")[op]
+    return f"""define internal ptr @mule.fast.compare.bool.{op}(ptr %left, ptr %right) alwaysinline {{
+entry:
+  %left.bits = ptrtoint ptr %left to i64
+  %right.bits = ptrtoint ptr %right to i64
+  %tags = and i64 %left.bits, %right.bits
+  %tag = and i64 %tags, 1
+  %integers = icmp ne i64 %tag, 0
+  br i1 %integers, label %fixnums, label %slow
+fixnums:
+  %compared = icmp {predicate} i64 %left.bits, %right.bits
+  %value = select i1 %compared, ptr @mule.true, ptr @mule.false
+  ret ptr %value
+slow:
+  %fallback = call ptr @mule_compare_bool(i32 {op}, ptr %left, ptr %right)
+  ret ptr %fallback
+}}"""
+
+
 # Exact ordering of a machine integer against a binary64: doubles beyond the
 # i64 range order by sign, and in-range doubles split into an integer part,
 # which is compared as an integer, and a fraction that breaks ties.
@@ -2329,6 +2458,93 @@ ready:
   ret ptr %owned
 failed:
   ret ptr null
+}
+
+define internal ptr @mule.borrowed.float(ptr %slot, double %value) alwaysinline {
+entry:
+  %cached = load ptr, ptr %slot
+  %present = icmp ne ptr %cached, null
+  br i1 %present, label %ready, label %build
+build:
+  %built = call ptr @mule_literal_float(double %value)
+  store ptr %built, ptr %slot
+  br label %ready
+ready:
+  %result = phi ptr [%cached, %entry], [%built, %build]
+  ret ptr %result
+}
+
+define internal ptr @mule.borrowed.text(ptr %slot, ptr %data, i64 %length) alwaysinline {
+entry:
+  %cached = load ptr, ptr %slot
+  %present = icmp ne ptr %cached, null
+  br i1 %present, label %ready, label %build
+build:
+  %built = call ptr @mule_literal_text(ptr %data, i64 %length)
+  store ptr %built, ptr %slot
+  br label %ready
+ready:
+  %result = phi ptr [%cached, %entry], [%built, %build]
+  ret ptr %result
+}
+
+define internal ptr @mule.borrowed.bytes(ptr %slot, ptr %data, i64 %length) alwaysinline {
+entry:
+  %cached = load ptr, ptr %slot
+  %present = icmp ne ptr %cached, null
+  br i1 %present, label %ready, label %build
+build:
+  %built = call ptr @mule_literal_bytes(ptr %data, i64 %length)
+  store ptr %built, ptr %slot
+  br label %ready
+ready:
+  %result = phi ptr [%cached, %entry], [%built, %build]
+  ret ptr %result
+}
+
+define internal ptr @mule.borrowed.int(ptr %slot, ptr %text) alwaysinline {
+entry:
+  %cached = load ptr, ptr %slot
+  %present = icmp ne ptr %cached, null
+  br i1 %present, label %ready, label %build
+build:
+  %built = call ptr @mule_literal_int(ptr %text)
+  store ptr %built, ptr %slot
+  br label %ready
+ready:
+  %result = phi ptr [%cached, %entry], [%built, %build]
+  ret ptr %result
+}
+
+define internal ptr @mule.borrowed.tuple(ptr %slot, i64 %count, ptr %items) alwaysinline {
+entry:
+  %cached = load ptr, ptr %slot
+  %present = icmp ne ptr %cached, null
+  br i1 %present, label %ready, label %build
+build:
+  %tuple = call ptr @mule_sequence_tuple_owned(i64 %count, ptr %items)
+  store ptr %tuple, ptr %slot
+  %bad = icmp eq ptr %tuple, null
+  br i1 %bad, label %failed, label %ready
+ready:
+  %result = phi ptr [%cached, %entry], [%tuple, %build]
+  ret ptr %result
+failed:
+  ret ptr null
+}
+
+define internal ptr @mule.borrowed.tuple.fn(ptr %slot, ptr %builder) alwaysinline {
+entry:
+  %cached = load ptr, ptr %slot
+  %present = icmp ne ptr %cached, null
+  br i1 %present, label %ready, label %build
+build:
+  %built = call ptr %builder()
+  call void @mule.heap.release(ptr %built)
+  br label %ready
+ready:
+  %result = phi ptr [%cached, %entry], [%built, %build]
+  ret ptr %result
 }"""
 
 
@@ -2349,6 +2565,7 @@ def helpers(*, bootstrap: bool = False) -> str:
             *(_unary_helper(op) for op in range(4)),
             *(_unary_helper(op, fixnum=True) for op in range(3)),
             *(_compare_helper(op) for op in range(8)),
+            *(_compare_bool_helper(op) for op in range(6)),
         ]
     )
 
@@ -2396,6 +2613,29 @@ class LiteralEmitter(ast.Visitor):
 
     def visit_Tuple(self, node: ast.Tuple) -> str:
         return self.module.constant_tuple(node)
+
+
+class BorrowedLiteralEmitter(LiteralEmitter):
+    """Emit borrowed references to unit-owned cached constants without retaining."""
+
+    def visit_IntegerLiteral(self, node: ast.IntegerLiteral) -> str:
+        value = node.value
+        if -(1 << 62) <= value < (1 << 62):
+            tagged = ((value << 1) | 1) & ((1 << 64) - 1)
+            return f"inttoptr i64 {tagged} to ptr"
+        return self.module.constant_bigint(value, borrowed=True)
+
+    def visit_FloatLiteral(self, node: ast.FloatLiteral) -> str:
+        return self.module.constant_float(node, borrowed=True)
+
+    def visit_TextLiteral(self, node: ast.TextLiteral) -> str:
+        return self.module.constant_text(node, borrowed=True)
+
+    def visit_BytesLiteral(self, node: ast.BytesLiteral) -> str:
+        return self.module.constant_bytes(node, borrowed=True)
+
+    def visit_Tuple(self, node: ast.Tuple) -> str:
+        return self.module.constant_tuple(node, borrowed=True)
 
 
 INSERT_SAFEPOINT = insert_safepoint

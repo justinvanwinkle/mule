@@ -43,8 +43,8 @@ def test_redundant_bitmask_ord_codepoint():
 
 
 def test_redundant_bitmask_range_loop_and_narrowed_branch():
-    # A `for ... in range(16)` lowers to a guarded counted loop (where `i` has
-    # type IntegerType(0, 15)) plus a generic fallback loop (where `i` is UNKNOWN).
+    # A `for ... in range(16)` proves fixnum range bounds (where `i` has type
+    # IntegerType(0, 15)) and eliminates the generic fallback loop.
     # Redundant bitmask elimination removes the `%bit_and` in the counted loop.
     compilation = compile_source(
         "def f():\n"
@@ -56,7 +56,7 @@ def test_redundant_bitmask_range_loop_and_narrowed_branch():
     )
     check_ir1_consistency(compilation.components)
     fn = compilation.lambdas[1]
-    assert len(list(known_calls(fn, "%bit_and"))) == 1
+    assert list(known_calls(fn, "%bit_and")) == []
 
     # In a branch-narrowed interval `0 <= x <= 15`, `x & 0xff` is eliminated completely.
     _, fn_branch = _compile_fn(
@@ -82,7 +82,7 @@ def test_non_redundant_bitmask_preserved():
     )
     check_ir1_consistency(compilation.components)
     fn = compilation.lambdas[1]
-    assert len(list(known_calls(fn, "%bit_and"))) == 2
+    assert len(list(known_calls(fn, "%bit_and"))) == 1
 
     # Negative lower bound may have high bits set in two's complement
     compilation_neg = compile_source(
@@ -95,7 +95,7 @@ def test_non_redundant_bitmask_preserved():
     )
     check_ir1_consistency(compilation_neg.components)
     fn_neg = compilation_neg.lambdas[1]
-    assert len(list(known_calls(fn_neg, "%bit_and"))) == 2
+    assert len(list(known_calls(fn_neg, "%bit_and"))) == 1
 
 
 @pytest.mark.parametrize(

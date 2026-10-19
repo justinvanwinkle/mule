@@ -3,6 +3,7 @@
 use crate::{builtins, gmp::BigInt, numeric, text::Text};
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_void};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub type Value = *mut Object;
 pub type Native = unsafe extern "C" fn(Value, Value) -> Value;
@@ -65,12 +66,23 @@ struct Entry {
     boxed: bool,
 }
 
+static NEXT_NAMESPACE_VERSION: AtomicUsize = AtomicUsize::new(1);
+
 /// A namespace's names and their cells, in binding order: a name moves to
 /// the end when it becomes bound, as a key added to a dict does. Only names
 /// the namespace itself binds are visible to queries.
-#[derive(Default)]
 pub struct Namespace {
     entries: Vec<Entry>,
+    version: usize,
+}
+
+impl Default for Namespace {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            version: NEXT_NAMESPACE_VERSION.fetch_add(1, Ordering::Relaxed),
+        }
+    }
 }
 
 impl Drop for Namespace {
@@ -84,6 +96,26 @@ impl Drop for Namespace {
 }
 
 impl Namespace {
+    #[inline]
+    pub fn version(&self) -> usize {
+        self.version
+    }
+
+    #[inline]
+    pub fn get_at(&self, index: usize) -> Value {
+        self.entries
+            .get(index)
+            .map(|entry| unsafe { &*entry.cell })
+            .filter(|cell| cell.bound())
+            .map_or(std::ptr::null_mut(), |cell| cell.value)
+    }
+
+    pub fn lookup_index(&self, name: &str) -> Option<(usize, Value)> {
+        let index = self.position(name)?;
+        let cell = unsafe { &*self.entries[index].cell };
+        cell.bound().then_some((index, cell.value))
+    }
+
     fn position(&self, name: &str) -> Option<usize> {
         self.entries.iter().position(|entry| entry.name == name)
     }
@@ -125,8 +157,11 @@ impl Namespace {
         let previous = std::mem::replace(&mut cell.value, value);
         if !cell.bound() {
             cell.own = 1;
-            let entry = self.entries.remove(index);
-            self.entries.push(entry);
+            if index + 1 != self.entries.len() {
+                let entry = self.entries.remove(index);
+                self.entries.push(entry);
+                self.version = NEXT_NAMESPACE_VERSION.fetch_add(1, Ordering::Relaxed);
+            }
         }
         previous
     }
@@ -190,6 +225,7 @@ impl Namespace {
     /// Detach every cell, returning the values it held, owned. Static cells
     /// outlive the namespace, so they are left unbound and unowned.
     fn clear(&mut self) -> Vec<Value> {
+        self.version = NEXT_NAMESPACE_VERSION.fetch_add(1, Ordering::Relaxed);
         self.entries
             .iter()
             .map(|entry| {
@@ -246,6 +282,7 @@ pub enum Data {
         count: usize,
         defaults: Value,
         closure: Value,
+        owned_mask: Cell<u64>,
     },
     ReceiverArgs {
         receiver: Value,
@@ -253,6 +290,7 @@ pub enum Data {
         count: usize,
         defaults: Value,
         closure: Value,
+        owned_mask: Cell<u64>,
     },
     KeywordArgs {
         receiver: Value,
@@ -293,6 +331,11 @@ pub enum Data {
     },
     /// An exported buffer's physical lifetime guard, owning its backing object.
     BufferLease { owner: Value },
+    /// Fast sequence iterator over an exact list or tuple.
+    SeqIter {
+        sequence: Value,
+        index: usize,
+    },
     DescriptorLease(Option<std::fs::File>),
     /// A generator's suspended execution on its own native stack.
     Coroutine(Box<crate::coroutine::Coroutine>),
@@ -356,6 +399,7 @@ impl Data {
             Self::BoundMethod { receiver, method } => { visit(*receiver); visit(*method); }
             Self::WeakHandle { callback, .. } => visit(*callback),
             Self::BufferLease { owner } => visit(*owner),
+            Self::SeqIter { sequence, .. } => visit(*sequence),
             Self::Traceback { frame, globals, next, .. } => { visit(frame.get()); visit(*globals); visit(*next); }
             Self::Frame { globals, back, .. } => { visit(*globals); visit(*back); }
             Self::Function { defaults, closure, attributes, annotate, annotations, positional_defaults, keyword_defaults, .. } => {
@@ -393,7 +437,7 @@ impl Data {
             | Self::Traceback { .. } | Self::Frame { .. } | Self::Function { .. } => true,
             Self::None | Self::Bool(_) | Self::DescriptorLease(_) | Self::ForeignPointerVector { .. } | Self::ForeignCString { .. }
             | Self::ArgumentView { .. } | Self::ReceiverArgs { .. } | Self::KeywordArgs { .. }
-            | Self::Coroutine(_) | Self::Undefined => false,
+            | Self::SeqIter { .. } | Self::Coroutine(_) | Self::Undefined => false,
         }
     }
 }
@@ -550,15 +594,168 @@ pub unsafe fn new_value(data: Data) -> Value {
         }
     }
     let tracked = data.cycle_candidate();
-    let value = Box::into_raw(Box::new(Object {
-        references: std::sync::atomic::AtomicUsize::new(1),
-        tracked,
-        gc_slot: 0,
-        data,
-    }));
+    let value = unsafe {
+        alloc_object(Object {
+            references: std::sync::atomic::AtomicUsize::new(1),
+            tracked,
+            gc_slot: 0,
+            data,
+        })
+    };
     if tracked { crate::gc::track(value); }
     value
 }
+
+const OBJECT_POOL_CAP: usize = 512;
+const TUPLE2_POOL_CAP: usize = 1024;
+
+struct ObjectPool {
+    slots: [*mut Object; OBJECT_POOL_CAP],
+    len: usize,
+    tuple2_slots: [*mut Object; TUPLE2_POOL_CAP],
+    tuple2_len: usize,
+}
+
+impl ObjectPool {
+    const fn new() -> Self {
+        Self {
+            slots: [std::ptr::null_mut(); OBJECT_POOL_CAP],
+            len: 0,
+            tuple2_slots: [std::ptr::null_mut(); TUPLE2_POOL_CAP],
+            tuple2_len: 0,
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    unsafe fn flush(&mut self) {
+        unsafe {
+            while self.len > 0 {
+                self.len -= 1;
+                let ptr = *self.slots.get_unchecked(self.len);
+                std::alloc::dealloc(ptr.cast::<u8>(), std::alloc::Layout::new::<Object>());
+            }
+            while self.tuple2_len > 0 {
+                self.tuple2_len -= 1;
+                let ptr = *self.tuple2_slots.get_unchecked(self.tuple2_len);
+                std::ptr::drop_in_place(&mut (*ptr).data);
+                std::alloc::dealloc(ptr.cast::<u8>(), std::alloc::Layout::new::<Object>());
+            }
+        }
+    }
+}
+
+std::thread_local! {
+    static OBJECT_POOL: std::cell::UnsafeCell<ObjectPool> = const {
+        std::cell::UnsafeCell::new(ObjectPool::new())
+    };
+}
+
+#[cold]
+#[inline(never)]
+pub unsafe fn flush_object_pool() {
+    unsafe {
+        let cell = OBJECT_POOL.with(|c| c.get());
+        (*cell).flush();
+    }
+}
+
+#[inline(always)]
+unsafe fn alloc_object(obj: Object) -> Value {
+    unsafe {
+        let cell = OBJECT_POOL.with(|c| c.get());
+        let pool = &mut *cell;
+        if pool.len > 0 {
+            pool.len -= 1;
+            let ptr = *pool.slots.get_unchecked(pool.len);
+            ptr.write(obj);
+            return ptr;
+        }
+        Box::into_raw(Box::new(obj))
+    }
+}
+
+#[inline(always)]
+unsafe fn alloc_tuple2(v0: Value, v1: Value, tracked: bool) -> Value {
+    unsafe {
+        let cell = OBJECT_POOL.with(|c| c.get());
+        let pool = &mut *cell;
+        if pool.tuple2_len > 0 {
+            pool.tuple2_len -= 1;
+            let ptr = *pool.tuple2_slots.get_unchecked(pool.tuple2_len);
+            (*ptr).references.store(1, std::sync::atomic::Ordering::Relaxed);
+            (*ptr).tracked = tracked;
+            (*ptr).gc_slot = 0;
+            if let Data::Args(ref mut values, ..) = (*ptr).data {
+                let buf = values.as_mut_ptr();
+                *buf = v0;
+                *buf.add(1) = v1;
+                values.set_len(2);
+                if tracked {
+                    crate::gc::track(ptr);
+                }
+                return ptr;
+            }
+        }
+        let mut values = Vec::new();
+        if values.try_reserve_exact(2).is_err() {
+            release(v0);
+            release(v1);
+            error("MemoryError", "sequence allocation failed");
+            pool.flush();
+            return std::ptr::null_mut();
+        }
+        values.push(v0);
+        values.push(v1);
+        let value = alloc_object(Object {
+            references: std::sync::atomic::AtomicUsize::new(1),
+            tracked,
+            gc_slot: 0,
+            data: Data::Args(values, std::ptr::null_mut(), std::ptr::null_mut()),
+        });
+        if tracked {
+            crate::gc::track(value);
+        }
+        value
+    }
+}
+
+#[inline(always)]
+unsafe fn dealloc_object(value: Value) {
+    unsafe {
+        let cell = OBJECT_POOL.with(|c| c.get());
+        let pool = &mut *cell;
+        if !has_error() && pool.len < OBJECT_POOL_CAP {
+            *pool.slots.get_unchecked_mut(pool.len) = value;
+            pool.len += 1;
+            return;
+        }
+        std::alloc::dealloc(value.cast::<u8>(), std::alloc::Layout::new::<Object>());
+    }
+}
+
+#[inline(always)]
+unsafe fn drop_and_dealloc_object(value: Value) {
+    unsafe {
+        if !has_error() {
+            if let Data::Args(ref mut values, ty, attrs) = (*value).data {
+                if ty.is_null() && attrs.is_null() && values.capacity() == 2 {
+                    let cell = OBJECT_POOL.with(|c| c.get());
+                    let pool = &mut *cell;
+                    if pool.tuple2_len < TUPLE2_POOL_CAP {
+                        values.set_len(0);
+                        *pool.tuple2_slots.get_unchecked_mut(pool.tuple2_len) = value;
+                        pool.tuple2_len += 1;
+                        return;
+                    }
+                }
+            }
+        }
+        std::ptr::drop_in_place(&mut (*value).data);
+        dealloc_object(value);
+    }
+}
+
 impl Object {
     pub fn reference_count(&self) -> usize {
         self.references.load(std::sync::atomic::Ordering::Relaxed)
@@ -567,28 +764,39 @@ impl Object {
     fn remove_reference(&self) -> bool {
         use std::sync::atomic::{Ordering, fence};
         let previous = self.references.fetch_sub(1, Ordering::Release);
-        assert!(previous > 0, "release of an unowned heap value");
+        assert!(previous != 0, "release of an unowned heap value");
         if previous != 1 { return false; }
         fence(Ordering::Acquire);
         true
     }
 }
 
-#[inline]
+#[inline(always)]
 pub unsafe fn retain(value: Value) -> Value {
     unsafe {
         if !value.is_null() && !is_fixnum(value) && (*value).reference_count() != usize::MAX {
             let previous = (*value).references.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            assert!(previous > 0 && previous < isize::MAX as usize,
-                    "invalid or overflowing heap reference count");
+            assert!(
+                previous != 0 && previous < isize::MAX as usize,
+                "invalid or overflowing heap reference count"
+            );
         }
         value
     }
 }
-#[inline]
+#[inline(always)]
 pub unsafe fn release(value: Value) {
     unsafe {
-        if value.is_null() || is_fixnum(value) || (*value).reference_count() == usize::MAX {
+        if value.is_null() || is_fixnum(value) {
+            return;
+        }
+        let count = (*value).reference_count();
+        if count == usize::MAX {
+            return;
+        }
+        if count == 1 {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+            destroy(value);
             return;
         }
         if !(*value).remove_reference() { return; }
@@ -618,8 +826,72 @@ unsafe fn destroy(value: Value) {
         if (*value).tracked {
             crate::gc::untrack(value);
         }
-        let owned = Box::from_raw(value);
-        release_data(value, owned.data);
+        match &(*value).data {
+            Data::Text(text, ty, attrs) if ty.is_null() && attrs.is_null() => {
+                if text.is_inline() {
+                    dealloc_object(value);
+                } else {
+                    drop_and_dealloc_object(value);
+                }
+                return;
+            }
+            Data::Float(_, ty, attrs) if ty.is_null() && attrs.is_null() => {
+                dealloc_object(value);
+                return;
+            }
+            Data::SeqIter { sequence, .. } => {
+                let seq = *sequence;
+                dealloc_object(value);
+                release(seq);
+                return;
+            }
+            Data::Bytes(_, ty, attrs) | Data::BigInt(_, ty, attrs)
+                if ty.is_null() && attrs.is_null() =>
+            {
+                drop_and_dealloc_object(value);
+                return;
+            }
+            Data::List(values, ty, attrs) | Data::Args(values, ty, attrs)
+                if ty.is_null() && attrs.is_null() =>
+            {
+                (*value).references.store(0, std::sync::atomic::Ordering::Relaxed);
+                for &child in values {
+                    release(child);
+                }
+                drop_and_dealloc_object(value);
+                return;
+            }
+            Data::Instance {
+                ty,
+                fields,
+                attributes,
+            } if attributes.is_null() => {
+                (*value).references.store(0, std::sync::atomic::Ordering::Relaxed);
+                release(*ty);
+                for &field in fields.iter() {
+                    release(field);
+                }
+                drop_and_dealloc_object(value);
+                return;
+            }
+            _ => (),
+        }
+        (*value).references.store(0, std::sync::atomic::Ordering::Relaxed);
+        let data = std::ptr::read(&(*value).data);
+        dealloc_object(value);
+        release_data(value, data);
+    }
+}
+
+#[inline]
+pub unsafe fn new_untracked_value(data: Data) -> Value {
+    unsafe {
+        alloc_object(Object {
+            references: std::sync::atomic::AtomicUsize::new(1),
+            tracked: false,
+            gc_slot: 0,
+            data,
+        })
     }
 }
 
@@ -1010,6 +1282,7 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
                 count: args.len(),
                 defaults,
                 closure,
+                owned_mask: Cell::new(0),
             },
         };
         let result = entry(globals, &mut view);
@@ -1019,6 +1292,76 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
                 "SystemError",
                 "native function returned NULL without an error",
             );
+        }
+        result
+    }
+}
+/// Invoke `callable` consuming the caller's owned references in `args`.
+pub unsafe fn call_owned(callable: Value, args: &[Value]) -> Value {
+    unsafe {
+        if has_error() {
+            for &arg in args {
+                release(arg);
+            }
+            return std::ptr::null_mut();
+        }
+        if !callable.is_null() && !is_fixnum(callable) && args.len() < 64 {
+            if let Data::Function {
+                entry,
+                globals,
+                defaults,
+                closure,
+                ..
+            } = &(*callable).data
+            {
+                if mule_enter_frame() < 0 {
+                    for &arg in args {
+                        release(arg);
+                    }
+                    return std::ptr::null_mut();
+                }
+                let mask = if args.is_empty() {
+                    0u64
+                } else {
+                    (1u64 << args.len()) - 1
+                };
+                let mut view = Object {
+                    references: std::sync::atomic::AtomicUsize::new(usize::MAX),
+                    tracked: false,
+                    gc_slot: 0,
+                    data: Data::ArgumentView {
+                        values: args.as_ptr(),
+                        count: args.len(),
+                        defaults: *defaults,
+                        closure: *closure,
+                        owned_mask: Cell::new(mask),
+                    },
+                };
+                let result = (*entry)(*globals, &mut view);
+                mule_leave_frame();
+                if let Data::ArgumentView { owned_mask, .. } = &view.data {
+                    let mut rem = owned_mask.get();
+                    while rem != 0 {
+                        let idx = rem.trailing_zeros() as usize;
+                        rem &= rem - 1;
+                        release(*args.get_unchecked(idx));
+                    }
+                }
+                if result.is_null() && !has_error() {
+                    error(
+                        "SystemError",
+                        "native function returned NULL without an error",
+                    );
+                }
+                return result;
+            }
+            if let Data::BoundMethod { receiver, method } = &(*callable).data {
+                return call_with_receiver_owned(*method, retain(*receiver), args);
+            }
+        }
+        let result = call(callable, args);
+        for &arg in args {
+            release(arg);
         }
         result
     }
@@ -1052,6 +1395,7 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
                         count: args.len(),
                         defaults: *defaults,
                         closure: *closure,
+                        owned_mask: Cell::new(0),
                     },
                 };
                 let result = entry(*globals, &mut view);
@@ -1077,6 +1421,77 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
         }
         error("TypeError", "method is not a native function");
         std::ptr::null_mut()
+    }
+}
+/// Invoke `method` consuming the caller's owned `receiver` and `args`.
+pub unsafe fn call_with_receiver_owned(method: Value, receiver: Value, args: &[Value]) -> Value {
+    unsafe {
+        if has_error() {
+            release(receiver);
+            for &arg in args {
+                release(arg);
+            }
+            return std::ptr::null_mut();
+        }
+        if !method.is_null() && !is_fixnum(method) && args.len() < 63 {
+            if let Data::Function {
+                entry,
+                globals,
+                defaults,
+                closure,
+                ..
+            } = &(*method).data
+            {
+                if mule_enter_frame() < 0 {
+                    release(receiver);
+                    for &arg in args {
+                        release(arg);
+                    }
+                    return std::ptr::null_mut();
+                }
+                let mask = (1u64 << (args.len() + 1)) - 1;
+                let mut view = Object {
+                    references: std::sync::atomic::AtomicUsize::new(usize::MAX),
+                    tracked: false,
+                    gc_slot: 0,
+                    data: Data::ReceiverArgs {
+                        receiver,
+                        values: args.as_ptr(),
+                        count: args.len(),
+                        defaults: *defaults,
+                        closure: *closure,
+                        owned_mask: Cell::new(mask),
+                    },
+                };
+                let result = (*entry)(*globals, &mut view);
+                mule_leave_frame();
+                if let Data::ReceiverArgs { owned_mask, .. } = &view.data {
+                    let mut rem = owned_mask.get();
+                    if (rem & 1) != 0 {
+                        release(receiver);
+                        rem &= !1;
+                    }
+                    while rem != 0 {
+                        let idx = rem.trailing_zeros() as usize;
+                        rem &= rem - 1;
+                        release(*args.get_unchecked(idx - 1));
+                    }
+                }
+                if result.is_null() && !has_error() {
+                    error(
+                        "SystemError",
+                        "native method returned NULL without an error",
+                    );
+                }
+                return result;
+            }
+        }
+        let result = call_with_receiver(method, receiver, args);
+        release(receiver);
+        for &arg in args {
+            release(arg);
+        }
+        result
     }
 }
 pub unsafe fn special(value: Value, name: &str, args: &[Value]) -> Value {
@@ -1450,22 +1865,165 @@ unsafe fn contains(container: Value, item: Value) -> Option<bool> {
         None
     }
 }
-pub unsafe fn compare(op: i32, left: Value, right: Value) -> Value {
+
+#[cold]
+#[inline(never)]
+unsafe fn compare_sequence_storage_slow(
+    op: i32,
+    left: Value,
+    right: Value,
+    index: usize,
+) -> Value {
     unsafe {
         if has_error() {
             return std::ptr::null_mut();
         }
-        if op == 6 || op == 7 {
-            return bool_value((left == right) == (op == 6));
+        retain(left);
+        retain(right);
+        let result = compare_sequence_storage_slow_inner(op, left, right, index);
+        release(left);
+        release(right);
+        result
+    }
+}
+
+unsafe fn compare_sequence_storage_slow_inner(
+    op: i32,
+    left: Value,
+    right: Value,
+    mut index: usize,
+) -> Value {
+    unsafe {
+        let elements = |v: Value| -> &[Value] {
+            match &(*v).data {
+                Data::Args(items, ..) | Data::List(items, ..) => items.as_slice(),
+                _ => &[],
+            }
+        };
+        loop {
+            let a = elements(left);
+            let b = elements(right);
+            if index >= a.len() || index >= b.len() {
+                let (la, lb) = (a.len(), b.len());
+                return bool_value(match op {
+                    0 => la == lb,
+                    1 => la != lb,
+                    2 => la < lb,
+                    3 => la <= lb,
+                    4 => la > lb,
+                    _ => la >= lb,
+                });
+            }
+            let x = a[index];
+            let y = b[index];
+            if x == y {
+                index += 1;
+                continue;
+            }
+            if is_fixnum(x) && is_fixnum(y) {
+                let (fx, fy) = (fixnum(x), fixnum(y));
+                return bool_value(match op {
+                    0 => false,
+                    1 => true,
+                    2 => fx < fy,
+                    3 => fx <= fy,
+                    4 => fx > fy,
+                    _ => fx >= fy,
+                });
+            }
+            retain(x);
+            retain(y);
+            let eq = compare(0, x, y);
+            if eq.is_null() {
+                release(x);
+                release(y);
+                return std::ptr::null_mut();
+            }
+            let same = truth(eq);
+            release(eq);
+            let Some(same) = same else {
+                release(x);
+                release(y);
+                return std::ptr::null_mut();
+            };
+            if same {
+                release(x);
+                release(y);
+                index += 1;
+                continue;
+            }
+            if op < 2 {
+                release(x);
+                release(y);
+                return bool_value(op == 1);
+            }
+            let ord = compare(op, x, y);
+            release(x);
+            release(y);
+            return ord;
         }
-        if op == 8 || op == 9 {
-            return contains(right, left)
-                .map_or(std::ptr::null_mut(), |found| bool_value(found == (op == 8)));
+    }
+}
+
+#[inline(always)]
+unsafe fn compare_sequence_storage(
+    op: i32,
+    left: Value,
+    right: Value,
+    init_a: &[Value],
+    init_b: &[Value],
+) -> Value {
+    unsafe {
+        if std::ptr::eq(left, right) {
+            return bool_value(matches!(op, 0 | 3 | 5));
         }
+        if op < 2 && init_a.len() != init_b.len() {
+            return bool_value(op == 1);
+        }
+        let mut index = 0usize;
+        let min_len = init_a.len().min(init_b.len());
+        while index < min_len {
+            let x = *init_a.get_unchecked(index);
+            let y = *init_b.get_unchecked(index);
+            if x == y {
+                index += 1;
+                continue;
+            }
+            if ((x as usize) & (y as usize) & 1) != 0 {
+                let (sx, sy) = (x as isize, y as isize);
+                return bool_value(match op {
+                    0 => false,
+                    1 => true,
+                    2 | 3 => sx < sy,
+                    _ => sx > sy,
+                });
+            }
+            return compare_sequence_storage_slow(op, left, right, index);
+        }
+        let (la, lb) = (init_a.len(), init_b.len());
+        bool_value(match op {
+            0 => la == lb,
+            1 => la != lb,
+            2 => la < lb,
+            3 => la <= lb,
+            4 => la > lb,
+            _ => la >= lb,
+        })
+    }
+}
+
+pub unsafe fn compare(op: i32, left: Value, right: Value) -> Value {
+    unsafe {
         if !left.is_null() && !right.is_null() && !is_fixnum(left) && !is_fixnum(right) {
             match (&(*left).data, &(*right).data) {
+                (Data::Args(a, ty_a, ..), Data::Args(b, ty_b, ..))
+                | (Data::List(a, ty_a, ..), Data::List(b, ty_b, ..))
+                    if ty_a.is_null() && ty_b.is_null() && (0..=5).contains(&op) =>
+                {
+                    return compare_sequence_storage(op, left, right, a.as_slice(), b.as_slice());
+                }
                 (Data::Text(a, ty_a, ..), Data::Text(b, ty_b, ..))
-                    if ty_a.is_null() && ty_b.is_null() =>
+                    if ty_a.is_null() && ty_b.is_null() && (0..=5).contains(&op) =>
                 {
                     let matched = match op {
                         0 => std::ptr::eq(left, right) || a == b,
@@ -1496,7 +2054,7 @@ pub unsafe fn compare(op: i32, left: Value, right: Value) -> Value {
                     return bool_value(matched);
                 }
                 (Data::Bytes(a, ty_a, ..), Data::Bytes(b, ty_b, ..))
-                    if ty_a.is_null() && ty_b.is_null() =>
+                    if ty_a.is_null() && ty_b.is_null() && (0..=5).contains(&op) =>
                 {
                     let matched = match op {
                         0 => std::ptr::eq(left, right) || a == b,
@@ -1510,6 +2068,35 @@ pub unsafe fn compare(op: i32, left: Value, right: Value) -> Value {
                 }
                 _ => (),
             }
+        }
+        compare_slow(op, left, right)
+    }
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn compare_slow(op: i32, left: Value, right: Value) -> Value {
+    unsafe {
+        if has_error() {
+            return std::ptr::null_mut();
+        }
+        if op == 6 || op == 7 {
+            return bool_value((left == right) == (op == 6));
+        }
+        retain(left);
+        retain(right);
+        let result = compare_slow_inner(op, left, right);
+        release(left);
+        release(right);
+        result
+    }
+}
+
+unsafe fn compare_slow_inner(op: i32, left: Value, right: Value) -> Value {
+    unsafe {
+        if op == 8 || op == 9 {
+            return contains(right, left)
+                .map_or(std::ptr::null_mut(), |found| bool_value(found == (op == 8)));
         }
         let methods = ["__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"];
         let Some(method) = usize::try_from(op).ok().and_then(|op| methods.get(op)) else {
@@ -1739,6 +2326,7 @@ pub unsafe fn formatted_value(
             Data::BoundMethod { .. } => b"<bound native method>".to_vec(),
             Data::WeakHandle { .. } => b"<weak handle>".to_vec(),
             Data::BufferLease { .. } => b"<buffer lifetime guard>".to_vec(),
+            Data::SeqIter { .. } => b"<sequence iterator>".to_vec(),
             Data::DescriptorLease(_) => b"<descriptor lifetime guard>".to_vec(),
             Data::Coroutine(_) => b"<coroutine>".to_vec(),
             Data::Undefined => b"<undefined>".to_vec(),
@@ -2070,6 +2658,7 @@ unsafe fn sequence_buffer(count: isize, values: *const Value) -> Option<Vec<Valu
         let mut result = Vec::new();
         if result.try_reserve_exact(count as usize).is_err() {
             error("MemoryError", "sequence allocation failed");
+            flush_object_pool();
             return None;
         }
         for index in 0..count as usize {
@@ -2088,6 +2677,12 @@ pub unsafe extern "C" fn mule_sequence_list(count: isize, values: *const Value) 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_sequence_tuple(count: isize, values: *const Value) -> Value {
     unsafe {
+        if count == 2 && !values.is_null() {
+            let v0 = retain(*values);
+            let v1 = retain(*values.add(1));
+            let tracked = Data::may_cycle(v0) || Data::may_cycle(v1);
+            return alloc_tuple2(v0, v1, tracked);
+        }
         sequence_buffer(count, values)
             .map_or(std::ptr::null_mut(), |values| new_value(Data::Args(values, std::ptr::null_mut(), std::ptr::null_mut())))
     }
@@ -2107,6 +2702,14 @@ pub unsafe extern "C" fn mule_sequence_tuple_owned(
     values: *const Value,
 ) -> Value {
     unsafe {
+        if count == 2 && !values.is_null() {
+            let v0 = *values;
+            let v1 = *values.add(1);
+            if !v0.is_null() && !v1.is_null() {
+                let tracked = Data::may_cycle(v0) || Data::may_cycle(v1);
+                return alloc_tuple2(v0, v1, tracked);
+            }
+        }
         if count < 0 || (count != 0 && values.is_null()) {
             error("SystemError", "invalid sequence buffer");
             return std::ptr::null_mut();
@@ -2132,6 +2735,7 @@ pub unsafe extern "C" fn mule_sequence_tuple_owned(
                 release(value);
             }
             error("MemoryError", "sequence allocation failed");
+            flush_object_pool();
             return std::ptr::null_mut();
         }
         if count != 0 {
@@ -2318,6 +2922,7 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
                 Data::BoundMethod { .. } => "method",
                 Data::WeakHandle { .. } => "weak handle",
                 Data::BufferLease { .. } => "buffer lifetime guard",
+                Data::SeqIter { .. } => "iterator",
                 Data::DescriptorLease(_) => "descriptor lifetime guard",
                 Data::Coroutine(_) => "coroutine",
                 Data::Undefined => "undefined",
@@ -2350,10 +2955,36 @@ pub unsafe extern "C" fn mule_type_name(value: Value) -> Value {
         })
     }
 }
+#[inline]
+pub unsafe fn latin1_slice_value(bytes: &[u8]) -> Value {
+    unsafe {
+        match bytes.len() {
+            0 => empty_text(),
+            1 => latin1_character(bytes[0]),
+            _ => match Text::from_latin1_slice(bytes) {
+                Ok(slice) => new_untracked_value(Data::Text(
+                    slice,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )),
+                Err(_) => {
+                    error("MemoryError", "text storage allocation failed");
+                    std::ptr::null_mut()
+                }
+            },
+        }
+    }
+}
+#[inline]
 pub unsafe fn text_slice_range(text: &Text, start: usize, stop: usize) -> Value {
     unsafe {
         if start >= stop {
             return empty_text();
+        }
+        if let Some(bytes) = text.as_latin1() {
+            let end = stop.min(bytes.len());
+            let begin = start.min(end);
+            return latin1_slice_value(&bytes[begin..end]);
         }
         if stop - start == 1 {
             if let Some(code) = text.get(start) {
@@ -2363,7 +2994,11 @@ pub unsafe fn text_slice_range(text: &Text, start: usize, stop: usize) -> Value 
             }
         }
         match text.slice(start, stop) {
-            Ok(slice) => new_value(Data::Text(slice, std::ptr::null_mut(), std::ptr::null_mut())),
+            Ok(slice) => new_untracked_value(Data::Text(
+                slice,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )),
             Err(_) => {
                 error("MemoryError", "text storage allocation failed");
                 std::ptr::null_mut()
@@ -2793,6 +3428,39 @@ pub unsafe extern "C" fn mule_unary(op: i32, value: Value) -> Value {
 pub unsafe extern "C" fn mule_compare(op: i32, left: Value, right: Value) -> Value {
     unsafe { compare(op, left, right) }
 }
+#[cold]
+#[inline(never)]
+unsafe fn coerce_compare_bool(result: Value) -> Value {
+    unsafe {
+        let converted = truth(result).map_or(std::ptr::null_mut(), |flag| bool_value(flag));
+        release(result);
+        converted
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_compare_bool(op: i32, left: Value, right: Value) -> Value {
+    unsafe {
+        if !left.is_null() && !right.is_null() && !is_fixnum(left) && !is_fixnum(right) {
+            match (&(*left).data, &(*right).data) {
+                (Data::Args(a, ty_a, ..), Data::Args(b, ty_b, ..))
+                | (Data::List(a, ty_a, ..), Data::List(b, ty_b, ..))
+                    if ty_a.is_null() && ty_b.is_null() && (0..=5).contains(&op) =>
+                {
+                    return compare_sequence_storage(op, left, right, a.as_slice(), b.as_slice());
+                }
+                _ => (),
+            }
+        }
+        let result = compare(op, left, right);
+        if result.is_null()
+            || std::ptr::eq(result, bool_value(true))
+            || std::ptr::eq(result, bool_value(false))
+        {
+            return result;
+        }
+        coerce_compare_bool(result)
+    }
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_truth(value: Value) -> i32 {
     unsafe { truth(value).map_or(-1, i32::from) }
@@ -2810,6 +3478,25 @@ pub unsafe extern "C" fn mule_call(callable: Value, count: isize, args: *const V
             std::slice::from_raw_parts(args, count as usize)
         };
         call(callable, args)
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_call_owned(
+    callable: Value,
+    count: isize,
+    args: *const Value,
+) -> Value {
+    unsafe {
+        if count < 0 || (count != 0 && args.is_null()) {
+            error("SystemError", "invalid argument buffer");
+            return std::ptr::null_mut();
+        }
+        let args = if count == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(args, count as usize)
+        };
+        call_owned(callable, args)
     }
 }
 #[unsafe(no_mangle)]
@@ -2957,7 +3644,47 @@ pub unsafe extern "C" fn mule_arg(args: Value, index: i32) -> Value {
             error("IndexError", "native argument index out of range");
             return std::ptr::null_mut();
         }
-        if let Some(value) = argument(args, index as usize) {
+        let idx = index as usize;
+        if !args.is_null() && !is_fixnum(args) && idx < 64 {
+            let bit = 1u64 << idx;
+            match &(*args).data {
+                Data::ArgumentView {
+                    values,
+                    count,
+                    owned_mask,
+                    ..
+                } if idx < *count => {
+                    let value = *values.add(idx);
+                    let mask = owned_mask.get();
+                    if (mask & bit) != 0 {
+                        owned_mask.set(mask & !bit);
+                        return value;
+                    }
+                    return retain(value);
+                }
+                Data::ReceiverArgs {
+                    receiver,
+                    values,
+                    count,
+                    owned_mask,
+                    ..
+                } if idx <= *count => {
+                    let value = if idx == 0 {
+                        *receiver
+                    } else {
+                        *values.add(idx - 1)
+                    };
+                    let mask = owned_mask.get();
+                    if (mask & bit) != 0 {
+                        owned_mask.set(mask & !bit);
+                        return value;
+                    }
+                    return retain(value);
+                }
+                _ => (),
+            }
+        }
+        if let Some(value) = argument(args, idx) {
             retain(value)
         } else {
             error("IndexError", "native argument index out of range");

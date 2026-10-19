@@ -7,7 +7,18 @@ through visitors.
 
 from dataclasses import dataclass
 
-from .ctype import FLOAT, PYTHON_INTEGER, REAL, IntegerType, ValueType
+from .ctype import (
+    BYTES_TYPE,
+    FLOAT,
+    LIST_TYPE,
+    PYTHON_INTEGER,
+    REAL,
+    TEXT_TYPE,
+    UNKNOWN,
+    IntegerType,
+    ListType,
+    ValueType,
+)
 
 
 class AnnotationLedger:
@@ -54,10 +65,25 @@ class Contract:
     def refine(self, actual):
         return actual if actual.fits(self.fact) else self.fact
 
+    def general_parameter_type(self) -> ValueType:
+        return UNKNOWN
+
     def integer_conflict(self, actual):
         return True
 
     def boolean_conflict(self, actual):
+        return True
+
+    def text_conflict(self, actual):
+        return True
+
+    def bytes_conflict(self, actual):
+        return True
+
+    def list_conflict(self, actual):
+        return True
+
+    def tuple_conflict(self, actual):
         return True
 
 
@@ -141,7 +167,87 @@ class PythonFloatContract(FloatContract):
         return self.name
 
 
+@dataclass(frozen=True, slots=True)
+class TextContract(Contract):
+    name: str = "str"
+
+    @property
+    def display_name(self):
+        return self.name
+
+    @property
+    def fact(self):
+        return TEXT_TYPE
+
+    def accept(self, visitor):
+        return visitor.visit_PythonIntegerContract(self)
+
+    def text_conflict(self, actual):
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class BytesContract(Contract):
+    name: str = "bytes"
+
+    @property
+    def display_name(self):
+        return self.name
+
+    @property
+    def fact(self):
+        return BYTES_TYPE
+
+    def accept(self, visitor):
+        return visitor.visit_PythonIntegerContract(self)
+
+    def bytes_conflict(self, actual):
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class ListContract(Contract):
+    name: str = "list"
+    element: Contract | None = None
+
+    @property
+    def display_name(self):
+        if self.element is None:
+            return self.name
+        return f"{self.name}[{self.element.display_name}]"
+
+    @property
+    def fact(self):
+        if self.element is None:
+            return LIST_TYPE
+        return ListType(self.element.fact)
+
+    def general_parameter_type(self) -> ValueType:
+        if self.element is None:
+            return UNKNOWN
+        return self.fact
+
+    def accept(self, visitor):
+        return visitor.visit_PythonIntegerContract(self)
+
+    def list_conflict(self, actual):
+        return (
+            self.element is not None
+            and actual.element is not UNKNOWN
+            and self.element.contradicts(actual.element)
+        )
+
+    def refine(self, actual):
+        return actual.annotated_list(self.fact)
+
+
 BUILTINS = {"int": PythonIntegerContract(), "float": PythonFloatContract("float", 64)}
+
+DECLARATIONS = {
+    **BUILTINS,
+    "str": TextContract(),
+    "bytes": BytesContract(),
+}
 
 
 EXPORTS = {

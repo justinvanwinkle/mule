@@ -231,6 +231,18 @@ pub unsafe extern "C" fn mule_list_shape_matches(value: Value, arity: usize) -> 
     }
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_exact_list(value: Value) -> i32 {
+    unsafe {
+        if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::List(_, class, ..) = &(*value).data {
+                return i32::from(class.is_null());
+            }
+        }
+        0
+    }
+}
+
 /// Compiler-proved physical access: a live builtin tuple, an in-range index,
 /// and initialized non-NULL elements. The returned element is owned.
 #[unsafe(no_mangle)]
@@ -318,6 +330,103 @@ pub unsafe extern "C" fn mule_storage_write(
         null_mut()
     }
 }
+#[cold]
+#[inline(never)]
+unsafe fn list_index_error() -> Value {
+    object::error("IndexError", "list index out of range");
+    null_mut()
+}
+
+/// Direct `list[index]` when `sequence` is a proven exact builtin `list` and
+/// `index` is a proven tagged fixnum.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_list_getitem(sequence: Value, index: Value) -> Value {
+    unsafe {
+        if !object::is_fixnum(index) || sequence.is_null() || object::is_fixnum(sequence) {
+            return list_index_error();
+        }
+        let Data::List(values, ty, ..) = &(*sequence).data else {
+            return list_index_error();
+        };
+        if !ty.is_null() {
+            return list_index_error();
+        }
+        let raw = object::fixnum(index);
+        let len = values.len() as i64;
+        let pos = if raw < 0 { raw + len } else { raw };
+        if (pos as u64) < (len as u64) {
+            let elem = *values.get_unchecked(pos as usize);
+            if !object::is_fixnum(elem) {
+                object::retain(elem);
+            }
+            return elem;
+        }
+        list_index_error()
+    }
+}
+
+/// Borrowed `list[index]` when `sequence` is a proven exact builtin `list`
+/// kept alive by the caller across the consumer, and `index` is a proven
+/// tagged fixnum.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_list_getitem_borrow(sequence: Value, index: Value) -> Value {
+    unsafe {
+        if !object::is_fixnum(index) || sequence.is_null() || object::is_fixnum(sequence) {
+            return list_index_error();
+        }
+        let Data::List(values, ty, ..) = &(*sequence).data else {
+            return list_index_error();
+        };
+        if !ty.is_null() {
+            return list_index_error();
+        }
+        let raw = object::fixnum(index);
+        let len = values.len() as i64;
+        let pos = if raw < 0 { raw + len } else { raw };
+        if (pos as u64) < (len as u64) {
+            return *values.get_unchecked(pos as usize);
+        }
+        list_index_error()
+    }
+}
+
+#[inline(never)]
+unsafe fn fast_getitem_non_list(sequence: Value, raw: i64) -> Value {
+    unsafe {
+        match &(*sequence).data {
+            Data::Args(values, ty, ..) if ty.is_null() => {
+                let len = values.len() as i64;
+                let pos = if raw < 0 { raw + len } else { raw };
+                if (pos as u64) < (len as u64) {
+                    let elem = *values.get_unchecked(pos as usize);
+                    if !object::is_fixnum(elem) {
+                        object::retain(elem);
+                    }
+                    return elem;
+                }
+                null_mut()
+            }
+            Data::Bytes(values, ty, ..) if ty.is_null() => {
+                let len = values.len() as i64;
+                let pos = if raw < 0 { raw + len } else { raw };
+                if (pos as u64) < (len as u64) {
+                    return object::small(i64::from(*values.get_unchecked(pos as usize)));
+                }
+                null_mut()
+            }
+            Data::Text(text, ty, ..) if ty.is_null() => {
+                let len = text.len() as i64;
+                let pos = if raw < 0 { raw + len } else { raw };
+                if (pos as u64) < (len as u64) {
+                    return object::text_character_at(text, pos as usize);
+                }
+                null_mut()
+            }
+            _ => null_mut(),
+        }
+    }
+}
+
 /// Fast path for `sequence[index]` when `sequence` is an exact builtin
 /// `list`, `tuple`, `bytes`, or `str` (`ty.is_null()`) and `index` is an
 /// in-bounds fixnum (non-negative or negative). Returns NULL without setting
@@ -329,33 +438,21 @@ pub unsafe extern "C" fn mule_fast_getitem(sequence: Value, index: Value) -> Val
             return null_mut();
         }
         let raw = object::fixnum(index);
-        match &(*sequence).data {
-            Data::List(values, ty, ..) | Data::Args(values, ty, ..) if ty.is_null() => {
+        if let Data::List(values, ty, ..) = &(*sequence).data {
+            if ty.is_null() {
                 let len = values.len() as i64;
                 let pos = if raw < 0 { raw + len } else { raw };
-                if pos >= 0 && pos < len {
-                    return object::retain(*values.get_unchecked(pos as usize));
+                if (pos as u64) < (len as u64) {
+                    let elem = *values.get_unchecked(pos as usize);
+                    if !object::is_fixnum(elem) {
+                        object::retain(elem);
+                    }
+                    return elem;
                 }
-                null_mut()
             }
-            Data::Bytes(values, ty, ..) if ty.is_null() => {
-                let len = values.len() as i64;
-                let pos = if raw < 0 { raw + len } else { raw };
-                if pos >= 0 && pos < len {
-                    return object::small(i64::from(*values.get_unchecked(pos as usize)));
-                }
-                null_mut()
-            }
-            Data::Text(text, ty, ..) if ty.is_null() => {
-                let len = text.len() as i64;
-                let pos = if raw < 0 { raw + len } else { raw };
-                if pos >= 0 && pos < len {
-                    return object::text_character_at(text, pos as usize);
-                }
-                null_mut()
-            }
-            _ => null_mut(),
+            return null_mut();
         }
+        fast_getitem_non_list(sequence, raw)
     }
 }
 
@@ -499,6 +596,18 @@ pub unsafe extern "C" fn mule_text_slice_eq(
         result
     }
 }
+#[inline(never)]
+unsafe fn setitem_retain_and_release(item: Value, old: Value) -> i32 {
+    unsafe {
+        if !object::is_fixnum(item) {
+            object::retain(item);
+        }
+        if !object::is_fixnum(old) {
+            object::release(old);
+        }
+        1
+    }
+}
 /// Fast path for `sequence[index] = item` when `sequence` is an exact builtin
 /// `list` (`ty.is_null()`) and `index` is an in-bounds fixnum. Returns 1 when
 /// handled (retaining `item` and releasing the old element), or 0 when the
@@ -517,9 +626,38 @@ pub unsafe extern "C" fn mule_fast_setitem(sequence: Value, index: Value, item: 
                 if pos >= 0 && pos < len {
                     let slot = values.get_unchecked_mut(pos as usize);
                     let old = *slot;
-                    *slot = object::retain(item);
-                    object::track_if_needed(sequence, item);
-                    object::release(old);
+                    *slot = item;
+                    if object::is_fixnum(item) && object::is_fixnum(old) {
+                        return 1;
+                    }
+                    return setitem_retain_and_release(item, old);
+                }
+            }
+        }
+        0
+    }
+}
+/// Fast path for `sequence[index] = item` that transfers ownership of `item`
+/// when `sequence` is an exact builtin `list` (`ty.is_null()`) and `index` is
+/// an in-bounds fixnum. When returning 0, `item` remains owned by the caller.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_fast_setitem_move(sequence: Value, index: Value, item: Value) -> i32 {
+    unsafe {
+        if !object::is_fixnum(index) || sequence.is_null() || object::is_fixnum(sequence) {
+            return 0;
+        }
+        let raw = object::fixnum(index);
+        if let Data::List(values, ty, ..) = &mut (*sequence).data {
+            if ty.is_null() {
+                let len = values.len() as i64;
+                let pos = if raw < 0 { raw + len } else { raw };
+                if pos >= 0 && pos < len {
+                    let slot = values.get_unchecked_mut(pos as usize);
+                    let old = *slot;
+                    *slot = item;
+                    if !object::is_fixnum(old) {
+                        object::release(old);
+                    }
                     return 1;
                 }
             }
@@ -541,6 +679,27 @@ pub unsafe extern "C" fn mule_storage_append(value: Value, element: Value) -> Va
                 return object::none_value();
             }
         }
+        object::error("TypeError", "mutable list storage is required");
+        null_mut()
+    }
+}
+/// Append `element` to a mutable list, consuming the caller's owned `element` reference.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_storage_append_move(value: Value, element: Value) -> Value {
+    unsafe {
+        if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::List(values, ..) = &mut (*value).data {
+                if values.try_reserve(1).is_err() {
+                    object::release(element);
+                    object::error("MemoryError", "list allocation failed");
+                    return null_mut();
+                }
+                values.push(element);
+                object::track_if_needed(value, element);
+                return object::none_value();
+            }
+        }
+        object::release(element);
         object::error("TypeError", "mutable list storage is required");
         null_mut()
     }
@@ -638,6 +797,515 @@ pub unsafe extern "C" fn mule_text_find(
         result
     }
 }
+
+#[inline]
+unsafe fn exact_text_slice(
+    value: Value,
+    text: &crate::text::Text,
+    start: usize,
+    stop: usize,
+) -> Value {
+    unsafe {
+        if start == 0 && stop >= text.len() {
+            object::retain(value)
+        } else {
+            object::text_slice_range(text, start, stop)
+        }
+    }
+}
+
+/// Fast path for exact `str.partition(sep)` / `str.rpartition(sep)` unpacking directly
+/// into `out[0..3]`. Returns 1 on success and 0 on exception.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_partition_into(
+    receiver: Value,
+    sep: Value,
+    reverse: i32,
+    out: *mut Value,
+) -> i32 {
+    unsafe {
+        if !receiver.is_null() && !object::is_fixnum(receiver) {
+            if let Data::Text(text, ty, ..) = &(*receiver).data
+                && ty.is_null()
+                && !sep.is_null()
+                && !object::is_fixnum(sep)
+            {
+                if let Data::Text(sep_text, sep_ty, ..) = &(*sep).data
+                    && sep_ty.is_null()
+                {
+                    if let (Some(haystack), Some(needle)) = (text.as_latin1(), sep_text.as_latin1()) {
+                        let sep_len = needle.len();
+                        if sep_len == 0 {
+                            object::error("ValueError", "empty separator");
+                            return 0;
+                        }
+                        let len = haystack.len();
+                        let found = if sep_len > len {
+                            None
+                        } else if sep_len == 1 {
+                            let b0 = needle[0];
+                            if reverse != 0 {
+                                haystack.iter().rposition(|&b| b == b0)
+                            } else {
+                                haystack.iter().position(|&b| b == b0)
+                            }
+                        } else if reverse != 0 {
+                            text.rfind(sep_text, 0, len)
+                        } else {
+                            text.find(sep_text, 0, len)
+                        };
+                        if let Some(pos) = found {
+                            let before = if pos == len {
+                                object::retain(receiver)
+                            } else {
+                                object::latin1_slice_value(&haystack[..pos])
+                            };
+                            if before.is_null() {
+                                return 0;
+                            }
+                            let after_start = pos + sep_len;
+                            let after = if after_start == 0 {
+                                object::retain(receiver)
+                            } else {
+                                object::latin1_slice_value(&haystack[after_start..])
+                            };
+                            if after.is_null() {
+                                object::release(before);
+                                return 0;
+                            }
+                            *out.add(0) = before;
+                            *out.add(1) = object::retain(sep);
+                            *out.add(2) = after;
+                            return 1;
+                        }
+                        let empty = object::empty_text();
+                        if reverse != 0 {
+                            *out.add(0) = empty;
+                            *out.add(1) = empty;
+                            *out.add(2) = object::retain(receiver);
+                        } else {
+                            *out.add(0) = object::retain(receiver);
+                            *out.add(1) = empty;
+                            *out.add(2) = empty;
+                        }
+                        return 1;
+                    }
+                    if sep_text.is_empty() {
+                        object::error("ValueError", "empty separator");
+                        return 0;
+                    }
+                    let len = text.len();
+                    let found = if reverse != 0 {
+                        text.rfind(sep_text, 0, len)
+                    } else {
+                        text.find(sep_text, 0, len)
+                    };
+                    if let Some(pos) = found {
+                        let before = exact_text_slice(receiver, text, 0, pos);
+                        if before.is_null() {
+                            return 0;
+                        }
+                        let after = exact_text_slice(receiver, text, pos + sep_text.len(), len);
+                        if after.is_null() {
+                            object::release(before);
+                            return 0;
+                        }
+                        *out.add(0) = before;
+                        *out.add(1) = object::retain(sep);
+                        *out.add(2) = after;
+                        return 1;
+                    }
+                    let empty = object::empty_text();
+                    if reverse != 0 {
+                        *out.add(0) = empty;
+                        *out.add(1) = empty;
+                        *out.add(2) = object::retain(receiver);
+                    } else {
+                        *out.add(0) = object::retain(receiver);
+                        *out.add(1) = empty;
+                        *out.add(2) = empty;
+                    }
+                    return 1;
+                }
+            }
+        }
+        let tuple = mule_text_partition(receiver, sep, reverse);
+        if tuple.is_null() {
+            return 0;
+        }
+        if !object::is_fixnum(tuple)
+            && let Data::Args(values, ty, ..) = &(*tuple).data
+            && ty.is_null()
+            && values.len() == 3
+        {
+            *out.add(0) = object::retain(values[0]);
+            *out.add(1) = object::retain(values[1]);
+            *out.add(2) = object::retain(values[2]);
+            object::release(tuple);
+            return 1;
+        }
+        let unpack_fn = object::lookup(mule_protocol_globals(), "unpack");
+        let unpacked = if unpack_fn.is_null() {
+            null_mut()
+        } else {
+            object::call(unpack_fn, &[tuple, object::small(3)])
+        };
+        object::release(tuple);
+        if unpacked.is_null() {
+            return 0;
+        }
+        for idx in 0..3usize {
+            let item = mule_storage_read(unpacked, object::small(idx as i64));
+            if item.is_null() {
+                for prev in 0..idx {
+                    object::release(*out.add(prev));
+                }
+                object::release(unpacked);
+                return 0;
+            }
+            *out.add(idx) = item;
+        }
+        object::release(unpacked);
+        1
+    }
+}
+
+/// Fast path for `str == str` / `str != str` when both operands are proven `str`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_eq(lhs: Value, rhs: Value) -> i32 {
+    if lhs == rhs {
+        return 1;
+    }
+    unsafe {
+        let (Data::Text(left, ..), Data::Text(right, ..)) = (&(*lhs).data, &(*rhs).data) else {
+            return 0;
+        };
+        i32::from(left == right)
+    }
+}
+
+/// Fast path for `str.partition(sep)` / `str.rpartition(sep)` returning a 3-tuple.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_partition(
+    receiver: Value,
+    sep: Value,
+    reverse: i32,
+) -> Value {
+    unsafe {
+        if !receiver.is_null()
+            && !object::is_fixnum(receiver)
+            && matches!(&(*receiver).data, Data::Text(_, ty, ..) if ty.is_null())
+            && !sep.is_null()
+            && !object::is_fixnum(sep)
+            && matches!(&(*sep).data, Data::Text(_, sep_ty, ..) if sep_ty.is_null())
+        {
+            let mut slots = [null_mut(); 3];
+            if mule_text_partition_into(receiver, sep, reverse, slots.as_mut_ptr()) == 0 {
+                return null_mut();
+            }
+            return object::mule_sequence_tuple_owned(3, slots.as_ptr());
+        }
+        let mut bound = null_mut();
+        let attr = if reverse != 0 {
+            c"rpartition".as_ptr()
+        } else {
+            c"partition".as_ptr()
+        };
+        let method = crate::classes::mule_resolve_method(receiver, attr, null_mut(), &mut bound);
+        if method.is_null() {
+            return null_mut();
+        }
+        let args = [sep];
+        let result = crate::classes::mule_call_resolved(method, bound, 1, args.as_ptr());
+        object::release(bound);
+        object::release(method);
+        result
+    }
+}
+
+/// Fast path for `str.split(sep, maxsplit)` when `receiver` and `sep` are exact `str`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_split(
+    receiver: Value,
+    sep: Value,
+    maxsplit: Value,
+) -> Value {
+    unsafe {
+        if !receiver.is_null() && !object::is_fixnum(receiver) {
+            if let Data::Text(text, ty, ..) = &(*receiver).data
+                && ty.is_null()
+                && !sep.is_null()
+                && !object::is_fixnum(sep)
+            {
+                if let Data::Text(sep_text, sep_ty, ..) = &(*sep).data
+                    && sep_ty.is_null()
+                {
+                    let max_val = if maxsplit.is_null() {
+                        Some(-1i64)
+                    } else if object::is_fixnum(maxsplit) {
+                        Some(object::fixnum(maxsplit))
+                    } else {
+                        match &(*maxsplit).data {
+                            Data::Bool(flag) => Some(i64::from(*flag)),
+                            Data::BigInt(number, int_ty, ..) if int_ty.is_null() => {
+                                Some(number.to_i64().unwrap_or_else(|| {
+                                    if number.sign() < 0 { -1 } else { i64::MAX }
+                                }))
+                            }
+                            _ => None,
+                        }
+                    };
+                    if let Some(mut remaining) = max_val {
+                        if let (Some(haystack), Some(needle)) = (text.as_latin1(), sep_text.as_latin1()) {
+                            let sep_len = needle.len();
+                            if sep_len == 0 {
+                                object::error("ValueError", "empty separator");
+                                return null_mut();
+                            }
+                            let len = haystack.len();
+                            let mut parts = Vec::with_capacity(8);
+                            let mut start = 0usize;
+                            if sep_len == 1 {
+                                let b0 = needle[0];
+                                while remaining != 0 {
+                                    let Some(rel) = haystack[start..].iter().position(|&b| b == b0) else {
+                                        break;
+                                    };
+                                    let pos = start + rel;
+                                    let piece = if start == 0 && pos == len {
+                                        object::retain(receiver)
+                                    } else {
+                                        object::latin1_slice_value(&haystack[start..pos])
+                                    };
+                                    if piece.is_null() {
+                                        for item in parts {
+                                            object::release(item);
+                                        }
+                                        return null_mut();
+                                    }
+                                    parts.push(piece);
+                                    start = pos + 1;
+                                    if remaining > 0 {
+                                        remaining -= 1;
+                                    }
+                                }
+                            } else {
+                                while remaining != 0 {
+                                    let Some(pos) = text.find(sep_text, start, len) else {
+                                        break;
+                                    };
+                                    let piece = if start == 0 && pos == len {
+                                        object::retain(receiver)
+                                    } else {
+                                        object::latin1_slice_value(&haystack[start..pos])
+                                    };
+                                    if piece.is_null() {
+                                        for item in parts {
+                                            object::release(item);
+                                        }
+                                        return null_mut();
+                                    }
+                                    parts.push(piece);
+                                    start = pos + sep_len;
+                                    if remaining > 0 {
+                                        remaining -= 1;
+                                    }
+                                }
+                            }
+                            let tail = if start == 0 {
+                                object::retain(receiver)
+                            } else {
+                                object::latin1_slice_value(&haystack[start..])
+                            };
+                            if tail.is_null() {
+                                for item in parts {
+                                    object::release(item);
+                                }
+                                return null_mut();
+                            }
+                            parts.push(tail);
+                            return object::new_untracked_value(Data::List(parts, null_mut(), null_mut()));
+                        }
+                        if sep_text.is_empty() {
+                            object::error("ValueError", "empty separator");
+                            return null_mut();
+                        }
+                        let len = text.len();
+                        let sep_len = sep_text.len();
+                        let mut parts = Vec::with_capacity(8);
+                        let mut start = 0usize;
+                        while remaining != 0 {
+                            let Some(pos) = text.find(sep_text, start, len) else {
+                                 break;
+                            };
+                            let piece = exact_text_slice(receiver, text, start, pos);
+                            if piece.is_null() {
+                                for item in parts {
+                                    object::release(item);
+                                }
+                                return null_mut();
+                            }
+                            parts.push(piece);
+                            start = pos + sep_len;
+                            if remaining > 0 {
+                                remaining -= 1;
+                            }
+                        }
+                        let tail = exact_text_slice(receiver, text, start, len);
+                        if tail.is_null() {
+                            for item in parts {
+                                object::release(item);
+                            }
+                            return null_mut();
+                        }
+                        parts.push(tail);
+                        return object::new_untracked_value(Data::List(parts, null_mut(), null_mut()));
+                    }
+                }
+            }
+        }
+        let mut bound = null_mut();
+        let method =
+            crate::classes::mule_resolve_method(receiver, c"split".as_ptr(), null_mut(), &mut bound);
+        if method.is_null() {
+            return null_mut();
+        }
+        let result = if maxsplit.is_null() {
+            let args = [sep];
+            crate::classes::mule_call_resolved(method, bound, 1, args.as_ptr())
+        } else {
+            let args = [sep, maxsplit];
+            crate::classes::mule_call_resolved(method, bound, 2, args.as_ptr())
+        };
+        object::release(bound);
+        object::release(method);
+        result
+    }
+}
+
+/// Fast path for `str.startswith` (`is_end == 0`) and `str.endswith` (`is_end != 0`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_affix(
+    receiver: Value,
+    affix: Value,
+    start: Value,
+    end: Value,
+    is_end: i32,
+) -> Value {
+    unsafe {
+        if !receiver.is_null() && !object::is_fixnum(receiver) {
+            if let Data::Text(text, ty, ..) = &(*receiver).data
+                && ty.is_null()
+                && !affix.is_null()
+                && !object::is_fixnum(affix)
+            {
+                let len = text.len() as i64;
+                let s = if start.is_null() {
+                    Some(0usize)
+                } else if object::is_fixnum(start) {
+                    let raw = object::fixnum(start);
+                    let adj = if raw < 0 {
+                        (raw + len).max(0)
+                    } else if raw > len {
+                        len + 1
+                    } else {
+                        raw
+                    };
+                    Some(adj as usize)
+                } else if matches!(&(*start).data, Data::None) {
+                    Some(0usize)
+                } else {
+                    None
+                };
+                let e = if end.is_null() {
+                    Some(text.len())
+                } else if object::is_fixnum(end) {
+                    let raw = object::fixnum(end);
+                    let adj = if raw > len {
+                        len
+                    } else if raw < 0 {
+                        (raw + len).max(0)
+                    } else {
+                        raw
+                    };
+                    Some(adj as usize)
+                } else if matches!(&(*end).data, Data::None) {
+                    Some(text.len())
+                } else {
+                    None
+                };
+                if let (Some(s), Some(e)) = (s, e) {
+                    match &(*affix).data {
+                        Data::Text(sub_text, ..) => {
+                            let size = sub_text.len();
+                            let matched = if e < s || e - s < size {
+                                false
+                            } else if is_end != 0 {
+                                text.slice_eq(e - size, e, sub_text)
+                            } else {
+                                text.slice_eq(s, s + size, sub_text)
+                            };
+                            return object::bool_value(matched);
+                        }
+                        Data::Args(items, ..) => {
+                            let mut all_text = true;
+                            for &item in items {
+                                if item.is_null() || object::is_fixnum(item) {
+                                    all_text = false;
+                                    break;
+                                }
+                                let Data::Text(sub_text, ..) = &(*item).data else {
+                                    all_text = false;
+                                    break;
+                                };
+                                let size = sub_text.len();
+                                let matched = if e < s || e - s < size {
+                                    false
+                                } else if is_end != 0 {
+                                    text.slice_eq(e - size, e, sub_text)
+                                } else {
+                                    text.slice_eq(s, s + size, sub_text)
+                                };
+                                if matched {
+                                    return object::bool_value(true);
+                                }
+                            }
+                            if all_text {
+                                return object::bool_value(false);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let mut bound = null_mut();
+        let attr = if is_end != 0 {
+            c"endswith".as_ptr()
+        } else {
+            c"startswith".as_ptr()
+        };
+        let method = crate::classes::mule_resolve_method(receiver, attr, null_mut(), &mut bound);
+        if method.is_null() {
+            return null_mut();
+        }
+        let s_arg = if start.is_null() {
+            object::none_value()
+        } else {
+            start
+        };
+        let e_arg = if end.is_null() {
+            object::none_value()
+        } else {
+            end
+        };
+        let args = [affix, s_arg, e_arg];
+        let result = crate::classes::mule_call_resolved(method, bound, 3, args.as_ptr());
+        object::release(bound);
+        object::release(method);
+        result
+    }
+}
 /// Insert an element before a position no greater than the list's length.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_storage_insert(
@@ -681,12 +1349,41 @@ pub unsafe extern "C" fn mule_storage_delete(value: Value, start: Value, stop: V
                     object::error("IndexError", "storage index out of range");
                     return null_mut();
                 }
+                if start == stop {
+                    return object::none_value();
+                }
+                if stop - start == 1 {
+                    let removed = if stop == values.len() {
+                        values.pop().unwrap()
+                    } else {
+                        values.remove(start)
+                    };
+                    object::release(removed);
+                    return object::none_value();
+                }
                 // Release after removal: a destructor may observe the list.
                 let removed: Vec<Value> = values.drain(start..stop).collect();
                 for element in removed {
                     object::release(element);
                 }
                 return object::none_value();
+            }
+        }
+        object::error("TypeError", "mutable list storage is required");
+        null_mut()
+    }
+}
+/// Pop and return the last element of a mutable list, transferring ownership.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_storage_pop(value: Value) -> Value {
+    unsafe {
+        if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::List(values, ..) = &mut (*value).data {
+                if let Some(element) = values.pop() {
+                    return element;
+                }
+                object::error("IndexError", "pop from empty list");
+                return null_mut();
             }
         }
         object::error("TypeError", "mutable list storage is required");
@@ -1012,6 +1709,25 @@ pub unsafe extern "C" fn mule_range_storage(iterator: Value, state: *mut i64) ->
     }
 }
 
+#[cold]
+#[inline(never)]
+unsafe fn resolve_storage_iterator() -> Value {
+    unsafe {
+        let resolved = object::lookup(mule_protocol_globals(), "StorageIterator");
+        STORAGE_ITERATOR.with(|slot| slot.set(resolved));
+        resolved
+    }
+}
+
+#[inline(always)]
+unsafe fn cached_storage_iterator() -> Value {
+    let cached = STORAGE_ITERATOR.with(Cell::get);
+    if !cached.is_null() {
+        return cached;
+    }
+    unsafe { resolve_storage_iterator() }
+}
+
 /// Fast path for `for`-loop advancement on a `StorageIterator` (`list`/`tuple`).
 /// Returns `1` and writes the retained element to `*out` when `iterator` is an
 /// unexhausted `StorageIterator` with an in-bounds fixnum index; returns `0`
@@ -1023,53 +1739,280 @@ pub unsafe extern "C" fn mule_fast_next_item(iterator: Value, out: *mut Value) -
         if iterator.is_null() || object::is_fixnum(iterator) || out.is_null() {
             return -1;
         }
-        let Data::Instance { ty, fields, .. } = &mut (*iterator).data else {
-            return -1;
+        match &mut (*iterator).data {
+            Data::SeqIter { sequence, index } => {
+                let seq = *sequence;
+                if seq.is_null() || object::is_fixnum(seq) {
+                    return -1;
+                }
+                let values = match &(*seq).data {
+                    Data::List(values, ..) | Data::Args(values, ..) => values,
+                    _ => return -1,
+                };
+                let pos = *index;
+                if pos >= values.len() {
+                    return 0;
+                }
+                *index = pos + 1;
+                *out = object::retain(*values.get_unchecked(pos));
+                1
+            }
+            Data::Instance { ty, fields, .. } => {
+                let storage_iterator = cached_storage_iterator();
+                if storage_iterator.is_null() || *ty != storage_iterator || fields.len() < 3 {
+                    return -1;
+                }
+                let sequence = fields[0];
+                let index = fields[1];
+                let exhausted = fields[2];
+                if exhausted != object::bool_value(false)
+                    || !object::is_fixnum(index)
+                    || sequence.is_null()
+                    || object::is_fixnum(sequence)
+                {
+                    return -1;
+                }
+                let pos = object::fixnum(index);
+                if pos < 0 {
+                    return -1;
+                }
+                let values = match &(*sequence).data {
+                    Data::List(values, ..) | Data::Args(values, ..) => values,
+                    _ => return -1,
+                };
+                let len = values.len() as i64;
+                if pos >= len {
+                    let old = fields[2];
+                    fields[2] = object::bool_value(true);
+                    object::release(old);
+                    return 0;
+                }
+                let Some(next_pos) = pos.checked_add(1) else {
+                    return -1;
+                };
+                if !(numeric::MIN..=numeric::MAX).contains(&next_pos) {
+                    return -1;
+                }
+                fields[1] = object::small(next_pos);
+                *out = object::retain(*values.get_unchecked(pos as usize));
+                1
+            }
+            _ => -1,
+        }
+    }
+}
+
+/// Fast path for `iterate(value)` on exact builtin `list` and `tuple` objects.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_fast_iterate(value: Value) -> Value {
+    unsafe {
+        if value.is_null() || object::is_fixnum(value) {
+            return null_mut();
+        }
+        match &(*value).data {
+            Data::SeqIter { .. } => return object::retain(value),
+            Data::List(_, ty, ..) | Data::Args(_, ty, ..) if ty.is_null() => (),
+            _ => return null_mut(),
+        }
+        object::new_untracked_value(Data::SeqIter {
+            sequence: object::retain(value),
+            index: 0,
+        })
+    }
+}
+
+/// Fast path for `iterate(value)` that consumes the caller's owned `value` reference
+/// when `value` is an exact builtin `list`, `tuple`, or `SeqIter`. Leaves `value`
+/// unconsumed when returning NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_fast_iterate_move(value: Value) -> Value {
+    unsafe {
+        if value.is_null() || object::is_fixnum(value) {
+            return null_mut();
+        }
+        match &(*value).data {
+            Data::SeqIter { .. } => return value,
+            Data::List(_, ty, ..) | Data::Args(_, ty, ..) if ty.is_null() => (),
+            _ => return null_mut(),
+        }
+        object::new_untracked_value(Data::SeqIter {
+            sequence: value,
+            index: 0,
+        })
+    }
+}
+
+/// Fast path for unpacking an exact builtin `tuple` or `list` of length `arity`
+/// directly into `out[0..arity]`. Consumes `value` and returns `1` on a shape
+/// match; leaves `value` unconsumed and returns `0` when the general `unpack`
+/// protocol is required.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_fast_unpack(value: Value, arity: isize, out: *mut Value) -> i32 {
+    unsafe {
+        if value.is_null() || object::is_fixnum(value) || arity < 0 || out.is_null() {
+            return 0;
+        }
+        let count = arity as usize;
+        let matched = match &(*value).data {
+            Data::Args(values, ty, ..) | Data::List(values, ty, ..) => {
+                ty.is_null() && values.len() == count
+            }
+            _ => false,
         };
-        let mut storage_iterator = STORAGE_ITERATOR.with(Cell::get);
-        if storage_iterator.is_null() {
-            storage_iterator = object::lookup(mule_protocol_globals(), "StorageIterator");
-            STORAGE_ITERATOR.with(|slot| slot.set(storage_iterator));
+        if !matched {
+            return 0;
         }
-        if storage_iterator.is_null() || *ty != storage_iterator {
-            return -1;
+        if (*value).references.load(std::sync::atomic::Ordering::Relaxed) == 1 {
+            let (Data::Args(values, ..) | Data::List(values, ..)) = &mut (*value).data else {
+                unreachable!();
+            };
+            std::ptr::copy_nonoverlapping(values.as_ptr(), out, count);
+            values.set_len(0);
+            object::release(value);
+            return 1;
         }
-        if fields.len() < 3 {
-            return -1;
+        let (Data::Args(values, ..) | Data::List(values, ..)) = &(*value).data else {
+            unreachable!();
+        };
+        for i in 0..count {
+            let elem = *values.get_unchecked(i);
+            if !object::is_fixnum(elem) {
+                object::retain(elem);
+            }
+            *out.add(i) = elem;
         }
-        let sequence = fields[0];
-        let index = fields[1];
-        let exhausted = fields[2];
-        if exhausted != object::bool_value(false)
-            || !object::is_fixnum(index)
-            || sequence.is_null()
-            || object::is_fixnum(sequence)
+        object::release(value);
+        1
+    }
+}
+
+/// Fast path for `for a, b, ... in seq:` on a `SeqIter` or `StorageIterator`
+/// whose next item is an exact `tuple` or `list` of length `arity`: unpacks the
+/// item's elements directly into `unpack_out[0..arity]` without retaining/releasing
+/// the item container, stores `null` into `*out` as a sentinel, and returns `1`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_fast_next_unpack(
+    iterator: Value,
+    arity: isize,
+    unpack_out: *mut Value,
+    out: *mut Value,
+) -> i32 {
+    unsafe {
+        if iterator.is_null()
+            || object::is_fixnum(iterator)
+            || arity < 0
+            || unpack_out.is_null()
+            || out.is_null()
         {
             return -1;
         }
-        let pos = object::fixnum(index);
-        if pos < 0 {
-            return -1;
+        let count = arity as usize;
+        match &mut (*iterator).data {
+            Data::SeqIter { sequence, index } => {
+                let seq = *sequence;
+                if seq.is_null() || object::is_fixnum(seq) {
+                    return -1;
+                }
+                let values = match &(*seq).data {
+                    Data::List(values, ..) | Data::Args(values, ..) => values,
+                    _ => return -1,
+                };
+                let pos = *index;
+                if pos >= values.len() {
+                    return 0;
+                }
+                *index = pos + 1;
+                let item = *values.get_unchecked(pos);
+                if !item.is_null() && !object::is_fixnum(item) {
+                    match &(*item).data {
+                        Data::Args(tuple_vals, item_ty, ..)
+                        | Data::List(tuple_vals, item_ty, ..)
+                            if item_ty.is_null() && tuple_vals.len() == count =>
+                        {
+                            for i in 0..count {
+                                let elem = *tuple_vals.get_unchecked(i);
+                                if !object::is_fixnum(elem) {
+                                    object::retain(elem);
+                                }
+                                *unpack_out.add(i) = elem;
+                            }
+                            *out = null_mut();
+                            return 1;
+                        }
+                        _ => (),
+                    }
+                }
+                if !object::is_fixnum(item) {
+                    object::retain(item);
+                }
+                *out = item;
+                1
+            }
+            Data::Instance { ty, fields, .. } => {
+                let storage_iterator = cached_storage_iterator();
+                if storage_iterator.is_null() || *ty != storage_iterator || fields.len() < 3 {
+                    return -1;
+                }
+                let sequence = fields[0];
+                let index = fields[1];
+                let exhausted = fields[2];
+                if exhausted != object::bool_value(false)
+                    || !object::is_fixnum(index)
+                    || sequence.is_null()
+                    || object::is_fixnum(sequence)
+                {
+                    return -1;
+                }
+                let pos = object::fixnum(index);
+                if pos < 0 {
+                    return -1;
+                }
+                let values = match &(*sequence).data {
+                    Data::List(values, ..) | Data::Args(values, ..) => values,
+                    _ => return -1,
+                };
+                let len = values.len() as i64;
+                if pos >= len {
+                    let old = fields[2];
+                    fields[2] = object::bool_value(true);
+                    object::release(old);
+                    return 0;
+                }
+                let Some(next_pos) = pos.checked_add(1) else {
+                    return -1;
+                };
+                if !(numeric::MIN..=numeric::MAX).contains(&next_pos) {
+                    return -1;
+                }
+                let item = *values.get_unchecked(pos as usize);
+                if !item.is_null() && !object::is_fixnum(item) {
+                    match &(*item).data {
+                        Data::Args(tuple_vals, item_ty, ..)
+                        | Data::List(tuple_vals, item_ty, ..)
+                            if item_ty.is_null() && tuple_vals.len() == count =>
+                        {
+                            fields[1] = object::small(next_pos);
+                            for i in 0..count {
+                                let elem = *tuple_vals.get_unchecked(i);
+                                if !object::is_fixnum(elem) {
+                                    object::retain(elem);
+                                }
+                                *unpack_out.add(i) = elem;
+                            }
+                            *out = null_mut();
+                            return 1;
+                        }
+                        _ => (),
+                    }
+                }
+                fields[1] = object::small(next_pos);
+                if !object::is_fixnum(item) {
+                    object::retain(item);
+                }
+                *out = item;
+                1
+            }
+            _ => -1,
         }
-        let values = match &(*sequence).data {
-            Data::List(values, ..) | Data::Args(values, ..) => values,
-            _ => return -1,
-        };
-        let len = values.len() as i64;
-        if pos >= len {
-            let old = fields[2];
-            fields[2] = object::retain(object::bool_value(true));
-            object::release(old);
-            return 0;
-        }
-        let Some(next_pos) = pos.checked_add(1) else {
-            return -1;
-        };
-        if !(numeric::MIN..=numeric::MAX).contains(&next_pos) {
-            return -1;
-        }
-        fields[1] = object::small(next_pos);
-        *out = object::retain(*values.get_unchecked(pos as usize));
-        1
     }
 }

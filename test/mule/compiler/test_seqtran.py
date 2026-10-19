@@ -376,3 +376,49 @@ def test_len_native_execution(tmp_path):
     result = run_native(tmp_path, source)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "5 4 2 3\n5 2 7\ntype-error\n"
+
+
+def test_range_prepare_fixnum_literal_and_bounded_eliminate_generic_loop():
+    from mule.compiler.driver import emit_llvm
+
+    for src in (
+        "def f():\n total = 0\n for i in range(10):\n  total += i\n return total\n",
+        "def f():\n total = 0\n for i in range(2, 10, 3):\n  total += i\n return total\n",
+        "def f(x: int):\n n = x & 1023\n total = 0\n for i in range(n):\n  total += i\n return total\n",
+        "def f(x: int, y: int):\n a = x & 255\n b = y & 255\n total = 0\n for i in range(a, b, -1):\n  total += i\n return total\n",
+    ):
+        compilation = compile_source(src)
+        fn = compilation.lambdas[1]
+        prepares = list(known_calls(fn, "%range_prepare"))
+        assert len(prepares) == 1
+        assert prepares[0].lvar is None
+        assert len(list(known_calls(fn, "%range_available"))) == 1
+        assert len(list(known_calls(fn, "%range_advance"))) == 1
+        assert list(known_calls(fn, "%sequence_available")) == []
+        assert list(known_calls(fn, "%next_item")) == []
+        assert list(known_calls(fn, "%catch_exception")) == []
+        check_ir1_consistency(compilation.components)
+
+        ir = emit_llvm(src + "print(0)\n")
+        body_start = ir.index('define internal ptr @"mule_fn_f.')
+        body_end = ir.index("\n}", body_start)
+        body = ir[body_start:body_end]
+        assert "@mule_range_storage(" in body
+        assert "@mule_catch_exception(" not in body
+
+
+def test_range_prepare_unbounded_or_shadowed_keeps_generic_fallback():
+    for src in (
+        "def f(n: int):\n total = 0\n for i in range(n):\n  total += i\n return total\n",
+        "def f(n):\n total = 0\n for i in range(n):\n  total += i\n return total\n",
+        "__safety__ = 3\ndef f():\n total = 0\n for i in range(10):\n  total += i\n return total\n",
+        "range = None\ndef f():\n total = 0\n for i in range(10):\n  total += i\n return total\n",
+    ):
+        compilation = compile_source(src)
+        fn = compilation.lambdas[1]
+        prepares = list(known_calls(fn, "%range_prepare"))
+        assert len(prepares) == 1
+        assert prepares[0].lvar is not None
+        assert len(list(known_calls(fn, "%sequence_available"))) == 1
+        assert len(list(known_calls(fn, "%next_item"))) == 1
+        check_ir1_consistency(compilation.components)

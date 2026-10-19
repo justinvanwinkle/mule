@@ -118,12 +118,12 @@ def find_in(text, sub, start, end):
     while position < limit:
         if _text_codepoint(text, position) == first:
             offset = 1
-            cursor = position + 1
-            while offset < size and cursor < end:
-                if _text_codepoint(text, cursor) != _text_codepoint(sub, offset):
+            while offset < size:
+                if _text_codepoint(text, position + offset) != _text_codepoint(
+                    sub, offset
+                ):
                     break
                 offset += 1
-                cursor += 1
             if offset == size:
                 return position
         position += 1
@@ -150,12 +150,12 @@ def rfind_in(text, sub, start, end):
     while position >= start:
         if _text_codepoint(text, position) == first:
             offset = 1
-            cursor = position + 1
-            while offset < size and cursor < end:
-                if _text_codepoint(text, cursor) != _text_codepoint(sub, offset):
+            while offset < size:
+                if _text_codepoint(text, position + offset) != _text_codepoint(
+                    sub, offset
+                ):
                     break
                 offset += 1
-                cursor += 1
             if offset == size:
                 return position
         position -= 1
@@ -185,8 +185,11 @@ def _contains_codepoint(text, code):
 
 def _extend_mapping(codes, mapped):
     if _tuple_storage(mapped):
-        for code in mapped:
-            _storage_append(codes, code)
+        index = 0
+        count = _storage_length(mapped)
+        while index < count:
+            _storage_append(codes, _storage_read(mapped, index))
+            index += 1
     else:
         _storage_append(codes, mapped)
 
@@ -1391,8 +1394,8 @@ class TextStorage:
     def count(self, sub, start=None, end=None, /):
         _require_text(sub, "count() argument 1 must be str")
         length = _text_length(self)
-        start = _start_bound(length, start)
-        end = _end_bound(length, end)
+        start = 0 if start is None else _start_bound(length, start)
+        end = length if end is None else _end_bound(length, end)
         size = _text_length(sub)
         if end - start < size:
             return 0
@@ -1566,6 +1569,33 @@ class TextStorage:
         )
 
     def join(self, iterable, /):
+        if _type_of(iterable) is list or _tuple_storage(iterable):
+            count = _storage_length(iterable)
+            if count == 0:
+                return ""
+            if count == 1:
+                first = _storage_read(iterable, 0)
+                if not _text_storage(first):
+                    raise TypeError(
+                        f"sequence item 0: expected str instance, "
+                        f"{_type_name(first)} found"
+                    )
+                return first
+            pieces = []
+            sep_nonempty = _text_length(self) > 0
+            index = 0
+            while index < count:
+                item = _storage_read(iterable, index)
+                if not _text_storage(item):
+                    raise TypeError(
+                        f"sequence item {index}: expected str instance, "
+                        f"{_type_name(item)} found"
+                    )
+                if index > 0 and sep_nonempty:
+                    _storage_append(pieces, self)
+                _storage_append(pieces, item)
+                index += 1
+            return _text_join(pieces)
         pieces = []
         for item in iterable:
             if not _text_storage(item):
@@ -1938,22 +1968,38 @@ def _compare(left, right):
 
 def _affix_match(text, affix, start, end, suffix, method):
     if _tuple_storage(affix):
-        for candidate in affix:
+        count = _storage_length(affix)
+        if count == 0:
+            return False
+        length = -1
+        span = 0
+        index = 0
+        while index < count:
+            candidate = _storage_read(affix, index)
             if not _text_storage(candidate):
                 raise TypeError(
                     f"tuple for {method} must only contain str, not "
                     f"{_type_name(candidate)}"
                 )
-            if _affix_match(text, candidate, start, end, suffix, method):
+            if length < 0:
+                length = _text_length(text)
+                start = 0 if start is None else _start_bound(length, start)
+                end = length if end is None else _end_bound(length, end)
+                span = end - start
+            size = _text_length(candidate)
+            if span >= size and _matches_at(
+                text, candidate, end - size if suffix else start, size
+            ):
                 return True
+            index += 1
         return False
     if not _text_storage(affix):
         raise TypeError(
             f"{method} first arg must be str or a tuple of str, not {_type_name(affix)}"
         )
     length = _text_length(text)
-    start = _start_bound(length, start)
-    end = _end_bound(length, end)
+    start = 0 if start is None else _start_bound(length, start)
+    end = length if end is None else _end_bound(length, end)
     size = _text_length(affix)
     if end - start < size:
         return False

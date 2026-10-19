@@ -1751,6 +1751,56 @@ pub unsafe extern "C" fn mule_class_delete(
     }
 }
 
+#[inline]
+unsafe fn resolve_namespace_cached(
+    receiver: Value,
+    bindings: &object::Namespace,
+    attribute: *const c_char,
+    cache: *mut AttrCache,
+    bound: *mut Value,
+) -> Value {
+    unsafe {
+        if object::has_error() {
+            return std::ptr::null_mut();
+        }
+        let key = (receiver as usize) | 1;
+        let version = bindings.version();
+        let value = if !cache.is_null()
+            && (*cache).class_id == key
+            && (*cache).epoch == version
+        {
+            bindings.get_at((*cache).encoded)
+        } else if let Some(attr) = name(attribute) {
+            if let Some((index, val)) = bindings.lookup_index(attr) {
+                if !cache.is_null() {
+                    (*cache).class_id = key;
+                    (*cache).encoded = index;
+                    (*cache).epoch = version;
+                }
+                val
+            } else {
+                std::ptr::null_mut()
+            }
+        } else {
+            return std::ptr::null_mut();
+        };
+        if value.is_null() {
+            return std::ptr::null_mut();
+        }
+        if !bound.is_null() && !object::is_fixnum(value) {
+            if let Data::BoundMethod {
+                receiver: bm_recv,
+                method,
+            } = &(*value).data
+            {
+                *bound = object::retain(*bm_recv);
+                return object::retain(*method);
+            }
+        }
+        object::retain(value)
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_resolve_method(
     receiver: Value,
@@ -1764,25 +1814,53 @@ pub unsafe extern "C" fn mule_resolve_method(
             return std::ptr::null_mut();
         }
         *bound = std::ptr::null_mut();
-        if !cache.is_null() && !receiver.is_null() && !object::is_fixnum(receiver) {
-            if let Data::Instance { ty, fields, attributes } = &(*receiver).data {
-                if let Data::Class(layout) = &(**ty).data {
-                    if let Some(encoded) = cached(layout, cache) {
-                        let kind = encoded & KIND;
-                        if kind == FIELD {
-                            let value = fields[encoded >> SHIFT];
-                            if !value.is_null() {
+        if !receiver.is_null() && !object::is_fixnum(receiver) {
+            match &(*receiver).data {
+                Data::Instance { ty, fields, attributes } if !cache.is_null() => {
+                    if let Data::Class(layout) = &(**ty).data {
+                        if let Some(encoded) = cached(layout, cache) {
+                            let kind = encoded & KIND;
+                            if kind == FIELD {
+                                let value = fields[encoded >> SHIFT];
+                                if !value.is_null() {
+                                    return object::retain(value);
+                                }
+                            } else if kind == METHOD && attributes.is_null() {
+                                let position = encoded >> SHIFT;
+                                let defining = layout.ancestor(position >> DEPTH_SHIFT);
+                                let value = defining.attributes[position & INDEX_MASK].1;
+                                *bound = object::retain(receiver);
                                 return object::retain(value);
                             }
-                        } else if kind == METHOD && attributes.is_null() {
-                            let position = encoded >> SHIFT;
-                            let defining = layout.ancestor(position >> DEPTH_SHIFT);
-                            let value = defining.attributes[position & INDEX_MASK].1;
-                            *bound = object::retain(receiver);
-                            return object::retain(value);
                         }
                     }
                 }
+                Data::Namespace(bindings) => {
+                    let value =
+                        resolve_namespace_cached(receiver, bindings, attribute, cache, bound);
+                    if !value.is_null() || object::has_error() {
+                        return value;
+                    }
+                }
+                Data::List(_, ty, attributes)
+                    if !cache.is_null() && ty.is_null() && attributes.is_null() =>
+                {
+                    let owner = builtin_type(Builtin::List);
+                    if !owner.is_null() {
+                        if let Data::Class(layout) = &(*owner).data {
+                            if let Some(encoded) = cached(layout, cache) {
+                                if encoded & KIND == METHOD {
+                                    let position = encoded >> SHIFT;
+                                    let defining = layout.ancestor(position >> DEPTH_SHIFT);
+                                    let value = defining.attributes[position & INDEX_MASK].1;
+                                    *bound = object::retain(receiver);
+                                    return object::retain(value);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => (),
             }
         }
         resolve(receiver, attribute, cache, bound)
@@ -1897,24 +1975,65 @@ pub unsafe extern "C" fn mule_call_resolved(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_call_resolved_owned(
+    callable: Value,
+    receiver: Value,
+    count: isize,
+    args: *const Value,
+) -> Value {
+    unsafe {
+        if count < 0 || (count > 0 && args.is_null()) {
+            object::release(receiver);
+            object::error("SystemError", "invalid method argument buffer");
+            return std::ptr::null_mut();
+        }
+        let args = if count == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(args, count as usize)
+        };
+        if receiver.is_null() {
+            object::call_owned(callable, args)
+        } else {
+            object::call_with_receiver_owned(callable, receiver, args)
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_get_attr_cached(
     receiver: Value,
     attribute: *const c_char,
     cache: *mut AttrCache,
 ) -> Value {
     unsafe {
-        if !cache.is_null() && !receiver.is_null() && !object::is_fixnum(receiver) {
-            if let Data::Instance { ty, fields, .. } = &(*receiver).data {
-                if let Data::Class(layout) = &(**ty).data {
-                    if let Some(encoded) = cached(layout, cache) {
-                        if encoded & KIND == FIELD {
-                            let value = fields[encoded >> SHIFT];
-                            if !value.is_null() {
-                                return object::retain(value);
+        if !receiver.is_null() && !object::is_fixnum(receiver) {
+            match &(*receiver).data {
+                Data::Instance { ty, fields, .. } if !cache.is_null() => {
+                    if let Data::Class(layout) = &(**ty).data {
+                        if let Some(encoded) = cached(layout, cache) {
+                            if encoded & KIND == FIELD {
+                                let value = fields[encoded >> SHIFT];
+                                if !value.is_null() {
+                                    return object::retain(value);
+                                }
                             }
                         }
                     }
                 }
+                Data::Namespace(bindings) => {
+                    let value = resolve_namespace_cached(
+                        receiver,
+                        bindings,
+                        attribute,
+                        cache,
+                        std::ptr::null_mut(),
+                    );
+                    if !value.is_null() || object::has_error() {
+                        return value;
+                    }
+                }
+                _ => (),
             }
         }
         let mut bound = std::ptr::null_mut();

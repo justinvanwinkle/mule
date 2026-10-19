@@ -1,19 +1,39 @@
-"""IR1 transforms for formatting operations (``%format``)."""
+"""IR1 transforms for formatting operations (``%format`` and ``str``)."""
 
 from __future__ import annotations
 
 from mule import ast
 
-from .ctype import TEXT_TYPE
+from .ctype import INTEGER, TEXT_TYPE
 from .ir1opt import (
     _FOLD_LIMIT_BITS,
     constant_literal,
     lvar_type,
     replace_combination_with_constant,
     replace_combination_with_lvar,
+    retarget_known_combination,
 )
-from .knownfun import deftransform
-from .node import Combination
+from .knownfun import KNOWN, defderive, defknown, deftransform
+from .node import (
+    CallKind,
+    Combination,
+    FunctionalKind,
+    GlobalVar,
+    LeafVisitor,
+    NodeVisitor,
+    Ref,
+)
+
+if "str" not in KNOWN:
+    defknown("str", "call")
+
+_PROTOCOL_PREFIXES = (
+    "mule_sequences_",
+    "mule_format_",
+    "mule_arguments_",
+    "mule_native_class_",
+    "mule_print_",
+)
 
 
 class _EmptyTextLiteral(ast.Visitor):
@@ -64,11 +84,64 @@ class _FormatLiteralFold(ast.Visitor):
         return None
 
 
+_FORMAT_LITERAL_NO_CONV = _FormatLiteralFold(None)
+
 _FORMAT_LITERAL_FOLD = {
-    None: _FormatLiteralFold(None),
+    None: _FORMAT_LITERAL_NO_CONV,
     "s": _FormatLiteralFold("s"),
     "r": _FormatLiteralFold("r"),
 }
+
+
+class _PredictableStrGlobal(NodeVisitor, LeafVisitor):
+    """Match a ``Ref`` to an unmutated ``GlobalVar('str')`` outside protocols."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        if node.lexenv.policy.safety >= 3:
+            return None
+        home = node.home_lambda
+        if home is not None and (
+            home.kind is FunctionalKind.TOPLEVEL
+            or home.policy.safety >= 3
+            or home.name.startswith(_PROTOCOL_PREFIXES)
+        ):
+            return None
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        if leaf.name == "str" and not leaf.sets:
+            return leaf
+        return None
+
+
+_PREDICTABLE_STR_GLOBAL = _PredictableStrGlobal()
+
+
+def is_predictable_str_call(node: Combination) -> bool:
+    """Whether ``node`` is a positional call to builtin ``str``."""
+    if node.kind is CallKind.KNOWN:
+        return node.fun_info is KNOWN.get("str")
+    if (
+        node.kind not in (CallKind.FULL, CallKind.GUARDED)
+        or len(node.fun.uses) != 1
+        or (node.info is not None and node.info.keywords)
+        or node.lexenv.policy.safety >= 3
+    ):
+        return False
+    home = node.home_lambda
+    if home is not None and (
+        home.kind is FunctionalKind.TOPLEVEL
+        or home.policy.safety >= 3
+        or home.name.startswith(_PROTOCOL_PREFIXES)
+    ):
+        return False
+    return node.fun.uses[0].accept(_PREDICTABLE_STR_GLOBAL) is not None
 
 
 @deftransform("%format")
@@ -96,4 +169,43 @@ def _transform_format(node: Combination) -> bool:
     return False
 
 
-__all__ = ["_transform_format"]
+@deftransform("str")
+def _transform_str(node: Combination) -> bool:
+    if not is_predictable_str_call(node):
+        return False
+    span = node.source.span if node.source is not None else None
+    if node.lvar is not None and len(node.args) == 0:
+        replace_combination_with_constant(node, ast.TextLiteral("", span=span))
+        return True
+    if len(node.args) != 1:
+        return False
+    arg_lvar = node.args[0]
+    if node.lvar is not None:
+        literal = constant_literal(arg_lvar)
+        if literal is not None:
+            folded = literal.accept(_FORMAT_LITERAL_NO_CONV)
+            if folded is not None:
+                folded.span = span
+                replace_combination_with_constant(node, folded)
+                return True
+    arg_type = lvar_type(arg_lvar)
+    if arg_type.fits_text(TEXT_TYPE) and not arg_type.may_be_unbound:
+        replace_combination_with_lvar(node, arg_lvar)
+        return True
+    if arg_type.fits(INTEGER) and not arg_type.may_be_unbound:
+        decimal_info = KNOWN.get("_decimal_protocol")
+        if decimal_info is None:
+            from .protocols import PRIMITIVES
+
+            decimal_info = PRIMITIVES["_decimal_protocol"]
+        if decimal_info.derive_type is None:
+            defderive("_decimal_protocol", lambda _node: TEXT_TYPE)
+        retarget_known_combination(node, decimal_info, [arg_lvar])
+        node.derived_type = TEXT_TYPE
+        if node.lvar is not None:
+            node.lvar.derived_type = None
+        return True
+    return False
+
+
+__all__ = ["_transform_format", "_transform_str", "is_predictable_str_call"]

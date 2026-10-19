@@ -34,6 +34,7 @@ _MINIMUM_SIZE = 8
 _MODULUS = 2305843009213693951
 _WORD = 0xFFFFFFFFFFFFFFFF
 _PERTURB_MASK = 0x3FFFFFFFFFFFFFFF
+_MASK_LIMIT = 0x1FFFFFFFFFFFFFF
 _PRIME_1 = 11400714785074694791
 _PRIME_2 = 14029467366897019727
 _PRIME_5 = 2870177450012600261
@@ -52,13 +53,15 @@ _MISSING = _Missing()
 
 
 def _signed(value):
-    value &= _WORD
+    value = _integer_storage(value) & _WORD
     return value - (1 << 64) if value >= 1 << 63 else value
 
 
 def _integer_hash(value):
-    if -_MODULUS < value < _MODULUS:
-        return -2 if value == -1 else value
+    value = _integer_storage(value)
+    if value > -_MODULUS:
+        if value < _MODULUS:
+            return -2 if value == -1 else value
     result = (-value if value < 0 else value) % _MODULUS
     if value < 0:
         result = -result
@@ -113,6 +116,172 @@ def _integer_storage_kind(value):
     return math_number_kind(value) == 1
 
 
+def _table_clear(self):
+    self._indices = _empty_indices(_MINIMUM_SIZE)
+    self._hashes = []
+    self._keys = []
+    self._values = []
+    self._used = 0
+
+
+def _table_find(self, key, code):
+    """The index-table slot for ``key`` and its entry, or -1 for none."""
+    indices = self._indices
+    hashes = self._hashes
+    keys = self._keys
+    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
+    perturb = code & _PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(indices, slot)
+        if entry is _EMPTY:
+            return slot, -1
+        if entry is not _DUMMY and _storage_read(hashes, entry) == code:
+            existing = _storage_read(keys, entry)
+            if existing is key or existing == key:
+                return slot, entry
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
+
+
+def _table_lookup(self, key):
+    code = _storage_hash(key)
+    if code is None:
+        code = hash(key)
+    indices = self._indices
+    hashes = self._hashes
+    keys = self._keys
+    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
+    perturb = code & _PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(indices, slot)
+        if entry is _EMPTY:
+            return _EMPTY
+        if entry is not _DUMMY and _storage_read(hashes, entry) == code:
+            existing = _storage_read(keys, entry)
+            if existing is key or existing == key:
+                return entry
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
+
+
+def _table_get_value(self, key, default):
+    entry = _table_lookup(self, key)
+    return _storage_read(self._values, entry) if entry is not _EMPTY else default
+
+
+def _table_resize(self, minimum):
+    size = _MINIMUM_SIZE
+    while size * 2 < minimum * 3:
+        size *= 2
+    hashes, keys, values = [], [], []
+    old_hashes = self._hashes
+    old_keys = self._keys
+    old_values = self._values
+    count = _storage_length(old_keys)
+    index = 0
+    while index < count:
+        key = _storage_read(old_keys, index)
+        if key is not _DELETED:
+            _storage_append(hashes, _storage_read(old_hashes, index))
+            _storage_append(keys, key)
+            _storage_append(values, _storage_read(old_values, index))
+        index += 1
+    indices = _empty_indices(size * 2)
+    self._indices = indices
+    self._hashes, self._keys, self._values = hashes, keys, values
+    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
+    live_count = _storage_length(keys)
+    index = 0
+    while index < live_count:
+        perturb = _storage_read(hashes, index) & _PERTURB_MASK
+        slot = perturb & mask
+        while _storage_read(indices, slot) is not _EMPTY:
+            perturb >>= 5
+            slot = (slot * 5 + perturb + 1) & mask
+        _storage_write(indices, slot, index)
+        index += 1
+
+
+def _table_insert(self, key, value):
+    code = _storage_hash(key)
+    if code is None:
+        code = hash(key)
+    indices = self._indices
+    hashes = self._hashes
+    keys = self._keys
+    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
+    perturb = code & _PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(indices, slot)
+        if entry is _EMPTY:
+            break
+        if entry is not _DUMMY and _storage_read(hashes, entry) == code:
+            existing = _storage_read(keys, entry)
+            if existing is key or existing == key:
+                _storage_write(self._values, entry, value)
+                return
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
+    if (_storage_length(self._keys) + 1) * 3 > _storage_length(self._indices) * 2:
+        _table_resize(self, self._used + 1)
+        indices = self._indices
+        mask = (_storage_length(indices) - 1) & _MASK_LIMIT
+        perturb = code & _PERTURB_MASK
+        slot = perturb & mask
+        while _storage_read(indices, slot) is not _EMPTY:
+            perturb >>= 5
+            slot = (slot * 5 + perturb + 1) & mask
+    _storage_write(self._indices, slot, _storage_length(self._keys))
+    _storage_append(self._hashes, code)
+    _storage_append(self._keys, key)
+    _storage_append(self._values, value)
+    self._used += 1
+
+
+def _table_remove(self, key):
+    """Delete ``key``'s entry, returning its value, or _MISSING if absent."""
+    code = _storage_hash(key)
+    if code is None:
+        code = hash(key)
+    indices = self._indices
+    hashes = self._hashes
+    keys = self._keys
+    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
+    perturb = code & _PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(indices, slot)
+        if entry is _EMPTY:
+            return _MISSING
+        if entry is not _DUMMY and _storage_read(hashes, entry) == code:
+            existing = _storage_read(keys, entry)
+            if existing is key or existing == key:
+                value = _storage_read(self._values, entry)
+                _storage_write(self._indices, slot, _DUMMY)
+                _storage_write(self._keys, entry, _DELETED)
+                _storage_write(self._values, entry, None)
+                self._used -= 1
+                return value
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
+
+
+def _table_live(self):
+    """The live entries' indices, in insertion order."""
+    positions = []
+    keys = self._keys
+    count = _storage_length(keys)
+    index = 0
+    while index < count:
+        if _storage_read(keys, index) is not _DELETED:
+            _storage_append(positions, index)
+        index += 1
+    return positions
+
+
 class _Table:
     """Hash table storage shared by dict and the set types."""
 
@@ -124,124 +293,25 @@ class _Table:
         self._used = 0
 
     def _find(self, key, code):
-        """The index-table slot for ``key`` and its entry, or -1 for none."""
-        indices = self._indices
-        hashes = self._hashes
-        keys = self._keys
-        mask = (_storage_length(indices) - 1) & _PERTURB_MASK
-        perturb = code & _PERTURB_MASK
-        slot = perturb & mask
-        while True:
-            entry = _storage_read(indices, slot)
-            if entry == _EMPTY:
-                return slot, -1
-            if entry >= 0 and _storage_read(hashes, entry) == code:
-                existing = _storage_read(keys, entry)
-                if existing is key or existing == key:
-                    return slot, entry
-            perturb >>= 5
-            slot = (slot * 5 + perturb + 1) & mask
+        return _table_find(self, key, code)
 
     def _lookup(self, key):
-        code = _storage_hash(key)
-        if code is None:
-            code = hash(key)
-        indices = self._indices
-        hashes = self._hashes
-        keys = self._keys
-        mask = (_storage_length(indices) - 1) & _PERTURB_MASK
-        perturb = code & _PERTURB_MASK
-        slot = perturb & mask
-        while True:
-            entry = _storage_read(indices, slot)
-            if entry == _EMPTY:
-                return -1
-            if entry >= 0 and _storage_read(hashes, entry) == code:
-                existing = _storage_read(keys, entry)
-                if existing is key or existing == key:
-                    return entry
-            perturb >>= 5
-            slot = (slot * 5 + perturb + 1) & mask
+        return _table_lookup(self, key)
 
     def _get_value(self, key, default):
-        entry = self._lookup(key)
-        return _storage_read(self._values, entry) if entry >= 0 else default
+        return _table_get_value(self, key, default)
 
     def _insert(self, key, value):
-        code = _storage_hash(key)
-        if code is None:
-            code = hash(key)
-        slot, entry = self._find(key, code)
-        if entry >= 0:
-            _storage_write(self._values, entry, value)
-            return
-        if (_storage_length(self._keys) + 1) * 3 > _storage_length(self._indices) * 2:
-            self._resize(self._used + 1)
-            slot, entry = self._find(key, code)
-        _storage_write(self._indices, slot, _storage_length(self._keys))
-        _storage_append(self._hashes, code)
-        _storage_append(self._keys, key)
-        _storage_append(self._values, value)
-        self._used += 1
+        _table_insert(self, key, value)
 
     def _remove(self, key):
-        """Delete ``key``'s entry, returning its value, or _MISSING if absent."""
-        code = _storage_hash(key)
-        if code is None:
-            code = hash(key)
-        slot, entry = self._find(key, code)
-        if entry < 0:
-            return _MISSING
-        value = _storage_read(self._values, entry)
-        _storage_write(self._indices, slot, _DUMMY)
-        _storage_write(self._keys, entry, _DELETED)
-        _storage_write(self._values, entry, None)
-        self._used -= 1
-        return value
+        return _table_remove(self, key)
 
     def _resize(self, minimum):
-        size = _MINIMUM_SIZE
-        while size * 2 < minimum * 3:
-            size *= 2
-        hashes, keys, values = [], [], []
-        old_hashes = self._hashes
-        old_keys = self._keys
-        old_values = self._values
-        count = _storage_length(old_keys)
-        index = 0
-        while index < count:
-            key = _storage_read(old_keys, index)
-            if key is not _DELETED:
-                _storage_append(hashes, _storage_read(old_hashes, index))
-                _storage_append(keys, key)
-                _storage_append(values, _storage_read(old_values, index))
-            index += 1
-        indices = _empty_indices(size * 2)
-        self._indices = indices
-        self._hashes, self._keys, self._values = hashes, keys, values
-        mask = (_storage_length(indices) - 1) & _PERTURB_MASK
-        live_count = _storage_length(keys)
-        index = 0
-        while index < live_count:
-            perturb = _storage_read(hashes, index) & _PERTURB_MASK
-            slot = perturb & mask
-            while _storage_read(indices, slot) != _EMPTY:
-                perturb >>= 5
-                slot = (slot * 5 + perturb + 1) & mask
-            _storage_write(indices, slot, index)
-            index += 1
+        _table_resize(self, minimum)
 
     def _live(self):
-        """The live entries' indices, in insertion order."""
-        positions = []
-        keys = self._keys
-        count = _storage_length(keys)
-        index = 0
-        while index < count:
-            if _storage_read(keys, index) is not _DELETED:
-                _storage_append(positions, index)
-            index += 1
-        return positions
+        return _table_live(self)
 
     def __len__(self):
         return self._used
@@ -288,6 +358,30 @@ def _representation(open, items, close):
     return open + ", ".join(items) + close
 
 
+def _dict_update_table(self, other):
+    for index in _table_live(other):
+        _table_insert(self, _storage_read(other._keys, index), _storage_read(other._values, index))
+
+
+def _dict_update_other(self, other):
+    if _is_dict(other):
+        _dict_update_table(self, other)
+        return
+    owner = _type_of(other)
+    keys = None
+    missing = _binding_missing()
+    method = class_lookup_default(owner, "keys", missing)
+    if method is not missing:
+        keys = bind_instance_attribute(method, other, owner)
+    if keys is not None:
+        for key in keys():
+            _table_insert(self, key, other[key])
+        return
+    for item in other:
+        key, value = item
+        _table_insert(self, key, value)
+
+
 class dict(_Table):
     def __new__(cls, /, *args, **kwargs):
         if not is_class(cls) or not is_subclass(cls, dict):
@@ -303,9 +397,9 @@ class dict(_Table):
         if len(args) > 1:
             raise TypeError(f"dict expected at most 1 argument, got {len(args)}")
         if args:
-            self._update_other(args[0])
+            _dict_update_other(self, args[0])
         if kwargs:
-            self._update_table(kwargs)
+            _dict_update_table(self, kwargs)
 
     @classmethod
     def fromkeys(cls, iterable, value=None):
@@ -315,7 +409,7 @@ class dict(_Table):
         return result
 
     def __getitem__(self, key):
-        entry = self._lookup(key)
+        entry = _table_lookup(self, key)
         if entry >= 0:
             return _storage_read(self._values, entry)
         owner = class_of(self)
@@ -328,21 +422,21 @@ class dict(_Table):
         raise KeyError(key)
 
     def __setitem__(self, key, value):
-        self._insert(key, value)
+        _table_insert(self, key, value)
 
     def __delitem__(self, key):
-        if self._remove(key) is _MISSING:
+        if _table_remove(self, key) is _MISSING:
             raise KeyError(key)
 
     def __contains__(self, key):
-        return self._lookup(key) >= 0
+        return _table_lookup(self, key) >= 0
 
     def __iter__(self):
         return _TableIterator(self, 1)
 
     def __reversed__(self):
         keys = []
-        positions = self._live()
+        positions = _table_live(self)
         index = _storage_length(positions)
         while index > 0:
             index -= 1
@@ -354,8 +448,8 @@ class dict(_Table):
             return False
         if self._used != other._used:
             return False
-        for index in self._live():
-            entry = other._lookup(_storage_read(self._keys, index))
+        for index in _table_live(self):
+            entry = _table_lookup(other, _storage_read(self._keys, index))
             if entry < 0:
                 return False
             mine, theirs = _storage_read(self._values, index), _storage_read(other._values, entry)
@@ -368,7 +462,7 @@ class dict(_Table):
 
     def __repr__(self):
         items = []
-        for index in self._live():
+        for index in _table_live(self):
             _storage_append(
                 items,
                 repr(_storage_read(self._keys, index))
@@ -381,25 +475,26 @@ class dict(_Table):
         if not _is_dict(other):
             raise TypeError("unsupported operand type(s) for |")
         result = self.copy()
-        result._update_table(other)
+        _dict_update_table(result, other)
         return result
 
     def __ior__(self, other):
-        self._update_other(other)
+        _dict_update_other(self, other)
         return self
 
     def get(self, key, default=None):
-        return self._get_value(key, default)
+        entry = _table_lookup(self, key)
+        return _storage_read(self._values, entry) if entry >= 0 else default
 
     def setdefault(self, key, default=None):
-        entry = self._lookup(key)
+        entry = _table_lookup(self, key)
         if entry >= 0:
             return _storage_read(self._values, entry)
-        self._insert(key, default)
+        _table_insert(self, key, default)
         return default
 
     def pop(self, key, default=_MISSING):
-        value = self._remove(key)
+        value = _table_remove(self, key)
         if value is _MISSING:
             if default is _MISSING:
                 raise KeyError(key)
@@ -407,12 +502,12 @@ class dict(_Table):
         return value
 
     def popitem(self):
-        positions = self._live()
+        positions = _table_live(self)
         if not positions:
             raise KeyError("popitem(): dictionary is empty")
         index = _storage_read(positions, _storage_length(positions) - 1)
         key, value = _storage_read(self._keys, index), _storage_read(self._values, index)
-        self._remove(key)
+        _table_remove(self, key)
         return (key, value)
 
     def keys(self):
@@ -425,41 +520,25 @@ class dict(_Table):
         return dict_items(self)
 
     def _update_table(self, other):
-        for index in other._live():
-            self._insert(_storage_read(other._keys, index), _storage_read(other._values, index))
+        _dict_update_table(self, other)
 
     def _update_other(self, other):
-        if _is_dict(other):
-            self._update_table(other)
-            return
-        owner = _type_of(other)
-        keys = None
-        missing = _binding_missing()
-        method = class_lookup_default(owner, "keys", missing)
-        if method is not missing:
-            keys = bind_instance_attribute(method, other, owner)
-        if keys is not None:
-            for key in keys():
-                self._insert(key, other[key])
-            return
-        for item in other:
-            key, value = item
-            self._insert(key, value)
+        _dict_update_other(self, other)
 
     def update(self, /, *args, **kwargs):
         if len(args) > 1:
             raise TypeError(f"update expected at most 1 argument, got {len(args)}")
         if args:
-            self._update_other(args[0])
+            _dict_update_other(self, args[0])
         if kwargs:
-            self._update_table(kwargs)
+            _dict_update_table(self, kwargs)
 
     def clear(self):
-        self._clear_table()
+        _table_clear(self)
 
     def copy(self):
         result = _empty_dict()
-        result._update_table(self)
+        _dict_update_table(result, self)
         return result
 
 
@@ -580,7 +659,7 @@ class dict_items(_SetView):
         if not _tuple_storage(item) or len(item) != 2:
             return False
         key, value = _storage_read(item, 0), _storage_read(item, 1)
-        entry = self.mapping._lookup(key)
+        entry = _table_lookup(self.mapping, key)
         if entry < 0:
             return False
         stored = self.mapping._values[entry]
@@ -590,19 +669,23 @@ class dict_items(_SetView):
         return _representation("dict_items([", self._entries(), "])")
 
 
+def _set_fill(self, iterable):
+    _table_clear(self)
+    for item in iterable:
+        _table_insert(self, item, None)
+
+
 class _SetBase(_Table):
     """Operations shared by set and frozenset."""
 
     def _fill(self, iterable):
-        self._clear_table()
-        for item in iterable:
-            self._insert(item, None)
+        _set_fill(self, iterable)
 
     def _same_kind(self):
         return class_of(self)()
 
     def __contains__(self, item):
-        return self._lookup(item) >= 0
+        return _table_lookup(self, item) >= 0
 
     def __iter__(self):
         return _TableIterator(self, 0)
@@ -612,7 +695,7 @@ class _SetBase(_Table):
         if not self._used:
             return name + "()"
         items = []
-        for index in self._live():
+        for index in _table_live(self):
             items.append(repr(self._keys[index]))
         if name == "set":
             return _representation("{", items, "}")
@@ -670,35 +753,35 @@ class _SetBase(_Table):
     def issubset(self, other):
         if not _is_set(other):
             other = set(other)
-        for index in self._live():
-            if other._lookup(self._keys[index]) < 0:
+        for index in _table_live(self):
+            if _table_lookup(other, self._keys[index]) < 0:
                 return False
         return True
 
     def issuperset(self, other):
         for item in other:
-            if self._lookup(item) < 0:
+            if _table_lookup(self, item) < 0:
                 return False
         return True
 
     def isdisjoint(self, other):
         for item in other:
-            if self._lookup(item) >= 0:
+            if _table_lookup(self, item) >= 0:
                 return False
         return True
 
     def union(self, *others):
         result = self._same_kind()
-        for index in self._live():
-            result._insert(self._keys[index], None)
+        for index in _table_live(self):
+            _table_insert(result, self._keys[index], None)
         for other in others:
             for item in other:
-                result._insert(item, None)
+                _table_insert(result, item, None)
         return result
 
     def intersection(self, *others):
         result = self._same_kind()
-        for index in self._live():
+        for index in _table_live(self):
             key = self._keys[index]
             kept = True
             for other in others:
@@ -706,12 +789,12 @@ class _SetBase(_Table):
                     kept = False
                     break
             if kept:
-                result._insert(key, None)
+                _table_insert(result, key, None)
         return result
 
     def difference(self, *others):
         result = self._same_kind()
-        for index in self._live():
+        for index in _table_live(self):
             key = self._keys[index]
             kept = True
             for other in others:
@@ -719,21 +802,21 @@ class _SetBase(_Table):
                     kept = False
                     break
             if kept:
-                result._insert(key, None)
+                _table_insert(result, key, None)
         return result
 
     def symmetric_difference(self, other):
         if not _is_set(other):
             other = set(other)
         result = self._same_kind()
-        for index in self._live():
+        for index in _table_live(self):
             key = self._keys[index]
-            if other._lookup(key) < 0:
-                result._insert(key, None)
-        for index in other._live():
+            if _table_lookup(other, key) < 0:
+                _table_insert(result, key, None)
+        for index in _table_live(other):
             key = other._keys[index]
-            if self._lookup(key) < 0:
-                result._insert(key, None)
+            if _table_lookup(self, key) < 0:
+                _table_insert(result, key, None)
         return result
 
     def copy(self):
@@ -760,7 +843,7 @@ class set(_SetBase):
     def __init__(self, *args):
         if len(args) > 1:
             raise TypeError(f"set expected at most 1 argument, got {len(args)}")
-        self._fill(args[0] if args else ())
+        _set_fill(self, args[0] if args else ())
 
     def __ior__(self, other):
         _require_set(other)
@@ -783,45 +866,45 @@ class set(_SetBase):
         return self
 
     def add(self, item):
-        self._insert(item, None)
+        _table_insert(self, item, None)
 
     def discard(self, item):
-        self._remove(item)
+        _table_remove(self, item)
 
     def remove(self, item):
-        if self._remove(item) is _MISSING:
+        if _table_remove(self, item) is _MISSING:
             raise KeyError(item)
 
     def pop(self):
-        positions = self._live()
+        positions = _table_live(self)
         if not positions:
             raise KeyError("pop from an empty set")
         key = self._keys[positions[0]]
-        self._remove(key)
+        _table_remove(self, key)
         return key
 
     def clear(self):
-        self._clear_table()
+        _table_clear(self)
 
     def update(self, *others):
         for other in others:
             for item in other:
-                self._insert(item, None)
+                _table_insert(self, item, None)
 
     def intersection_update(self, *others):
         kept = self
         for other in others:
             kept = kept.intersection(other)
-        self._fill(kept)
+        _set_fill(self, kept)
 
     def difference_update(self, *others):
         for other in others:
             for item in other:
-                self._remove(item)
+                _table_remove(self, item)
 
     def symmetric_difference_update(self, other):
         kept = self.symmetric_difference(other)
-        self._fill(kept)
+        _set_fill(self, kept)
 
 
 class frozenset(_SetBase):
@@ -830,12 +913,12 @@ class frozenset(_SetBase):
     def __init__(self, *args):
         if len(args) > 1:
             raise TypeError(f"frozenset expected at most 1 argument, got {len(args)}")
-        self._fill(args[0] if args else ())
+        _set_fill(self, args[0] if args else ())
 
     def __hash__(self):
         # CPython's frozenset hash: an order-independent mix of element hashes.
         accumulator = 0
-        for index in self._live():
+        for index in _table_live(self):
             code = self._hashes[index] & _WORD
             accumulator ^= ((code ^ 89869747) ^ (code << 16)) * 3644798167 & _WORD
         accumulator ^= (self._used + 1) * 1927868237 & _WORD
@@ -848,7 +931,7 @@ class frozenset(_SetBase):
 
 def _empty_table(cls):
     result = _allocate_instance(cls)
-    _Table._clear_table(result)
+    _table_clear(result)
     return result
 
 
@@ -861,13 +944,13 @@ def build_dict(flat):
     result = _empty_dict()
     index = 0
     while index < _storage_length(flat):
-        result._insert(_storage_read(flat, index), _storage_read(flat, index + 1))
+        _table_insert(result, _storage_read(flat, index), _storage_read(flat, index + 1))
         index += 2
     return result
 
 
 def build_set(items):
-    result = set()
+    result = _empty_table(set)
     for item in items:
-        result._insert(item, None)
+        _table_insert(result, item, None)
     return result

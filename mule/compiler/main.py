@@ -264,6 +264,7 @@ def _fold_protocol_constants(compilation: Compilation) -> bool:
 
 
 def _ir1_optimize_phase_1(compilation: Compilation) -> None:
+    facts_stale = True
     for iteration in range(REOPTIMIZE_LIMIT):
         ir1_changed = False
         with phase("IR1 optimization round %d", iteration + 1, level=logging.DEBUG):
@@ -272,19 +273,27 @@ def _ir1_optimize_phase_1(compilation: Compilation) -> None:
                 if component.reanalyze:
                     find_dfo(component)
                     ir1_changed = True
+        if ir1_changed:
+            facts_stale = True
         if _fold_protocol_constants(compilation):
+            facts_stale = True
             continue
         if any(component.reoptimize for component in compilation.components):
             continue
-        if compilation.facts is not None and not ir1_changed:
+        if compilation.facts is not None and not facts_stale:
             return
         with phase("IR1 local-call and flow analysis", level=logging.DEBUG):
             compilation.facts = locall.analyze(
                 compilation.lambdas, compilation.annotations
             )
+            facts_stale = False
         if not any(component.reoptimize for component in compilation.components):
             return
-    # The reoptimize limit was reached; the facts computed last remain valid.
+    if facts_stale:
+        with phase("IR1 local-call and flow analysis", level=logging.DEBUG):
+            compilation.facts = locall.analyze(
+                compilation.lambdas, compilation.annotations
+            )
     logger.debug("IR1 reoptimization reached its %d-round limit", REOPTIMIZE_LIMIT)
 
 
@@ -339,6 +348,11 @@ def compile_toplevel(
         tree.accept(binds_name)
         if not binds_name.found:
             converter.module_name_literal = ast.TextLiteral(namespace)
+        if namespace == "__main__" and not filename.startswith("<"):
+            binds_file = BindsName("__file__")
+            tree.accept(binds_file)
+            if not binds_file.found:
+                converter.module_file_literal = ast.TextLiteral(filename)
         entry = convert_module(converter, tree)
         if converter.module_annotations:
             for lambda_ in converter.functions:
