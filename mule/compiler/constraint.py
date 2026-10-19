@@ -592,60 +592,6 @@ class _Propagation(NodeVisitor, LeafVisitor):
                     iter_type = receiver_type.dict_values_iterator_type()
                     if iter_type is not UNKNOWN:
                         return _fact(iter_type)
-                if (
-                    method_name
-                    in ("heappush", "heappop", "heapreplace", "heappushpop", "heapify")
-                    and not has_keywords
-                    and arity >= 1
-                    and self.walk.lambda_.policy.safety < 3
-                ):
-                    recv_name = receiver_lvar.use().accept(_GLOBAL_CALLEE_NAME)
-                    if (
-                        recv_name == "heapq"
-                        and recv_name not in self.walk.rebound_globals
-                        and recv_name not in self.walk.global_targets
-                    ):
-                        heap_lvar = args[1]
-                        heap_type = self.type_of(heap_lvar)
-                        heap_var = self.origins.get(heap_lvar)
-                        if method_name == "heappush" and arity == 2:
-                            elem_type = self.type_of(args[2])
-                            if heap_var is not None and not heap_var.indirect:
-                                self.assign(
-                                    heap_var, _fact(heap_type.with_element(elem_type))
-                                )
-                            if (
-                                not heap_type.may_be_unbound
-                                and heap_type.fits(LIST_TYPE)
-                                and not elem_type.may_be_unbound
-                            ):
-                                return NONE_FACT
-                        elif method_name == "heappop" and arity == 1:
-                            if not heap_type.may_be_unbound and heap_type.fits(
-                                LIST_TYPE
-                            ):
-                                return _fact(heap_type.getitem_type(_SMALL_INTS[0]))
-                        elif (
-                            method_name in ("heapreplace", "heappushpop") and arity == 2
-                        ):
-                            elem_type = self.type_of(args[2])
-                            if heap_var is not None and not heap_var.indirect:
-                                self.assign(
-                                    heap_var, _fact(heap_type.with_element(elem_type))
-                                )
-                            if not heap_type.may_be_unbound and heap_type.fits(
-                                LIST_TYPE
-                            ):
-                                return _fact(
-                                    heap_type.getitem_type(_SMALL_INTS[0]).join(
-                                        elem_type
-                                    )
-                                )
-                        elif method_name == "heapify" and arity == 1:
-                            if not heap_type.may_be_unbound and heap_type.fits(
-                                LIST_TYPE
-                            ):
-                                return NONE_FACT
                 result_type = receiver_type.method_return_type(
                     method_name, arity, has_keywords
                 )
@@ -677,7 +623,9 @@ class _Propagation(NodeVisitor, LeafVisitor):
                     updated = (
                         recv_type.with_element(val_type)
                         if key_type.fits(PYTHON_INTEGER)
-                        else LIST_TYPE
+                        else recv_type.with_element(
+                            val_type.iterate_type().next_item_type()
+                        )
                     )
                 else:
                     updated = recv_type.with_entry(key_type, val_type)
@@ -716,6 +664,55 @@ class _Propagation(NodeVisitor, LeafVisitor):
             if receiver_type.fits_list(LIST_TYPE):
                 return _fact(receiver_type)
             return UNKNOWN_FACT
+        if name == "_storage_append" and len(args) == 2:
+            recv_var = self.origins.get(args[0])
+            recv_type = self.type_of(args[0])
+            elem_type = self.type_of(args[1])
+            if (
+                recv_var is not None
+                and not recv_var.indirect
+                and recv_type.fits_list(LIST_TYPE)
+            ):
+                self.assign(recv_var, _fact(recv_type.with_element(elem_type)))
+        elif name == "_storage_write" and len(args) == 3:
+            recv_var = self.origins.get(args[0])
+            recv_type = self.type_of(args[0])
+            elem_type = self.type_of(args[2])
+            if (
+                recv_var is not None
+                and not recv_var.indirect
+                and recv_type.fits_list(LIST_TYPE)
+            ):
+                self.assign(recv_var, _fact(recv_type.with_element(elem_type)))
+        elif name == "_storage_read" and len(args) == 2:
+            recv_type = self.type_of(args[0])
+            idx_type = self.type_of(args[1])
+            return _fact(recv_type.getitem_type(idx_type))
+        elif (
+            name
+            in (
+                "_text_length",
+                "_text_codepoint",
+                "_text_character",
+                "_text_slice",
+            )
+            and args
+        ):
+            recv_var = self.origins.get(args[0])
+            if (
+                recv_var is not None
+                and not recv_var.indirect
+                and self.type_of(args[0]) is UNKNOWN
+            ):
+                self.assign(recv_var, TEXT_FACT)
+        elif name in ("_bytes_length", "_bytes_byte", "_bytes_slice") and args:
+            recv_var = self.origins.get(args[0])
+            if (
+                recv_var is not None
+                and not recv_var.indirect
+                and self.type_of(args[0]) is UNKNOWN
+            ):
+                self.assign(recv_var, BYTES_FACT)
         if info.derive_type is not None:
             value_type = info.derive_type(node)
             if value_type is not None:
@@ -1011,7 +1008,15 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
     closure = (
         tuple(lambda_.environment.closure) if lambda_.environment is not None else ()
     )
-    indirect = tuple(var for var in (*lambda_.locals, *closure) if var.indirect)
+    indirect = tuple(
+        var
+        for var in (*lambda_.locals, *closure)
+        if var.indirect
+        and (
+            var.home is not lambda_
+            or any(s.home_lambda is not lambda_ for s in var.sets)
+        )
+    )
     volatile_keys = (
         *((_GLOBAL, name) for name in global_names),
         *indirect,
@@ -1102,8 +1107,23 @@ class _Walk:
         closure = lambda_.environment.closure if lambda_.environment is not None else ()
         for var in closure:
             vtype = var.optimistic_type
-            self.initial[var] = _fact(
+            resolved_type = (
                 vtype if vtype is not None and vtype is not BOTTOM else UNKNOWN
+            )
+            target = (
+                made_function(var.sets[0].value.uses[0])
+                if resolved_type is FUNCTION_TYPE
+                and len(var.sets) == 1
+                and var.home is not None
+                and var not in var.home.vars
+                and var.sets[0].value is not None
+                and len(var.sets[0].value.uses) == 1
+                else None
+            )
+            self.initial[var] = (
+                Fact(resolved_type, target, True)
+                if target is not None
+                else _fact(resolved_type)
             )
         # What user code may leave behind in module globals and variables
         # captured by nested functions.
@@ -1253,8 +1273,9 @@ class _Walk:
         facts = self.facts
         calls = tuple(
             CallSite(
-                facts.get(node.fun.use(), NO_FACT).target,
+                (callee := facts.get(node.fun.use(), NO_FACT)).target,
                 tuple(facts.get(arg.use(), NO_FACT).type for arg in node.args),
+                callee.proven,
             )
             for block, node in self.graph.call_nodes
             if block in incoming
@@ -1556,7 +1577,24 @@ class _ConstrainComparison(NodeVisitor):
     def visit_Combination(self, node):
         if node.kind is not CallKind.KNOWN:
             return None
-        operator = _COMPARISON_OPERATORS.get(node.fun_info.name)
+        name = node.fun_info.name
+        if name == "%unary_not" and len(node.args) == 1:
+            return node.args[0].use().accept(
+                _ConstrainComparison(self.visitor, self.state, not self.truth)
+            )
+        if name in ("_text_storage", "_bytes_storage") and len(node.args) == 1:
+            if not self.truth:
+                return None
+            local = self.visitor.origins.get(node.args[0])
+            if local is None or local not in self.visitor.state:
+                return None
+            current = self.visitor.state[local]
+            if current.type is not UNKNOWN:
+                return None
+            edge = self.state.copy()
+            edge[local] = TEXT_FACT if name == "_text_storage" else BYTES_FACT
+            return edge
+        operator = _COMPARISON_OPERATORS.get(name)
         if operator is None:
             return None
         visitor = self.visitor

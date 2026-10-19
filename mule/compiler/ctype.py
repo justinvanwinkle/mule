@@ -870,6 +870,14 @@ class BooleanType(IntegerType):
     def fixnum_domain(self):
         return None
 
+    def dispatch_domain(self):
+        return None if self.may_be_unbound else self.as_bound()
+
+    def dispatch_rank(self) -> int:
+        if self.may_be_unbound or self.minimum is None or self.maximum is None:
+            return 2**64
+        return self.maximum - self.minimum
+
     def accepts(self, actual):
         return actual.fits_boolean(self)
 

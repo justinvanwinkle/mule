@@ -14,19 +14,26 @@ from typing import TYPE_CHECKING
 
 from .node import (
     BasicVar,
+    Bind,
     Block,
     CallKind,
+    Cast,
     Cleanup,
     CleanupKind,
     Combination,
     Component,
     Ctran,
     CtranKind,
+    Enclose,
+    Entry,
     Exit,
+    If,
     KnownFunction,
     Lambda,
     Leaf,
     LeafVisitor,
+    Lexenv,
+    LoopTarget,
     Lvar,
     Node,
     NodeVisitor,
@@ -864,3 +871,350 @@ def known_calls(lambda_: Lambda, name: str) -> Iterator[Combination]:
             and linked(call.fun_info, call, "known function").name == name
         ):
             yield call
+
+
+class _CloneIR1Node(NodeVisitor):
+    """Clone one IR1 node into a fresh component while keeping leaf identities."""
+
+    def __init__(
+        self,
+        block_map: dict[Block, Block],
+        ctran_map: dict[Ctran, Ctran],
+        lvar_map: dict[Lvar, Lvar],
+        cleanup_map: dict[Cleanup, Cleanup],
+        lexenv_map: dict[Lexenv, Lexenv],
+        saved_refs: dict[Leaf, list[Ref]],
+        saved_sets: dict[BasicVar, list[Set]],
+    ):
+        self.block_map = block_map
+        self.ctran_map = ctran_map
+        self.lvar_map = lvar_map
+        self.cleanup_map = cleanup_map
+        self.lexenv_map = lexenv_map
+        self.saved_refs = saved_refs
+        self.saved_sets = saved_sets
+
+    def map_ctran(self, ctran: Ctran | None) -> Ctran | None:
+        if ctran is None:
+            return None
+        mapped = self.ctran_map.get(ctran)
+        if mapped is None:
+            mapped = Ctran()
+            mapped.kind = ctran.kind
+            mapped.block = self.block_map.get(ctran.block, ctran.block)
+            self.ctran_map[ctran] = mapped
+        return mapped
+
+    def map_lvar(self, lvar: Lvar | None) -> Lvar | None:
+        if lvar is None:
+            return None
+        mapped = self.lvar_map.get(lvar)
+        if mapped is None:
+            mapped = Lvar()
+            mapped.derived_type = lvar.derived_type
+            mapped.reoptimize = False
+            mapped.info = lvar.info
+            self.lvar_map[lvar] = mapped
+        return mapped
+
+    def map_cleanup(self, cleanup: Cleanup | None) -> Cleanup | None:
+        if cleanup is None:
+            return None
+        mapped = self.cleanup_map.get(cleanup)
+        if mapped is None:
+            mapped = Cleanup(
+                cleanup.kind,
+                target=self.block_map.get(cleanup.target, cleanup.target),
+                binding=cleanup.binding,
+                parent=self.map_cleanup(cleanup.parent),
+                info=cleanup.info,
+                loops=cleanup.loops,
+                class_scopes=cleanup.class_scopes,
+                nlx_info=list(cleanup.nlx_info),
+            )
+            self.cleanup_map[cleanup] = mapped
+        return mapped
+
+    def map_lexenv(self, lexenv: Lexenv | None) -> Lexenv | None:
+        if lexenv is None:
+            return None
+        mapped = self.lexenv_map.get(lexenv)
+        if mapped is None:
+            mapped = Lexenv(
+                vars=lexenv.vars,
+                lambda_=lexenv.lambda_,
+                cleanup=self.map_cleanup(lexenv.cleanup),
+                policy=lexenv.policy,
+                loops=tuple(
+                    LoopTarget(
+                        self.block_map.get(lt.continue_block, lt.continue_block),
+                        self.block_map.get(lt.break_block, lt.break_block),
+                        self.map_cleanup(lt.cleanup),
+                    )
+                    for lt in lexenv.loops
+                ),
+                parent=self.map_lexenv(lexenv.parent),
+            )
+            self.lexenv_map[lexenv] = mapped
+        return mapped
+
+    def _finish_node(self, old: Node, new: Node) -> Node:
+        new.prev = self.map_ctran(old.prev)
+        new.next = self.map_ctran(old.next)
+        new.reoptimize = False
+        return new
+
+    def _finish_valued(self, old: ValuedNode, new: ValuedNode) -> ValuedNode:
+        self._finish_node(old, new)
+        new.lvar = self.map_lvar(old.lvar)
+        new.derived_type = old.derived_type
+        return new
+
+    def visit_Ref(self, node: Ref) -> Ref:
+        leaf = node.leaf
+        if leaf not in self.saved_refs:
+            self.saved_refs[leaf] = list(leaf.refs)
+        cloned = Ref(self.map_lexenv(node.lexenv), node.source, leaf, final=node.final)
+        if node in leaf.refs:
+            leaf.refs[leaf.refs.index(node)] = cloned
+        else:
+            leaf.refs.append(cloned)
+        return self._finish_valued(node, cloned)
+
+    def visit_If(self, node: If) -> If:
+        cloned = If(
+            self.map_lexenv(node.lexenv),
+            node.source,
+            self.map_lvar(node.test),
+            self.block_map[node.consequent],
+            self.block_map[node.alternative],
+        )
+        return self._finish_node(node, cloned)
+
+    def visit_Set(self, node: Set) -> Set:
+        var = node.var
+        if var not in self.saved_sets:
+            self.saved_sets[var] = list(var.sets)
+        cloned = Set(
+            self.map_lexenv(node.lexenv),
+            node.source,
+            var,
+            self.map_lvar(node.value),
+        )
+        if node in var.sets:
+            var.sets[var.sets.index(node)] = cloned
+        else:
+            var.sets.append(cloned)
+        return self._finish_valued(node, cloned)
+
+    def visit_Combination(self, node: Combination) -> Combination:
+        cloned = Combination(
+            self.map_lexenv(node.lexenv),
+            node.source,
+            self.map_lvar(node.fun),
+        )
+        cloned.args = [self.map_lvar(arg) for arg in node.args]
+        cloned.kind = node.kind
+        cloned.fun_info = node.fun_info
+        cloned.info = node.info
+        cloned.template = node.template
+        cloned.predicted = node.predicted
+        cloned.proven = node.proven
+        return self._finish_valued(node, cloned)
+
+    def visit_Bind(self, node: Bind) -> Bind:
+        cloned = Bind(self.map_lexenv(node.lexenv), node.source)
+        cloned.lambda_ = node.lambda_
+        return self._finish_node(node, cloned)
+
+    def visit_Return(self, node: Return) -> Return:
+        cloned = Return(
+            self.map_lexenv(node.lexenv),
+            node.source,
+            self.map_lvar(node.result),
+            node.lambda_,
+        )
+        cloned.result_type = node.result_type
+        return self._finish_node(node, cloned)
+
+    def visit_Cast(self, node: Cast) -> Cast:
+        cloned = Cast(
+            self.map_lexenv(node.lexenv),
+            node.source,
+            self.map_lvar(node.value),
+            node.contract,
+            node.location,
+            node.safety,
+            node.declaration,
+        )
+        cloned.type_check = node.type_check
+        return self._finish_valued(node, cloned)
+
+    def visit_Entry(self, node: Entry) -> Entry:
+        cloned = Entry(self.map_lexenv(node.lexenv), node.source)
+        cloned.cleanup = self.map_cleanup(node.cleanup)
+        return self._finish_node(node, cloned)
+
+    def visit_Exit(self, node: Exit) -> Exit:
+        cloned = Exit(
+            self.map_lexenv(node.lexenv),
+            node.source,
+            None,
+            self.map_lvar(node.value),
+        )
+        return self._finish_valued(node, cloned)
+
+    def visit_Enclose(self, node: Enclose) -> Enclose:
+        cloned = Enclose(self.map_lexenv(node.lexenv), node.source, list(node.funs))
+        return self._finish_node(node, cloned)
+
+
+class _LinkClonedExits(NodeVisitor):
+    def __init__(self, node_map: dict[Node, Node]):
+        self.node_map = node_map
+
+    def visit_Entry(self, node: Entry):
+        cloned = self.node_map[node]
+        cloned.exits = [
+            self.node_map[ex] for ex in node.exits if ex in self.node_map
+        ]
+
+    def visit_Exit(self, node: Exit):
+        cloned = self.node_map[node]
+        if node.entry is not None:
+            cloned.entry = self.node_map.get(node.entry, node.entry)
+
+
+def clone_lambda_component(lambda_: Lambda):
+    """Temporarily replace ``lambda_``'s IR1 component with a deep clone of its
+    control/dataflow graph while keeping ``Lambda`` and ``Leaf`` identities."""
+    old_component = linked(lambda_.component, lambda_, "component")
+    old_blocks = tuple(old_component.blocks())
+    new_component = Component(old_component.name)
+    new_component.kind = old_component.kind
+    new_component.lambdas = list(old_component.lambdas)
+    new_component.reoptimize = False
+    new_component.reanalyze = False
+    new_component.head.number = old_component.head.number
+    new_component.tail.number = old_component.tail.number
+    block_map: dict[Block, Block] = {
+        old_component.head: new_component.head,
+        old_component.tail: new_component.tail,
+    }
+    for old_block in old_blocks:
+        new_block = Block(component=new_component)
+        new_block.number = old_block.number
+        new_block.reoptimize = False
+        new_block.flush_p = old_block.flush_p
+        new_block.type_check = old_block.type_check
+        new_block.delete_p = old_block.delete_p
+        block_map[old_block] = new_block
+    prev_block = new_component.head
+    for old_block in old_blocks:
+        nb = block_map[old_block]
+        prev_block.next = nb
+        nb.prev = prev_block
+        prev_block = nb
+    prev_block.next = new_component.tail
+    new_component.tail.prev = prev_block
+    for old_block in (old_component.head, *old_blocks, old_component.tail):
+        nb = block_map[old_block]
+        nb.pred = [block_map[p] for p in old_block.pred if p in block_map]
+        nb.succ = [block_map[s] for s in old_block.succ if s in block_map]
+    ctran_map: dict[Ctran, Ctran] = {}
+    lvar_map: dict[Lvar, Lvar] = {}
+    cleanup_map: dict[Cleanup, Cleanup] = {}
+    lexenv_map: dict[Lexenv, Lexenv] = {}
+    saved_refs: dict[Leaf, list[Ref]] = {}
+    saved_sets: dict[BasicVar, list[Set]] = {}
+    cloner = _CloneIR1Node(
+        block_map,
+        ctran_map,
+        lvar_map,
+        cleanup_map,
+        lexenv_map,
+        saved_refs,
+        saved_sets,
+    )
+    node_map: dict[Node, Node] = {}
+    old_nodes: list[Node] = []
+    for old_block in old_blocks:
+        for old_node in old_block.nodes():
+            old_nodes.append(old_node)
+            node_map[old_node] = old_node.accept(cloner)
+    for old_ctran, new_ctran in ctran_map.items():
+        new_ctran.next = (
+            node_map.get(old_ctran.next) if old_ctran.next is not None else None
+        )
+        new_ctran.use = (
+            node_map.get(old_ctran.use) if old_ctran.use is not None else None
+        )
+    for old_lvar, new_lvar in lvar_map.items():
+        new_lvar.dest = (
+            node_map.get(old_lvar.dest) if old_lvar.dest is not None else None
+        )
+        new_lvar.uses = [node_map[u] for u in old_lvar.uses if u in node_map]
+    for old_cleanup, new_cleanup in cleanup_map.items():
+        if old_cleanup.mess_up is not None:
+            new_cleanup.mess_up = node_map.get(old_cleanup.mess_up, old_cleanup.mess_up)
+    for old_block in old_blocks:
+        nb = block_map[old_block]
+        nb.start = cloner.map_ctran(old_block.start)
+        nb.last = node_map.get(old_block.last) if old_block.last is not None else None
+    exit_linker = _LinkClonedExits(node_map)
+    for old_node in old_nodes:
+        old_node.accept(exit_linker)
+    saved_lambda = (
+        lambda_.component,
+        lambda_.bind,
+        lambda_.return_,
+        list(lambda_.entries),
+    )
+    lambda_.component = new_component
+    if lambda_.bind is not None:
+        lambda_.bind = node_map.get(lambda_.bind, lambda_.bind)
+    if lambda_.return_ is not None:
+        lambda_.return_ = node_map.get(lambda_.return_, lambda_.return_)
+    lambda_.entries = [node_map.get(e, e) for e in lambda_.entries]
+
+    # Track any leaves whose refs or sets are mutated by IR1 transforms while
+    # the cloned component is active so restore() leaves no dangling refs.
+    def restore() -> None:
+        for block in list(new_component.blocks()):
+            for node in list(block.nodes()):
+                node.accept(_DetachClonedLeafRefs(saved_refs, saved_sets))
+        for leaf, refs in saved_refs.items():
+            leaf.refs[:] = refs
+        for var, sets in saved_sets.items():
+            var.sets[:] = sets
+        (
+            lambda_.component,
+            lambda_.bind,
+            lambda_.return_,
+            entries,
+        ) = saved_lambda
+        lambda_.entries[:] = entries
+
+    return new_component, node_map, restore
+
+
+class _DetachClonedLeafRefs(NodeVisitor):
+    """Remove any refs/sets created during cloned-component IR1 optimization
+    on leaves that were not already in ``saved_refs`` / ``saved_sets``."""
+
+    def __init__(
+        self,
+        saved_refs: dict[Leaf, list[Ref]],
+        saved_sets: dict[BasicVar, list[Set]],
+    ):
+        self.saved_refs = saved_refs
+        self.saved_sets = saved_sets
+
+    def visit_Ref(self, node: Ref):
+        if node.leaf not in self.saved_refs and node in node.leaf.refs:
+            node.leaf.refs.remove(node)
+
+    def visit_Set(self, node: Set):
+        if node.var not in self.saved_sets and node in node.var.sets:
+            node.var.sets.remove(node)
+
