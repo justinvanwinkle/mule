@@ -26,13 +26,16 @@ from .vmdef import define_vop
 from .vop import (
     BOOLEAN,
     BOOLEAN_T,
+    BOX_LAYOUTS,
     BOXED_FLOAT,
+    BOXED_I64,
     CLASS,
     DESCRIPTOR,
     DOUBLE,
     FLOAT_BOX_LAYOUT,
     IMMEDIATE,
     INSTANCE,
+    INT64_BOX_LAYOUT,
     NULL,
     SIGNED,
 )
@@ -105,23 +108,6 @@ _RAW_FLOAT_COMPARE = {
     ast.ComparisonOperator.GREATER: "ogt",
     ast.ComparisonOperator.GREATER_EQUAL: "oge",
 }
-
-
-def decimal(value: int) -> str:
-    """Render arbitrary-size integers without the host's digit conversion cap."""
-    negative = value < 0
-    value = abs(value)
-    chunks = []
-    while value:
-        value, chunk = divmod(value, 1_000_000_000)
-        chunks.append(chunk)
-    if not chunks:
-        return "0"
-    return (
-        ("-" if negative else "")
-        + str(chunks[-1])
-        + "".join(f"{chunk:09d}" for chunk in reversed(chunks[:-1]))
-    )
 
 
 # Fixed templates: emitted by the IR2 converter for IR1 nodes other than
@@ -361,12 +347,17 @@ def type_check(gen, vop):
         gen.store(result, gen.take(operand))
         return
     actual = operand.tn.type or UNKNOWN
-    if check.safety and not actual.fits(check.contract.fact):
+    checked = check.safety and not actual.fits(check.contract.fact)
+    if checked:
         # Keep the unrefined operand owned by its original slot until the
         # assertion succeeds, so error cleanup releases its actual value.
         value = gen.load(operand)
         check.contract.accept(_ContractAssertion(gen, value))
     value = gen.take(operand)
+    if checked:
+        # Failure landings still own the unchecked input. Keep its SSA identity
+        # separate so successful refinement cannot change their release facts.
+        value = gen.operation(f"getelementptr i8, ptr {value}, i64 0")
     gen.publish(result, value)
     gen.refine(result.tn, value)
 
@@ -382,14 +373,24 @@ class _ContractAssertion:
     def visit_IntegerContract(self, contract):
         fact = contract.fact
         module = self.gen.module
-        minimum = module.text(decimal(fact.minimum))
-        maximum = module.text(decimal(fact.maximum))
+        minimum = self.integer_bound(fact.minimum)
+        maximum = self.integer_bound(fact.maximum)
         name = module.text(contract.display_name)
         status = self.gen.operation(
             f"call i32 @mule_assert_integer(ptr {self.value}, ptr {minimum}, "
             f"ptr {maximum}, ptr {name})"
         )
         self.gen.check_status(status)
+
+    def integer_bound(self, value: int | None) -> str:
+        if value is None:
+            return "null"
+        bound = self.gen.operation(
+            ast.IntegerLiteral(value).accept(BorrowedLiteralEmitter(self.gen.module))
+        )
+        if not -(1 << 62) <= value < (1 << 62):
+            self.gen.check_pointer(bound)
+        return bound
 
     def visit_FloatContract(self, contract):
         name = self.gen.module.text(contract.display_name)
@@ -548,7 +549,18 @@ def _binary_generic(gen, vop, opcode, *, inplace):
     ):
         reuse = gen.operation(f"load ptr, ptr {gen.local_slot(info.reuse_local)}")
         reuse_slot = gen.reuse_slot()
-    if opcode in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12):
+    rejected = gen.context.rejected_fixnum_guard
+    if rejected is not None and rejected.rejects_operands(gen.component, (left, right)):
+        value = _binary_fallback(gen, lhs, rhs, opcode, inplace, reuse, reuse_slot)
+        gen.native_result(result, value)
+        gen.refine(result.tn, value)
+        return
+    if opcode in (0, 1):
+        _tagged_add_sub(
+            gen, result, lhs, rhs, opcode, fixnums, inplace, reuse, reuse_slot
+        )
+        return
+    if opcode in (2, 4, 5, 8, 9, 10, 11, 12):
         operation = (
             f"call ptr @mule.{prefix}.binary.{opcode}(ptr {lhs}, ptr {rhs}, "
             f"i32 {int(inplace)}, ptr {reuse}, ptr {reuse_slot})"
@@ -559,6 +571,62 @@ def _binary_generic(gen, vop, opcode, *, inplace):
             f"i32 {int(inplace)}, ptr null)"
         )
     gen.pointer_result(result, operation, (lhs, rhs))
+
+
+def _tagged_add_sub(gen, result, lhs, rhs, opcode, fixnums, inplace, reuse, reuse_slot):
+    """Keep infallible tagged arithmetic separate from fallible object dispatch."""
+    slow = gen.fresh("arithmetic.slow")[1:]
+    fast = gen.fresh("arithmetic.fast")[1:]
+    done = gen.fresh("arithmetic.done")[1:]
+    left_bits = gen.operation(f"ptrtoint ptr {lhs} to i64")
+    right_bits = gen.operation(f"ptrtoint ptr {rhs} to i64")
+    if not fixnums:
+        tags = gen.operation(f"and i64 {left_bits}, {right_bits}")
+        tag = gen.operation(f"and i64 {tags}, 1")
+        integers = gen.operation(f"icmp ne i64 {tag}, 0")
+        arithmetic = gen.fresh("arithmetic.fixnums")[1:]
+        gen.line(f"br i1 {integers}, label %{arithmetic}, label %{slow}")
+        gen.lines.append(arithmetic + ":")
+    intrinsic = "sadd" if opcode == 0 else "ssub"
+    cleared = gen.operation(f"and i64 {left_bits if opcode == 0 else right_bits}, -2")
+    left = cleared if opcode == 0 else left_bits
+    right = right_bits if opcode == 0 else cleared
+    checked = gen.operation(
+        f"call {{i64, i1}} @llvm.{intrinsic}.with.overflow.i64(i64 {left}, i64 {right})"
+    )
+    overflow = gen.operation(f"extractvalue {{i64, i1}} {checked}, 1")
+    gen.line(f"br i1 {overflow}, label %{slow}, label %{fast}")
+    gen.lines.append(fast + ":")
+    bits = gen.operation(f"extractvalue {{i64, i1}} {checked}, 0")
+    value = gen.operation(f"inttoptr i64 {bits} to ptr")
+    # This edge proves both operands are immediate fixnums, including when
+    # their incoming TNs were unknown. Neither operand owns heap storage here.
+    gen.line(f"br label %{done}")
+
+    gen.lines.append(slow + ":")
+    fallback = _binary_fallback(gen, lhs, rhs, opcode, inplace, reuse, reuse_slot)
+    slow_success = gen.current_block()
+    gen.line(f"br label %{done}")
+    gen.lines.append(done + ":")
+    merged = gen.operation(f"phi ptr [{value}, %{fast}], [{fallback}, %{slow_success}]")
+    gen.native_result(result, merged)
+    gen.refine(result.tn, merged)
+
+
+def _binary_fallback(gen, lhs, rhs, opcode, inplace, reuse, reuse_slot):
+    """Dispatch owned operands and check only this fallible operation's result."""
+    if reuse_slot != "null":
+        gen.line(f"store ptr {reuse}, ptr {reuse_slot}")
+    fallback = gen.operation(
+        f"call ptr @mule_binary_reuse(i32 {opcode}, ptr {lhs}, ptr {rhs}, "
+        f"i32 {int(inplace)}, ptr {reuse_slot})"
+    )
+    # The operands were already consumed. Release them on failure too,
+    # while leaving unrelated live temporaries to the ordinary failure landing.
+    for operand in (lhs, rhs):
+        gen.release(operand)
+    gen.check_pointer(fallback)
+    return fallback
 
 
 def _define_binary(operator, opcode):
@@ -1806,16 +1874,24 @@ def read_int64(gen, vop, values):
     index = gen.decode(values[1])
     address = gen.operation(f"getelementptr i64, ptr {payload}, i64 {index}")
     value = gen.operation(f"load i64, ptr {address}")
-    return gen.operation(f"call ptr @mule_box_i64(i64 {value})")
+    return gen.operation(f"call ptr @{INT64_BOX_LAYOUT.symbol()}(i64 {value})")
 
 
 def write_int64(gen, vop, values):
     payload = gen.operation(f"call ptr @mule_native_payload(ptr {values[0]})")
     gen.check_pointer(payload)
-    slot = gen.operation("alloca i64")
-    status = gen.operation(f"call i32 @mule_unbox_i64(ptr {values[2]}, ptr {slot})")
-    gen.check_status(status)
-    value = gen.operation(f"load i64, ptr {slot}")
+    fact = vop.args[2].tn.type or UNKNOWN
+    if fact.is_fixnum:
+        value = gen.decode(values[2])
+    elif vop.args[2].tn.primitive_type is BOXED_I64:
+        value = gen.operation(
+            f"call i64 @{INT64_BOX_LAYOUT.symbol('load')}(ptr {values[2]})"
+        )
+    else:
+        slot = gen.operation("alloca i64")
+        status = gen.operation(f"call i32 @mule_unbox_i64(ptr {values[2]}, ptr {slot})")
+        gen.check_status(status)
+        value = gen.operation(f"load i64, ptr {slot}")
     index = gen.decode(values[1])
     address = gen.operation(f"getelementptr i64, ptr {payload}, i64 {index}")
     gen.line(f"store i64 {value}, ptr {address}")
@@ -2052,6 +2128,17 @@ def raw_setattr(gen, vop):
 
 
 @define_vop(
+    "raw-method-attribute",
+    translate=fndb.GETATTR,
+    args=((INSTANCE,),),
+    results=((INSTANCE,),),
+    ltn_policy=RAW,
+)
+def raw_method_attribute(gen, vop):
+    gen.store(vop.results[0], gen.take(vop.args[0]))
+
+
+@define_vop(
     "raw-resolve-method",
     translate=fndb.RESOLVE_METHOD,
     args=((INSTANCE,),),
@@ -2065,7 +2152,7 @@ def raw_resolve_method(gen, vop):
 @define_vop(
     "raw-call-resolved",
     translate=fndb.CALL_RESOLVED,
-    results=(RAW_SCALAR,),
+    results=((*RAW_SCALAR, INSTANCE, CLASS),),
     ltn_policy=RAW,
 )
 def raw_call_resolved(gen, vop):
@@ -2080,6 +2167,8 @@ def raw_call_resolved(gen, vop):
     result = gen.operation(
         f"call {plan.returned.llvm_type} {plan.entry}({', '.join(parameters)})"
     )
+    if plan.returned.owns_result:
+        gen.line(f"store ptr {result}, ptr {gen.owner_slot(vop.node)}")
     failed = gen.operation("load i1, ptr %call.error")
     gen.guard(failed)
     gen.store(vop.results[0], result)
@@ -2102,9 +2191,7 @@ def raw_construct(gen, vop):
     instance = gen.operation(f"call ptr {body}({', '.join(parameters)})")
     gen.line(f"store ptr {instance}, ptr {gen.owner_slot(vop.node)}")
     gen.check_pointer(instance)
-    payload = gen.operation(f"call ptr @mule_native_payload(ptr {instance})")
-    gen.check_pointer(payload)
-    gen.store(vop.results[0], payload)
+    gen.store(vop.results[0], instance)
 
 
 # Runtime helper templates shared by the object templates.
@@ -2228,68 +2315,6 @@ entry:
   %index = lshr i64 %encoded, {ATTR_SHIFT}
   %slot = getelementptr ptr, ptr %fields, i64 %index
   ret ptr %slot
-}}"""
-
-
-def leaf_box_helpers(layout) -> str:
-    """Expose construction, extraction and private lifetime operations to LLVM."""
-    pointers = "\n".join(
-        f"  %empty.{index} = getelementptr i8, ptr %box, i64 {offset}\n"
-        f"  store ptr null, ptr %empty.{index}"
-        for index, offset in enumerate(layout.null_pointer_offsets)
-    )
-    llvm_type = layout.storage.llvm_type
-    return f"""define internal nonnull ptr @{layout.symbol()}({llvm_type} %value) alwaysinline {{
-entry:
-  %box = call noalias nonnull ptr @mule_allocate_object_storage()
-  store i64 1, ptr %box
-  %tracked = getelementptr i8, ptr %box, i64 8
-  store i8 0, ptr %tracked
-  %gc.slot = getelementptr i8, ptr %box, i64 12
-  store i32 0, ptr %gc.slot
-  %kind = getelementptr i8, ptr %box, i64 {DATA_OFFSET}
-  store i32 {layout.tag}, ptr %kind
-  %payload = getelementptr i8, ptr %box, i64 {layout.payload_offset}
-  store {llvm_type} %value, ptr %payload
-{pointers}
-  ret ptr %box
-}}
-
-define internal {llvm_type} @{layout.symbol("load")}(ptr %box) alwaysinline {{
-entry:
-  %payload = getelementptr i8, ptr %box, i64 {layout.payload_offset}
-  %value = load {llvm_type}, ptr %payload
-  ret {llvm_type} %value
-}}
-
-define internal ptr @{layout.symbol("private.retain")}(ptr %box) alwaysinline {{
-entry:
-  %null = icmp eq ptr %box, null
-  br i1 %null, label %done, label %retain
-retain:
-  %refs = load i64, ptr %box
-  %next = add i64 %refs, 1
-  store i64 %next, ptr %box
-  br label %done
-done:
-  ret ptr %box
-}}
-
-define internal void @{layout.symbol("private.release")}(ptr %box) alwaysinline {{
-entry:
-  %null = icmp eq ptr %box, null
-  br i1 %null, label %done, label %release
-release:
-  %refs = load i64, ptr %box
-  %next = sub i64 %refs, 1
-  store i64 %next, ptr %box
-  %last = icmp eq i64 %next, 0
-  br i1 %last, label %free, label %done
-free:
-  call void @mule_deallocate_object_storage(ptr %box)
-  br label %done
-done:
-  ret void
 }}"""
 
 
@@ -2529,26 +2554,7 @@ _RANGE = """  %test.shifted = shl i64 %result, 1
 
 
 def _binary_helper(op: int, *, fixnums: bool = False) -> str:
-    decode = """  %a = ashr i64 %left.bits, 1
-  %b = ashr i64 %right.bits, 1
-"""
-    encode = _ENCODE
-    if op in (0, 1):
-        # Exactly one operand retains the tag: the result is 2*(a +/- b)+1.
-        # Signed word overflow therefore also checks the fixnum result range.
-        decode = ""
-        intrinsic = "sadd" if op == 0 else "ssub"
-        cleared = "left" if op == 0 else "right"
-        left = "%cleared" if op == 0 else "%left.bits"
-        right = "%right.bits" if op == 0 else "%cleared"
-        operation = f"""  %cleared = and i64 %{cleared}.bits, -2
-  %checked = call {{i64, i1}} @llvm.{intrinsic}.with.overflow.i64(i64 {left}, i64 {right})
-  %result = extractvalue {{i64, i1}} %checked, 0
-  %overflow = extractvalue {{i64, i1}} %checked, 1
-  br i1 %overflow, label %slow, label %encode"""
-        encode = """  %value = inttoptr i64 %result to ptr
-  ret ptr %value"""
-    elif op == 2:
+    if op == 2:
         operation = f"""  %checked = call {{i64, i1}} @llvm.smul.with.overflow.i64(i64 %a, i64 %b)
   %result = extractvalue {{i64, i1}} %checked, 0
   %overflow = extractvalue {{i64, i1}} %checked, 1
@@ -2617,18 +2623,20 @@ slow.store:
 slow.call:
   %fallback = call ptr @mule_binary_reuse(i32 {op}, ptr %left, ptr %right, i32 %inplace, ptr %reuse.slot)
   ret ptr %fallback"""
-        if op in (0, 1, 2) and not fixnums
+        if op == 2 and not fixnums
         else f"""  %fallback = call ptr @mule_binary_reuse(i32 {op}, ptr %left, ptr %right, i32 %inplace, ptr null)
   ret ptr %fallback"""
     )
-    inline = " alwaysinline" if op in (0, 1, 2, 10, 11, 12) else ""
+    inline = " alwaysinline" if op in (2, 10, 11, 12) else ""
     return f"""define internal ptr @mule.{prefix}.binary.{op}(ptr %left, ptr %right, i32 %inplace, ptr %reuse, ptr %reuse.slot){inline} {{
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
-{guard}{decode}{operation}
+{guard}  %a = ashr i64 %left.bits, 1
+  %b = ashr i64 %right.bits, 1
+{operation}
 encode:
-{encode}
+{_ENCODE}
 slow:
 {slow}
 }}"""
@@ -2808,19 +2816,24 @@ ready:
   ret ptr %owned
 }
 
-define internal ptr @mule.cached.int(ptr %slot, ptr %text) alwaysinline {
+define internal ptr @mule.cached.int(ptr %slot, ptr %integer) alwaysinline {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
   br i1 %present, label %ready, label %build
 build:
-  %built = call ptr @mule_literal_int(ptr %text)
+  %built = call ptr @mule_literal_integer(ptr %integer)
+  %bad = icmp eq ptr %built, null
+  br i1 %bad, label %failed, label %built.ok
+built.ok:
   store ptr %built, ptr %slot
   br label %ready
 ready:
-  %result = phi ptr [%cached, %entry], [%built, %build]
+  %result = phi ptr [%cached, %entry], [%built, %built.ok]
   %owned = call ptr @mule.heap.retain(ptr %result)
   ret ptr %owned
+failed:
+  ret ptr null
 }
 
 define internal ptr @mule.cached.tuple(ptr %slot, i64 %count, ptr %items) alwaysinline {
@@ -2883,13 +2896,13 @@ ready:
   ret ptr %result
 }
 
-define internal ptr @mule.borrowed.int(ptr %slot, ptr %text) alwaysinline {
+define internal ptr @mule.borrowed.int(ptr %slot, ptr %integer) alwaysinline {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
   br i1 %present, label %ready, label %build
 build:
-  %built = call ptr @mule_literal_int(ptr %text)
+  %built = call ptr @mule_literal_integer(ptr %integer)
   store ptr %built, ptr %slot
   br label %ready
 ready:
@@ -2937,14 +2950,11 @@ def helpers(*, bootstrap: bool = False) -> str:
             MIXED_COMPARE,
             LITERAL_HELPERS,
             _ownership(),
-            leaf_box_helpers(FLOAT_BOX_LAYOUT),
+            *(layout.codec.helpers(layout) for layout in BOX_LAYOUTS),
             _truth(),
             _attribute_cache_helpers(),
-            *(_binary_helper(op) for op in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12)),
-            *(
-                _binary_helper(op, fixnums=True)
-                for op in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12)
-            ),
+            *(_binary_helper(op) for op in (2, 4, 5, 8, 9, 10, 11, 12)),
+            *(_binary_helper(op, fixnums=True) for op in (2, 4, 5, 8, 9, 10, 11, 12)),
             *(_unary_helper(op) for op in range(4)),
             *(_unary_helper(op, fixnum=True) for op in range(3)),
             *(_compare_helper(op) for op in range(8)),
@@ -3078,7 +3088,6 @@ __all__ = [
     "LiteralEmitter",
     "allocate",
     "compiled_call",
-    "decimal",
     "helpers",
     "initialize",
     "invalid_initializer",

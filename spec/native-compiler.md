@@ -550,6 +550,24 @@ unordered floating-point NaN case; an identity default would change that result.
 
 ## Annotation contracts
 
+Integer contract bounds cross the native boundary as borrowed integer values.
+Fixnum bounds use the ordinary tagged integer representation. Wider bounds use
+the same unit-owned numeric constants as other bigint literals. Null denotes an
+absent bound, distinct from the integer zero. Checks compare integers directly;
+they do not parse text or construct a bound for each comparison. Display labels
+remain text for error messages. Successful checks refine the value only on the
+success path; a rejected heap argument retains its original cleanup obligation.
+
+Bigint literals are emitted as native GMP integer headers and native limb
+arrays, then copied into the existing unit-owned numeric pool. This follows
+SBCL's `integer-bits-to-core` and `bignum-to-core` in
+`src/compiler/generic/genesis.lisp`, which write native numeric constant words.
+Mule uses GMP's read-only integer layout rather than SBCL's bignum layout.
+The primitive requires 64-bit GMP limbs without nail bits and rejects an
+incompatible GMP ABI before reading them. Static numeric storage stays borrowed;
+the owned runtime copy follows the existing pool lifetime. There is no decimal
+literal ABI or serialized numeric interchange format.
+
 ### Builtin Python annotations and SBCL correspondence
 
 All parsed annotation expressions are accepted, including forward references,

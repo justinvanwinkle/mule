@@ -1,27 +1,21 @@
 //! OS fatal-signal diagnostics over immutable compiler-emitted labels.
-//! Signal handlers write native bytes; no Python code, locks or allocation.
+//! Explicit activation-chain traversal writes native bytes without Python,
+//! locks or allocation. Optional libc C-stack output remains a separate path.
 
 use crate::object::{self, Data, Value};
-use crate::traceback::CodeInfo;
-use std::cell::RefCell;
-use std::ffi::{CStr, c_char, c_void};
-use std::ptr::{null, null_mut};
+use std::ffi::{CStr, c_void};
+use std::ptr::null_mut;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicUsize, Ordering};
 
-struct Frame { label: *const c_char, parent: *mut Frame }
 struct Header { bytes: Vec<u8> }
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static FD: AtomicI32 = AtomicI32::new(2);
 static C_STACK: AtomicBool = AtomicBool::new(false);
-static HEAD: AtomicPtr<Frame> = AtomicPtr::new(null_mut());
 static HEADER: AtomicPtr<Header> = AtomicPtr::new(null_mut());
 static HEADER_ROOT: Mutex<Option<Box<Header>>> = Mutex::new(None);
 const SIGNALS: [i32; 5] = [11, 8, 6, 7, 4];
 static PREVIOUS: [AtomicUsize; 5] = [const { AtomicUsize::new(0) }; 5];
-thread_local! {
-    static FRAMES: RefCell<Vec<Box<Frame>>> = const { RefCell::new(Vec::new()) };
-}
 
 unsafe extern "C" {
     fn signal(number: i32, handler: usize) -> usize;
@@ -34,55 +28,6 @@ unsafe extern "C" {
 
 #[inline(always)]
 pub fn enabled() -> bool { ACTIVE.load(Ordering::Relaxed) }
-
-#[inline(always)]
-pub fn push(code: *const CodeInfo) {
-    if enabled() {
-        push_slow(code);
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn push_slow(code: *const CodeInfo) {
-    FRAMES.with_borrow_mut(|frames| {
-        let mut node = Box::new(Frame {
-            label: unsafe { (*code).fault_label },
-            parent: HEAD.load(Ordering::Relaxed),
-        });
-        HEAD.store(&mut *node, Ordering::SeqCst);
-        frames.push(node);
-    });
-}
-
-#[inline(always)]
-pub fn pop() {
-    if enabled() {
-        pop_slow();
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn pop_slow() {
-    FRAMES.with_borrow_mut(|frames| {
-        if let Some(node) = frames.pop() {
-            HEAD.store(node.parent, Ordering::SeqCst);
-        }
-    });
-}
-
-pub fn replace(codes: impl Iterator<Item = *const CodeInfo>) {
-    let mut frames = Vec::new();
-    let mut parent = null_mut();
-    for code in codes {
-        let mut node = Box::new(Frame { label: unsafe { (*code).fault_label }, parent });
-        parent = &mut *node;
-        frames.push(node);
-    }
-    HEAD.store(parent, Ordering::SeqCst);
-    FRAMES.with_borrow_mut(|current| { *current = frames; });
-}
 
 unsafe fn output(fd: i32, bytes: &[u8]) {
     unsafe {
@@ -98,10 +43,10 @@ unsafe fn output(fd: i32, bytes: &[u8]) {
 unsafe fn dump(fd: i32, header: &[u8]) {
     unsafe {
         output(fd, header);
-        let mut node = HEAD.load(Ordering::SeqCst);
+        let mut node = crate::traceback::active_head();
         let mut count = 0;
         while !node.is_null() && count < 100 {
-            let label = (*node).label;
+            let label = (*(*node).code).fault_label;
             if !label.is_null() { output(fd, CStr::from_ptr(label).to_bytes()); }
             node = (*node).parent;
             count += 1;
@@ -184,7 +129,6 @@ unsafe extern "C" fn fault_enable(_: Value, args: Value) -> Value {
         FD.store(fd, Ordering::Relaxed);
         C_STACK.store(c_stack, Ordering::Relaxed);
         if !ACTIVE.swap(true, Ordering::SeqCst) {
-            crate::traceback::refresh_fault_frames();
             for (index, number) in SIGNALS.iter().enumerate() {
                 let previous = signal(*number, fatal as *const () as usize);
                 if previous == usize::MAX {
@@ -209,7 +153,6 @@ unsafe extern "C" fn fault_disable(_: Value, args: Value) -> Value {
         }
         HEADER.store(null_mut(), Ordering::SeqCst);
         *HEADER_ROOT.lock().unwrap() = None;
-        replace(std::iter::empty());
         object::bool_value(previous)
     }
 }
@@ -218,9 +161,7 @@ unsafe extern "C" fn fault_dump(_: Value, args: Value) -> Value {
     unsafe {
         let Some([fd, header]) = operands(args) else { return null_mut(); };
         let (Some(fd), Some(header)) = (descriptor(fd), bytes(header)) else { return null_mut(); };
-        replace(crate::traceback::fault_codes().into_iter());
         dump(fd, header);
-        if !enabled() { replace(std::iter::empty()); }
         object::none_value()
     }
 }

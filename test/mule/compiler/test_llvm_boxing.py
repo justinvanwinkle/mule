@@ -9,7 +9,6 @@ from mule.compiler import emit_llvm
 from mule.compiler.codegen import DECLARATIONS
 from mule.compiler.driver import Toolchain, link_llvm
 from mule.compiler.vop import FLOAT_BOX_LAYOUT
-from mule.compiler.vops import leaf_box_helpers
 from test.mule.compiler.test_exception_groups import compare
 from test.mule.compiler.test_native import run_native
 
@@ -30,7 +29,7 @@ def test_private_box_roundtrip_eliminates_real_pool_calls_without_lto(tmp_path):
     llvm = (
         DECLARATIONS
         + "\n"
-        + leaf_box_helpers(layout)
+        + layout.codec.helpers(layout)
         + f"""
 declare double @strtod(ptr, ptr)
 define double @roundtrip(double %input) noinline {{

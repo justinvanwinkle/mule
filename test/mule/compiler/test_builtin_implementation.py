@@ -18,7 +18,7 @@ def test_builtin_marker_controls_traceback_entries_preserving_native_frames(mark
         "implementation.py",
     )
     assert ("call void @mule_traceback_here" in llvm) is (not marker)
-    assert "call void @mule_frame_push" in llvm
+    assert "store atomic ptr %frame, ptr %frame.slot release" in llvm
 
 
 @pytest.mark.parametrize("value", ("1", "None", "'yes'", "bool(1)"))

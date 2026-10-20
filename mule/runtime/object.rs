@@ -388,6 +388,10 @@ pub const FLOAT_VALUE_OFFSET: usize = 24;
 pub const FLOAT_CLASS_OFFSET: usize = 32;
 pub const FLOAT_ATTRIBUTES_OFFSET: usize = 40;
 pub const INSTANCE_TAG: u32 = 16;
+pub const NATIVE_INSTANCE_TAG: u32 = 17;
+pub const NATIVE_INSTANCE_CLASS_OFFSET: usize = 24;
+pub const NATIVE_INSTANCE_PAYLOAD_OFFSET: usize = 32;
+pub const NATIVE_INSTANCE_LENGTH_OFFSET: usize = 40;
 pub const CLASS_TAG: u32 = 15;
 /// `Data::Instance.ty`, the class object.
 pub const INSTANCE_CLASS_OFFSET: usize = 24;
@@ -3843,6 +3847,54 @@ mod lifetime_tests {
                 word::<*const crate::classes::ClassLayout>(class, CLASS_LAYOUT_OFFSET),
                 &**layout as *const _
             );
+            release(instance);
+            release(class);
+        }
+    }
+
+    #[test]
+    fn compiled_bigint_offsets_match_the_existing_object_storage() {
+        unsafe {
+            let value = new_value(Data::BigInt(
+                BigInt::from_i64(i64::MIN), std::ptr::null_mut(), std::ptr::null_mut(),
+            ));
+            assert_eq!(word::<u32>(value, DATA_OFFSET), BIGINT_TAG);
+            assert!(word::<Value>(value, BIGINT_CLASS_OFFSET).is_null());
+            assert!(word::<Value>(value, BIGINT_ATTRIBUTES_OFFSET).is_null());
+            let Data::BigInt(integer, class, attributes) = &(*value).data else {
+                panic!("missing integer storage");
+            };
+            let base = value as usize;
+            assert_eq!(integer as *const BigInt as usize - base, BIGINT_VALUE_OFFSET);
+            assert_eq!(class as *const Value as usize - base, BIGINT_CLASS_OFFSET);
+            assert_eq!(attributes as *const Value as usize - base, BIGINT_ATTRIBUTES_OFFSET);
+            assert_eq!(integer.to_i64(), Some(i64::MIN));
+            release(value);
+        }
+    }
+
+    #[test]
+    fn compiled_native_instance_offsets_preserve_the_owner_and_payload() {
+        unsafe {
+            let class = new_value(Data::Class(Box::new(crate::classes::ClassLayout::for_test())));
+            let payload = vec![17_i64, -23].into_boxed_slice();
+            let field_data = payload.as_ptr();
+            let instance = new_value(Data::NativeInstance { ty: retain(class), payload });
+            assert_eq!(word::<u32>(instance, DATA_OFFSET), NATIVE_INSTANCE_TAG);
+            assert_eq!(word::<Value>(instance, NATIVE_INSTANCE_CLASS_OFFSET), class);
+            assert_eq!(word::<*const i64>(instance, NATIVE_INSTANCE_PAYLOAD_OFFSET), field_data);
+            assert_eq!(word::<usize>(instance, NATIVE_INSTANCE_LENGTH_OFFSET), 2);
+            let Data::NativeInstance { ty, payload } = &(*instance).data else {
+                panic!("missing native instance storage");
+            };
+            let base = instance as usize;
+            assert_eq!(ty as *const Value as usize - base, NATIVE_INSTANCE_CLASS_OFFSET);
+            assert_eq!(payload as *const Box<[i64]> as usize - base, NATIVE_INSTANCE_PAYLOAD_OFFSET);
+            let borrowed = crate::native_storage::mule_native_payload(instance);
+            borrowed.add(1).write(42);
+            assert_eq!(crate::native_storage::mule_native_payload(instance), borrowed);
+            assert_eq!(*borrowed.add(1), 42);
+            assert_eq!(word::<usize>(instance, NATIVE_INSTANCE_LENGTH_OFFSET), 2);
             release(instance);
             release(class);
         }

@@ -59,6 +59,7 @@ from .ctype import (
     UNBOUND,
     UNKNOWN,
     UNKNOWN_UNBOUND,
+    InstanceType,
     IntegerType,
     IteratorType,
     TextType,
@@ -1203,6 +1204,12 @@ def _propagate_getattr(visitor: _Propagation, node: Combination):
     # ``%resolve_method`` and keep their precise mutation tracking.
     if node.args:
         visitor.widen_escaped_container(visitor.origins.get(node.args[0]))
+        if node.info is not None:
+            field_type = visitor.walk.instance_field_type(
+                visitor.type_of(node.args[0]), node.info.name
+            )
+            if field_type is not UNKNOWN:
+                return _fact(field_type)
 
 
 @defpropagate("%make_function")
@@ -1249,8 +1256,14 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
             # like those, the prediction seeds the callee's guarded entry
             # contexts but publishes no return type.
             if not has_keywords:
+                receiver_class = receiver_type.instance_class()
+                seeded_receiver = (
+                    InstanceType(receiver_class)
+                    if receiver_class is not None
+                    else receiver_type
+                )
                 visitor.walk.method_calls.append(
-                    CallSite(method, (receiver_type, *arg_types), False)
+                    CallSite(method, (seeded_receiver, *arg_types), False)
                 )
             visitor.walk.method_targets[node] = method
             visitor.invalidate()
@@ -1784,6 +1797,14 @@ class _Walk:
         if facts is None:
             return None
         return facts.methods.get(name)
+
+    def instance_field_type(self, receiver_type: ValueType, name: str) -> ValueType:
+        """The predicted field type on instances of the receiver's class,
+        restricted to shapes whose consumers guard their runtime operations."""
+        facts = self.class_facts.get(receiver_type.instance_class())
+        if facts is None:
+            return UNKNOWN
+        return facts.fields.get(name, UNKNOWN)
 
     def builtin_target(
         self, fun_lvar

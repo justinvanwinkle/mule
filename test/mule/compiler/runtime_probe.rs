@@ -6,7 +6,7 @@ use std::ptr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use mule_runtime::numeric::{mule_literal_float, mule_literal_int};
+use mule_runtime::numeric::mule_literal_float;
 use mule_runtime::*;
 
 static SCENARIO: OnceLock<String> = OnceLock::new();
@@ -244,8 +244,8 @@ unsafe fn bigint_reuse() {
 }
 
 unsafe fn integer(decimal: &str) -> Value {
-    let text = CString::new(decimal).expect("probe integer contains no NUL");
-    unsafe { mule_literal_int(text.as_ptr()) }
+    let value = mule_runtime::gmp::BigInt::from_decimal(decimal).expect("invalid probe integer");
+    unsafe { mule_runtime::numeric::integer_import_owned(value) }
 }
 
 unsafe fn text(value: &str) -> Value {

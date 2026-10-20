@@ -44,6 +44,7 @@ unsafe extern "C" {
     fn __gmpz_sizeinbase(value: *const Mpz, base: c_int) -> usize;
     fn __gmpz_tstbit(value: *const Mpz, bit: c_ulong) -> c_int;
     fn __gmpz_cmp(left: *const Mpz, right: *const Mpz) -> c_int;
+    fn __gmpz_cmp_si(left: *const Mpz, right: c_long) -> c_int;
     fn __gmpz_cmp_d(left: *const Mpz, right: c_double) -> c_int;
     fn __gmpz_abs(result: *mut Mpz, value: *const Mpz);
     fn __gmpz_neg(result: *mut Mpz, value: *const Mpz);
@@ -64,7 +65,7 @@ unsafe extern "C" {
 }
 
 /// The active GMP numeric bits per limb, including any configured nail bits.
-/// Direct binary64-limb layouts must check this value before using that ABI.
+/// Direct 64-bit limb layouts must check this value before using that ABI.
 pub fn bits_per_limb() -> c_int {
     unsafe { __gmp_bits_per_limb }
 }
@@ -191,6 +192,10 @@ impl BigInt {
 
     pub fn compare(&self, other: &Self) -> Ordering {
         unsafe { __gmpz_cmp(&self.0, &other.0) }.cmp(&0)
+    }
+
+    pub fn compare_i64(&self, other: i64) -> Ordering {
+        unsafe { __gmpz_cmp_si(&self.0, other as c_long) }.cmp(&0)
     }
 
     /// The caller must exclude NaN, which GMP's comparison does not accept.
@@ -325,5 +330,63 @@ impl Clone for BigInt {
 impl Drop for BigInt {
     fn drop(&mut self) {
         unsafe { __gmpz_clear(&mut self.0) };
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+
+    #[test]
+    fn compiled_mpz_offsets_match_the_public_gmp_storage_abi() {
+        assert_eq!(std::mem::offset_of!(Mpz, allocated), MPZ_ALLOCATED_OFFSET);
+        assert_eq!(std::mem::offset_of!(Mpz, size), MPZ_SIZE_OFFSET);
+        assert_eq!(std::mem::offset_of!(Mpz, limbs), MPZ_LIMBS_OFFSET);
+        assert_eq!(std::mem::size_of::<Mpz>(), MPZ_STORAGE_SIZE);
+        assert_eq!(std::mem::align_of::<Mpz>(), MPZ_STORAGE_ALIGNMENT);
+        assert_eq!(std::mem::offset_of!(BigInt, 0), 0);
+        assert_eq!(std::mem::size_of::<BigInt>(), MPZ_STORAGE_SIZE);
+        assert_eq!(std::mem::align_of::<BigInt>(), MPZ_STORAGE_ALIGNMENT);
+        assert_eq!(std::mem::size_of::<c_ulong>(), 8);
+    }
+
+    #[test]
+    fn callback_allocated_single_limb_values_support_normal_gmp_operations() {
+        // The compiler uses the same guard before emitting this physical form.
+        if bits_per_limb() != 64 {
+            return;
+        }
+        for value in [0, 1, -1, -(1_i64 << 62), (1_i64 << 62) - 1, i64::MIN, i64::MAX] {
+            unsafe {
+                let limbs = allocate_limbs(std::mem::size_of::<c_ulong>());
+                limbs.write(value.unsigned_abs() as c_ulong);
+                let integer = BigInt(Mpz {
+                    allocated: 1,
+                    size: value.signum() as c_int,
+                    limbs,
+                });
+                assert_eq!(integer.to_i64(), Some(value));
+                assert_eq!(integer.to_decimal(), value.to_string());
+                assert_eq!(integer.compare(&BigInt::from_i64(value)), Ordering::Equal);
+                assert_eq!(integer.clone().to_i64(), Some(value));
+                // Ordinary Drop must accept the callback-owned raw allocation.
+                drop(integer);
+            }
+        }
+    }
+
+    #[test]
+    fn configured_callbacks_can_release_raw_limb_buffers() {
+        unsafe {
+            let bytes = 3 * std::mem::size_of::<c_ulong>();
+            let limbs = allocate_limbs(bytes);
+            for index in 0..3 {
+                limbs.add(index).write((index + 17) as c_ulong);
+            }
+            for index in 0..3 {
+                assert_eq!(*limbs.add(index), (index + 17) as c_ulong);
+            }
+            deallocate_limbs(limbs, bytes);
+        }
     }
 }

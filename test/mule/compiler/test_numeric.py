@@ -22,10 +22,12 @@ def test_tagged_add_sub_keep_encoded_operands(tmp_path):
         check=True,
         timeout=30,
     ).stdout
-    for prefix in ("fast", "fixnum"):
-        for opcode, intrinsic in ((0, "sadd"), (1, "ssub")):
+    # Add/sub now emit their success and error edges in the VOP body rather
+    # than merging them inside a nullable-result helper.
+    for entry in ("body", "spec.0"):
+        for operation, intrinsic in (("add", "sadd"), ("sub", "ssub")):
             body = re.search(
-                rf"^define[^\n]*@mule\.{prefix}\.binary\.{opcode}\([^\n]*\)[^\n]*\{{\n(.*?)^\}}",
+                rf'^define[^\n]*@"?mule_fn_{operation}\.{re.escape(entry)}"?\([^\n]*\)[^\n]*\{{\n(.*?)^\}}',
                 optimized,
                 re.MULTILINE | re.DOTALL,
             )

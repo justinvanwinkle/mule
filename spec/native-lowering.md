@@ -221,8 +221,15 @@ The result already has Mule's tag, and signed machine overflow exactly matches
 overflow of the fixnum range. LLVM's signed-overflow intrinsics replace SBCL's
 instruction and overflow-flag branch. Overflow uses the existing
 arbitrary-precision fallback with the original operands, rather than SBCL's
-checked-arithmetic error path. Both proven-fixnum and dynamically guarded helpers use
+checked-arithmetic error path. Both proven-fixnum and dynamically guarded VOPs use
 this representation, avoiding operand decoding and result re-encoding.
+
+Add/sub VOPs separate tagged success from the runtime fallback. Tagged success
+is non-null and its operands are immediate, so it needs neither a sentinel check
+nor reference-count operations. The fallback preserves the original operands
+and in-place reuse slot, releases consumed operands, and checks its nullable
+result before joining success. The merge publishes an owned result only after
+success; unrelated live values retain ordinary failure cleanup.
 
 ## Internal calls
 
@@ -240,6 +247,37 @@ pointer independently of returned values. Mule retains its existing explicit
 traceback interface rather than reconstructing LLVM-managed frames; the separate
 address preserves that identity contract without forcing result loads and stores.
 
+### Live activation records
+
+Generated object bodies keep a stack-resident record with parent, code metadata,
+and borrowed globals. A runtime-owned, constant-initialized thread-local atomic
+head identifies the current chain. LLVM initializes every field before publishing
+the record with a release store, before fallible module initialization. Cleanup
+reacquires the current thread's head slot and reloads the record's parent before
+unlinking it. Neither value may be cached across generator suspension. Existing
+raw entries and native adapters keep their existing frame visibility.
+
+Suspended coroutine stacks retain detached record chains, not copied vectors.
+Resume links the detached bottom to the resumer before publishing the coroutine
+head. Yield restores the resumer head before clearing the detached bottom's
+parent. Only detached records can have their parent changed. Empty or completed
+coroutines retain no detached records. This preserves sequential resumption;
+it does not introduce concurrent-resume support.
+
+Frame inspection and fatal-signal diagnostics share this chain. Explicit-chain
+signal traversal uses immutable preformatted metadata without allocating. The
+optional libc C-stack diagnostic remains separate. Materialized Python frames
+and traceback values retain their existing ownership; live records borrow the
+globals already kept alive by the callable/module lifetime.
+
+SBCL `src/code/debug-int.lisp`, `top-frame` and `compute-calling-frame`, recovers
+frames from native control-stack and compiled debug metadata. Mule does not yet
+emit the corresponding metadata for LLVM-managed frames. Explicit stack records
+are the LLVM adaptation: they remove runtime vector updates and duplicate
+fault-record allocation without pretending that an unwinder can recover missing
+Python globals. Rust exposes only the physical TLS slot. Without LTO, entry and
+exit retain small slot-accessor calls; LLVM performs the record loads and stores.
+
 When analysis predicts a target with matching arity, generated code checks the
 already-evaluated callee's native entry and globals. A match selects a specialized
 entry after checking argument representations/ranges, or calls the general native
@@ -247,6 +285,22 @@ body. Proven caller facts remove redundant argument checks. A mismatch calls
 the actual callee through the runtime. Both routes use the same recursion guard.
 Arguments still evaluate after the callee and before the guard, so an argument
 that rebinds the global does not replace the already-loaded callable.
+
+When an external entry rejects a conjunction of full-range fixnum argument
+guards, it calls a dedicated fallback body with that rejected predicate.
+The predicate refers to the original incoming SSA arguments, not mutable
+parameter locals. It does not imply that either individual argument is a
+non-fixnum. IR2 follows single-definition argument moves, exact copies, and
+bound local loads to prove operand origins. When an operation contains every
+argument from the rejected conjunction, its VOP emits the runtime fallback
+directly instead of repeating the impossible fixnum path. Reassigned, cyclic,
+or ambiguous origins keep their ordinary checks. The canonical general body remains
+unrestricted for other callers. Mixed class, range, or other guards retain
+the unrestricted fallback rather than claiming a stronger negative fact.
+SBCL's `constraint.not-p`, `add-test-constraints`, and
+`constraint-propagate-if` in `src/compiler/constraint.lisp` preserve negative
+branch facts. Mule carries this relational entry fact separately from its
+per-value type lattice and applies it to representation-specific VOP emission.
 
 ### Numeric conventions in mixed bodies
 
@@ -309,6 +363,46 @@ API can register heap floats even though public Python weakref constructors
 reject builtin floats. Such registration captures the pointer and therefore
 prevents private ownership. This preserves weak callbacks, alias identity,
 shared-reference behavior, and pending-error cleanup.
+
+### Scalar and native-reference extension (implementation in progress)
+
+SBCL's `src/compiler/x86-64/move.lisp`, word/descriptor moves, separates
+fixnum tagging from bignum allocation and digit loads. Mule retains its existing
+tagged/GMP integer representation: signed words within the fixnum range encode
+directly, while wider words initialize a normalized one-limb GMP value on the
+64-bit, nail-free limb ABI. Other GMP limb configurations retain checked Rust
+conversion and cleanup paths. The GMP tuple wrapper has an explicit transparent
+layout, and runtime tests assert all generated offsets.
+
+Box payload codecs describe initialization, extraction, and owned-resource
+cleanup. Wide integer limb bytes come from GMP's configured allocation callback
+and return through its matching sized-free callback. No Rust/system allocation
+is paired with GMP cleanup. Matching allocation-family attributes apply only to
+compiler-generated raw storage operations, never to public GMP functions or the
+callbacks themselves. As for the object pool, compiler-internal allocation
+bookkeeping and hook call counts are not language guarantees when an allocation
+is eliminated. Actual allocations still honor the configured callbacks. User
+finalizers, weak callbacks, and other language effects remain outside that
+contract. Unknown memory effects are not advertised as pure.
+
+Booleans select the existing immortal objects directly, and `None` remains its
+singleton. Existing string/container object references require no reboxing.
+
+Native instance views carry the original borrowed object descriptor, following
+SBCL's descriptor-based instance access. Field operations derive the immutable
+payload pointer from that descriptor. This replaces detached payload pointers;
+there is no owner lookup, backlink, or parallel ownership cache. Instance,
+class, and method reference results become owned before raw-body cleanup.
+Native callers put those results in their existing per-function owner slots.
+Adapters consume that ownership; bound methods are materialized by the existing
+compiled attribute-binding protocol. Owned-result producers in loops retain
+the ordinary path until replacement/liveness analysis can safely release roots.
+
+This ownership convention is a necessary adaptation to Mule's reference-counted
+runtime, unlike SBCL's tracing collector. NativeInstance tag, payload pointer,
+and length offsets are asserted against real allocations before generated
+direct loads depend on them. Checked public numeric entry boundaries keep their
+pending-error, type, and width validation.
 
 ## Raw int64, float64, and class entries
 

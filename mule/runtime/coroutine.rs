@@ -108,7 +108,7 @@ pub struct Coroutine {
     transfer: Value,
     /// The coroutine's own native frames, outside the resumer's depth.
     depth: usize,
-    frames: Vec<(*const crate::traceback::CodeInfo, Value)>,
+    frames: crate::traceback::DetachedFrames,
     handlers: Vec<Value>,
     parent: *mut Coroutine,
 }
@@ -153,7 +153,7 @@ impl Coroutine {
                 arguments: object::retain(arguments),
                 transfer: null_mut(),
                 depth: 0,
-                frames: Vec::new(),
+                frames: crate::traceback::DetachedFrames::default(),
                 handlers: Vec::new(),
                 parent: null_mut(),
             });
@@ -430,5 +430,65 @@ unsafe extern "C" fn yield_export(_: Value, args: Value) -> Value {
             return null_mut();
         };
         mule_coroutine_yield(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traceback::{Activation, active_head, mule_frame_head_slot};
+    use std::sync::atomic::{AtomicPtr, Ordering};
+
+    unsafe fn publish(slot: *mut *mut Activation, value: *mut Activation) {
+        unsafe { AtomicPtr::from_ptr(slot).store(value, Ordering::Release); }
+    }
+
+    unsafe extern "C" fn migrating_body(_: Value, _: Value) -> Value {
+        unsafe {
+            let initial_slot = mule_frame_head_slot();
+            let mut record = Activation {
+                parent: active_head(), code: std::ptr::null(), globals: null_mut(),
+            };
+            publish(initial_slot, &mut record);
+            let sent = mule_coroutine_yield(object::small(11));
+            assert_eq!(sent, object::small(7));
+            let resumed_slot = mule_frame_head_slot();
+            assert_ne!(initial_slot, resumed_slot);
+            assert_eq!(active_head(), &mut record as *mut Activation);
+            // The bottom record's parent changes when another thread resumes it.
+            publish(resumed_slot, record.parent);
+            object::small(22)
+        }
+    }
+
+    #[test]
+    fn suspended_native_stack_resumes_with_new_thread_head_and_parent() {
+        unsafe {
+            assert!(active_head().is_null());
+            let function = object::function(null_mut(), migrating_body, "migrating_body");
+            let arguments = object::new_value(Data::Args(Vec::new(), null_mut(), null_mut()));
+            let mut coroutine = Coroutine::new(function, arguments).unwrap();
+            object::release(function);
+            object::release(arguments);
+            assert_eq!(coroutine.resume(object::small(0)), object::small(11));
+            assert!(active_head().is_null());
+
+            // The original thread does not touch the coroutine until join.
+            // This exercises the physical stack service, not Python thread APIs.
+            let address = (&mut *coroutine as *mut Coroutine) as usize;
+            std::thread::spawn(move || {
+                let coroutine = &mut *(address as *mut Coroutine);
+                let mut resumer = Activation {
+                    parent: null_mut(), code: std::ptr::null(), globals: null_mut(),
+                };
+                publish(mule_frame_head_slot(), &mut resumer);
+                assert_eq!(coroutine.resume(object::small(7)), object::small(22));
+                assert_eq!(active_head(), &mut resumer as *mut Activation);
+                publish(mule_frame_head_slot(), null_mut());
+            }).join().unwrap();
+            assert_eq!(coroutine.state, FINISHED);
+            assert!(active_head().is_null());
+            drop(coroutine);
+        }
     }
 }

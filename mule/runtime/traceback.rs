@@ -21,6 +21,7 @@ use crate::hashing::FastMap as HashMap;
 use std::ffi::{CStr, c_char};
 use std::io::Write;
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicPtr, Ordering, compiler_fence};
 
 /// A compiled function's code metadata, emitted by the compiler as constant data.
 #[repr(C)]
@@ -30,6 +31,29 @@ pub struct CodeInfo {
     pub filename: *const c_char,
     pub firstlineno: i32,
     pub fault_label: *const c_char,
+}
+
+/// A compiler-owned native stack record. Code and globals are borrowed from
+/// the running callable/module; materialized Python frames retain globals.
+#[repr(C)]
+pub struct Activation {
+    pub parent: *mut Activation,
+    pub code: *const CodeInfo,
+    pub globals: Value,
+}
+
+/// Records remain in their coroutine's mapped stack while it is suspended.
+#[derive(Default)]
+pub struct DetachedFrames {
+    head: *mut Activation,
+    bottom: *mut Activation,
+}
+
+impl DetachedFrames {
+    pub fn clear(&mut self) {
+        self.head = null_mut();
+        self.bottom = null_mut();
+    }
 }
 
 impl CodeInfo {
@@ -57,8 +81,8 @@ thread_local! {
     static CODES: RefCell<HashMap<usize, (Value, Value)>> = RefCell::new(HashMap::with_hasher(crate::hashing::FastBuild::new()));
     /// The pending error's traceback, outermost entry first, or NULL.
     static PENDING: Cell<Value> = const { Cell::new(null_mut()) };
-    /// Live activations, innermost last: code metadata and retained globals.
-    static FRAMES: RefCell<Vec<(*const CodeInfo, Value)>> = const { RefCell::new(Vec::new()) };
+    /// Constant TLS has no lazy initialization or destructor on signal access.
+    static ACTIVE_FRAME: AtomicPtr<Activation> = const { AtomicPtr::new(null_mut()) };
 }
 
 unsafe fn code_info(receiver: Value) -> *const CodeInfo {
@@ -114,49 +138,58 @@ pub fn clear_code_cache() {
     }
 }
 
-/// Enter a compiled function activation.
+/// Physical TLS storage for compiler-emitted atomic link/unlink operations.
+/// Reacquire this address after any suspension; it belongs to the current thread.
 #[unsafe(no_mangle)]
-pub extern "C" fn mule_frame_push(code: *const CodeInfo, globals: Value) {
-    FRAMES.with_borrow_mut(|frames| frames.push((code, globals)));
-    crate::faults::push(code);
+#[inline(never)]
+pub extern "C" fn mule_frame_head_slot() -> *mut *mut Activation {
+    // A stackful coroutine can resume on another native thread. Keep this
+    // physical lookup distinct across suspension even with whole-program LTO.
+    compiler_fence(Ordering::SeqCst);
+    ACTIVE_FRAME.with(|head| head.as_ptr())
 }
 
-/// Leave the innermost compiled function activation.
-#[unsafe(no_mangle)]
-pub extern "C" fn mule_frame_pop() {
-    FRAMES.with_borrow_mut(|frames| {
-        frames.pop();
-    });
-    crate::faults::pop();
+pub fn active_head() -> *mut Activation {
+    unsafe { AtomicPtr::from_ptr(mule_frame_head_slot()).load(Ordering::Acquire) }
 }
 
-/// Move suspended activations into the currently running stack, preserving the
-/// ownership of their retained globals. The returned boundary belongs to the
-/// resumer; yielded activations move back out at that boundary.
-pub fn enter_coroutine_frames(frames: &mut Vec<(*const CodeInfo, Value)>) -> usize {
-    let boundary = FRAMES.with_borrow_mut(|active| {
-        let boundary = active.len();
-        active.append(frames);
+fn publish_head(value: *mut Activation) {
+    unsafe { AtomicPtr::from_ptr(mule_frame_head_slot()).store(value, Ordering::Release); }
+}
+
+/// Attach a private coroutine chain above its resumer's live records.
+/// All record storage remains owned by the corresponding mapped native stack.
+pub unsafe fn enter_coroutine_frames(frames: &mut DetachedFrames) -> *mut Activation {
+    unsafe {
+        let boundary = active_head();
+        if !frames.head.is_null() {
+            (*frames.bottom).parent = boundary;
+            publish_head(frames.head);
+            frames.clear();
+        }
         boundary
-    });
-    refresh_fault_frames();
-    boundary
-}
-
-pub fn leave_coroutine_frames(boundary: usize) -> Vec<(*const CodeInfo, Value)> {
-    let suspended = FRAMES.with_borrow_mut(|active| active.split_off(boundary));
-    refresh_fault_frames();
-    suspended
-}
-
-pub fn refresh_fault_frames() {
-    if crate::faults::enabled() {
-        FRAMES.with_borrow(|frames| crate::faults::replace(frames.iter().map(|(code, _)| *code)));
     }
 }
 
-pub fn fault_codes() -> Vec<*const CodeInfo> {
-    FRAMES.with_borrow(|frames| frames.iter().map(|(code, _)| *code).collect())
+/// Detach before mutating any parent link or allowing stack storage to disappear.
+pub unsafe fn leave_coroutine_frames(boundary: *mut Activation) -> DetachedFrames {
+    unsafe {
+        let head = active_head();
+        publish_head(boundary);
+        if head == boundary {
+            return DetachedFrames::default();
+        }
+        let mut bottom = head;
+        loop {
+            assert!(!bottom.is_null(), "coroutine frame chain lost its resumer boundary");
+            if (*bottom).parent == boundary {
+                break;
+            }
+            bottom = (*bottom).parent;
+        }
+        (*bottom).parent = null_mut();
+        DetachedFrames { head, bottom }
+    }
 }
 
 /// A frame value for the activation `depth` steps out from the innermost
@@ -165,12 +198,18 @@ pub fn fault_codes() -> Vec<*const CodeInfo> {
 /// line: compiled bodies do not record a current line for live frames.
 pub unsafe fn frame_at(depth: usize) -> Value {
     unsafe {
-        let records: Vec<(*const CodeInfo, Value)> = FRAMES.with_borrow(|frames| frames.clone());
-        if depth >= records.len() {
-            return null_mut();
+        let mut cursor = active_head();
+        for _ in 0..depth {
+            if cursor.is_null() { return null_mut(); }
+            cursor = (*cursor).parent;
+        }
+        let mut records = Vec::new();
+        while !cursor.is_null() {
+            records.push(((*cursor).code, (*cursor).globals));
+            cursor = (*cursor).parent;
         }
         let mut back = null_mut();
-        for (code, globals) in records[..records.len() - depth].iter() {
+        for (code, globals) in records.iter().rev() {
             back = object::new_value(Data::Frame {
                 code: *code,
                 line: i64::from((*(*code)).firstlineno),
@@ -383,4 +422,55 @@ fn source_line(filename: &str, line: i64) -> Option<String> {
     let text = std::fs::read_to_string(filename).ok()?;
     let source = text.lines().nth(index)?.trim();
     (!source.is_empty()).then(|| source.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(parent: *mut Activation) -> Activation {
+        Activation { parent, code: std::ptr::null(), globals: null_mut() }
+    }
+
+    #[test]
+    fn activation_layout_matches_compiler_storage() {
+        assert_eq!(std::mem::size_of::<Activation>(), 24);
+        assert_eq!(std::mem::align_of::<Activation>(), 8);
+        assert_eq!(std::mem::offset_of!(Activation, parent), 0);
+        assert_eq!(std::mem::offset_of!(Activation, code), 8);
+        assert_eq!(std::mem::offset_of!(Activation, globals), 16);
+    }
+
+    #[test]
+    fn detached_nested_chains_reconnect_to_the_current_resumer() {
+        unsafe {
+            assert!(active_head().is_null());
+            let mut first = record(null_mut());
+            let mut second = record(null_mut());
+            let mut outer = record(&mut first);
+            let mut inner = record(&mut outer);
+            ACTIVE_FRAME.with(|head| head.store(&mut inner, Ordering::Release));
+            let mut nested = leave_coroutine_frames(&mut outer);
+            assert_eq!(active_head(), &mut outer as *mut Activation);
+            assert!(inner.parent.is_null());
+            let mut suspended = leave_coroutine_frames(&mut first);
+            assert_eq!(active_head(), &mut first as *mut Activation);
+            assert!(outer.parent.is_null());
+
+            ACTIVE_FRAME.with(|head| head.store(&mut second, Ordering::Release));
+            let boundary = enter_coroutine_frames(&mut suspended);
+            assert_eq!(boundary, &mut second as *mut Activation);
+            assert_eq!(outer.parent, boundary);
+            let nested_boundary = enter_coroutine_frames(&mut nested);
+            assert_eq!(nested_boundary, &mut outer as *mut Activation);
+            assert_eq!(inner.parent, nested_boundary);
+            let _nested = leave_coroutine_frames(nested_boundary);
+            let _outer = leave_coroutine_frames(boundary);
+            let mut empty = DetachedFrames::default();
+            assert_eq!(enter_coroutine_frames(&mut empty), boundary);
+            assert!(leave_coroutine_frames(boundary).head.is_null());
+            assert_eq!(active_head(), boundary);
+            ACTIVE_FRAME.with(|head| head.store(null_mut(), Ordering::Release));
+        }
+    }
 }

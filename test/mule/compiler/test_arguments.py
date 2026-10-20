@@ -411,9 +411,11 @@ def test_generated_external_binder_calls_body_without_argument_tuple():
     llvm = emit_llvm("def f(a, b=2):\n    return a + b\nf(a=1)\n")
     entries = llvm.split("\ndefine ")[1:]
     binder = next(
-        entry for entry in entries if entry.startswith('ptr @"mule_fn_f.fn"(')
+        entry
+        for entry in entries
+        if entry.startswith('internal ptr @"mule_fn_f.fn.binding"(')
     )
-    assert 'call ptr @"mule_fn_f.body"(' in binder
+    assert 'call ptr @"mule_fn_f.body.fallback.fixnum"(' in binder
     assert "call ptr @mule_sequence_tuple(" not in binder
 
 

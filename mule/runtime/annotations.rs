@@ -10,27 +10,26 @@ enum Integer<'a> {
     Big(&'a BigInt),
 }
 
-impl Integer<'_> {
-    fn compare_decimal(&self, bound: &str) -> Option<Ordering> {
-        match self {
-            Self::Small(value) => match bound.parse::<i64>() {
-                Ok(bound) => Some(value.cmp(&bound)),
-                Err(_) => {
-                    let bound = BigInt::from_decimal(bound)?;
-                    // Every tagged integer fits i64; an out-of-i64 bound is
-                    // therefore ordered by its sign without allocating a value.
-                    if bound.to_i64().is_none() {
-                        Some(if bound.sign() < 0 {
-                            Ordering::Greater
-                        } else {
-                            Ordering::Less
-                        })
-                    } else {
-                        Some(value.cmp(&bound.to_i64()?))
-                    }
-                }
-            },
-            Self::Big(value) => Some(value.compare(&BigInt::from_decimal(bound)?)),
+impl<'a> Integer<'a> {
+    unsafe fn borrowed(value: Value) -> Option<Self> {
+        if object::is_fixnum(value) {
+            Some(Self::Small(unsafe { object::fixnum(value) }))
+        } else if value.is_null() {
+            None
+        } else {
+            match unsafe { &(*value).data } {
+                Data::BigInt(value, ..) => Some(Self::Big(value)),
+                _ => None,
+            }
+        }
+    }
+
+    fn compare(&self, bound: &Self) -> Ordering {
+        match (self, bound) {
+            (Self::Small(value), Self::Small(bound)) => value.cmp(bound),
+            (Self::Big(value), Self::Big(bound)) => value.compare(bound),
+            (Self::Big(value), Self::Small(bound)) => value.compare_i64(*bound),
+            (Self::Small(value), Self::Big(bound)) => bound.compare_i64(*value).reverse(),
         }
     }
 }
@@ -51,45 +50,29 @@ fn failed(name: &str) -> i32 {
 }
 
 /// Check an integer category and inclusive bounds without retaining or consuming
-/// the value. Null bound pointers mean the corresponding side is unbounded.
+/// the value or numeric bounds. Null means the corresponding side is unbounded.
 /// Booleans are intentionally excluded: the compiler may use an accepted narrow
 /// integer contract to select tagged integer instructions.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_assert_integer(
     value: Value,
-    minimum: *const c_char,
-    maximum: *const c_char,
+    minimum: Value,
+    maximum: Value,
     name: *const c_char,
 ) -> i32 {
-    let name = unsafe { annotation_name(name) };
-    let value = if object::is_fixnum(value) {
-        Integer::Small(unsafe { object::fixnum(value) })
-    } else if value.is_null() {
-        return failed(name);
-    } else {
-        match unsafe { &(*value).data } {
-            Data::BigInt(value, ..) => Integer::Big(value),
-            _ => return failed(name),
-        }
+    let Some(value) = (unsafe { Integer::borrowed(value) }) else {
+        return failed(unsafe { annotation_name(name) });
     };
     for (bound, excluded) in [(minimum, Ordering::Less), (maximum, Ordering::Greater)] {
         if bound.is_null() {
             continue;
         }
-        let bound = match unsafe { CStr::from_ptr(bound) }.to_str() {
-            Ok(bound) => bound,
-            Err(_) => {
-                object::error("RuntimeError", "invalid compiler annotation bound");
-                return -1;
-            }
+        let Some(bound) = (unsafe { Integer::borrowed(bound) }) else {
+            object::error("RuntimeError", "invalid compiler integer bound");
+            return -1;
         };
-        match value.compare_decimal(bound) {
-            Some(ordering) if ordering == excluded => return failed(name),
-            Some(_) => {}
-            None => {
-                object::error("RuntimeError", "invalid compiler annotation bound");
-                return -1;
-            }
+        if value.compare(&bound) == excluded {
+            return failed(unsafe { annotation_name(name) });
         }
     }
     0
@@ -113,11 +96,63 @@ pub unsafe extern "C" fn mule_assert_float(value: Value, name: *const c_char) ->
 /// occurs, so arbitrary-precision integers and boolean identities are retained.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_assert_real(value: Value, name: *const c_char) -> i32 {
-    if !value.is_null() && (object::is_fixnum(value)
-        || matches!(unsafe { &(*value).data }, Data::BigInt(..) | Data::Bool(..) | Data::Float(..)))
+    if !value.is_null()
+        && (object::is_fixnum(value)
+            || matches!(
+                unsafe { &(*value).data },
+                Data::BigInt(..) | Data::Bool(..) | Data::Float(..)
+            ))
     {
         0
     } else {
         failed(unsafe { annotation_name(name) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::numeric::integer_import_owned;
+    use std::ptr::null_mut;
+
+    #[test]
+    fn numeric_bounds_compare_all_storage_pairs_and_unbounded_sides() {
+        unsafe {
+            let wide = BigInt::from_i64(1).shifted_left(127);
+            let values = [
+                integer_import_owned(wide.neg()),
+                object::small(-1),
+                object::small(0),
+                object::small(1),
+                integer_import_owned(wide),
+            ];
+            for (index, value) in values.iter().enumerate() {
+                for (bound_index, bound) in values.iter().enumerate() {
+                    let lower = mule_assert_integer(*value, *bound, null_mut(), c"test".as_ptr());
+                    assert_eq!(lower == 0, index >= bound_index);
+                    object::clear_error();
+                    let upper = mule_assert_integer(*value, null_mut(), *bound, c"test".as_ptr());
+                    assert_eq!(upper == 0, index <= bound_index);
+                    object::clear_error();
+                }
+                assert_eq!(
+                    mule_assert_integer(*value, *value, *value, c"test".as_ptr()),
+                    0
+                );
+            }
+            assert_eq!(
+                mule_assert_integer(
+                    object::bool_value(true),
+                    null_mut(),
+                    null_mut(),
+                    c"test".as_ptr()
+                ),
+                -1
+            );
+            object::clear_error();
+            for value in values {
+                object::release(value);
+            }
+        }
     }
 }

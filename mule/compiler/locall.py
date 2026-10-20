@@ -62,8 +62,10 @@ from .ctype import (
     TEXT_TYPE,
     UNBOUND,
     UNKNOWN,
+    DictType,
     InstanceType,
     IntegerType,
+    OptionalValueType,
     TupleType,
     UniqueObjectType,
     ValueType,
@@ -380,7 +382,9 @@ class _SpecializesBody(NodeVisitor):
             cand_recv = self.candidate.get(arg_use, UNKNOWN)
             gen_recv = self.general.get(arg_use, UNKNOWN)
             if cand_recv != gen_recv and (
-                cand_recv.is_exact_list or cand_recv.fits_text(TEXT_TYPE)
+                cand_recv.is_exact_list
+                or cand_recv.fits_text(TEXT_TYPE)
+                or cand_recv.fits_dict()
             ):
                 return True
         if (
@@ -816,12 +820,197 @@ def _collect_module_classes(
 @dataclass(slots=True)
 class ClassFacts:
     """What analysis knows about one user class whose instances it types:
-    its resolved methods, including inherited ones defined in the module.
-    Instance fields have no facts: other units and dynamic ``setattr`` may
-    store any value into them."""
+    its resolved methods (including inherited ones defined in the module),
+    its single-inheritance chain of class identities, the names shadowed on
+    the class by non-method bindings, and its guarded instance field types."""
 
     identity: str
     methods: dict[str, Lambda]
+    fields: dict[str, ValueType]
+    chain: tuple[str, ...] = ()
+    shadowed: frozenset[str] = frozenset()
+
+
+class _SanitizeInstanceFieldType(ValueTypeVisitor):
+    """Restricts a value type stored into an instance field to shapes whose
+    consumers guard their runtime operations (`OptionalValueType(InstanceType)`).
+    Unboxed or immediate types are widened to `UNKNOWN` because dynamic
+    `setattr` or cross-module code may store any value into a field."""
+
+    def visit_ValueType(self, fact):
+        return UNKNOWN
+
+    def visit_BottomType(self, fact):
+        return BOTTOM
+
+    def visit_NoneType(self, fact):
+        return UNKNOWN if fact.may_be_unbound else NONE_TYPE
+
+    def visit_InstanceType(self, fact):
+        if fact.may_be_unbound:
+            return UNKNOWN
+        return OptionalValueType(fact, False)
+
+    def visit_OptionalValueType(self, fact):
+        if fact.may_be_unbound:
+            return UNKNOWN
+        inner = fact.inner.accept(self)
+        if inner is UNKNOWN or inner is BOTTOM:
+            return UNKNOWN
+        return inner
+
+    def visit_DictType(self, fact):
+        if fact.may_be_unbound:
+            return UNKNOWN
+        if fact.value is BOTTOM:
+            return DictType(BOTTOM, BOTTOM, False, False)
+        val = fact.value.accept(self)
+        if val is UNKNOWN or val is BOTTOM or val is NONE_TYPE:
+            return UNKNOWN
+        return DictType(UNKNOWN, val, False, False)
+
+
+class _GetattrOnInstance(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is GETATTR
+            and len(node.args) == 1
+            and node.info is not None
+        ):
+            return node.args[0], node.info.name
+        return None
+
+
+_GETATTR_ON_INSTANCE = _GetattrOnInstance()
+
+
+_SANITIZE_INSTANCE_FIELD_TYPE = _SanitizeInstanceFieldType()
+
+
+class _CollectSetattrSites(NodeVisitor):
+    def __init__(self, sites: list[Combination], setitems: list[Combination]):
+        self.sites = sites
+        self.setitems = setitems
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is SETATTR
+            and len(node.args) == 2
+            and node.info is not None
+        ):
+            self.sites.append(node)
+        elif (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is PROTOCOLS.get("setitem")
+            and len(node.args) == 3
+        ):
+            self.setitems.append(node)
+
+
+def _update_class_field_types(
+    class_facts: dict[str, ClassFacts],
+    setattr_sites: list[tuple[Lambda, Combination]],
+    setitem_sites: list[tuple[Lambda, Combination]],
+    bodies: dict[tuple[Lambda, str], Body],
+) -> bool:
+    if not class_facts or not setattr_sites:
+        return False
+    direct_stores: dict[str, dict[str, ValueType]] = defaultdict(dict)
+    ambiguous_fields: set[str] = set()
+    for lam, node in setattr_sites:
+        field_name = node.info.name
+        recv_use = node.args[0].use()
+        val_use = node.args[1].use()
+        found_context = False
+        saw_typed_receiver = False
+        best_store: tuple[str, ValueType] | None = None
+        for ctx_name in ("observed", "fixnum", "general"):
+            body = bodies.get((lam, ctx_name))
+            if body is None:
+                continue
+            recv_fact = body.facts.get(recv_use, NO_FACT)
+            val_fact = body.facts.get(val_use, NO_FACT)
+            if recv_fact.type is BOTTOM or val_fact.type is BOTTOM:
+                continue
+            found_context = True
+            recv_cls = recv_fact.type.instance_class()
+            if recv_cls is not None and recv_cls in class_facts:
+                saw_typed_receiver = True
+                if best_store is None or best_store[1] is UNKNOWN:
+                    best_store = (recv_cls, val_fact.type)
+        if best_store is not None:
+            recv_cls, stored_type = best_store
+            if stored_type is UNKNOWN:
+                cur_type = class_facts[recv_cls].fields.get(field_name, BOTTOM)
+                if cur_type is not BOTTOM:
+                    stored_type = cur_type
+            prev = direct_stores[recv_cls].get(field_name, BOTTOM)
+            direct_stores[recv_cls][field_name] = prev.join(stored_type)
+        if (
+            found_context
+            and not saw_typed_receiver
+            and not (lam.method_class is not None and lam.method_class in class_facts)
+        ):
+            ambiguous_fields.add(field_name)
+
+    for lam, node in setitem_sites:
+        attr = node.args[0].use().accept(_GETATTR_ON_INSTANCE)
+        if attr is None:
+            continue
+        inst_lvar, field_name = attr
+        inst_use = inst_lvar.use()
+        val_use = node.args[2].use()
+        for ctx_name in ("observed", "fixnum", "general"):
+            body = bodies.get((lam, ctx_name))
+            if body is None:
+                continue
+            inst_fact = body.facts.get(inst_use, NO_FACT)
+            val_fact = body.facts.get(val_use, NO_FACT)
+            if inst_fact.type is BOTTOM or val_fact.type is BOTTOM:
+                continue
+            inst_cls = inst_fact.type.instance_class()
+            if inst_cls is not None and inst_cls in class_facts:
+                cur_field = direct_stores[inst_cls].get(field_name, BOTTOM)
+                if cur_field.fits_dict():
+                    direct_stores[inst_cls][field_name] = cur_field.with_entry(
+                        UNKNOWN, val_fact.type
+                    )
+
+    changed = False
+    for class_id, facts in class_facts.items():
+        new_fields: dict[str, ValueType] = {}
+        chain = facts.chain or (class_id,)
+        candidate_names = {
+            name
+            for anc_id in chain
+            for name in direct_stores.get(anc_id, ())
+            if name not in ambiguous_fields
+            and name not in facts.methods
+            and name not in facts.shadowed
+        }
+        for name in candidate_names:
+            joined = BOTTOM
+            for anc_id in chain:
+                anc_type = direct_stores.get(anc_id, {}).get(name, BOTTOM)
+                if anc_type is not BOTTOM:
+                    joined = joined.join(anc_type)
+            sanitized = joined.accept(_SANITIZE_INSTANCE_FIELD_TYPE)
+            if (
+                sanitized is not UNKNOWN
+                and sanitized is not BOTTOM
+                and sanitized is not NONE_TYPE
+                and sanitized != DictType(BOTTOM, BOTTOM, False)
+            ):
+                new_fields[name] = sanitized
+        if new_fields != facts.fields:
+            facts.fields = new_fields
+            changed = True
+    return changed
 
 
 def _collect_class_tables(lambdas):
@@ -871,16 +1060,25 @@ def _collect_class_tables(lambdas):
             if base_target is None and _constructs_own_instances(
                 collector, class_id, cls_name
             ):
+                methods_map, chain, shadowed = _resolved_class_info(
+                    collector, class_id, cls_name
+                )
                 typed[class_id] = ClassFacts(
-                    class_id, _resolved_methods(collector, class_id, cls_name)
+                    class_id,
+                    methods_map,
+                    {},
+                    chain,
+                    shadowed,
                 )
     return by_ns, typed
 
 
-def _resolved_methods(collector, class_id: str, cls_name: str) -> dict[str, Lambda]:
+def _resolved_class_info(
+    collector, class_id: str, cls_name: str
+) -> tuple[dict[str, Lambda], tuple[str, ...], frozenset[str]]:
     """The class's methods in method-resolution order over its module
-    bases. Only single inheritance chains are resolved; with several bases
-    only the class's own methods are known."""
+    bases, its single-inheritance chain of class identities, and the
+    non-method attribute names bound on the chain."""
     identities = {name: identity for identity, name in collector.public_names.items()}
     chain = [class_id]
     current = cls_name
@@ -893,11 +1091,15 @@ def _resolved_methods(collector, class_id: str, cls_name: str) -> dict[str, Lamb
         current = bases[0]
         chain.append(identities[current])
     resolved: dict[str, Lambda] = {}
+    shadowed: set[str] = set()
     for identity in reversed(chain):
         for name in collector.other_bindings.get(identity, ()):
             resolved.pop(name, None)
-        resolved.update(collector.methods.get(identity, {}))
-    return resolved
+            shadowed.add(name)
+        for name, lam in collector.methods.get(identity, {}).items():
+            shadowed.discard(name)
+            resolved[name] = lam
+    return resolved, tuple(chain), frozenset(shadowed)
 
 
 def _constructs_own_instances(collector, class_id: str, cls_name: str) -> bool:
@@ -1730,6 +1932,21 @@ def analyze(
             lambda_.self_type_deriver = self_d
             lambda_.branch_deriver = branch_d
 
+    setattr_sites: list[tuple[Lambda, Combination]] = []
+    setitem_sites: list[tuple[Lambda, Combination]] = []
+    if class_facts:
+        for lambda_ in lambdas:
+            graph = graphs[lambda_]
+            site_collector = _CollectSetattrSites([], [])
+            for block in graph.blocks:
+                for node in graph.block_nodes[block]:
+                    node.accept(site_collector)
+            for site in site_collector.sites:
+                setattr_sites.append((lambda_, site))
+            for site in site_collector.setitems:
+                setitem_sites.append((lambda_, site))
+    field_changes = 0
+
     # The canonical (callee, arguments) queries and return types consulted
     # during the current propagation.
     consulted: dict[tuple[Lambda, tuple], ValueType] = {}
@@ -2113,6 +2330,13 @@ def analyze(
                     ):
                         summaries[key] = BOTTOM
                         return_changes.pop(key, None)
+        if field_changes < 3 and _update_class_field_types(
+            class_facts, setattr_sites, setitem_sites, bodies
+        ):
+            field_changes += 1
+            inputs.clear()
+            deriver_cache.clear()
+            changed = True
         if not changed:
             break
 

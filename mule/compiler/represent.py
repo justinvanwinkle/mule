@@ -358,6 +358,7 @@ class Representation:
     llvm_type = "i64"
     zero = "0"
     primitive_type = SIGNED64
+    owns_result = False
 
     def numeric(self):
         raise NotNative
@@ -391,11 +392,39 @@ class Representation:
     def parameter(self, gen, value):
         raise NotNative
 
+    def validate_boxing(self) -> None:
+        raise NotNative
+
+    def prepare_return(self, gen, value):
+        return value
+
     def can_adapt_return(self, component) -> bool:
         return True
 
 
-class Int64(Representation):
+class BoxableRepresentation(Representation):
+    """A representation with a defined conversion at an object boundary."""
+
+    def validate_boxing(self) -> None:
+        pass
+
+
+class ObjectReference(BoxableRepresentation):
+    """A borrowed object internally, transferred as an owned native result."""
+
+    llvm_type = "ptr"
+    zero = "null"
+    owns_result = True
+
+    def prepare_return(self, gen, value):
+        return gen.operation(f"call ptr @mule.fast.retain(ptr {value})")
+
+    def box(self, gen, value):
+        # The raw return convention already transferred an owned reference.
+        return gen.take_native_result(value)
+
+
+class Int64(BoxableRepresentation):
     def python_real(self):
         return self
 
@@ -409,7 +438,12 @@ class Int64(Representation):
         return True
 
     def box(self, gen, value):
-        return gen.operation(f"call ptr @mule_box_i64(i64 {value})")
+        return gen.operation(f"call ptr @mule.box.i64(i64 {value})")
+
+    def can_adapt_return(self, component) -> bool:
+        # Reconstructing a wide integer can replace an existing object's
+        # identity. Tagged fixnum results do not have that ownership boundary.
+        return component.context.return_type.is_fixnum
 
     def parameter(self, gen, value):
         slot = gen.operation("alloca i64")
@@ -418,7 +452,7 @@ class Int64(Representation):
         return gen.operation(f"load i64, ptr {slot}")
 
 
-class Float64(Representation):
+class Float64(BoxableRepresentation):
     def python_real(self):
         return self
 
@@ -448,7 +482,7 @@ class Float64(Representation):
         return gen.operation(f"load double, ptr {slot}")
 
 
-class Boolean(Representation):
+class Boolean(BoxableRepresentation):
     def python_real(self):
         return self
 
@@ -463,11 +497,10 @@ class Boolean(Representation):
         return True
 
     def box(self, gen, value):
-        wide = gen.operation(f"zext i1 {value} to i32")
-        return gen.operation(f"call ptr @mule_bool(i32 {wide})")
+        return gen.operation(f"select i1 {value}, ptr @mule.true, ptr @mule.false")
 
 
-class Nothing(Representation):
+class Nothing(BoxableRepresentation):
     primitive_type = NONE_T
 
     def box(self, gen, value):
@@ -475,7 +508,7 @@ class Nothing(Representation):
 
 
 @dataclass(frozen=True)
-class Instance(Representation):
+class Instance(ObjectReference):
     layout_id: str
     layout: Layout = field(compare=False)
     llvm_type = "ptr"
@@ -486,15 +519,15 @@ class Instance(Representation):
         return instance_type(self.layout)
 
     def field(self, name):
-        if name not in self.layout.info.fields:
-            raise NotNative
-        return INT64
+        if name in self.layout.info.fields:
+            return INT64
+        return self.method(name)
 
     def method(self, name):
         target = self.layout.methods.get(name)
         if target is None:
             raise NotNative
-        return Method(self, target)
+        return Method(self, target, name)
 
     def parameter(self, gen, value):
         payload = gen.operation(
@@ -502,11 +535,11 @@ class Instance(Representation):
             f"ptr {self.layout.schema}, ptr %globals)"
         )
         gen.check_pointer(payload)
-        return payload
+        return value
 
 
 @dataclass(frozen=True)
-class Class(Representation):
+class Class(ObjectReference):
     binding: str
     layout_id: str
     layout: Layout = field(compare=False)
@@ -519,9 +552,10 @@ class Class(Representation):
 
 
 @dataclass(frozen=True)
-class Method(Representation):
+class Method(ObjectReference):
     receiver: Instance
     target: object
+    name: str
     llvm_type = "ptr"
     zero = "null"
 
@@ -529,15 +563,11 @@ class Method(Representation):
     def primitive_type(self):
         return self.receiver.primitive_type
 
+    def box(self, gen, value):
+        return gen.box_method(value, self.name)
+
 
 INT64, FLOAT, BOOL, NONE = Int64(), Float64(), Boolean(), Nothing()
-
-
-class _Probe:
-    """A generator stand-in for representation checks during planning."""
-
-    def operation(self, text):
-        return "0"
 
 
 class _Contract:
@@ -618,6 +648,8 @@ class NativePlan:
     dependencies: dict[GlobalVar, Class] = field(default_factory=dict)
     calls: set[Lambda] = field(default_factory=set)
     allocations: dict[object, Class] = field(default_factory=dict)
+    # Exactly one owning root for each constructor or owned native call result.
+    owners: dict[object, Representation] = field(default_factory=dict)
     method_targets: dict[object, Lambda] = field(default_factory=dict)
 
     @property
@@ -765,8 +797,7 @@ class _Select(NodeVisitor, LeafVisitor):
             value = self.plan.values.get(use)
             if value is None:
                 raise Deferred
-            # Instance escape requires owned-return representation conversion.
-            value.box(_Probe(), "0")
+            value.validate_boxing()
             if self.plan.returned is not None and self.plan.returned != value:
                 raise NotNative
             self.plan.returned = value
@@ -841,11 +872,27 @@ class _Select(NodeVisitor, LeafVisitor):
         self.plan.calls.add(target)
         annotation = target.signature.implementation_return_annotation
         if annotation is not None:
-            return annotation.accept(_Contract())
-        known = self.known_plans.get(target)
-        if known is None:
-            raise Deferred
-        return known.returned
+            result = annotation.accept(_Contract())
+        else:
+            known = self.known_plans.get(target)
+            if known is None or known.returned is None:
+                raise Deferred
+            result = known.returned
+        if result.owns_result:
+            self._own_result(node, result)
+        return result
+
+    def _own_result(self, node, representation):
+        """Record a root only when its site cannot overwrite a live loop owner."""
+        pending, visited = list(linked(self.block, self, "current block").succ), set()
+        while pending:
+            block = pending.pop()
+            if block is self.block:
+                raise NotNative
+            if block not in visited:
+                visited.add(block)
+                pending.extend(block.succ)
+        self.plan.owners[node] = representation
 
     def construct(self, node):
         if node.info is not None and node.info.keywords:
@@ -862,16 +909,7 @@ class _Select(NodeVisitor, LeafVisitor):
         ):
             if contract is None or self.value(argument) != contract.accept(_Contract()):
                 raise NotNative
-        # A reused allocation site in a loop needs an escape/lifetime analysis
-        # before borrowed instance references can safely replace owned values.
-        pending, visited = list(linked(self.block, self, "current block").succ), set()
-        while pending:
-            block = pending.pop()
-            if block is self.block:
-                raise NotNative
-            if block not in visited:
-                visited.add(block)
-                pending.extend(block.succ)
+        self._own_result(node, instance)
         self.plan.calls.add(initializer)
         self.plan.allocations[node] = callee
         return instance

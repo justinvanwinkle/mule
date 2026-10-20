@@ -4,6 +4,15 @@ use crate::object::{self, Data, Native, Object, Value};
 use std::cell::Cell;
 use std::ffi::{c_char, c_void};
 
+/// Existing `Data::ArgumentView` storage exposed to generated external entries.
+/// Keep these offsets synchronized with `mule/compiler/argument_layout.py`.
+pub const ARGUMENT_VIEW_TAG: u32 = 10;
+pub const ARGUMENT_VALUES_OFFSET: usize = 24;
+pub const ARGUMENT_COUNT_OFFSET: usize = 32;
+pub const ARGUMENT_DEFAULTS_OFFSET: usize = 40;
+pub const ARGUMENT_CLOSURE_OFFSET: usize = 48;
+pub const ARGUMENT_OWNED_MASK_OFFSET: usize = 56;
+
 pub type Constructor = unsafe extern "C" fn(Value, Value) -> Value;
 thread_local! {
     static CONSTRUCTOR: Cell<Option<Constructor>> = const { Cell::new(None) };
@@ -55,6 +64,54 @@ pub unsafe extern "C" fn mule_binding_positional(view: Value, required: i32, pos
             return -1;
         }
         actual as i32
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn compiled_argument_view_offsets_match_runtime_storage() {
+        let arguments = [object::small(13), object::small(-7)];
+        let defaults_value = object::small(29);
+        let closure_value = object::small(31);
+        let view = Object {
+            references: AtomicUsize::new(usize::MAX),
+            tracked: false,
+            gc_slot: 0,
+            data: Data::ArgumentView {
+                values: arguments.as_ptr(),
+                count: arguments.len(),
+                defaults: defaults_value,
+                closure: closure_value,
+                owned_mask: Cell::new(2),
+            },
+        };
+        assert_eq!(std::mem::offset_of!(Object, data), object::DATA_OFFSET);
+        assert_eq!(std::mem::size_of::<Value>(), 8);
+        assert_eq!(std::mem::size_of::<usize>(), 8);
+        assert_eq!(std::mem::size_of::<Cell<u64>>(), 8);
+        assert_eq!(std::mem::align_of::<Object>(), 8);
+        let base = std::ptr::from_ref(&view).cast::<u8>();
+        unsafe {
+            assert_eq!(*base.add(object::DATA_OFFSET).cast::<u32>(), ARGUMENT_VIEW_TAG);
+            assert_eq!(*base.add(ARGUMENT_VALUES_OFFSET).cast::<*const Value>(), arguments.as_ptr());
+            assert_eq!(*base.add(ARGUMENT_COUNT_OFFSET).cast::<usize>(), arguments.len());
+            assert_eq!(*base.add(ARGUMENT_DEFAULTS_OFFSET).cast::<Value>(), defaults_value);
+            assert_eq!(*base.add(ARGUMENT_CLOSURE_OFFSET).cast::<Value>(), closure_value);
+            assert_eq!(*base.add(ARGUMENT_OWNED_MASK_OFFSET).cast::<u64>(), 2);
+        }
+        let Data::ArgumentView { values, count, defaults, closure, owned_mask } = &view.data else {
+            unreachable!()
+        };
+        let address = base as usize;
+        assert_eq!(std::ptr::from_ref(values) as usize - address, ARGUMENT_VALUES_OFFSET);
+        assert_eq!(std::ptr::from_ref(count) as usize - address, ARGUMENT_COUNT_OFFSET);
+        assert_eq!(std::ptr::from_ref(defaults) as usize - address, ARGUMENT_DEFAULTS_OFFSET);
+        assert_eq!(std::ptr::from_ref(closure) as usize - address, ARGUMENT_CLOSURE_OFFSET);
+        assert_eq!(std::ptr::from_ref(owned_mask) as usize - address, ARGUMENT_OWNED_MASK_OFFSET);
     }
 }
 

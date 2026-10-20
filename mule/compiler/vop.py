@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
+from .boxing import IntegerPayload, ScalarPayload
+
 if TYPE_CHECKING:
     from .ltn import EntryContext
     from .node import Combination, Lambda
@@ -64,7 +66,7 @@ IMMEDIATE = StorageClass("immediate", "ptr", "null")
 SIGNED = StorageClass("signed", "i64", "0", raw=True)
 BOOLEAN = StorageClass("boolean", "i1", "false", raw=True)
 DOUBLE = StorageClass("double", "double", "0.0", raw=True)
-# A borrowed pointer to a native instance's field payload.
+# A borrowed pointer to the original native instance object.
 INSTANCE = StorageClass("instance", "ptr", "null", raw=True)
 # The value ``None`` held as nothing at all.
 NULL = StorageClass("null", "i64", "0", raw=True)
@@ -76,10 +78,10 @@ RANGE = StorageClass("range", "[3 x i64]", "zeroinitializer")
 
 @dataclass(frozen=True, slots=True)
 class BoxLayout:
-    """The active fields of a fixed-layout leaf box.
+    """The active fields and payload lifetime of a fixed-layout box.
 
-    The payload owns no references or resources. Private ownership must still
-    establish that the object cannot acquire weak references or escape.
+    Payload codecs initialize, extract, and release any owned storage. Private
+    ownership must still exclude weak references and escaping aliases.
     """
 
     name: str
@@ -87,12 +89,15 @@ class BoxLayout:
     storage: StorageClass
     payload_offset: int
     null_pointer_offsets: tuple[int, ...]
+    codec: ScalarPayload | IntegerPayload = field(default_factory=ScalarPayload)
 
     def symbol(self, operation: str = "") -> str:
         return f"mule.box.{self.name}" + (f".{operation}" if operation else "")
 
 
 FLOAT_BOX_LAYOUT = BoxLayout("f64", 3, DOUBLE, 24, (32, 40))
+INT64_BOX_LAYOUT = BoxLayout("i64", 2, SIGNED, 24, (40, 48), IntegerPayload())
+BOX_LAYOUTS = (FLOAT_BOX_LAYOUT, INT64_BOX_LAYOUT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +136,15 @@ NONE_T = PrimitiveType("none", (IMMEDIATE, NULL))
 # Any immortal object: fixnum, boolean, or ``None``.
 IMMORTAL_T = PrimitiveType("immortal", (IMMEDIATE,))
 # A machine integer that may exceed the fixnum range (``int64`` contracts).
-SIGNED64 = PrimitiveType("signed64", (SIGNED, DESCRIPTOR))
+SIGNED64 = PrimitiveType(
+    "signed64", (SIGNED, DESCRIPTOR), boxed_layout=INT64_BOX_LAYOUT
+)
+BOXED_I64 = PrimitiveType(
+    "boxed-i64",
+    (DESCRIPTOR, SIGNED),
+    object_boundary_scs=(DESCRIPTOR,),
+    boxed_layout=INT64_BOX_LAYOUT,
+)
 # A binary64 float (``float``/``float64`` contracts): raw, or a boxed object.
 FLOAT64 = PrimitiveType("float64", (DOUBLE, DESCRIPTOR), boxed_layout=FLOAT_BOX_LAYOUT)
 # A proven Python float whose object identity and ownership are preserved.

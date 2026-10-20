@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .ctype import UNKNOWN, ValueType, ValueTypeVisitor
+from .ctype import FIXNUM_MAX, FIXNUM_MIN, UNKNOWN, ValueType, ValueTypeVisitor
 from .node import (
     CallKind,
     Cast,
@@ -40,6 +40,7 @@ from .vmdef import operand_restriction_ok, primitive_type_ok, templates_for
 from .vop import (
     BOOLEAN_T,
     BOXED_FLOAT,
+    BOXED_I64,
     FIXNUM,
     IMMORTAL_T,
     NONE_T,
@@ -58,6 +59,79 @@ class NoTemplate(Exception):
     """No registered template translates a known call under its policy."""
 
 
+@dataclass(frozen=True, slots=True)
+class FixnumGuard:
+    """A conjunction of full-range fixnum tests on incoming parameters.
+
+    Its rejection means at least one listed argument is not a fixnum. It
+    does not narrow any individual argument and does not describe reassigned
+    parameter locals. Operand proofs follow only single-definition copies of
+    incoming values; reassigned locations do not inherit the predicate.
+    """
+
+    parameter_indices: tuple[int, ...]
+
+    def rejects_operands(self, component, operands) -> bool:
+        """Whether these operands contain every argument in the rejected test."""
+        origins = {
+            _incoming_parameter_origin(operand.tn, component.writes)
+            for operand in operands
+        }
+        return bool(self.parameter_indices) and set(self.parameter_indices) <= origins
+
+    def emit(self, builder, parameters) -> str:
+        """Emit the complete conjunction over the supplied incoming values."""
+        combined = None
+        for index in self.parameter_indices:
+            bits = builder.operation(f"ptrtoint ptr {parameters[index]} to i64")
+            combined = (
+                bits
+                if combined is None
+                else builder.operation(f"and i64 {combined}, {bits}")
+            )
+        if combined is None:
+            raise ValueError("a fixnum guard requires at least one parameter")
+        tag = builder.operation(f"and i64 {combined}, 1")
+        return builder.operation(f"icmp ne i64 {tag}, 0")
+
+    @classmethod
+    def from_parameters(cls, parameters) -> FixnumGuard | None:
+        """Return the complete guard only when no other condition is required."""
+        indices = []
+        for index, fact in enumerate(parameters):
+            if fact is UNKNOWN:
+                continue
+            if (
+                not fact.is_fixnum
+                or fact.minimum != FIXNUM_MIN
+                or fact.maximum != FIXNUM_MAX
+            ):
+                return None
+            indices.append(index)
+        return cls(tuple(indices)) if indices else None
+
+
+def _incoming_parameter_origin(tn, writes) -> int | None:
+    """Follow exact IR2 copies without treating mutable locals as SSA values."""
+    visited = set()
+    while tn not in visited:
+        visited.add(tn)
+        definitions = writes.get(tn, ())
+        if len(definitions) != 1:
+            return None
+        writer, _ref = definitions[0]
+        if writer.info.name == "move-argument":
+            return writer.codegen_info
+        if writer.info.name == "load-local":
+            access = writer.codegen_info
+            if not access.bound or access.allow_unbound:
+                return None
+        elif writer.info.name != "move":
+            return None
+        tn = writer.args[0].tn
+    return None
+
+
 @dataclass(slots=True, eq=False)
 class EntryContext:
     """The facts one body is generated under: value types and predicted
@@ -71,6 +145,7 @@ class EntryContext:
     return_type: ValueType = UNKNOWN
     plan: NativePlan | None = None
     convention: CallConvention | None = None
+    rejected_fixnum_guard: FixnumGuard | None = None
 
     def type_of(self, node) -> ValueType:
         return self.types.get(node, UNKNOWN)
@@ -91,7 +166,17 @@ class _PrimitiveTypeOf(ValueTypeVisitor):
     def visit_IntegerType(self, fact: ValueType) -> PrimitiveType:
         if fact.is_fixnum:
             return FIXNUM
+        if (
+            not fact.may_be_unbound
+            and fact.minimum is not None
+            and fact.maximum is not None
+            and -(1 << 63) <= fact.minimum
+            and fact.maximum < 1 << 63
+        ):
+            return BOXED_I64
         return self.visit_ValueType(fact)
+
+    visit_PythonIntegerType = visit_ValueType
 
     def visit_BooleanType(self, fact: ValueType) -> PrimitiveType:
         return BOOLEAN_T

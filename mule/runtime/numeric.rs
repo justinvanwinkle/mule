@@ -101,28 +101,17 @@ pub unsafe fn integer_import_owned(integer: BigInt) -> Value {
     unsafe { object::new_value(Data::BigInt(integer, std::ptr::null_mut(), std::ptr::null_mut())) }
 }
 
+/// Acquire a unit-owned value from a compiler-emitted native GMP integer.
+/// The source header and limbs remain borrowed immutable static storage.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mule_literal_int(decimal: *const c_char) -> Value {
-    if decimal.is_null() {
-        return fail("ValueError", "invalid integer literal");
+pub unsafe extern "C" fn mule_literal_integer(integer: *const BigInt) -> Value {
+    if crate::gmp::bits_per_limb() != 64 {
+        return fail("RuntimeError", "compiled integer constants require 64-bit GMP limbs");
     }
-    let Ok(text) = unsafe { CStr::from_ptr(decimal) }.to_str() else {
-        return fail("ValueError", "invalid integer literal");
-    };
-    let digits = text.strip_prefix(['-', '+']).unwrap_or(text);
-    if digits.is_empty() || !digits.bytes().all(|digit| digit.is_ascii_digit()) {
-        return fail("ValueError", "invalid integer literal");
+    if integer.is_null() {
+        return fail("RuntimeError", "missing compiled integer constant");
     }
-    if let Ok(value) = text.parse::<i64>() {
-        if (MIN..=MAX).contains(&value) {
-            return object::small(value);
-        }
-        return unsafe { integer_import_owned(BigInt::from_i64(value)) };
-    }
-    match BigInt::from_decimal(text) {
-        Some(integer) => unsafe { integer_import_owned(integer) },
-        None => fail("ValueError", "invalid integer literal"),
-    }
+    unsafe { integer_import(&*integer) }
 }
 
 #[unsafe(no_mangle)]

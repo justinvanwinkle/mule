@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 from mule import ast
 from mule.diagnostics import phase
 
-from . import vops
+from . import argument_layout, vops
 from .callconv import CallConvention
 from .ctype import (
     FIXNUM_MAX,
@@ -52,7 +52,7 @@ from .ctype import (
 from .ir1util import block_exception_target, made_function
 from .ir2tran import ir2_convert
 from .locall import specialized_ir1_context
-from .ltn import EntryContext, ltn_analyze, primitive_type_of
+from .ltn import EntryContext, FixnumGuard, ltn_analyze, primitive_type_of
 from .node import (
     CallKind,
     CodeInfo,
@@ -80,6 +80,8 @@ from .vop import (
     DOUBLE,
     FLOAT_BOX_LAYOUT,
     IMMEDIATE,
+    INSTANCE,
+    INT64_BOX_LAYOUT,
     NONE_T,
     NULL,
     RANGE,
@@ -95,7 +97,7 @@ if TYPE_CHECKING:
 OBJECT = vops.OBJECT
 logger = logging.getLogger(__name__)
 
-DECLARATIONS = """declare ptr @mule_literal_int(ptr)
+DECLARATIONS = """declare ptr @mule_literal_integer(ptr)
 declare ptr @mule_literal_float(double)
 declare ptr @mule_literal_text(ptr, i64)
 declare ptr @mule_literal_bytes(ptr, i64)
@@ -105,8 +107,7 @@ declare ptr @mule_load_global(ptr, ptr)
 declare i32 @mule_store_global(ptr, ptr, ptr)
 declare i32 @mule_link_globals(ptr, i64, ptr, ptr, i32)
 declare void @mule_traceback_here(ptr, i32, ptr, ptr, i32, ptr)
-declare void @mule_frame_push(ptr, ptr)
-declare void @mule_frame_pop()
+declare ptr @mule_frame_head_slot()
 @mule_safepoint_requested = external global i8
 declare i32 @mule_safepoint()
 declare ptr @mule_namespace()
@@ -190,8 +191,12 @@ declare i32 @mule_unbox_i64(ptr, ptr)
 declare ptr @mule_box_i64(i64)
 declare i32 @mule_unbox_f64(ptr, ptr)
 declare ptr @mule_box_f64(double)
-declare noalias nonnull ptr @mule_allocate_object_storage() allockind("alloc,uninitialized") "alloc-family"="mule_allocate_object_storage"
+declare noalias nonnull align 8 ptr @mule_allocate_object_storage() allockind("alloc,uninitialized") "alloc-family"="mule_allocate_object_storage"
 declare void @mule_deallocate_object_storage(ptr allocptr) allockind("free") "alloc-family"="mule_allocate_object_storage"
+@__gmp_bits_per_limb = external constant i32
+declare noalias nonnull align 8 ptr @mule_allocate_integer_limbs(i64) allocsize(0) allockind("alloc,uninitialized") "alloc-family"="mule_allocate_integer_limbs"
+declare void @mule_deallocate_integer_limbs(ptr allocptr, i64) allockind("free") "alloc-family"="mule_allocate_integer_limbs"
+declare void @mule_clear_integer_storage(ptr)
 declare ptr @mule_box_f64_move(double, ptr, ptr)
 declare i32 @mule_native_zero_division()
 declare i32 @mule_native_type_error()
@@ -324,7 +329,8 @@ def _parsed_helpers(
     helper_defs: list[tuple[str, str]] = []
     current_symbol = None
     current_lines: list[str] = []
-    for line in vops.helpers(bootstrap=bootstrap).splitlines():
+    helper_text = vops.helpers(bootstrap=bootstrap) + "\n\n" + argument_layout.helpers()
+    for line in helper_text.splitlines():
         if current_symbol is not None:
             current_lines.append(line)
             if line == "}":
@@ -816,6 +822,7 @@ class ModuleGenerator:
         self.specialized = _SpecializedSymbols(self.owned, self.foreign, self.facts)
         self.unpacked = _UnpackedSymbols(self.owned, self.facts)
         self.numeric_entries: dict[tuple[Lambda, object], NumericEntry] = {}
+        self.rejected_fixnum_entries: dict[Lambda, EntryContext] = {}
         self.fresh_box_summaries: dict[
             tuple[Lambda, object, str], BoxLayout | None
         ] = {}
@@ -1252,20 +1259,35 @@ class ModuleGenerator:
         return entry
 
     def constant_bigint(self, value: int, *, borrowed: bool = False) -> str:
-        """A unit-owned immutable arbitrary-precision int literal."""
+        """A unit-owned integer initialized from its native GMP constant."""
         existing = self.bigint_constants.get(value)
         if existing is None:
             index = len(self.bigint_constants)
             slot = f"@mule.literal.int.slot.{index}"
-            text = self.text(vops.decimal(value))
-            entry = f"call ptr @mule.cached.int(ptr {slot}, ptr {text})"
+            magnitude = abs(value)
+            limbs = []
+            while magnitude:
+                limbs.append(magnitude & ((1 << 64) - 1))
+                magnitude >>= 64
+            count = len(limbs)
+            size = -count if value < 0 else count
+            words = ", ".join(f"i64 {limb}" for limb in limbs)
+            self.auxiliary.extend(
+                [
+                    f"{slot}.limbs = private constant [{count} x i64] [{words}], align 8",
+                    (
+                        f"{slot}.value = private constant {{i32, i32, ptr}} "
+                        f"{{i32 0, i32 {size}, ptr {slot}.limbs}}, align 8"
+                    ),
+                ]
+            )
+            entry = f"call ptr @mule.cached.int(ptr {slot}, ptr {slot}.value)"
             self.bigint_constants[value] = slot, entry
             self.auxiliary.append(f"{slot} = internal global ptr null")
         else:
             slot, entry = existing
         if borrowed:
-            text = self.text(vops.decimal(value))
-            return f"call ptr @mule.borrowed.int(ptr {slot}, ptr {text})"
+            return f"call ptr @mule.borrowed.int(ptr {slot}, ptr {slot}.value)"
         return entry
 
     def tuple_pack_helper(self, count: int) -> str:
@@ -2471,6 +2493,14 @@ class ModuleGenerator:
                 return None
         return layout
 
+    def rejected_fixnum_entry(self, function: Lambda, guard: FixnumGuard) -> str:
+        if function not in self.rejected_fixnum_entries:
+            general, _variants = self.contexts(function)
+            self.rejected_fixnum_entries[function] = replace(
+                general, rejected_fixnum_guard=guard
+            )
+        return _suffixed(self.bodies[function], ".fallback.fixnum")
+
     def emit(self) -> str:
         program = self.program
         functions = []
@@ -2486,6 +2516,7 @@ class ModuleGenerator:
         emitted_variants = set()
         emitted_unpacked = set()
         emitted_numeric = set()
+        emitted_rejected_fixnum = set()
         while True:
             pending_variants = (
                 self.specialized.requested & variants_by_key.keys()
@@ -2494,7 +2525,15 @@ class ModuleGenerator:
                 self.unpacked.requested & contexts_by_key.keys()
             ) - emitted_unpacked
             pending_numeric = self.numeric_entries.keys() - emitted_numeric
-            if not pending_variants and not pending_unpacked and not pending_numeric:
+            pending_rejected = (
+                self.rejected_fixnum_entries.keys() - emitted_rejected_fixnum
+            )
+            if not (
+                pending_variants
+                or pending_unpacked
+                or pending_numeric
+                or pending_rejected
+            ):
                 break
             for key in sorted(
                 pending_variants, key=lambda item: (item[0].name, str(item[1]))
@@ -2514,6 +2553,11 @@ class ModuleGenerator:
                 emitted_numeric.add(key)
                 entry = self.numeric_entries[key]
                 functions.append(self.emit_body(entry.function, entry.context))
+            for function in sorted(pending_rejected, key=lambda item: item.name):
+                emitted_rejected_fixnum.add(function)
+                functions.append(
+                    self.emit_body(function, self.rejected_fixnum_entries[function])
+                )
         for lambda_, plan in self.native_plans.items():
             facts = self.facts[lambda_]
             context = EntryContext(
@@ -3494,6 +3538,8 @@ class FunctionGenerator:
             self.body = module.numeric_entries[self.lambda_, self.context.id].symbol
         elif self.unpacked:
             self.body = module.unpacked[self.lambda_, self.context.id]
+        elif self.context.rejected_fixnum_guard is not None:
+            self.body = _suffixed(module.bodies[self.lambda_], ".fallback.fixnum")
         elif self.context.id is not None:
             self.body = module.specialized[self.lambda_, self.context.id]
         else:
@@ -3588,8 +3634,7 @@ class FunctionGenerator:
         self.owner_slots: dict[object, str] = {}
         if self.raw:
             self.owner_slots = {
-                node: f"%owner.{index}"
-                for index, node in enumerate(self.plan.allocations)
+                node: f"%owner.{index}" for index, node in enumerate(self.plan.owners)
             }
             self.dependencies = {
                 var: f"%class.{index}"
@@ -4211,6 +4256,11 @@ class FunctionGenerator:
     def return_value(self, operand) -> None:
         if self.convention is None:
             value = self.take(operand)
+            if self.raw:
+                returned = linked(
+                    self.plan.returned, self.plan, "return representation"
+                )
+                value = returned.prepare_return(self, value)
             llvm_type = operand.tn.sc.llvm_type
         else:
             sc = self.convention.returned
@@ -4345,7 +4395,7 @@ class FunctionGenerator:
         """An owned object for a raw value."""
         sc = tn.sc
         if sc is SIGNED:
-            return self.operation(f"call ptr @mule_box_i64(i64 {value})")
+            return self.operation(f"call ptr @{INT64_BOX_LAYOUT.symbol()}(i64 {value})")
         if sc is BOOLEAN:
             return self.operation(f"select i1 {value}, ptr @mule.true, ptr @mule.false")
         if sc is NULL:
@@ -4354,6 +4404,8 @@ class FunctionGenerator:
             return self.operation(
                 f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {value})"
             )
+        if sc in (INSTANCE, CLASS):
+            return self.operation(f"call ptr @mule.fast.retain(ptr {value})")
         return value
 
     def double(self, ref) -> str:
@@ -4378,10 +4430,24 @@ class FunctionGenerator:
             self.lines.append(continuation + ":")
         return self.operation(f"{opcode} double {left}, {right}")
 
-    def field_address(self, tn, payload: str, name: str) -> str:
+    def field_address(self, tn, owner: str, name: str) -> str:
         layout = tn.primitive_type.layout
         index = layout.info.fields.index(name)
+        slot = self.operation(f"getelementptr i8, ptr {owner}, i64 32")
+        payload = self.operation(f"load ptr, ptr {slot}, !invariant.load !{{}}")
         return self.operation(f"getelementptr i64, ptr {payload}, i64 {index}")
+
+    def box_method(self, receiver: str, name: str) -> str:
+        """Consume an owned receiver and materialize its compiled bound method."""
+        attribute = self.operation(self.constant(ast.TextLiteral(name)))
+        self.check_pointer(attribute)
+        receiver = self.take_native_result(receiver)
+        return self.sequence_call("get_attribute", [receiver, attribute])
+
+    def take_native_result(self, value: str) -> str:
+        """Transfer the adapter's owned raw result after fallible preparation."""
+        self.line("store ptr null, ptr %native.result.owner")
+        return value
 
     def arithmetic(self, opcode: str, left: str, right: str) -> str:
         if opcode in ("add", "sub", "mul"):
@@ -4699,7 +4765,10 @@ class FunctionGenerator:
             return self.emit_raw()
         wrapper = (
             self.wrapper()
-            if self.context.id is None and not self.unpacked and self.convention is None
+            if self.context.id is None
+            and not self.unpacked
+            and self.convention is None
+            and self.context.rejected_fixnum_guard is None
             else ""
         )
         adapter = ""
@@ -4713,6 +4782,7 @@ class FunctionGenerator:
             and not self.unpacked
             and self.convention is None
             and self.context.id is None
+            and self.context.rejected_fixnum_guard is None
             else "internal "
         )
         plan = self.module.native_plans.get(self.lambda_)
@@ -4766,6 +4836,21 @@ class FunctionGenerator:
         if self.range_tns:
             self.line("%range.buffer = alloca [3 x i64]")
         self.entry_end = len(self.lines)
+        # Publish only a fully initialized stack record, before any operation
+        # that can enter cleanup. Globals remain borrowed from the callable.
+        self.line("%frame = alloca {ptr, ptr, ptr}, align 8")
+        self.line("%frame.slot = call ptr @mule_frame_head_slot()")
+        self.line("%frame.parent = load atomic ptr, ptr %frame.slot acquire, align 8")
+        self.line("store ptr %frame.parent, ptr %frame")
+        self.line(
+            "%frame.code = getelementptr {ptr, ptr, ptr}, ptr %frame, i32 0, i32 1"
+        )
+        self.line(f"store ptr {self.module.code_descriptor(lambda_)}, ptr %frame.code")
+        self.line(
+            "%frame.globals = getelementptr {ptr, ptr, ptr}, ptr %frame, i32 0, i32 2"
+        )
+        self.line("store ptr %globals, ptr %frame.globals")
+        self.line("store atomic ptr %frame, ptr %frame.slot release, align 8")
         if lambda_ is self.module.program.entry and self.context.id is None:
             # The runtime creates the main program's globals and enters its
             # top-level body once, before any function it defines can exist.
@@ -4773,9 +4858,6 @@ class FunctionGenerator:
             self.line(
                 f"call void @mule_module_loaded(ptr {self.module.text('__main__')}, ptr %globals)"
             )
-        self.line(
-            f"call void @mule_frame_push(ptr {self.module.code_descriptor(lambda_)}, ptr %globals)"
-        )
         self.line(f"br label %{self.component.blocks[0].label}")
         self.emit_blocks()
         handler_live = None
@@ -4819,7 +4901,13 @@ class FunctionGenerator:
             loaded = self.operation(f"load ptr, ptr {tn.slot}")
             self.record_facts(tn, loaded)
             self.release(loaded)
-        self.line("call void @mule_frame_pop()")
+        # Suspension can change both the thread and the bottom record's parent.
+        # Neither value may be reused from entry when the activation returns.
+        self.line("%frame.exit.slot = call ptr @mule_frame_head_slot()")
+        self.line("%frame.exit.parent = load ptr, ptr %frame")
+        self.line(
+            "store atomic ptr %frame.exit.parent, ptr %frame.exit.slot release, align 8"
+        )
         value = self.operation(f"load {returned.llvm_type}, ptr %return")
         self.line(f"ret {returned.llvm_type} {value}")
         self.lines.append("}")
@@ -4917,6 +5005,7 @@ class FunctionGenerator:
         fixnum_variant = next(
             (v for v in module.variants_of(lambda_) if v.id == "fixnum"), None
         )
+        general_body = module.bodies[lambda_]
         if (
             param_names
             and not module.program.bootstrap
@@ -4925,11 +5014,12 @@ class FunctionGenerator:
         ):
             builder = _HelperBuilder(self.module)
             combined = None
-            guard_ok = None
+            guard = FixnumGuard.from_parameters(fixnum_variant.parameters)
+            guard_ok = None if guard is None else guard.emit(builder, param_names)
             for index, (name, expected) in enumerate(
                 zip(param_names, fixnum_variant.parameters, strict=True)
             ):
-                if expected is UNKNOWN:
+                if expected is UNKNOWN or guard is not None:
                     continue
                 if (
                     expected.is_fixnum
@@ -4962,6 +5052,8 @@ class FunctionGenerator:
                     else builder.operation(f"and i1 %fix.ok, {guard_ok}")
                 )
             if guard_ok is not None:
+                if guard is not None:
+                    general_body = module.rejected_fixnum_entry(lambda_, guard)
                 lines.extend(builder.lines)
                 lines.extend(
                     [
@@ -4974,12 +5066,12 @@ class FunctionGenerator:
                 )
         lines.extend(
             [
-                f"  %result = call ptr {module.bodies[lambda_]}({arguments})",
+                f"  %result = call ptr {general_body}({arguments})",
                 "  ret ptr %result",
             ]
         )
 
-    def binding_wrapper(self) -> str:
+    def binding_wrapper(self, *, ordinary_view: bool = False) -> str:
         lambda_ = self.lambda_
         module = self.module
         count = len(lambda_.vars)
@@ -5022,14 +5114,41 @@ class FunctionGenerator:
             if kind == ast.ParameterKind.KEYWORD_ONLY
         )
         required = sum(index not in default_offsets for index in range(positional))
+        entry = module.functions[lambda_]
+        view_entry = _suffixed(entry, ".view")
+        header = (
+            f"define internal ptr {view_entry}(ptr %globals, ptr %args) alwaysinline {{"
+            if ordinary_view
+            else f"define ptr {entry}(ptr %globals, ptr %args) {{"
+        )
         lines = [
-            f"define ptr {module.functions[lambda_]}(ptr %globals, ptr %args) {{",
+            header,
             "entry:",
         ]
-        plain_pred = "plain"
+        binding = _suffixed(module.functions[lambda_], ".binding")
         if fast:
+            if not ordinary_view:
+                lines += [
+                    "  %ordinary = call i1 @mule.argument_view.is_view(ptr %args)",
+                    "  br i1 %ordinary, label %view, label %other",
+                    "view:",
+                    f"  %view.result = tail call ptr {view_entry}(ptr %globals, ptr %args)",
+                    "  ret ptr %view.result",
+                    "other:",
+                ]
+            count_helper = (
+                "mule.argument_view.positional"
+                if ordinary_view
+                else "mule_binding_positional"
+            )
+            take_helper = "mule.argument_view.take" if ordinary_view else "mule_arg"
+            default_helper = (
+                "mule.argument_view.arg_or_default"
+                if ordinary_view
+                else "mule_arg_or_default"
+            )
             lines += [
-                f"  %plain.count = call i32 @mule_binding_positional(ptr %args, i32 {required}, i32 {positional}, i32 {int(rest_idx is not None)})",
+                f"  %plain.count = call i32 @{count_helper}(ptr %args, i32 {required}, i32 {positional}, i32 {int(rest_idx is not None)})",
                 "  %fits = icmp sge i32 %plain.count, 0",
                 "  br i1 %fits, label %plain, label %binding",
                 "plain:",
@@ -5043,7 +5162,6 @@ class FunctionGenerator:
                     "  br i1 %plain.missing, label %failed, label %plain.ok",
                     "plain.ok:",
                 ]
-                plain_pred = "plain.ok"
             if keywords_idx is not None:
                 build_dict = module.protocol_helper("build_dict", 1)
                 lines += [
@@ -5064,7 +5182,6 @@ class FunctionGenerator:
                     "  br label %failed",
                     "plain.ready:",
                 ]
-                plain_pred = "plain.ready"
             for index, kind in enumerate(kinds):
                 if kind in (
                     ast.ParameterKind.VAR_POSITIONAL,
@@ -5077,41 +5194,59 @@ class FunctionGenerator:
                     )
                 elif index < required:
                     lines.append(
-                        f"  %plain.{index} = call ptr @mule_arg(ptr %args, i32 {index})"
+                        f"  %plain.{index} = call ptr @{take_helper}(ptr %args, i32 {index})"
                     )
                 else:
                     lines.append(
-                        f"  %plain.{index} = call ptr @mule_arg_or_default(ptr %args, i32 {index}, i32 {default_offsets[index]})"
+                        f"  %plain.{index} = call ptr @{default_helper}(ptr %args, i32 {index}, i32 {default_offsets[index]})"
                     )
             lines.append("  br label %invoke")
         else:
             lines.append("  br label %binding")
-        lines += self.keyword_entry(positional, default_offsets, rest_idx, keywords_idx)
-        lines += ["invoke:"]
-        for index in range(count):
-            if fast:
-                lines.append(
-                    f"  %parameter.{index} = phi ptr [%plain.{index}, %{plain_pred}], [%bound.{index}, %bound.ok]"
-                )
-            else:
-                lines.append(
-                    f"  %parameter.{index} = getelementptr i8, ptr %bound.{index}, i64 0"
-                )
-        param_names = [f"%parameter.{index}" for index in range(count)]
-        arguments = ", ".join(
-            [
-                "ptr %globals",
-                *self.wrapper_closure(lines),
-                *(f"ptr {name}" for name in param_names),
-            ]
-        )
-        self.wrapper_body_call(lines, param_names, arguments)
+        lines += [
+            "binding:",
+            f"  %bound.result = tail call ptr {binding}(ptr %globals, ptr %args)",
+            "  ret ptr %bound.result",
+        ]
+        if fast:
+            lines.append("invoke:")
+            param_names = [f"%plain.{index}" for index in range(count)]
+            arguments = ", ".join(
+                [
+                    "ptr %globals",
+                    *self.wrapper_closure(lines),
+                    *(f"ptr {name}" for name in param_names),
+                ]
+            )
+            self.wrapper_body_call(lines, param_names, arguments)
         lines += [
             "failed:",
             "  ret ptr null",
             "}",
         ]
-        return "\n".join(lines)
+        # Keep keyword buffers and variable-sized scratch out of the ordinary
+        # positional entry. Do not assume keywords themselves are infrequent.
+        if ordinary_view:
+            return "\n".join(lines)
+        bound_lines = [
+            f"define internal ptr {binding}(ptr %globals, ptr %args) noinline {{",
+            "entry:",
+            "  br label %binding",
+            *self.keyword_entry(positional, default_offsets, rest_idx, keywords_idx),
+            "invoke:",
+        ]
+        param_names = [f"%bound.{index}" for index in range(count)]
+        arguments = ", ".join(
+            [
+                "ptr %globals",
+                *self.wrapper_closure(bound_lines),
+                *(f"ptr {name}" for name in param_names),
+            ]
+        )
+        self.wrapper_body_call(bound_lines, param_names, arguments)
+        bound_lines += ["failed:", "  ret ptr null", "}"]
+        view = self.binding_wrapper(ordinary_view=True) if fast else ""
+        return "\n".join(lines + [""] + bound_lines + [view])
 
     def keyword_entry(
         self,
@@ -5431,6 +5566,9 @@ def native_adapter(gen: FunctionGenerator, plan, linkage: str) -> str:
     gen.line("store ptr null, ptr %result")
     gen.line("%native.error = alloca i1")
     gen.line("store i1 false, ptr %native.error")
+    if plan.returned.owns_result:
+        gen.line("%native.result.owner = alloca ptr")
+        gen.line("store ptr null, ptr %native.result.owner")
     dependencies = []
     slots = []
     for index in range(len(plan.dependencies)):
@@ -5462,6 +5600,8 @@ def native_adapter(gen: FunctionGenerator, plan, linkage: str) -> str:
     result = gen.operation(
         f"call {plan.returned.llvm_type} {plan.entry}({', '.join(call)})"
     )
+    if plan.returned.owns_result:
+        gen.line(f"store ptr {result}, ptr %native.result.owner")
     failed = gen.operation("load i1, ptr %native.error")
     gen.guard(failed)
     boxed = plan.returned.box(gen, result)
@@ -5483,6 +5623,8 @@ def native_adapter(gen: FunctionGenerator, plan, linkage: str) -> str:
     gen.lines.append("error:")
     gen.line("br label %cleanup")
     gen.lines.append("cleanup:")
+    if plan.returned.owns_result:
+        gen.release(gen.operation("load ptr, ptr %native.result.owner"))
     for slot in slots:
         gen.release(gen.operation(f"load ptr, ptr {slot}"))
     for i in range(len(plan.parameters)):

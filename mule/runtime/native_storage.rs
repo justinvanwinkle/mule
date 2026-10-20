@@ -358,6 +358,57 @@ mod float_box_tests {
     }
 }
 
+#[cfg(test)]
+mod integer_storage_tests {
+    use super::*;
+    use std::mem::MaybeUninit;
+
+    #[test]
+    fn compiled_single_limb_objects_support_checked_unboxing_and_normal_release() {
+        if crate::gmp::bits_per_limb() != 64 {
+            return;
+        }
+        for value in [0, -1, (1_i64 << 62), i64::MIN, i64::MAX] {
+            unsafe {
+                let limbs = mule_allocate_integer_limbs(8);
+                limbs.write(value.unsigned_abs());
+                let mut integer = MaybeUninit::<BigInt>::uninit();
+                let storage = integer.as_mut_ptr().cast::<u8>();
+                storage.add(crate::gmp::MPZ_ALLOCATED_OFFSET).cast::<i32>().write(1);
+                storage.add(crate::gmp::MPZ_SIZE_OFFSET).cast::<i32>()
+                    .write(value.signum() as i32);
+                storage.add(crate::gmp::MPZ_LIMBS_OFFSET).cast::<*mut u64>().write(limbs);
+                let object = object::new_value(Data::BigInt(
+                    integer.assume_init(), std::ptr::null_mut(), std::ptr::null_mut(),
+                ));
+                let mut actual = 0;
+                assert_eq!(mule_unbox_i64(object, &mut actual), 0);
+                assert_eq!(actual, value);
+                assert_eq!(numeric::integer_export(object).unwrap().to_decimal(), value.to_string());
+                object::release(object);
+            }
+        }
+    }
+
+    #[test]
+    fn raw_integer_storage_cleanup_preserves_a_pending_error() {
+        unsafe {
+            assert!(!object::has_error());
+            let value = BigInt::from_decimal("1267650600228229401496703205376").unwrap();
+            let mut storage = MaybeUninit::new(value);
+            object::error("ValueError", "integer storage pending error");
+            let limbs = mule_allocate_integer_limbs(8);
+            limbs.write(42);
+            mule_deallocate_integer_limbs(limbs, 8);
+            mule_clear_integer_storage(storage.as_mut_ptr().cast());
+            assert!(object::has_error());
+            assert_eq!(object::error_kind(), "ValueError");
+            assert_eq!(object::error_message(), "integer storage pending error");
+            object::clear_error();
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mule_native_zero_division() -> i32 {
     object::error("ZeroDivisionError", "float division by zero");

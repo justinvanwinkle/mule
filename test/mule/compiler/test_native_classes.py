@@ -413,3 +413,61 @@ def test_method_self_types_receiver_and_preserves_override_semantics(tmp_path):
     result = run_native(tmp_path, source)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "12 111 -1\n6 0 105\n"
+
+
+def test_instance_field_types_specialize_method_calls_and_preserve_dynamic_override(
+    tmp_path,
+):
+    source = (
+        "class Leaf:\n"
+        " def __init__(self, v):\n"
+        "  self.v = v\n"
+        "  self.next = None\n"
+        " def compute(self, x):\n"
+        "  return self.v + x\n"
+        "class AltLeaf:\n"
+        " def __init__(self):\n"
+        "  self.next = None\n"
+        " def compute(self, x):\n"
+        "  return x * 10\n"
+        "class CustomMap:\n"
+        " def __setitem__(self, k, v):\n"
+        "  self.last = (k, v)\n"
+        " def get(self, k):\n"
+        "  return AltLeaf()\n"
+        "class Holder:\n"
+        " def __init__(self, leaf):\n"
+        "  self.leaf = leaf\n"
+        "  self.table = {}\n"
+        " def put(self, k, leaf):\n"
+        "  self.table[k] = leaf\n"
+        "  leaf.next = self.leaf\n"
+        " def eval_leaf(self, x):\n"
+        "  if self.leaf is None:\n"
+        "   return -1\n"
+        "  return self.leaf.compute(x)\n"
+        " def eval_key(self, k, x):\n"
+        "  node = self.table.get(k)\n"
+        "  if node is None:\n"
+        "   return -2\n"
+        "  nxt = node.next\n"
+        "  base = node.compute(x)\n"
+        "  if nxt is not None:\n"
+        "   return base + nxt.compute(1)\n"
+        "  return base\n"
+        "h = Holder(Leaf(5))\n"
+        "h.put('a', Leaf(20))\n"
+        "print(h.eval_leaf(3), h.eval_key('a', 4), h.eval_key('missing', 4))\n"
+        "h.leaf = AltLeaf()\n"
+        "print(h.eval_leaf(3))\n"
+        "h.leaf = None\n"
+        "print(h.eval_leaf(3))\n"
+        "h.table = CustomMap()\n"
+        "h.put('b', Leaf(7))\n"
+        "print(h.eval_key('b', 4))\n"
+    )
+    ir = emit_llvm(source)
+    assert '@"mule.method.mule_fn_Leaf.compute.' in ir
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "8 30 -2\n30\n-1\n40\n"

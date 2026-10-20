@@ -2399,25 +2399,31 @@ class ListType(ValueType):
 
 @dataclass(frozen=True, slots=True)
 class DictType(ValueType):
-    """Exact builtin dict storage."""
+    """Exact builtin dict storage (or optimistic field dict when not proven)."""
 
     key: ValueType = UNKNOWN
     value: ValueType = UNKNOWN
     may_be_unbound: bool = False
+    proven: bool = True
 
     def runtime_class_type(self):
-        return UNKNOWN if self.may_be_unbound else CLASS_DICT_TYPE
+        return UNKNOWN if (self.may_be_unbound or not self.proven) else CLASS_DICT_TYPE
 
     def runtime_parent_class_type(self):
-        return CLASS_OBJECT_TYPE
+        return UNKNOWN if not self.proven else CLASS_OBJECT_TYPE
 
     def same_runtime_class(self, other) -> bool:
-        return other.fits_dict(DICT_TYPE)
+        return self.proven and other.fits_dict(DICT_TYPE)
 
     def exact_length(self) -> int | None:
         return (
             0
-            if (not self.may_be_unbound and self.key is BOTTOM and self.value is BOTTOM)
+            if (
+                self.proven
+                and not self.may_be_unbound
+                and self.key is BOTTOM
+                and self.value is BOTTOM
+            )
             else None
         )
 
@@ -2426,10 +2432,15 @@ class DictType(ValueType):
 
     @property
     def is_heap_object(self):
-        return not self.may_be_unbound
+        return self.proven and not self.may_be_unbound
 
     def truth_value(self) -> bool | None:
-        if not self.may_be_unbound and self.key is BOTTOM and self.value is BOTTOM:
+        if (
+            self.proven
+            and not self.may_be_unbound
+            and self.key is BOTTOM
+            and self.value is BOTTOM
+        ):
             return False
         return None
 
@@ -2439,14 +2450,14 @@ class DictType(ValueType):
     def as_bound(self):
         if not self.may_be_unbound:
             return self
-        if self.key is UNKNOWN and self.value is UNKNOWN:
+        if self.key is UNKNOWN and self.value is UNKNOWN and self.proven:
             return DICT_TYPE
-        return DictType(self.key, self.value, False)
+        return DictType(self.key, self.value, False, self.proven)
 
     def with_unbound(self):
         if self.may_be_unbound:
             return self
-        return DictType(self.key, self.value, True)
+        return DictType(self.key, self.value, True, self.proven)
 
     def as_optional(self, may_be_unbound: bool = False):
         return OptionalValueType(
@@ -2457,6 +2468,8 @@ class DictType(ValueType):
         if self.key is UNKNOWN and self.value is UNKNOWN:
             return self
         if max_depth <= 0:
+            if not self.proven:
+                return DictType(UNKNOWN, UNKNOWN, self.may_be_unbound, False)
             return (
                 DICT_TYPE
                 if not self.may_be_unbound
@@ -2472,11 +2485,11 @@ class DictType(ValueType):
             if self.value is BOTTOM
             else self.value.limit_container_depth(max_depth - 1)
         )
-        if lk is UNKNOWN and lv is UNKNOWN and not self.may_be_unbound:
+        if lk is UNKNOWN and lv is UNKNOWN and not self.may_be_unbound and self.proven:
             return DICT_TYPE
         if lk == self.key and lv == self.value:
             return self
-        return DictType(lk, lv, self.may_be_unbound)
+        return DictType(lk, lv, self.may_be_unbound, self.proven)
 
     def update_nested_lists(self, elem_type):
         if self.value is BOTTOM or self.value is UNKNOWN:
@@ -2484,7 +2497,7 @@ class DictType(ValueType):
         new_val = self.value._update_as_nested_list(elem_type).limit_container_depth(2)
         if new_val == self.value:
             return self
-        return DictType(self.key, new_val, self.may_be_unbound)
+        return DictType(self.key, new_val, self.may_be_unbound, self.proven)
 
     def update_nested_dicts(self, key_type, val_type):
         if self.value is BOTTOM or self.value is UNKNOWN:
@@ -2494,7 +2507,7 @@ class DictType(ValueType):
         ).limit_container_depth(2)
         if new_val == self.value:
             return self
-        return DictType(self.key, new_val, self.may_be_unbound)
+        return DictType(self.key, new_val, self.may_be_unbound, self.proven)
 
     def _update_as_nested_dict(self, key_type, val_type):
         return self.update_nested_dicts(key_type, val_type).with_entry(
@@ -2505,6 +2518,8 @@ class DictType(ValueType):
         return parent.update_nested_dicts(self.key, self.value)
 
     def widen_constant(self):
+        if not self.proven:
+            return DictType(UNKNOWN, UNKNOWN, self.may_be_unbound, False)
         return (
             DICT_TYPE if not self.may_be_unbound else DictType(UNKNOWN, UNKNOWN, True)
         )
@@ -2520,6 +2535,7 @@ class DictType(ValueType):
         if left is self:
             return self
         may_be_unbound = left.may_be_unbound or self.may_be_unbound
+        proven = left.proven and self.proven
         if left.key is BOTTOM:
             key = self.key
         elif self.key is BOTTOM:
@@ -2532,21 +2548,23 @@ class DictType(ValueType):
             value = left.value
         else:
             value = left.value.join(self.value).limit_container_depth(2)
-        if key is UNKNOWN and value is UNKNOWN and not may_be_unbound:
+        if key is UNKNOWN and value is UNKNOWN and not may_be_unbound and proven:
             return DICT_TYPE
         if (
             key == self.key
             and value == self.value
             and may_be_unbound == self.may_be_unbound
+            and proven == self.proven
         ):
             return self
         if (
             key == left.key
             and value == left.value
             and may_be_unbound == left.may_be_unbound
+            and proven == left.proven
         ):
             return left
-        return DictType(key, value, may_be_unbound)
+        return DictType(key, value, may_be_unbound, proven)
 
     def widen(self, new):
         return new.widen_dict(self)
@@ -2555,20 +2573,24 @@ class DictType(ValueType):
         key = widen_fact(old.key, self.key).limit_container_depth(2)
         value = widen_fact(old.value, self.value).limit_container_depth(2)
         may_be_unbound = old.may_be_unbound or self.may_be_unbound
+        proven = old.proven and self.proven
         if (
             key == self.key
             and value == self.value
             and may_be_unbound == self.may_be_unbound
+            and proven == self.proven
         ):
             return self
-        if key is UNKNOWN and value is UNKNOWN and not may_be_unbound:
+        if key is UNKNOWN and value is UNKNOWN and not may_be_unbound and proven:
             return DICT_TYPE
-        return DictType(key, value, may_be_unbound)
+        return DictType(key, value, may_be_unbound, proven)
 
     def accepts(self, actual):
         return actual.fits_dict(self)
 
     def fits_dict(self, expected=None):
+        if not self.proven:
+            return False
         if expected is None:
             return not self.may_be_unbound
         if self.may_be_unbound and not expected.may_be_unbound:
@@ -2590,7 +2612,7 @@ class DictType(ValueType):
         new_val = (
             v if self.value is BOTTOM else self.value.join(v).limit_container_depth(2)
         )
-        return DictType(new_key, new_val, self.may_be_unbound)
+        return DictType(new_key, new_val, self.may_be_unbound, self.proven)
 
     def getitem_type(self, index):
         if self.may_be_unbound or index.may_be_unbound or self.value is BOTTOM:
@@ -3092,6 +3114,9 @@ class OptionalValueType(ValueType):
         if self.may_be_unbound:
             return self
         return NONE_TYPE if is_none else self.inner
+
+    def instance_class(self) -> str | None:
+        return None if self.may_be_unbound else self.inner.instance_class()
 
     def narrow_identity(self, target, is_same: bool):
         if self.may_be_unbound:
