@@ -63,6 +63,41 @@ Mule implementation against CPython's hashing implementation. These broader
 cases supplement the small diagnostic kernels; results from a numeric loop
 alone do not establish application performance.
 
+## Closed numeric-use float local storage, 2026-10-20
+
+An ordinary object-mode function repeatedly computes
+`value = value * 1.0000001 + 0.125`, starting at `0.5`, and returns whether the
+result exceeds `1000.0`. The iteration count comes from `sys.argv`, so it is
+not a compile-time constant. This diagnostic specifically exercises a float
+whose identity never escapes. It does not measure returned float accumulators
+or application-wide performance.
+
+On the AMD Ryzen 9 9955HX host, 20,000,000 iterations produced these median
+whole-process times. Both builds use LLVM `-O3`, Rust optimization level 3, and
+no LTO. Five alternating samples per executable follow validation/warmup runs,
+with the measurement process and its children pinned to CPU 0. Compilation and
+other compiler tests finished before timing started.
+
+| Build | Median seconds |
+| --- | ---: |
+| Before closed-group representation selection | 0.260872 |
+| After closed-group representation selection | 0.030628 |
+
+The changed executable is 8.52 times as fast on this diagnostic. The source
+snapshots differ only in `mule/compiler/represent.py`; both include the same
+other working-tree compiler and runtime changes. Both executables match the
+CPython 3.15 host's output at counts 0, 1, 10,000, and 20,000,000. Focused
+regression tests separately compare branch, copy, exception, boundness, and
+capture behavior with the CPython 3.14 conformance oracle.
+
+The baseline LLVM boxes and unboxes the loop-carried value. The changed
+executable's optimized machine code keeps that value in an XMM register and
+uses `mulsd` and `addsd` without float boxing calls in the function. Generic
+iteration and safepoint paths remain. Source, baseline snapshot, LLVM, native
+executables, executable/source hashes, raw samples, and the measurement script
+are under `/tmp/mule-float-storage.7PQvSc/`, with results in `results.json`.
+These temporary artifacts are local evidence, not published benchmark assets.
+
 ## Parser construction staging, 2026-10-19
 
 The Python-hosted parser and the native parser remain separate measurements.

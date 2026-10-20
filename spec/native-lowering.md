@@ -320,14 +320,21 @@ retain optimization level 3.
 ## Remaining work and verification
 
 This stage does not specialize unannotated float signatures, store floats in
-native class fields, mix machine
-and object representations inside one body (a native plan is all or nothing,
-with coercions only at the entry adapter), or perform SBCL's full local-call
-and constraint transformations. Speculative global call returns remain unknown
+native class fields, or perform SBCL's full local-call and constraint
+transformations. A native plan remains all or nothing, with coercions only at
+the entry adapter. Ordinary object bodies can nevertheless retain float locals
+in raw storage across blocks when their entire assignment-connected group has
+only compatible numeric uses. Object boundaries keep those groups boxed to
+preserve identity; see [closed numeric-use float groups](compiler-gaps.md#closed-numeric-use-float-groups-implemented).
+Speculative global call returns remain unknown
 when the general fallback could return another type. LLVM handles SSA
 promotion, instruction optimization, and register allocation.
 
 ### Generated code volume
+
+The recorded investigation below predates several optimizations, including
+last-read ownership transfers, local borrowing, and closed numeric-use float
+storage. Its counts describe that snapshot, not the current checkout.
 
 Unoptimized LLVM for the Benchmarks Game programs runs 100–200 instructions
 per source line; nbody's `advance` (about 20 lines) is 4,804 instructions, of
