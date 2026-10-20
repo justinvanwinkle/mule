@@ -212,12 +212,33 @@ Tagged integers, booleans, and `None` need no reference-count updates. Ownership
 templates skip those values; heap values retain the Rust ownership protocol.
 Unknown local loads still check for the unbound marker.
 
+Fixnum addition and subtraction operate on tagged words, following
+`overflow+-fixnum` and `overflow-fixnum` in SBCL's
+`src/compiler/x86-64/arith.lisp`. SBCL uses a zero fixnum tag; Mule encodes
+`x` as `2*x + 1`. Addition clears the left tag before adding the right word.
+Subtraction clears the right tag before subtracting it from the left word.
+The result already has Mule's tag, and signed machine overflow exactly matches
+overflow of the fixnum range. LLVM's signed-overflow intrinsics replace SBCL's
+instruction and overflow-flag branch. Overflow uses the existing
+arbitrary-precision fallback with the original operands, rather than SBCL's
+checked-arithmetic error path. Both proven-fixnum and dynamically guarded helpers use
+this representation, avoiding operand decoding and result re-encoding.
+
 ## Internal calls
 
 Every function has a public callable wrapper and an internal native body. The
 wrapper checks positional arity and acquires owned arguments. The body receives
 the globals and positional values directly, owns them, and cleans them on every
 normal/error exit.
+
+Traceback recording identifies each live call with a separate one-byte stack
+allocation. The runtime compares and stores its address without reading its
+contents. Return-value storage does not escape through this interface, so LLVM
+can promote it to SSA across success and error paths, including native adapters.
+SBCL's `src/code/debug-int.lisp` represents a frame with its control-stack
+pointer independently of returned values. Mule retains its existing explicit
+traceback interface rather than reconstructing LLVM-managed frames; the separate
+address preserves that identity contract without forcing result loads and stores.
 
 When analysis predicts a target with matching arity, generated code checks the
 already-evaluated callee's native entry and globals. A match selects a specialized
@@ -226,6 +247,68 @@ body. Proven caller facts remove redundant argument checks. A mismatch calls
 the actual callee through the runtime. Both routes use the same recursion guard.
 Arguments still evaluate after the callee and before the guard, so an argument
 that rebinds the global does not replace the already-loaded callable.
+
+### Numeric conventions in mixed bodies
+
+Same-unit proven positional calls can select a numeric internal entry without
+requiring a whole-function native plan. The selected semantic context must fit
+the caller's proven argument facts without guards. A numeric-use float result
+returns as `double`; a non-boolean integer proven within the fixnum range returns
+as `i64`. A numeric entry can still execute object operations and retains the
+ordinary frame, traceback, handler, and descriptor cleanup paths.
+
+Float parameters use `double` only when every assignment-connected callee use
+permits it. Proven fixnum parameters use `i64` at the call boundary and can use
+the existing tagged representation inside object operations. Other parameters
+transfer owned object references normally. Numeric calls keep the actual callable
+alive while borrowing its closure. They check the existing error-flag convention
+before delivering the result; zero and NaN are not failure sentinels.
+
+Object and unknown callers retain the ordinary object entry. In particular,
+numeric float entries are selected only when every assignment-connected caller
+consumer admits doubles, not for identity comparisons or escaping objects.
+Keywords, default/reordered arguments, foreign units, and direct self-recursive
+edges retain the existing object convention in this increment. See
+[numeric calling conventions](compiler-gaps.md#numeric-internal-calling-conventions-implemented).
+
+## LLVM-visible leaf boxes
+
+Leaf boxing separates raw pooled storage from LLVM-visible initialization and
+payload loads. This follows SBCL's `move-from-double` in
+`src/compiler/x86-64/float.lisp`: allocation and the payload store are separate
+backend operations. `src/compiler/x86-64/alloc.lisp` similarly separates raw
+allocation from header initialization. Mule uses its existing C-layout object
+ABI and pool rather than introducing another object representation.
+
+Only `mule_allocate_object_storage` and terminal
+`mule_deallocate_object_storage` receive matching LLVM `allockind` and
+`alloc-family` contracts. Allocator-internal pool bookkeeping may disappear
+with an unobservable allocation. Memory effects remain unspecified: these
+functions do access TLS. Generic `new_value` performs canonicalization and GC
+work; conditional `release` can leave references alive. Neither is an allocator
+or unconditional free for this purpose.
+
+A representation-stage ownership proof marks complete copy-connected groups
+private only when every origin creates fresh leaf storage and every use has an
+explicit noncapture contract. Unknown uses, parameters, pooled constants,
+globals, containers, closures, and ordinary returns prevent this proof. A
+proven same-unit factory result can qualify only when every selected normal
+object entry has a fresh return with no other escape. Numeric entry conventions
+are not used to infer object-return ownership. In-place box reuse is not fresh
+provenance. Physical slots with different ownership modes cannot be coalesced.
+
+Private groups use ordinary local reference counts and terminal raw storage
+deallocation; other groups retain their existing ownership helpers and generic
+destruction. This adapts SBCL's lifetime/representation separation to Mule's
+reference-counted runtime. It does not cancel box/unbox values: LLVM performs
+the payload forwarding and allocation elimination. The first leaf layout is a
+float; the allocation contracts and privacy proof are layout-driven.
+
+Float type alone does not authorize raw deallocation. The physical weak-handle
+API can register heap floats even though public Python weakref constructors
+reject builtin floats. Such registration captures the pointer and therefore
+prevents private ownership. This preserves weak callbacks, alias identity,
+shared-reference behavior, and pending-error cleanup.
 
 ## Raw int64, float64, and class entries
 
@@ -246,8 +329,12 @@ to a fixed point. An arithmetic result requires a direct fixed-width contract
 or a range proof before it may lose arbitrary precision. Signed bitwise
 operations are closed over the selected 64-bit operand representation. Native
 methods and scalar callers use raw entries; generic interfaces supply coercions
-at entry and exit. Safety-zero contract arithmetic uses LLVM `nsw`; positive
-safety uses overflow intrinsics and reports `OverflowError` before a field write.
+at entry and exit when those conversions preserve object semantics. A generic
+Float64 result adapter requires every return copy group to have fresh producers
+and no identity-bearing use. Otherwise the ordinary object body remains in use,
+while the raw entry remains available. Safety-zero contract arithmetic uses LLVM
+`nsw`; positive safety uses overflow intrinsics and reports `OverflowError`
+before a field write.
 The boxed path remains available for unsupported signatures and operations.
 
 `float` and `float64` contracts select the `double` storage class, as SBCL's
@@ -319,13 +406,14 @@ retain optimization level 3.
 
 ## Remaining work and verification
 
-This stage does not specialize unannotated float signatures, store floats in
-native class fields, or perform SBCL's full local-call and constraint
+This stage does not assign raw float signatures to unknown calls, store floats
+in native class fields, or perform SBCL's full local-call and constraint
 transformations. A native plan remains all or nothing, with coercions only at
 the entry adapter. Ordinary object bodies can nevertheless retain float locals
 in raw storage across blocks when their entire assignment-connected group has
-only compatible numeric uses. Object boundaries keep those groups boxed to
-preserve identity; see [closed numeric-use float groups](compiler-gaps.md#closed-numeric-use-float-groups-implemented).
+only compatible numeric uses. Proven numeric internal calls can carry those
+representations between mixed bodies. Object boundaries keep groups boxed where
+identity requires it; see [closed numeric-use float groups](compiler-gaps.md#closed-numeric-use-float-groups-implemented).
 Speculative global call returns remain unknown
 when the general fallback could return another type. LLVM handles SSA
 promotion, instruction optimization, and register allocation.

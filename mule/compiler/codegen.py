@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 import re
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cache
 from typing import TYPE_CHECKING
 
@@ -38,6 +38,7 @@ from mule import ast
 from mule.diagnostics import phase
 
 from . import vops
+from .callconv import CallConvention
 from .ctype import (
     FIXNUM_MAX,
     FIXNUM_MIN,
@@ -51,7 +52,7 @@ from .ctype import (
 from .ir1util import block_exception_target, made_function
 from .ir2tran import ir2_convert
 from .locall import specialized_ir1_context
-from .ltn import EntryContext, ltn_analyze
+from .ltn import EntryContext, ltn_analyze, primitive_type_of
 from .node import (
     CallKind,
     CodeInfo,
@@ -62,20 +63,29 @@ from .node import (
     Signature,
     linked,
 )
-from .represent import select_native_plans, select_representations
+from .represent import (
+    can_use_double,
+    fresh_box_returns,
+    mark_private_boxes,
+    select_native_plans,
+    select_representations,
+)
 from .traceback_sites import SourceHighlights
 from .vop import (
     BOOLEAN,
     BOOLEAN_T,
+    BOXED_FLOAT,
     CLASS,
     DESCRIPTOR,
     DOUBLE,
+    FLOAT_BOX_LAYOUT,
     IMMEDIATE,
     NONE_T,
     NULL,
     RANGE,
     SIGNED,
     TN,
+    BoxLayout,
 )
 
 if TYPE_CHECKING:
@@ -180,6 +190,8 @@ declare i32 @mule_unbox_i64(ptr, ptr)
 declare ptr @mule_box_i64(i64)
 declare i32 @mule_unbox_f64(ptr, ptr)
 declare ptr @mule_box_f64(double)
+declare noalias nonnull ptr @mule_allocate_object_storage() allockind("alloc,uninitialized") "alloc-family"="mule_allocate_object_storage"
+declare void @mule_deallocate_object_storage(ptr allocptr) allockind("free") "alloc-family"="mule_allocate_object_storage"
 declare ptr @mule_box_f64_move(double, ptr, ptr)
 declare i32 @mule_native_zero_division()
 declare i32 @mule_native_type_error()
@@ -224,6 +236,7 @@ declare ptr @mule_list_getitem(ptr, ptr)
 declare ptr @mule_list_getitem_borrow(ptr, ptr)
 declare ptr @mule_fast_getslice(ptr, ptr, ptr, ptr)
 declare ptr @mule_text_slice_eq(ptr, ptr, ptr, ptr, i32)
+declare ptr @mule_text_slice2_eq(ptr, ptr, ptr, ptr, ptr, ptr, i32)
 declare i32 @mule_fast_setitem(ptr, ptr, ptr)
 declare i32 @mule_fast_setitem_move(ptr, ptr, ptr)
 declare i32 @mule_fast_next_item(ptr, ptr)
@@ -624,7 +637,7 @@ def generate(program: Program) -> str:
     return llvm
 
 
-def compile_component(lambda_: Lambda, context):
+def compile_component(lambda_: Lambda, context, *, select_calls=None):
     """Run the IR2 phases for one body (``compile-component`` for a backend
     whose register allocation LLVM performs)."""
     with specialized_ir1_context(lambda_, context):
@@ -644,6 +657,8 @@ def compile_component(lambda_: Lambda, context):
             level=logging.DEBUG,
         ):
             select_representations(component)
+            if select_calls is not None and select_calls(component):
+                select_representations(component)
         return component
 
 
@@ -767,6 +782,26 @@ class TupleConstant:
     borrowed_entry: str = ""
 
 
+@dataclass(slots=True)
+class NumericEntry:
+    function: Lambda
+    context: EntryContext
+    symbol: str
+
+
+def _numeric_argument_fits(actual, expected) -> bool:
+    # Boolean facts can fit integer bounds, but their singleton pointers do
+    # not have the tagged fixnum representation that a scalar entry decodes.
+    if expected.is_fixnum and not actual.is_fixnum:
+        return False
+    if (
+        primitive_type_of(expected) is BOXED_FLOAT
+        and primitive_type_of(actual) is not BOXED_FLOAT
+    ):
+        return False
+    return actual.fits(expected)
+
+
 class ModuleGenerator:
     def __init__(self, program: Program):
         self.program = program
@@ -780,6 +815,10 @@ class ModuleGenerator:
         self.bodies = _Symbols(self.owned, self.foreign, "body")
         self.specialized = _SpecializedSymbols(self.owned, self.foreign, self.facts)
         self.unpacked = _UnpackedSymbols(self.owned, self.facts)
+        self.numeric_entries: dict[tuple[Lambda, object], NumericEntry] = {}
+        self.fresh_box_summaries: dict[
+            tuple[Lambda, object, str], BoxLayout | None
+        ] = {}
         self.by_name = {
             lambda_.name: lambda_ for lambda_ in [*program.external, *lambdas]
         }
@@ -2255,7 +2294,7 @@ class ModuleGenerator:
             None,
             facts.types,
             facts.targets,
-            (UNKNOWN,) * len(lambda_.vars),
+            facts.parameters or (UNKNOWN,) * len(lambda_.vars),
             facts.return_type,
         )
         variants = [
@@ -2269,6 +2308,168 @@ class ModuleGenerator:
             for context in facts.variants
         ]
         return general, variants
+
+    def numeric_entry(self, function: Lambda, context: EntryContext) -> NumericEntry:
+        """Select an internal ABI without changing the entry's semantic facts."""
+        key = function, context.id
+        existing = self.numeric_entries.get(key)
+        if existing is not None:
+            return existing
+        returned = (
+            DOUBLE if primitive_type_of(context.return_type) is BOXED_FLOAT else SIGNED
+        )
+        parameters = tuple(
+            DOUBLE
+            if primitive_type_of(fact) is BOXED_FLOAT
+            else SIGNED
+            if fact.is_fixnum
+            else DESCRIPTOR
+            for fact in context.parameters
+        )
+        numeric = replace(context, convention=CallConvention(parameters, returned))
+        # Signature probing does not select calls or retain cloned IR1 nodes.
+        # Object-sensitive parameter uses must keep the incoming object itself.
+        component = compile_component(function, numeric)
+        parameters = tuple(
+            DESCRIPTOR
+            if sc is DOUBLE
+            and not can_use_double(component, component.environment.vars[var])
+            else sc
+            for var, sc in zip(function.vars, parameters, strict=True)
+        )
+        numeric.convention = CallConvention(parameters, returned)
+        entry = NumericEntry(
+            function,
+            numeric,
+            _symbol(f"{function.name}.numeric.{context.id or 'general'}"),
+        )
+        self.numeric_entries[key] = entry
+        return entry
+
+    def select_numeric_calls(self, component) -> bool:
+        """Use scalar locations only for proven calls and compatible consumers."""
+        if component.context.plan is not None:
+            return False
+        changed = False
+        pending = [
+            vop
+            for block in component.blocks
+            for vop in block.vops
+            if vop.info is vops.FULL_CALL
+        ]
+        while pending:
+            remaining = []
+            progress = False
+            for vop in pending:
+                site = vop.codegen_info
+                target = site.target
+                if (
+                    not site.proven
+                    or site.keywords
+                    or target not in self.owned
+                    or target in self.native_plans
+                    or target is component.lambda_
+                    or target.call_order((), len(vop.args) - 1)
+                    != tuple(range(len(target.vars)))
+                ):
+                    continue
+                result = vop.results[0].tn
+                fact = result.type or UNKNOWN
+                if primitive_type_of(fact) is BOXED_FLOAT:
+                    if not can_use_double(component, result, ignore=(vop,)):
+                        remaining.append(vop)
+                        continue
+                elif not fact.is_fixnum:
+                    continue
+                arguments = tuple(arg.tn.type or UNKNOWN for arg in vop.args[1:])
+                general, variants = self.contexts(target)
+                context = next(
+                    (
+                        candidate
+                        for candidate in (*variants, general)
+                        if all(
+                            _numeric_argument_fits(actual, expected)
+                            for actual, expected in zip(
+                                arguments, candidate.parameters, strict=True
+                            )
+                        )
+                        and (
+                            candidate.return_type.is_fixnum
+                            if fact.is_fixnum
+                            else primitive_type_of(candidate.return_type) is BOXED_FLOAT
+                        )
+                        and candidate.return_type.fits(fact)
+                    ),
+                    None,
+                )
+                if context is None:
+                    continue
+                entry = self.numeric_entry(target, context)
+                convention = linked(entry.context.convention, entry, "convention")
+                restrictions = tuple(
+                    (DESCRIPTOR, DOUBLE)
+                    if sc is DOUBLE
+                    else (IMMEDIATE, SIGNED)
+                    if sc is SIGNED
+                    else OBJECT
+                    for sc in convention.parameters
+                )
+                vop.info = replace(
+                    vops.LOCAL_CALL,
+                    args=(OBJECT, *restrictions),
+                    arg_escapes=(
+                        False,
+                        *(sc is DESCRIPTOR for sc in convention.parameters),
+                    ),
+                    results=(
+                        (DOUBLE,)
+                        if convention.returned is DOUBLE
+                        else (IMMEDIATE, SIGNED),
+                    ),
+                )
+                vop.codegen_info = entry
+                progress = changed = True
+            if not progress:
+                break
+            pending = remaining
+        return changed
+
+    def fresh_box_result(self, component, vop):
+        """Transfer fresh object ownership only across proven factory calls."""
+        if vop.info is not vops.FULL_CALL:
+            return None
+        site = vop.codegen_info
+        target = site.target
+        if (
+            not site.proven
+            or site.keywords
+            or target not in self.owned
+            or target is component.lambda_
+            or target.call_order((), len(vop.args) - 1)
+            != tuple(range(len(target.vars)))
+        ):
+            return None
+        layout = vop.results[0].tn.primitive_type.boxed_layout
+        if layout is None:
+            return None
+        sources = tuple(ref.tn.type or UNKNOWN for ref in vop.args[1:])
+        general, variants = self.contexts(target)
+        contexts = {None: general, **{context.id: context for context in variants}}
+        for selected, _guards in _entry_steps(self, target, sources):
+            context = contexts[None if selected is None else selected.id]
+            if primitive_type_of(context.return_type).boxed_layout is not layout:
+                return None
+            key = target, context.id, "object"
+            if key not in self.fresh_box_summaries:
+                # A pending entry is conservative, and only object conventions
+                # are probed. No cloned node identities survive this scope.
+                self.fresh_box_summaries[key] = None
+                body = compile_component(target, context)
+                if fresh_box_returns(body, layout):
+                    self.fresh_box_summaries[key] = layout
+            if self.fresh_box_summaries[key] is not layout:
+                return None
+        return layout
 
     def emit(self) -> str:
         program = self.program
@@ -2284,6 +2485,7 @@ class ModuleGenerator:
                 contexts_by_key[lambda_, variant.id] = (lambda_, variant)
         emitted_variants = set()
         emitted_unpacked = set()
+        emitted_numeric = set()
         while True:
             pending_variants = (
                 self.specialized.requested & variants_by_key.keys()
@@ -2291,7 +2493,8 @@ class ModuleGenerator:
             pending_unpacked = (
                 self.unpacked.requested & contexts_by_key.keys()
             ) - emitted_unpacked
-            if not pending_variants and not pending_unpacked:
+            pending_numeric = self.numeric_entries.keys() - emitted_numeric
+            if not pending_variants and not pending_unpacked and not pending_numeric:
                 break
             for key in sorted(
                 pending_variants, key=lambda item: (item[0].name, str(item[1]))
@@ -2305,6 +2508,12 @@ class ModuleGenerator:
                 emitted_unpacked.add(key)
                 lambda_, context = contexts_by_key[key]
                 functions.append(self.emit_body(lambda_, context, unpacked=True))
+            for key in sorted(
+                pending_numeric, key=lambda item: (item[0].name, str(item[1]))
+            ):
+                emitted_numeric.add(key)
+                entry = self.numeric_entries[key]
+                functions.append(self.emit_body(entry.function, entry.context))
         for lambda_, plan in self.native_plans.items():
             facts = self.facts[lambda_]
             context = EntryContext(
@@ -2641,7 +2850,13 @@ class ModuleGenerator:
             ),
             specialized_ir1_context(lambda_, context),
         ):
-            component = compile_component(lambda_, context)
+            component = compile_component(
+                lambda_, context, select_calls=self.select_numeric_calls
+            )
+            mark_private_boxes(
+                component,
+                fresh_result=lambda vop: self.fresh_box_result(component, vop),
+            )
             with phase("VOP generation %s", lambda_.name, level=logging.DEBUG):
                 body = FunctionGenerator(self, component, unpacked=unpacked).emit()
         logger.debug(
@@ -3053,7 +3268,7 @@ def _pack_slot_tns(component, candidates, fixed, prefix: str) -> list[list]:
     for tn in candidates:
         if tn not in first_step:
             continue
-        key = (tn.sc, tn in owned_set)
+        key = (tn.sc, tn in owned_set, tn.private_box)
         by_kind.setdefault(key, []).append(tn)
     for kind_tns in by_kind.values():
         kind_tns.sort(key=lambda tn: (first_step[tn], last_step[tn]))
@@ -3255,6 +3470,7 @@ class FunctionGenerator:
         self.context = component.context
         self.plan = self.context.plan
         self.raw = self.plan is not None
+        self.convention = self.context.convention
         self.unpacked = unpacked
         if unpacked:
             info = _return_tuple_info(self.lambda_)
@@ -3268,11 +3484,14 @@ class FunctionGenerator:
         self.environment = component.environment
         self.immortal_values: set[str] = set()
         self.heap_values: set[str] = set()
+        self.private_values: dict[str, BoxLayout] = {}
         self.lines: list[str] = []
         self.serial = 0
         self.exception_target: str | None = None
         if self.raw:
             self.body = self.plan.entry
+        elif self.convention is not None:
+            self.body = module.numeric_entries[self.lambda_, self.context.id].symbol
         elif self.unpacked:
             self.body = module.unpacked[self.lambda_, self.context.id]
         elif self.context.id is not None:
@@ -3364,6 +3583,7 @@ class FunctionGenerator:
         self.uses_out = False
         self.uses_reuse = False
         self.uses_float_scratch = False
+        self.uses_numeric_error = False
         self.max_argv = 0
         self.owner_slots: dict[object, str] = {}
         if self.raw:
@@ -3724,10 +3944,16 @@ class FunctionGenerator:
             return source.span.start.line
         return self.module.code(self.lambda_).firstlineno
 
-    def emit_landings(self, activation: str = "%return") -> None:
+    def emit_landings(self) -> None:
         """Record source failures (unless resuming a caught transfer), then
-        release owned temporaries. ``activation`` is a stack slot of this call
-        that tells ordinary propagation apart from distinct activations."""
+        release owned temporaries. A separate address identifies this call
+        without exposing the return-value slot to the runtime."""
+        if self.landing_sites:
+            # The runtime compares and stores this address, never its contents.
+            # Keep result storage private so LLVM can promote it to SSA.
+            self.lines.insert(
+                self.lines.index("entry:") + 1, "  %activation = alloca i8"
+            )
         code = self.module.code_descriptor(self.lambda_)
         owned_sets = list(
             dict.fromkeys(
@@ -3785,7 +4011,7 @@ class FunctionGenerator:
                 self.line(f"{marker} = phi ptr {incoming_markers}")
                 self.line(
                     f"call void @mule_traceback_here(ptr {code}, i32 {line}, "
-                    f"ptr %globals, ptr {activation}, i32 {int(explicit_raise)}, ptr {marker})"
+                    f"ptr %globals, ptr %activation, i32 {int(explicit_raise)}, ptr {marker})"
                 )
             if (base, owned) in chain_labels:
                 self.line(f"br label %{chain_labels[base, owned]}")
@@ -3827,7 +4053,7 @@ class FunctionGenerator:
         if tn in self.registers:
             return self.values[tn]
         value = self.operation(f"load {tn.sc.llvm_type}, ptr {tn.slot}")
-        self.mark_immortal(tn, value)
+        self.record_facts(tn, value)
         return value
 
     def take(self, ref) -> str:
@@ -3857,7 +4083,7 @@ class FunctionGenerator:
         if tn in self.live:
             raise ValueError(f"{tn!r} redefined while it still owns a value")
         self.values[tn] = value
-        self.mark_immortal(tn, value)
+        self.record_facts(tn, value)
         if tn.sc.owned and value not in self.immortal_values:
             self.live[tn] = value
 
@@ -3886,15 +4112,17 @@ class FunctionGenerator:
         if tn.sc.owned and release:
             old = self.operation(f"load ptr, ptr {tn.slot}")
             self.line(f"store ptr {value}, ptr {tn.slot}")
-            self.mark_immortal(tn, old)
-            self.mark_immortal(tn, value)
+            self.record_facts(tn, old)
+            self.record_facts(tn, value)
             self.release(old)
             return
         self.line(f"store ptr {value}, ptr {tn.slot}")
-        self.mark_immortal(tn, value)
+        self.record_facts(tn, value)
 
     def record_facts(self, tn, value: str) -> None:
         self.mark_immortal(tn, value)
+        if tn.private_box is not None:
+            self.private_values[value] = tn.private_box
         fact = tn.type or UNKNOWN
         if fact.is_fixnum or fact.is_immortal:
             self.immortal_values.add(value)
@@ -3906,6 +4134,10 @@ class FunctionGenerator:
     def retain(self, value: str) -> str:
         if value in self.immortal_values:
             return value
+        layout = self.private_values.get(value)
+        if layout is not None:
+            self.line(f"call ptr @{layout.symbol('private.retain')}(ptr {value})")
+            return value
         if value in self.heap_values:
             self.line(f"call ptr @mule.heap.retain(ptr {value})")
             return value
@@ -3914,6 +4146,10 @@ class FunctionGenerator:
 
     def release(self, value: str) -> None:
         if value in self.immortal_values:
+            return
+        layout = self.private_values.get(value)
+        if layout is not None:
+            self.line(f"call void @{layout.symbol('private.release')}(ptr {value})")
             return
         if value in self.heap_values:
             self.line(f"call void @mule.heap.release(ptr {value})")
@@ -3958,6 +4194,93 @@ class FunctionGenerator:
 
     def parameter(self, index: int) -> str:
         return f"%parameter.{index}"
+
+    def parameter_value(self, index: int, ref) -> str:
+        value = self.parameter(index)
+        if self.convention is None:
+            return value
+        sc = self.convention.parameters[index]
+        if sc is SIGNED and ref.tn.sc in OBJECT:
+            return self.encode(value)
+        if sc is DOUBLE and ref.tn.sc is not DOUBLE:
+            raise ValueError(
+                f"raw float parameter {index} requires double local storage"
+            )
+        return value
+
+    def return_value(self, operand) -> None:
+        if self.convention is None:
+            value = self.take(operand)
+            llvm_type = operand.tn.sc.llvm_type
+        else:
+            sc = self.convention.returned
+            if sc is DOUBLE:
+                value = vops.unbox_float_operand(self, operand)
+                consumed = self.take(operand)
+                if operand.tn.sc in OBJECT:
+                    self.release(consumed)
+            else:
+                value = self.take(operand)
+                if operand.tn.sc in OBJECT:
+                    pointer = value
+                    value = self.decode(pointer)
+                    self.release(pointer)
+            llvm_type = sc.llvm_type
+        self.line(f"store {llvm_type} {value}, ptr %return")
+        self.line("br label %cleanup")
+
+    def numeric_call(self, vop) -> None:
+        entry = vop.codegen_info
+        convention = linked(entry.context.convention, entry, "convention")
+        callable_ref, *arguments = vop.args
+        converted = []
+        # Keep original operands owned until all fallible extraction and frame
+        # entry checks succeed. Their ordinary landing releases them on failure.
+        for ref, sc in zip(arguments, convention.parameters, strict=True):
+            if sc is DOUBLE:
+                converted.append(vops.unbox_float_operand(self, ref))
+            elif sc is SIGNED:
+                value = self.load(ref)
+                converted.append(self.decode(value) if ref.tn.sc in OBJECT else value)
+            else:
+                converted.append(self.load(ref))
+        callee = self.load(callable_ref)
+        closure = (
+            self.operation(f"call ptr @mule_function_closure_of(ptr {callee})")
+            if self.module.closure_of(entry.function)
+            else None
+        )
+        status = self.operation("call i32 @mule_enter_frame()")
+        self.check_status(status)
+        self.uses_numeric_error = True
+        self.line("store i1 false, ptr %numeric.error")
+        self.take(callable_ref)
+        raw_owned = []
+        for ref, sc in zip(arguments, convention.parameters, strict=True):
+            taken = self.take(ref)
+            if sc is not DESCRIPTOR and ref.tn.sc in OBJECT:
+                raw_owned.append(taken)
+        operands = ["ptr %globals", "ptr %numeric.error"]
+        if closure is not None:
+            operands.append(f"ptr {closure}")
+        operands.extend(
+            f"{sc.llvm_type} {value}"
+            for sc, value in zip(convention.parameters, converted, strict=True)
+        )
+        value = self.operation(
+            f"call {convention.returned.llvm_type} {entry.symbol}({', '.join(operands)})"
+        )
+        self.line("call void @mule_leave_frame()")
+        for owned in raw_owned:
+            self.release(owned)
+        self.release(callee)
+        failed = self.operation("load i1, ptr %numeric.error")
+        self.guard(failed)
+        result = vop.results[0]
+        if convention.returned is SIGNED and result.tn.sc in OBJECT:
+            self.native_result(result, self.encode(value))
+        else:
+            self.store(result, value)
 
     def local_slot(self, name: str) -> str:
         return self.local_slots[name]
@@ -4028,7 +4351,9 @@ class FunctionGenerator:
         if sc is NULL:
             return "@mule.none"
         if sc is DOUBLE:
-            return self.operation(f"call ptr @mule_box_f64(double {value})")
+            return self.operation(
+                f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {value})"
+            )
         return value
 
     def double(self, ref) -> str:
@@ -4373,43 +4698,64 @@ class FunctionGenerator:
         if self.raw:
             return self.emit_raw()
         wrapper = (
-            self.wrapper() if (self.context.id is None and not self.unpacked) else ""
+            self.wrapper()
+            if self.context.id is None and not self.unpacked and self.convention is None
+            else ""
         )
         adapter = ""
-        # Every object entry of a natively planned lambda, general or guarded,
-        # becomes the adapter that checks the plan's boundaries and calls the
-        # raw entry; its own body remains as the fallback.
+        # Adapt an object entry only when reboxing preserves the returned
+        # object's semantics. Otherwise its ordinary body stays authoritative;
+        # the raw entry remains available to native callers.
         linkage = (
             ""
             if self.module.program.exports
             and not self.raw
             and not self.unpacked
+            and self.convention is None
             and self.context.id is None
             else "internal "
         )
         plan = self.module.native_plans.get(self.lambda_)
-        if plan is not None:
+        if plan is not None and linked(
+            plan.returned, plan, "returned representation"
+        ).can_adapt_return(self.component):
             adapter = native_adapter(self, plan, linkage)
             self.body = _suffixed(self.body, ".boxed")
             linkage = "internal "
             self.lines = []
         lambda_ = self.lambda_
+        parameter_scs = (
+            self.convention.parameters
+            if self.convention is not None
+            else (DESCRIPTOR,) * len(lambda_.vars)
+        )
+        returned = (
+            self.convention.returned if self.convention is not None else DESCRIPTOR
+        )
         parameters = ", ".join(
             ["ptr %globals"]
+            + (["ptr %error.flag"] if self.convention is not None else [])
             + (["ptr %closure"] if self.module.closure_of(lambda_) else [])
-            + [f"ptr %parameter.{index}" for index in range(len(lambda_.vars))]
+            + [
+                f"{sc.llvm_type} %parameter.{index}"
+                for index, sc in enumerate(parameter_scs)
+            ]
             + (["ptr %tuple.out"] if self.unpacked else [])
         )
-        self.lines.append(f"define {linkage}ptr {self.body}({parameters}) {{")
+        self.lines.append(
+            f"define {linkage}{returned.llvm_type} {self.body}({parameters}) {{"
+        )
         self.lines.append("entry:")
         if self.context.id is not None:
             for index, fact in enumerate(self.context.parameters):
+                if parameter_scs[index] is not DESCRIPTOR:
+                    continue
                 value = f"%parameter.{index}"
                 if fact.is_fixnum or fact.is_immortal:
                     self.immortal_values.add(value)
                 self.refine_type(fact, value)
-        self.line("%return = alloca ptr")
-        self.line("store ptr null, ptr %return")
+        self.line(f"%return = alloca {returned.llvm_type}")
+        self.line(f"store {returned.llvm_type} {returned.zero}, ptr %return")
         for group in (*self.local_slot_groups, *self.value_slot_groups):
             tn = group[0]
             self.line(f"{tn.slot} = alloca {tn.sc.llvm_type}")
@@ -4453,12 +4799,14 @@ class FunctionGenerator:
                     continue
                 value = self.operation(f"load ptr, ptr {tn.slot}")
                 self.line(f"store ptr null, ptr {tn.slot}")
-                self.mark_immortal(tn, value)
+                self.record_facts(tn, value)
                 if tn.sc.owned:
                     self.release(value)
             self.line(f"br label %{label}")
         self.emit_landings()
         self.lines.append("error:")
+        if self.convention is not None:
+            self.line("store i1 true, ptr %error.flag")
         self.line("br label %cleanup")
         self.lines.append("cleanup:")
         cleanup_groups = [
@@ -4469,10 +4817,11 @@ class FunctionGenerator:
         for group in cleanup_groups:
             tn = group[0]
             loaded = self.operation(f"load ptr, ptr {tn.slot}")
+            self.record_facts(tn, loaded)
             self.release(loaded)
         self.line("call void @mule_frame_pop()")
-        value = self.operation("load ptr, ptr %return")
-        self.line(f"ret ptr {value}")
+        value = self.operation(f"load {returned.llvm_type}, ptr %return")
+        self.line(f"ret {returned.llvm_type} {value}")
         self.lines.append("}")
         return wrapper + "\n\n" + adapter + "\n\n" + "\n".join(self.lines)
 
@@ -4509,6 +4858,8 @@ class FunctionGenerator:
             self.lines.insert(self.entry_end, "  %out = alloca ptr")
         if self.uses_float_scratch:
             self.lines.insert(self.entry_end, "  %float.scratch = alloca double")
+        if self.uses_numeric_error:
+            self.lines.insert(self.entry_end, "  %numeric.error = alloca i1")
 
     def emit_raw(self) -> str:
         """Native entry: borrowed raw slots and scalars, ownership only at edges."""
@@ -5126,7 +5477,7 @@ def native_adapter(gen: FunctionGenerator, plan, linkage: str) -> str:
         gen.line(f"ret ptr {result}")
     # The adapter is its own function: its failure edges land here, and the
     # body generated next starts without them.
-    gen.emit_landings(activation="%result")
+    gen.emit_landings()
     gen.landings.clear()
     gen.landing_sites.clear()
     gen.lines.append("error:")

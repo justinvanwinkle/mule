@@ -2,6 +2,7 @@
 
 from mule.compiler import emit_llvm
 from test.mule.compiler.test_native import run_native
+from test.mule.compiler.test_numeric_call_conventions import numeric_entries
 
 
 def _function_llvm_body(llvm: str, header: str) -> str:
@@ -32,9 +33,10 @@ def check(text: str, i: int) -> int:
 check("true", 0)
 """
     )
-    body = _function_llvm_body(llvm, 'define internal ptr @"mule_fn_check.spec.0"')
-    assert body.count("@mule_text_slice_eq(") == 5
-    assert "@mule.fast.getslice(" not in body
+    for symbol, _parameters, body in numeric_entries(llvm, "mule_fn_check", "i64"):
+        assert f"call i64 {symbol}(" in llvm
+        assert body.count("@mule_text_slice_eq(") == 5
+        assert "@mule.fast.getslice(" not in body
 
 
 def test_single_use_local_slice_equality_fuses_across_index_update():
@@ -74,6 +76,27 @@ keep_word('"other"', 1, 5)
     body = _function_llvm_body(llvm, 'define internal ptr @"mule_fn_keep_word.spec.0"')
     assert "@mule_text_slice_eq(" not in body
     assert "@mule.fast.getslice(" in body
+
+
+def test_two_sided_slice_equality_fuses_to_mule_text_slice2_eq(tmp_path):
+    source = """
+def cmp_slices(x: str, y: str) -> tuple[bool, bool]:
+    eq = x[:5] == y[3:8]
+    ne = x[1:4] != y[-3:]
+    return eq, ne
+
+print(cmp_slices("hello world", "xxxhello"))
+print(cmp_slices("hello world", "xxxworld"))
+print(cmp_slices("héllo🚀world", "abchélloxyz"))
+"""
+    llvm = emit_llvm(source)
+    body = _function_llvm_body(llvm, 'define internal ptr @"mule_fn_cmp_slices.spec.0"')
+    assert body.count("@mule_text_slice2_eq(") == 2
+    assert "@mule.fast.getslice(" not in body
+    assert "@mule_text_slice_eq(" not in body
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "(True, True)\n(False, True)\n(True, True)\n"
 
 
 def test_slice_compare_fusion_native_semantics(tmp_path):

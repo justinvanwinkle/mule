@@ -7,6 +7,40 @@ use crate::numeric;
 use crate::object::{self, Data, Value};
 use std::ffi::c_void;
 
+/// Acquire uninitialized object storage from the runtime's physical allocator.
+/// The caller must initialize every active header and payload field before
+/// publishing the pointer or using any operation that reads an Object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_allocate_object_storage() -> Value {
+    unsafe { object::allocate_object_storage() }
+}
+
+/// Release a terminal raw allocation after all required object cleanup.
+/// This does not decrement references, drop payloads, or clear pending errors.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_deallocate_object_storage(value: Value) {
+    unsafe { object::deallocate_object_storage(value) }
+}
+
+/// Acquire uninitialized limb bytes using GMP's configured allocation callback.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_allocate_integer_limbs(bytes: usize) -> *mut u64 {
+    unsafe { crate::gmp::allocate_limbs(bytes).cast() }
+}
+
+/// Release terminal limb storage through GMP's matching allocation callback.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_deallocate_integer_limbs(limbs: *mut u64, bytes: usize) {
+    unsafe { crate::gmp::deallocate_limbs(limbs.cast(), bytes) }
+}
+
+/// Drop an initialized BigInt payload without inspecting its surrounding Object.
+/// Header ownership, class/attribute references, GC and weakrefs belong to callers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_clear_integer_storage(storage: *mut c_void) {
+    unsafe { std::ptr::drop_in_place(storage.cast::<BigInt>()) }
+}
+
 unsafe fn descriptor<'a>(class: Value) -> Option<&'a NativeLayout> {
     if class.is_null() || object::is_fixnum(class) {
         return None;
@@ -210,6 +244,64 @@ pub unsafe extern "C" fn mule_box_f64_move(value: f64, operand: Value, local: Va
 #[cfg(test)]
 mod float_box_tests {
     use super::*;
+
+    unsafe fn initialize_float_storage(storage: Value, payload: f64) {
+        unsafe {
+            storage.write(object::Object {
+                references: std::sync::atomic::AtomicUsize::new(1),
+                tracked: false,
+                gc_slot: 0,
+                data: Data::Float(payload, std::ptr::null_mut(), std::ptr::null_mut()),
+            });
+        }
+    }
+
+    #[test]
+    fn initialized_raw_storage_supports_normal_unboxing_and_release() {
+        unsafe {
+            let storage = mule_allocate_object_storage();
+            assert!(!storage.is_null());
+            assert_eq!(storage as usize % std::mem::align_of::<object::Object>(), 0);
+            initialize_float_storage(storage, 3.25);
+            let mut output = 0.0;
+            assert_eq!(mule_unbox_f64(storage, &mut output), 0);
+            assert_eq!(output, 3.25);
+            object::release(storage);
+        }
+    }
+
+    #[test]
+    fn terminal_leaf_storage_returns_to_the_existing_pool() {
+        unsafe {
+            assert!(!object::has_error());
+            object::flush_object_pool();
+            let first = mule_allocate_object_storage();
+            initialize_float_storage(first, 1.5);
+            mule_deallocate_object_storage(first);
+            let reused = mule_allocate_object_storage();
+            assert_eq!(reused, first);
+            initialize_float_storage(reused, -0.0);
+            let mut output = 0.0;
+            assert_eq!(mule_unbox_f64(reused, &mut output), 0);
+            assert_eq!(output.to_bits(), (-0.0_f64).to_bits());
+            object::release(reused);
+        }
+    }
+
+    #[test]
+    fn raw_storage_operations_preserve_a_pending_error() {
+        unsafe {
+            assert!(!object::has_error());
+            object::error("ValueError", "raw storage pending error");
+            let storage = mule_allocate_object_storage();
+            assert!(!storage.is_null());
+            mule_deallocate_object_storage(storage);
+            assert!(object::has_error());
+            assert_eq!(object::error_kind(), "ValueError");
+            assert_eq!(object::error_message(), "raw storage pending error");
+            object::clear_error();
+        }
+    }
 
     #[test]
     fn an_exclusive_moved_operand_reuses_its_box() {

@@ -63,6 +63,76 @@ Mule implementation against CPython's hashing implementation. These broader
 cases supplement the small diagnostic kernels; results from a numeric loop
 alone do not establish application performance.
 
+## Private leaf-box elimination, 2026-10-20
+
+The compiler's generated float construction, payload-load, and private-release
+helpers are tested together against the real pooled-storage runtime ABI. The
+unoptimized probe allocates a box, initializes its active fields, reads its
+payload, and releases its sole private reference. At LLVM `-O3`, without LTO,
+the entire probe becomes `ret double %input`: no allocation, deallocation,
+load, store, or helper call remains. Native machine code also contains no calls.
+Executed probes compare exact bits for 3.25, negative zero, infinity, and NaN.
+
+This relies on truthful allocation-family contracts for raw storage and on
+private ownership, not on treating generic reference release as free. Native
+regressions separately verify private aliases, fresh factory returns, container
+and closure escapes, error cleanup, slot reuse, and the physical weak-handle API
+for builtin floats. Shared and escaped objects retain ordinary destruction.
+
+Reproduce the optimized-IR and executable check with:
+
+```sh
+uv run pytest -m integration test/mule/compiler/test_llvm_boxing.py
+```
+
+This is an instruction/allocation-elimination result, not a new application-wide
+timing claim. The older runtime box/unbox probes under
+`/tmp/mule-llvm-roundtrip.5sUn0A/` document why visibility and ownership contracts
+were needed; their files are local temporary evidence.
+
+## Numeric calls in mixed bodies, 2026-10-20
+
+This diagnostic calls a nested accumulator function with ordinary object
+parameters and a numeric weight. The helper runs
+`total = total * 1.0000001 + step` from `0.5`, can print its object parameter,
+and returns the accumulated float to a numeric comparison in its caller. The
+iteration count comes from `sys.argv`. The new internal convention returns a
+`double` and accepts the weight as a `double` without requiring a whole-function
+native plan.
+
+On the AMD Ryzen 9 9955HX, 20,000,000 iterations produced these whole-process
+medians. Both builds use LLVM `-O3`, Rust level 3, and no LTO. Five alternating
+samples per executable follow validation/warmup runs, pinned to CPU 0. Builds
+and compiler tests finished before timing started.
+
+| Build | Median seconds |
+| --- | ---: |
+| Before numeric calling conventions | 0.585985 |
+| After numeric calling conventions | 0.030313 |
+
+The changed executable is 19.33 times as fast on this diagnostic. The baseline
+uses a clean source snapshot of `a31c335`; the changed build includes this
+numeric-convention implementation and its float-identity adapter repair. Both
+executables match CPython 3.15 host output at counts 0, 1, 10,000, and 20,000,000.
+Separate native regressions compare numeric values, aliases, closures, exception
+paths, arbitrary-precision integers, and booleans against CPython 3.14.
+
+The generated LLVM declares and calls a `double`-returning numeric entry with a
+raw weight parameter. In optimized machine code LLVM inlines that entry into
+the caller and keeps the recurrence in an XMM register with `mulsd` and `addsd`.
+The caller has no float boxing/unboxing calls. Frame, generic iteration,
+safepoint, and conditional print paths remain. Source, LLVM, executables,
+hashes, samples, and the measurement script are under
+`/tmp/mule-numeric-abi.Dy4sF8/`; `eligible.py` is the measured source and
+`results.json` contains the samples. These are temporary local artifacts.
+
+This is not an application-wide speedup claim. Eligibility still depends on
+existing type and call-target proofs. A preliminary probe that instead calls a
+small helper on each iteration's accumulator did not establish the float facts
+needed to select a numeric entry; it remains in `probe.py` and was not timed.
+This measurement does not establish that the type solver resolves such cyclic
+argument/result dependencies.
+
 ## Closed numeric-use float local storage, 2026-10-20
 
 An ordinary object-mode function repeatedly computes

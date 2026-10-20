@@ -325,23 +325,46 @@ impl Text {
     /// Compare `self[start..stop]` with `other` in-place without allocating.
     #[inline]
     pub fn slice_eq(&self, start: usize, stop: usize, other: &Self) -> bool {
+        self.slice_range_eq(start, stop, other, 0, other.len())
+    }
+
+    /// Compare `self[start1..stop1]` with `other[start2..stop2]` in-place
+    /// without allocating.
+    #[inline]
+    pub fn slice_range_eq(
+        &self,
+        start1: usize,
+        stop1: usize,
+        other: &Self,
+        start2: usize,
+        stop2: usize,
+    ) -> bool {
         if let (Some(left_bytes), Some(right_bytes)) = (self.as_latin1(), other.as_latin1()) {
-            let stop = stop.min(left_bytes.len());
-            let start = start.min(stop);
-            return &left_bytes[start..stop] == right_bytes;
+            let stop1 = stop1.min(left_bytes.len());
+            let start1 = start1.min(stop1);
+            let stop2 = stop2.min(right_bytes.len());
+            let start2 = start2.min(stop2);
+            return left_bytes[start1..stop1] == right_bytes[start2..stop2];
         }
-        let stop = stop.min(self.len());
-        let start = start.min(stop);
-        let slice_len = stop - start;
-        if slice_len != other.len() {
+        let stop1 = stop1.min(self.len());
+        let start1 = start1.min(stop1);
+        let stop2 = stop2.min(other.len());
+        let start2 = start2.min(stop2);
+        let len1 = stop1 - start1;
+        let len2 = stop2 - start2;
+        if len1 != len2 {
             return false;
         }
         Codepoints {
             text: self,
-            index: start,
+            index: start1,
         }
-        .take(slice_len)
-        .eq(other.codepoints())
+        .take(len1)
+        .eq(Codepoints {
+            text: other,
+            index: start2,
+        }
+        .take(len2))
     }
 
     /// First codepoint index of `sub` within `start..end`, or `None`.

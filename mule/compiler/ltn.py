@@ -50,6 +50,7 @@ from .vop import (
 )
 
 if TYPE_CHECKING:
+    from .callconv import CallConvention
     from .represent import NativePlan
 
 
@@ -61,7 +62,7 @@ class NoTemplate(Exception):
 class EntryContext:
     """The facts one body is generated under: value types and predicted
     targets per node, the entry's parameter types, its return type, and the
-    optional native representation plan."""
+    optional native body plan and independent internal calling convention."""
 
     id: str | None
     types: dict = field(default_factory=dict)
@@ -69,6 +70,7 @@ class EntryContext:
     parameters: tuple = ()
     return_type: ValueType = UNKNOWN
     plan: NativePlan | None = None
+    convention: CallConvention | None = None
 
     def type_of(self, node) -> ValueType:
         return self.types.get(node, UNKNOWN)

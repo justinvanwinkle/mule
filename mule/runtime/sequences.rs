@@ -615,6 +615,61 @@ pub unsafe extern "C" fn mule_text_slice_eq(
         result
     }
 }
+
+/// Fast path for `left[start1:stop1] == right[start2:stop2]` (or `!=` when
+/// `invert != 0`) when both `left` and `right` are exact builtin `str` objects
+/// (`ty.is_null()`) and all slice bounds are `None` or fixnums. Compares both
+/// slices in-place without allocating either substring.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_slice2_eq(
+    left: Value,
+    start1: Value,
+    stop1: Value,
+    right: Value,
+    start2: Value,
+    stop2: Value,
+    invert: i32,
+) -> Value {
+    unsafe {
+        if !left.is_null()
+            && !object::is_fixnum(left)
+            && !right.is_null()
+            && !object::is_fixnum(right)
+        {
+            if let (Data::Text(text1, ty1, ..), Data::Text(text2, ty2, ..)) =
+                (&(*left).data, &(*right).data)
+            {
+                if ty1.is_null() && ty2.is_null() {
+                    let len1 = text1.len() as i64;
+                    let len2 = text2.len() as i64;
+                    if let (Some(s1), Some(e1), Some(s2), Some(e2)) = (
+                        slice_bound(start1, 0, len1),
+                        slice_bound(stop1, len1, len1),
+                        slice_bound(start2, 0, len2),
+                        slice_bound(stop2, len2, len2),
+                    ) {
+                        let matched = text1.slice_range_eq(s1, e1, text2, s2, e2);
+                        return object::bool_value(if invert != 0 { !matched } else { matched });
+                    }
+                }
+            }
+        }
+        let slice1 = mule_fast_getslice(left, start1, stop1, object::none_value());
+        if slice1.is_null() {
+            return null_mut();
+        }
+        let slice2 = mule_fast_getslice(right, start2, stop2, object::none_value());
+        if slice2.is_null() {
+            object::release(slice1);
+            return null_mut();
+        }
+        let op = if invert != 0 { 1 } else { 0 };
+        let result = object::compare(op, slice1, slice2);
+        object::release(slice1);
+        object::release(slice2);
+        result
+    }
+}
 #[inline(never)]
 unsafe fn setitem_retain_and_release(item: Value, old: Value) -> i32 {
     unsafe {

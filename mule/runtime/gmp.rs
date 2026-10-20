@@ -1,7 +1,7 @@
 //! Owning Rust integers over GMP's public integer ABI.
 
 use std::cmp::Ordering;
-use std::ffi::{CStr, CString, c_char, c_double, c_int, c_long, c_ulong};
+use std::ffi::{CStr, CString, c_char, c_double, c_int, c_long, c_ulong, c_void};
 use std::mem::MaybeUninit;
 
 #[repr(C)]
@@ -11,8 +11,24 @@ struct Mpz {
     limbs: *mut c_ulong,
 }
 
+pub const MPZ_ALLOCATED_OFFSET: usize = 0;
+pub const MPZ_SIZE_OFFSET: usize = 4;
+pub const MPZ_LIMBS_OFFSET: usize = 8;
+pub const MPZ_STORAGE_SIZE: usize = 16;
+pub const MPZ_STORAGE_ALIGNMENT: usize = 8;
+
+type Allocate = unsafe extern "C" fn(usize) -> *mut c_void;
+type Reallocate = unsafe extern "C" fn(*mut c_void, usize, usize) -> *mut c_void;
+type Free = unsafe extern "C" fn(*mut c_void, usize);
+
 #[link(name = "gmp")]
 unsafe extern "C" {
+    static __gmp_bits_per_limb: c_int;
+    fn __gmp_get_memory_functions(
+        allocate: *mut Option<Allocate>,
+        reallocate: *mut Option<Reallocate>,
+        free: *mut Option<Free>,
+    );
     fn __gmpz_init(value: *mut Mpz);
     fn __gmpz_clear(value: *mut Mpz);
     fn __gmpz_set(result: *mut Mpz, value: *const Mpz);
@@ -47,7 +63,50 @@ unsafe extern "C" {
     fn __gmpz_pow_ui(result: *mut Mpz, value: *const Mpz, exponent: c_ulong);
 }
 
+/// The active GMP numeric bits per limb, including any configured nail bits.
+/// Direct binary64-limb layouts must check this value before using that ABI.
+pub fn bits_per_limb() -> c_int {
+    unsafe { __gmp_bits_per_limb }
+}
+
+/// Acquire raw limb storage through the allocator currently configured in GMP.
+///
+/// # Safety
+/// `bytes` must be positive. The resulting block must be initialized before
+/// reading it and freed through GMP with the same allocation size.
+pub unsafe fn allocate_limbs(bytes: usize) -> *mut c_ulong {
+    assert!(bytes > 0, "GMP limb allocation requires a positive byte size");
+    let mut allocate = None;
+    let mut reallocate = None;
+    let mut free = None;
+    unsafe { __gmp_get_memory_functions(&mut allocate, &mut reallocate, &mut free) };
+    let allocate = allocate.expect("GMP allocator callback is missing");
+    let result = unsafe { allocate(bytes) }.cast::<c_ulong>();
+    if result.is_null() {
+        let layout = std::alloc::Layout::from_size_align(bytes, std::mem::align_of::<c_ulong>())
+            .expect("invalid GMP limb allocation size");
+        std::alloc::handle_alloc_error(layout);
+    }
+    result
+}
+
+/// Return a raw limb allocation to GMP's current matching deallocator.
+///
+/// # Safety
+/// `limbs` must be the terminal, uniquely owned allocation returned by GMP.
+/// `bytes` must match its original allocation size. GMP's memory callbacks
+/// must not change while allocations made through them remain live.
+pub unsafe fn deallocate_limbs(limbs: *mut c_ulong, bytes: usize) {
+    let mut allocate = None;
+    let mut reallocate = None;
+    let mut free = None;
+    unsafe { __gmp_get_memory_functions(&mut allocate, &mut reallocate, &mut free) };
+    let free = free.expect("GMP deallocator callback is missing");
+    unsafe { free(limbs.cast(), bytes) };
+}
+
 /// A GMP integer whose allocation is initialized, cloned, and freed by Rust.
+#[repr(transparent)]
 pub struct BigInt(Mpz);
 
 impl BigInt {

@@ -156,7 +156,8 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         self.has_getitem = False
         self.current = None
 
-    def analyze(self, contract, full: ValueType) -> ValueType:
+    def analyze(self, contract, full: ValueType, declared=None) -> ValueType:
+        effective = contract if contract is not None else declared
         while self.queue and not (
             self.disqualified and self.text_disqualified and self.list_disqualified
         ):
@@ -168,22 +169,37 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         if (
             self.numeric
             and not self.disqualified
-            and (contract is None or not contract.contradicts(full))
+            and (effective is None or not effective.contradicts(full))
         ):
             return full
         if (
-            self.text
+            (
+                self.text
+                or (
+                    effective is not None
+                    and effective.fact is TEXT_TYPE
+                    and (self.has_getitem or self.has_len)
+                )
+            )
             and not self.text_disqualified
             and not self.numeric
-            and (contract is None or not contract.contradicts(TEXT_TYPE))
+            and (effective is None or not effective.contradicts(TEXT_TYPE))
         ):
             return TEXT_TYPE
         if (
-            (self.list_seq or (self.has_len and self.has_getitem))
+            (
+                self.list_seq
+                or (self.has_len and self.has_getitem)
+                or (
+                    effective is not None
+                    and effective.fact.is_exact_list
+                    and (self.has_getitem or self.has_len)
+                )
+            )
             and not self.list_disqualified
             and not self.numeric
             and not self.text
-            and (contract is None or not contract.contradicts(LIST_TYPE))
+            and (effective is None or not effective.contradicts(LIST_TYPE))
         ):
             return LIST_TYPE
         return UNKNOWN
@@ -432,6 +448,7 @@ class LambdaFacts:
     targets: dict[object, Lambda]
     variants: tuple[EntryContext, ...] = ()
     return_type: ValueType = UNKNOWN
+    parameters: tuple[ValueType, ...] = ()
 
 
 def global_bindings(lambdas) -> dict[str, dict[str, Lambda]]:
@@ -1469,7 +1486,13 @@ def analyze(
                 spec_params = (
                     InstanceType(lambda_.method_class),
                     *(
-                        _ParameterUse(var, storage_methods).analyze(contract, full)
+                        _ParameterUse(var, storage_methods).analyze(
+                            contract,
+                            full,
+                            lambda_.local_annotations.get(var.name)
+                            if ("local", lambda_, var.name) not in annotations.ignored
+                            else None,
+                        )
                         for var, contract in zip(
                             lambda_.vars[1:],
                             signature.annotations[1:],
@@ -1480,7 +1503,13 @@ def analyze(
                 parameters[lambda_, "fixnum"] = spec_params
             else:
                 spec_params = tuple(
-                    _ParameterUse(var, storage_methods).analyze(contract, full)
+                    _ParameterUse(var, storage_methods).analyze(
+                        contract,
+                        full,
+                        lambda_.local_annotations.get(var.name)
+                        if ("local", lambda_, var.name) not in annotations.ignored
+                        else None,
+                    )
                     for var, contract in zip(
                         lambda_.vars, signature.annotations, strict=True
                     )
@@ -2104,6 +2133,7 @@ def analyze(
             general.types(),
             general.targets(),
             return_type=summaries[lambda_, "general"].normalized_bottom(),
+            parameters=parameters[lambda_, "general"],
         )
         entries = []
         obs_params = parameters.get((lambda_, "observed"))

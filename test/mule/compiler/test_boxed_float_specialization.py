@@ -26,10 +26,9 @@ def test_inferred_floats_emit_native_arithmetic_in_object_entry(operator, opcode
     )
     body = llvm.split('define internal ptr @"mule_fn_run.body"(')[1].split("\n}")[0]
     assert f"{opcode} double" in body
-    assert "call i32 @mule_unbox_f64" in body
-    assert "call ptr @mule_box_f64" in body
-    assert body.count("alloca double") == 1
-    assert "alloca double" not in body.split("br label", 1)[1]
+    assert "call double @mule.box.f64.load(" in body
+    assert "call ptr @mule.box.f64(" in body
+    assert "alloca double" not in body
 
 
 def test_augmented_float_assignment_selects_guarded_box_reuse():
@@ -46,8 +45,10 @@ def test_arithmetic_intermediate_stays_double_until_the_local_store():
     body = llvm.split('define internal ptr @"mule_fn_run.body"(')[1].split("\n}")[0]
     for multiply in body.split("fmul double")[1:]:
         before_add = multiply.split("fadd double", 1)[0]
-        assert "@mule_box_f64" not in before_add
-        assert "@mule_unbox_f64" in before_add  # The other operand remains an object.
+        assert "@mule.box.f64(" not in before_add
+        assert (
+            "@mule.box.f64.load(" in before_add
+        )  # The other operand remains an object.
 
 
 def test_arithmetic_literal_is_loaded_without_a_box_or_reference_updates():
@@ -191,6 +192,8 @@ def test_numeric_only_float_locals_stay_unboxed_across_blocks(source, tmp_path):
     assert "fcmp ogt double" in body
     assert "call ptr @mule_box_f64" not in body
     assert "call i32 @mule_unbox_f64" not in body
+    assert "@mule.box.f64(" not in body
+    assert "@mule.box.f64.load(" not in body
     compare(tmp_path, program)
 
 

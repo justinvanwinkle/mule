@@ -1,12 +1,39 @@
 """Compare complete native tracebacks with Python 3.14, without normalization."""
 
 import os
+import re
 import subprocess
 
 import pytest
 
-from mule.compiler import build
+from mule.compiler import build, emit_llvm
+from mule.compiler.driver import Toolchain
 from test.python_host import python_host
+
+
+def test_traceback_identity_allows_return_value_promotion(tmp_path):
+    source = tmp_path / "add.ll"
+    source.write_text(emit_llvm("def add(x, y): return x + y\n"))
+    optimized = subprocess.run(
+        [Toolchain().llvm_tool("opt"), "-passes=mem2reg", "-S", source],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout
+    # Isolate promotion from inlining and other LLVM transformations. Both
+    # entries must return an SSA merge of the success value and error sentinel.
+    for entry in ("body", "spec.0"):
+        body = re.search(
+            rf'^define[^\n]*@"?mule_fn_add\.{re.escape(entry)}"?\([^\n]*\)[^\n]*\{{\n(.*?)^\}}',
+            optimized,
+            re.MULTILINE | re.DOTALL,
+        )
+        assert body is not None
+        returned = re.search(r"ret ptr (%[\w.]+)", body[1])
+        assert returned is not None
+        assert re.search(rf"{re.escape(returned[1])} = phi ptr ", body[1])
+
 
 PROGRAMS = {
     "builtin_error.py": """def inner():

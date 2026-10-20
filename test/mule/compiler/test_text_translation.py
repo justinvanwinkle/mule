@@ -2,6 +2,7 @@
 
 from mule.compiler import emit_llvm
 from test.mule.compiler.test_exception_groups import compare
+from test.mule.compiler.test_numeric_call_conventions import numeric_entries
 
 
 def test_exact_str_find_emits_mule_text_find_and_borrows_receiver():
@@ -17,11 +18,10 @@ def search(text: str, needle: str, pos: int) -> int:
 print(search("hello world", "o", 2))
 """
     )
-    spec_start = llvm.index('define internal ptr @"mule_fn_search.spec.0"(')
-    spec_end = llvm.index("}", spec_start)
-    spec_body = llvm[spec_start:spec_end]
-    assert spec_body.count("call ptr @mule_text_find(") == 4
-    assert "@mule_resolve_method" not in spec_body
+    for symbol, _parameters, body in numeric_entries(llvm, "mule_fn_search", "i64"):
+        assert f"call i64 {symbol}(" in llvm
+        assert body.count("call ptr @mule_text_find(") == 4
+        assert "@mule_resolve_method" not in body
 
 
 def test_str_find_and_rfind_edge_cases(tmp_path):

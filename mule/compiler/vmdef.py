@@ -30,6 +30,9 @@ def define_vop(
     policy=None,
     guard=None,
     ltn_policy: str | None = None,
+    fresh_result: bool = False,
+    arg_escapes: tuple[bool, ...] | None = None,
+    reuses_local: bool = False,
 ):
     """Decorate a generator function into a registered ``Template``.
 
@@ -56,6 +59,9 @@ def define_vop(
             guard=guard,
             translate=translate,
             ltn_policy=ltn_policy,
+            fresh_result=fresh_result,
+            arg_escapes=arg_escapes,
+            reuses_local=reuses_local,
         )
         translated = () if translate is None else (translate, *also_translate)
         for known in translated:

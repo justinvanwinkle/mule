@@ -375,7 +375,18 @@ pub enum Data {
 
 /// Byte offsets compiled code reads, from the object address. `Data`'s
 /// `repr(C)` tag is a `u32` at `DATA_OFFSET`; payload fields follow it.
+pub const REFERENCES_OFFSET: usize = 0;
+pub const TRACKED_OFFSET: usize = 8;
+pub const GC_SLOT_OFFSET: usize = 12;
 pub const DATA_OFFSET: usize = 16;
+pub const BIGINT_TAG: u32 = 2;
+pub const BIGINT_VALUE_OFFSET: usize = 24;
+pub const BIGINT_CLASS_OFFSET: usize = 40;
+pub const BIGINT_ATTRIBUTES_OFFSET: usize = 48;
+pub const FLOAT_TAG: u32 = 3;
+pub const FLOAT_VALUE_OFFSET: usize = 24;
+pub const FLOAT_CLASS_OFFSET: usize = 32;
+pub const FLOAT_ATTRIBUTES_OFFSET: usize = 40;
 pub const INSTANCE_TAG: u32 = 16;
 pub const CLASS_TAG: u32 = 15;
 /// `Data::Instance.ty`, the class object.
@@ -705,18 +716,37 @@ pub unsafe fn flush_object_pool() {
     }
 }
 
+/// Acquire aligned storage without creating a Rust Object value.
+/// The caller must initialize all active fields before any Object access.
+/// Allocation failure aborts, as it does for the existing Box-based allocator.
+///
+/// # Safety
+/// The caller must initialize the storage or return it through the raw storage
+/// deallocator. No Object reference may observe partially initialized fields.
 #[inline(always)]
-unsafe fn alloc_object(obj: Object) -> Value {
+pub unsafe fn allocate_object_storage() -> Value {
     unsafe {
         let cell = OBJECT_POOL.with(|c| c.get());
         let pool = &mut *cell;
         if pool.len > 0 {
             pool.len -= 1;
-            let ptr = *pool.slots.get_unchecked(pool.len);
-            ptr.write(obj);
-            return ptr;
+            return *pool.slots.get_unchecked(pool.len);
         }
-        Box::into_raw(Box::new(obj))
+        let layout = std::alloc::Layout::new::<Object>();
+        let ptr = std::alloc::alloc(layout).cast::<Object>();
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        ptr
+    }
+}
+
+#[inline(always)]
+unsafe fn alloc_object(obj: Object) -> Value {
+    unsafe {
+        let ptr = allocate_object_storage();
+        ptr.write(obj);
+        ptr
     }
 }
 
@@ -777,6 +807,17 @@ unsafe fn dealloc_object(value: Value) {
         }
         std::alloc::dealloc(value.cast::<u8>(), std::alloc::Layout::new::<Object>());
     }
+}
+
+/// End a raw storage allocation without inspecting or dropping its payload.
+///
+/// # Safety
+/// The caller must own this allocation exclusively and complete every required
+/// child, weak-reference, finalization, and GC action before calling this function.
+/// Uninitialized storage and trivially droppable scalar data need no payload drop.
+#[inline(always)]
+pub unsafe fn deallocate_object_storage(value: Value) {
+    unsafe { dealloc_object(value) }
 }
 
 #[inline(always)]
@@ -3751,6 +3792,34 @@ mod lifetime_tests {
 
     unsafe fn word<T: Copy>(value: Value, offset: usize) -> T {
         unsafe { *((value as *const u8).add(offset) as *const T) }
+    }
+
+    #[test]
+    fn compiled_float_offsets_match_header_and_payload_storage() {
+        assert_eq!(std::mem::offset_of!(Object, references), REFERENCES_OFFSET);
+        assert_eq!(std::mem::offset_of!(Object, tracked), TRACKED_OFFSET);
+        assert_eq!(std::mem::offset_of!(Object, gc_slot), GC_SLOT_OFFSET);
+        assert_eq!(std::mem::offset_of!(Object, data), DATA_OFFSET);
+        assert_eq!(std::mem::align_of::<Object>(), 8);
+        assert!(std::mem::size_of::<Object>() >= FLOAT_ATTRIBUTES_OFFSET + std::mem::size_of::<Value>());
+        unsafe {
+            let value = new_value(Data::Float(-0.0, std::ptr::null_mut(), std::ptr::null_mut()));
+            assert_eq!(word::<usize>(value, REFERENCES_OFFSET), 1);
+            assert!(!word::<bool>(value, TRACKED_OFFSET));
+            assert_eq!(word::<u32>(value, GC_SLOT_OFFSET), 0);
+            assert_eq!(word::<u32>(value, DATA_OFFSET), FLOAT_TAG);
+            assert_eq!(word::<f64>(value, FLOAT_VALUE_OFFSET).to_bits(), (-0.0_f64).to_bits());
+            assert!(word::<Value>(value, FLOAT_CLASS_OFFSET).is_null());
+            assert!(word::<Value>(value, FLOAT_ATTRIBUTES_OFFSET).is_null());
+            let Data::Float(payload, class, attributes) = &(*value).data else {
+                panic!("missing float storage");
+            };
+            let base = value as usize;
+            assert_eq!(payload as *const f64 as usize - base, FLOAT_VALUE_OFFSET);
+            assert_eq!(class as *const Value as usize - base, FLOAT_CLASS_OFFSET);
+            assert_eq!(attributes as *const Value as usize - base, FLOAT_ATTRIBUTES_OFFSET);
+            release(value);
+        }
     }
 
     #[test]

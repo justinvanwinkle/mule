@@ -30,6 +30,7 @@ from .vop import (
     CLASS,
     DESCRIPTOR,
     DOUBLE,
+    FLOAT_BOX_LAYOUT,
     IMMEDIATE,
     INSTANCE,
     NULL,
@@ -307,7 +308,8 @@ def move(gen, vop):
 
 @define_vop("move-argument", results=(None,))
 def move_argument(gen, vop):
-    gen.store(vop.results[0], gen.parameter(vop.codegen_info), release=False)
+    result = vop.results[0]
+    gen.store(result, gen.parameter_value(vop.codegen_info, result), release=False)
 
 
 @define_vop("load-closure", results=(None,))
@@ -344,7 +346,7 @@ def unbind_global(gen, vop):
     gen.line(gen.module.delete_global(vop.codegen_info))
 
 
-@define_vop("discard", args=(None,))
+@define_vop("discard", args=(None,), arg_escapes=(False,))
 def discard(gen, vop):
     operand = vop.args[0]
     if operand.tn.sc in OBJECT:
@@ -443,10 +445,12 @@ def jump(gen, vop):
 
 @define_vop("return", args=(None,))
 def return_(gen, vop):
-    operand = vop.args[0]
-    value = gen.take(operand)
-    gen.line(f"store {operand.tn.sc.llvm_type} {value}, ptr %return")
-    gen.line("br label %cleanup")
+    gen.return_value(vop.args[0])
+
+
+@define_vop("local-call")
+def local_call(gen, vop):
+    gen.numeric_call(vop)
 
 
 @define_vop("full-call", results=(None,))
@@ -581,15 +585,12 @@ for _operator, _opcode in BINARY_OPCODES.items():
     _define_binary(_operator, _opcode)
 
 
-def _unbox_float_operand(gen, operand):
+def unbox_float_operand(gen, operand):
     if operand.tn.sc is DOUBLE:
         return gen.load(operand)
-    slot = gen.float_scratch()
-    status = gen.operation(
-        f"call i32 @mule_unbox_f64(ptr {gen.load(operand)}, ptr {slot})"
+    return gen.operation(
+        f"call double @{FLOAT_BOX_LAYOUT.symbol('load')}(ptr {gen.load(operand)})"
     )
-    gen.check_status(status)
-    return gen.operation(f"load double, ptr {slot}")
 
 
 def _boxed_float_binary(operator, opcode):
@@ -602,11 +603,13 @@ def _boxed_float_binary(operator, opcode):
         arg_types=((BOXED_FLOAT,), (BOXED_FLOAT,)),
         result_types=((BOXED_FLOAT,),),
         cost=-1,
+        fresh_result=True,
+        reuses_local=True,
+        arg_escapes=(False, False),
     )
     def generator(gen, vop):
-        # Retain the operand slots through checked extraction: an error must
-        # leave both objects available to the shared ownership cleanup.
-        operands = [_unbox_float_operand(gen, operand) for operand in vop.args]
+        # Keep both operand slots owned through a possible division error.
+        operands = [unbox_float_operand(gen, operand) for operand in vop.args]
         value = gen.float_arithmetic(opcode, *operands, check_zero=True)
         left, right = (gen.take(operand) for operand in vop.args)
         consumed = [
@@ -632,7 +635,7 @@ def _boxed_float_binary(operator, opcode):
             )
             consumed = [right] if vop.args[1].tn.sc is DESCRIPTOR else []
         else:
-            operation = f"call ptr @mule_box_f64(double {value})"
+            operation = f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {value})"
         gen.pointer_result(vop.results[0], operation, consumed)
 
 
@@ -649,10 +652,12 @@ def _boxed_float_unary(operator, negate: bool):
         arg_types=((BOXED_FLOAT,),),
         result_types=((BOXED_FLOAT,),),
         cost=-1,
+        fresh_result=negate,
+        arg_escapes=(False,),
     )
     def generator(gen, vop):
         operand = vop.args[0]
-        raw = _unbox_float_operand(gen, operand)
+        raw = unbox_float_operand(gen, operand)
         value = gen.operation(f"fneg double {raw}") if negate else raw
         taken = gen.take(operand)
         consumed = [taken] if operand.tn.sc is DESCRIPTOR else []
@@ -662,7 +667,9 @@ def _boxed_float_unary(operator, negate: bool):
                 gen.release(item)
             return
         gen.pointer_result(
-            vop.results[0], f"call ptr @mule_box_f64(double {value})", consumed
+            vop.results[0],
+            f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {value})",
+            consumed,
         )
 
 
@@ -678,9 +685,10 @@ def _boxed_float_compare(operator, predicate):
         results=(OBJECT,),
         arg_types=((BOXED_FLOAT,), (BOXED_FLOAT,)),
         cost=-1,
+        arg_escapes=(False, False),
     )
     def generator(gen, vop):
-        operands = [_unbox_float_operand(gen, operand) for operand in vop.args]
+        operands = [unbox_float_operand(gen, operand) for operand in vop.args]
         condition = gen.operation(
             f"fcmp {predicate} double {operands[0]}, {operands[1]}"
         )
@@ -777,6 +785,7 @@ def _define_compare(operator, opcode):
         translate=fndb.COMPARE[operator],
         args=(OBJECT, OBJECT),
         results=(OBJECT,),
+        arg_escapes=(False, False) if opcode in (6, 7) else None,
     )
     def generic(gen, vop):
         result = vop.results[0]
@@ -1537,6 +1546,28 @@ def text_slice_compare(gen, vop):
     gen.native_result(vop.results[0], boolean, (sequence, start, stop, target))
 
 
+@define_vop(
+    "text-slice2-compare",
+    args=(OBJECT, OBJECT, OBJECT, OBJECT, OBJECT, OBJECT),
+    results=(OBJECT,),
+)
+def text_slice2_compare(gen, vop):
+    left = gen.take(vop.args[0])
+    start1 = gen.take(vop.args[1])
+    stop1 = gen.take(vop.args[2])
+    right = gen.take(vop.args[3])
+    start2 = gen.take(vop.args[4])
+    stop2 = gen.take(vop.args[5])
+    invert = int(bool(vop.codegen_info))
+    boolean = gen.operation(
+        f"call ptr @mule_text_slice2_eq(ptr {left}, ptr {start1}, ptr {stop1}, "
+        f"ptr {right}, ptr {start2}, ptr {stop2}, i32 {invert})"
+    )
+    gen.native_result(
+        vop.results[0], boolean, (left, start1, stop1, right, start2, stop2)
+    )
+
+
 @define_vop("protocol-setitem", translate=fndb.PROTOCOLS["setitem"], results=(OBJECT,))
 def protocol_setitem(gen, vop):
     if (vop.args[0].tn.type or UNKNOWN).fits_dict():
@@ -2200,6 +2231,68 @@ entry:
 }}"""
 
 
+def leaf_box_helpers(layout) -> str:
+    """Expose construction, extraction and private lifetime operations to LLVM."""
+    pointers = "\n".join(
+        f"  %empty.{index} = getelementptr i8, ptr %box, i64 {offset}\n"
+        f"  store ptr null, ptr %empty.{index}"
+        for index, offset in enumerate(layout.null_pointer_offsets)
+    )
+    llvm_type = layout.storage.llvm_type
+    return f"""define internal nonnull ptr @{layout.symbol()}({llvm_type} %value) alwaysinline {{
+entry:
+  %box = call noalias nonnull ptr @mule_allocate_object_storage()
+  store i64 1, ptr %box
+  %tracked = getelementptr i8, ptr %box, i64 8
+  store i8 0, ptr %tracked
+  %gc.slot = getelementptr i8, ptr %box, i64 12
+  store i32 0, ptr %gc.slot
+  %kind = getelementptr i8, ptr %box, i64 {DATA_OFFSET}
+  store i32 {layout.tag}, ptr %kind
+  %payload = getelementptr i8, ptr %box, i64 {layout.payload_offset}
+  store {llvm_type} %value, ptr %payload
+{pointers}
+  ret ptr %box
+}}
+
+define internal {llvm_type} @{layout.symbol("load")}(ptr %box) alwaysinline {{
+entry:
+  %payload = getelementptr i8, ptr %box, i64 {layout.payload_offset}
+  %value = load {llvm_type}, ptr %payload
+  ret {llvm_type} %value
+}}
+
+define internal ptr @{layout.symbol("private.retain")}(ptr %box) alwaysinline {{
+entry:
+  %null = icmp eq ptr %box, null
+  br i1 %null, label %done, label %retain
+retain:
+  %refs = load i64, ptr %box
+  %next = add i64 %refs, 1
+  store i64 %next, ptr %box
+  br label %done
+done:
+  ret ptr %box
+}}
+
+define internal void @{layout.symbol("private.release")}(ptr %box) alwaysinline {{
+entry:
+  %null = icmp eq ptr %box, null
+  br i1 %null, label %done, label %release
+release:
+  %refs = load i64, ptr %box
+  %next = sub i64 %refs, 1
+  store i64 %next, ptr %box
+  %last = icmp eq i64 %next, 0
+  br i1 %last, label %free, label %done
+free:
+  call void @mule_deallocate_object_storage(ptr %box)
+  br label %done
+done:
+  ret void
+}}"""
+
+
 def _ownership() -> str:
     return """define internal ptr @mule.fast.retain(ptr %value) alwaysinline {
 entry:
@@ -2436,9 +2529,27 @@ _RANGE = """  %test.shifted = shl i64 %result, 1
 
 
 def _binary_helper(op: int, *, fixnums: bool = False) -> str:
-    if op in (0, 1, 2):
-        intrinsic = {0: "sadd", 1: "ssub", 2: "smul"}[op]
-        operation = f"""  %checked = call {{i64, i1}} @llvm.{intrinsic}.with.overflow.i64(i64 %a, i64 %b)
+    decode = """  %a = ashr i64 %left.bits, 1
+  %b = ashr i64 %right.bits, 1
+"""
+    encode = _ENCODE
+    if op in (0, 1):
+        # Exactly one operand retains the tag: the result is 2*(a +/- b)+1.
+        # Signed word overflow therefore also checks the fixnum result range.
+        decode = ""
+        intrinsic = "sadd" if op == 0 else "ssub"
+        cleared = "left" if op == 0 else "right"
+        left = "%cleared" if op == 0 else "%left.bits"
+        right = "%right.bits" if op == 0 else "%cleared"
+        operation = f"""  %cleared = and i64 %{cleared}.bits, -2
+  %checked = call {{i64, i1}} @llvm.{intrinsic}.with.overflow.i64(i64 {left}, i64 {right})
+  %result = extractvalue {{i64, i1}} %checked, 0
+  %overflow = extractvalue {{i64, i1}} %checked, 1
+  br i1 %overflow, label %slow, label %encode"""
+        encode = """  %value = inttoptr i64 %result to ptr
+  ret ptr %value"""
+    elif op == 2:
+        operation = f"""  %checked = call {{i64, i1}} @llvm.smul.with.overflow.i64(i64 %a, i64 %b)
   %result = extractvalue {{i64, i1}} %checked, 0
   %overflow = extractvalue {{i64, i1}} %checked, 1
 {_RANGE}
@@ -2515,11 +2626,9 @@ slow.call:
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
-{guard}  %a = ashr i64 %left.bits, 1
-  %b = ashr i64 %right.bits, 1
-{operation}
+{guard}{decode}{operation}
 encode:
-{_ENCODE}
+{encode}
 slow:
 {slow}
 }}"""
@@ -2828,6 +2937,7 @@ def helpers(*, bootstrap: bool = False) -> str:
             MIXED_COMPARE,
             LITERAL_HELPERS,
             _ownership(),
+            leaf_box_helpers(FLOAT_BOX_LAYOUT),
             _truth(),
             _attribute_cache_helpers(),
             *(_binary_helper(op) for op in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12)),
@@ -2924,10 +3034,12 @@ UNBIND_GLOBAL = unbind_global
 DISCARD = discard
 TYPE_CHECK = type_check
 TEXT_SLICE_COMPARE = text_slice_compare
+TEXT_SLICE2_COMPARE = text_slice2_compare
 BRANCH = branch
 JUMP = jump
 RETURN = return_
 FULL_CALL = full_call
+LOCAL_CALL = local_call
 FAST_LEN = fast_len
 PARSE_INT_TEXT = parse_int_text
 PARSE_INT_SLICE = parse_int_slice
@@ -2946,6 +3058,7 @@ __all__ = [
     "LOAD_CLOSURE",
     "LOAD_GLOBAL",
     "LOAD_LOCAL",
+    "LOCAL_CALL",
     "MOVE",
     "MOVE_ARGUMENT",
     "OBJECT",
@@ -2956,6 +3069,7 @@ __all__ = [
     "RETURN",
     "STORE_GLOBAL",
     "TERMINATORS",
+    "TEXT_SLICE2_COMPARE",
     "TEXT_SLICE_COMPARE",
     "TYPE_CHECK",
     "UNARY_OPCODES",

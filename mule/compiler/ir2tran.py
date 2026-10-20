@@ -146,6 +146,7 @@ _BORROWING_VOPS = frozenset(
         "protocol-setitem",
         "fast-len",
         "text-slice-compare",
+        "text-slice2-compare",
         "parse-int-text",
         "parse-int-slice",
     }
@@ -648,10 +649,170 @@ def _remove_vop_from_component(component: IR2Component, vop: VOP) -> None:
             ref_list.remove((vop, ref))
 
 
+def _slice_step_writer(
+    slice_vop: VOP, reads, writes, positions: dict[VOP, int]
+) -> VOP | None:
+    step_tn = slice_vop.args[3].tn
+    step_writes = writes.get(step_tn)
+    step_reads = reads.get(step_tn)
+    if (
+        step_writes is None
+        or len(step_writes) != 1
+        or step_reads is None
+        or len(step_reads) != 1
+    ):
+        return None
+    writer = step_writes[0][0]
+    if writer.info is not vops.CONSTANT or writer not in positions:
+        return None
+    return writer
+
+
+def _trace_slice_to_compare(
+    slice_index: int,
+    slice_vop: VOP,
+    reads,
+    writes,
+    positions: dict[VOP, int],
+    local_candidates: set,
+) -> tuple[VOP | None, VOP | None, VOP | None, TNRef | None]:
+    slice_res = slice_vop.results[0].tn
+    slice_res_writes = writes.get(slice_res)
+    slice_res_reads = reads.get(slice_res)
+    if (
+        slice_res_writes is None
+        or len(slice_res_writes) != 1
+        or slice_res_reads is None
+        or len(slice_res_reads) != 1
+    ):
+        return None, None, None, None
+    consumer, consumer_ref = slice_res_reads[0]
+    if consumer.info.name in ("compare-equal", "compare-not_equal"):
+        if consumer in positions and positions[consumer] > slice_index:
+            return None, None, consumer, consumer_ref
+    elif (
+        consumer.info is vops.MOVE
+        and consumer in positions
+        and positions[consumer] == slice_index + 1
+    ):
+        local_tn = consumer.results[0].tn
+        local_writes = writes.get(local_tn)
+        local_reads = reads.get(local_tn)
+        if (
+            local_tn in local_candidates
+            and local_writes is not None
+            and len(local_writes) == 1
+            and local_reads is not None
+            and len(local_reads) == 1
+        ):
+            reader, _ = local_reads[0]
+            if (
+                reader.info is vops.LOAD_LOCAL
+                and reader.codegen_info is not None
+                and reader.codegen_info.move
+                and reader.codegen_info.bound
+                and reader in positions
+                and positions[reader] > positions[consumer]
+            ):
+                loaded_tn = reader.results[0].tn
+                loaded_writes = writes.get(loaded_tn)
+                loaded_reads = reads.get(loaded_tn)
+                if (
+                    loaded_writes is not None
+                    and len(loaded_writes) == 1
+                    and loaded_reads is not None
+                    and len(loaded_reads) == 1
+                ):
+                    cmp_candidate, cmp_ref = loaded_reads[0]
+                    if (
+                        cmp_candidate.info.name
+                        in ("compare-equal", "compare-not_equal")
+                        and cmp_candidate in positions
+                        and positions[cmp_candidate] > positions[reader]
+                    ):
+                        return consumer, reader, cmp_candidate, cmp_ref
+    return None, None, None, None
+
+
+def _trace_operand_to_slice(
+    ref: TNRef,
+    compare_vop: VOP,
+    reads,
+    writes,
+    positions: dict[VOP, int],
+    removed: set[VOP],
+    local_candidates: set,
+) -> tuple[VOP, VOP, VOP | None, VOP | None] | None:
+    tn = ref.tn
+    tn_writes = writes.get(tn)
+    tn_reads = reads.get(tn)
+    if (
+        tn_writes is None
+        or len(tn_writes) != 1
+        or tn_reads is None
+        or len(tn_reads) != 1
+        or tn_reads[0][0] is not compare_vop
+    ):
+        return None
+    writer = tn_writes[0][0]
+    if writer in removed or writer not in positions:
+        return None
+    if _is_valid_text_slice_getslice(writer):
+        step_w = _slice_step_writer(writer, reads, writes, positions)
+        if step_w is not None and step_w not in removed:
+            return writer, step_w, None, None
+        return None
+    if (
+        writer.info is vops.LOAD_LOCAL
+        and writer.codegen_info is not None
+        and writer.codegen_info.move
+        and writer.codegen_info.bound
+    ):
+        local_tn = writer.args[0].tn
+        local_writes = writes.get(local_tn)
+        local_reads = reads.get(local_tn)
+        if (
+            local_tn in local_candidates
+            and local_writes is not None
+            and len(local_writes) == 1
+            and local_reads is not None
+            and len(local_reads) == 1
+        ):
+            move_w = local_writes[0][0]
+            if (
+                move_w.info is vops.MOVE
+                and move_w not in removed
+                and move_w in positions
+                and positions[move_w] < positions[writer]
+            ):
+                src_tn = move_w.args[0].tn
+                src_writes = writes.get(src_tn)
+                src_reads = reads.get(src_tn)
+                if (
+                    src_writes is not None
+                    and len(src_writes) == 1
+                    and src_reads is not None
+                    and len(src_reads) == 1
+                ):
+                    slice_w = src_writes[0][0]
+                    if (
+                        slice_w not in removed
+                        and slice_w in positions
+                        and positions[slice_w] + 1 == positions[move_w]
+                        and _is_valid_text_slice_getslice(slice_w)
+                    ):
+                        step_w = _slice_step_writer(slice_w, reads, writes, positions)
+                        if step_w is not None and step_w not in removed:
+                            return slice_w, step_w, move_w, writer
+    return None
+
+
 def _fuse_text_slice_compares(component: IR2Component) -> None:
-    """Fuse ``text[start:stop] == target`` (and ``!=``) into an in-place
-    ``text-slice-compare`` VOP when ``text`` and ``target`` are proven ``str``
-    and the substring slice is not read anywhere else."""
+    """Fuse ``text[start:stop] == target`` and
+    ``left[start1:stop1] == right[start2:stop2]`` (and ``!=``) into an in-place
+    ``text-slice-compare`` or ``text-slice2-compare`` VOP when the sliced
+    sequences and target are proven ``str`` and the substring slices are not
+    read anywhere else."""
     reads = component.reads
     writes = component.writes
     local_candidates = {
@@ -666,88 +827,21 @@ def _fuse_text_slice_compares(component: IR2Component) -> None:
         positions = {step: pos for pos, step in enumerate(vop_list)}
         removed: set[VOP] = set()
         replacements: dict[VOP, list[VOP]] = {}
+
         for slice_index, slice_vop in enumerate(vop_list):
             if slice_vop in removed or not _is_valid_text_slice_getslice(slice_vop):
                 continue
-            slice_res = slice_vop.results[0].tn
-            slice_res_writes = writes.get(slice_res)
-            slice_res_reads = reads.get(slice_res)
-            if (
-                slice_res_writes is None
-                or len(slice_res_writes) != 1
-                or slice_res_reads is None
-                or len(slice_res_reads) != 1
-            ):
+            step_writer = _slice_step_writer(slice_vop, reads, writes, positions)
+            if step_writer is None:
                 continue
-            step_tn = slice_vop.args[3].tn
-            step_writes = writes.get(step_tn)
-            step_reads = reads.get(step_tn)
-            if (
-                step_writes is None
-                or len(step_writes) != 1
-                or step_reads is None
-                or len(step_reads) != 1
-            ):
-                continue
-            step_writer = step_writes[0][0]
-            if step_writer.info is not vops.CONSTANT or step_writer not in positions:
-                continue
-
-            consumer, consumer_ref = slice_res_reads[0]
-            move_vop: VOP | None = None
-            load_vop: VOP | None = None
-            compare_vop: VOP | None = None
-            compare_ref: TNRef | None = None
-
-            if consumer.info.name in ("compare-equal", "compare-not_equal"):
-                if consumer in positions and positions[consumer] > slice_index:
-                    compare_vop = consumer
-                    compare_ref = consumer_ref
-            elif (
-                consumer.info is vops.MOVE
-                and consumer in positions
-                and positions[consumer] == slice_index + 1
-            ):
-                local_tn = consumer.results[0].tn
-                local_writes = writes.get(local_tn)
-                local_reads = reads.get(local_tn)
-                if (
-                    local_tn in local_candidates
-                    and local_writes is not None
-                    and len(local_writes) == 1
-                    and local_reads is not None
-                    and len(local_reads) == 1
-                ):
-                    reader, _ = local_reads[0]
-                    if (
-                        reader.info is vops.LOAD_LOCAL
-                        and reader.codegen_info is not None
-                        and reader.codegen_info.move
-                        and reader.codegen_info.bound
-                        and reader in positions
-                        and positions[reader] > positions[consumer]
-                    ):
-                        loaded_tn = reader.results[0].tn
-                        loaded_writes = writes.get(loaded_tn)
-                        loaded_reads = reads.get(loaded_tn)
-                        if (
-                            loaded_writes is not None
-                            and len(loaded_writes) == 1
-                            and loaded_reads is not None
-                            and len(loaded_reads) == 1
-                        ):
-                            cmp_candidate, cmp_ref = loaded_reads[0]
-                            if (
-                                cmp_candidate.info.name
-                                in ("compare-equal", "compare-not_equal")
-                                and cmp_candidate in positions
-                                and positions[cmp_candidate] > positions[reader]
-                            ):
-                                move_vop = consumer
-                                load_vop = reader
-                                compare_vop = cmp_candidate
-                                compare_ref = cmp_ref
-
+            move_vop, load_vop, compare_vop, compare_ref = _trace_slice_to_compare(
+                slice_index,
+                slice_vop,
+                reads,
+                writes,
+                positions,
+                local_candidates,
+            )
             if compare_vop is None or compare_ref is None or compare_vop in removed:
                 continue
             compare_index = positions[compare_vop]
@@ -774,6 +868,95 @@ def _fuse_text_slice_compares(component: IR2Component) -> None:
                 for tn in slice_operand_tns
             ):
                 continue
+
+            other_slice_info = _trace_operand_to_slice(
+                other_ref,
+                compare_vop,
+                reads,
+                writes,
+                positions,
+                removed,
+                local_candidates,
+            )
+            if other_slice_info is not None:
+                other_slice, other_step, other_move, other_load = other_slice_info
+                other_slice_index = positions[other_slice]
+                if other_slice is not slice_vop and other_slice_index > slice_index:
+                    other_operand_tns = {
+                        other_slice.args[0].tn,
+                        other_slice.args[1].tn,
+                        other_slice.args[2].tn,
+                    }
+                    if not (slice_operand_tns & other_operand_tns) and all(
+                        len(writes.get(tn, ())) == 1 and len(reads.get(tn, ())) == 1
+                        for tn in other_operand_tns
+                    ):
+                        allowed_steps = {
+                            move_vop,
+                            load_vop,
+                            other_step,
+                            other_slice,
+                            other_move,
+                            other_load,
+                        }
+                        intervening_two_ok = True
+                        for pos in range(slice_index + 1, compare_index):
+                            step = vop_list[pos]
+                            if step in allowed_steps:
+                                continue
+                            if (
+                                step in removed
+                                or not _safe_slice_compare_intervening_step(step)
+                            ):
+                                intervening_two_ok = False
+                                break
+                            step_tns = {ref.tn for ref in (*step.args, *step.results)}
+                            if step_tns & slice_operand_tns:
+                                intervening_two_ok = False
+                                break
+                            if pos > other_slice_index and (
+                                step_tns & other_operand_tns
+                            ):
+                                intervening_two_ok = False
+                                break
+                        if intervening_two_ok:
+                            invert = compare_vop.info.name == "compare-not_equal"
+                            for dead_vop in (
+                                step_writer,
+                                slice_vop,
+                                move_vop,
+                                load_vop,
+                                other_step,
+                                other_slice,
+                                other_move,
+                                other_load,
+                                compare_vop,
+                            ):
+                                if dead_vop is not None:
+                                    _remove_vop_from_component(component, dead_vop)
+                                    removed.add(dead_vop)
+                            fused_args = [
+                                TNRef(slice_vop.args[0].tn, False),
+                                TNRef(slice_vop.args[1].tn, False),
+                                TNRef(slice_vop.args[2].tn, False),
+                                TNRef(other_slice.args[0].tn, False),
+                                TNRef(other_slice.args[1].tn, False),
+                                TNRef(other_slice.args[2].tn, False),
+                            ]
+                            fused_results = [TNRef(compare_vop.results[0].tn, True)]
+                            fused_vop = VOP(
+                                vops.TEXT_SLICE2_COMPARE,
+                                compare_vop.node,
+                                fused_args,
+                                fused_results,
+                            )
+                            fused_vop.codegen_info = invert
+                            for ref in fused_args:
+                                reads[ref.tn].append((fused_vop, ref))
+                            for ref in fused_results:
+                                writes[ref.tn].append((fused_vop, ref))
+                            replacements[compare_vop] = [fused_vop]
+                            continue
 
             intervening_ok = True
             for step in vop_list[slice_index + 1 : compare_index]:

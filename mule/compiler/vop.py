@@ -75,6 +75,27 @@ RANGE = StorageClass("range", "[3 x i64]", "zeroinitializer")
 
 
 @dataclass(frozen=True, slots=True)
+class BoxLayout:
+    """The active fields of a fixed-layout leaf box.
+
+    The payload owns no references or resources. Private ownership must still
+    establish that the object cannot acquire weak references or escape.
+    """
+
+    name: str
+    tag: int
+    storage: StorageClass
+    payload_offset: int
+    null_pointer_offsets: tuple[int, ...]
+
+    def symbol(self, operation: str = "") -> str:
+        return f"mule.box.{self.name}" + (f".{operation}" if operation else "")
+
+
+FLOAT_BOX_LAYOUT = BoxLayout("f64", 3, DOUBLE, 24, (32, 40))
+
+
+@dataclass(frozen=True, slots=True)
 class PrimitiveType:
     """The values a TN may hold and the storage classes that can hold them,
     cheapest first (``primitive-type-scs``)."""
@@ -85,6 +106,7 @@ class PrimitiveType:
     layout: object = field(default=None, compare=False)
     # Object entries without coercion VOPs must respect these implicit boundaries.
     object_boundary_scs: tuple[StorageClass, ...] | None = None
+    boxed_layout: BoxLayout | None = None
 
     def __repr__(self):
         return f"<PrimitiveType {self.name}>"
@@ -111,10 +133,13 @@ IMMORTAL_T = PrimitiveType("immortal", (IMMEDIATE,))
 # A machine integer that may exceed the fixnum range (``int64`` contracts).
 SIGNED64 = PrimitiveType("signed64", (SIGNED, DESCRIPTOR))
 # A binary64 float (``float``/``float64`` contracts): raw, or a boxed object.
-FLOAT64 = PrimitiveType("float64", (DOUBLE, DESCRIPTOR))
+FLOAT64 = PrimitiveType("float64", (DOUBLE, DESCRIPTOR), boxed_layout=FLOAT_BOX_LAYOUT)
 # A proven Python float whose object identity and ownership are preserved.
 BOXED_FLOAT = PrimitiveType(
-    "boxed-float", (DOUBLE, DESCRIPTOR), object_boundary_scs=(DESCRIPTOR,)
+    "boxed-float",
+    (DOUBLE, DESCRIPTOR),
+    object_boundary_scs=(DESCRIPTOR,),
+    boxed_layout=FLOAT_BOX_LAYOUT,
 )
 # Loop state.
 RANGE_T = PrimitiveType("range-state", (RANGE,))
@@ -142,6 +167,7 @@ class TN:
         "name",
         "number",
         "primitive_type",
+        "private_box",
         "sc",
         "slot",
         "type",
@@ -152,6 +178,8 @@ class TN:
     ):
         self.primitive_type = primitive_type
         self.sc: StorageClass | None = None
+        # A whole-copy-group proof permits non-atomic local ownership operations.
+        self.private_box: BoxLayout | None = None
         self.leaf = leaf
         self.name = name
         self.kind = kind or TNKind.NORMAL
@@ -224,6 +252,34 @@ class Template:
     # ``None`` for bodies over object representations, ``"raw"`` for native
     # bodies whose plan assigns machine representations.
     ltn_policy: str | None = None
+    # A result with a new object identity, independent of operand identities.
+    fresh_result: bool = False
+    # Unspecified operands may retain or publish their references.
+    arg_escapes: tuple[bool, ...] | None = None
+    # Such generators require codegen_info.reuse_local when info is present.
+    reuses_local: bool = False
+
+    def captures_argument(self, index: int, *, vop: VOP | None = None) -> bool:
+        # Reuse can forward the left operand through the result. Without the
+        # operation's reuse facts, preserve the capturing answer.
+        if (
+            self.reuses_local
+            and index == 0
+            and (vop is None or not self.produces_fresh(vop))
+        ):
+            return True
+        return (
+            self.arg_escapes is None
+            or index >= len(self.arg_escapes)
+            or self.arg_escapes[index]
+        )
+
+    def produces_fresh(self, vop: VOP) -> bool:
+        return self.fresh_result and not (
+            self.reuses_local
+            and vop.codegen_info is not None
+            and vop.codegen_info.reuse_local is not None
+        )
 
 
 class IR2Block:
@@ -309,6 +365,7 @@ __all__ = [
     "DOUBLE",
     "FIXNUM",
     "FLOAT64",
+    "FLOAT_BOX_LAYOUT",
     "IMMEDIATE",
     "IMMORTAL_T",
     "INSTANCE",
@@ -320,6 +377,7 @@ __all__ = [
     "SIGNED64",
     "TN",
     "VOP",
+    "BoxLayout",
     "IR2Block",
     "IR2Component",
     "IR2Environment",

@@ -1,8 +1,68 @@
 """Exercise the independent tagged-integer/GMP arithmetic runtime."""
 
+import re
+import subprocess
+
 import pytest
 
+from mule.compiler import emit_llvm
+from mule.compiler.driver import Toolchain
 from test.mule.compiler.test_native import run_native
+
+
+def test_tagged_add_sub_keep_encoded_operands(tmp_path):
+    source = tmp_path / "arithmetic.ll"
+    source.write_text(
+        emit_llvm("def add(x, y): return x + y\ndef sub(x, y): return x - y\n")
+    )
+    optimized = subprocess.run(
+        [Toolchain().llvm_tool("opt"), "-passes=mem2reg,instcombine", "-S", source],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout
+    for prefix in ("fast", "fixnum"):
+        for opcode, intrinsic in ((0, "sadd"), (1, "ssub")):
+            body = re.search(
+                rf"^define[^\n]*@mule\.{prefix}\.binary\.{opcode}\([^\n]*\)[^\n]*\{{\n(.*?)^\}}",
+                optimized,
+                re.MULTILINE | re.DOTALL,
+            )
+            assert body is not None
+            assert f"@llvm.{intrinsic}.with.overflow.i64" in body[1]
+            assert not re.search(r"\b(?:ashr|shl) i64\b", body[1])
+
+
+def test_tagged_add_sub_preserve_fixnum_boundaries_and_bigints(tmp_path):
+    values = [
+        -(2**62) - 1,
+        -(2**62),
+        -(2**62) + 1,
+        -1,
+        0,
+        1,
+        2**62 - 2,
+        2**62 - 1,
+        2**62,
+    ]
+    result = run_native(
+        tmp_path,
+        f"""def add(x, y): return x + y
+def sub(x, y): return x - y
+values = {values!r}
+for left in values:
+    for right in values:
+        print(add(left, right), sub(left, right))
+print(add(True, False), sub(True, False))
+print(add('a', 'b'))
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    expected = "".join(
+        f"{left + right} {left - right}\n" for left in values for right in values
+    )
+    assert result.stdout == expected + "1 1\nab\n"
 
 
 @pytest.mark.parametrize(

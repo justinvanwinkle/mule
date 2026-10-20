@@ -485,8 +485,10 @@ The existing `_mule_native` module supplies raw binary64 square root,
 numeric-kind/bit-length queries, storage conversion and special-method access.
 It uses the existing module cache and system math services; no new library,
 CPython linkage or Rust integer/math algorithms are introduced. Binary64
-operations currently use boxed primitive entries; unboxed float representation
-selection remains compiler work, and this increment makes no speed claim.
+math operations described here currently use boxed primitive entries. General
+floating arithmetic separately supports native representations and
+[LLVM-visible leaf boxes](native-lowering.md#llvm-visible-leaf-boxes); this math
+increment makes no speed claim.
 
 The added transcendental operations follow SBCL `src/code/irrat.lisp`,
 `def-math-rtn`, `handle-reals`, `exp`, `log`, `sin`, `cos`, and `acos`:

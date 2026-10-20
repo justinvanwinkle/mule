@@ -22,6 +22,7 @@ Two decisions live here:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -53,13 +54,18 @@ from .vop import (
     BOOLEAN_T,
     BOXED_FLOAT,
     CLASS_T,
+    DESCRIPTOR,
+    DOUBLE,
     FIXNUM,
     FLOAT64,
+    FLOAT_BOX_LAYOUT,
     IMMORTAL_T,
     NONE_T,
     RANGE,
     RANGE_T,
     SIGNED64,
+    VOP,
+    BoxLayout,
     IR2Component,
     PrimitiveType,
     T,
@@ -90,6 +96,7 @@ def select_representations(component: IR2Component) -> None:
             reads=reads.get(tn, ()),
             writes=writes.get(tn, ()),
             raw=raw,
+            convention=component.context.convention,
         )
 
 
@@ -144,34 +151,152 @@ def _select_float_move_representations(component):
             or root.primitive_type is not BOXED_FLOAT
         ):
             continue
-        group = set()
-        pending = [root]
-        candidates = [sc for sc in root.primitive_type.scs if sc.raw]
-        while pending:
-            tn = pending.pop()
-            if tn in group:
-                continue
-            group.add(tn)
-            candidates = [sc for sc in candidates if tn.primitive_type.admits(sc)]
-            for vop, ref in (
-                *component.reads.get(tn, ()),
-                *component.writes.get(tn, ()),
-            ):
-                if _representation_move(vop):
-                    pending.extend(operand.tn for operand in (*vop.args, *vop.results))
-                    continue
-                restriction = tn.primitive_type.operand_restriction(
-                    _restriction(vop, ref), raw=False
-                )
-                if restriction is not None:
-                    candidates = [sc for sc in candidates if sc in restriction]
+        group, candidates = _move_group_representations(component, root)
         visited.update(group)
         if candidates:
             selected.update((tn, candidates[0]) for tn in group)
     return selected
 
 
-def select_tn_representation(tn, *, reads=(), writes=(), raw=False):
+def can_use_double(component, tn, *, ignore=()) -> bool:
+    """Whether every value and boundary in a copy group admits raw doubles.
+
+    ``ignore`` omits boundary VOPs whose convention is currently being selected,
+    such as the producer of a numeric call result or an argument initialization.
+    The caller must replace each omitted boundary with a compatible convention.
+    All other uses, including identity-sensitive uses, retain their restrictions.
+    """
+    _group, candidates = _move_group_representations(component, tn, ignore=ignore)
+    return DOUBLE in candidates
+
+
+def fresh_float_returns(component) -> bool:
+    """Whether object returns can be reconstructed without losing aliases."""
+    found = False
+    for block in component.blocks:
+        for vop in block.vops:
+            if vop.info.name != "return":
+                continue
+            found = True
+            group, candidates = _move_group_representations(
+                component, vop.args[0].tn, ignore=(vop,)
+            )
+            if DOUBLE not in candidates:
+                return False
+            for tn in group:
+                for writer, _ref in component.writes.get(tn, ()):
+                    if _representation_move(writer):
+                        continue
+                    if not writer.info.produces_fresh(writer):
+                        return False
+    return found
+
+
+def fresh_box_returns(component: IR2Component, layout: BoxLayout) -> bool:
+    """Whether an object entry returns fresh leaf storage without another escape."""
+    if component.context.plan is not None or component.context.convention is not None:
+        return False
+    found = False
+    for block in component.blocks:
+        for vop in block.vops:
+            if vop.info.name != "return":
+                continue
+            found = True
+            group, _candidates = _move_group_representations(component, vop.args[0].tn)
+            if not _private_box_group(
+                component, group, layout, None, allow_return=True
+            ):
+                return False
+    return found
+
+
+def mark_private_boxes(
+    component: IR2Component,
+    *,
+    fresh_result: Callable[[VOP], BoxLayout | None] | None = None,
+) -> None:
+    """Prove private ownership for complete groups of leaf-box copies.
+
+    Every origin must allocate fresh leaf storage, and every non-copy reader
+    must explicitly promise not to capture the reference. A resolver can supply
+    an interprocedural fresh-result proof for an otherwise opaque producer.
+    Unknown origins and uses retain ordinary shared-object ownership.
+    """
+    for tn in component.tns:
+        tn.private_box = None
+    if component.context.plan is not None:
+        return
+    visited = set()
+    for root in component.tns:
+        layout = root.primitive_type.boxed_layout
+        if root in visited or root.sc is not DESCRIPTOR or layout is None:
+            continue
+        group, _candidates = _move_group_representations(component, root)
+        visited.update(group)
+        if _private_box_group(component, group, layout, fresh_result):
+            for tn in group:
+                tn.private_box = layout
+
+
+def _private_box_group(
+    component, group, layout, fresh_result, *, allow_return=False
+) -> bool:
+    found_origin = False
+    for tn in group:
+        if tn.sc is not DESCRIPTOR or tn.primitive_type.boxed_layout is not layout:
+            return False
+        for reader, ref in component.reads.get(tn, ()):
+            if _representation_move(reader):
+                continue
+            if allow_return and reader.info.name == "return":
+                continue
+            if reader.info.arg_escapes is None or len(reader.info.arg_escapes) != len(
+                reader.args
+            ):
+                return False
+            if reader.info.captures_argument(reader.args.index(ref), vop=reader):
+                return False
+        for writer, _ref in component.writes.get(tn, ()):
+            if _representation_move(writer) or writer.info.name == "unbind-local":
+                continue
+            if writer.info.produces_fresh(writer):
+                found_origin = True
+                continue
+            if fresh_result is not None and fresh_result(writer) is layout:
+                found_origin = True
+                continue
+            return False
+    return found_origin
+
+
+def _move_group_representations(component, root, *, ignore=()):
+    group = set()
+    pending = [root]
+    ignored = frozenset(ignore)
+    candidates = [sc for sc in root.primitive_type.scs if sc.raw]
+    convention = component.context.convention
+    while pending:
+        tn = pending.pop()
+        if tn in group:
+            continue
+        group.add(tn)
+        candidates = [sc for sc in candidates if tn.primitive_type.admits(sc)]
+        for vop, ref in (
+            *component.reads.get(tn, ()),
+            *component.writes.get(tn, ()),
+        ):
+            if vop in ignored:
+                continue
+            if _representation_move(vop):
+                pending.extend(operand.tn for operand in (*vop.args, *vop.results))
+                continue
+            restriction = _operand_restriction(vop, ref, convention=convention)
+            if restriction is not None:
+                candidates = [sc for sc in candidates if sc in restriction]
+    return group, candidates
+
+
+def select_tn_representation(tn, *, reads=(), writes=(), raw=False, convention=None):
     """The cheapest storage class among the primitive type's candidates,
     counting one coercion per operand whose restriction excludes it. A native
     body holds every value that has a machine representation in it."""
@@ -186,9 +311,7 @@ def select_tn_representation(tn, *, reads=(), writes=(), raw=False):
     for sc in candidates:
         cost = 0
         for vop, ref in (*reads, *writes):
-            restriction = tn.primitive_type.operand_restriction(
-                _restriction(vop, ref), raw=raw
-            )
+            restriction = _operand_restriction(vop, ref, raw=raw, convention=convention)
             if restriction is not None and sc not in restriction:
                 cost += 1
         if cost == 0:
@@ -196,6 +319,17 @@ def select_tn_representation(tn, *, reads=(), writes=(), raw=False):
         if best_cost is None or cost < best_cost:
             best, best_cost = sc, cost
     return best
+
+
+def _operand_restriction(vop, ref, *, raw=False, convention=None):
+    restriction = (
+        convention.operand_restriction(vop, ref)
+        if convention is not None and not raw
+        else None
+    )
+    if restriction is None:
+        restriction = _restriction(vop, ref)
+    return ref.tn.primitive_type.operand_restriction(restriction, raw=raw)
 
 
 def _restriction(vop, ref):
@@ -257,6 +391,9 @@ class Representation:
     def parameter(self, gen, value):
         raise NotNative
 
+    def can_adapt_return(self, component) -> bool:
+        return True
+
 
 class Int64(Representation):
     def python_real(self):
@@ -299,7 +436,10 @@ class Float64(Representation):
         return True
 
     def box(self, gen, value):
-        return gen.operation(f"call ptr @mule_box_f64(double {value})")
+        return gen.operation(f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {value})")
+
+    def can_adapt_return(self, component) -> bool:
+        return fresh_float_returns(component)
 
     def parameter(self, gen, value):
         slot = gen.operation("alloca double")

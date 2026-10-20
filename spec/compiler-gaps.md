@@ -2,8 +2,10 @@
 
 Status: **implemented** for general-context flow-type feedback into IR1
 transforms (Section 1A) and entry-context IR1 specialization / closed-call
-parameter promotion (Section 1B), and closed numeric-use float local storage
-(part of Section 5); **proposed** for Sections 1C–4 and the rest of Section 5.
+parameter promotion (Section 1B), closed numeric-use float local storage,
+numeric internal calling conventions, and LLVM-visible private leaf boxes
+(parts of Section 5); **proposed** for
+Sections 1C–4 and the rest of Section 5.
 
 This document records the remaining architectural and transform gaps between
 SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`),
@@ -248,8 +250,9 @@ Returns, unknown calls, identity comparisons, captured values, deletion, and
 possibly unbound reads retain object boundaries. One such boundary keeps the
 entire assignment-connected group boxed. This increment introduces no conversion
 VOPs and does not independently reconstruct boxes for aliases. Existing float
-arithmetic generators still handle their descriptor operands normally. Functions
-that return their float accumulator therefore still use boxed local storage.
+arithmetic generators still handle their descriptor operands normally. Generic
+object entries returning their float accumulator still use boxed local storage;
+the numeric internal conventions below remove that boundary for numeric callers.
 
 The SBCL reference is `src/compiler/represent.lisp`: `add-representation-costs`
 does not charge ordinary descriptor costs for a move whose other operand has no
@@ -260,3 +263,73 @@ class throughout each group instead of inserting conversions. Python float
 identity requires this conservative boundary: reboxing separate aliases could
 change `is` results. Full costed coercion insertion and mixed-boundary local
 representations remain proposed work, not part of this increment.
+
+### Numeric internal calling conventions (implemented)
+
+SBCL's `src/compiler/ltn.lisp`, `ltn-analyze-return`, annotates return locations
+independently of the representations used by other operations in the function.
+`src/compiler/ir2tran.lisp`, `ir2-convert-local-known-call` and
+`ir2-convert-return`, deliver known local calls and returns through those
+locations. Mule's counterpart separates internal `CallConvention` metadata from
+the all-or-nothing `NativePlan` used for fully native bodies.
+
+The implementation selects same-unit proven positional calls with a statically
+valid parameter mapping. It uses an existing semantic entry context whose
+parameter facts the caller proves without guards. A float result qualifies only
+when all assignment-connected caller uses permit doubles; a bounded integer
+result requires a non-boolean fixnum proof. Demand-generated numeric entries
+return `double` or `i64`. Float parameters use doubles only when their complete
+callee copy group admits raw storage. Proven fixnum parameters can cross as
+`i64` and retain the existing tagged representation for object operations.
+Other parameters retain their owned-object convention.
+
+Numeric entries preserve ordinary object operations, frame tracking, reference
+cleanup, handlers, and traceback generation. They do not use `emit_raw` or its
+whole-native-body ownership assumptions. A separate error flag reports failure,
+following the existing native-entry convention: every numeric bit pattern remains
+a valid result, so no numeric sentinel can signal an exception. The caller checks
+that flag before delivering a result and retains the actual callable while its
+borrowed closure is in use.
+
+Unlike SBCL's tracing collector, Mule currently transfers owned object arguments
+and releases owned temporaries explicitly. Numeric arguments carry no references.
+This ownership adaptation requires separate handling at mixed call boundaries.
+The generic wrapper never calls a numeric entry: forwarded object identities,
+pooled literal identities, and escaped aliases keep their ordinary object path.
+The numeric-use restriction allows a numeric entry to extract a still-boxed
+return value without reconstructing object identities. Guarded unknown calls,
+keyword/default adaptation, and calls to other compilation units remain on the
+existing object convention in this increment.
+
+Object-entry adaptation of existing fully native float bodies also requires
+return provenance. SBCL's representation coercions do not establish Python's
+observable float identity. Mule therefore permits scalar-result reboxing in an
+object adapter only when every return copy group comes from fresh-result VOPs
+and has no intervening identity-bearing use. Float arithmetic and unary negation
+can establish freshness; pooled constants, forwarded parameters, captures, and
+unknown calls cannot. Otherwise the generic object body remains authoritative,
+while the raw native entry remains available to native callers.
+
+### LLVM-visible private leaf boxes (implemented)
+
+Leaf layouts describe allocation, active header fields, payload access, and
+private lifetime helpers. Float construction and proven extraction now expose
+ordinary LLVM stores and loads. Only raw pooled-storage allocation and terminal
+deallocation have matching allocation-family contracts, without restricted
+memory-effect claims. Generic construction, shared ownership, and destruction
+retain their existing contracts.
+
+The representation stage proves private ownership for complete copy groups
+whose origins are fresh and whose uses explicitly cannot capture references.
+It rejects pooled constants, arguments, unknown calls, stored or returned
+references, and in-place forwarding. Proven factory results require fresh
+summaries for every possible normal object entry. Private ownership is not
+inferred from float type alone, and groups with different lifetime modes do not
+share physical slots.
+
+Private counts and terminal storage release let LLVM eliminate eligible
+box/load/free sequences itself, including without LTO. No transform substitutes
+an unboxed value for a box/unbox pattern. This is a limited leaf ownership proof,
+not complete closure/container escape analysis. See the
+[lowering contract](native-lowering.md#llvm-visible-leaf-boxes) and
+[optimization evidence](performance.md#private-leaf-box-elimination-2026-10-20).
