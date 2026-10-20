@@ -2213,14 +2213,12 @@ BOOTSTRAP_CLASS_TARGETS: dict[str, ClassConstructorTarget] = {
     "TupleStorage": ClassConstructorTarget(
         base_type=TupleType(), cls_type=CLASS_TUPLE_TYPE
     ),
-    "list": ClassConstructorTarget(base_type=EMPTY_LIST_TYPE, cls_type=CLASS_LIST_TYPE),
+    "list": ClassConstructorTarget(base_type=LIST_TYPE, cls_type=CLASS_LIST_TYPE),
     "ListStorage": ClassConstructorTarget(
-        base_type=EMPTY_LIST_TYPE, cls_type=CLASS_LIST_TYPE
+        base_type=LIST_TYPE, cls_type=CLASS_LIST_TYPE
     ),
-    "dict": ClassConstructorTarget(base_type=EMPTY_DICT_TYPE, cls_type=CLASS_DICT_TYPE),
-    "_Table": ClassConstructorTarget(
-        base_type=EMPTY_DICT_TYPE, cls_type=CLASS_DICT_TYPE
-    ),
+    "dict": ClassConstructorTarget(base_type=DICT_TYPE, cls_type=CLASS_DICT_TYPE),
+    "_Table": ClassConstructorTarget(base_type=DICT_TYPE, cls_type=CLASS_DICT_TYPE),
     "object": ClassConstructorTarget(base_type=UNKNOWN, cls_type=CLASS_OBJECT_TYPE),
     "type": ClassConstructorTarget(
         base_type=ANY_CLASS_TYPE,

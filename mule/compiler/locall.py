@@ -1409,6 +1409,19 @@ def analyze(
         return tuple(var.optimistic_type for var in lambda_.environment.closure)
 
     deriver_cache: dict[tuple[Lambda, tuple[ValueType, ...]], Body] = {}
+    post_graphs: dict[Lambda, LambdaGraph] = {}
+    analysis_finished = False
+
+    def _current_graph(target_lam: Lambda) -> LambdaGraph:
+        if not analysis_finished:
+            return graphs[target_lam]
+        cached_graph = post_graphs.get(target_lam)
+        comp = target_lam.component
+        current_blocks = tuple(comp.blocks()) if comp is not None else ()
+        if cached_graph is None or cached_graph.blocks != current_blocks:
+            cached_graph = build_lambda_graph(target_lam)
+            post_graphs[target_lam] = cached_graph
+        return cached_graph
 
     def _resolve_deriver_call(
         callee: Fact, arguments, location=None, keywords=()
@@ -1444,7 +1457,7 @@ def analyze(
                     param_types,
                     _resolve_deriver_call,
                     AnnotationLedger(),
-                    graph=graphs[target_lam],
+                    graph=_current_graph(target_lam),
                     proven_globals=proven_globals,
                     rebound_globals=rebound_by_namespace.get(
                         target_lam.namespace, frozenset()
@@ -1510,7 +1523,7 @@ def analyze(
                     param_types,
                     _resolve_deriver_call,
                     AnnotationLedger(),
-                    graph=graphs[target_lam],
+                    graph=_current_graph(target_lam),
                     proven_globals=proven_by_namespace.get(
                         target_lam.namespace, frozenset()
                     ),
@@ -1987,6 +2000,8 @@ def analyze(
         results[lambda_] = facts
         _mark_guarded_calls(graph, general)
         _publish_derived_types(lambda_, graph, facts.types)
+    analysis_finished = True
+    deriver_cache.clear()
     return results
 
 

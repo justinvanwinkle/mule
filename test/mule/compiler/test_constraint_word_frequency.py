@@ -64,6 +64,14 @@ def test_empty_list_append_and_for_iteration_infers_element_type():
     assert w_type.is_fixnum is True
 
 
+def test_list_constructor_from_argument_has_unknown_length():
+    compilation = lower(
+        "def f(source):\n values = list(source)\n n = len(values)\n return n\n"
+    )
+    fn = function(compilation, 1)
+    assert fact(compilation, fn, stored_value(fn, "n").use()) != IntegerType(0, 0)
+
+
 def test_dict_get_setitem_and_items_iteration_infers_entry_types():
     compilation = lower(
         "def f(words):\n"
