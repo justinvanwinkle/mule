@@ -97,6 +97,8 @@ class LocalAccess:
 _BORROWING_VOPS = frozenset(
     {
         "getattr",
+        "getattr-default",
+        "hasattr",
         "setattr",
         "resolve-method",
         "resolve-super-method",

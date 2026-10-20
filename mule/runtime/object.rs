@@ -548,12 +548,23 @@ pub fn take_native_error() -> Option<(String, String)> {
     });
     taken
 }
-/// Clear a pending runtime-raised error of class `kind`, reporting whether
-/// one was cleared. A pending exception object (raised by compiled code) is
-/// left in place: matching it needs the class hierarchy.
+/// Clear a pending error of class `kind` (or a subclass), whether the
+/// runtime raised it or compiled code did, reporting whether one was
+/// cleared. `getattr` with a default and `hasattr` use it: they swallow any
+/// `AttributeError`, including one a property or `__getattr__` raised.
 pub fn clear_native_error_of(kind: &str) -> bool {
     if crate::sequences::has_pending() {
         return unsafe { crate::sequences::clear_pending_instance_of(kind) };
+    }
+    clear_runtime_error_of(kind)
+}
+/// Clear an error of class `kind` only when the runtime itself raised it,
+/// reporting whether it did. An exception raised by compiled code stays
+/// pending: a lookup that reports "not found" must not hide it, or the
+/// caller's fallback runs the code that raised it a second time.
+pub fn clear_runtime_error_of(kind: &str) -> bool {
+    if crate::sequences::has_pending() {
+        return false;
     }
     let matched = ERROR.with_borrow(|current| current.as_ref().is_some_and(|value| value.0 == kind));
     if matched {

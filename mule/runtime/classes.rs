@@ -1143,7 +1143,7 @@ pub unsafe extern "C" fn mule_attribute_lookup_or(
 ) -> Value {
     unsafe {
         let value = mule_attribute_lookup_once(receiver, attribute);
-        if value.is_null() && object::clear_native_error_of("AttributeError") {
+        if value.is_null() && object::clear_runtime_error_of("AttributeError") {
             return object::retain(missing);
         }
         value

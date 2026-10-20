@@ -1216,15 +1216,21 @@ def _retarget_attribute_builtin(
 
 @deftransform("getattr")
 def _transform_getattr(node: Combination) -> bool:
-    """``getattr(x, "name", default)`` with a constant name becomes a lookup
-    with its own call-site cache (SBCL's ``slot-value`` with a constant slot
-    name compiles to the slot accessor). The builtin name check is the
-    predictable-global test ``_OptimizeNode`` already made."""
-    if len(node.args) != 3:
+    """``getattr`` with a constant name is attribute access (SBCL's
+    ``slot-value`` with a constant slot name compiles to the slot accessor):
+    ``getattr(x, "name")`` is ``x.name``, and ``getattr(x, "name", default)``
+    is the same cached lookup with a miss returning ``default``. The name is
+    used as written: ``getattr`` never applies private-name mangling. The
+    builtin name check is the predictable-global test ``_OptimizeNode``
+    already made."""
+    if len(node.args) not in (2, 3):
         return False
     name = _constant_attribute_name(node.args[1])
     if name is None:
         return False
+    if len(node.args) == 2:
+        _retarget_attribute_builtin(node, fndb.GETATTR, name, [node.args[0]])
+        return True
     _retarget_attribute_builtin(
         node, fndb.GETATTR_DEFAULT, name, [node.args[0], node.args[2]]
     )
