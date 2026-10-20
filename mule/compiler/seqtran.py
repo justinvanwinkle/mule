@@ -1186,6 +1186,62 @@ def _transform_len(node: Combination) -> bool:
     return True
 
 
+class _AttributeName(ast.Visitor):
+    """The text of a constant attribute name, or None."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_TextLiteral(self, node: ast.TextLiteral) -> str | None:
+        return node.value if node.value.isidentifier() else None
+
+
+_ATTRIBUTE_NAME = _AttributeName()
+
+
+def _constant_attribute_name(lvar: Lvar) -> str | None:
+    literal = constant_literal(lvar)
+    return None if literal is None else literal.accept(_ATTRIBUTE_NAME)
+
+
+def _retarget_attribute_builtin(
+    node: Combination, info: FunInfo, name: str, args: list[Lvar]
+) -> None:
+    from .ir1tran import AttributeInfo
+
+    location = node.info.location if node.info is not None else None
+    retarget_known_combination(node, info, args)
+    node.info = AttributeInfo(name, location)
+
+
+@deftransform("getattr")
+def _transform_getattr(node: Combination) -> bool:
+    """``getattr(x, "name", default)`` with a constant name becomes a lookup
+    with its own call-site cache (SBCL's ``slot-value`` with a constant slot
+    name compiles to the slot accessor). The builtin name check is the
+    predictable-global test ``_OptimizeNode`` already made."""
+    if len(node.args) != 3:
+        return False
+    name = _constant_attribute_name(node.args[1])
+    if name is None:
+        return False
+    _retarget_attribute_builtin(
+        node, fndb.GETATTR_DEFAULT, name, [node.args[0], node.args[2]]
+    )
+    return True
+
+
+@deftransform("hasattr")
+def _transform_hasattr(node: Combination) -> bool:
+    if len(node.args) != 2:
+        return False
+    name = _constant_attribute_name(node.args[1])
+    if name is None:
+        return False
+    _retarget_attribute_builtin(node, fndb.HASATTR, name, [node.args[0]])
+    return True
+
+
 class _IfTestingLvar(NodeVisitor):
     """Return ``node`` when it is an ``If`` testing ``test``."""
 

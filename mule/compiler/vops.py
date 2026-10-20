@@ -866,6 +866,37 @@ def getattr_(gen, vop):
     )
 
 
+@define_vop(
+    "getattr-default",
+    translate=fndb.GETATTR_DEFAULT,
+    args=(OBJECT, OBJECT),
+    results=(OBJECT,),
+)
+def getattr_default(gen, vop):
+    """``getattr(x, "name", default)``: a per-site cache that also records
+    misses, so a repeated miss returns the default after one class check."""
+    receiver, default = gen.take(vop.args[0]), gen.take(vop.args[1])
+    info = vop.codegen_info
+    gen.pointer_result(
+        vop.results[0],
+        f"call ptr @mule_getattr_default(ptr {receiver}, ptr {gen.module.text(info.name)}, "
+        f"ptr {default}, ptr {gen.module.attribute_cache()})",
+        (receiver, default),
+    )
+
+
+@define_vop("hasattr", translate=fndb.HASATTR, args=(OBJECT,), results=(OBJECT,))
+def hasattr_(gen, vop):
+    receiver = gen.take(vop.args[0])
+    info = vop.codegen_info
+    gen.pointer_result(
+        vop.results[0],
+        f"call ptr @mule_hasattr(ptr {receiver}, ptr {gen.module.text(info.name)}, "
+        f"ptr {gen.module.attribute_cache()})",
+        (receiver,),
+    )
+
+
 @define_vop("setattr", translate=fndb.SETATTR, args=(OBJECT, OBJECT))
 def setattr_(gen, vop):
     receiver, value = gen.take(vop.args[0]), gen.take(vop.args[1])

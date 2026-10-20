@@ -23,6 +23,25 @@ pub fn has_pending() -> bool {
 pub fn take_pending() -> Value {
     replace_pending(null_mut())
 }
+/// Clear the pending exception when it is an instance of the protocol
+/// class named `kind` or a subclass, reporting whether it was cleared.
+pub unsafe fn clear_pending_instance_of(kind: &str) -> bool {
+    unsafe {
+        let pending = PENDING.with(Cell::get);
+        let class = object::lookup(mule_protocol_globals(), kind);
+        if pending.is_null() || class.is_null() {
+            return false;
+        }
+        let raised = mule_raised_class(pending);
+        let matched = crate::classes::is_subclass(raised, class);
+        object::release(raised);
+        if matched {
+            clear_pending();
+            crate::traceback::clear();
+        }
+        matched
+    }
+}
 /// Reinstate an exception taken with `take_pending`, replacing any current one.
 pub fn restore_pending(saved: Value) {
     unsafe { object::release(replace_pending(saved)) };

@@ -553,7 +553,7 @@ pub fn take_native_error() -> Option<(String, String)> {
 /// left in place: matching it needs the class hierarchy.
 pub fn clear_native_error_of(kind: &str) -> bool {
     if crate::sequences::has_pending() {
-        return false;
+        return unsafe { crate::sequences::clear_pending_instance_of(kind) };
     }
     let matched = ERROR.with_borrow(|current| current.as_ref().is_some_and(|value| value.0 == kind));
     if matched {

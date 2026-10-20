@@ -257,6 +257,17 @@ COMPARE = {
 
 # Attribute and method protocols.
 GETATTR = defknown("%getattr", "call", non_integer_first_arg=True)
+# ``getattr(x, "name", default)`` and ``hasattr(x, "name")`` with a constant
+# name: the builtin call, rewritten once the name is known (seqtran).
+GETATTR_DEFAULT = defknown("%getattr_default", "call", non_integer_first_arg=True)
+HASATTR = defknown(
+    "%hasattr", "call", derive_type=lambda node: BOOLEAN, non_integer_first_arg=True
+)
+# The builtins themselves, so a call to an unmutated global ``getattr`` or
+# ``hasattr`` reaches the transforms above, as ``len`` does. They are never
+# emitted as known calls: without a constant name the call stays generic.
+GETATTR_BUILTIN = defknown("getattr", "call", "unsafe")
+HASATTR_BUILTIN = defknown("hasattr", "call", "unsafe")
 SETATTR = defknown(
     "%setattr", "call", "unsafe", result=False, non_integer_first_arg=True
 )
@@ -449,6 +460,8 @@ __all__ = [
     "ENTER_HANDLER",
     "FORMAT",
     "GETATTR",
+    "GETATTR_DEFAULT",
+    "HASATTR",
     "GETSLICE",
     "HAS_BINDING",
     "IMPORT",

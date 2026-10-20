@@ -605,6 +605,10 @@ const METHOD: usize = 2;
 const VALUE: usize = 3;
 const DESCRIPTOR: usize = 4;
 const DATA_DESCRIPTOR: usize = 5;
+/// A cached miss: the class and its bases define no such attribute, the
+/// class has no `__getattr__` or `__getattribute__`, and no fixed field has
+/// the name. Only instances without an instance `__dict__` may use it.
+const ABSENT: usize = 6;
 const KIND: usize = 7;
 const SHIFT: u32 = 3;
 // Class attribute encodings pack the defining class's depth above the index.
@@ -882,6 +886,11 @@ unsafe fn resolved(
 }
 
 unsafe fn missing(layout: Option<&ClassLayout>, instance: bool, attribute: &str) -> Value {
+    if PROBING.with(Cell::get) {
+        // The caller discards the error: format no message for it.
+        object::error("AttributeError", "");
+        return std::ptr::null_mut();
+    }
     let message = match layout {
         Some(layout) if instance => {
             format!("'{}' object has no attribute '{attribute}'", layout.name)
@@ -2156,6 +2165,103 @@ thread_local! {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_get_attr(receiver: Value, attribute: *const c_char) -> Value {
     unsafe { mule_get_attr_cached(receiver, attribute, std::ptr::null_mut()) }
+}
+
+/// `getattr(receiver, attribute, default)` with a constant name, for one
+/// call site. Owned result; `default` is borrowed. A plain instance whose
+/// class defines no such attribute and no lookup hooks, and which has no
+/// instance `__dict__`, caches the miss by class and epoch: the next call
+/// reads the class pointer, the cache, and the dict pointer, and returns the
+/// default. Class mutation advances the epoch, and instance dict creation
+/// sets the dict pointer, so both invalidate it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_getattr_default(
+    receiver: Value,
+    attribute: *const c_char,
+    default: Value,
+    cache: *mut AttrCache,
+) -> Value {
+    unsafe {
+        if !receiver.is_null() && !object::is_fixnum(receiver) {
+            if let Data::Instance { ty, fields, attributes } = &(*receiver).data {
+                if let Data::Class(layout) = &(**ty).data {
+                    if let Some(encoded) = cached(layout, cache) {
+                        let kind = encoded & KIND;
+                        if kind == ABSENT && attributes.is_null() {
+                            return object::retain(default);
+                        }
+                        if kind == FIELD {
+                            let value = fields[encoded >> SHIFT];
+                            if !value.is_null() {
+                                return object::retain(value);
+                            }
+                        }
+                    } else if attributes.is_null()
+                        && hook(layout, Special::GetAttribute).is_null()
+                        && hook(layout, Special::GetAttr).is_null()
+                    {
+                        if let Some(name) = name(attribute) {
+                            if layout.find(name).is_none() && !layout.field_lookup.contains_key(name) {
+                                store_cached(layout, cache, ABSENT);
+                                return object::retain(default);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let value = probing(|| mule_get_attr_cached(receiver, attribute, cache));
+        if value.is_null() && object::clear_native_error_of("AttributeError") {
+            return object::retain(default);
+        }
+        value
+    }
+}
+
+/// `hasattr(receiver, attribute)` with a constant name: `getattr` with a
+/// sentinel default.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_hasattr(
+    receiver: Value,
+    attribute: *const c_char,
+    cache: *mut AttrCache,
+) -> Value {
+    unsafe {
+        let missing = crate::arguments::mule_binding_missing();
+        let value = mule_getattr_default(receiver, attribute, missing, cache);
+        if value.is_null() {
+            return value;
+        }
+        let found = value != missing;
+        object::release(value);
+        object::bool_value(found)
+    }
+}
+
+thread_local! {
+    /// Set while a caller discards `AttributeError`: misses then skip
+    /// formatting a message nobody reads.
+    static PROBING: Cell<bool> = const { Cell::new(false) };
+}
+
+fn probing<T>(lookup: impl FnOnce() -> T) -> T {
+    let previous = PROBING.with(|probing| probing.replace(true));
+    let result = lookup();
+    PROBING.with(|probing| probing.set(previous));
+    result
+}
+
+unsafe fn store_cached(layout: &ClassLayout, cache: *mut AttrCache, encoded: usize) {
+    unsafe {
+        if cache.is_null() {
+            return;
+        }
+        let epoch = ATTRIBUTE_EPOCH.load(Ordering::Relaxed);
+        (*cache).encoded = encoded;
+        (*cache).class_id = layout.id;
+        (*cache).epoch = epoch;
+        (*cache).extra[layout.id & (EXTRA_CACHE_SLOTS - 1)] = [layout.id, encoded, epoch];
+    }
 }
 
 pub unsafe fn get_exception_traceback(exception: Value) -> Value {
