@@ -474,16 +474,20 @@ class ModuleCompiler:
 
     def compile_pending(self):
         """Compile every module imported so far, and those they import."""
-        if not self.storage_methods and self.primitives is None:
-            from .sequence_protocol import stdlib_target_summary, stdlib_type_summary
+        if self.primitives is None:
+            if not self.storage_methods:
+                from .sequence_protocol import stdlib_type_summary
 
-            exported, methods, builtins = stdlib_type_summary()
-            self.exported_types.update(exported)
-            self.storage_methods.update(methods)
-            self.builtin_return_types.update(builtins)
-            exp_targets, b_targets = stdlib_target_summary()
-            self.exported_targets.update(exp_targets)
-            self.builtin_targets.update(b_targets)
+                exported, methods, builtins = stdlib_type_summary()
+                self.exported_types.update(exported)
+                self.storage_methods.update(methods)
+                self.builtin_return_types.update(builtins)
+            if not self.exported_targets:
+                from .sequence_protocol import stdlib_target_summary
+
+                exp_targets, b_targets = stdlib_target_summary()
+                self.exported_targets.update(exp_targets)
+                self.builtin_targets.update(b_targets)
         pending_compilations: list[tuple[CompiledModule, Compilation]] = []
         while self.pending:
             descriptor = self.pending.popleft()
@@ -546,16 +550,20 @@ class ModuleCompiler:
         """Compile the main module and every module it imports; imported
         modules accumulate on the compiler. Returns the main module's
         ``Compilation``."""
-        if not self.storage_methods and self.primitives is None:
-            from .sequence_protocol import stdlib_target_summary, stdlib_type_summary
+        if self.primitives is None:
+            if not self.storage_methods:
+                from .sequence_protocol import stdlib_type_summary
 
-            exported, methods, builtins = stdlib_type_summary()
-            self.exported_types.update(exported)
-            self.storage_methods.update(methods)
-            self.builtin_return_types.update(builtins)
-            exp_targets, b_targets = stdlib_target_summary()
-            self.exported_targets.update(exp_targets)
-            self.builtin_targets.update(b_targets)
+                exported, methods, builtins = stdlib_type_summary()
+                self.exported_types.update(exported)
+                self.storage_methods.update(methods)
+                self.builtin_return_types.update(builtins)
+            if not self.exported_targets:
+                from .sequence_protocol import stdlib_target_summary
+
+                exp_targets, b_targets = stdlib_target_summary()
+                self.exported_targets.update(exp_targets)
+                self.builtin_targets.update(b_targets)
         compilation = compile_toplevel(source, filename, imports=self)
         self.compile_pending()
         compilation.imported_function_types = self.exported_types

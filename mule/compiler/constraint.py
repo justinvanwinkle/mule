@@ -1390,6 +1390,21 @@ def _propagate_getitem(visitor: _Propagation, node: Combination):
     return _fact(receiver_type.getitem_type(index_type))
 
 
+@defpropagate("%getslice")
+def _propagate_getslice(visitor: _Propagation, node: Combination):
+    args = node.args
+    if not args:
+        return None
+    if any(visitor.type_of(arg) is BOTTOM for arg in args):
+        return NO_FACT
+    receiver_type = visitor.type_of(args[0])
+    if receiver_type.may_run_user_code or any(
+        visitor.type_of(arg).may_run_user_code for arg in args[1:]
+    ):
+        visitor.invalidate()
+    return _fact(receiver_type.getslice_type())
+
+
 @defpropagate("%setitem")
 def _propagate_setitem(visitor: _Propagation, node: Combination):
     args = node.args
