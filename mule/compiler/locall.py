@@ -72,6 +72,7 @@ from .ctype import (
 from .dfo import find_dfo
 from .fndb import (
     BUILD_TUPLE,
+    CLASS_DELETE,
     CLASS_STORE,
     COMPARE,
     GETATTR,
@@ -759,13 +760,20 @@ class _ModuleClassCollector(NodeVisitor):
             info = linked(node.info, node, "info")
             value = node.args[1]
             lam = made_function(value.uses[0]) if len(value.uses) == 1 else None
-            if lam is not None:
+            if lam is not None and info.name not in (
+                "__init_subclass__",
+                "__class_getitem__",
+            ):
                 self.methods[info.identity][info.name] = lam
             else:
                 # Any other binding (a decorated function, a descriptor, a
-                # rebinding) shadows a method of the same name.
+                # rebinding, or an implicit classmethod) shadows a method of
+                # the same name.
                 self.methods[info.identity].pop(info.name, None)
                 self.other_bindings[info.identity].add(info.name)
+        elif node.fun_info is CLASS_DELETE:
+            info = linked(node.info, node, "info")
+            self.methods[info.identity].pop(info.name, None)
         elif node.fun_info is MAKE_CLASS:
             info = linked(node.info, node, "class definition")
             self.public_names[info.identity] = info.public_name
@@ -1445,26 +1453,52 @@ def analyze(
                 if self_type is not None:
                     gen_params[0] = self_type
             parameters[lambda_, "general"] = tuple(gen_params)
-            spec_params = tuple(
-                _ParameterUse(var, storage_methods).analyze(contract, full)
-                for var, contract in zip(
-                    lambda_.vars, signature.annotations, strict=True
+            is_typed_method = (
+                lambda_.method_class is not None
+                and lambda_.method_class in class_facts
+                and lambda_ in class_facts[lambda_.method_class].methods.values()
+                and signature.kinds[0]
+                in (
+                    ast.ParameterKind.POSITIONAL_ONLY,
+                    ast.ParameterKind.POSITIONAL_OR_KEYWORD,
                 )
+                and signature.annotations[0] is None
+                and lambda_.vars[0].name not in lambda_.local_annotations
             )
-            if all(param is not UNKNOWN for param in spec_params):
+            if is_typed_method:
+                spec_params = (
+                    InstanceType(lambda_.method_class),
+                    *(
+                        _ParameterUse(var, storage_methods).analyze(contract, full)
+                        for var, contract in zip(
+                            lambda_.vars[1:],
+                            signature.annotations[1:],
+                            strict=True,
+                        )
+                    ),
+                )
                 parameters[lambda_, "fixnum"] = spec_params
             else:
-                partial_params = tuple(
-                    param
-                    if param is not UNKNOWN
-                    and (contract is not None or lambda_.vars[0].name != "self")
-                    else UNKNOWN
-                    for param, contract in zip(
-                        spec_params, signature.annotations, strict=True
+                spec_params = tuple(
+                    _ParameterUse(var, storage_methods).analyze(contract, full)
+                    for var, contract in zip(
+                        lambda_.vars, signature.annotations, strict=True
                     )
                 )
-                if any(param is not UNKNOWN for param in partial_params):
-                    parameters[lambda_, "fixnum"] = partial_params
+                if all(param is not UNKNOWN for param in spec_params):
+                    parameters[lambda_, "fixnum"] = spec_params
+                else:
+                    partial_params = tuple(
+                        param
+                        if param is not UNKNOWN
+                        and (contract is not None or lambda_.vars[0].name != "self")
+                        else UNKNOWN
+                        for param, contract in zip(
+                            spec_params, signature.annotations, strict=True
+                        )
+                    )
+                    if any(param is not UNKNOWN for param in partial_params):
+                        parameters[lambda_, "fixnum"] = partial_params
         else:
             gen_params = [binding_types.get(kind, UNKNOWN) for kind in signature.kinds]
             if lambda_.vars and gen_params[0] is UNKNOWN:
@@ -1929,7 +1963,10 @@ def analyze(
                 parameters[gen_key] = merged_gen
                 changed = True
         for key, body in bodies.items():
-            if key[1] == "fixnum":
+            if key[1] == "fixnum" and (
+                (key[0], "observed") in bodies
+                or any(param.is_fixnum for param in parameters[key])
+            ):
                 continue
             for call in body.calls:
                 target = call.target.as_lambda() if call.target is not None else None
@@ -1979,7 +2016,10 @@ def analyze(
                     else (
                         fix_param
                         if fix_params is not None
-                        and (fix_param := fix_params[idx]) in (LIST_TYPE, TEXT_TYPE)
+                        and (
+                            (fix_param := fix_params[idx]) in (LIST_TYPE, TEXT_TYPE)
+                            or fix_param.instance_class() is not None
+                        )
                         else UNKNOWN
                     )
                     for idx, domain in enumerate(raw_domains)
@@ -2087,7 +2127,11 @@ def analyze(
             candidate_types = body.types()
             ret_type = summaries[key].normalized_bottom()
             if identifier == "fixnum" and not _specializes_body(
-                graph, facts.types, candidate_types
+                graph,
+                facts.types,
+                candidate_types,
+                facts.targets,
+                body.targets(),
             ):
                 continue
             if (
@@ -2107,7 +2151,11 @@ def analyze(
                 identifier == "observed"
                 and parameters[key] == parameters.get((lambda_, "fixnum"))
                 and _specializes_body(
-                    graph, facts.types, bodies[lambda_, "fixnum"].types()
+                    graph,
+                    facts.types,
+                    bodies[lambda_, "fixnum"].types(),
+                    facts.targets,
+                    bodies[lambda_, "fixnum"].targets(),
                 )
             ):
                 continue

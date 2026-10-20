@@ -862,7 +862,9 @@ def getattr_(gen, vop):
     info = vop.codegen_info
     cache = gen.module.attribute_cache()
     labels = _AttributeSite(gen, receiver, cache, ATTR_FIELD)
-    slot = gen.operation(f"call ptr @mule.attr.field(ptr {receiver}, i64 {labels.encoded})")
+    slot = gen.operation(
+        f"call ptr @mule.attr.field(ptr {receiver}, i64 {labels.encoded})"
+    )
     field = gen.operation(f"load ptr, ptr {slot}")
     unset = gen.operation(f"icmp eq ptr {field}, null")
     loaded = gen.fresh("attr.loaded")[1:]
@@ -891,7 +893,9 @@ class _AttributeSite:
     the caller merges both paths at."""
 
     def __init__(self, gen, receiver: str, cache: str, kind: int):
-        self.encoded = gen.operation(f"call i64 @mule.attr.hit(ptr {receiver}, ptr {cache})")
+        self.encoded = gen.operation(
+            f"call i64 @mule.attr.hit(ptr {receiver}, ptr {cache})"
+        )
         found = gen.operation(f"and i64 {self.encoded}, {ATTR_KIND_MASK}")
         matched = gen.operation(f"icmp eq i64 {found}, {kind}")
         hit = gen.fresh("attr.hit")[1:]
@@ -938,7 +942,9 @@ def setattr_(gen, vop):
     info = vop.codegen_info
     cache = gen.module.attribute_cache()
     site = _AttributeSite(gen, receiver, cache, ATTR_FIELD)
-    slot = gen.operation(f"call ptr @mule.attr.field(ptr {receiver}, i64 {site.encoded})")
+    slot = gen.operation(
+        f"call ptr @mule.attr.field(ptr {receiver}, i64 {site.encoded})"
+    )
     old = gen.operation(f"load ptr, ptr {slot}")
     gen.line(f"call ptr @mule.fast.retain(ptr {value})")
     gen.line(f"store ptr {value}, ptr {slot}")

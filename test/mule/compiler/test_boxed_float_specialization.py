@@ -153,3 +153,95 @@ run()
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "zero division 1.5\n"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        """
+def run(n, label):
+    total = 0.5
+    for index in range(n):
+        if index % 2:
+            delta = 1.5
+        else:
+            delta = 2.5
+        total += delta
+    print(label)
+    return total > 5.0
+""",
+        """
+def run(n, label):
+    value = 0.5
+    index = 0
+    while index < n:
+        previous = value
+        value = previous * 1.5
+        index += 1
+    print(label)
+    return value > 5.0
+""",
+    ],
+    ids=["branch-and-counted-loop", "copy-and-while-loop"],
+)
+def test_numeric_only_float_locals_stay_unboxed_across_blocks(source, tmp_path):
+    program = source + '\nprint(run(0, "zero"))\nprint(run(8, "eight"))\n'
+    llvm = emit_llvm(program)
+    body = llvm.split('define internal ptr @"mule_fn_run.body"(')[1].split("\n}")[0]
+    assert "fcmp ogt double" in body
+    assert "call ptr @mule_box_f64" not in body
+    assert "call i32 @mule_unbox_f64" not in body
+    compare(tmp_path, program)
+
+
+def test_numeric_only_float_locals_preserve_value_on_failed_assignment(tmp_path):
+    compare(
+        tmp_path,
+        """
+def run(n):
+    value = -0.0
+    for index in range(n):
+        value += 1.5
+    try:
+        value /= -0.0
+    except ZeroDivisionError:
+        print(value == 0.0, value > 0.0)
+    return value > 1.0
+print(run(0))
+print(run(3))
+""",
+    )
+
+
+def test_float_local_storage_preserves_boundness_and_captured_identity(tmp_path):
+    compare(
+        tmp_path,
+        """
+def maybe(flag):
+    if flag:
+        value = 1.5
+    try:
+        print(value > 1.0)
+    except UnboundLocalError:
+        print('unbound')
+maybe(False)
+maybe(True)
+def deleted():
+    value = 1.5
+    del value
+    try:
+        print(value > 1.0)
+    except UnboundLocalError:
+        print('deleted')
+deleted()
+def captured():
+    value = 1.5
+    def read():
+        return value
+    saved = value
+    print(read() is saved)
+    value += 1.5
+    print(read() is saved, value > 1.0)
+captured()
+""",
+    )

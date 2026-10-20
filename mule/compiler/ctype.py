@@ -3226,6 +3226,12 @@ class InstanceType(ValueType):
     def instance_class(self) -> str | None:
         return None if self.may_be_unbound else self.identity
 
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else ClassType((self,))
+
+    def runtime_parent_class_type(self):
+        return None if self.may_be_unbound else CLASS_OBJECT_TYPE
+
     def as_optional(self, may_be_unbound: bool = False):
         return OptionalValueType(
             self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound

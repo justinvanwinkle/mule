@@ -704,7 +704,7 @@ def _entry_steps(module, function, sources) -> tuple:
         ),
         key=lambda context: (
             sum(
-                0 if source.dispatch_fits(expected) else 1
+                0 if expected is not UNKNOWN and source.dispatch_fits(expected) else 1
                 for source, expected in zip(sources, context.parameters, strict=True)
             ),
             sum(fact.dispatch_rank() for fact in context.parameters),
@@ -4400,9 +4400,7 @@ class FunctionGenerator:
             + [f"ptr %parameter.{index}" for index in range(len(lambda_.vars))]
             + (["ptr %tuple.out"] if self.unpacked else [])
         )
-        self.lines.append(
-            f"define {linkage}ptr {self.body}({parameters}) {{"
-        )
+        self.lines.append(f"define {linkage}ptr {self.body}({parameters}) {{")
         self.lines.append("entry:")
         if self.context.id is not None:
             for index, fact in enumerate(self.context.parameters):
@@ -4737,9 +4735,7 @@ class FunctionGenerator:
             lines.append("  br label %invoke")
         else:
             lines.append("  br label %binding")
-        lines += self.keyword_entry(
-            positional, default_offsets, rest_idx, keywords_idx
-        )
+        lines += self.keyword_entry(positional, default_offsets, rest_idx, keywords_idx)
         lines += ["invoke:"]
         for index in range(count):
             if fast:

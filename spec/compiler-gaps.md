@@ -2,7 +2,8 @@
 
 Status: **implemented** for general-context flow-type feedback into IR1
 transforms (Section 1A) and entry-context IR1 specialization / closed-call
-parameter promotion (Section 1B); **proposed** for Sections 1C–5.
+parameter promotion (Section 1B), and closed numeric-use float local storage
+(part of Section 5); **proposed** for Sections 1C–4 and the rest of Section 5.
 
 This document records the remaining architectural and transform gaps between
 SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`),
@@ -213,14 +214,15 @@ suite failure or performance measurement.
 
 ---
 
-## 5. Representation selection and unboxed SSA values across blocks (`represent.lisp`) (proposed)
+## 5. Representation selection and unboxed SSA values across blocks (`represent.lisp`) (partially implemented)
 
 - **SBCL reference**: `src/compiler/represent.lisp` (`select-tn-representation`,
   automatic coercion VOPs at block boundaries).
 - **Current Mule state**: `mule/compiler/represent.py` and `vops.py` keep raw
   `i64` / `double` values for `mule.int64` / `mule.float64` annotated locals and
-  range-loop counters, and unbox fixnum arithmetic inside basic blocks, while
-  normal `LambdaVar`s store tagged `Value` (`ptr`) across block boundaries.
+  range-loop counters, and unbox fixnum arithmetic inside basic blocks.
+  Ordinary float locals can also remain raw across blocks when their entire
+  assignment-connected group has only compatible numeric uses, as described below.
 - **Proposed plan**:
   1. **Flow-proven unboxed local TNs (`SC_SIGNED_REG` / `SC_DOUBLE_REG`)**:
      When `represent.py` sees that every write and read of a non-closed-over
@@ -230,3 +232,31 @@ suite failure or performance measurement.
      `SC_SIGNED_REG` (`i64`) or `SC_DOUBLE_REG` (`double`) across the entire
      function body and insert tag/box coercions only at boundaries where a
      generic runtime helper requires a `ptr` `Value`.
+
+### Closed numeric-use float groups (implemented)
+
+Representation selection preserves `BOXED_FLOAT` for a local when every value
+assigned to it has that primitive type. It connects the local and temporary TNs
+through assignment VOPs (`move`) and local reads (`load-local`) that flow analysis
+proves bound. These connections require the same storage representation because
+the current copy generators do not insert conversions. Selection chooses raw
+`double` storage only if every connected TN and every other producer or consumer
+permits it. This includes copies, branch joins, and loop-carried float locals in
+otherwise ordinary object-mode functions.
+
+Returns, unknown calls, identity comparisons, captured values, deletion, and
+possibly unbound reads retain object boundaries. One such boundary keeps the
+entire assignment-connected group boxed. This increment introduces no conversion
+VOPs and does not independently reconstruct boxes for aliases. Existing float
+arithmetic generators still handle their descriptor operands normally. Functions
+that return their float accumulator therefore still use boxed local storage.
+
+The SBCL reference is `src/compiler/represent.lisp`: `add-representation-costs`
+does not charge ordinary descriptor costs for a move whose other operand has no
+selected representation. `select-tn-representation` chooses storage, and
+`emit-moves-and-coercions` supplies representation-specific moves and conversions.
+Mule follows that move relationship but currently requires a common legal raw
+class throughout each group instead of inserting conversions. Python float
+identity requires this conservative boundary: reboxing separate aliases could
+change `is` results. Full costed coercion insertion and mixed-boundary local
+representations remain proposed work, not part of this increment.

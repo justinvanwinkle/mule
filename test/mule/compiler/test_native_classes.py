@@ -2,7 +2,7 @@
 
 import pytest
 
-from mule.compiler import UnsupportedSyntax
+from mule.compiler import UnsupportedSyntax, emit_llvm
 from mule.compiler.main import compile_source as lower
 from test.mule.compiler.test_native import run_native
 
@@ -384,3 +384,32 @@ def test_class_docstring_preserves_instance_behavior(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "42\n"
+
+
+def test_method_self_types_receiver_and_preserves_override_semantics(tmp_path):
+    source = (
+        "class Counter:\n"
+        " def step(self, x):\n"
+        "  return x + 1\n"
+        " def bump(self, x):\n"
+        "  if self is None:\n"
+        "   return -1\n"
+        "  return self.step(x) + 10\n"
+        " def same_kind(self, other):\n"
+        "  if type(other) is type(self):\n"
+        "   return other.step(5)\n"
+        "  return 0\n"
+        "class SubCounter(Counter):\n"
+        " def step(self, x):\n"
+        "  return x + 100\n"
+        "c = Counter()\n"
+        "s = SubCounter()\n"
+        "print(c.bump(1), s.bump(1), Counter.bump(None, 1))\n"
+        "print(c.same_kind(Counter()), c.same_kind(s), s.same_kind(SubCounter()))\n"
+    )
+    ir = emit_llvm(source)
+    assert '@"mule.method.mule_fn_Counter.bump.' in ir
+    assert '@"mule.method.mule_fn_Counter.step.' in ir
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "12 111 -1\n6 0 105\n"

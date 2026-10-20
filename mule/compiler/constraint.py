@@ -1248,9 +1248,10 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
             # method's body directly, as it guards predicted global calls;
             # like those, the prediction seeds the callee's guarded entry
             # contexts but publishes no return type.
-            visitor.walk.method_calls.append(
-                CallSite(method, (receiver_type, *arg_types), False)
-            )
+            if not has_keywords:
+                visitor.walk.method_calls.append(
+                    CallSite(method, (receiver_type, *arg_types), False)
+                )
             visitor.walk.method_targets[node] = method
             visitor.invalidate()
             return UNKNOWN_FACT

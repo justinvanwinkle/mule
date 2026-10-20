@@ -3344,7 +3344,7 @@ class _Statements(ast.Visitor):
             identity,
             identity if native is not None else None,
             declarations,
-            bool(keywords),
+            bool(keywords or decorators),
         )
         following, created = Ctran(), Lvar()
         function.known(ctran, following, created, fndb.MAKE_CLASS, operands, node, info)

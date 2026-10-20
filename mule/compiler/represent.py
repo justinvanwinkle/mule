@@ -5,9 +5,10 @@ Two decisions live here:
 - ``select_representations`` assigns every TN of an IR2 component a storage
   class from its primitive type's candidates by the cost of the VOP operands
   that read and write it (``select-tn-representation``). A local whose every
-  writer delivers an immortal value becomes an immediate (never released);
-  everything else holding an object is an owned descriptor. Raw storage
-  classes are chosen when the templates reading a TN restrict it to them.
+  writer delivers an immortal value becomes an immediate (never released).
+  Float locals and their assignment-connected temporaries can share raw
+  storage when every producer and consumer permits it without coercion.
+  Object boundaries keep the entire connected group boxed to preserve identity.
 
 - ``select_native_plans`` decides which lambdas get a native entry: a body
   whose parameters, locals, and intermediate values all have proven machine
@@ -50,6 +51,7 @@ from .node import (
 )
 from .vop import (
     BOOLEAN_T,
+    BOXED_FLOAT,
     CLASS_T,
     FIXNUM,
     FLOAT64,
@@ -81,8 +83,9 @@ def select_representations(component: IR2Component) -> None:
         for tn in component.tns:
             if tn.leaf is not None:
                 tn.primitive_type = _variable_type(tn, component, writes)
+    shared = _select_float_move_representations(component) if not raw else {}
     for tn in component.tns:
-        tn.sc = select_tn_representation(
+        tn.sc = shared.get(tn) or select_tn_representation(
             tn,
             reads=reads.get(tn, ()),
             writes=writes.get(tn, ()),
@@ -91,8 +94,9 @@ def select_representations(component: IR2Component) -> None:
 
 
 def _variable_type(tn, component, writes) -> PrimitiveType:
-    """A local is immortal when every value written into it is."""
+    """Preserve float storage candidates or the union of immortal writers."""
     context = component.context
+    written_types = set()
     for vop, _ref in writes.get(tn, ()):
         name = vop.info.name
         if name == "move":
@@ -105,9 +109,66 @@ def _variable_type(tn, component, writes) -> PrimitiveType:
             continue
         else:
             written = T
-        if written not in IMMORTAL_TYPES:
-            return T
-    return IMMORTAL_T
+        written_types.add(written)
+    if written_types == {BOXED_FLOAT}:
+        return BOXED_FLOAT
+    if written_types.issubset(IMMORTAL_TYPES):
+        return IMMORTAL_T
+    return T
+
+
+def _representation_move(vop) -> bool:
+    """Whether this VOP copies a value without checking or changing its type."""
+    if vop.info.name == "move":
+        return True
+    if vop.info.name == "load-local":
+        access = vop.codegen_info
+        return access.bound and not access.allow_unbound
+    return False
+
+
+def _select_float_move_representations(component):
+    """Choose one raw storage class for a closed group of float copies.
+
+    As in SBCL's move costing, copies inherit their operands' representation
+    rather than imposing an object boundary. Without coercion VOPs, every
+    connected TN must admit the same class. Any identity-bearing object use
+    therefore keeps all aliases boxed, including copies across loop backedges.
+    """
+    selected = {}
+    visited = set()
+    for root in component.tns:
+        if (
+            root in visited
+            or root.leaf is None
+            or root.primitive_type is not BOXED_FLOAT
+        ):
+            continue
+        group = set()
+        pending = [root]
+        candidates = [sc for sc in root.primitive_type.scs if sc.raw]
+        while pending:
+            tn = pending.pop()
+            if tn in group:
+                continue
+            group.add(tn)
+            candidates = [sc for sc in candidates if tn.primitive_type.admits(sc)]
+            for vop, ref in (
+                *component.reads.get(tn, ()),
+                *component.writes.get(tn, ()),
+            ):
+                if _representation_move(vop):
+                    pending.extend(operand.tn for operand in (*vop.args, *vop.results))
+                    continue
+                restriction = tn.primitive_type.operand_restriction(
+                    _restriction(vop, ref), raw=False
+                )
+                if restriction is not None:
+                    candidates = [sc for sc in candidates if sc in restriction]
+        visited.update(group)
+        if candidates:
+            selected.update((tn, candidates[0]) for tn in group)
+    return selected
 
 
 def select_tn_representation(tn, *, reads=(), writes=(), raw=False):
