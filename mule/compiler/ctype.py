@@ -750,17 +750,6 @@ class IntegerType(PrimitiveType):
     def accept(self, visitor):
         return visitor.visit_IntegerType(self)
 
-    def truth_value(self) -> bool | None:
-        if self.may_be_unbound:
-            return None
-        if self.minimum == 0 and self.maximum == 0:
-            return False
-        if (self.minimum is not None and self.minimum > 0) or (
-            self.maximum is not None and self.maximum < 0
-        ):
-            return True
-        return None
-
     def join(self, other):
         return other.join_integer(self)
 
@@ -1079,6 +1068,15 @@ class BooleanType(IntegerType):
 
     def accept(self, visitor):
         return visitor.visit_BooleanType(self)
+
+    def truth_value(self) -> bool | None:
+        if self.may_be_unbound:
+            return None
+        if self.minimum == 0 and self.maximum == 0:
+            return False
+        if self.minimum == 1 and self.maximum == 1:
+            return True
+        return None
 
     def join(self, other):
         return other.join_boolean(self)
