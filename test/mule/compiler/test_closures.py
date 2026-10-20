@@ -1,7 +1,50 @@
 """Nested functions capture enclosing variables with Python's cell semantics."""
 
+import re
+
+from mule.compiler import emit_llvm
 from mule.compiler.main import compile_toplevel
 from test.mule.compiler.test_modules import execute
+
+MIXED_CAPTURE = """def factory(value):
+    count = 0
+    def update():
+        nonlocal count
+        count += 1
+        return value, count
+    return update
+"""
+
+
+def test_closure_metadata_uses_native_boolean_storage():
+    llvm = emit_llvm(MIXED_CAPTURE)
+    flags = re.findall(
+        r"@mule\.closure\.cells\.\d+ = private constant \[2 x i8\] \[i8 ([01]), i8 ([01])\]",
+        llvm,
+    )
+    assert flags
+    assert all(set(values) == {"0", "1"} for values in flags)
+
+
+def test_mixed_capture_metadata_preserves_cells_and_borrowed_values(tmp_path):
+    result = execute(
+        tmp_path,
+        {},
+        MIXED_CAPTURE
+        + """held = ['shared']
+update = factory(held)
+cells = dict(zip(update.__code__.co_freevars, update.__closure__))
+again = dict(zip(update.__code__.co_freevars, update.__closure__))
+print(cells['value'].cell_contents is held)
+print(cells['count'] is again['count'])
+cells['count'].cell_contents = 10
+held.append('visible')
+value, count = update()
+print(value is held, len(value), count, cells['count'].cell_contents)
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "True\nTrue\nTrue 2 11 11\n"
 
 
 def test_nested_functions_share_cells_and_copy_constant_captures(tmp_path):

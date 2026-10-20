@@ -63,6 +63,7 @@ from .vop import (
     NONE_T,
     RANGE,
     RANGE_T,
+    REFERENCE_T,
     SIGNED64,
     VOP,
     BoxLayout,
@@ -117,8 +118,10 @@ def _variable_type(tn, component, writes) -> PrimitiveType:
         else:
             written = T
         written_types.add(written)
-    if written_types == {BOXED_FLOAT}:
-        return BOXED_FLOAT
+    if len(written_types) == 1:
+        written = next(iter(written_types))
+        if written.boxed_layout is not None:
+            return written
     if written_types.issubset(IMMORTAL_TYPES):
         return IMMORTAL_T
     return T
@@ -398,7 +401,7 @@ class Representation:
     def prepare_return(self, gen, value):
         return value
 
-    def can_adapt_return(self, component) -> bool:
+    def can_adapt_return(self, component, plan=None) -> bool:
         return True
 
 
@@ -440,10 +443,10 @@ class Int64(BoxableRepresentation):
     def box(self, gen, value):
         return gen.operation(f"call ptr @mule.box.i64(i64 {value})")
 
-    def can_adapt_return(self, component) -> bool:
+    def can_adapt_return(self, component, plan=None) -> bool:
         # Reconstructing a wide integer can replace an existing object's
         # identity. Tagged fixnum results do not have that ownership boundary.
-        return component.context.return_type.is_fixnum
+        return plan is not None and not plan.result_may_alias
 
     def parameter(self, gen, value):
         slot = gen.operation("alloca i64")
@@ -472,7 +475,7 @@ class Float64(BoxableRepresentation):
     def box(self, gen, value):
         return gen.operation(f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {value})")
 
-    def can_adapt_return(self, component) -> bool:
+    def can_adapt_return(self, component, plan=None) -> bool:
         return fresh_float_returns(component)
 
     def parameter(self, gen, value):
@@ -521,7 +524,7 @@ class Instance(ObjectReference):
     def field(self, name):
         if name in self.layout.info.fields:
             return INT64
-        return self.method(name)
+        return self.method(name).bound()
 
     def method(self, name):
         target = self.layout.methods.get(name)
@@ -552,7 +555,7 @@ class Class(ObjectReference):
 
 
 @dataclass(frozen=True)
-class Method(ObjectReference):
+class Method(Representation):
     receiver: Instance
     target: object
     name: str
@@ -563,8 +566,16 @@ class Method(ObjectReference):
     def primitive_type(self):
         return self.receiver.primitive_type
 
-    def box(self, gen, value):
-        return gen.box_method(value, self.name)
+    def bound(self):
+        return BoundMethod(self.receiver, self.target, self.name)
+
+
+@dataclass(frozen=True)
+class BoundMethod(ObjectReference):
+    receiver: Instance
+    target: object
+    name: str
+    primitive_type = REFERENCE_T
 
 
 INT64, FLOAT, BOOL, NONE = Int64(), Float64(), Boolean(), Nothing()
@@ -651,6 +662,8 @@ class NativePlan:
     # Exactly one owning root for each constructor or owned native call result.
     owners: dict[object, Representation] = field(default_factory=dict)
     method_targets: dict[object, Lambda] = field(default_factory=dict)
+    return_sources: list = field(default_factory=list)
+    result_may_alias: bool = True
 
     @property
     def entry(self):
@@ -793,6 +806,8 @@ class _Select(NodeVisitor, LeafVisitor):
     def visit_Return(self, node: Return):
         if not node.result.uses:
             raise NotNative
+        if node.result not in self.plan.return_sources:
+            self.plan.return_sources.append(node.result)
         for use in node.result.uses:
             value = self.plan.values.get(use)
             if value is None:
@@ -825,7 +840,12 @@ class _Select(NodeVisitor, LeafVisitor):
             self.numeric_operands(args)
             return BOOL
         if name == "%getattr":
-            return self.value(args[0]).field(linked(node.info, node, "attribute").name)
+            result = self.value(args[0]).field(
+                linked(node.info, node, "attribute").name
+            )
+            if result.owns_result:
+                self._own_result(node, result)
+            return result
         if name == "%setattr":
             attribute = linked(node.info, node, "attribute").name
             if self.value(args[0]).field(attribute) != self.value(args[1]):
@@ -1021,15 +1041,127 @@ def select_native_plans(lambdas, facts, layouts) -> dict[Lambda, NativePlan]:
         invalid = {
             lambda_
             for lambda_, plan in plans.items()
-            if any(
-                target not in plans or plans[target].dependencies
-                for target in plan.calls
-            )
+            if any(target not in plans for target in plan.calls)
         }
         if not invalid:
+            changed = True
+            while changed:
+                changed = False
+                for lambda_, plan in plans.items():
+                    for target in plan.calls:
+                        for variable, required in plans[target].dependencies.items():
+                            previous = plan.dependencies.get(variable)
+                            if previous is not None and previous != required:
+                                invalid.add(lambda_)
+                            elif previous is None:
+                                plan.dependencies[variable] = required
+                                changed = True
+        if not invalid:
+            _propagate_native_results(plans)
             return plans
         for lambda_ in invalid:
             del plans[lambda_]
+
+
+class _LiteralAliases(ast.Visitor):
+    def visit_Node(self, node):
+        return True
+
+    def visit_IntegerLiteral(self, node):
+        return not -(1 << 62) <= node.value < 1 << 62
+
+
+_LITERAL_ALIASES = _LiteralAliases()
+
+
+class _ResultAliases(NodeVisitor, LeafVisitor):
+    """Whether a boxed result can forward a pre-existing object identity."""
+
+    def __init__(self, plan, plans, nodes, variables):
+        self.plan, self.plans = plan, plans
+        self.nodes, self.variables = nodes, variables
+
+    def lvar(self, value):
+        return not value.uses or any(self.nodes.get(node, True) for node in value.uses)
+
+    def visit_Node(self, node):
+        return True
+
+    def visit_Leaf(self, leaf):
+        return True
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(self)
+
+    def visit_Constant(self, leaf):
+        return leaf.value.accept(_LITERAL_ALIASES)
+
+    def visit_LambdaVar(self, leaf):
+        if leaf in self.plan.function.vars:
+            return True
+        return self.variables.get(leaf, True)
+
+    def visit_Cast(self, node):
+        return self.lvar(node.value)
+
+    def visit_Combination(self, node):
+        if node.kind is not CallKind.KNOWN:
+            return True
+        name = linked(node.fun_info, node, "known operation").name
+        if name == "%getattr":
+            # Native fields store machine words, not boxed object identities.
+            return False
+        if name in _BINARY_NAMES:
+            if name.startswith("%i"):
+                return any(self.lvar(argument) for argument in node.args)
+            return False
+        if name in _UNARY_NAMES:
+            return name == "%unary_positive" and any(
+                self.lvar(argument) for argument in node.args
+            )
+        if name == "%call_resolved":
+            target = self.plan.method_target(node.args[0])
+            callee = self.plans.get(target)
+            return callee is None or callee.result_may_alias
+        return True
+
+
+def _propagate_native_results(plans):
+    nodes = {
+        function: dict.fromkeys(plan.values, False) for function, plan in plans.items()
+    }
+    variables = {
+        function: dict.fromkeys(plan.locals, False) for function, plan in plans.items()
+    }
+    for plan in plans.values():
+        plan.result_may_alias = False
+    changed = True
+    while changed:
+        changed = False
+        for function, plan in plans.items():
+            visitor = _ResultAliases(plan, plans, nodes[function], variables[function])
+            for variable in plan.locals:
+                sources = [
+                    site.value for site in variable.sets if site.value is not None
+                ]
+                aliases = (
+                    variable in function.vars
+                    or not sources
+                    or any(visitor.lvar(source) for source in sources)
+                )
+                if aliases and not variables[function][variable]:
+                    variables[function][variable] = True
+                    changed = True
+            for node in plan.values:
+                if not nodes[function][node] and node.accept(visitor):
+                    nodes[function][node] = True
+                    changed = True
+            aliases = not plan.return_sources or any(
+                visitor.lvar(source) for source in plan.return_sources
+            )
+            if aliases and not plan.result_may_alias:
+                plan.result_may_alias = True
+                changed = True
 
 
 def _select_function(lambda_, index, facts, layouts, bindings, plans) -> NativePlan:

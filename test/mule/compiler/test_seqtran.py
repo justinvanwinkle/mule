@@ -408,7 +408,7 @@ def test_range_prepare_fixnum_literal_and_bounded_eliminate_generic_loop():
         check_ir1_consistency(compilation.components)
 
         ir = emit_llvm(src + "print(0)\n")
-        body_start = ir.index('define internal ptr @"mule_fn_f.')
+        body_start = ir.index('define internal ptr @"mule_fn_f.body"(')
         body_end = ir.index("\n}", body_start)
         body = ir[body_start:body_end]
         assert "@mule_range_storage(" in body

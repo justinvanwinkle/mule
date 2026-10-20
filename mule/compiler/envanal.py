@@ -68,6 +68,11 @@ def environment_analyze(compilation) -> None:
         if pending:
             for lambda_ in compilation.lambdas:
                 compute_closure(lambda_)
+    # Introspection and closure slots must use the same order. Finalize it
+    # after cleanup conversion has added every transitive capture.
+    for lambda_ in compilation.lambdas:
+        environment = linked(lambda_.environment, lambda_, "environment")
+        environment.closure.sort(key=lambda var: var.name)
     converter.function_converters.clear()
 
 

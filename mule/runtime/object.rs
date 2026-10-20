@@ -270,10 +270,9 @@ pub enum Data {
         keyword_entry: Option<Native>,
         /// Captured cells and values for a nested function, or NULL.
         closure: Value,
-        /// A static string with one byte per closure entry: `c` for a cell,
-        /// `v` for a value captured directly because it is never reassigned.
-        /// NULL without a closure.
-        closure_cells: *const c_char,
+        /// A static native boolean per closure entry: true for a shared cell,
+        /// false for a value captured directly. NULL without a closure.
+        closure_cells: *const bool,
         /// The function's `__dict__` namespace, created on first assignment.
         attributes: Value,
         /// Deferred annotation callable and lazy cache, owned independently.
@@ -3615,7 +3614,7 @@ pub unsafe extern "C" fn mule_function(
 /// A function's `__closure__`: a tuple holding a cell for each captured
 /// variable, or None. A value captured directly is never reassigned, so a
 /// new cell holding it reads the same as the variable's own would.
-unsafe fn closure_cells_of(closure: Value, kinds: *const c_char) -> Value {
+unsafe fn closure_cells_of(closure: Value, cell_flags: *const bool) -> Value {
     unsafe {
         if closure.is_null() {
             return none_value();
@@ -3632,7 +3631,7 @@ unsafe fn closure_cells_of(closure: Value, kinds: *const c_char) -> Value {
         }
         let mut cells = Vec::with_capacity(entries.len());
         for (index, entry) in entries.iter().enumerate() {
-            let cell = if *kinds.add(index) as u8 == b'c' {
+            let cell = if *cell_flags.add(index) {
                 retain(*entry)
             } else {
                 let cell = call(cell_new, &[]);
@@ -3665,7 +3664,7 @@ unsafe fn closure_cells_of(closure: Value, kinds: *const c_char) -> Value {
 pub unsafe extern "C" fn mule_function_closure(
     value: Value,
     closure: Value,
-    cells: *const c_char,
+    cells: *const bool,
 ) -> Value {
     unsafe {
         if !value.is_null() {

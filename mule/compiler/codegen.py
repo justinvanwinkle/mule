@@ -85,6 +85,7 @@ from .vop import (
     NONE_T,
     NULL,
     RANGE,
+    REFERENCE,
     SIGNED,
     TN,
     BoxLayout,
@@ -184,6 +185,7 @@ declare i32 @mule_import_star(ptr, ptr)
 declare ptr @mule_coroutine_yield(ptr)
 declare i32 @mule_class_delete(ptr, ptr, i32)
 declare i32 @mule_native_class_matches(ptr, ptr, ptr)
+declare i32 @mule_native_instance_matches(ptr, ptr, ptr)
 declare ptr @mule_native_instance_payload(ptr, ptr, ptr)
 declare ptr @mule_native_new(ptr)
 declare ptr @mule_native_payload(ptr)
@@ -943,7 +945,7 @@ class ModuleGenerator:
             symbol = cells[name] = _symbol(f"mule.cell:{namespace}:{name}")
         return symbol
 
-    def load_global(self, var, safety: int) -> str:
+    def load_global(self, var, safety: int, *, speculative=False) -> str:
         """The call reading global ``var``, owned, under ``safety``.
 
         Safety 3 is exact Python: the namespace's own binding, else the
@@ -955,13 +957,13 @@ class ModuleGenerator:
         """
         cell = self.cell(var.namespace, var.name)
         if safety == 3 or self.program.bootstrap:
-            helper = "live"
+            helper = "peek.live" if speculative else "live"
         elif var.name in self.program.builtin_names:
             helper = "unchecked"
             self.expected_builtins.setdefault(
                 runtime_namespace(var.namespace), set()
             ).add(var.name)
-        elif safety == 0:
+        elif safety == 0 or speculative:
             helper = "unchecked"
         else:
             helper = "checked"
@@ -1134,11 +1136,9 @@ class ModuleGenerator:
                     )
                 ),
                 texts(
-                    sorted(
-                        var.name
-                        for var in lambda_.environment.closure
-                        if not var.name.startswith("$")
-                    )
+                    var.name
+                    for var in lambda_.environment.closure
+                    if not var.name.startswith("$")
                 )
                 if lambda_.environment
                 else texts(()),
@@ -2487,7 +2487,25 @@ class ModuleGenerator:
                 # are probed. No cloned node identities survive this scope.
                 self.fresh_box_summaries[key] = None
                 body = compile_component(target, context)
-                if fresh_box_returns(body, layout):
+                fresh = fresh_box_returns(body, layout)
+                native = self.native_plans.get(target)
+                native_result = (
+                    linked(native.returned, native, "return representation")
+                    if native is not None
+                    else None
+                )
+                if (
+                    not fresh
+                    and native is not None
+                    and not native.dependencies
+                    and native_result is not None
+                    and native_result.primitive_type.boxed_layout is layout
+                    and native_result.can_adapt_return(body, native)
+                ):
+                    # The actual object entry necessarily constructs its result
+                    # from raw bits; no dependency fallback can return an alias.
+                    fresh = True
+                if fresh:
                     self.fresh_box_summaries[key] = layout
             if self.fresh_box_summaries[key] is not layout:
                 return None
@@ -4240,6 +4258,29 @@ class FunctionGenerator:
     def parameter(self, index: int) -> str:
         return f"%parameter.{index}"
 
+    def check_native_receiver(self) -> None:
+        """Keep native-class receiver rules independent of body specialization."""
+        if self.raw or self.lambda_ in self.module.native_plans:
+            return
+        layout = self.module.layouts.get(self.lambda_.owner_class)
+        if (
+            layout is None
+            or not self.lambda_.vars
+            or self.lambda_ not in layout.methods.values()
+        ):
+            return
+        matched = self.operation(
+            f"call i32 @mule_native_instance_matches(ptr %parameter.0, "
+            f"ptr {layout.schema}, ptr %globals)"
+        )
+        wrong = self.operation(f"icmp eq i32 {matched}, 0")
+        failed, accepted = self.fresh("receiver.bad")[1:], self.fresh("receiver.ok")[1:]
+        self.line(f"br i1 {wrong}, label %{failed}, label %{accepted}")
+        self.lines.append(failed + ":")
+        self.line("call i32 @mule_native_type_error()")
+        self.propagate()
+        self.lines.append(accepted + ":")
+
     def parameter_value(self, index: int, ref) -> str:
         value = self.parameter(index)
         if self.convention is None:
@@ -4404,7 +4445,7 @@ class FunctionGenerator:
             return self.operation(
                 f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {value})"
             )
-        if sc in (INSTANCE, CLASS):
+        if sc in (INSTANCE, CLASS, REFERENCE):
             return self.operation(f"call ptr @mule.fast.retain(ptr {value})")
         return value
 
@@ -4437,11 +4478,11 @@ class FunctionGenerator:
         payload = self.operation(f"load ptr, ptr {slot}, !invariant.load !{{}}")
         return self.operation(f"getelementptr i64, ptr {payload}, i64 {index}")
 
-    def box_method(self, receiver: str, name: str) -> str:
-        """Consume an owned receiver and materialize its compiled bound method."""
+    def bind_method(self, receiver: str, name: str) -> str:
+        """Materialize an attribute now while the caller retains its receiver root."""
         attribute = self.operation(self.constant(ast.TextLiteral(name)))
         self.check_pointer(attribute)
-        receiver = self.take_native_result(receiver)
+        receiver = self.operation(f"call ptr @mule.fast.retain(ptr {receiver})")
         return self.sequence_call("get_attribute", [receiver, attribute])
 
     def take_native_result(self, value: str) -> str:
@@ -4786,10 +4827,11 @@ class FunctionGenerator:
             else "internal "
         )
         plan = self.module.native_plans.get(self.lambda_)
-        if plan is not None and linked(
-            plan.returned, plan, "returned representation"
-        ).can_adapt_return(self.component):
-            adapter = native_adapter(self, plan, linkage)
+        if plan is not None:
+            adapt_return = linked(
+                plan.returned, plan, "returned representation"
+            ).can_adapt_return(self.component, plan)
+            adapter = native_adapter(self, plan, linkage, adapt_return=adapt_return)
             self.body = _suffixed(self.body, ".boxed")
             linkage = "internal "
             self.lines = []
@@ -5553,7 +5595,9 @@ class FunctionGenerator:
         return "\n".join(lines)
 
 
-def native_adapter(gen: FunctionGenerator, plan, linkage: str) -> str:
+def native_adapter(
+    gen: FunctionGenerator, plan, linkage: str, *, adapt_return=True
+) -> str:
     """Boxed entry checks physical boundaries once, then calls a raw entry."""
     parameters = ", ".join(
         ["ptr %globals", *(f"ptr %parameter.{i}" for i in range(len(plan.parameters)))]
@@ -5576,8 +5620,13 @@ def native_adapter(gen: FunctionGenerator, plan, linkage: str) -> str:
         slots.append(slot)
         gen.line(f"{slot} = alloca ptr")
         gen.line(f"store ptr null, ptr {slot}")
+    arguments = [
+        rep.parameter(gen, f"%parameter.{i}") for i, rep in enumerate(plan.parameters)
+    ]
     for index, (var, prediction) in enumerate(plan.dependencies.items()):
-        value = gen.operation(gen.module.load_global(var, gen.lambda_.policy.safety))
+        value = gen.operation(
+            gen.module.load_global(var, gen.lambda_.policy.safety, speculative=True)
+        )
         gen.line(f"store ptr {value}, ptr {slots[index]}")
         gen.check_pointer(value)
         matched = gen.operation(
@@ -5588,9 +5637,24 @@ def native_adapter(gen: FunctionGenerator, plan, linkage: str) -> str:
         gen.line(f"br i1 {wrong}, label %fallback, label %{continuation}")
         gen.lines.append(continuation + ":")
         dependencies.append(value)
-    arguments = [
-        rep.parameter(gen, f"%parameter.{i}") for i, rep in enumerate(plan.parameters)
-    ]
+    if not adapt_return:
+        gen.line("br label %fallback")
+        gen.lines.append("fallback:")
+        for slot in slots:
+            gen.release(gen.operation(f"load ptr, ptr {slot}"))
+        boxed = gen.operation(f"call ptr {_suffixed(gen.body, '.boxed')}({parameters})")
+        gen.line(f"ret ptr {boxed}")
+        gen.emit_landings()
+        gen.landings.clear()
+        gen.landing_sites.clear()
+        gen.lines.extend(["error:", "  br label %cleanup", "cleanup:"])
+        for slot in slots:
+            gen.release(gen.operation(f"load ptr, ptr {slot}"))
+        for index in range(len(plan.parameters)):
+            gen.release(f"%parameter.{index}")
+        gen.line("ret ptr null")
+        gen.lines.append("}")
+        return "\n".join(gen.lines)
     call = ["ptr %globals", "ptr %native.error"]
     call.extend(
         f"{rep.llvm_type} {value}"

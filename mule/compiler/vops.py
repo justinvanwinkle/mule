@@ -37,6 +37,7 @@ from .vop import (
     INSTANCE,
     INT64_BOX_LAYOUT,
     NULL,
+    REFERENCE,
     SIGNED,
 )
 
@@ -296,6 +297,8 @@ def move(gen, vop):
 def move_argument(gen, vop):
     result = vop.results[0]
     gen.store(result, gen.parameter_value(vop.codegen_info, result), release=False)
+    if vop.codegen_info == len(gen.lambda_.vars) - 1:
+        gen.check_native_receiver()
 
 
 @define_vop("load-closure", results=(None,))
@@ -1185,8 +1188,12 @@ def make_function(gen, vop):
     if closure is not None:
         # Assigned captured variables live in cells; the others are captured
         # by value. ``__closure__`` presents every entry as a cell.
-        cells = module.text(
-            "".join("c" if var.indirect else "v" for var in target.environment.closure)
+        cells = f"@mule.closure.cells.{len(module.auxiliary)}"
+        flags = ", ".join(
+            f"i8 {int(var.indirect)}" for var in target.environment.closure
+        )
+        module.auxiliary.append(
+            f"{cells} = private constant [{closure_count} x i8] [{flags}], align 1"
         )
         function = gen.operation(call)
         call = f"call ptr @mule_function_closure(ptr {function}, ptr {closure}, ptr {cells})"
@@ -1881,9 +1888,7 @@ def write_int64(gen, vop, values):
     payload = gen.operation(f"call ptr @mule_native_payload(ptr {values[0]})")
     gen.check_pointer(payload)
     fact = vop.args[2].tn.type or UNKNOWN
-    if fact.is_fixnum:
-        value = gen.decode(values[2])
-    elif vop.args[2].tn.primitive_type is BOXED_I64:
+    if fact.is_fixnum or vop.args[2].tn.primitive_type is BOXED_I64:
         value = gen.operation(
             f"call i64 @{INT64_BOX_LAYOUT.symbol('load')}(ptr {values[2]})"
         )
@@ -2131,11 +2136,14 @@ def raw_setattr(gen, vop):
     "raw-method-attribute",
     translate=fndb.GETATTR,
     args=((INSTANCE,),),
-    results=((INSTANCE,),),
+    results=((REFERENCE,),),
     ltn_policy=RAW,
 )
 def raw_method_attribute(gen, vop):
-    gen.store(vop.results[0], gen.take(vop.args[0]))
+    value = gen.bind_method(gen.take(vop.args[0]), vop.codegen_info.name)
+    gen.line(f"store ptr {value}, ptr {gen.owner_slot(vop.node)}")
+    gen.check_pointer(value)
+    gen.store(vop.results[0], value)
 
 
 @define_vop(
@@ -2152,7 +2160,7 @@ def raw_resolve_method(gen, vop):
 @define_vop(
     "raw-call-resolved",
     translate=fndb.CALL_RESOLVED,
-    results=((*RAW_SCALAR, INSTANCE, CLASS),),
+    results=((*RAW_SCALAR, INSTANCE, CLASS, REFERENCE),),
     ltn_policy=RAW,
 )
 def raw_call_resolved(gen, vop):
@@ -2163,6 +2171,9 @@ def raw_call_resolved(gen, vop):
     parameters = ["ptr %globals", "ptr %call.error", f"ptr {gen.take(method)}"]
     parameters.extend(
         f"{argument.tn.sc.llvm_type} {gen.take(argument)}" for argument in arguments
+    )
+    parameters.extend(
+        f"ptr {gen.dependencies[variable]}" for variable in plan.dependencies
     )
     result = gen.operation(
         f"call {plan.returned.llvm_type} {plan.entry}({', '.join(parameters)})"
@@ -2477,7 +2488,7 @@ slow:
   ret ptr %result
 }
 
-define internal ptr @mule.global.live(ptr %cell, ptr %name) {
+define internal ptr @mule.global.peek.live(ptr %cell, ptr %name) {
 entry:
   %own.slot = getelementptr inbounds {ptr, i64, ptr, ptr}, ptr %cell, i64 0, i32 1
   %own = load i64, ptr %own.slot
@@ -2503,6 +2514,17 @@ found:
   %result.value = phi ptr [%value, %module], [%live, %builtin.value]
   %owned = call ptr @mule.fast.retain(ptr %result.value)
   ret ptr %owned
+slow:
+  ret ptr @mule.undefined
+}
+
+define internal ptr @mule.global.live(ptr %cell, ptr %name) {
+entry:
+  %value = call ptr @mule.global.peek.live(ptr %cell, ptr %name)
+  %missing = icmp eq ptr %value, @mule.undefined
+  br i1 %missing, label %slow, label %found
+found:
+  ret ptr %value
 slow:
   %result = call ptr @mule_load_global(ptr %cell, ptr %name)
   ret ptr %result

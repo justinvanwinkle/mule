@@ -3,7 +3,9 @@
 import re
 import subprocess
 
-from mule.compiler import emit_llvm
+import pytest
+
+from mule.compiler import build, emit_llvm
 from mule.compiler.modules import STDLIB
 from test.mule.compiler.test_native import run_native
 from test.python_host import python_host
@@ -16,6 +18,10 @@ class Node:
     def __init__(self, value: int64):
         self.value = value
     def identity(self):
+        return self
+    def choose(self, create: int64):
+        if create:
+            return Node(6)
         return self
     def fresh(self, value: int64):
         return Node(value)
@@ -223,3 +229,72 @@ print(result.value, result is owner)
     )
     body = object_entry_body(emit_llvm(source), "Node.loop")
     assert not re.search(r"\bcall ptr @mule\.native\.\d+\(", body)
+
+
+def test_boxed_native_method_still_rejects_a_wrong_receiver(tmp_path):
+    result = run_native(
+        tmp_path,
+        NODE
+        + """
+class Other:
+    pass
+try:
+    Node.loop(Other(), 0)
+except TypeError:
+    print('wrong receiver')
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "wrong receiver\n"
+
+
+def test_unused_native_class_dependency_does_not_raise_early(tmp_path):
+    source = compare_reference_program(
+        tmp_path,
+        """
+original = Node(12)
+del Node
+print(original.choose(0) is original)
+try:
+    original.choose(1)
+except NameError:
+    print('missing constructor')
+""",
+    )
+    native_reference_body(emit_llvm(source), "Node.choose")
+
+
+@pytest.mark.integration
+def test_optimized_native_reference_returns_preserve_lifetimes_and_fallbacks(tmp_path):
+    source = tmp_path / "program.py"
+    source.write_text(NODE + """
+from _mule_native import weak_handle, weak_target
+original = Node(3)
+handle = weak_handle(original, None, None)
+returned = original.identity()
+del original
+print(returned.value)
+fresh = returned.chain(9)
+fresh_handle = weak_handle(fresh, None, None)
+bound = returned.get_bound()
+del returned
+print(bound(4), weak_target(handle) is None)
+del bound
+print(weak_target(handle) is None, fresh.value)
+del fresh
+print(weak_target(fresh_handle) is None)
+value = Node(11)
+del Node
+print(value.choose(0) is value)
+try:
+    value.choose(1)
+except NameError:
+    print('missing constructor')
+""")
+    executable = build(source, tmp_path / "program", optimize=3, lto=False, workers=1)
+    source.unlink()
+    result = subprocess.run(
+        [executable], check=False, capture_output=True, text=True, timeout=10
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "3\n7 False\nTrue 9\nTrue\nTrue\nmissing constructor\n"

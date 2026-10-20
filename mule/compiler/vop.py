@@ -72,6 +72,8 @@ INSTANCE = StorageClass("instance", "ptr", "null", raw=True)
 NULL = StorageClass("null", "i64", "0", raw=True)
 # A borrowed pointer to a native class object whose layout was guarded at entry.
 CLASS = StorageClass("class", "ptr", "null", raw=True)
+# A borrowed reference to a materialized first-class object in a native body.
+REFERENCE = StorageClass("reference", "ptr", "null", raw=True)
 # Counted-loop iteration state: current value, stop, and step words.
 RANGE = StorageClass("range", "[3 x i64]", "zeroinitializer")
 
@@ -158,6 +160,7 @@ BOXED_FLOAT = PrimitiveType(
 RANGE_T = PrimitiveType("range-state", (RANGE,))
 # A native class object: owned, or borrowed once its layout is guarded.
 CLASS_T = PrimitiveType("class", (DESCRIPTOR, CLASS))
+REFERENCE_T = PrimitiveType("object-reference", (REFERENCE, DESCRIPTOR))
 
 
 def instance_type(layout) -> PrimitiveType:

@@ -180,7 +180,8 @@ heap:
   %kind.addr = getelementptr i8, ptr %box, i64 16
   %kind = load i32, ptr %kind.addr
   %integer = icmp eq i32 %kind, {layout.tag}
-  br i1 %integer, label %abi.check, label %fallback
+  call void @llvm.assume(i1 %integer)
+  br label %abi.check
 abi.check:
   %limb.bits = load i32, ptr @__gmp_bits_per_limb, !invariant.load !{{}}
   %native.limb = icmp eq i32 %limb.bits, 64

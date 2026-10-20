@@ -313,13 +313,14 @@ def find_template_for_ltn_policy(call: Combination, context, annotate) -> object
         if arg.info is None or arg.info.kind is not IR2LvarKind.DELAYED
     ]
     lvar = call.lvar
-    result = (
-        None
-        if lvar is None
-        else lvar.info.primitive_type
-        if lvar.info is not None
-        else annotate.lvar_ptype(lvar)
-    )
+    if context.plan is not None:
+        result = context.plan.node_type(call)
+    elif lvar is None:
+        result = primitive_type_of(context.type_of(call))
+    elif lvar.info is not None:
+        result = lvar.info.primitive_type
+    else:
+        result = annotate.lvar_ptype(lvar)
     policy = call.lexenv.policy
     raw = context.plan is not None
     for template in candidates:
@@ -353,7 +354,11 @@ def template_args_ok(template, operands) -> bool:
 
 
 def template_results_ok(template, result) -> bool:
-    if result is None or not template.result_types:
+    if result is None:
+        return True
+    if template.results and not operand_restriction_ok(template.results[0], result):
+        return False
+    if not template.result_types:
         return True
     return primitive_type_ok(template.result_types[0], result)
 

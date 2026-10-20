@@ -397,7 +397,17 @@ documentation or changing class layout, construction or method dispatch.
   assignments in either scope are visible to both and reading it before any
   assignment raises `NameError`. A captured variable that is never assigned
   after binding (a parameter, for example) is copied into the closure when
-  the function object is created. Nested class definitions remain unsupported.
+  the function object is created. A static native boolean array records which
+  entries hold shared cells. The compiler emits one byte containing zero or
+  one per entry, and Rust borrows it as `*const bool`; no text encoding or
+  character decoding participates. `__closure__` exposes the shared cell for
+  indirect entries and constructs a cell around directly captured values.
+  Environment analysis orders the completed capture layout once; closure slots,
+  boolean flags, and `co_freevars` consume that same order.
+  This follows SBCL's `closure-initial-value` and `ir2-convert-enclose` in
+  `src/compiler/ir2tran.lisp`: preserve the distinction between direct captures
+  and explicit value cells. Python's `__closure__` introspection requires the
+  additional static boolean metadata. Nested class definitions remain unsupported.
 - `lambda` expressions. A lambda converts as a function named `<lambda>` whose
   body is a single `return`, through the same function-creation path as `def`:
   defaults are evaluated left to right in the enclosing scope when the lambda
