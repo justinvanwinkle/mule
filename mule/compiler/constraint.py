@@ -919,7 +919,10 @@ def _comparison_bound(
         ast.ComparisonOperator.GREATER_EQUAL,
     ):
         return other_type.minimum
-    if effective is ast.ComparisonOperator.EQUAL:
+    if effective in (
+        ast.ComparisonOperator.EQUAL,
+        ast.ComparisonOperator.NOT_EQUAL,
+    ):
         return other_type.exact_integer()
     return None
 
@@ -1185,6 +1188,16 @@ def _propagate_unpack_ref(visitor: _Propagation, node: Combination):
     if seq_type is BOTTOM:
         return NO_FACT
     return _fact(seq_type.getitem_type(visitor.type_of(args[1])))
+
+
+@defpropagate("%getattr")
+def _propagate_getattr(visitor: _Propagation, node: Combination):
+    # A bound method such as ``add = items.append`` can mutate the receiver
+    # through calls this analysis does not attribute to it, so the receiver's
+    # tracked contents no longer hold. Direct method calls use
+    # ``%resolve_method`` and keep their precise mutation tracking.
+    if node.args:
+        visitor.widen_escaped_container(visitor.origins.get(node.args[0]))
 
 
 @defpropagate("%make_function")

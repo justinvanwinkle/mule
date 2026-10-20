@@ -13,6 +13,7 @@ from mule.compiler.ctype import (
     UNKNOWN,
     IntegerType,
     OptionalIntegerType,
+    PythonIntegerType,
 )
 from mule.compiler.main import compile_source
 from mule.compiler.node import Set
@@ -78,8 +79,10 @@ def test_per_variable_loop_widening_preserves_bounded_flag_in_scan_payload():
     [
         ("max(1, x)", IntegerType(1, None), False),
         ("max(1, x & 255)", IntegerType(1, 255), True),
-        ("min(100, x)", IntegerType(None, 100), False),
-        ("min(100, max(0, x))", IntegerType(0, 100), True),
+        ("min(100, x)", PythonIntegerType(None, 100), False),
+        ("min(100, max(0, x))", PythonIntegerType(0, 100), False),
+        ("min(100, max(2, x))", IntegerType(2, 100), True),
+        ("min(100, max(0, x + 0))", IntegerType(0, 100), True),
         ("abs(x)", IntegerType(0, None), False),
         ("abs((x & 15) - 10)", IntegerType(0, 10), True),
         ("abs((x & 7) + 3)", IntegerType(3, 10), True),

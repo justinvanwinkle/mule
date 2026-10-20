@@ -750,6 +750,17 @@ class IntegerType(PrimitiveType):
     def accept(self, visitor):
         return visitor.visit_IntegerType(self)
 
+    def truth_value(self) -> bool | None:
+        if self.may_be_unbound:
+            return None
+        if self.minimum == 0 and self.maximum == 0:
+            return False
+        if (self.minimum is not None and self.minimum > 0) or (
+            self.maximum is not None and self.maximum < 0
+        ):
+            return True
+        return None
+
     def join(self, other):
         return other.join_integer(self)
 
@@ -2145,12 +2156,9 @@ class ListType(ValueType):
         return LIST_TYPE if not self.may_be_unbound else ListType(UNKNOWN, True)
 
     def widen_mutable_containers(self):
-        if self.element is BOTTOM or self.element is UNKNOWN:
-            return self
-        new_elem = self.element.widen_constant().widen_mutable_containers()
-        if new_elem == self.element:
-            return self
-        return ListType(new_elem, self.may_be_unbound)
+        # Code the analysis cannot see may store any value or remove any
+        # element, so neither the length nor the element type survives.
+        return self.widen_constant()
 
     def join(self, other):
         return other.join_list(self)
@@ -2472,19 +2480,8 @@ class DictType(ValueType):
         )
 
     def widen_mutable_containers(self):
-        new_key = (
-            self.key
-            if self.key is BOTTOM or self.key is UNKNOWN
-            else self.key.widen_constant().widen_mutable_containers()
-        )
-        new_val = (
-            self.value
-            if self.value is BOTTOM or self.value is UNKNOWN
-            else self.value.widen_constant().widen_mutable_containers()
-        )
-        if new_key == self.key and new_val == self.value:
-            return self
-        return DictType(new_key, new_val, self.may_be_unbound)
+        # As for lists: unseen code may insert or delete any entry.
+        return self.widen_constant()
 
     def join(self, other):
         return other.join_dict(self)

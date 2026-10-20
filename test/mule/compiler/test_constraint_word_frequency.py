@@ -72,6 +72,23 @@ def test_list_constructor_from_argument_has_unknown_length():
     assert fact(compilation, fn, stored_value(fn, "n").use()) != IntegerType(0, 0)
 
 
+def test_empty_list_passed_to_unknown_callee_has_unknown_length():
+    # The callee may append to the list, so its length is no longer known.
+    compilation = lower(
+        "def f(callback):\n values = []\n callback(values)\n n = len(values)\n return n\n"
+    )
+    fn = function(compilation, 1)
+    assert fact(compilation, fn, stored_value(fn, "n").use()) != IntegerType(0, 0)
+
+
+def test_empty_list_mutated_through_bound_method_has_unknown_length():
+    compilation = lower(
+        "def f():\n values = []\n add = values.append\n add(1)\n n = len(values)\n return n\n"
+    )
+    fn = function(compilation, 1)
+    assert fact(compilation, fn, stored_value(fn, "n").use()) != IntegerType(0, 0)
+
+
 def test_dict_get_setitem_and_items_iteration_infers_entry_types():
     compilation = lower(
         "def f(words):\n"
