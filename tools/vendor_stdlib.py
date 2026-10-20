@@ -8,7 +8,7 @@ import hashlib
 import tarfile
 from pathlib import Path, PurePosixPath
 
-from .stdlib_io import adapt_io
+from tools.stdlib_io import adapt_io
 
 # 3.14.7 matches the host CPython used as the conformance oracle.
 VERSION = "3.14.7"

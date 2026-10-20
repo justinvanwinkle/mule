@@ -1,8 +1,4 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.15"
-# dependencies = []
-# ///
+#!/usr/bin/env -S uv run python
 """Generate Unicode name lookup data; no host APIs are used at execution.
 
 Canonical names come from the running CPython's Unicode database. Formal
@@ -14,7 +10,7 @@ references and whose version must match the running Python's.
 import unicodedata
 from pathlib import Path
 
-from tools.generate_unicode_data import (
+from generate_unicode_data import (
     ascii_ranges,
     render_bytes,
     require_matching_unicode_version,

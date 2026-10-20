@@ -67,6 +67,9 @@ force-exclude = true
 # dict(a=1) and list() read as clearly as their literals.
 ignore = ["C408"]
 
+[tool.ty.environment]
+extra-paths = ["tools"]
+
 [tool.ty.src]
 # Not ordinary Python to type-check: the vendored CPython standard library and
 # Mule's compiler-bound protocol modules, programs that exercise runtime errors
