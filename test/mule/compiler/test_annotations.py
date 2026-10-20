@@ -232,19 +232,6 @@ def test_uninitialized_annotated_local_still_raises_unbound_local_error(tmp_path
     assert "UnboundLocalError" in result.stderr
 
 
-@pytest.mark.parametrize(
-    ("policy", "attributes"),
-    [("speed=0", "noinline optnone"), ("debug=3", "noinline")],
-)
-def test_policy_is_applied_to_native_function_definition(policy, attributes):
-    llvm = emit_llvm(
-        "from mule import optimize\n"
-        f"@optimize({policy})\ndef identity(value):\n return value\n"
-    )
-    definitions = [line for line in llvm.splitlines() if line.startswith("define ")]
-    assert any(line.endswith(f") {attributes} {{") for line in definitions)
-
-
 def test_trusted_annotations_do_not_emit_runtime_annotation_checks():
     llvm = emit_llvm(
         "from mule import int32, optimize\n"

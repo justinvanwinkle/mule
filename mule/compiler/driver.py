@@ -725,6 +725,22 @@ class Build:
             # merge at the final link.
             whole = parts / "unit.ll"
             whole.write_text(source.read_text().replace(" linkonce_odr ", " weak_odr "))
+            # llvm-split places each internal helper in one partition and
+            # leaves only a declaration in the others, where it can no longer
+            # be inlined. Inlining the alwaysinline helpers (reference
+            # counting, global access, fast paths) before splitting keeps
+            # every partition's code the same as an unsplit compilation.
+            inlined = parts / "inlined.bc"
+            _run(
+                [
+                    toolchain.llvm_tool("opt"),
+                    "-passes=always-inline",
+                    str(whole),
+                    "-o",
+                    str(inlined),
+                ],
+                "LLVM compilation/linking failed",
+            )
             _run(
                 [
                     toolchain.llvm_tool("llvm-split"),
@@ -732,7 +748,7 @@ class Build:
                     str(partitions),
                     "-o",
                     str(parts / "part"),
-                    str(whole),
+                    str(inlined),
                 ],
                 "LLVM compilation/linking failed",
             )

@@ -49,6 +49,18 @@ class FunInfo:
     numeric: bool = False
     non_integer_first_arg: bool = False
     index_second_arg: bool = False
+    # Escape facts (see ``escape.py``): argument positions the operation only
+    # reads, keeping no reference after it returns, and the position whose
+    # value the result may be (``identity`` returns its argument). An
+    # undeclared position is assumed to be kept.
+    borrowed_args: frozenset[int] = frozenset()
+    result_arg: int | None = None
+
+    def borrows_argument(self, index: int) -> bool:
+        return index in self.borrowed_args
+
+    def returns_argument(self, index: int) -> bool:
+        return self.result_arg == index
 
     @property
     def foldable(self) -> bool:

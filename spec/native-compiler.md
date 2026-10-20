@@ -798,10 +798,10 @@ It does not wrap calls in the generated executable.
   annotated facts. Checks disappear when analysis already proves the contract.
   Failures produce `TypeError`, and error cleanup owns the unrefined value until
   the check succeeds. These levels currently share the same annotation checks.
-- `speed=0` emits `noinline optnone` native bodies. Levels one through three
-  retain the existing `-O3` compilation pipeline.
-- `debug=3` prevents body inlining. Other levels retain existing behavior;
-  source tracebacks and DWARF debug metadata are not implemented by this option.
+- `speed` and `debug` are recorded in the policy but do not change generated
+  function attributes: every compiled body is an ordinary LLVM function that
+  LLVM may inline and optimize at the build's optimization level. Source
+  tracebacks and DWARF debug metadata are not implemented by `debug`.
 
 These options currently control the behavior above, not every future compiler
 optimization or Python runtime check. Ownership, argument arity, dynamic errors,

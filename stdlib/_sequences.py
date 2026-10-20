@@ -621,6 +621,40 @@ def getitem(value, index):
         raise KeyError(index)
     if cls is list and is_slice(index):
         return _selected(value, index)
+    return _getitem_general(value, index)
+
+
+# Entry points for a receiver the compiler proved to be an exact ``dict``:
+# the compiled code calls them directly, without resolving a method,
+# binding arguments, or testing the receiver's class. An exact dict has no
+# ``__missing__``, ``__getitem__`` override, or other hook.
+def dict_get(table, key, default):
+    entry = _table_lookup(table, key)
+    if entry >= 0:
+        return _storage_read(table._values, entry)
+    return default
+
+
+def dict_getitem(table, key):
+    entry = _table_lookup(table, key)
+    if entry >= 0:
+        return _storage_read(table._values, entry)
+    raise KeyError(key)
+
+
+def dict_setitem(table, key, value):
+    _table_insert(table, key, value)
+
+
+def dict_contains(table, key):
+    return _table_lookup(table, key) >= 0
+
+
+def dict_not_contains(table, key):
+    return _table_lookup(table, key) < 0
+
+
+def _getitem_general(value, index):
     method = _getitem_method(value)
     if method is None:
         # Subscripting a class without a metaclass __getitem__ (PEP 560).

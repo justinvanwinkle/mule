@@ -66,17 +66,6 @@ def test_observed_scalar_call_context_keeps_native_class_entry():
     assert all(re.search(r"call i64 @mule\.native\.\d+\(", body) for body in guarded)
 
 
-def test_debug_three_prevents_native_method_body_inlining():
-    llvm = emit_llvm(COUNTER.replace("safety=0", "safety=0, debug=3"))
-    definitions = [
-        line
-        for line in llvm.splitlines()
-        if line.startswith("define internal ") and "@mule.native." in line
-    ]
-    assert definitions
-    assert all(line.endswith(" noinline {") for line in definitions)
-
-
 @pytest.mark.parametrize("value", (-(2**63), -(2**62) - 1, 0, 2**62, 2**63 - 1))
 def test_native_int64_field_preserves_full_width_values(tmp_path, value):
     result = run_native(

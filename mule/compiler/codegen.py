@@ -1252,7 +1252,7 @@ class ModuleGenerator:
         """Construct the cached tuple on first use; main releases initialized roots."""
         packer = self.tuple_pack_helper(len(operations))
         lines = [
-            f"define internal ptr {symbol}() noinline optnone {{",
+            f"define internal ptr {symbol}() {{",
             "entry:",
             f"  %cached = load ptr, ptr {slot}",
             "  %present = icmp ne ptr %cached, null",
@@ -2406,7 +2406,7 @@ class ModuleGenerator:
             links.append("  %protocol.globals = call ptr @mule_protocol_globals()")
             links += self.link(PROTOCOL_NAMESPACE, target, "link.failed", 0)
         initialize = (
-            f"define {linkage}ptr {unit_initializer(self.program.unit)}() noinline optnone {{\n"
+            f"define {linkage}ptr {unit_initializer(self.program.unit)}() {{\n"
             "entry:\n"
             + "".join(line + "\n" for line in links)
             + "  ret ptr inttoptr (i64 1 to ptr)\n"
@@ -2443,7 +2443,7 @@ class ModuleGenerator:
             ]
         )
         finalize = (
-            f"define {linkage}void {unit_finalizer(self.program.unit)}() noinline optnone {{\n"
+            f"define {linkage}void {unit_finalizer(self.program.unit)}() {{\n"
             "entry:\n"
             + "".join(
                 f"  {value} = load ptr, ptr {slot}\n"
@@ -4296,15 +4296,8 @@ class FunctionGenerator:
             + [f"ptr %parameter.{index}" for index in range(len(lambda_.vars))]
             + (["ptr %tuple.out"] if self.unpacked else [])
         )
-        attributes = ""
-        if lambda_.policy.speed == 0 or (
-            self.module.program.bootstrap and lambda_.kind is FunctionalKind.TOPLEVEL
-        ):
-            attributes = " noinline optnone"
-        elif lambda_.policy.debug == 3:
-            attributes = " noinline"
         self.lines.append(
-            f"define {linkage}ptr {self.body}({parameters}){attributes} {{"
+            f"define {linkage}ptr {self.body}({parameters}) {{"
         )
         self.lines.append("entry:")
         if self.context.id is not None:
@@ -4418,17 +4411,15 @@ class FunctionGenerator:
     def emit_raw(self) -> str:
         """Native entry: borrowed raw slots and scalars, ownership only at edges."""
         plan = self.plan
-        lambda_ = self.lambda_
         parameters = ["ptr %globals", "ptr %error.flag"]
         parameters.extend(
             f"{rep.llvm_type} %parameter.{index}"
             for index, rep in enumerate(plan.parameters)
         )
         parameters.extend(f"ptr {value}" for value in self.dependencies.values())
-        attributes = " noinline" if lambda_.policy.debug == 3 else ""
         returned = plan.returned
         self.lines = [
-            f"define internal {returned.llvm_type} {plan.entry}({', '.join(parameters)}){attributes} {{",
+            f"define internal {returned.llvm_type} {plan.entry}({', '.join(parameters)}) {{",
             "entry:",
         ]
         self.line(f"%return = alloca {returned.llvm_type}")
@@ -4981,9 +4972,8 @@ def native_adapter(gen: FunctionGenerator, plan, linkage: str) -> str:
     parameters = ", ".join(
         ["ptr %globals", *(f"ptr %parameter.{i}" for i in range(len(plan.parameters)))]
     )
-    attributes = " noinline" if plan.function.policy.debug == 3 else ""
     gen.lines = [
-        f"define {linkage}ptr {gen.body}({parameters}){attributes} {{",
+        f"define {linkage}ptr {gen.body}({parameters}) {{",
         "entry:",
     ]
     gen.line("%result = alloca ptr")

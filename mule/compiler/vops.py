@@ -783,9 +783,11 @@ def _define_compare(operator, opcode):
         left, right = vop.args
         lhs, rhs = gen.take(left), gen.take(right)
         if opcode in (8, 9):
-            value = gen.sequence_call(
-                "contains" if opcode == 8 else "not_contains", [rhs, lhs]
-            )
+            if (right.tn.type or UNKNOWN).fits_dict():
+                name = "dict_contains" if opcode == 8 else "dict_not_contains"
+            else:
+                name = "contains" if opcode == 8 else "not_contains"
+            value = gen.sequence_call(name, [rhs, lhs])
             gen.publish(result, value)
             gen.check_pointer(value)
             gen.refine(result.tn, value)
@@ -1381,8 +1383,24 @@ def structural_unpack(gen, vop):
     gen.pointer_result(vop.results[0], f"call ptr {helper}(ptr {value}, ptr {count})")
 
 
+def _exact_dict_call(gen, vop, name):
+    """Call the ``_sequences`` entry for an operand proven to be an exact
+    ``dict``. The getitem and setitem VOPs borrow their operands; the compiled
+    entry consumes owned ones, so each operand is retained for the call."""
+    operands = [gen.take(value) for value in vop.args]
+    for operand in operands:
+        gen.line(f"call ptr @mule.fast.retain(ptr {operand})")
+    result = gen.sequence_call(name, operands)
+    gen.publish(vop.results[0], result)
+    gen.check_pointer(result)
+    gen.refine(vop.results[0].tn, result)
+
+
 @define_vop("protocol-getitem", translate=fndb.PROTOCOLS["getitem"], results=(OBJECT,))
 def protocol_getitem(gen, vop):
+    if (vop.args[0].tn.type or UNKNOWN).fits_dict():
+        _exact_dict_call(gen, vop, "dict_getitem")
+        return
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])
     info = vop.codegen_info
@@ -1443,6 +1461,9 @@ def text_slice_compare(gen, vop):
 
 @define_vop("protocol-setitem", translate=fndb.PROTOCOLS["setitem"], results=(OBJECT,))
 def protocol_setitem(gen, vop):
+    if (vop.args[0].tn.type or UNKNOWN).fits_dict():
+        _exact_dict_call(gen, vop, "dict_setitem")
+        return
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])
     item = gen.take(vop.args[2])
