@@ -10,6 +10,7 @@ from mule.compiler.ctype import (
     EMPTY_LIST_TYPE,
     FIXNUM_MAX,
     FIXNUM_MIN,
+    FLOAT,
     INTEGER,
     ITERATOR_TYPE,
     LIST_TYPE,
@@ -30,6 +31,7 @@ from mule.compiler.ctype import (
     widen_fact,
 )
 from mule.compiler.main import compile_source
+from mule.compiler.sequence_protocol import stdlib_type_summary
 
 
 def test_parameterized_list_type():
@@ -212,3 +214,45 @@ def aggregate(items: list):
     assert last_routes_ref.derived_type == DictType(
         UNKNOWN, ListType(IntegerType(0, None))
     )
+
+
+def test_stdlib_type_summary_derives_methods_and_builtins():
+    _, methods, builtins = stdlib_type_summary()
+    for pred in (
+        "isalpha",
+        "isdigit",
+        "isdecimal",
+        "isnumeric",
+        "isalnum",
+        "isspace",
+        "isprintable",
+        "isascii",
+        "islower",
+        "isupper",
+        "istitle",
+        "isidentifier",
+        "startswith",
+        "endswith",
+    ):
+        assert methods["TextStorage", pred] is BOOLEAN
+    assert methods["TupleStorage", "count"].fits(INTEGER)
+    assert methods["TupleStorage", "index"].fits(INTEGER)
+    assert methods["ListStorage", "count"].fits(INTEGER)
+    assert methods["ListStorage", "index"].fits(INTEGER)
+    assert ("ListStorage", "pop") in methods
+    assert builtins["int"] is INTEGER
+    assert builtins["bool"] is BOOLEAN
+    assert builtins["float"] is FLOAT
+    assert builtins["list"] is LIST_TYPE
+    assert builtins["dict"] is DICT_TYPE
+    assert builtins["str"] is TEXT_TYPE
+    assert builtins["bytes"] is BYTES_TYPE
+    assert builtins["chr"] is TEXT_TYPE
+    assert builtins["ord"] == IntegerType(0, 0x10FFFF)
+    assert builtins["hash"] == IntegerType(-(1 << 63), (1 << 63) - 1)
+    assert builtins["id"] is INTEGER
+    assert builtins["isinstance"] is BOOLEAN
+    assert builtins["issubclass"] is BOOLEAN
+    assert builtins["callable"] is BOOLEAN
+    assert builtins["all"] is BOOLEAN
+    assert builtins["any"] is BOOLEAN

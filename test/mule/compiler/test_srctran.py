@@ -54,6 +54,7 @@ def _compile_typed(source: str, param_types: dict[str, object]):
     for var in fn.vars:
         if var.name in param_types:
             var.type = param_types[var.name]
+    assert fn.component is not None
     changed = ir1_optimize_until_done(fn.component)
     check_ir1_consistency(compilation.components)
     return compilation, fn, changed
@@ -295,6 +296,7 @@ def test_power_of_two_floor_divide_and_modulo_strength_reductions():
     assert isinstance(mask_ref.leaf.value, ast.IntegerLiteral)
     assert mask_ref.leaf.value.value == 15
     assert lvar_type(bit_and.args[1]) == IntegerType(15, 15)
+    assert bit_and.lvar is not None
     assert lvar_type(bit_and.lvar) == IntegerType(0, 15)
 
     # Non-power-of-two or negative divisors stay as %floor_divide / %modulo
@@ -473,10 +475,12 @@ def test_same_variable_unannotated_and_negative_cases():
     )
     assert list(known_calls(fn_is, "%compare_is")) == []
     assert len(fn_is.vars[0].refs) == 0
+    assert fn_is.return_ is not None
     assert constant_lvar_value(fn_is.return_.result).value is True
 
     assert list(known_calls(fn_is_not, "%compare_is_not")) == []
     assert len(fn_is_not.vars[0].refs) == 0
+    assert fn_is_not.return_ is not None
     assert constant_lvar_value(fn_is_not.return_.result).value is False
     check_ir1_consistency(compilation.components)
 

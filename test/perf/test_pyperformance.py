@@ -54,8 +54,12 @@ def test_pyperf_runner_parses_options_and_emits_bench_lines(capsys):
     captured = capsys.readouterr()
     obs = parse_bench_output(subprocess.CompletedProcess([], 0, captured.out, ""), 0.05)
     assert obs["total_loops"] == 6
-    assert "sample_func" in obs["sub_benchmarks"]
-    assert obs["kernel_seconds"] >= 0.0
+    sub_benchmarks = obs["sub_benchmarks"]
+    assert isinstance(sub_benchmarks, dict)
+    assert "sample_func" in sub_benchmarks
+    kernel_seconds = obs["kernel_seconds"]
+    assert isinstance(kernel_seconds, float)
+    assert kernel_seconds >= 0.0
 
 
 def test_pyperformance_cli_list_and_run_baseline(tmp_path):

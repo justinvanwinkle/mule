@@ -21,6 +21,7 @@ def test_constant_tuple_subscript_folds_to_element():
     fn = compilation.lambdas[1]
     assert list(known_calls(fn, "%build_tuple"))
     assert list(known_calls(fn, "%getitem"))
+    assert fn.component is not None
     assert ir1_optimize_until_done(fn.component)
     assert list(known_calls(fn, "%build_tuple")) == []
     assert list(known_calls(fn, "%getitem")) == []
@@ -69,6 +70,7 @@ def test_negative_index_on_lambda_vars_removes_unused_ref():
     var_b.type = INTEGER
     assert len(var_a.refs) == 1
     assert len(var_b.refs) == 1
+    assert fn.component is not None
     assert ir1_optimize_until_done(fn.component)
     assert list(known_calls(fn, "%build_tuple")) == []
     assert list(known_calls(fn, "%getitem")) == []
@@ -87,6 +89,7 @@ def test_tuple_subscript_out_of_bounds_kept_for_runtime_index_error():
         fn = compilation.lambdas[1]
         for var in fn.vars:
             var.type = INTEGER
+        assert fn.component is not None
         ir1_optimize_until_done(fn.component)
         assert len(list(known_calls(fn, "%getitem"))) == 1
         check_ir1_consistency(compilation.components)
@@ -97,6 +100,7 @@ def test_tuple_subscript_non_integer_index_kept():
     fn = compilation.lambdas[1]
     for var in fn.vars:
         var.type = INTEGER
+    assert fn.component is not None
     ir1_optimize_until_done(fn.component)
     assert len(list(known_calls(fn, "%getitem"))) == 1
     assert len(list(known_calls(fn, "%build_tuple"))) == 1
@@ -106,6 +110,7 @@ def test_tuple_subscript_non_integer_index_kept():
 def test_tuple_subscript_preserves_side_effecting_dropped_element():
     compilation = compile_toplevel("def f(g):\n return (g(), 20)[1]\n")
     fn = compilation.lambdas[1]
+    assert fn.component is not None
     ir1_optimize_until_done(fn.component)
     assert len(list(known_calls(fn, "%build_tuple"))) == 1
     assert len(list(known_calls(fn, "%getitem"))) == 1
@@ -138,6 +143,7 @@ def test_tuple_subscript_preserves_potentially_unbound_dropped_elements():
     comp_unbound = compile_toplevel("def f(a):\n return (a, 20)[1]\n")
     fn_unbound = comp_unbound.lambdas[1]
     fn_unbound.vars[0].type = UNKNOWN_UNBOUND
+    assert fn_unbound.component is not None
     ir1_optimize_until_done(fn_unbound.component)
     assert len(list(known_calls(fn_unbound, "%build_tuple"))) == 1
     assert len(list(known_calls(fn_unbound, "%getitem"))) == 1
@@ -167,6 +173,7 @@ def test_empty_list_and_tuple_unary_not_fold_to_true():
     for expr in ("not []", "not ()"):
         compilation = compile_toplevel(f"def f():\n return {expr}\n")
         fn = compilation.lambdas[1]
+        assert fn.component is not None
         assert ir1_optimize_until_done(fn.component)
         assert list(known_calls(fn, "%build_list")) == []
         assert list(known_calls(fn, "%build_tuple")) == []
@@ -197,6 +204,7 @@ def test_unfolded_empty_tuple_unary_not_direct_transform():
 def test_non_empty_list_unary_not_preserved():
     compilation = compile_toplevel("def f(x):\n return not [x]\n")
     fn = compilation.lambdas[1]
+    assert fn.component is not None
     ir1_optimize_until_done(fn.component)
     assert len(list(known_calls(fn, "%build_list"))) == 1
     assert len(list(known_calls(fn, "%unary_not"))) == 1

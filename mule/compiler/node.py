@@ -27,13 +27,42 @@ Python adaptations, recorded in ``spec/python-changes.md``:
 from __future__ import annotations
 
 import itertools
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Literal
 
 from mule import ast
 
+from .annotation_types import Contract
+from .ctype import (
+    ANY_CLASS_TYPE,
+    BOOLEAN,
+    BOTTOM,
+    BYTES_TYPE,
+    CLASS_BOOL_TYPE,
+    CLASS_BYTES_TYPE,
+    CLASS_DICT_TYPE,
+    CLASS_FLOAT_TYPE,
+    CLASS_INT_TYPE,
+    CLASS_LIST_TYPE,
+    CLASS_OBJECT_TYPE,
+    CLASS_STR_TYPE,
+    CLASS_TUPLE_TYPE,
+    CLASS_TYPE_TYPE,
+    DICT_TYPE,
+    EMPTY_DICT_TYPE,
+    FLOAT,
+    INTEGER,
+    LIST_TYPE,
+    STORAGE_CLASS_TYPES,
+    TEXT_TYPE,
+    UNKNOWN,
+    DictType,
+    IntegerType,
+    TupleType,
+    ValueType,
+)
 from .policy import OptimizationPolicy
 
 _numbers = itertools.count(1)
@@ -532,8 +561,6 @@ class KnownFunction(Leaf):
 class BasicVar(Leaf):
     __slots__ = ("sets",)
 
-    source_name: str
-
     def __init__(self, source_name: str):
         super().__init__(source_name)
         self.sets: list[Set] = []
@@ -553,7 +580,7 @@ class GlobalVar(BasicVar):
 
     @property
     def name(self) -> str:
-        return self.source_name
+        return self.source_name or "" or ""
 
     def accept(self, visitor: LeafVisitor):
         return visitor.visit_GlobalVar(self)
@@ -584,7 +611,7 @@ class LambdaVar(BasicVar):
 
     @property
     def name(self) -> str:
-        return self.source_name
+        return self.source_name or ""
 
     def accept(self, visitor: LeafVisitor):
         return visitor.visit_LambdaVar(self)
@@ -620,6 +647,7 @@ class Signature:
 
     kinds: tuple[ast.ParameterKind, ...] = ()
     default_parameters: tuple[int, ...] = ()
+    default_expressions: tuple = ()
     variadic: bool = False
     annotations: tuple = ()
     return_annotation: object = None
@@ -679,6 +707,133 @@ class Signature:
                 order[parameter] = -2 - defaults[parameter]
         return tuple(order)
 
+    def bind_parameter_types(
+        self,
+        parameters: tuple[str, ...],
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+        *,
+        receiver_type: ValueType | None = None,
+        default_types: tuple[ValueType, ...] = (),
+    ) -> list[ValueType] | None:
+        """Bind call-site argument types to ``parameters`` using Python's
+        calling convention, including ``*args``, ``**kwargs``, and defaults."""
+        kinds = self.kinds or (ast.ParameterKind.POSITIONAL_ONLY,) * len(parameters)
+        if len(kinds) != len(parameters):
+            return None
+        bound: list[ValueType | None] = [None] * len(parameters)
+        var_pos_idx: int | None = None
+        var_kw_idx: int | None = None
+        for idx, kind in enumerate(kinds):
+            if kind == ast.ParameterKind.VAR_POSITIONAL:
+                var_pos_idx = idx
+            elif kind == ast.ParameterKind.VAR_KEYWORD:
+                var_kw_idx = idx
+        var_pos_elems: list[ValueType] = []
+        var_kw_vals: list[ValueType] = []
+        positional = 0
+        if receiver_type is not None:
+            if not parameters or kinds[0] in (
+                ast.ParameterKind.KEYWORD_ONLY,
+                ast.ParameterKind.VAR_KEYWORD,
+            ):
+                return None
+            if kinds[0] == ast.ParameterKind.VAR_POSITIONAL:
+                var_pos_elems.append(receiver_type)
+            else:
+                bound[0] = receiver_type
+                positional = 1
+        if keywords == ("*",) and len(arg_types) == 1:
+            if var_pos_idx is not None and all(
+                b is not None or idx == var_pos_idx or idx in self.default_parameters
+                for idx, b in enumerate(bound)
+            ):
+                bound[var_pos_idx] = TupleType()
+                defaults = {
+                    param_idx: offset
+                    for offset, param_idx in enumerate(self.default_parameters)
+                }
+                res_star: list[ValueType] = []
+                for idx, val in enumerate(bound):
+                    if val is None:
+                        offset = defaults[idx]
+                        val = (
+                            default_types[offset]
+                            if offset < len(default_types)
+                            else UNKNOWN
+                        )
+                    res_star.append(val)
+                return res_star
+            return None
+        kw_list = keywords or (None,) * len(arg_types)
+        if len(kw_list) != len(arg_types):
+            return None
+        for arg_type, keyword in zip(arg_types, kw_list, strict=True):
+            if keyword is None:
+                while (
+                    positional < len(parameters)
+                    and kinds[positional]
+                    in (
+                        ast.ParameterKind.POSITIONAL_ONLY,
+                        ast.ParameterKind.POSITIONAL_OR_KEYWORD,
+                    )
+                    and bound[positional] is not None
+                ):
+                    positional += 1
+                if positional < len(parameters) and kinds[positional] in (
+                    ast.ParameterKind.POSITIONAL_ONLY,
+                    ast.ParameterKind.POSITIONAL_OR_KEYWORD,
+                ):
+                    bound[positional] = arg_type
+                    positional += 1
+                elif var_pos_idx is not None:
+                    var_pos_elems.append(arg_type)
+                else:
+                    return None
+            else:
+                if keyword in parameters:
+                    target = parameters.index(keyword)
+                    if kinds[target] in (
+                        ast.ParameterKind.POSITIONAL_OR_KEYWORD,
+                        ast.ParameterKind.KEYWORD_ONLY,
+                    ):
+                        if bound[target] is not None:
+                            return None
+                        bound[target] = arg_type
+                        continue
+                if var_kw_idx is not None:
+                    var_kw_vals.append(arg_type)
+                else:
+                    return None
+        if var_pos_idx is not None:
+            arity = len(var_pos_elems)
+            bound[var_pos_idx] = (
+                TupleType(arity, tuple(var_pos_elems) if arity <= 16 else None)
+                if arity > 0
+                else TupleType(0)
+            )
+        if var_kw_idx is not None:
+            if not var_kw_vals:
+                bound[var_kw_idx] = EMPTY_DICT_TYPE
+            else:
+                joined_val = var_kw_vals[0]
+                for val_type in var_kw_vals[1:]:
+                    joined_val = joined_val.join(val_type)
+                bound[var_kw_idx] = DictType(TEXT_TYPE, joined_val)
+        defaults = {
+            param_idx: offset
+            for offset, param_idx in enumerate(self.default_parameters)
+        }
+        result: list[ValueType] = []
+        for idx, val in enumerate(bound):
+            if val is None:
+                if idx not in defaults:
+                    return None
+                offset = defaults[idx]
+                val = default_types[offset] if offset < len(default_types) else UNKNOWN
+            result.append(val)
+        return result
+
 
 @dataclass(frozen=True, slots=True)
 class CodeInfo:
@@ -700,13 +855,16 @@ class Lambda(Functional):
         "annotation_expressions",
         "bind",
         "binding",
+        "branch_deriver",
         "calls",
         "code",
         "component",
         "declared_free",
+        "default_types",
         "entries",
         "environment",
         "home",
+        "is_protocol",
         "lets",
         "local_annotations",
         "locals",
@@ -716,7 +874,9 @@ class Lambda(Functional):
         "owner_class",
         "policy",
         "return_",
+        "self_type_deriver",
         "signature",
+        "type_deriver",
         "vars",
     )
 
@@ -746,14 +906,42 @@ class Lambda(Functional):
         self.namespace = namespace
         self.code: CodeInfo | None = None
         self.owner_class: str | None = None
+        self.is_protocol: bool = name.startswith(
+            (
+                "mule_sequences_",
+                "mule_format_",
+                "mule_arguments_",
+                "mule_native_class_",
+                "mule_print_",
+            )
+        )
         self.signature = Signature()
-        self.local_annotations: dict[str, object] = {}
+        self.local_annotations: dict[str, Contract] = {}
         self.annotation_expressions: dict[str, ast.Expression] = {}
         # The constant signature tuple ``_arguments.bind`` binds calls with.
         self.binding: ast.Tuple | None = None
         # Enclosing variables a ``nonlocal`` declaration makes free here.
         # Python closes over them even when the body never uses them.
         self.declared_free: list[LambdaVar] = []
+        self.default_types: tuple[ValueType, ...] = ()
+        self.type_deriver: Callable[[tuple[ValueType, ...]], ValueType] | None = None
+        self.self_type_deriver: (
+            Callable[[tuple[ValueType, ...]], ValueType | None] | None
+        ) = None
+        self.branch_deriver: (
+            Callable[[tuple[ValueType, ...], bool], tuple[ValueType, ...] | None] | None
+        ) = None
+
+    def as_lambda(self) -> Lambda | None:
+        return self
+
+    def global_constant_type(self) -> ValueType:
+        return UNKNOWN
+
+    def summary_return_type(self) -> ValueType:
+        if self.return_ is None or self.return_.result_type is None:
+            return UNKNOWN
+        return self.return_.result_type
 
     @property
     def parameters(self) -> tuple[str, ...]:
@@ -772,6 +960,298 @@ class Lambda(Functional):
         return self.signature.call_order(
             self.parameters, keywords, count, receiver=receiver
         )
+
+    def _bind_call_parameters(
+        self,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+        *,
+        receiver_type: ValueType | None = None,
+    ) -> tuple[ValueType, ...] | None:
+        bound = self.signature.bind_parameter_types(
+            self.parameters,
+            arg_types,
+            keywords,
+            receiver_type=receiver_type,
+            default_types=self.default_types,
+        )
+        return None if bound is None else tuple(bound)
+
+    def derive_return_type(
+        self,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+        *,
+        receiver_type: ValueType | None = None,
+    ) -> ValueType:
+        if any(arg is BOTTOM for arg in arg_types) or receiver_type is BOTTOM:
+            return BOTTOM
+        deriver = self.type_deriver
+        if deriver is None:
+            return UNKNOWN
+        param_types = self._bind_call_parameters(
+            arg_types, keywords, receiver_type=receiver_type
+        )
+        if param_types is None:
+            return UNKNOWN
+        return deriver(param_types)
+
+    def derive_self_type(
+        self,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+        *,
+        receiver_type: ValueType | None = None,
+    ) -> ValueType | None:
+        if any(arg is BOTTOM for arg in arg_types) or receiver_type is BOTTOM:
+            return BOTTOM
+        deriver = self.self_type_deriver
+        if deriver is None:
+            return None
+        param_types = self._bind_call_parameters(
+            arg_types, keywords, receiver_type=receiver_type
+        )
+        if param_types is None:
+            return None
+        return deriver(param_types)
+
+    def constrain_call(self, node, visitor, state, truth: bool) -> bool:
+        deriver = self.branch_deriver
+        if deriver is None:
+            return False
+        keywords = (
+            node.info.keywords if node.info is not None and node.info.keywords else ()
+        )
+        arg_types = tuple(visitor.type_of(arg) for arg in node.args)
+        if any(arg is BOTTOM for arg in arg_types):
+            return False
+        param_types = self._bind_call_parameters(arg_types, keywords)
+        if param_types is None:
+            return False
+        narrowed_params = deriver(param_types, truth)
+        if narrowed_params is None:
+            return False
+        changed = False
+        if not keywords:
+            for idx, arg_lvar in enumerate(node.args):
+                if idx >= len(narrowed_params):
+                    break
+                local = visitor.origins.get(arg_lvar)
+                if local is None or local not in visitor.state:
+                    continue
+                narrowed_type = narrowed_params[idx]
+                if narrowed_type is BOTTOM or narrowed_type is UNKNOWN:
+                    continue
+                current = state[local]
+                if narrowed_type != current.type and narrowed_type.fits(current.type):
+                    state[local] = visitor.narrowed_fact(current, narrowed_type)
+                    changed = True
+                src_var = visitor.type_of_origins.get(arg_lvar) or (
+                    visitor.type_of_origins.get(local) if local is not None else None
+                )
+                if src_var is not None and src_var in visitor.state:
+                    src_cur = state[src_var]
+                    narrowed_src = src_cur.type.narrow_by_runtime_class(
+                        narrowed_type, True
+                    )
+                    if narrowed_src is not BOTTOM and narrowed_src != src_cur.type:
+                        state[src_var] = visitor.narrowed_fact(src_cur, narrowed_src)
+                        changed = True
+        return changed
+
+    def propagate_call(
+        self,
+        node,
+        visitor,
+        args,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+    ) -> ValueType:
+        return self.derive_return_type(arg_types, keywords)
+
+    def protocol_self_type(self) -> ValueType:
+        if not self.is_protocol or not self.vars or self.vars[0].name != "self":
+            return UNKNOWN
+        if self.code is None or "." not in self.code.qualname:
+            return UNKNOWN
+        cls_name = self.code.qualname.split(".", 1)[0]
+        return STORAGE_CLASS_TYPES.get(cls_name, UNKNOWN)
+
+
+@dataclass(frozen=True, slots=True)
+class ClassConstructorTarget:
+    """Compile-time callable target representing a class constructor
+    (``__new__`` and/or ``__init__`` on ``base_type``)."""
+
+    base_type: ValueType = UNKNOWN
+    cls_type: ValueType = UNKNOWN
+    new_target: Lambda | None = None
+    init_target: Lambda | None = None
+    records_type_origin: bool = False
+
+    def as_lambda(self) -> Lambda | None:
+        return None
+
+    def global_constant_type(self) -> ValueType:
+        return self.cls_type
+
+    def summary_return_type(self) -> ValueType:
+        return self.base_type.widen_constant()
+
+    def derive_return_type(
+        self,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+        *,
+        receiver_type: ValueType | None = None,
+    ) -> ValueType:
+        if self.records_type_origin and len(arg_types) == 1 and not keywords:
+            if arg_types[0] is BOTTOM:
+                return BOTTOM
+            if self.new_target is None:
+                return arg_types[0].runtime_class_type()
+        result_type = self.base_type
+        if self.new_target is not None:
+            derived = self.new_target.derive_return_type(
+                arg_types, keywords, receiver_type=self.cls_type
+            )
+            if derived is BOTTOM:
+                return BOTTOM
+            if derived is not UNKNOWN:
+                result_type = derived
+        if self.init_target is not None:
+            mutated = self.init_target.derive_self_type(
+                arg_types, keywords, receiver_type=result_type
+            )
+            if mutated is BOTTOM:
+                return BOTTOM
+            if mutated is not None and mutated is not UNKNOWN:
+                result_type = mutated
+        return result_type
+
+    def derive_self_type(
+        self,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+        *,
+        receiver_type: ValueType | None = None,
+    ) -> ValueType | None:
+        return None
+
+    def constrain_call(self, node, visitor, state, truth: bool) -> bool:
+        return False
+
+    def propagate_call(
+        self,
+        node,
+        visitor,
+        args,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+    ) -> ValueType:
+        if self.records_type_origin and len(args) == 1 and not keywords:
+            src_var = visitor.origins.get(args[0])
+            if src_var is not None and node.lvar is not None:
+                visitor.type_of_origins[node.lvar] = src_var
+        return self.derive_return_type(arg_types, keywords)
+
+
+@dataclass(frozen=True, slots=True)
+class ForeignCallTarget:
+    """Compile-time callable target for a foreign runtime function (such as an
+    export from ``_mule_native``) with encapsulated return-type and branch
+    derivation."""
+
+    return_type: ValueType = UNKNOWN
+    derive_fn: Callable | None = None
+    propagate_fn: Callable | None = None
+    constrain_fn: Callable | None = None
+
+    def as_lambda(self) -> Lambda | None:
+        return None
+
+    def global_constant_type(self) -> ValueType:
+        return UNKNOWN
+
+    def summary_return_type(self) -> ValueType:
+        return self.return_type
+
+    def derive_return_type(
+        self,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+        *,
+        receiver_type: ValueType | None = None,
+    ) -> ValueType:
+        if self.derive_fn is not None:
+            return self.derive_fn(arg_types, keywords, receiver_type=receiver_type)
+        return self.return_type
+
+    def derive_self_type(
+        self,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+        *,
+        receiver_type: ValueType | None = None,
+    ) -> ValueType | None:
+        return None
+
+    def constrain_call(self, node, visitor, state, truth: bool) -> bool:
+        if self.constrain_fn is not None:
+            return self.constrain_fn(node, visitor, state, truth)
+        return False
+
+    def propagate_call(
+        self,
+        node,
+        visitor,
+        args,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+    ) -> ValueType:
+        if self.propagate_fn is not None:
+            res = self.propagate_fn(node, visitor, args, arg_types, keywords)
+            if res is not None:
+                return res
+        return self.derive_return_type(arg_types, keywords)
+
+
+def _derive_len_builtin(
+    arg_types: tuple[ValueType, ...],
+    keywords: tuple[str | None, ...] = (),
+    *,
+    receiver_type: ValueType | None = None,
+) -> ValueType:
+    if len(arg_types) != 1 or keywords:
+        return UNKNOWN
+    if arg_types[0] is BOTTOM:
+        return BOTTOM
+    exact = arg_types[0].exact_length()
+    if exact is not None:
+        return IntegerType(exact, exact)
+    return IntegerType(0, (1 << 60) - 1)
+
+
+BOOTSTRAP_BUILTIN_TARGETS: dict[
+    str, Lambda | ClassConstructorTarget | ForeignCallTarget
+] = {
+    "int": ClassConstructorTarget(INTEGER, CLASS_INT_TYPE),
+    "bool": ClassConstructorTarget(BOOLEAN, CLASS_BOOL_TYPE),
+    "float": ClassConstructorTarget(FLOAT, CLASS_FLOAT_TYPE),
+    "str": ClassConstructorTarget(TEXT_TYPE, CLASS_STR_TYPE),
+    "bytes": ClassConstructorTarget(BYTES_TYPE, CLASS_BYTES_TYPE),
+    "tuple": ClassConstructorTarget(TupleType(), CLASS_TUPLE_TYPE),
+    "list": ClassConstructorTarget(LIST_TYPE, CLASS_LIST_TYPE),
+    "dict": ClassConstructorTarget(DICT_TYPE, CLASS_DICT_TYPE),
+    "object": ClassConstructorTarget(UNKNOWN, CLASS_OBJECT_TYPE),
+    "type": ClassConstructorTarget(
+        ANY_CLASS_TYPE, CLASS_TYPE_TYPE, records_type_origin=True
+    ),
+    "len": ForeignCallTarget(
+        IntegerType(0, (1 << 60) - 1), derive_fn=_derive_len_builtin
+    ),
+    "input": ForeignCallTarget(TEXT_TYPE),
+}
 
 
 class OptionalDispatch(Functional):

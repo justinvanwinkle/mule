@@ -19,5 +19,10 @@ def prepare(program):
         namespace="$mule.print",
         imports=imports,
     )
+    imports.record_types("$mule.print", compilation)
+    program.exported_types.update(imports.exported_types)
+    program.exported_targets.update(imports.exported_targets)
+    program.builtin_return_types.update(imports.builtin_return_types)
+    program.builtin_targets.update(imports.builtin_targets)
     add_lambdas(program, compilation.lambdas, compilation.facts)
     return compilation.entry

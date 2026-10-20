@@ -48,6 +48,7 @@ def _compile_typed(source: str, param_types: dict[str, object]):
     for var in fn.vars:
         if var.name in param_types:
             var.type = param_types[var.name]
+    assert fn.component is not None
     changed = ir1_optimize_until_done(fn.component)
     check_ir1_consistency(compilation.components)
     return compilation, fn, changed
@@ -188,6 +189,7 @@ def test_str_identity_reduction_on_non_literal_text_expression():
     use = ret.result.use()
     assert isinstance(use, Combination)
     assert use.kind is CallKind.KNOWN
+    assert use.fun_info is not None
     assert use.fun_info.name == "%format"
     check_ir1_consistency(compilation.components)
 

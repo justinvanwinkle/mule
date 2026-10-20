@@ -89,9 +89,11 @@ def test_fndb_arg_type_handles_empty_cached_and_multi_use_lvars():
 def test_fndb_derive_type_during_ir1_optimize(source, known_name, expected):
     compilation = compile_toplevel(source)
     fn = compilation.lambdas[1]
+    assert fn.component is not None
     ir1_optimize(fn.component)
     call = next(known_calls(fn, known_name))
     assert call.derived_type == expected
+    assert call.lvar is not None
     assert lvar_type(call.lvar) == expected
 
 
@@ -104,6 +106,7 @@ def test_fndb_derive_type_for_inplace_getslice_unpack_and_boolean_knowns():
         " return 'hello'[1:3], a, b, i\n"
     )
     fn = compilation.lambdas[1]
+    assert fn.component is not None
     ir1_optimize(fn.component)
 
     slice_call = next(known_calls(fn, "%getslice"))
@@ -122,16 +125,19 @@ def test_fndb_derive_type_for_inplace_getslice_unpack_and_boolean_knowns():
     compilation_iadd = compile_toplevel("def f(x):\n x += 1\n return x\n")
     fn_iadd = compilation_iadd.lambdas[1]
     fn_iadd.vars[0].type = IntegerType(5, 5)
+    assert fn_iadd.component is not None
     ir1_optimize(fn_iadd.component)
     assert next(known_calls(fn_iadd, "%iadd")).derived_type == IntegerType(6, 6)
 
     compilation_bytes = compile_toplevel("def f():\n return b'abc'[1:2]\n")
     fn_bytes = compilation_bytes.lambdas[1]
+    assert fn_bytes.component is not None
     ir1_optimize(fn_bytes.component)
     assert next(known_calls(fn_bytes, "%getslice")).derived_type == BYTES_TYPE
 
     compilation_list = compile_toplevel("def f(x):\n return [x, 1][0:1]\n")
     fn_list = compilation_list.lambdas[1]
+    assert fn_list.component is not None
     ir1_optimize(fn_list.component)
     assert next(known_calls(fn_list, "%getslice")).derived_type == LIST_TYPE
 
@@ -151,6 +157,8 @@ def test_locall_publishes_derived_types_to_all_valued_nodes_and_lvars():
         " return res, pair\n"
     )
     fn = compilation.lambdas[1]
+    assert compilation.facts is not None
+    assert fn.component is not None
     general_types = compilation.facts[fn].types
 
     valued_nodes = [
@@ -196,6 +204,7 @@ def test_locall_feedback_triggers_ir1opt_transform_on_flow_narrowed_local():
         compilation = compile_source("def f():\n x = 42\n return x // 1\n")
         fn = compilation.lambdas[1]
         assert list(known_calls(fn, "%floor_divide")) == []
+        assert compilation.facts is not None
         assert compilation.facts[fn].return_type == IntegerType(42, 42)
         check_ir1_consistency(compilation.components)
 
@@ -245,6 +254,7 @@ def test_locall_feedback_terminates_cleanly_when_transform_declines():
         fn = compilation.lambdas[1]
         div_call = next(known_calls(fn, "%floor_divide"))
         assert div_call.derived_type == IntegerType(6, 6)
+        assert div_call.lvar is not None
         assert div_call.lvar.derived_type == IntegerType(6, 6)
         assert calls == 1
         check_ir1_consistency(compilation.components)

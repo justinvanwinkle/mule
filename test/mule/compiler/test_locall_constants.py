@@ -94,14 +94,17 @@ def test_global_constant_refs_receive_derived_types_and_propagate():
 
     assert len(empty_refs) == 1
     assert empty_refs[0].derived_type == IntegerType(FIXNUM_MIN, FIXNUM_MAX)
+    assert empty_refs[0].lvar is not None
     assert empty_refs[0].lvar.derived_type == IntegerType(FIXNUM_MIN, FIXNUM_MAX)
 
     assert len(mask_refs) == 1
     assert mask_refs[0].derived_type == IntegerType(FIXNUM_MIN, FIXNUM_MAX)
+    assert mask_refs[0].lvar is not None
     assert mask_refs[0].lvar.derived_type == IntegerType(FIXNUM_MIN, FIXNUM_MAX)
 
     assert len(vocab_refs) == 1
     assert vocab_refs[0].derived_type == TupleType(2, (TEXT_TYPE, TEXT_TYPE))
+    assert vocab_refs[0].lvar is not None
     assert vocab_refs[0].lvar.derived_type == TupleType(2, (TEXT_TYPE, TEXT_TYPE))
 
     assert len(c_refs) == 1
@@ -110,6 +113,7 @@ def test_global_constant_refs_receive_derived_types_and_propagate():
     assert len(cache_refs) == 1
     assert cache_refs[0].derived_type is UNKNOWN
 
+    assert compilation.facts is not None
     assert compilation.facts[lookup_fn].return_type == TupleType(
         5,
         (

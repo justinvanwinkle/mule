@@ -23,6 +23,7 @@ entry's facts.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -31,9 +32,8 @@ from mule import ast
 from . import ir1opt, loop
 from .annotation_types import AnnotationLedger
 from .constraint import (
-    _BINARY_OPERATORS,
-    _COMPARISON_OPERATORS,
-    _UNARY_OPERATORS,
+    BOOTSTRAP_BUILTIN_TARGETS,
+    BOOTSTRAP_CLASS_TARGETS,
     NO_FACT,
     Body,
     Fact,
@@ -45,32 +45,54 @@ from .constraint import (
     widen_fact,
 )
 from .ctype import (
+    ANY_CLASS_TYPE,
     BOOLEAN,
     BOOLEAN_FALSE,
     BOOLEAN_TRUE,
     BOTTOM,
-    BYTES_TYPE,
+    BUILTIN_CLASS_TYPES,
     DICT_TYPE,
     FIXNUM_MAX,
     FIXNUM_MIN,
+    FLOAT,
     INTEGER,
     LIST_TYPE,
     NONE_TYPE,
+    STORAGE_CLASS_TYPES,
     TEXT_TYPE,
     UNBOUND,
     UNKNOWN,
     IntegerType,
     TupleType,
+    UniqueObjectType,
     ValueType,
     ValueTypeVisitor,
 )
 from .dfo import find_dfo
-from .fndb import LEN, MAKE_FUNCTION, flow_propagation
+from .fndb import (
+    BUILD_TUPLE,
+    CLASS_STORE,
+    COMPARE,
+    GETATTR,
+    GETSLICE,
+    IMPORT,
+    LEN,
+    MAKE_CLASS,
+    MAKE_FUNCTION,
+    PROTOCOLS,
+    RESOLVE_METHOD,
+    RESOLVE_SUPER_METHOD,
+    SETATTR,
+    UNARY,
+    flow_propagation,
+)
 from .ir1util import clone_lambda_component, join_blocks_if_possible, made_function
 from .knownfun import KNOWN
 from .node import (
     CallKind,
+    ClassConstructorTarget,
     Combination,
+    ForeignCallTarget,
     FunctionalKind,
     GlobalVar,
     Lambda,
@@ -83,133 +105,29 @@ from .node import (
 )
 from .seqtran import is_predictable_len_call, known_length_primitive
 
-_PROTOCOL_PREFIXES = (
-    "mule_sequences_",
-    "mule_format_",
-    "mule_arguments_",
-    "mule_native_class_",
-    "mule_print_",
-)
+DELATTR = PROTOCOLS["delete_attribute"]
+DELITEM = PROTOCOLS["delitem"]
+GETITEM = PROTOCOLS["getitem"]
+ITERATE = PROTOCOLS["iterate"]
+SETITEM = PROTOCOLS["setitem"]
 
-_MULE_NATIVE_RETURN_TYPES: dict[str, ValueType] = {
-    "text_from_codepoints": TEXT_TYPE,
-    "bytes_from_values": BYTES_TYPE,
-    "byte_copy": BYTES_TYPE,
-    "byte_length": IntegerType(0, (1 << 48) - 1),
-    "read_byte": IntegerType(0, 255),
-    "identity": INTEGER,
-    "typed_value": UNKNOWN,
-    "is_class": BOOLEAN,
-    "is_subclass": BOOLEAN,
-    "is_instance": BOOLEAN,
-    "overriding_new": BOOLEAN,
-    "buffer_exports": IntegerType(0, (1 << 48) - 1),
-}
-
-_STORAGE_SELF_TYPES: dict[str, ValueType] = {
-    "TextStorage.": TEXT_TYPE,
-    "BytesStorage.": BYTES_TYPE,
-    "TupleStorage.": TupleType(),
-    "ListStorage.": LIST_TYPE,
-    "dict.": DICT_TYPE,
-}
-
-_NUMERIC_KNOWN = (
-    frozenset(_BINARY_OPERATORS)
-    | (frozenset(_UNARY_OPERATORS) - {"%unary_not"})
-    | (
-        frozenset(_COMPARISON_OPERATORS)
-        - {"%compare_is", "%compare_is_not", "%compare_in", "%compare_not_in"}
-    )
-    | {"%range_prepare", "%range_advance", "%make_slice", "%getslice"}
-)
-_NON_INTEGER_FIRST_OPERAND = frozenset(
+_SET_DEL_ITEM = frozenset({SETITEM, DELITEM})
+_GET_SET_DEL_ATTR = frozenset({GETATTR, SETATTR, DELATTR})
+_GET_ITEM_OR_SLICE = frozenset({GETITEM, GETSLICE})
+_CONTAINMENT_COMPARE = frozenset(
     {
-        "%getattr",
-        "%setattr",
-        "%delattr",
-        "%resolve_method",
-        "%getitem",
-        "%getslice",
-        "%setitem",
-        "%delitem",
-        "%iterate",
-        "%for_next",
-        "%unpack",
-        "_text_length",
-        "_text_codepoint",
-        "_text_character",
-        "_text_slice",
-        "_text_join",
-        "_text_from_codepoints",
-        "_storage_length",
-        "_storage_read",
-        "_storage_write",
-        "_storage_append",
-        "_storage_insert",
-        "_storage_delete",
-        "_storage_tuple",
+        COMPARE[ast.ComparisonOperator.IN],
+        COMPARE[ast.ComparisonOperator.NOT_IN],
     }
 )
-_INDEX_SECOND_OPERAND = frozenset({"%getitem", "%setitem", "%delitem"})
-_TEXT_METHODS = frozenset(
+_SPECIALIZABLE_CONTAINER_OPS = frozenset(
     {
-        "find",
-        "rfind",
-        "split",
-        "rsplit",
-        "splitlines",
-        "strip",
-        "lstrip",
-        "rstrip",
-        "startswith",
-        "endswith",
-        "replace",
-        "lower",
-        "upper",
-        "join",
-        "partition",
-        "rpartition",
-        "encode",
-        "isalpha",
-        "isdigit",
-        "isdecimal",
-        "isnumeric",
-        "isalnum",
-        "isspace",
-        "islower",
-        "isupper",
-        "istitle",
-        "isidentifier",
-        "isprintable",
-        "isascii",
-        "casefold",
-        "capitalize",
-        "title",
-        "swapcase",
-        "center",
-        "ljust",
-        "rjust",
-        "zfill",
-        "expandtabs",
-        "removeprefix",
-        "removesuffix",
-        "format",
-        "format_map",
-    }
-)
-
-
-_LIST_METHODS = frozenset(
-    {
-        "append",
-        "extend",
-        "insert",
-        "pop",
-        "remove",
-        "clear",
-        "reverse",
-        "sort",
+        GETITEM,
+        GETSLICE,
+        SETITEM,
+        DELITEM,
+        RESOLVE_METHOD,
+        ITERATE,
     }
 )
 
@@ -217,9 +135,14 @@ _LIST_METHODS = frozenset(
 class _ParameterUse(NodeVisitor, LeafVisitor):
     """Classifies how one parameter (and local copies of it) is used."""
 
-    def __init__(self, parameter):
+    def __init__(
+        self,
+        parameter,
+        storage_methods: Mapping[tuple[str, str], ValueType] | None = None,
+    ):
         self.copies = {parameter}
         self.queue = [parameter]
+        self.storage_methods = storage_methods
         self.numeric = False
         self.disqualified = False
         self.text = False
@@ -302,65 +225,66 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
                 self.disqualified = True
                 self.has_len = True
             return
-        name = info.name
-        if name == "%resolve_method" and node.args and node.args[0] is lvar:
+        if info is RESOLVE_METHOD and node.args and node.args[0] is lvar:
             self.disqualified = True
             method_name = linked(node.info, node, "info").name
-            if method_name in _TEXT_METHODS:
-                self.text = True
+            if self.storage_methods is not None and (
+                ("TextStorage", method_name) in self.storage_methods
+                or ("ListStorage", method_name) in self.storage_methods
+            ):
+                if ("TextStorage", method_name) in self.storage_methods:
+                    if ("TupleStorage", method_name) not in self.storage_methods:
+                        self.text = True
+                else:
+                    self.text_disqualified = True
+                if ("ListStorage", method_name) in self.storage_methods:
+                    if ("TupleStorage", method_name) not in self.storage_methods and (
+                        "dict",
+                        method_name,
+                    ) not in self.storage_methods:
+                        self.list_seq = True
+                else:
+                    self.list_disqualified = True
             else:
                 self.text_disqualified = True
-            if method_name in _LIST_METHODS:
-                self.list_seq = True
-            elif method_name not in {"copy", "index", "count"}:
                 self.list_disqualified = True
             return
-        if node.args and node.args[0] is lvar and name in {"%setitem", "%delitem"}:
+        if node.args and node.args[0] is lvar and info in _SET_DEL_ITEM:
             self.disqualified = True
             self.text_disqualified = True
             self.list_seq = True
             return
-        if (
-            node.args
-            and node.args[0] is lvar
-            and name in {"%getattr", "%setattr", "%delattr"}
-        ):
+        if node.args and node.args[0] is lvar and info in _GET_SET_DEL_ATTR:
             self.disqualified = True
             self.list_disqualified = True
             return
-        if node.args and node.args[0] is lvar and name in _NON_INTEGER_FIRST_OPERAND:
+        if node.args and node.args[0] is lvar and info.non_integer_first_arg:
             self.disqualified = True
-            if name in {"%getitem", "%getslice"}:
+            if info in _GET_ITEM_OR_SLICE:
                 self.has_getitem = True
-            elif name == "_storage_length":
+            elif info.derive_type is not None and info.derive_type(node) == IntegerType(
+                0, FIXNUM_MAX
+            ):
                 self.has_len = True
             return
-        if name == "%resolve_super_method" and lvar in node.args:
+        if info is RESOLVE_SUPER_METHOD and lvar in node.args:
             self.disqualified = True
             self.text_disqualified = True
             self.list_disqualified = True
             self.sequence_disqualified = True
             return
-        if (
-            len(node.args) > 1
-            and node.args[1] is lvar
-            and name in {"%compare_in", "%compare_not_in"}
-        ):
+        if len(node.args) > 1 and node.args[1] is lvar and info in _CONTAINMENT_COMPARE:
             self.disqualified = True
             return
-        if (
-            len(node.args) > 1
-            and node.args[1] is lvar
-            and name in _INDEX_SECOND_OPERAND
-        ):
+        if len(node.args) > 1 and node.args[1] is lvar and info.index_second_arg:
             self.numeric = True
             self.text_disqualified = True
             self.list_disqualified = True
             return
-        if node.args and node.args[0] is lvar and name in {"%getitem", "%getslice"}:
+        if node.args and node.args[0] is lvar and info in _GET_ITEM_OR_SLICE:
             self.has_getitem = True
             return
-        if name in _NUMERIC_KNOWN:
+        if info.numeric:
             self.numeric = True
 
 
@@ -372,9 +296,7 @@ class _PredictableGlobalFunInfo(NodeVisitor, LeafVisitor):
         if node.lexenv.policy.safety >= 3:
             return None
         home = node.home_lambda
-        if home is not None and (
-            home.policy.safety >= 3 or home.name.startswith(_PROTOCOL_PREFIXES)
-        ):
+        if home is not None and (home.policy.safety >= 3 or home.is_protocol):
             return None
         return node.leaf.accept(self)
 
@@ -419,7 +341,9 @@ class _SpecializesBody(NodeVisitor):
         cand_type = self.candidate.get(node, UNKNOWN)
         gen_type = self.general.get(node, UNKNOWN)
         if cand_type != gen_type and (
-            cand_type.is_fixnum or cand_type.fits(BOOLEAN) or cand_type.fits_float
+            cand_type.fits(INTEGER)
+            or cand_type.fits(BOOLEAN)
+            or cand_type.fits_float(FLOAT)
         ):
             return True
         if is_predictable_len_call(node) and len(node.args[0].uses) == 1:
@@ -430,16 +354,7 @@ class _SpecializesBody(NodeVisitor):
                 return True
         if (
             node.kind is CallKind.KNOWN
-            and node.fun_info is not None
-            and node.fun_info.name
-            in {
-                "%getitem",
-                "%getslice",
-                "%setitem",
-                "%delitem",
-                "%resolve_method",
-                "%iterate",
-            }
+            and node.fun_info in _SPECIALIZABLE_CONTAINER_OPS
             and node.args
             and len(node.args[0].uses) == 1
         ):
@@ -485,7 +400,7 @@ def _specializes_body(
     return False
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class EntryContext:
     """A guarded internal entry: facts valid once its parameter guards pass."""
 
@@ -553,19 +468,28 @@ class _GlobalFunctionStore(LeafVisitor):
             self.namespace[leaf.name] = lambda_
 
 
+_UNARY_CONSTANT_OPS = frozenset(
+    {
+        UNARY[ast.UnaryOperator.NEGATIVE],
+        UNARY[ast.UnaryOperator.POSITIVE],
+        UNARY[ast.UnaryOperator.INVERT],
+    }
+)
+
+
 class _FoldUnaryConstant(ast.Visitor):
-    def __init__(self, name: str):
-        self.name = name
+    def __init__(self, info):
+        self.info = info
 
     def visit_Node(self, node):
         return None
 
     def visit_IntegerLiteral(self, node: ast.IntegerLiteral):
-        if self.name == "%unary_negative":
+        if self.info is UNARY[ast.UnaryOperator.NEGATIVE]:
             return ast.IntegerLiteral(-node.value)
-        if self.name == "%unary_positive":
+        if self.info is UNARY[ast.UnaryOperator.POSITIVE]:
             return ast.IntegerLiteral(+node.value)
-        if self.name == "%unary_invert":
+        if self.info is UNARY[ast.UnaryOperator.INVERT]:
             return ast.IntegerLiteral(~node.value)
         return None
 
@@ -605,15 +529,15 @@ class _MadeConstant(NodeVisitor, LeafVisitor):
     def visit_Combination(self, node):
         if node.kind is not CallKind.KNOWN or node.fun_info is None:
             return None
-        name = node.fun_info.name
-        if name in ("%unary_negative", "%unary_positive", "%unary_invert"):
+        info = node.fun_info
+        if info in _UNARY_CONSTANT_OPS:
             if len(node.args) != 1 or len(node.args[0].uses) != 1:
                 return None
             operand = node.args[0].uses[0].accept(self)
             if operand is None:
                 return None
-            return operand.accept(_FoldUnaryConstant(name))
-        if name == "%build_tuple":
+            return operand.accept(_FoldUnaryConstant(info))
+        if info is BUILD_TUPLE:
             elements = []
             for arg in node.args:
                 if len(arg.uses) != 1:
@@ -655,10 +579,69 @@ def _widen_user_constant_type(vtype: ValueType) -> ValueType:
     return vtype.accept(_WIDEN_USER_CONSTANT_TYPE)
 
 
+class _GlobalCalleeRefName(NodeVisitor, LeafVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        return leaf.name
+
+
+_GLOBAL_CALLEE_REF_NAME = _GlobalCalleeRefName()
+
+
+class _ProtocolSingletonStoreType(NodeVisitor):
+    def __init__(
+        self,
+        var_name: str,
+        class_targets: dict[str, ClassConstructorTarget] | None,
+    ):
+        self.var_name = var_name
+        self.class_targets = class_targets
+
+    def visit_Node(self, node):
+        return UNKNOWN
+
+    def visit_Combination(self, node: Combination):
+        if node.args:
+            return UNKNOWN
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is not None
+            and node.fun_info.derive_type is not None
+        ):
+            derived = node.fun_info.derive_type(node)
+            return derived.widen_constant() if derived is not None else UNKNOWN
+        if (
+            node.kind in (CallKind.FULL, CallKind.GUARDED)
+            and self.class_targets is not None
+            and len(node.fun.uses) == 1
+        ):
+            callee_name = node.fun.uses[0].accept(_GLOBAL_CALLEE_REF_NAME)
+            if callee_name is not None and callee_name in self.class_targets:
+                cls_target = self.class_targets[callee_name]
+                if cls_target.new_target is None and cls_target.init_target is None:
+                    return UniqueObjectType(self.var_name)
+        return UNKNOWN
+
+
 class _GlobalConstantStores(NodeVisitor, LeafVisitor):
-    def __init__(self, constants: dict[GlobalVar, ValueType], *, is_protocol: bool):
+    def __init__(
+        self,
+        constants: dict[GlobalVar, ValueType],
+        *,
+        is_protocol: bool,
+        class_targets: dict[str, ClassConstructorTarget] | None = None,
+    ):
         self.constants = constants
         self.is_protocol = is_protocol
+        self.class_targets = class_targets
         self._store: Set | None = None
 
     def visit_Set(self, node: Set):
@@ -676,9 +659,19 @@ class _GlobalConstantStores(NodeVisitor, LeafVisitor):
         if home is None or home.kind is not FunctionalKind.TOPLEVEL:
             return
         literal = store.value.accept(_MadeConstant())
-        if literal is None:
+        if literal is not None:
+            vtype = constant_type(literal)
+        elif (
+            self.is_protocol
+            and leaf.name.startswith("_")
+            and len(store.value.uses) == 1
+        ):
+            vtype = store.value.uses[0].accept(
+                _ProtocolSingletonStoreType(leaf.name, self.class_targets)
+            )
+        else:
             return
-        vtype = constant_type(literal)
+        vtype = vtype.widen_mutable_containers()
         if vtype is UNKNOWN:
             return
         if self.is_protocol:
@@ -694,7 +687,114 @@ class _GlobalConstantStores(NodeVisitor, LeafVisitor):
             self.constants[leaf] = _widen_user_constant_type(vtype)
 
 
-def collect_global_constants(target) -> dict[GlobalVar, ValueType]:
+class _ClassBaseNames(NodeVisitor, LeafVisitor):
+    """Extract base class global names from the ``bases`` operand of ``%make_class``."""
+
+    def visit_Node(self, node) -> tuple[str, ...]:
+        return ()
+
+    def visit_Leaf(self, leaf) -> tuple[str, ...]:
+        return ()
+
+    def visit_Ref(self, node: Ref) -> tuple[str, ...]:
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar) -> tuple[str, ...]:
+        if (
+            len(leaf.sets) == 1
+            and leaf.sets[0].value is not None
+            and len(leaf.sets[0].value.uses) == 1
+        ):
+            return leaf.sets[0].value.uses[0].accept(self)
+        return ()
+
+    def visit_Combination(self, node: Combination) -> tuple[str, ...]:
+        if node.kind is CallKind.KNOWN and node.fun_info is BUILD_TUPLE:
+            return tuple(
+                base_name
+                for arg in node.args
+                if len(arg.uses) == 1
+                and (base_name := arg.uses[0].accept(_GLOBAL_CALLEE_REF_NAME))
+                is not None
+            )
+        return ()
+
+
+_CLASS_BASE_NAMES = _ClassBaseNames()
+
+
+class _ModuleClassCollector(NodeVisitor):
+    """Collect module-level class definitions and their method lambdas."""
+
+    def __init__(self):
+        self.methods: dict[str, dict[str, Lambda]] = defaultdict(dict)
+        self.public_names: dict[str, str] = {}
+        self.bases: dict[str, tuple[str, ...]] = {}
+
+    def visit_Combination(self, node: Combination):
+        if node.kind is not CallKind.KNOWN or node.fun_info is None:
+            return
+        if node.fun_info is CLASS_STORE and len(node.args) == 1:
+            info = linked(node.info, node, "info")
+            if info.class_name is not None:
+                lam = made_function(node.args[0].use())
+                if lam is not None:
+                    self.methods[info.class_name][info.name] = lam
+        elif node.fun_info is MAKE_CLASS:
+            info = linked(node.info, node, "class definition")
+            self.public_names[info.identity] = info.public_name
+            self.bases[info.public_name] = (
+                node.args[0].uses[0].accept(_CLASS_BASE_NAMES)
+                if node.args and len(node.args[0].uses) == 1
+                else ()
+            )
+
+
+def _collect_module_classes(
+    lambdas,
+) -> dict[str, dict[str, ClassConstructorTarget]]:
+    by_ns: dict[str, dict[str, ClassConstructorTarget]] = defaultdict(dict)
+    collectors: dict[str, _ModuleClassCollector] = defaultdict(_ModuleClassCollector)
+    visited_components = set()
+    for lambda_ in lambdas:
+        component = lambda_.component
+        if component is None or (lambda_.namespace, component) in visited_components:
+            continue
+        visited_components.add((lambda_.namespace, component))
+        collector = collectors[lambda_.namespace]
+        for block in component.blocks():
+            for node in block.nodes():
+                node.accept(collector)
+    for ns, collector in collectors.items():
+        all_class_ids = list(
+            dict.fromkeys([*collector.public_names, *collector.methods])
+        )
+        for class_id in all_class_ids:
+            cls_name = collector.public_names.get(class_id, class_id)
+            methods = collector.methods.get(class_id, {})
+            base_target = BOOTSTRAP_CLASS_TARGETS.get(cls_name)
+            if base_target is not None:
+                base_type = base_target.base_type
+                cls_type = base_target.cls_type
+                records_type_origin = base_target.records_type_origin
+            else:
+                cls_type = BUILTIN_CLASS_TYPES.get(cls_name, ANY_CLASS_TYPE)
+                base_type = STORAGE_CLASS_TYPES.get(cls_name, UNKNOWN)
+                records_type_origin = False
+            by_ns[ns][cls_name] = ClassConstructorTarget(
+                base_type=base_type,
+                cls_type=cls_type,
+                new_target=methods.get("__new__"),
+                init_target=methods.get("__init__"),
+                records_type_origin=records_type_origin,
+            )
+    return by_ns
+
+
+def collect_global_constants(
+    target,
+    class_targets_by_ns: dict[str, dict[str, ClassConstructorTarget]] | None = None,
+) -> dict[GlobalVar, ValueType]:
     """Unreassigned module-level private constant globals and their value types."""
     try:
         lambdas = list(target)
@@ -710,17 +810,24 @@ def collect_global_constants(target) -> dict[GlobalVar, ValueType]:
             seen.add(parent)
             lambdas.append(parent)
             current = parent
-    is_protocol = any(
-        lambda_.name.startswith(_PROTOCOL_PREFIXES) for lambda_ in lambdas
-    )
+    is_protocol = any(lambda_.is_protocol for lambda_ in lambdas)
+    if class_targets_by_ns is None and is_protocol:
+        class_targets_by_ns = _collect_module_classes(lambdas)
     constants: dict[GlobalVar, ValueType] = {}
-    visitor = _GlobalConstantStores(constants, is_protocol=is_protocol)
     visited_components = set()
     for lambda_ in lambdas:
         component = lambda_.component
         if component is None or component in visited_components:
             continue
         visited_components.add(component)
+        ns_classes = (
+            class_targets_by_ns.get(lambda_.namespace)
+            if class_targets_by_ns is not None
+            else None
+        )
+        visitor = _GlobalConstantStores(
+            constants, is_protocol=is_protocol, class_targets=ns_classes
+        )
         for block in component.blocks():
             for node in block.nodes():
                 node.accept(visitor)
@@ -779,7 +886,7 @@ class _ClosedFunctionBinding(NodeVisitor, LeafVisitor):
         return None
 
     def visit_LambdaVar(self, leaf: LambdaVar):
-        if len(leaf.sets) != 1 or leaf in leaf.home.vars:
+        if len(leaf.sets) != 1 or (leaf.home is not None and leaf in leaf.home.vars):
             return None
         final_refs = [ref for ref in leaf.refs if ref.final]
         if (
@@ -862,10 +969,8 @@ class _ImportedModuleOrigin(NodeVisitor, LeafVisitor):
     def visit_Combination(self, node: Combination):
         if node.kind is not CallKind.KNOWN or node.fun_info is None:
             return None
-        if node.fun_info.name == "%import":
+        if node.fun_info is IMPORT:
             return linked(node.info, node, "info").module_name
-        if node.fun_info.name == "%import_module":
-            return node.info
         return None
 
     def visit_Ref(self, node: Ref):
@@ -926,7 +1031,7 @@ class _ImportBindingStores(NodeVisitor, LeafVisitor):
     def visit_Combination(self, node: Combination):
         if node.kind is not CallKind.KNOWN or node.fun_info is None:
             return None
-        if node.fun_info.name == "%getattr" and len(node.args) == 1:
+        if node.fun_info is GETATTR and len(node.args) == 1:
             if len(node.args[0].uses) != 1:
                 return None
             mod_name = node.args[0].uses[0].accept(_ImportedModuleOrigin())
@@ -971,13 +1076,43 @@ class _ImportBindingStores(NodeVisitor, LeafVisitor):
             self._active_aliases.remove(leaf)
 
 
+_ACTIVE_DERIVATIONS: set[tuple[Lambda, str]] = set()
+_MAX_DERIVATION_DEPTH = 6
+
+
+class _MakeFunctionDefaults(NodeVisitor):
+    def __init__(self, target: Lambda, ref: Ref):
+        self.target = target
+        self.ref = ref
+
+    def visit_Node(self, node):
+        return ()
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is MAKE_FUNCTION
+            and len(node.args) > 1
+            and node.args[0] is self.ref.lvar
+        ):
+            return tuple(node.args[1:])
+        return ()
+
+
 def analyze(
     lambdas,
     annotations: AnnotationLedger,
     *,
-    imported_function_types: dict[tuple[str, str], ValueType] | None = None,
-    storage_methods: dict[tuple[str, str], ValueType] | None = None,
-    builtin_return_types: dict[str, ValueType] | None = None,
+    imported_function_types: Mapping[tuple[str, str], ValueType] | None = None,
+    imported_targets: (
+        Mapping[tuple[str, str], Lambda | ClassConstructorTarget | ForeignCallTarget]
+        | None
+    ) = None,
+    storage_methods: Mapping[tuple[str, str], ValueType] | None = None,
+    builtin_return_types: Mapping[str, ValueType] | None = None,
+    builtin_targets: (
+        Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
+    ) = None,
 ) -> dict[Lambda, LambdaFacts]:
     """Solve local-call arguments and results, then publish entry contexts.
 
@@ -987,12 +1122,44 @@ def analyze(
     by union, and widen cyclic intervals before publication.
     """
     lambdas = list(lambdas)
+    is_protocol_unit = any(lam.is_protocol for lam in lambdas)
+    if not is_protocol_unit:
+        if (
+            storage_methods is None
+            or imported_function_types is None
+            or builtin_return_types is None
+        ):
+            from .sequence_protocol import stdlib_type_summary
+
+            exported, methods, builtins = stdlib_type_summary()
+            if imported_function_types is None:
+                imported_function_types = exported
+            if storage_methods is None:
+                storage_methods = methods
+            if builtin_return_types is None:
+                builtin_return_types = builtins
+        if imported_targets is None or builtin_targets is None:
+            from .sequence_protocol import stdlib_target_summary
+
+            exp_targets, b_targets = stdlib_target_summary()
+            if imported_targets is None:
+                imported_targets = exp_targets
+            if builtin_targets is None:
+                builtin_targets = b_targets
+    else:
+        if imported_targets is None:
+            from .protocols import NATIVE_MODULE_TARGETS
+
+            imported_targets = NATIVE_MODULE_TARGETS
+        if builtin_targets is None:
+            builtin_targets = BOOTSTRAP_BUILTIN_TARGETS
     graphs: dict[Lambda, LambdaGraph] = {
         lambda_: build_lambda_graph(lambda_) for lambda_ in lambdas
     }
     closed_lambdas = _collect_closed_lambdas(lambdas)
-    global_constants = collect_global_constants(lambdas)
-    old_constant_ref_types: dict[object, ValueType | None] = {}
+    class_targets_by_ns = _collect_module_classes(lambdas)
+    global_constants = collect_global_constants(lambdas, class_targets_by_ns)
+    old_constant_ref_types: dict[Ref, ValueType | None] = {}
     for leaf, vtype in global_constants.items():
         for ref in leaf.refs:
             home = ref.home_lambda
@@ -1018,28 +1185,108 @@ def analyze(
                 node.accept(visitor)
                 node.accept(imp_visitor)
     imported_returns_by_ns: dict[str, dict[str, ValueType]] = defaultdict(dict)
+    imported_targets_by_ns: dict[
+        str, dict[str, Lambda | ClassConstructorTarget | ForeignCallTarget]
+    ] = defaultdict(dict)
     for ns, bindings in import_bindings_by_ns.items():
         ns_returns = imported_returns_by_ns[ns]
+        ns_targets = imported_targets_by_ns[ns]
+        ns_counts = global_counts[ns]
         for local_name, (mod_name, orig_name) in bindings.items():
-            if mod_name == "_mule_native" and orig_name in _MULE_NATIVE_RETURN_TYPES:
-                ns_returns[local_name] = _MULE_NATIVE_RETURN_TYPES[orig_name]
-            elif (
+            if ns_counts.get(local_name, 0) > 1:
+                continue
+            if (
                 imported_function_types is not None
                 and (mod_name, orig_name) in imported_function_types
             ):
                 ns_returns[local_name] = imported_function_types[mod_name, orig_name]
+            if (
+                imported_targets is not None
+                and (mod_name, orig_name) in imported_targets
+            ):
+                ns_targets[local_name] = imported_targets[mod_name, orig_name]
+    for ns, cls_targets in class_targets_by_ns.items():
+        ns_targets = imported_targets_by_ns[ns]
+        ns_counts = global_counts[ns]
+        for cls_name, cls_target in cls_targets.items():
+            if ns_counts.get(cls_name, 0) <= 1 and cls_name not in global_targets[ns]:
+                ns_targets[cls_name] = cls_target
     proven_by_namespace: dict[str, frozenset[str]] = {
         ns: frozenset(
             name
             for name, target in targets.items()
-            if global_counts[ns].get(name) == 1
-            and target.name.startswith(_PROTOCOL_PREFIXES)
+            if global_counts[ns].get(name) == 1 and target.is_protocol
         )
         for ns, targets in global_targets.items()
     }
     rebound_by_namespace: dict[str, frozenset[str]] = {
         ns: frozenset(counts) for ns, counts in global_counts.items()
     }
+    namespaces = {lambda_.namespace for lambda_ in lambdas}
+    global_constants_by_ns: dict[str, dict[str, ValueType]] = {}
+    for ns in namespaces:
+        rebound = rebound_by_namespace.get(ns, frozenset())
+        ns_consts: dict[str, ValueType] = {
+            cls_name: cls_type
+            for cls_name, cls_type in BUILTIN_CLASS_TYPES.items()
+            if cls_name not in rebound
+        }
+        ns_counts = global_counts[ns]
+        for cls_name, cls_target in class_targets_by_ns.get(ns, {}).items():
+            if ns_counts.get(cls_name, 0) <= 1:
+                ns_consts[cls_name] = cls_target.cls_type
+        for local_name, (mod_name, orig_name) in import_bindings_by_ns.get(
+            ns, {}
+        ).items():
+            if ns_counts.get(local_name, 0) > 1:
+                continue
+            if (
+                imported_targets is not None
+                and (mod_name, orig_name) in imported_targets
+            ):
+                cls_const = imported_targets[mod_name, orig_name].global_constant_type()
+                if cls_const is not UNKNOWN:
+                    ns_consts[local_name] = cls_const
+            if (
+                orig_name.startswith("_")
+                and imported_function_types is not None
+                and (mod_name, orig_name) in imported_function_types
+                and (
+                    imported_targets is None
+                    or (mod_name, orig_name) not in imported_targets
+                )
+            ):
+                ns_consts[local_name] = imported_function_types[mod_name, orig_name]
+        global_constants_by_ns[ns] = ns_consts
+    for leaf, vtype in global_constants.items():
+        if leaf.sets and leaf.sets[0].home_lambda is not None:
+            ns = leaf.sets[0].home_lambda.namespace
+            global_constants_by_ns.setdefault(ns, {})[leaf.name] = vtype
+    for lambda_ in lambdas:
+        if (
+            lambda_.signature.default_parameters
+            and len(lambda_.refs) == 1
+            and lambda_.refs[0].dest is not None
+        ):
+            default_lvars = lambda_.refs[0].dest.accept(
+                _MakeFunctionDefaults(lambda_, lambda_.refs[0])
+            )
+            if default_lvars:
+                ns_consts = global_constants_by_ns.get(lambda_.namespace, {})
+                def_types: list[ValueType] = []
+                for def_lvar in default_lvars:
+                    lit = def_lvar.accept(_MadeConstant())
+                    if lit is not None:
+                        def_types.append(constant_type(lit))
+                    elif (
+                        len(def_lvar.uses) == 1
+                        and (gname := def_lvar.uses[0].accept(_GLOBAL_CALLEE_REF_NAME))
+                        is not None
+                    ):
+                        def_types.append(ns_consts.get(gname, UNKNOWN))
+                    else:
+                        def_types.append(UNKNOWN)
+                lambda_.default_types = tuple(def_types)
     captured_vars: list = []
     seen_captured: set = set()
     for lambda_ in lambdas:
@@ -1068,7 +1315,9 @@ def analyze(
         signature = lambda_.signature
         if lambda_.vars and not signature.variadic:
             gen_params = [
-                _ParameterUse(var).general_type(lambda_.local_annotations.get(var.name))
+                _ParameterUse(var, storage_methods).general_type(
+                    lambda_.local_annotations.get(var.name)
+                )
                 if contract is None
                 and ("local", lambda_, var.name) not in annotations.ignored
                 else UNKNOWN
@@ -1076,19 +1325,13 @@ def analyze(
                     lambda_.vars, signature.annotations, strict=True
                 )
             ]
-            if (
-                lambda_.name.startswith(_PROTOCOL_PREFIXES)
-                and lambda_.vars[0].name == "self"
-                and gen_params[0] is UNKNOWN
-            ):
-                qualname = lambda_.code.qualname
-                for prefix, self_type in _STORAGE_SELF_TYPES.items():
-                    if qualname.startswith(prefix):
-                        gen_params[0] = self_type
-                        break
+            if gen_params[0] is UNKNOWN:
+                self_type = lambda_.protocol_self_type()
+                if self_type is not None:
+                    gen_params[0] = self_type
             parameters[lambda_, "general"] = tuple(gen_params)
             spec_params = tuple(
-                _ParameterUse(var).analyze(contract, full)
+                _ParameterUse(var, storage_methods).analyze(contract, full)
                 for var, contract in zip(
                     lambda_.vars, signature.annotations, strict=True
                 )
@@ -1109,17 +1352,10 @@ def analyze(
                     parameters[lambda_, "fixnum"] = partial_params
         else:
             gen_params = [binding_types.get(kind, UNKNOWN) for kind in signature.kinds]
-            if (
-                lambda_.vars
-                and lambda_.name.startswith(_PROTOCOL_PREFIXES)
-                and lambda_.vars[0].name == "self"
-                and gen_params[0] is UNKNOWN
-            ):
-                qualname = lambda_.code.qualname
-                for prefix, self_type in _STORAGE_SELF_TYPES.items():
-                    if qualname.startswith(prefix):
-                        gen_params[0] = self_type
-                        break
+            if lambda_.vars and gen_params[0] is UNKNOWN:
+                self_type = lambda_.protocol_self_type()
+                if self_type is not None:
+                    gen_params[0] = self_type
             parameters[lambda_, "general"] = tuple(gen_params)
     summaries: dict[tuple[Lambda, str], ValueType] = dict.fromkeys(parameters, BOTTOM)
     return_changes = defaultdict(int)
@@ -1172,6 +1408,135 @@ def analyze(
             return ()
         return tuple(var.optimistic_type for var in lambda_.environment.closure)
 
+    deriver_cache: dict[tuple[Lambda, tuple[ValueType, ...]], Body] = {}
+
+    def _resolve_deriver_call(
+        callee: Fact, arguments, location=None, keywords=()
+    ) -> ValueType:
+        if not callee.proven or callee.target is None:
+            return UNKNOWN
+        return callee.target.derive_return_type(arguments, keywords)
+
+    def _propagate_for_deriver(
+        target_lam: Lambda, param_types: tuple[ValueType, ...], mode: str
+    ) -> Body | None:
+        cache_key = (target_lam, param_types)
+        cached = deriver_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        active_key = (target_lam, mode)
+        if (
+            active_key in _ACTIVE_DERIVATIONS
+            or len(_ACTIVE_DERIVATIONS) >= _MAX_DERIVATION_DEPTH
+        ):
+            return None
+        _ACTIVE_DERIVATIONS.add(active_key)
+        try:
+            proven_globals = (
+                proven_by_namespace.get(target_lam.namespace, frozenset())
+                if target_lam.kind is not FunctionalKind.TOPLEVEL
+                else frozenset()
+            )
+            with flow_propagation():
+                body = propagate(
+                    target_lam,
+                    global_targets[target_lam.namespace],
+                    param_types,
+                    _resolve_deriver_call,
+                    AnnotationLedger(),
+                    graph=graphs[target_lam],
+                    proven_globals=proven_globals,
+                    rebound_globals=rebound_by_namespace.get(
+                        target_lam.namespace, frozenset()
+                    ),
+                    global_constants=global_constants_by_ns.get(target_lam.namespace),
+                    imported_returns=(
+                        imported_returns_by_ns.get(target_lam.namespace)
+                        if target_lam.kind is not FunctionalKind.TOPLEVEL
+                        and target_lam.policy.safety < 3
+                        else None
+                    ),
+                    imported_targets=(
+                        imported_targets_by_ns.get(target_lam.namespace)
+                        if target_lam.kind is not FunctionalKind.TOPLEVEL
+                        and target_lam.policy.safety < 3
+                        else None
+                    ),
+                    storage_methods=storage_methods,
+                    builtin_return_types=builtin_return_types,
+                    builtin_targets=builtin_targets,
+                )
+            if len(deriver_cache) > 64:
+                deriver_cache.clear()
+            deriver_cache[cache_key] = body
+            return body
+        finally:
+            _ACTIVE_DERIVATIONS.discard(active_key)
+
+    def _make_derivers(target_lam: Lambda):
+        def _derive_ret(param_types: tuple[ValueType, ...]) -> ValueType:
+            body = _propagate_for_deriver(target_lam, param_types, "ret")
+            if body is None:
+                return summaries.get(
+                    (target_lam, "general"), UNKNOWN
+                ).normalized_bottom()
+            return body.return_type.normalized_bottom()
+
+        def _derive_self(param_types: tuple[ValueType, ...]) -> ValueType | None:
+            body = _propagate_for_deriver(target_lam, param_types, "self")
+            if body is None:
+                return None
+            return body.self_type
+
+        def _derive_branch(
+            param_types: tuple[ValueType, ...], truth: bool
+        ) -> tuple[ValueType, ...] | None:
+            body = _propagate_for_deriver(target_lam, param_types, "branch")
+            if body is None or not body.return_states:
+                return None
+            active_key = (target_lam, "branch_narrow")
+            if (
+                active_key in _ACTIVE_DERIVATIONS
+                or len(_ACTIVE_DERIVATIONS) >= _MAX_DERIVATION_DEPTH
+            ):
+                return None
+            _ACTIVE_DERIVATIONS.add(active_key)
+            try:
+                from .constraint import _Walk
+
+                walk = _Walk(
+                    target_lam,
+                    global_targets[target_lam.namespace],
+                    param_types,
+                    _resolve_deriver_call,
+                    AnnotationLedger(),
+                    graph=graphs[target_lam],
+                    proven_globals=proven_by_namespace.get(
+                        target_lam.namespace, frozenset()
+                    ),
+                    rebound_globals=rebound_by_namespace.get(
+                        target_lam.namespace, frozenset()
+                    ),
+                    global_constants=global_constants_by_ns.get(target_lam.namespace),
+                    imported_returns=imported_returns_by_ns.get(target_lam.namespace),
+                    imported_targets=imported_targets_by_ns.get(target_lam.namespace),
+                    storage_methods=storage_methods,
+                    builtin_return_types=builtin_return_types,
+                    builtin_targets=builtin_targets,
+                )
+                return walk.narrow_return_parameters(body, truth)
+            finally:
+                _ACTIVE_DERIVATIONS.discard(active_key)
+
+        return _derive_ret, _derive_self, _derive_branch
+
+    for lambda_ in lambdas:
+        if lambda_.kind is FunctionalKind.NORMAL:
+            ret_d, self_d, branch_d = _make_derivers(lambda_)
+            lambda_.type_deriver = ret_d
+            lambda_.self_type_deriver = self_d
+            lambda_.branch_deriver = branch_d
+
     # The canonical (callee, arguments) queries and return types consulted
     # during the current propagation.
     consulted: dict[tuple[Lambda, tuple], ValueType] = {}
@@ -1203,13 +1568,20 @@ def analyze(
             )
 
         def resolve_defined(
-            callee, arguments, context_parameters, context_summaries, location, keywords
+            callee: Fact,
+            arguments,
+            context_parameters,
+            context_summaries,
+            location,
+            keywords,
         ):
             # A name's predicted target is never sufficient to publish a return
             # type. Only an already-loaded value with proven identity is local.
             if not callee.proven or callee.target is None:
                 return UNKNOWN
-            target = callee.target
+            target = callee.target.as_lambda()
+            if target is None:
+                return callee.target.derive_return_type(arguments, keywords)
             order = target.call_order(keywords, len(arguments))
             if order is None:
                 if target.signature.variadic:
@@ -1241,6 +1613,12 @@ def analyze(
             result = lookup_return_type(
                 target, arguments, context_parameters, context_summaries
             )
+            if result is UNKNOWN and arguments != context_parameters.get(
+                (target, "general")
+            ):
+                derived = target.derive_return_type(arguments)
+                if derived is not UNKNOWN and derived is not BOTTOM:
+                    return derived
             consulted[target, arguments] = result
             return result
 
@@ -1278,14 +1656,22 @@ def analyze(
                         rebound_globals=rebound_by_namespace.get(
                             lambda_.namespace, frozenset()
                         ),
+                        global_constants=global_constants_by_ns.get(lambda_.namespace),
                         imported_returns=(
                             imported_returns_by_ns.get(lambda_.namespace)
                             if lambda_.kind is not FunctionalKind.TOPLEVEL
                             and lambda_.policy.safety < 3
                             else None
                         ),
+                        imported_targets=(
+                            imported_targets_by_ns.get(lambda_.namespace)
+                            if lambda_.kind is not FunctionalKind.TOPLEVEL
+                            and lambda_.policy.safety < 3
+                            else None
+                        ),
                         storage_methods=storage_methods,
                         builtin_return_types=builtin_return_types,
+                        builtin_targets=builtin_targets,
                     )
                 bodies[key] = body
                 inputs[key] = (
@@ -1415,7 +1801,7 @@ def analyze(
             if key[1] == "fixnum":
                 continue
             for call in body.calls:
-                target = call.target
+                target = call.target.as_lambda() if call.target is not None else None
                 if (
                     target is None
                     or not target.signature.positional_body
@@ -1670,11 +2056,7 @@ class _ReoptimizeNarrowedKnownCalls(NodeVisitor):
         else:
             return
         if not (
-            info.transforms
-            or (
-                info.optimizer is not None
-                and info.optimizer.__name__ != "_optimize_getslice"
-            )
+            info.transforms or (info.optimizer is not None and info is not GETITEM)
         ):
             return
         if any(
@@ -1743,11 +2125,7 @@ class _NodeHasContextTransform(NodeVisitor):
         else:
             return False
         if not (
-            info.transforms
-            or (
-                info.optimizer is not None
-                and info.optimizer.__name__ != "_optimize_getslice"
-            )
+            info.transforms or (info.optimizer is not None and info is not GETITEM)
         ):
             return False
         for arg in node.args:

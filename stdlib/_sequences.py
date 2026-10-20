@@ -42,6 +42,7 @@ from _mule_native import is_instance
 from _mule_native import overriding_new
 from _mule_native import class_lookup_default
 from _mule_native import bind_instance_attribute
+from _mule_native import math_fabs
 from _mule_native import type_of
 from _slice import is_slice, positions, slice
 
@@ -584,6 +585,11 @@ def invert(value):
 
 
 def abs(value, /):
+    cls = _type_of(value)
+    if cls is int or cls is bool:
+        return -value if value < 0 else +value
+    if cls is float:
+        return math_fabs(value)
     method = _abs_method(value)
     if method is None:
         raise TypeError(f"bad operand type for abs(): '{type(value).__name__}'")
@@ -754,6 +760,11 @@ class filter:
 
 
 def reversed(sequence, /):
+    cls = _type_of(sequence)
+    if cls is list or cls is tuple:
+        items = list(sequence)
+        _reverse_in_place(items)
+        return iter(items)
     method = _reversed_method(sequence)
     if method is not None:
         return method()
@@ -794,6 +805,17 @@ _DIVMOD_MISSING = object()
 
 
 def divmod(left, right, /):
+    lcls, rcls = _type_of(left), _type_of(right)
+    if (lcls is int or lcls is bool) and (rcls is int or rcls is bool):
+        if right == 0:
+            raise ZeroDivisionError("division by zero")
+        return (left // right, left % right)
+    if (lcls is float or lcls is int or lcls is bool) and (
+        rcls is float or rcls is int or rcls is bool
+    ):
+        if right == 0:
+            raise ZeroDivisionError("float divmod()")
+        return (left // right, left % right)
     left_owner, right_owner = type_of(left), type_of(right)
     forward = class_lookup_default(left_owner, '__divmod__', _DIVMOD_MISSING)
     reflected = class_lookup_default(right_owner, '__rdivmod__', _DIVMOD_MISSING)
@@ -2634,6 +2656,8 @@ def _make_list(*args):
 
 
 def _make_tuple(*args):
+    if _storage_length(args) == 0:
+        return ()
     if _storage_length(args) == 1:
         arg = _storage_read(args, 0)
         if _type_of(arg) is tuple:
@@ -2667,6 +2691,21 @@ def _extreme(args, key, default, greatest):
     if count > 1:
         if default is not _missing_default:
             raise TypeError("default is only valid with one iterable argument")
+        if count == 2 and key is None:
+            first = _storage_read(args, 0)
+            second = _storage_read(args, 1)
+            if greatest:
+                return second if second > first else first
+            return second if second < first else first
+        if count == 3 and key is None:
+            first = _storage_read(args, 0)
+            second = _storage_read(args, 1)
+            third = _storage_read(args, 2)
+            if greatest:
+                best = second if second > first else first
+                return third if third > best else best
+            best = second if second < first else first
+            return third if third < best else best
         # Positional candidates are read from the argument tuple by index:
         # iterating it would end with a StopIteration exception object.
         best = _storage_read(args, 0)
@@ -2680,7 +2719,26 @@ def _extreme(args, key, default, greatest):
                 best_key = candidate_key
             index += 1
         return best
-    iterator = iterate(_storage_read(args, 0))
+    iterable = _storage_read(args, 0)
+    owner = _type_of(iterable)
+    if owner is list or owner is tuple:
+        length = _storage_length(iterable)
+        if length == 0:
+            if default is not _missing_default:
+                return default
+            raise ValueError("min/max arg is an empty sequence")
+        best = _storage_read(iterable, 0)
+        best_key = best if key is None else key(best)
+        index = 1
+        while index < length:
+            candidate = _storage_read(iterable, index)
+            candidate_key = candidate if key is None else key(candidate)
+            if _better(candidate_key, best_key, greatest):
+                best = candidate
+                best_key = candidate_key
+            index += 1
+        return best
+    iterator = iterate(iterable)
     try:
         best = next_item(iterator)
     except StopIteration:
@@ -2743,8 +2801,13 @@ class tuple(TupleStorage):
 class str(TextStorage):
     __slots__ = ()
 
-    def __new__(cls, *args):
-        value = _make_str(*args)
+    def __new__(
+        cls,
+        object=_CODEC_ERRORS_MISSING,
+        encoding=_CODEC_ERRORS_MISSING,
+        errors=_CODEC_ERRORS_MISSING,
+    ):
+        value = _make_str(object, encoding, errors)
         if cls is not str:
             return typed_value(value, cls)
         return value

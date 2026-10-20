@@ -154,7 +154,7 @@ def _exact_text_literal(lvar: Lvar) -> str | None:
     vtype = lvar_type(lvar)
     if not vtype.fits(TEXT_TYPE):
         return None
-    return vtype.literal
+    return vtype.interned_text()
 
 
 def _exact_bytes_literal(lvar: Lvar) -> bytes | None:

@@ -23,8 +23,6 @@ from .ctype import (
     EMPTY_LIST_TYPE,
     FLOAT,
     FUNCTION_TYPE,
-    INTEGER,
-    LIST_TYPE,
     NONE_TYPE,
     TEXT_TYPE,
     UNKNOWN,
@@ -34,7 +32,7 @@ from .ctype import (
     ValueType,
 )
 from .knownfun import defknown, fun_info
-from .node import CallKind, GlobalVar, LeafVisitor, NodeVisitor, Ref
+from .node import CallKind, LeafVisitor, NodeVisitor
 
 
 class _DerivationMode(local):
@@ -43,13 +41,6 @@ class _DerivationMode(local):
 
 
 _DERIVATION_MODE = _DerivationMode()
-_PROTOCOL_PREFIXES = (
-    "mule_sequences_",
-    "mule_format_",
-    "mule_arguments_",
-    "mule_native_class_",
-    "mule_print_",
-)
 
 
 @contextmanager
@@ -62,43 +53,6 @@ def flow_propagation():
         yield
     finally:
         _DERIVATION_MODE.active = previous
-
-
-class _UnmutatedIntRef(NodeVisitor, LeafVisitor):
-    def visit_Node(self, node):
-        return False
-
-    def visit_Ref(self, node: Ref):
-        return node.leaf.accept(self)
-
-    def visit_Leaf(self, leaf):
-        return False
-
-    def visit_GlobalVar(self, leaf: GlobalVar):
-        return leaf.name == "int" and not leaf.sets
-
-
-_UNMUTATED_INT_REF = _UnmutatedIntRef()
-
-
-def derive_builtin_call_type(node) -> ValueType:
-    """Return ``INTEGER`` for an unmutated ``int(...)`` call outside flow propagation."""
-    if _DERIVATION_MODE.active:
-        return UNKNOWN
-    if node.kind not in (CallKind.FULL, CallKind.GUARDED):
-        return UNKNOWN
-    if node.info is not None and node.info.keywords:
-        return UNKNOWN
-    if len(node.args) > 2 or node.fun is None or len(node.fun.uses) != 1:
-        return UNKNOWN
-    lambda_ = node.home_lambda
-    if lambda_ is not None and (
-        lambda_.policy.safety >= 3 or lambda_.name.startswith(_PROTOCOL_PREFIXES)
-    ):
-        return UNKNOWN
-    if node.fun.use().accept(_UNMUTATED_INT_REF):
-        return INTEGER
-    return UNKNOWN
 
 
 class _LiteralType(ast.Visitor):
@@ -174,7 +128,7 @@ class _DeriveUseType(NodeVisitor, LeafVisitor):
             derived = node.fun_info.derive_type(node)
             if derived is not None:
                 return derived
-        return derive_builtin_call_type(node)
+        return UNKNOWN
 
     def visit_Exit(self, node):
         return _arg_type(node.value) if node.value is not None else UNKNOWN
@@ -203,16 +157,9 @@ def _arg_type(lvar) -> ValueType:
 def _derive_getslice(node) -> ValueType | None:
     if _DERIVATION_MODE.active:
         return None
-    receiver_type = _arg_type(node.args[0])
     if any(_arg_type(arg).may_be_unbound for arg in node.args):
         return UNKNOWN
-    if receiver_type.fits_text(TEXT_TYPE):
-        return TEXT_TYPE
-    if receiver_type is BYTES_TYPE:
-        return BYTES_TYPE
-    if receiver_type.fits_list(LIST_TYPE):
-        return receiver_type
-    return UNKNOWN
+    return _arg_type(node.args[0]).getslice_type()
 
 
 def _derive_build_list(node) -> ValueType | None:
@@ -257,6 +204,7 @@ BINARY = {
             if _DERIVATION_MODE.active
             else _arg_type(node.args[0]).binary(op, _arg_type(node.args[1]))
         ),
+        numeric=True,
     )
     for operator in ast.BinaryOperator
 }
@@ -270,6 +218,7 @@ INPLACE_BINARY = {
             if _DERIVATION_MODE.active
             else _arg_type(node.args[0]).binary(op, _arg_type(node.args[1]))
         ),
+        numeric=True,
     )
     for operator in ast.BinaryOperator
 }
@@ -280,6 +229,7 @@ UNARY = {
         derive_type=lambda node, op=operator: (
             None if _DERIVATION_MODE.active else _arg_type(node.args[0]).unary(op)
         ),
+        numeric=(operator is not ast.UnaryOperator.NOT),
     )
     for operator in ast.UnaryOperator
 }
@@ -292,14 +242,25 @@ COMPARE = {
             if _DERIVATION_MODE.active
             else _arg_type(node.args[0]).comparison(op, _arg_type(node.args[1]))
         ),
+        numeric=(
+            operator
+            not in (
+                ast.ComparisonOperator.IS,
+                ast.ComparisonOperator.IS_NOT,
+                ast.ComparisonOperator.IN,
+                ast.ComparisonOperator.NOT_IN,
+            )
+        ),
     )
     for operator in ast.ComparisonOperator
 }
 
 # Attribute and method protocols.
-GETATTR = defknown("%getattr", "call")
-SETATTR = defknown("%setattr", "call", "unsafe", result=False)
-RESOLVE_METHOD = defknown("%resolve_method", "call")
+GETATTR = defknown("%getattr", "call", non_integer_first_arg=True)
+SETATTR = defknown(
+    "%setattr", "call", "unsafe", result=False, non_integer_first_arg=True
+)
+RESOLVE_METHOD = defknown("%resolve_method", "call", non_integer_first_arg=True)
 RESOLVE_SUPER_METHOD = defknown("%resolve_super_method", "call")
 CALL_RESOLVED = defknown("%call_resolved", "call", "unsafe")
 
@@ -346,18 +307,33 @@ FORMAT = defknown("%format", "call", derive_type=lambda node: TEXT_TYPE)
 RANGE_PREPARE = defknown(
     "%range_prepare",
     derive_type=lambda node: None if _DERIVATION_MODE.active else BOOLEAN,
+    numeric=True,
+    non_integer_first_arg=True,
 )
 RANGE_AVAILABLE = defknown(
     "%range_available", "flushable", derive_type=lambda node: BOOLEAN
 )
-RANGE_ADVANCE = defknown("%range_advance", "unsafe")
+RANGE_ADVANCE = defknown("%range_advance", "unsafe", numeric=True)
 SEQUENCE_AVAILABLE = defknown(
     "%sequence_available",
     "unsafe",
     derive_type=lambda node: None if _DERIVATION_MODE.active else BOOLEAN,
 )
-GETSLICE = defknown("%getslice", "call", "unsafe", derive_type=_derive_getslice)
-LEN = defknown("len", "call", "unsafe")
+GETSLICE = defknown(
+    "%getslice",
+    "call",
+    "unsafe",
+    derive_type=_derive_getslice,
+    numeric=True,
+    non_integer_first_arg=True,
+)
+LEN = defknown(
+    "len",
+    "call",
+    "unsafe",
+    derive_type=lambda node: IntegerType(0, (1 << 60) - 1),
+    non_integer_first_arg=True,
+)
 
 _PROTOCOL_DERIVE_TYPES = {
     "getitem": lambda node: (
@@ -369,6 +345,19 @@ _PROTOCOL_DERIVE_TYPES = {
     "unpack": _derive_unpack,
 }
 
+_NON_INTEGER_FIRST_PROTOCOLS = frozenset(
+    {
+        "getitem",
+        "setitem",
+        "delitem",
+        "delete_attribute",
+        "iterate",
+        "next_item",
+        "unpack",
+    }
+)
+_INDEX_SECOND_PROTOCOLS = frozenset({"getitem", "setitem", "delitem"})
+
 # Compiled stdlib protocols, keyed by the name the sequence module exports.
 PROTOCOLS = {
     name: defknown(
@@ -377,6 +366,9 @@ PROTOCOLS = {
         "unsafe",
         protocol=name,
         derive_type=_PROTOCOL_DERIVE_TYPES.get(name),
+        numeric=(name == "make_slice"),
+        non_integer_first_arg=(name in _NON_INTEGER_FIRST_PROTOCOLS),
+        index_second_arg=(name in _INDEX_SECOND_PROTOCOLS),
     )
     for name in (
         "iterate",

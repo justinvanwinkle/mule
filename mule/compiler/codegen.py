@@ -43,6 +43,8 @@ from .ctype import (
     FIXNUM_MIN,
     NONE_TYPE,
     UNKNOWN,
+    ListType,
+    TextType,
     ValueType,
     ValueTypeVisitor,
 )
@@ -73,6 +75,7 @@ from .vop import (
     NULL,
     RANGE,
     SIGNED,
+    TN,
 )
 
 if TYPE_CHECKING:
@@ -377,8 +380,10 @@ class Program:
     module_import: ImportInfo | None = None
     search_paths: tuple[str, ...] = ()
     exported_types: dict[tuple[str, str], ValueType] = field(default_factory=dict)
+    exported_targets: dict[tuple[str, str], object] = field(default_factory=dict)
     storage_methods: dict[tuple[str, str], ValueType] = field(default_factory=dict)
     builtin_return_types: dict[str, ValueType] = field(default_factory=dict)
+    builtin_targets: dict[str, object] = field(default_factory=dict)
 
 
 # Every protocol (``$mule.*`` compilation namespaces) runs under the one
@@ -611,7 +616,7 @@ def generate(program: Program) -> str:
     return llvm
 
 
-def compile_component(lambda_: Lambda, context: EntryContext):
+def compile_component(lambda_: Lambda, context):
     """Run the IR2 phases for one body (``compile-component`` for a backend
     whose register allocation LLVM performs)."""
     with specialized_ir1_context(lambda_, context):
@@ -760,7 +765,7 @@ class ModuleGenerator:
         self.text_constants: dict[bytes, tuple[str, str]] = {}
         self.bytes_constants: dict[bytes, tuple[str, str]] = {}
         self.bigint_constants: dict[int, tuple[str, str]] = {}
-        self.protocol_helpers: dict[str, str] = {}
+        self.protocol_helpers: dict[object, str] = {}
         self.auxiliary: list[str] = []
         # Each runtime namespace's static cells (the runtime's ``GlobalCell``),
         # by name, linked once per namespace.
@@ -2180,8 +2185,8 @@ class ModuleGenerator:
     def emit(self) -> str:
         program = self.program
         functions = []
-        variants_by_key = {}
-        contexts_by_key = {}
+        variants_by_key: dict[tuple[Function, object], tuple[Lambda, EntryContext]] = {}
+        contexts_by_key: dict[tuple[Function, object], tuple[Lambda, EntryContext]] = {}
         for lambda_ in program.lambdas:
             general, variants = self.contexts(lambda_)
             contexts_by_key[lambda_, None] = (lambda_, general)
@@ -2538,9 +2543,7 @@ class ModuleGenerator:
         )
         return definitions
 
-    def emit_body(
-        self, lambda_: Lambda, context: EntryContext, *, unpacked: bool = False
-    ) -> str:
+    def emit_body(self, lambda_: Lambda, context, *, unpacked: bool = False) -> str:
         with (
             phase(
                 "LLVM body %s context %s",
@@ -3037,13 +3040,13 @@ class _ArgumentGuard(ValueTypeVisitor):
                 valid = operation(f"and i1 {valid}, {upper}")
         return valid
 
-    def visit_TextType(self, fact: ValueType) -> str:
+    def visit_TextType(self, fact: TextType) -> str:
         if fact.literal is not None:
             return self.visit_ValueType(fact)
         matched = self.gen.operation(f"call ptr @mule_text_storage(ptr {self.value})")
         return self.gen.operation(f"icmp eq ptr {matched}, @mule.true")
 
-    def visit_ListType(self, fact: ValueType) -> str:
+    def visit_ListType(self, fact: ListType) -> str:
         if fact.element != UNKNOWN or fact.may_be_unbound:
             return self.visit_ValueType(fact)
         matched = self.gen.operation(f"call i32 @mule_exact_list(ptr {self.value})")
@@ -3186,7 +3189,7 @@ class FunctionGenerator:
                         vop.results[0].tn.type = NONE_TYPE
         self._find_unpacked_calls(component)
         self.local_slots: dict[str, str] = {}
-        self.local_tns_by_name: dict[str, object] = {}
+        self.local_tns_by_name: dict[str, TN] = {}
         self.value_tns = []
         self.local_tns = []
         self.range_tns = []
@@ -3859,7 +3862,8 @@ class FunctionGenerator:
         return self.local_slots[name]
 
     def local_owned(self, name: str) -> bool:
-        return self.local_tns_by_name[name].sc.owned
+        sc = self.local_tns_by_name[name].sc
+        return sc is not None and sc.owned
 
     def dependency(self, var) -> str:
         return self.dependencies[var]

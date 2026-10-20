@@ -9,6 +9,7 @@ environment analysis, IR2) attach here as they are implemented.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from mule import ast
@@ -28,6 +29,7 @@ from . import (  # noqa: F401
     typetran,
 )
 from .annotation_types import AnnotationLedger
+from .ctype import ValueType
 from .debug import check_ir1_consistency
 from .dfo import find_dfo, find_initial_dfo
 from .envanal import environment_analyze
@@ -44,8 +46,10 @@ from .ir1tran_lambda import convert_module, lambda_blocks
 from .ir1util import join_blocks_if_possible, substitute_lvar_uses, unlink_node
 from .node import (
     Cast,
+    ClassConstructorTarget,
     Component,
     Constant,
+    ForeignCallTarget,
     GlobalVar,
     Lambda,
     LeafVisitor,
@@ -64,9 +68,16 @@ class Compilation:
     converter: Converter
     facts: dict[Lambda, locall.LambdaFacts] | None = None
     annotations: AnnotationLedger = field(default_factory=AnnotationLedger)
-    imported_function_types: dict[tuple[str, str], object] | None = None
-    storage_methods: dict[tuple[str, str], object] | None = None
-    builtin_return_types: dict[str, object] | None = None
+    imported_function_types: Mapping[tuple[str, str], ValueType] | None = None
+    imported_targets: (
+        Mapping[tuple[str, str], Lambda | ClassConstructorTarget | ForeignCallTarget]
+        | None
+    ) = None
+    storage_methods: Mapping[tuple[str, str], ValueType] | None = None
+    builtin_return_types: Mapping[str, ValueType] | None = None
+    builtin_targets: (
+        Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
+    ) = None
 
     @property
     def converters(self):
@@ -235,11 +246,13 @@ class _ReplaceGlobalConstantRefs(NodeVisitor, LeafVisitor):
 
 
 def _fold_protocol_constants(compilation: Compilation) -> bool:
-    if not compilation.entry.name.startswith(locall._PROTOCOL_PREFIXES):
+    if not compilation.entry.is_protocol:
         return False
     counts: dict[str, int] = {}
     constants: dict[str, Constant] = {}
     for lambda_ in compilation.lambdas:
+        if lambda_.component is None:
+            continue
         scan = _GlobalConstantScan(lambda_ is compilation.entry)
         for block in lambda_.component.blocks():
             for node in block.nodes():
@@ -254,7 +267,7 @@ def _fold_protocol_constants(compilation: Compilation) -> bool:
         return False
     changed = False
     for lambda_ in compilation.lambdas:
-        if lambda_ is compilation.entry:
+        if lambda_ is compilation.entry or lambda_.component is None:
             continue
         replacer = _ReplaceGlobalConstantRefs(single_constants)
         for block in lambda_.component.blocks():
@@ -290,8 +303,10 @@ def _ir1_optimize_phase_1(compilation: Compilation) -> None:
                 compilation.lambdas,
                 compilation.annotations,
                 imported_function_types=compilation.imported_function_types,
+                imported_targets=compilation.imported_targets,
                 storage_methods=compilation.storage_methods,
                 builtin_return_types=compilation.builtin_return_types,
+                builtin_targets=compilation.builtin_targets,
             )
             facts_stale = False
         if not any(component.reoptimize for component in compilation.components):
@@ -302,8 +317,10 @@ def _ir1_optimize_phase_1(compilation: Compilation) -> None:
                 compilation.lambdas,
                 compilation.annotations,
                 imported_function_types=compilation.imported_function_types,
+                imported_targets=compilation.imported_targets,
                 storage_methods=compilation.storage_methods,
                 builtin_return_types=compilation.builtin_return_types,
+                builtin_targets=compilation.builtin_targets,
             )
     logger.debug("IR1 reoptimization reached its %d-round limit", REOPTIMIZE_LIMIT)
 
@@ -365,6 +382,9 @@ def compile_toplevel(
             if not binds_file.found:
                 converter.module_file_literal = ast.TextLiteral(filename)
         entry = convert_module(converter, tree)
+        is_protocol = primitives is not None or namespace.startswith("$")
+        for lambda_ in converter.functions:
+            lambda_.is_protocol = is_protocol
         if converter.module_annotations:
             for lambda_ in converter.functions:
                 _GlobalAnnotationStores(converter, lambda_).apply(
@@ -419,14 +439,19 @@ def compile_source(
         )
         if imports is not None:
             compilation.imported_function_types = imports.exported_types
+            compilation.imported_targets = imports.exported_targets
             compilation.storage_methods = imports.storage_methods
             compilation.builtin_return_types = imports.builtin_return_types
-        elif not prefix.startswith(locall._PROTOCOL_PREFIXES):
-            from .sequence_protocol import stdlib_type_summary
+            compilation.builtin_targets = imports.builtin_targets
+        elif not compilation.entry.is_protocol:
+            from .sequence_protocol import stdlib_target_summary, stdlib_type_summary
 
             exported, methods, builtins = stdlib_type_summary()
+            exp_targets, b_targets = stdlib_target_summary()
             compilation.imported_function_types = exported
+            compilation.imported_targets = exp_targets
             compilation.storage_methods = methods
             compilation.builtin_return_types = builtins
+            compilation.builtin_targets = b_targets
         ir1_phases(compilation)
     return compilation

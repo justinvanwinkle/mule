@@ -2,6 +2,7 @@
 element propagation, fixnum range preparation, 64-element tuple literals, and
 pre-populated global constant Ref propagation."""
 
+from mule import ast
 from mule.compiler.annotation_types import AnnotationLedger
 from mule.compiler.constraint import constant_type, propagate
 from mule.compiler.ctype import (
@@ -146,6 +147,7 @@ def test_range_prepare_and_range_advance_with_fixnum_bound():
 def test_tuple_literal_up_to_64_elements_retains_element_types():
     words = ", ".join(f"'w{i}'" for i in range(32))
     expr = parse(f"({words})", mode="eval")
+    assert isinstance(expr, ast.ExpressionInput)
     tup_type = constant_type(expr.expression)
     assert isinstance(tup_type, TupleType)
     assert tup_type.arity == 32

@@ -27,12 +27,11 @@ class SourceHighlights:
         key = (filename, span.start.line)
         if key not in self._suppressed:
             try:
-                statements = parse(line.strip(), filename=filename).statements
+                module = parse(line.strip(), filename=filename)
             except SyntaxError:
-                statements = []
-            self._suppressed[key] = (
-                statements[0].accept(_SuppressedCall()) if statements else None
-            )
+                self._suppressed[key] = None
+            else:
+                self._suppressed[key] = module.accept(_SuppressedCall())
         return node.accept(_Marker(line, leading, self._suppressed[key]))
 
 
@@ -55,6 +54,9 @@ class _NamedCall(ast.Visitor):
 class _SuppressedCall(ast.Visitor):
     def visit_Node(self, node):
         return None
+
+    def visit_Module(self, node):
+        return node.statements[0].accept(self) if node.statements else None
 
     def visit_Return(self, node):
         return node.value.accept(_NamedCall()) if node.value is not None else None

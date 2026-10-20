@@ -68,9 +68,23 @@ To support **instant runtime imports (including dynamic `importlib.import_module
      - Every exported function's signature, symbol name, available specialized entry contexts (`general`, `fixnum`, `observed`), and inferred `ValueType` return type (`exported_types`, `storage_methods`, `builtin_return_types`).
    - **Separate compilation (default)**: When compiling downstream code that imports the package, Mule loads `interface.json` in milliseconds without re-parsing or re-analyzing the library's `.py` files. Callers immediately propagate the library's inferred return types and emit direct/guarded calls to its specialized entry symbols.
 
-3. **Retained `.py` sources for whole-program specialization**:
-   - Because standard Python wheels also include `.py` source files, a whole-program optimizing build (`-O2` / `-O3`) is not limited to the pre-baked entry contexts in the `.so`. When application call sites pass concrete argument types (such as a specific `TupleType` or homogeneous `ListType`) into an imported library function where specialization unlocks new IR1/IR2 transforms, the compiler can pull the function's `.py` source into the compilation unit's `locall` fixpoint and emit a caller-specialized clone.
+3. **Retained `.py` sources for whole-program and generic specialization**:
+   - Because standard Python wheels also include `.py` source files, a build is not limited to the pre-baked entry contexts in the `.so`. When application call sites pass concrete argument types (such as a specific `TupleType` or homogeneous `ListType`) into an imported library function where specialization unlocks new IR1/IR2 transforms, the compiler can pull the function's `.py` source into the compilation unit's `locall` fixpoint and emit a caller-specialized clone.
    - (Note: shipping textual `.ll` in wheels is intentionally avoided—once IR1/IR2 has lowered an unspecialized function to boxed `MuleValue` calls and reference counting in `.ll`, LLVM LTO cannot recover unboxed representations or Python-level transforms, and `.ll` text is an order of magnitude larger than `.py` source.)
+
+### 2.3 Caller-side monomorphization of specialized generics
+
+A prebuilt `.so` cannot contain machine code specialized for type parameters that are only known when downstream caller code is compiled (for example, `class Box[T]`, `def bisect[T](a: list[T], x: T)`, or functions instantiated with a caller-defined `@optimize(target_class=True)` native struct).
+
+To support specialized generics across `.so` boundaries, Mule follows the C++ template / Rust `.rlib`+`.so` split:
+
+1. **What lives in the library's `.so`**:
+   - Non-generic functions and classes.
+   - The boxed `"general"` fallback implementations of generic functions and classes (used by dynamic or unspecialized callers).
+   - The library module's global variable cells (`@mule.cell:<namespace>:<name>`), exported with default symbol visibility so code outside the `.so` binds to the same live module globals.
+2. **Where specialized generics are emitted (the caller's binary)**:
+   - When a caller compilation unit instantiates a generic class or calls a generic function from an imported package with concrete types (`int64`, `float64`, `list[int64]`, or a native struct layout), the compiler loads the generic definition from the package's `.py` source, specializes its IR1/IR2 under the concrete type arguments, and **emits the specialized native functions into the caller's compilation unit** with `linkonce_odr` / `weak_odr` linkage (so duplicate instantiations across multiple caller modules merge into a single definition at link time).
+   - Any module globals or non-generic helpers referenced by the specialized generic body resolve as external symbol references against the library's `.so`.
 
 ---
 

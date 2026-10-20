@@ -82,6 +82,12 @@ class ValueTypeVisitor:
     def visit_OptionalValueType(self, fact):
         return self.visit_ValueType(fact)
 
+    def visit_ClassType(self, fact):
+        return self.visit_ValueType(fact)
+
+    def visit_UniqueObjectType(self, fact):
+        return self.visit_ValueType(fact)
+
 
 @dataclass(frozen=True, slots=True)
 class ValueType:
@@ -142,6 +148,9 @@ class ValueType:
 
     def truth_value(self) -> bool | None:
         return None
+
+    def as_fact(self, wrap):
+        return wrap(self)
 
     def normalized_bottom(self):
         return self
@@ -215,6 +224,12 @@ class ValueType:
             return UNKNOWN_UNBOUND if unbound else UNKNOWN
         return OptionalValueType(joined, unbound)
 
+    def join_class(self, left):
+        return self.join_unknown(left)
+
+    def join_unique_object(self, left):
+        return self.join_unknown(left)
+
     def join_unbound(self, left):
         return self.with_unbound()
 
@@ -242,6 +257,9 @@ class ValueType:
     def widen_optional_value(self, old):
         return self
 
+    def widen_class(self, old):
+        return self
+
     def widen_constant(self):
         return self
 
@@ -260,11 +278,58 @@ class ValueType:
     def _update_as_nested_dict(self, key_type, val_type):
         return self.update_nested_dicts(key_type, val_type)
 
+    def propagate_to_parent_container(self, parent):
+        return parent
+
     def widen_mutable_containers(self):
         return self
 
     def limit_container_depth(self, max_depth: int = 3):
         return self
+
+    def runtime_class_type(self):
+        return UNKNOWN
+
+    def runtime_parent_class_type(self):
+        return None
+
+    def same_runtime_class(self, other) -> bool:
+        return False
+
+    def is_runtime_subclass_of(self, target) -> bool:
+        return target is UNKNOWN or self.same_runtime_class(target)
+
+    def is_class_object(self) -> bool | None:
+        return None if (self.may_be_unbound or self is UNKNOWN) else False
+
+    def allocate_instance_type(self):
+        return UNKNOWN
+
+    def general_instance_type(self):
+        return UNKNOWN
+
+    def parent_class_type(self):
+        return UNKNOWN
+
+    def is_subclass_of(self, target) -> bool | None:
+        return None
+
+    def check_subclass_from(self, source_instances) -> bool | None:
+        return None
+
+    def is_instance_of(self, target) -> bool | None:
+        if self.may_be_unbound:
+            return None
+        return self.runtime_class_type().is_subclass_of(target)
+
+    def is_same_unique_object(self, identity: object) -> bool:
+        return False
+
+    def compare_identity_with(self, left, operator):
+        return BOOLEAN
+
+    def compare_class_identity(self, left, is_same: bool):
+        return BOOLEAN
 
     def binary(self, operator, right):
         return right.binary_unknown(operator, self)
@@ -303,6 +368,9 @@ class ValueType:
         if operator in {
             ast.ComparisonOperator.IS,
             ast.ComparisonOperator.IS_NOT,
+        }:
+            return right.compare_identity_with(self, operator)
+        if operator in {
             ast.ComparisonOperator.IN,
             ast.ComparisonOperator.NOT_IN,
         }:
@@ -321,7 +389,44 @@ class ValueType:
     def narrow_none(self, is_none: bool):
         return self
 
+    def narrow_identity(self, target, is_same: bool):
+        if self.may_be_unbound:
+            return self
+        if target.fits_none(NONE_TYPE):
+            return self.narrow_none(is_same)
+        cmp = self.comparison(
+            ast.ComparisonOperator.IS if is_same else ast.ComparisonOperator.IS_NOT,
+            target,
+        )
+        if cmp is BOOLEAN_FALSE:
+            return BOTTOM
+        if is_same and target is not UNKNOWN and not target.may_be_unbound:
+            if self.fits(target):
+                return self
+            if target.fits(self):
+                return target
+        return self
+
+    def narrow_by_runtime_class(self, target_cls, is_same: bool):
+        if self.may_be_unbound:
+            return self
+        my_cls = self.runtime_class_type()
+        if my_cls is UNKNOWN:
+            return self
+        narrowed_cls = my_cls.narrow_identity(target_cls, is_same)
+        if narrowed_cls is BOTTOM:
+            return BOTTOM
+        if narrowed_cls == my_cls:
+            return self
+        return narrowed_cls.allocate_instance_type()
+
     def exact_integer(self):
+        return None
+
+    def exact_length(self) -> int | None:
+        return None
+
+    def codepoint_at(self, index: int):
         return None
 
     def interned_text(self) -> str | None:
@@ -339,8 +444,17 @@ class ValueType:
     def getitem_type(self, index):
         return UNKNOWN
 
+    def getslice_type(self):
+        return UNKNOWN
+
     def iterate_type(self):
         return UNKNOWN
+
+    def flow_iterate_type(self):
+        return self.iterate_type()
+
+    def is_empty_iterator(self) -> bool:
+        return False
 
     def next_item_type(self):
         return UNKNOWN
@@ -370,6 +484,19 @@ class ValueType:
         self, name: str, arity: int, has_keywords: bool, storage_methods=None
     ):
         return UNKNOWN
+
+    def method_call(
+        self, name: str, arg_types: tuple, has_keywords: bool, storage_methods=None
+    ):
+        return (
+            self.method_return_type(
+                name, len(arg_types), has_keywords, storage_methods
+            ),
+            None,
+            None,
+            False,
+            True,
+        )
 
     def fits(self, expected):
         return expected.accepts(self)
@@ -464,6 +591,12 @@ class ValueType:
     def fits_iterator(self, expected=None):
         return False
 
+    def fits_class(self, expected=None):
+        return False
+
+    def fits_unique_object(self, expected=None):
+        return False
+
     def proves_tuple_index(self, index):
         """Whether every value of this type is a bound tuple with an element
         at ``index``."""
@@ -487,6 +620,13 @@ class UnknownType(ValueType):
         if other is self:
             return self
         return other.join_unknown(self)
+
+    def narrow_by_runtime_class(self, target_cls, is_same: bool):
+        if not self.may_be_unbound and is_same:
+            narrowed = target_cls.general_instance_type()
+            if narrowed is not UNKNOWN:
+                return narrowed
+        return self
 
     def accepts_dispatch(self, actual):
         return True
@@ -514,6 +654,12 @@ class UnknownType(ValueType):
             expected is None or expected.element is UNKNOWN
         )
 
+    def runtime_parent_class_type(self):
+        return NONE_TYPE
+
+    def same_runtime_class(self, other) -> bool:
+        return other is UNKNOWN
+
 
 UNKNOWN = UnknownType()
 UNKNOWN_UNBOUND = UnknownType(may_be_unbound=True)
@@ -528,10 +674,16 @@ class PrimitiveType(ValueType):
     def may_run_user_code(self):
         return False
 
+    def runtime_parent_class_type(self):
+        return CLASS_OBJECT_TYPE
+
     def comparison(self, operator, right):
         if operator in {
             ast.ComparisonOperator.IS,
             ast.ComparisonOperator.IS_NOT,
+        }:
+            return right.compare_identity_with(self, operator)
+        if operator in {
             ast.ComparisonOperator.IN,
             ast.ComparisonOperator.NOT_IN,
         }:
@@ -541,12 +693,23 @@ class PrimitiveType(ValueType):
     def compare_primitive(self, left):
         return BOOLEAN
 
+    def narrow_none(self, is_none: bool):
+        if self.may_be_unbound:
+            return self
+        return BOTTOM if is_none else self
+
 
 @dataclass(frozen=True, slots=True)
 class IntegerType(PrimitiveType):
     minimum: int | None = None
     maximum: int | None = None
     may_be_unbound: bool = False
+
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else ClassType((self,))
+
+    def same_runtime_class(self, other) -> bool:
+        return other.fits_integer(INTEGER)
 
     def fits_real(self, expected):
         return not self.may_be_unbound
@@ -731,8 +894,15 @@ class IntegerType(PrimitiveType):
         elif operator == ast.ComparisonOperator.EQUAL:
             minimum = max(minimum, bound) if minimum is not None else bound
             maximum = min(maximum, bound) if maximum is not None else bound
+        elif operator == ast.ComparisonOperator.NOT_EQUAL:
+            if minimum == bound and maximum == bound:
+                return BOTTOM
+            if minimum == bound:
+                minimum = bound + 1
+            elif maximum == bound:
+                maximum = bound - 1
         if minimum is not None and maximum is not None and minimum > maximum:
-            return self
+            return BOTTOM
         if minimum == self.minimum and maximum == self.maximum:
             return self
         return replace(self, minimum=minimum, maximum=maximum)
@@ -758,7 +928,9 @@ class IntegerType(PrimitiveType):
         return IntegerType(minimum, maximum) if minimum <= maximum else None
 
     def dispatch_rank(self) -> int:
-        return self.maximum - self.minimum if self.is_fixnum else 2**64
+        if self.is_fixnum and self.minimum is not None and self.maximum is not None:
+            return self.maximum - self.minimum
+        return 2**64
 
     def accepts(self, actual):
         return actual.fits_integer(self)
@@ -785,6 +957,14 @@ class PythonIntegerType(IntegerType):
 
     @property
     def is_fixnum(self):
+        return False
+
+    def runtime_class_type(self):
+        if self.may_be_unbound:
+            return UNKNOWN
+        return ClassType((IntegerType(self.minimum, self.maximum), BOOLEAN))
+
+    def same_runtime_class(self, other) -> bool:
         return False
 
     def accept(self, visitor):
@@ -834,6 +1014,8 @@ class PythonIntegerType(IntegerType):
 
     def narrow(self, operator, bound, truth):
         narrowed = super().narrow(operator, bound, truth)
+        if narrowed is BOTTOM:
+            return BOTTOM
         if (narrowed.minimum is not None and narrowed.minimum > 1) or (
             narrowed.maximum is not None and narrowed.maximum < 0
         ):
@@ -852,6 +1034,22 @@ class PythonIntegerType(IntegerType):
 class BooleanType(IntegerType):
     minimum: int | None = 0
     maximum: int | None = 1
+
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else CLASS_BOOL_TYPE
+
+    def runtime_parent_class_type(self):
+        return CLASS_INT_TYPE
+
+    def same_runtime_class(self, other) -> bool:
+        return other.fits_boolean(BOOLEAN)
+
+    def is_runtime_subclass_of(self, target) -> bool:
+        return (
+            target is UNKNOWN
+            or target.fits_boolean(BOOLEAN)
+            or target.fits_integer(INTEGER)
+        )
 
     def annotation_conflict(self, contract):
         return contract.boolean_conflict(self)
@@ -938,7 +1136,22 @@ class BooleanType(IntegerType):
         return _integer_binary(operator, left, self, factory)
 
     def narrow(self, operator, bound, truth):
-        return self
+        narrowed = super().narrow(operator, bound, truth)
+        if narrowed is BOTTOM:
+            return BOTTOM
+        if (
+            narrowed.minimum == 0
+            and narrowed.maximum == 0
+            and not narrowed.may_be_unbound
+        ):
+            return BOOLEAN_FALSE
+        if (
+            narrowed.minimum == 1
+            and narrowed.maximum == 1
+            and not narrowed.may_be_unbound
+        ):
+            return BOOLEAN_TRUE
+        return narrowed
 
     def exact_integer(self):
         return None
@@ -977,6 +1190,12 @@ class BooleanType(IntegerType):
 @dataclass(frozen=True, slots=True)
 class FloatType(PrimitiveType):
     may_be_unbound: bool = False
+
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else CLASS_FLOAT_TYPE
+
+    def same_runtime_class(self, other) -> bool:
+        return other.fits_float(FLOAT)
 
     def fits_real(self, expected):
         return not self.may_be_unbound
@@ -1040,6 +1259,9 @@ class RealType(PrimitiveType):
     """Python float annotations admit integers without changing their objects."""
 
     may_be_unbound: bool = False
+
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else ClassType((INTEGER, BOOLEAN, FLOAT))
 
     def accept(self, visitor):
         return visitor.visit_RealType(self)
@@ -1155,6 +1377,12 @@ class ImmortalType(ValueType):
 class NoneType(PrimitiveType):
     may_be_unbound: bool = False
 
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else CLASS_NONE_TYPE
+
+    def same_runtime_class(self, other) -> bool:
+        return other.fits_none(NONE_TYPE)
+
     @property
     def is_immortal(self):
         return not self.may_be_unbound
@@ -1165,6 +1393,9 @@ class NoneType(PrimitiveType):
 
     def accept(self, visitor):
         return visitor.visit_NoneType(self)
+
+    def truth_value(self) -> bool | None:
+        return None if self.may_be_unbound else False
 
     def narrow_none(self, is_none: bool):
         if self.may_be_unbound:
@@ -1199,6 +1430,13 @@ class NoneType(PrimitiveType):
             return left
         return OptionalValueType(left.inner, unbound)
 
+    def join_class(self, left):
+        return ClassType(
+            left.instance_types,
+            may_be_none=True,
+            may_be_unbound=left.may_be_unbound or self.may_be_unbound,
+        )
+
     def accepts(self, actual):
         return actual.fits_none(self)
 
@@ -1226,6 +1464,12 @@ class TextType(PrimitiveType):
     literal: str | None = None
     may_be_unbound: bool = False
 
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else CLASS_STR_TYPE
+
+    def same_runtime_class(self, other) -> bool:
+        return other.fits_text(TEXT_TYPE)
+
     @property
     def is_heap_object(self):
         return not self.may_be_unbound
@@ -1244,6 +1488,27 @@ class TextType(PrimitiveType):
         if self.literal == "" or (len(self.literal) == 1 and ord(self.literal) <= 0xFF):
             return self.literal
         return None
+
+    def exact_length(self) -> int | None:
+        return (
+            len(self.literal)
+            if (not self.may_be_unbound and self.literal is not None)
+            else None
+        )
+
+    def codepoint_at(self, index: int):
+        if self.may_be_unbound or self.literal is None:
+            return None
+        idx = index + len(self.literal) if index < 0 else index
+        if 0 <= idx < len(self.literal):
+            cp = ord(self.literal[idx])
+            return IntegerType(cp, cp)
+        return None
+
+    def truth_value(self) -> bool | None:
+        if self.may_be_unbound or self.literal is None:
+            return None
+        return bool(self.literal)
 
     def dispatch_domain(self):
         return None if self.may_be_unbound else TEXT_TYPE
@@ -1330,6 +1595,9 @@ class TextType(PrimitiveType):
     def getitem_type(self, index):
         return UNKNOWN if self.may_be_unbound else TEXT_TYPE
 
+    def getslice_type(self):
+        return UNKNOWN if self.may_be_unbound else TEXT_TYPE
+
     def iterate_type(self):
         if self.may_be_unbound:
             return UNKNOWN
@@ -1349,6 +1617,12 @@ class TextType(PrimitiveType):
 @dataclass(frozen=True, slots=True)
 class BytesType(PrimitiveType):
     may_be_unbound: bool = False
+
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else CLASS_BYTES_TYPE
+
+    def same_runtime_class(self, other) -> bool:
+        return other.fits_bytes(BYTES_TYPE)
 
     @property
     def is_heap_object(self):
@@ -1410,6 +1684,9 @@ class BytesType(PrimitiveType):
             return IntegerType(0, 255)
         return UNKNOWN
 
+    def getslice_type(self):
+        return UNKNOWN if self.may_be_unbound else BYTES_TYPE
+
     def iterate_type(self):
         if self.may_be_unbound:
             return UNKNOWN
@@ -1430,12 +1707,24 @@ class BytesType(PrimitiveType):
 class FunctionType(ValueType):
     may_be_unbound: bool = False
 
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else CLASS_FUNCTION_TYPE
+
+    def runtime_parent_class_type(self):
+        return CLASS_OBJECT_TYPE
+
+    def same_runtime_class(self, other) -> bool:
+        return other.fits_function(FUNCTION_TYPE)
+
     def annotation_conflict(self, contract):
         return True
 
     @property
     def is_heap_object(self):
         return not self.may_be_unbound
+
+    def truth_value(self) -> bool | None:
+        return None if self.may_be_unbound else True
 
     def accept(self, visitor):
         return visitor.visit_FunctionType(self)
@@ -1469,12 +1758,29 @@ class TupleType(ValueType):
     elements: tuple[ValueType, ...] | None = None
     may_be_unbound: bool = False
 
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else CLASS_TUPLE_TYPE
+
+    def runtime_parent_class_type(self):
+        return CLASS_OBJECT_TYPE
+
+    def same_runtime_class(self, other) -> bool:
+        return other.fits_tuple(TupleType())
+
+    def exact_length(self) -> int | None:
+        return None if self.may_be_unbound else self.arity
+
     def annotation_conflict(self, contract):
         return False if self.may_be_unbound else contract.tuple_conflict(self)
 
     @property
     def is_heap_object(self):
         return not self.may_be_unbound
+
+    def truth_value(self) -> bool | None:
+        if self.may_be_unbound or self.arity is None:
+            return None
+        return self.arity > 0
 
     def accept(self, visitor):
         return visitor.visit_TupleType(self)
@@ -1620,6 +1926,10 @@ class TupleType(ValueType):
         if self.may_be_unbound or index.may_be_unbound:
             return UNKNOWN
         if self.elements is not None:
+            if self.arity is None and len(self.elements) == 1:
+                if index.fits(PYTHON_INTEGER):
+                    return self.elements[0]
+                return UNKNOWN
             idx = index.exact_integer()
             if idx is not None:
                 if idx < 0:
@@ -1627,11 +1937,32 @@ class TupleType(ValueType):
                 if 0 <= idx < len(self.elements):
                     return self.elements[idx]
             if len(self.elements) > 0 and index.fits(PYTHON_INTEGER):
+                lo, hi = index.minimum, index.maximum
+                if (
+                    lo is not None
+                    and hi is not None
+                    and 0 <= lo <= hi < len(self.elements)
+                ):
+                    sub = self.elements[lo : hi + 1]
+                    joined = sub[0]
+                    for element in sub[1:]:
+                        joined = joined.join(element)
+                    return joined
                 joined = self.elements[0]
                 for element in self.elements[1:]:
                     joined = joined.join(element)
                 return joined
         return UNKNOWN
+
+    def getslice_type(self):
+        if self.may_be_unbound:
+            return UNKNOWN
+        if self.elements:
+            joined = self.elements[0]
+            for element in self.elements[1:]:
+                joined = joined.join(element)
+            return TupleType(None, None if joined is UNKNOWN else (joined,))
+        return TupleType()
 
     def iterate_type(self):
         if self.may_be_unbound:
@@ -1648,7 +1979,41 @@ class TupleType(ValueType):
     def unpacked_tuple_type(self, arity: int):
         if not self.may_be_unbound and self.arity == arity:
             return self
+        if (
+            not self.may_be_unbound
+            and self.arity is None
+            and self.elements is not None
+            and len(self.elements) == 1
+            and 0 < arity <= 16
+        ):
+            return TupleType(arity, self.elements * arity)
         return TupleType(arity)
+
+    def check_subclass_from(self, source_instances) -> bool | None:
+        if self.may_be_unbound or self.elements is None:
+            return None
+        if not self.elements:
+            return False
+        outcomes = set()
+        for src in source_instances:
+            any_true = False
+            any_unknown = False
+            for elem in self.elements:
+                sub = elem.check_subclass_from((src,))
+                if sub is True:
+                    any_true = True
+                    break
+                if sub is None:
+                    any_unknown = True
+            if any_true:
+                outcomes.add(True)
+            elif any_unknown:
+                return None
+            else:
+                outcomes.add(False)
+        if len(outcomes) == 1:
+            return next(iter(outcomes))
+        return None
 
     def accepts(self, actual):
         return actual.fits_tuple(self)
@@ -1687,6 +2052,18 @@ class ListType(ValueType):
     element: ValueType = UNKNOWN
     may_be_unbound: bool = False
 
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else CLASS_LIST_TYPE
+
+    def runtime_parent_class_type(self):
+        return CLASS_OBJECT_TYPE
+
+    def same_runtime_class(self, other) -> bool:
+        return other.fits_list(LIST_TYPE)
+
+    def exact_length(self) -> int | None:
+        return 0 if (not self.may_be_unbound and self.element is BOTTOM) else None
+
     def annotation_conflict(self, contract):
         return False if self.may_be_unbound else contract.list_conflict(self)
 
@@ -1702,6 +2079,11 @@ class ListType(ValueType):
     @property
     def is_exact_list(self):
         return not self.may_be_unbound
+
+    def truth_value(self) -> bool | None:
+        if not self.may_be_unbound and self.element is BOTTOM:
+            return False
+        return None
 
     def accept(self, visitor):
         return visitor.visit_ListType(self)
@@ -1755,6 +2137,12 @@ class ListType(ValueType):
         if new_elem == self.element:
             return self
         return ListType(new_elem, self.may_be_unbound)
+
+    def propagate_to_parent_container(self, parent):
+        return parent.update_nested_lists(self.element)
+
+    def widen_constant(self):
+        return LIST_TYPE if not self.may_be_unbound else ListType(UNKNOWN, True)
 
     def widen_mutable_containers(self):
         if self.element is BOTTOM or self.element is UNKNOWN:
@@ -1841,10 +2229,18 @@ class ListType(ValueType):
             return self.element
         return UNKNOWN
 
+    def getslice_type(self):
+        return UNKNOWN if self.may_be_unbound else self
+
     def iterate_type(self):
         if self.may_be_unbound:
             return UNKNOWN
         return IteratorType(UNKNOWN if self.element is BOTTOM else self.element)
+
+    def flow_iterate_type(self):
+        if self.may_be_unbound:
+            return UNKNOWN
+        return IteratorType(self.element)
 
     def unpacked_tuple_type(self, arity: int):
         elem = (
@@ -1921,6 +2317,47 @@ class ListType(ValueType):
             return storage_methods.get(("ListStorage", name), UNKNOWN)
         return UNKNOWN
 
+    def method_call(
+        self, name: str, arg_types: tuple, has_keywords: bool, storage_methods=None
+    ):
+        if self.may_be_unbound:
+            return UNKNOWN, None, None, False, True
+        arity = len(arg_types)
+        if not has_keywords:
+            if name == "append" and arity == 1:
+                may_call = arg_types[0].may_be_unbound
+                return (
+                    NONE_TYPE if not may_call else UNKNOWN,
+                    self.with_element(arg_types[0]),
+                    0,
+                    False,
+                    may_call,
+                )
+            if name == "insert" and arity == 2:
+                return (
+                    self.method_return_type(name, arity, has_keywords, storage_methods),
+                    self.with_element(arg_types[1]),
+                    1,
+                    False,
+                    True,
+                )
+            if name == "extend" and arity == 1:
+                elem_type = arg_types[0].iterate_type().next_item_type()
+                return (
+                    self.method_return_type(name, arity, has_keywords, storage_methods),
+                    self.with_element(elem_type),
+                    None,
+                    False,
+                    True,
+                )
+        return (
+            self.method_return_type(name, arity, has_keywords, storage_methods),
+            None,
+            None,
+            False,
+            True,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class DictType(ValueType):
@@ -1930,12 +2367,33 @@ class DictType(ValueType):
     value: ValueType = UNKNOWN
     may_be_unbound: bool = False
 
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else CLASS_DICT_TYPE
+
+    def runtime_parent_class_type(self):
+        return CLASS_OBJECT_TYPE
+
+    def same_runtime_class(self, other) -> bool:
+        return other.fits_dict(DICT_TYPE)
+
+    def exact_length(self) -> int | None:
+        return (
+            0
+            if (not self.may_be_unbound and self.key is BOTTOM and self.value is BOTTOM)
+            else None
+        )
+
     def annotation_conflict(self, contract):
         return True
 
     @property
     def is_heap_object(self):
         return not self.may_be_unbound
+
+    def truth_value(self) -> bool | None:
+        if not self.may_be_unbound and self.key is BOTTOM and self.value is BOTTOM:
+            return False
+        return None
 
     def accept(self, visitor):
         return visitor.visit_DictType(self)
@@ -2003,6 +2461,14 @@ class DictType(ValueType):
     def _update_as_nested_dict(self, key_type, val_type):
         return self.update_nested_dicts(key_type, val_type).with_entry(
             key_type, val_type
+        )
+
+    def propagate_to_parent_container(self, parent):
+        return parent.update_nested_dicts(self.key, self.value)
+
+    def widen_constant(self):
+        return (
+            DICT_TYPE if not self.may_be_unbound else DictType(UNKNOWN, UNKNOWN, True)
         )
 
     def widen_mutable_containers(self):
@@ -2125,6 +2591,11 @@ class DictType(ValueType):
             return UNKNOWN
         return IteratorType(UNKNOWN if self.key is BOTTOM else self.key)
 
+    def flow_iterate_type(self):
+        if self.may_be_unbound:
+            return UNKNOWN
+        return IteratorType(self.key)
+
     def dict_keys_iterator_type(self):
         return self.iterate_type()
 
@@ -2164,6 +2635,57 @@ class DictType(ValueType):
             return storage_methods.get(("dict", name), UNKNOWN)
         return UNKNOWN
 
+    def method_call(
+        self, name: str, arg_types: tuple, has_keywords: bool, storage_methods=None
+    ):
+        if self.may_be_unbound:
+            return UNKNOWN, None, None, False, True
+        arity = len(arg_types)
+        if not has_keywords:
+            if name == "setdefault" and arity in (1, 2):
+                default_type = arg_types[1] if arity == 2 else NONE_TYPE
+                updated = self.with_entry(arg_types[0], default_type)
+                return (
+                    self.method_return_type(name, arity, has_keywords, storage_methods),
+                    updated,
+                    1 if arity == 2 else None,
+                    True,
+                    True,
+                )
+            if name == "get" and arity in (1, 2):
+                default_type = arg_types[1] if arity == 2 else NONE_TYPE
+                res_type = self.dict_get_type(default_type)
+                may_call = arg_types[0].may_run_user_code or res_type is UNKNOWN
+                return res_type, None, None, True, may_call
+            if name == "items" and arity == 0:
+                iter_type = (
+                    IteratorType(TupleType(2, (BOTTOM, BOTTOM)))
+                    if (self.key is BOTTOM and self.value is BOTTOM)
+                    else self.dict_items_iterator_type()
+                )
+                return iter_type, None, None, False, iter_type is UNKNOWN
+            if name == "keys" and arity == 0:
+                iter_type = (
+                    IteratorType(BOTTOM)
+                    if (self.key is BOTTOM and self.value is BOTTOM)
+                    else self.dict_keys_iterator_type()
+                )
+                return iter_type, None, None, False, iter_type is UNKNOWN
+            if name == "values" and arity == 0:
+                iter_type = (
+                    IteratorType(BOTTOM)
+                    if (self.key is BOTTOM and self.value is BOTTOM)
+                    else self.dict_values_iterator_type()
+                )
+                return iter_type, None, None, False, iter_type is UNKNOWN
+        return (
+            self.method_return_type(name, arity, has_keywords, storage_methods),
+            None,
+            None,
+            False,
+            True,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class IteratorType(ValueType):
@@ -2171,6 +2693,20 @@ class IteratorType(ValueType):
 
     element: ValueType = UNKNOWN
     may_be_unbound: bool = False
+
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else CLASS_ITERATOR_TYPE
+
+    def runtime_parent_class_type(self):
+        return CLASS_OBJECT_TYPE
+
+    def is_empty_iterator(self) -> bool:
+        return not self.may_be_unbound and (
+            self.element is BOTTOM or self.element == TupleType(2, (BOTTOM, BOTTOM))
+        )
+
+    def same_runtime_class(self, other) -> bool:
+        return other.fits_iterator(ITERATOR_TYPE)
 
     def annotation_conflict(self, contract):
         return True
@@ -2339,6 +2875,8 @@ class BottomType(ValueType):
     join_iterator = join_unknown
     join_optional_integer = join_unknown
     join_optional_value = join_unknown
+    join_class = join_unknown
+    join_unique_object = join_unknown
     join_unbound = join_unknown
 
     def normalized_bottom(self):
@@ -2417,6 +2955,8 @@ class UnboundType(ValueType):
     join_iterator = join_unknown
     join_optional_integer = join_unknown
     join_optional_value = join_unknown
+    join_class = join_unknown
+    join_unique_object = join_unknown
     join_unbound = join_unknown
 
 
@@ -2424,6 +2964,11 @@ class UnboundType(ValueType):
 class OptionalIntegerType(ValueType):
     integer: IntegerType = field(default_factory=IntegerType)
     may_be_unbound: bool = False
+
+    def runtime_class_type(self):
+        if self.may_be_unbound:
+            return UNKNOWN
+        return ClassType((self.integer, NONE_TYPE))
 
     def accept(self, visitor):
         return visitor.visit_OptionalIntegerType(self)
@@ -2479,7 +3024,9 @@ class OptionalIntegerType(ValueType):
         unbound = old.may_be_unbound or self.may_be_unbound
         if integer == self.integer and unbound == self.may_be_unbound:
             return self
-        return OptionalIntegerType(integer, unbound)
+        return OptionalIntegerType(
+            IntegerType(integer.minimum, integer.maximum), unbound
+        )
 
     def narrow_none(self, is_none: bool):
         if self.may_be_unbound:
@@ -2491,6 +3038,11 @@ class OptionalIntegerType(ValueType):
 class OptionalValueType(ValueType):
     inner: ValueType = UNKNOWN
     may_be_unbound: bool = False
+
+    def runtime_class_type(self):
+        if self.may_be_unbound:
+            return UNKNOWN
+        return self.inner.runtime_class_type().join(CLASS_NONE_TYPE)
 
     def accept(self, visitor):
         return visitor.visit_OptionalValueType(self)
@@ -2513,6 +3065,24 @@ class OptionalValueType(ValueType):
         if self.may_be_unbound:
             return self
         return NONE_TYPE if is_none else self.inner
+
+    def narrow_identity(self, target, is_same: bool):
+        if self.may_be_unbound:
+            return self
+        if target.fits_none(NONE_TYPE):
+            return self.narrow_none(is_same)
+        if (
+            is_same
+            and target.comparison(ast.ComparisonOperator.IS, NONE_TYPE) is BOOLEAN_FALSE
+        ):
+            return self.inner.narrow_identity(target, True)
+        if not is_same:
+            narrowed_inner = self.inner.narrow_identity(target, False)
+            if narrowed_inner is BOTTOM:
+                return NONE_TYPE
+            if narrowed_inner != self.inner:
+                return OptionalValueType(narrowed_inner, False)
+        return super().narrow_identity(target, is_same)
 
     def join(self, other):
         return other.join_optional_value(self)
@@ -2589,6 +3159,324 @@ class OptionalValueType(ValueType):
         return OptionalValueType(new_inner, self.may_be_unbound)
 
 
+def _merge_class_instances(
+    left_instances: tuple[ValueType, ...], right_instances: tuple[ValueType, ...]
+) -> tuple[ValueType, ...]:
+    merged: list[ValueType] = list(left_instances)
+    for r_inst in right_instances:
+        found = False
+        for i, l_inst in enumerate(merged):
+            if l_inst.same_runtime_class(r_inst):
+                merged[i] = UNKNOWN if l_inst is UNKNOWN else l_inst.join(r_inst)
+                found = True
+                break
+        if not found:
+            merged.append(r_inst)
+    return tuple(merged)
+
+
+@dataclass(frozen=True, slots=True)
+class ClassType(ValueType):
+    """Compile-time type of a class object, parameterized by the ``ValueType``s
+    of instances of the classes it may represent."""
+
+    instance_types: tuple[ValueType, ...] = ()
+    may_be_none: bool = False
+    may_be_unbound: bool = False
+
+    def accept(self, visitor):
+        return visitor.visit_ClassType(self)
+
+    @property
+    def is_heap_object(self):
+        return not self.may_be_unbound and not self.may_be_none
+
+    @property
+    def may_run_user_code(self):
+        return False
+
+    def truth_value(self) -> bool | None:
+        return None if (self.may_be_unbound or self.may_be_none) else True
+
+    def is_class_object(self) -> bool | None:
+        return None if (self.may_be_unbound or self.may_be_none) else True
+
+    def fits_class(self, expected=None):
+        return not self.may_be_unbound
+
+    def runtime_class_type(self):
+        return UNKNOWN if (self.may_be_unbound or self.may_be_none) else CLASS_TYPE_TYPE
+
+    def runtime_parent_class_type(self):
+        return None if (self.may_be_unbound or self.may_be_none) else CLASS_OBJECT_TYPE
+
+    def same_runtime_class(self, other) -> bool:
+        return (
+            not self.may_be_unbound
+            and not self.may_be_none
+            and other.fits_class()
+            and not other.may_be_none
+        )
+
+    def general_instance_type(self):
+        if (
+            not self.may_be_unbound
+            and not self.may_be_none
+            and len(self.instance_types) == 1
+        ):
+            inst = self.instance_types[0]
+            if inst.fits_class():
+                return ANY_CLASS_TYPE
+            return inst.widen_mutable_containers().widen_constant()
+        return UNKNOWN
+
+    def allocate_instance_type(self):
+        if self.may_be_unbound or self.may_be_none or not self.instance_types:
+            return UNKNOWN
+        result = self.instance_types[0]
+        for inst in self.instance_types[1:]:
+            result = result.join(inst)
+        return result
+
+    def parent_class_type(self):
+        if self.may_be_unbound or self.may_be_none or not self.instance_types:
+            return UNKNOWN
+        result: ValueType = BOTTOM
+        for inst in self.instance_types:
+            parent = inst.runtime_parent_class_type()
+            if parent is None:
+                return UNKNOWN
+            result = result.join(parent)
+        return result
+
+    def is_subclass_of(self, target) -> bool | None:
+        if self.may_be_unbound or self.may_be_none or not self.instance_types:
+            return None
+        return target.check_subclass_from(self.instance_types)
+
+    def check_subclass_from(self, source_instances) -> bool | None:
+        if self.may_be_unbound or self.may_be_none or not self.instance_types:
+            return None
+        outcomes = set()
+        for src in source_instances:
+            if len(self.instance_types) == 1:
+                outcomes.add(src.is_runtime_subclass_of(self.instance_types[0]))
+            else:
+                sub_outcomes = {
+                    src.is_runtime_subclass_of(t) for t in self.instance_types
+                }
+                if len(sub_outcomes) == 1:
+                    outcomes.add(next(iter(sub_outcomes)))
+                else:
+                    return None
+        if len(outcomes) == 1:
+            return next(iter(outcomes))
+        return None
+
+    def join(self, other):
+        return other.join_class(self)
+
+    def join_class(self, left):
+        if left is self:
+            return self
+        unbound = left.may_be_unbound or self.may_be_unbound
+        may_be_none = left.may_be_none or self.may_be_none
+        if not left.instance_types or not self.instance_types:
+            return UNKNOWN_UNBOUND if unbound else UNKNOWN
+        merged = _merge_class_instances(left.instance_types, self.instance_types)
+        if len(merged) > 8:
+            return UNKNOWN_UNBOUND if unbound else UNKNOWN
+        return ClassType(merged, may_be_none=may_be_none, may_be_unbound=unbound)
+
+    def join_none(self, left):
+        return ClassType(
+            self.instance_types,
+            may_be_none=True,
+            may_be_unbound=left.may_be_unbound or self.may_be_unbound,
+        )
+
+    def widen(self, new):
+        return new.widen_class(self)
+
+    def widen_class(self, old):
+        if len(self.instance_types) > 6:
+            return UNKNOWN_UNBOUND if self.may_be_unbound else UNKNOWN
+        return self
+
+    def comparison(self, operator, right):
+        if operator in {
+            ast.ComparisonOperator.IS,
+            ast.ComparisonOperator.IS_NOT,
+        }:
+            is_same = operator is ast.ComparisonOperator.IS
+            if right.fits_none(NONE_TYPE) and not self.may_be_unbound:
+                if not self.may_be_none:
+                    return BOOLEAN_FALSE if is_same else BOOLEAN_TRUE
+                if not self.instance_types:
+                    return BOOLEAN_TRUE if is_same else BOOLEAN_FALSE
+                return BOOLEAN
+            return right.compare_class_identity(self, is_same)
+        return super().comparison(operator, right)
+
+    def compare_identity_with(self, left, operator):
+        is_same = operator is ast.ComparisonOperator.IS
+        if left.fits_none(NONE_TYPE) and not self.may_be_unbound:
+            if not self.may_be_none:
+                return BOOLEAN_FALSE if is_same else BOOLEAN_TRUE
+            if not self.instance_types:
+                return BOOLEAN_TRUE if is_same else BOOLEAN_FALSE
+            return BOOLEAN
+        return left.compare_class_identity(self, is_same)
+
+    def compare_class_identity(self, left, is_same: bool):
+        if (
+            left.may_be_unbound
+            or self.may_be_unbound
+            or not left.instance_types
+            or not self.instance_types
+        ):
+            return BOOLEAN
+        if (
+            not left.may_be_none
+            and not self.may_be_none
+            and len(left.instance_types) == 1
+            and len(self.instance_types) == 1
+        ):
+            same = left.instance_types[0].same_runtime_class(self.instance_types[0])
+            res = same if is_same else not same
+            return BOOLEAN_TRUE if res else BOOLEAN_FALSE
+        overlap = any(
+            l_inst.same_runtime_class(r_inst)
+            for l_inst in left.instance_types
+            for r_inst in self.instance_types
+        ) or (left.may_be_none and self.may_be_none)
+        if not overlap:
+            return BOOLEAN_FALSE if is_same else BOOLEAN_TRUE
+        return BOOLEAN
+
+    def narrow_none(self, is_none: bool):
+        if self.may_be_unbound:
+            return self
+        if is_none:
+            return NONE_TYPE if self.may_be_none else BOTTOM
+        if not self.may_be_none:
+            return self
+        if not self.instance_types:
+            return BOTTOM
+        return ClassType(self.instance_types, may_be_none=False, may_be_unbound=False)
+
+    def narrow_identity(self, target, is_same: bool):
+        if self.may_be_unbound:
+            return self
+        if target.fits_none(NONE_TYPE):
+            return self.narrow_none(is_same)
+        if (
+            target.fits_class()
+            and not target.may_be_none
+            and len(target.instance_types) == 1
+        ):
+            if not self.instance_types and not self.may_be_none:
+                return (
+                    ClassType(
+                        target.instance_types,
+                        may_be_none=False,
+                        may_be_unbound=False,
+                    )
+                    if is_same
+                    else self
+                )
+            t_inst = target.instance_types[0]
+            if is_same:
+                matching = tuple(
+                    inst
+                    for inst in self.instance_types
+                    if inst.same_runtime_class(t_inst)
+                )
+                return (
+                    BOTTOM
+                    if not matching
+                    else ClassType(matching, may_be_none=False, may_be_unbound=False)
+                )
+            remaining = tuple(
+                inst
+                for inst in self.instance_types
+                if not inst.same_runtime_class(t_inst)
+            )
+            if not remaining and not self.may_be_none:
+                return BOTTOM
+            if not remaining and self.may_be_none:
+                return NONE_TYPE
+            return ClassType(
+                remaining, may_be_none=self.may_be_none, may_be_unbound=False
+            )
+        return super().narrow_identity(target, is_same)
+
+
+@dataclass(frozen=True, slots=True)
+class UniqueObjectType(ValueType):
+    """Compile-time type of a unique singleton object allocated at module
+    initialization (such as ``_binding_missing()`` or ``object()``)."""
+
+    identity: object = None
+    may_be_unbound: bool = False
+
+    def accept(self, visitor):
+        return visitor.visit_UniqueObjectType(self)
+
+    @property
+    def is_heap_object(self):
+        return not self.may_be_unbound
+
+    @property
+    def may_run_user_code(self):
+        return False
+
+    def truth_value(self) -> bool | None:
+        return None if self.may_be_unbound else True
+
+    def fits_unique_object(self, expected=None):
+        return not self.may_be_unbound
+
+    def is_same_unique_object(self, identity: object) -> bool:
+        return (
+            not self.may_be_unbound
+            and self.identity is not None
+            and self.identity == identity
+        )
+
+    def join(self, other):
+        return other.join_unique_object(self)
+
+    def join_unique_object(self, left):
+        if left.identity == self.identity and self.identity is not None:
+            unbound = left.may_be_unbound or self.may_be_unbound
+            return UniqueObjectType(self.identity, may_be_unbound=unbound)
+        return self.join_unknown(left)
+
+    def comparison(self, operator, right):
+        if operator in {
+            ast.ComparisonOperator.IS,
+            ast.ComparisonOperator.IS_NOT,
+        }:
+            return self.compare_identity_with(right, operator)
+        return super().comparison(operator, right)
+
+    def compare_identity_with(self, left, operator):
+        if self.may_be_unbound or left.may_be_unbound or self.identity is None:
+            return BOOLEAN
+        is_same = operator is ast.ComparisonOperator.IS
+        if left.is_same_unique_object(self.identity):
+            return BOOLEAN_TRUE if is_same else BOOLEAN_FALSE
+        if left is not UNKNOWN:
+            return BOOLEAN_FALSE if is_same else BOOLEAN_TRUE
+        return BOOLEAN
+
+    def narrow_none(self, is_none: bool):
+        if self.may_be_unbound:
+            return self
+        return BOTTOM if is_none else self
+
+
 def widen_fact(previous: ValueType, current: ValueType) -> ValueType:
     return previous.widen(previous.join(current)).limit_container_depth(3)
 
@@ -2614,6 +3502,41 @@ DICT_TYPE = DictType()
 EMPTY_DICT_TYPE = DictType(BOTTOM, BOTTOM)
 ITERATOR_TYPE = IteratorType()
 OPTIONAL_FIXNUM = OptionalIntegerType(IntegerType(FIXNUM_MIN, FIXNUM_MAX))
+ANY_CLASS_TYPE = ClassType()
+CLASS_TYPE_TYPE = ClassType((ANY_CLASS_TYPE,))
+CLASS_INT_TYPE = ClassType((INTEGER,))
+CLASS_BOOL_TYPE = ClassType((BOOLEAN,))
+CLASS_FLOAT_TYPE = ClassType((FLOAT,))
+CLASS_STR_TYPE = ClassType((TEXT_TYPE,))
+CLASS_BYTES_TYPE = ClassType((BYTES_TYPE,))
+CLASS_NONE_TYPE = ClassType((NONE_TYPE,))
+CLASS_FUNCTION_TYPE = ClassType((FUNCTION_TYPE,))
+CLASS_TUPLE_TYPE = ClassType((TupleType(),))
+CLASS_LIST_TYPE = ClassType((EMPTY_LIST_TYPE,))
+CLASS_DICT_TYPE = ClassType((EMPTY_DICT_TYPE,))
+CLASS_ITERATOR_TYPE = ClassType((ITERATOR_TYPE,))
+CLASS_OBJECT_TYPE = ClassType((UNKNOWN,))
+
+BUILTIN_CLASS_TYPES: dict[str, ClassType] = {
+    "int": CLASS_INT_TYPE,
+    "bool": CLASS_BOOL_TYPE,
+    "float": CLASS_FLOAT_TYPE,
+    "str": CLASS_STR_TYPE,
+    "bytes": CLASS_BYTES_TYPE,
+    "tuple": CLASS_TUPLE_TYPE,
+    "list": CLASS_LIST_TYPE,
+    "dict": CLASS_DICT_TYPE,
+    "object": CLASS_OBJECT_TYPE,
+    "type": CLASS_TYPE_TYPE,
+}
+STORAGE_CLASS_TYPES: dict[str, ValueType] = {
+    "TextStorage": TEXT_TYPE,
+    "BytesStorage": BYTES_TYPE,
+    "TupleStorage": TupleType(),
+    "ListStorage": LIST_TYPE,
+    "dict": DICT_TYPE,
+    "_Table": DICT_TYPE,
+}
 
 
 def _bounds_fit(actual, expected):
@@ -2936,6 +3859,21 @@ class _SerializeValueType(ValueTypeVisitor):
             "unbound": fact.may_be_unbound,
         }
 
+    def visit_ClassType(self, fact):
+        return {
+            "kind": "class",
+            "instances": [inst.to_dict() for inst in fact.instance_types],
+            "none": fact.may_be_none,
+            "unbound": fact.may_be_unbound,
+        }
+
+    def visit_UniqueObjectType(self, fact):
+        return {
+            "kind": "unique_obj",
+            "id": str(fact.identity),
+            "unbound": fact.may_be_unbound,
+        }
+
 
 _SERIALIZE_VALUE_TYPE = _SerializeValueType()
 
@@ -3029,4 +3967,15 @@ def value_type_from_dict(data: dict | None) -> ValueType:
         if inner is UNKNOWN:
             return UNKNOWN_UNBOUND if unbound else UNKNOWN
         return OptionalValueType(inner, may_be_unbound=unbound)
+    if kind == "class":
+        instances = tuple(
+            value_type_from_dict(inst) for inst in data.get("instances", ())
+        )
+        return ClassType(
+            instances,
+            may_be_none=bool(data.get("none", False)),
+            may_be_unbound=unbound,
+        )
+    if kind == "unique_obj":
+        return UniqueObjectType(data.get("id"), may_be_unbound=unbound)
     return UNKNOWN

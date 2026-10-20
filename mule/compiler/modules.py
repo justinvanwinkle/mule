@@ -9,21 +9,42 @@ from pathlib import Path
 
 from mule import ast
 
+from .constraint import BOOTSTRAP_BUILTIN_TARGETS, BOOTSTRAP_CLASS_TARGETS
 from .ctype import (
+    ANY_CLASS_TYPE,
+    BUILTIN_CLASS_TYPES,
     DICT_TYPE,
     EMPTY_DICT_TYPE,
     EMPTY_LIST_TYPE,
     LIST_TYPE,
+    STORAGE_CLASS_TYPES,
     UNKNOWN,
     ValueType,
 )
+from .fndb import IMPORT
 from .inputs import directory_entries, directory_exists, read_source, source_exists
 from .ir1opt import constant_literal
 from .ir1tran_lambda import lambda_blocks
 from .ir1util import class_method_definitions, known_calls
-from .locall import _PROTOCOL_PREFIXES, _ImportBindingStores, global_bindings
+from .locall import (
+    _CLASS_BASE_NAMES,
+    _ImportBindingStores,
+    collect_global_constants,
+    global_bindings,
+)
 from .main import Compilation, compile_toplevel, ir1_phases
-from .node import Combination, GlobalVar, LeafVisitor, NodeVisitor, Ref, linked
+from .node import (
+    ClassConstructorTarget,
+    Combination,
+    ForeignCallTarget,
+    GlobalVar,
+    Lambda,
+    LeafVisitor,
+    NodeVisitor,
+    Ref,
+    linked,
+)
+from .protocols import NATIVE_MODULE_EXPORTS, NATIVE_MODULE_TARGETS
 
 STDLIB = Path(__file__).resolve().parents[2] / "stdlib"
 NATIVE_MODULES = {
@@ -61,10 +82,8 @@ class _ImportedModuleName(NodeVisitor):
         return None
 
     def visit_Combination(self, node: Combination):
-        if node.fun_info is not None and node.fun_info.name == "%import":
-            return node.info.module_name
-        if node.fun_info is not None and node.fun_info.name == "%import_module":
-            return node.info
+        if node.fun_info is IMPORT:
+            return linked(node.info, node, "info").module_name
         return None
 
 
@@ -161,9 +180,17 @@ class ModuleCompiler:
         # Lambdas and facts of every imported module, in compilation order.
         self.lambdas = []
         self.facts = {}
-        self.exported_types: dict[tuple[str, str], ValueType] = {}
+        self.exported_types: dict[tuple[str, str], ValueType] = dict(
+            NATIVE_MODULE_EXPORTS
+        )
+        self.exported_targets: dict[
+            tuple[str, str], Lambda | ClassConstructorTarget | ForeignCallTarget
+        ] = dict(NATIVE_MODULE_TARGETS)
         self.storage_methods: dict[tuple[str, str], ValueType] = {}
         self.builtin_return_types: dict[str, ValueType] = {}
+        self.builtin_targets: dict[
+            str, Lambda | ClassConstructorTarget | ForeignCallTarget
+        ] = dict(BOOTSTRAP_BUILTIN_TARGETS)
         # Imported modules awaiting compilation. An importer needs only the
         # descriptor, so modules compile one after another rather than nested
         # inside their importer, and stack depth does not grow with import
@@ -349,6 +376,7 @@ class ModuleCompiler:
         for pub_name, lam in (
             global_bindings([compilation.entry]).get(namespace, {}).items()
         ):
+            self.exported_targets[namespace, pub_name] = lam
             if lam in facts:
                 ret_type = facts[lam].return_type
                 if ret_type == EMPTY_LIST_TYPE:
@@ -357,14 +385,21 @@ class ModuleCompiler:
                     ret_type = DICT_TYPE
                 if ret_type is not UNKNOWN:
                     self.exported_types[namespace, pub_name] = ret_type
-        class_names = {
-            linked(call.info, call, "class definition").identity: linked(
-                call.info, call, "class definition"
-            ).public_name
-            for call in known_calls(compilation.entry, "%make_class")
-        }
-        for class_id, methods in class_method_definitions(compilation.entry).items():
+        class_names: dict[str, str] = {}
+        class_bases: dict[str, tuple[str, ...]] = {}
+        for call in known_calls(compilation.entry, "%make_class"):
+            info = linked(call.info, call, "class definition")
+            class_names[info.identity] = info.public_name
+            class_bases[info.public_name] = (
+                call.args[0].uses[0].accept(_CLASS_BASE_NAMES)
+                if call.args and len(call.args[0].uses) == 1
+                else ()
+            )
+        method_defs = class_method_definitions(compilation.entry)
+        all_class_ids = list(dict.fromkeys([*class_names, *method_defs]))
+        for class_id in all_class_ids:
             class_name = class_names.get(class_id, class_id)
+            methods = method_defs.get(class_id, {})
             for method_name, target in methods.items():
                 if target in facts:
                     ret_type = facts[target].return_type
@@ -372,8 +407,35 @@ class ModuleCompiler:
                         ret_type = LIST_TYPE
                     elif ret_type == EMPTY_DICT_TYPE:
                         ret_type = DICT_TYPE
-                    if ret_type is not UNKNOWN:
-                        self.storage_methods[class_name, method_name] = ret_type
+                    self.storage_methods[class_name, method_name] = ret_type
+            bases = class_bases.get(class_name, ())
+            for base_name in bases:
+                for (owner_name, method_name), ret_type in list(
+                    self.storage_methods.items()
+                ):
+                    if owner_name == base_name:
+                        self.storage_methods.setdefault(
+                            (class_name, method_name), ret_type
+                        )
+            base_target = BOOTSTRAP_CLASS_TARGETS.get(class_name)
+            if base_target is not None:
+                base_type = base_target.base_type
+                cls_type = base_target.cls_type
+                records_type_origin = base_target.records_type_origin
+            else:
+                cls_type = BUILTIN_CLASS_TYPES.get(class_name, ANY_CLASS_TYPE)
+                base_type = STORAGE_CLASS_TYPES.get(class_name, UNKNOWN)
+                records_type_origin = False
+            cls_target = ClassConstructorTarget(
+                base_type=base_type,
+                cls_type=cls_type,
+                new_target=methods.get("__new__"),
+                init_target=methods.get("__init__"),
+                records_type_origin=records_type_origin,
+            )
+            self.exported_targets[namespace, class_name] = cls_target
+        for leaf, vtype in collect_global_constants(compilation.lambdas).items():
+            self.exported_types.setdefault((namespace, leaf.name), vtype)
         import_bindings: dict[str, tuple[str, str]] = {}
         imp_visitor = _ImportBindingStores(import_bindings)
         for block in lambda_blocks(compilation.entry):
@@ -393,32 +455,35 @@ class ModuleCompiler:
             )
             if builtin_name is None or target_name is None:
                 continue
+            target_obj = self.exported_targets.get((namespace, target_name))
+            if target_obj is None and target_name in import_bindings:
+                target_obj = self.exported_targets.get(import_bindings[target_name])
+            if target_obj is not None:
+                self.builtin_targets[builtin_name] = target_obj
             ret_type = self.exported_types.get((namespace, target_name), UNKNOWN)
             if ret_type is UNKNOWN and target_name in import_bindings:
                 ret_type = self.exported_types.get(
                     import_bindings[target_name], UNKNOWN
                 )
-            if (
-                ret_type is UNKNOWN
-                and (target_name, "__init__") not in self.storage_methods
-            ):
+            if ret_type is UNKNOWN and target_obj is not None:
+                ret_type = target_obj.summary_return_type()
+            if ret_type is UNKNOWN:
                 ret_type = self.storage_methods.get((target_name, "__new__"), UNKNOWN)
             if ret_type is not UNKNOWN:
                 self.builtin_return_types[builtin_name] = ret_type
 
     def compile_pending(self):
         """Compile every module imported so far, and those they import."""
-        if (
-            not self.storage_methods
-            and self.primitives is None
-            and not self.prefix.startswith(_PROTOCOL_PREFIXES)
-        ):
-            from .sequence_protocol import stdlib_type_summary
+        if not self.storage_methods and self.primitives is None:
+            from .sequence_protocol import stdlib_target_summary, stdlib_type_summary
 
             exported, methods, builtins = stdlib_type_summary()
             self.exported_types.update(exported)
             self.storage_methods.update(methods)
             self.builtin_return_types.update(builtins)
+            exp_targets, b_targets = stdlib_target_summary()
+            self.exported_targets.update(exp_targets)
+            self.builtin_targets.update(b_targets)
         pending_compilations: list[tuple[CompiledModule, Compilation]] = []
         while self.pending:
             descriptor = self.pending.popleft()
@@ -464,36 +529,40 @@ class ModuleCompiler:
             visit(desc.name)
         for descriptor, compilation in ordered:
             compilation.imported_function_types = self.exported_types
+            compilation.imported_targets = self.exported_targets
             compilation.storage_methods = self.storage_methods
             compilation.builtin_return_types = self.builtin_return_types
+            compilation.builtin_targets = self.builtin_targets
             ir1_phases(compilation)
             if compilation.facts is None:
                 raise RuntimeError(f"{descriptor.path} was not analyzed")
             self.record_types(descriptor.name, compilation)
         for descriptor, compilation in pending_compilations:
             self.lambdas.extend(compilation.lambdas)
-            self.facts.update(compilation.facts)
+            if compilation.facts is not None:
+                self.facts.update(compilation.facts)
 
     def compile(self, source, filename):
         """Compile the main module and every module it imports; imported
         modules accumulate on the compiler. Returns the main module's
         ``Compilation``."""
-        if (
-            not self.storage_methods
-            and self.primitives is None
-            and not self.prefix.startswith(_PROTOCOL_PREFIXES)
-        ):
-            from .sequence_protocol import stdlib_type_summary
+        if not self.storage_methods and self.primitives is None:
+            from .sequence_protocol import stdlib_target_summary, stdlib_type_summary
 
             exported, methods, builtins = stdlib_type_summary()
             self.exported_types.update(exported)
             self.storage_methods.update(methods)
             self.builtin_return_types.update(builtins)
+            exp_targets, b_targets = stdlib_target_summary()
+            self.exported_targets.update(exp_targets)
+            self.builtin_targets.update(b_targets)
         compilation = compile_toplevel(source, filename, imports=self)
         self.compile_pending()
         compilation.imported_function_types = self.exported_types
+        compilation.imported_targets = self.exported_targets
         compilation.storage_methods = self.storage_methods
         compilation.builtin_return_types = self.builtin_return_types
+        compilation.builtin_targets = self.builtin_targets
         ir1_phases(compilation)
         self.record_types("__main__", compilation)
         return compilation

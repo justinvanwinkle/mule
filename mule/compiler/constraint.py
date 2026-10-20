@@ -20,16 +20,29 @@ local-call analysis may guard.
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from mule import ast
 
+from . import fndb
 from .ctype import (
+    ANY_CLASS_TYPE,
     BOOLEAN,
     BOOLEAN_FALSE,
     BOOLEAN_TRUE,
     BOTTOM,
     BYTES_TYPE,
+    CLASS_BOOL_TYPE,
+    CLASS_BYTES_TYPE,
+    CLASS_DICT_TYPE,
+    CLASS_FLOAT_TYPE,
+    CLASS_INT_TYPE,
+    CLASS_LIST_TYPE,
+    CLASS_OBJECT_TYPE,
+    CLASS_STR_TYPE,
+    CLASS_TUPLE_TYPE,
+    CLASS_TYPE_TYPE,
     DICT_TYPE,
     EMPTY_DICT_TYPE,
     EMPTY_LIST_TYPE,
@@ -38,7 +51,6 @@ from .ctype import (
     IMMORTAL,
     IMMORTAL_UNBOUND,
     INTEGER,
-    ITERATOR_TYPE,
     LIST_TYPE,
     NONE_TYPE,
     PYTHON_INTEGER,
@@ -49,17 +61,19 @@ from .ctype import (
     UNKNOWN_UNBOUND,
     IntegerType,
     IteratorType,
-    ListType,
     TextType,
     TupleType,
     ValueType,
     ValueTypeVisitor,
 )
 from .ir1util import block_exception_target, made_function, made_lambda
+from .knownfun import defconstrain, defpropagate
 from .node import (
     CallKind,
     Cast,
+    ClassConstructorTarget,
     Combination,
+    ForeignCallTarget,
     FunctionalKind,
     If,
     Lambda,
@@ -67,15 +81,39 @@ from .node import (
     NodeVisitor,
     Ref,
     Set,
+    ValuedNode,
     linked,
 )
+
+_DEAD_EDGE = object()
+
+
+class _AsTupleType(ValueTypeVisitor):
+    def visit_ValueType(self, fact):
+        return None
+
+    def visit_TupleType(self, fact):
+        return None if fact.may_be_unbound else fact
+
+
+_AS_TUPLE_TYPE = _AsTupleType()
 
 
 @dataclass(frozen=True, slots=True)
 class Fact:
     type: ValueType = UNKNOWN
-    target: Lambda | None = None
+    target: Lambda | ClassConstructorTarget | ForeignCallTarget | None = None
     proven: bool = False
+
+    def as_fact(self, wrap):
+        return self
+
+    def with_type(self, type_: ValueType) -> Fact:
+        if type_ is self.type or type_ == self.type:
+            return self
+        if self.target is None and not self.proven:
+            return _fact(type_)
+        return Fact(type_, self.target, self.proven)
 
 
 NO_FACT = Fact(BOTTOM)
@@ -139,7 +177,7 @@ def _fact(value_type: ValueType) -> Fact:
 
 @dataclass(frozen=True, slots=True)
 class CallSite:
-    target: Lambda | None
+    target: Lambda | ClassConstructorTarget | ForeignCallTarget | None
     arguments: tuple[ValueType, ...]
     proven: bool = False
 
@@ -151,6 +189,8 @@ class Body:
     facts: dict[object, Fact]
     return_type: ValueType
     calls: tuple[CallSite, ...]
+    self_type: ValueType | None = None
+    return_states: tuple[tuple[ValuedNode, dict, dict, dict], ...] = ()
 
     def types(self) -> dict[object, ValueType]:
         return {
@@ -159,9 +199,9 @@ class Body:
 
     def targets(self) -> dict[object, Lambda]:
         return {
-            node: fact.target
+            node: lam
             for node, fact in self.facts.items()
-            if fact.target is not None
+            if fact.target is not None and (lam := fact.target.as_lambda()) is not None
         }
 
 
@@ -306,6 +346,8 @@ class _Propagation(NodeVisitor, LeafVisitor):
         self.state = state
         self.origins = origins
         self.parent_origins: dict[object, object] = {}
+        self.type_of_origins: dict[object, object] = {}
+        self.tuple_list_origins: dict[object, TupleType] = {}
         self.handler_state: dict[object, Fact] | None = None
         # Keys assigned since the handler state last absorbed the state.
         self.changed = set()
@@ -315,6 +357,8 @@ class _Propagation(NodeVisitor, LeafVisitor):
         self.state = state
         self.origins.clear()
         self.parent_origins.clear()
+        self.type_of_origins.clear()
+        self.tuple_list_origins.clear()
         self.changed.clear()
         self.handler_state = state.copy() if has_handler else None
 
@@ -325,8 +369,68 @@ class _Propagation(NodeVisitor, LeafVisitor):
     def fact_of(self, lvar) -> Fact:
         return self.walk.facts.get(lvar.use(), NO_FACT)
 
+    def lvar_fact(self, lvar) -> Fact:
+        return self.fact_of(lvar)
+
     def type_of(self, lvar) -> ValueType:
         return self.fact_of(lvar).type
+
+    def narrowed_fact(self, current: Fact, narrowed_type: ValueType) -> Fact:
+        if current.target is None:
+            return _fact(narrowed_type)
+        return Fact(narrowed_type, current.target, current.proven)
+
+    def prove_argument_type(self, lvar, proven_type: ValueType) -> None:
+        recv_var = self.origins.get(lvar)
+        if (
+            recv_var is not None
+            and not recv_var.indirect
+            and self.type_of(lvar) is UNKNOWN
+        ):
+            self.assign(recv_var, _fact(proven_type))
+
+    def update_mutated_container(self, recv_var, updated_type: ValueType) -> None:
+        if (
+            recv_var is None
+            or recv_var not in self.state
+            or recv_var in self.walk.indirect
+        ):
+            return
+        if self.state.get(recv_var) is not UNBOUND_FACT:
+            self.assign(recv_var, _fact(updated_type))
+        all_vars = {recv_var} | self.walk.aliases.get(recv_var, set())
+        for alias_var in all_vars - {recv_var}:
+            if alias_var in self.state and alias_var not in self.walk.indirect:
+                alias_type = self.state[alias_var].type
+                joined = alias_type.join(updated_type)
+                if joined != alias_type and joined is not UNKNOWN:
+                    self.assign(alias_var, _fact(joined))
+        parents = set()
+        for member in all_vars:
+            parents.update(self.walk.parent_containers.get(member, ()))
+        for parent_var in parents:
+            if parent_var in self.state and parent_var not in self.walk.indirect:
+                current_fact = self.state[parent_var]
+                updated_nested = updated_type.propagate_to_parent_container(
+                    current_fact.type
+                )
+                if updated_nested != current_fact.type:
+                    self.assign(parent_var, _fact(updated_nested))
+
+    def mutate_container_element(self, lvar, elem_type: ValueType) -> None:
+        recv_var = self.origins.get(lvar)
+        recv_type = self.type_of(lvar)
+        if recv_type.fits_list(LIST_TYPE):
+            self.mutate_list(recv_var, recv_type, elem_type)
+
+    def resolve_call_target(self, node: Combination):
+        callee_fact = self.fact_of(node.fun)
+        if callee_fact.target is not None:
+            return callee_fact.target if callee_fact.proven else None
+        imported = self.walk.imported_target(node.fun)
+        if imported is not None:
+            return imported
+        return self.walk.builtin_target(node.fun)
 
     def invalidate(self):
         self.walk.invalidate_globals(self.state)
@@ -492,23 +596,27 @@ class _Propagation(NodeVisitor, LeafVisitor):
         old = self.state[key]
         if node.value is None:
             self.assign(key, UNBOUND_FACT)
+            self.type_of_origins.pop(key, None)
         else:
             fact = self.fact_of(node.value)
             contract = self.walk.local_contracts.get(key)
             if contract is not None and not contract.contradicts(fact.type):
                 refined = contract.refine(fact.type)
                 if refined is not fact.type:
-                    fact = (
-                        _fact(refined)
-                        if fact.target is None
-                        else Fact(refined, fact.target, fact.proven)
-                    )
+                    fact = self.narrowed_fact(fact, refined)
             src_var = self.origins.get(node.value)
             if src_var is not None and src_var in self.state:
                 self.record_alias(key, src_var)
             parent_var = self.parent_origins.get(node.value)
             if parent_var is not None and parent_var in self.state:
                 self.record_container_child(parent_var, key)
+            type_origin = self.type_of_origins.get(node.value) or (
+                self.type_of_origins.get(src_var) if src_var is not None else None
+            )
+            if type_origin is not None:
+                self.type_of_origins[key] = type_origin
+            else:
+                self.type_of_origins.pop(key, None)
             self.assign(key, fact)
         # Origins are locals, so this changes nothing for a global.
         self.forget_origin(node.var)
@@ -526,29 +634,64 @@ class _Propagation(NodeVisitor, LeafVisitor):
         if node.kind in (CallKind.FULL, CallKind.GUARDED):
             info = linked(node.info, node, "info")
             arg_types = tuple(self.type_of(arg) for arg in node.args)
+            if any(t is BOTTOM for t in arg_types):
+                return NO_FACT
+            callee_fact = self.fact_of(node.fun)
+            target = self.resolve_call_target(node)
             resolved = self.walk.resolve_call(
-                self.fact_of(node.fun),
+                callee_fact,
                 arg_types,
                 info.location,
                 info.keywords,
             )
+            if resolved is BOTTOM:
+                return NO_FACT
+            if resolved is UNKNOWN and target is not None:
+                resolved = target.propagate_call(
+                    node, self, node.args, arg_types, info.keywords
+                )
+                if resolved is BOTTOM:
+                    return NO_FACT
             if resolved is UNKNOWN and self.walk.imported_returns:
                 callee_name = node.fun.use().accept(_IMPORTED_CALLEE_NAME)
                 if callee_name is not None:
-                    if (
-                        callee_name == "typed_value"
-                        and len(arg_types) == 2
-                        and not info.keywords
-                        and callee_name in self.walk.imported_returns
-                    ):
-                        resolved = arg_types[0]
-                    else:
-                        resolved = self.walk.imported_returns.get(callee_name, UNKNOWN)
+                    resolved = self.walk.imported_returns.get(callee_name, UNKNOWN)
             builtin_type = UNKNOWN
-            if resolved is UNKNOWN and not info.keywords:
-                builtin_type = self.walk.builtin_return_type(node.fun, arg_types)
+            if resolved is UNKNOWN:
+                builtin_type = self.walk.builtin_return_type(
+                    node.fun, arg_types, info.keywords
+                )
+                if builtin_type is BOTTOM:
+                    return NO_FACT
                 resolved = builtin_type
-            if builtin_type is UNKNOWN:
+            if target is not None:
+                mutated = None
+                if node.args:
+                    recv_var = self.origins.get(node.args[0])
+                    if (
+                        recv_var is not None
+                        and recv_var in self.state
+                        and recv_var not in self.walk.indirect
+                    ):
+                        recv_type = self.state[recv_var].type
+                        if recv_type.fits_list(LIST_TYPE) or recv_type.fits_dict(
+                            DICT_TYPE
+                        ):
+                            mutated = target.derive_self_type(
+                                arg_types, info.keywords, receiver_type=recv_type
+                            )
+                            if (
+                                mutated is not None
+                                and mutated is not BOTTOM
+                                and mutated is not UNKNOWN
+                            ):
+                                self.update_mutated_container(recv_var, mutated)
+                if callee_fact.target is not None:
+                    if mutated is None and node.args:
+                        self.widen_escaped_container(self.origins.get(node.args[0]))
+                    for arg in node.args[1:]:
+                        self.widen_escaped_container(self.origins.get(arg))
+            elif builtin_type is UNKNOWN:
                 for arg in node.args:
                     self.widen_escaped_container(self.origins.get(arg))
             fact = _fact(resolved)
@@ -559,306 +702,10 @@ class _Propagation(NodeVisitor, LeafVisitor):
     def derive_known(self, node: Combination):
         info = node.fun_info
         assert info is not None
-        name = info.name
-        args = node.args
-        if name in _BINARY_OPERATORS:
-            left, right = self.type_of(args[0]), self.type_of(args[1])
-            fact = _fact(left.binary(_BINARY_OPERATORS[name], right))
-            if left.may_run_user_code or right.may_run_user_code:
-                self.invalidate()
-            return fact
-        if name in _UNARY_OPERATORS:
-            operand = self.type_of(args[0])
-            fact = _fact(operand.unary(_UNARY_OPERATORS[name]))
-            if operand.may_run_user_code:
-                self.invalidate()
-            return fact
-        if name in _COMPARISON_OPERATORS:
-            operator = _COMPARISON_OPERATORS[name]
-            left, right = self.type_of(args[0]), self.type_of(args[1])
-            fact = _fact(left.comparison(operator, right))
-            if operator not in (
-                ast.ComparisonOperator.IS,
-                ast.ComparisonOperator.IS_NOT,
-            ) and (left.may_run_user_code or right.may_run_user_code):
-                self.invalidate()
-            return fact
-        if name == "%build_tuple":
-            arity = len(args)
-            elements = (
-                tuple(self.type_of(arg) for arg in args) if 0 < arity <= 64 else None
-            )
-            return _tuple_fact(arity, elements)
-        if name == "%build_list":
-            if not args:
-                return EMPTY_LIST_FACT
-            list_type = EMPTY_LIST_TYPE
-            for arg in args:
-                list_type = list_type.with_element(self.type_of(arg))
-            return _fact(list_type)
-        if name == "%build_dict":
-            if not args:
-                return EMPTY_DICT_FACT
-            if len(args) == 1:
-                dict_type, may_call = self.type_of(args[0]).accept(_BUILD_DICT_TYPE)
-                if may_call:
-                    self.invalidate()
-                return _fact(dict_type)
-            dict_type = EMPTY_DICT_TYPE
-            for key_arg, val_arg in zip(args[0::2], args[1::2], strict=True):
-                dict_type = dict_type.with_entry(
-                    self.type_of(key_arg), self.type_of(val_arg)
-                )
-            if any(self.type_of(key_arg).may_run_user_code for key_arg in args[0::2]):
-                self.invalidate()
-            return _fact(dict_type)
-        if name == "%range_prepare":
-            if self.is_proven_fixnum_range(node):
-                return BOOLEAN_TRUE_FACT
-            return BOOLEAN_FACT
-        if name == "%unpack":
-            self.invalidate()
-            arity = self.type_of(args[1]).exact_integer()
-            if arity is not None and arity >= 0:
-                seq_type = self.type_of(args[0])
-                if seq_type is BOTTOM:
-                    return NO_FACT
-                unpacked = seq_type.unpacked_tuple_type(arity)
-                return _tuple_fact(unpacked.arity, unpacked.elements)
-            return _UNBOUNDED_TUPLE_FACT
-        if name == "%unpack_ref":
-            seq_type = self.type_of(args[0])
-            if seq_type is BOTTOM:
-                return NO_FACT
-            return _fact(seq_type.getitem_type(self.type_of(args[1])))
-        if name == "%make_function":
-            lambda_ = made_lambda(node)
-            definition = linked(node.info, node, "info")
-            parameters = lambda_.signature.default_parameters
-            for value, contract, index in zip(
-                args[1:], definition.default_contracts, parameters, strict=True
-            ):
-                if contract is not None:
-                    self.walk.annotations.check(
-                        contract,
-                        self.type_of(value),
-                        definition.location,
-                        ("local", lambda_, lambda_.vars[index].name),
-                    )
-            return Fact(FUNCTION_TYPE, lambda_, True)
-        if name == "%call_resolved":
-            resolved = (
-                args[0].uses[0].accept(_RESOLVED_METHOD)
-                if len(args[0].uses) == 1
-                else None
-            )
-            if resolved is not None:
-                receiver_lvar, method_name = resolved
-                receiver_type = self.type_of(receiver_lvar)
-                has_keywords = bool(linked(node.info, node, "info").keywords)
-                arity = len(args) - 1
-                recv_var = self.origins.get(receiver_lvar)
-                if method_name == "append" and arity == 1 and not has_keywords:
-                    elem_type = self.type_of(args[1])
-                    self.record_container_child(recv_var, self.origins.get(args[1]))
-                    self.mutate_list(recv_var, receiver_type, elem_type)
-                    if (
-                        not receiver_type.may_be_unbound
-                        and receiver_type.fits(LIST_TYPE)
-                        and not elem_type.may_be_unbound
-                    ):
-                        return NONE_FACT
-                if method_name == "insert" and arity == 2 and not has_keywords:
-                    elem_type = self.type_of(args[2])
-                    self.record_container_child(recv_var, self.origins.get(args[2]))
-                    self.mutate_list(recv_var, receiver_type, elem_type)
-                if method_name == "extend" and arity == 1 and not has_keywords:
-                    elem_type = self.type_of(args[1]).iterate_type().next_item_type()
-                    self.mutate_list(recv_var, receiver_type, elem_type)
-                if method_name == "setdefault" and arity in (1, 2) and not has_keywords:
-                    key_type = self.type_of(args[1])
-                    default_type = self.type_of(args[2]) if arity == 2 else NONE_TYPE
-                    if arity == 2:
-                        self.record_container_child(recv_var, self.origins.get(args[2]))
-                    if recv_var is not None and node.lvar is not None:
-                        self.parent_origins[node.lvar] = recv_var
-                    self.mutate_dict(recv_var, receiver_type, key_type, default_type)
-                if method_name == "get" and arity in (1, 2) and not has_keywords:
-                    if recv_var is not None and node.lvar is not None:
-                        self.parent_origins[node.lvar] = recv_var
-                    default_type = self.type_of(args[2]) if arity == 2 else NONE_TYPE
-                    res_type = receiver_type.dict_get_type(default_type)
-                    if res_type is not UNKNOWN:
-                        if self.type_of(args[1]).may_run_user_code:
-                            self.invalidate()
-                        return _fact(res_type)
-                if method_name == "items" and arity == 0 and not has_keywords:
-                    if receiver_type == EMPTY_DICT_TYPE:
-                        return _EMPTY_DICT_ITEMS_ITERATOR_FACT
-                    iter_type = receiver_type.dict_items_iterator_type()
-                    if iter_type is not UNKNOWN:
-                        return _fact(iter_type)
-                if method_name == "keys" and arity == 0 and not has_keywords:
-                    if receiver_type == EMPTY_DICT_TYPE:
-                        return _EMPTY_ITERATOR_FACT
-                    iter_type = receiver_type.dict_keys_iterator_type()
-                    if iter_type is not UNKNOWN:
-                        return _fact(iter_type)
-                if method_name == "values" and arity == 0 and not has_keywords:
-                    if receiver_type == EMPTY_DICT_TYPE:
-                        return _EMPTY_ITERATOR_FACT
-                    iter_type = receiver_type.dict_values_iterator_type()
-                    if iter_type is not UNKNOWN:
-                        return _fact(iter_type)
-                result_type = receiver_type.method_return_type(
-                    method_name, arity, has_keywords, self.walk.storage_methods
-                )
-                self.invalidate()
-                return _fact(result_type)
-            self.invalidate()
-            return UNKNOWN_FACT
-        if name in ("%call_with", "%call_expanded_positional") and args:
-            callee_lvar = args[0]
-            arg_types = tuple(self.type_of(arg) for arg in args[1:])
-            resolved = self.walk.resolve_call(
-                self.fact_of(callee_lvar),
-                arg_types,
-                node.source,
-                ("*" * len(arg_types),),
-            )
-            if resolved is UNKNOWN and self.walk.imported_returns:
-                callee_name = callee_lvar.use().accept(_IMPORTED_CALLEE_NAME)
-                if callee_name is not None:
-                    resolved = self.walk.imported_returns.get(callee_name, UNKNOWN)
-            builtin_type = UNKNOWN
-            if resolved is UNKNOWN:
-                builtin_type = self.walk.builtin_return_type(callee_lvar, arg_types)
-                resolved = builtin_type
-            if builtin_type is UNKNOWN:
-                for arg in args[1:]:
-                    self.widen_escaped_container(self.origins.get(arg))
-            self.invalidate()
-            return _fact(resolved)
-        if name in ("%import", "%catch_exception"):
-            self.invalidate()
-            return UNKNOWN_FACT
-        if name == "%format":
-            self.invalidate()
-            return TEXT_FACT
-        if name == "%getitem":
-            recv_var = self.origins.get(args[0])
-            if recv_var is not None and node.lvar is not None:
-                self.parent_origins[node.lvar] = recv_var
-            receiver_type = self.type_of(args[0])
-            index_type = self.type_of(args[1])
-            if receiver_type is BOTTOM or index_type is BOTTOM:
-                return NO_FACT
-            if receiver_type.may_run_user_code or index_type.may_run_user_code:
-                self.invalidate()
-            return _fact(receiver_type.getitem_type(index_type))
-        if name == "%setitem" and len(args) == 3:
-            recv_var = self.origins.get(args[0])
-            val_var = self.origins.get(args[2])
-            self.record_container_child(recv_var, val_var)
-            recv_type = self.type_of(args[0])
-            key_type = self.type_of(args[1])
-            val_type = self.type_of(args[2])
-            if not recv_type.fits_list(LIST_TYPE) or key_type.may_run_user_code:
-                self.invalidate()
-            if recv_type.fits_list(LIST_TYPE):
-                elem_type = (
-                    val_type
-                    if key_type.fits(PYTHON_INTEGER)
-                    else val_type.iterate_type().next_item_type()
-                )
-                self.mutate_list(recv_var, recv_type, elem_type)
-            else:
-                self.mutate_dict(recv_var, recv_type, key_type, val_type)
-            return _fact(NONE_TYPE)
-        if name == "%iterate" and len(args) == 1:
-            operand_type = self.type_of(args[0])
-            if operand_type.may_run_user_code:
-                self.invalidate()
-            if operand_type == EMPTY_LIST_TYPE or operand_type == EMPTY_DICT_TYPE:
-                return _EMPTY_ITERATOR_FACT
-            return _fact(operand_type.iterate_type())
-        if name == "%next_item":
-            iterator_var = _loop_iterator_var(node.block)
-            if iterator_var is not None and iterator_var in self.state:
-                iter_type = self.state[iterator_var].type
-                if iter_type == _EMPTY_ITERATOR_TYPE:
-                    return NO_FACT
-                item_type = iter_type.next_item_type()
-                if iter_type.may_run_user_code:
-                    self.invalidate()
-                if item_type is not UNKNOWN:
-                    return _fact(item_type)
-            self.invalidate()
-            return UNKNOWN_FACT
-        if name == "%getslice":
-            receiver_type = self.type_of(args[0])
-            if receiver_type.may_run_user_code or any(
-                self.type_of(arg).may_run_user_code for arg in args[1:]
-            ):
-                self.invalidate()
-            if receiver_type.fits_text(TEXT_TYPE):
-                return TEXT_FACT
-            if receiver_type is BYTES_TYPE:
-                return BYTES_FACT
-            if receiver_type.fits_list(LIST_TYPE):
-                return _fact(receiver_type)
-            return UNKNOWN_FACT
-        if name == "_storage_append" and len(args) == 2:
-            recv_var = self.origins.get(args[0])
-            recv_type = self.type_of(args[0])
-            elem_type = self.type_of(args[1])
-            if recv_type.fits_list(LIST_TYPE):
-                self.mutate_list(recv_var, recv_type, elem_type)
-        elif name == "_storage_write" and len(args) == 3:
-            recv_var = self.origins.get(args[0])
-            recv_type = self.type_of(args[0])
-            elem_type = self.type_of(args[2])
-            if recv_type.fits_list(LIST_TYPE):
-                self.mutate_list(recv_var, recv_type, elem_type)
-        elif name == "_storage_read" and len(args) == 2:
-            recv_type = self.type_of(args[0])
-            idx_type = self.type_of(args[1])
-            if recv_type == EMPTY_LIST_TYPE and idx_type.fits(PYTHON_INTEGER):
-                return NO_FACT
-            return _fact(recv_type.getitem_type(idx_type))
-        elif name == "_allocate_instance" and len(args) == 1:
-            cls_name = (
-                args[0].use().accept(_GLOBAL_CALLEE_NAME)
-                if len(args[0].uses) == 1
-                else None
-            )
-            if cls_name == "dict":
-                return _fact(EMPTY_DICT_TYPE)
-        elif (
-            name
-            in (
-                "_text_length",
-                "_text_codepoint",
-                "_text_character",
-                "_text_slice",
-            )
-            and args
-        ):
-            recv_var = self.origins.get(args[0])
-            if (
-                recv_var is not None
-                and not recv_var.indirect
-                and self.type_of(args[0]) is UNKNOWN
-            ):
-                self.assign(recv_var, TEXT_FACT)
-        elif name in ("_bytes_length", "_bytes_byte", "_bytes_slice") and args:
-            recv_var = self.origins.get(args[0])
-            if (
-                recv_var is not None
-                and not recv_var.indirect
-                and self.type_of(args[0]) is UNKNOWN
-            ):
-                self.assign(recv_var, BYTES_FACT)
+        if info.propagate is not None:
+            res = info.propagate(self, node)
+            if res is not None:
+                return res.as_fact(_fact)
         if info.derive_type is not None:
             value_type = info.derive_type(node)
             if value_type is not None:
@@ -868,15 +715,6 @@ class _Propagation(NodeVisitor, LeafVisitor):
         if info.protocol is not None:
             self.invalidate()
             return UNKNOWN_FACT
-        if name in (
-            "%range_available",
-            "%sequence_available",
-            "%has_binding",
-        ):
-            return BOOLEAN_FACT
-        if name == "%range_advance":
-            state = linked(node.info, node, "info")
-            return _fact(self.range_type(state))
         if info.result:
             return UNKNOWN_FACT
         return None
@@ -946,7 +784,7 @@ class _ResolvedMethod(NodeVisitor):
         return None
 
     def visit_Combination(self, node: Combination):
-        if node.fun_info is not None and node.fun_info.name == "%resolve_method":
+        if node.fun_info is fndb.RESOLVE_METHOD:
             return node.args[0], linked(node.info, node, "info").name
         return None
 
@@ -985,8 +823,7 @@ class _SequenceIteratorVar(NodeVisitor, LeafVisitor):
 
     def visit_Combination(self, node: Combination):
         if (
-            node.fun_info is not None
-            and node.fun_info.name == "%sequence_available"
+            node.fun_info is fndb.SEQUENCE_AVAILABLE
             and len(node.args) == 1
             and len(node.args[0].uses) == 1
         ):
@@ -1056,6 +893,555 @@ _SWAPPED = {
     ast.ComparisonOperator.GREATER: ast.ComparisonOperator.LESS,
     ast.ComparisonOperator.GREATER_EQUAL: ast.ComparisonOperator.LESS_EQUAL,
 }
+_NEGATED_COMPARISON = {
+    ast.ComparisonOperator.LESS: ast.ComparisonOperator.GREATER_EQUAL,
+    ast.ComparisonOperator.LESS_EQUAL: ast.ComparisonOperator.GREATER,
+    ast.ComparisonOperator.GREATER: ast.ComparisonOperator.LESS_EQUAL,
+    ast.ComparisonOperator.GREATER_EQUAL: ast.ComparisonOperator.LESS,
+    ast.ComparisonOperator.EQUAL: ast.ComparisonOperator.NOT_EQUAL,
+    ast.ComparisonOperator.NOT_EQUAL: ast.ComparisonOperator.EQUAL,
+}
+
+
+def _comparison_bound(
+    operator: ast.ComparisonOperator, other_type: ValueType, truth: bool
+) -> int | None:
+    if other_type.may_be_unbound:
+        return None
+    effective = operator if truth else _NEGATED_COMPARISON.get(operator, operator)
+    if effective in (
+        ast.ComparisonOperator.LESS,
+        ast.ComparisonOperator.LESS_EQUAL,
+    ):
+        return other_type.maximum
+    if effective in (
+        ast.ComparisonOperator.GREATER,
+        ast.ComparisonOperator.GREATER_EQUAL,
+    ):
+        return other_type.minimum
+    if effective is ast.ComparisonOperator.EQUAL:
+        return other_type.exact_integer()
+    return None
+
+
+def _make_binary_propagator(operator: ast.BinaryOperator):
+    def _prop(visitor: _Propagation, node: Combination):
+        args = node.args
+        left, right = visitor.type_of(args[0]), visitor.type_of(args[1])
+        if left is BOTTOM or right is BOTTOM:
+            return NO_FACT
+        fact = _fact(left.binary(operator, right))
+        if left.may_run_user_code or right.may_run_user_code:
+            visitor.invalidate()
+        return fact
+
+    return _prop
+
+
+def _make_unary_propagator(operator: ast.UnaryOperator):
+    def _prop(visitor: _Propagation, node: Combination):
+        operand = visitor.type_of(node.args[0])
+        if operand is BOTTOM:
+            return NO_FACT
+        fact = _fact(operand.unary(operator))
+        if operand.may_run_user_code:
+            visitor.invalidate()
+        return fact
+
+    return _prop
+
+
+def _make_comparison_propagator(operator: ast.ComparisonOperator):
+    def _prop(visitor: _Propagation, node: Combination):
+        args = node.args
+        left, right = visitor.type_of(args[0]), visitor.type_of(args[1])
+        if left is BOTTOM or right is BOTTOM:
+            return NO_FACT
+        fact = _fact(left.comparison(operator, right))
+        if operator not in (
+            ast.ComparisonOperator.IS,
+            ast.ComparisonOperator.IS_NOT,
+        ) and (left.may_run_user_code or right.may_run_user_code):
+            visitor.invalidate()
+        return fact
+
+    return _prop
+
+
+def _constrain_identity_comparison(
+    operator: ast.ComparisonOperator,
+    visitor: _Propagation,
+    node: Combination,
+    state: dict,
+    truth: bool,
+) -> bool:
+    if len(node.args) != 2:
+        return False
+    left, right = node.args
+    is_same = (operator is ast.ComparisonOperator.IS) == truth
+    left_type = visitor.type_of(left)
+    right_type = visitor.type_of(right)
+    cmp = left_type.comparison(
+        ast.ComparisonOperator.IS if is_same else ast.ComparisonOperator.IS_NOT,
+        right_type,
+    )
+    if cmp is BOOLEAN_FALSE:
+        state[_DEAD_EDGE] = True
+        return True
+    changed = False
+    for operand, other in ((left, right), (right, left)):
+        other_type = visitor.type_of(other)
+        local = visitor.origins.get(operand)
+        if local is not None and local in visitor.state:
+            current = state[local]
+            narrowed = current.type.narrow_identity(other_type, is_same)
+            if narrowed is BOTTOM:
+                state[_DEAD_EDGE] = True
+                return True
+            if narrowed != current.type:
+                state[local] = visitor.narrowed_fact(current, narrowed)
+                changed = True
+        subj_var = visitor.type_of_origins.get(operand) or (
+            visitor.type_of_origins.get(local) if local is not None else None
+        )
+        if subj_var is not None and subj_var in visitor.state:
+            subj_cur = state[subj_var]
+            narrowed_subj = subj_cur.type.narrow_by_runtime_class(other_type, is_same)
+            if narrowed_subj is BOTTOM:
+                state[_DEAD_EDGE] = True
+                return True
+            if narrowed_subj != subj_cur.type:
+                state[subj_var] = visitor.narrowed_fact(subj_cur, narrowed_subj)
+                changed = True
+    return changed
+
+
+def _make_comparison_constrainer(operator: ast.ComparisonOperator):
+    if operator in (ast.ComparisonOperator.IS, ast.ComparisonOperator.IS_NOT):
+
+        def _constrain_is(
+            visitor: _Propagation, node: Combination, state: dict, truth: bool
+        ) -> bool:
+            return _constrain_identity_comparison(operator, visitor, node, state, truth)
+
+        return _constrain_is
+
+    swapped = _SWAPPED.get(
+        operator,
+        operator
+        if operator in (ast.ComparisonOperator.EQUAL, ast.ComparisonOperator.NOT_EQUAL)
+        else None,
+    )
+
+    def _constrain_ord(
+        visitor: _Propagation, node: Combination, state: dict, truth: bool
+    ) -> bool:
+        if len(node.args) != 2:
+            return False
+        left, right = node.args
+        changed = False
+        for operand, other, op in (
+            (left, right, operator),
+            (right, left, swapped),
+        ):
+            if op is None:
+                continue
+            local = visitor.origins.get(operand)
+            if local is None or local not in visitor.state:
+                continue
+            other_type = visitor.type_of(other)
+            bound = _comparison_bound(op, other_type, truth)
+            if bound is None:
+                continue
+            current = state[local]
+            narrowed = current.type.narrow(op, bound, truth)
+            if narrowed is BOTTOM:
+                state[_DEAD_EDGE] = True
+                return True
+            if narrowed != current.type:
+                state[local] = visitor.narrowed_fact(current, narrowed)
+                changed = True
+        return changed
+
+    return _constrain_ord
+
+
+for _op_name, _op_enum in _BINARY_OPERATORS.items():
+    defpropagate(_op_name)(_make_binary_propagator(_op_enum))
+
+for _op_name, _op_enum in _UNARY_OPERATORS.items():
+    defpropagate(_op_name)(_make_unary_propagator(_op_enum))
+
+for _op_name, _op_enum in _COMPARISON_OPERATORS.items():
+    defpropagate(_op_name)(_make_comparison_propagator(_op_enum))
+    defconstrain(_op_name)(_make_comparison_constrainer(_op_enum))
+
+
+@defconstrain("%unary_not")
+def _constrain_unary_not(
+    visitor: _Propagation, node: Combination, state: dict, truth: bool
+) -> bool:
+    if len(node.args) != 1:
+        return False
+    narrowed_edge = (
+        node.args[0].use().accept(_ConstrainComparison(visitor, state, not truth))
+    )
+    if narrowed_edge is _DEAD_EDGE:
+        state[_DEAD_EDGE] = True
+        return True
+    if narrowed_edge is not None:
+        state.update(narrowed_edge)
+        return True
+    return False
+
+
+@defpropagate("%build_tuple")
+def _propagate_build_tuple(visitor: _Propagation, node: Combination):
+    args = node.args
+    arity = len(args)
+    elements = tuple(visitor.type_of(arg) for arg in args) if 0 < arity <= 64 else None
+    return _tuple_fact(arity, elements)
+
+
+@defpropagate("%build_list")
+def _propagate_build_list(visitor: _Propagation, node: Combination):
+    args = node.args
+    if not args:
+        return EMPTY_LIST_FACT
+    list_type = EMPTY_LIST_TYPE
+    for arg in args:
+        list_type = list_type.with_element(visitor.type_of(arg))
+    return _fact(list_type)
+
+
+@defpropagate("%build_dict")
+def _propagate_build_dict(visitor: _Propagation, node: Combination):
+    args = node.args
+    if not args:
+        return EMPTY_DICT_FACT
+    if len(args) == 1:
+        dict_type, may_call = visitor.type_of(args[0]).accept(_BUILD_DICT_TYPE)
+        if may_call:
+            visitor.invalidate()
+        return _fact(dict_type)
+    dict_type = EMPTY_DICT_TYPE
+    for key_arg, val_arg in zip(args[0::2], args[1::2], strict=True):
+        dict_type = dict_type.with_entry(
+            visitor.type_of(key_arg), visitor.type_of(val_arg)
+        )
+    if any(visitor.type_of(key_arg).may_run_user_code for key_arg in args[0::2]):
+        visitor.invalidate()
+    return _fact(dict_type)
+
+
+@defpropagate("%range_prepare")
+def _propagate_range_prepare(visitor: _Propagation, node: Combination):
+    if visitor.is_proven_fixnum_range(node):
+        return BOOLEAN_TRUE_FACT
+    return BOOLEAN_FACT
+
+
+@defpropagate("%range_available")
+def _propagate_range_available(visitor: _Propagation, node: Combination):
+    return BOOLEAN_FACT
+
+
+@defpropagate("%has_binding")
+def _propagate_has_binding(visitor: _Propagation, node: Combination):
+    return BOOLEAN_FACT
+
+
+@defpropagate("%sequence_available")
+def _propagate_sequence_available(visitor: _Propagation, node: Combination):
+    if len(node.args) == 1 and visitor.type_of(node.args[0]).is_empty_iterator():
+        return BOOLEAN_FALSE_FACT
+    return BOOLEAN_FACT
+
+
+@defpropagate("%range_advance")
+def _propagate_range_advance(visitor: _Propagation, node: Combination):
+    state = linked(node.info, node, "info")
+    return _fact(visitor.range_type(state))
+
+
+@defpropagate("%unpack")
+def _propagate_unpack(visitor: _Propagation, node: Combination):
+    args = node.args
+    visitor.invalidate()
+    arity = visitor.type_of(args[1]).exact_integer()
+    if arity is not None and arity >= 0:
+        seq_type = visitor.type_of(args[0])
+        if seq_type is BOTTOM:
+            return NO_FACT
+        unpacked = seq_type.unpacked_tuple_type(arity)
+        return _tuple_fact(unpacked.arity, unpacked.elements)
+    return _UNBOUNDED_TUPLE_FACT
+
+
+@defpropagate("%unpack_ref")
+def _propagate_unpack_ref(visitor: _Propagation, node: Combination):
+    args = node.args
+    seq_type = visitor.type_of(args[0])
+    if seq_type is BOTTOM:
+        return NO_FACT
+    return _fact(seq_type.getitem_type(visitor.type_of(args[1])))
+
+
+@defpropagate("%make_function")
+def _propagate_make_function(visitor: _Propagation, node: Combination):
+    args = node.args
+    lambda_ = made_lambda(node)
+    definition = linked(node.info, node, "info")
+    parameters = lambda_.signature.default_parameters
+    for value, contract, index in zip(
+        args[1:], definition.default_contracts, parameters, strict=True
+    ):
+        if contract is not None:
+            visitor.walk.annotations.check(
+                contract,
+                visitor.type_of(value),
+                definition.location,
+                ("local", lambda_, lambda_.vars[index].name),
+            )
+    return Fact(FUNCTION_TYPE, lambda_, True)
+
+
+@defpropagate("%call_resolved")
+def _propagate_call_resolved(visitor: _Propagation, node: Combination):
+    args = node.args
+    resolved = (
+        args[0].uses[0].accept(_RESOLVED_METHOD) if len(args[0].uses) == 1 else None
+    )
+    if resolved is not None:
+        receiver_lvar, method_name = resolved
+        receiver_type = visitor.type_of(receiver_lvar)
+        if receiver_type is BOTTOM:
+            return NO_FACT
+        call_info = linked(node.info, node, "info")
+        has_keywords = bool(call_info.keywords)
+        arg_types = tuple(visitor.type_of(arg) for arg in args[1:])
+        if any(t is BOTTOM for t in arg_types):
+            return NO_FACT
+        recv_var = visitor.origins.get(receiver_lvar)
+        (
+            result_type,
+            updated_receiver,
+            child_arg_index,
+            returns_child,
+            may_call,
+        ) = receiver_type.method_call(
+            method_name,
+            arg_types,
+            has_keywords,
+            visitor.walk.storage_methods,
+        )
+        if child_arg_index is not None and 1 + child_arg_index < len(args):
+            visitor.record_container_child(
+                recv_var, visitor.origins.get(args[1 + child_arg_index])
+            )
+        if returns_child and recv_var is not None and node.lvar is not None:
+            visitor.parent_origins[node.lvar] = recv_var
+        if updated_receiver is not None:
+            visitor.update_mutated_container(recv_var, updated_receiver)
+        if may_call:
+            visitor.invalidate()
+        return _fact(result_type)
+    visitor.invalidate()
+    return UNKNOWN_FACT
+
+
+@defpropagate("%extend_arguments")
+def _propagate_extend_arguments(visitor: _Propagation, node: Combination):
+    args = node.args
+    if len(args) != 2:
+        return None
+    recv_var = visitor.origins.get(args[0])
+    recv_type = visitor.type_of(args[0])
+    seq_type = visitor.type_of(args[1])
+    elem_type = seq_type.iterate_type().next_item_type()
+    if recv_type.fits_list(LIST_TYPE):
+        visitor.mutate_list(recv_var, recv_type, elem_type)
+    tup = seq_type.accept(_AS_TUPLE_TYPE)
+    if recv_var is not None and recv_type == EMPTY_LIST_TYPE and tup is not None:
+        visitor.tuple_list_origins[recv_var] = tup
+    visitor.invalidate()
+    return NONE_FACT
+
+
+@defpropagate("%tuple_from_list")
+def _propagate_tuple_from_list(visitor: _Propagation, node: Combination):
+    args = node.args
+    if len(args) != 1:
+        return None
+    src_var = visitor.origins.get(args[0])
+    if src_var is not None and src_var in visitor.tuple_list_origins:
+        tup = visitor.tuple_list_origins[src_var]
+        return _tuple_fact(tup.arity, tup.elements)
+    list_type = visitor.type_of(args[0])
+    elem_type = list_type.iterate_type().next_item_type()
+    if elem_type is BOTTOM:
+        return _tuple_fact(0, ())
+    if elem_type is not UNKNOWN:
+        return _tuple_fact(1, (elem_type,))
+    return _UNBOUNDED_TUPLE_FACT
+
+
+def _propagate_call_with_helper(
+    visitor: _Propagation, node: Combination, *, expanded_positional: bool
+):
+    args = node.args
+    if not args:
+        return None
+    callee_lvar = args[0]
+    if expanded_positional and len(args) == 2:
+        seq_type = visitor.type_of(args[1])
+        if seq_type is BOTTOM:
+            return NO_FACT
+        tup = seq_type.accept(_AS_TUPLE_TYPE)
+        if tup is not None and tup.elements is not None:
+            arg_types = tup.elements
+            keywords: tuple[str | None, ...] = ()
+        elif tup is not None and tup.arity == 0:
+            arg_types = ()
+            keywords = ()
+        else:
+            arg_types = (seq_type,)
+            keywords = ("*",)
+    else:
+        arg_types = tuple(visitor.type_of(arg) for arg in args[1:])
+        keywords = ("*" * len(arg_types),)
+    callee_fact = visitor.fact_of(callee_lvar)
+    target = (
+        callee_fact.target
+        or visitor.walk.imported_target(callee_lvar)
+        or visitor.walk.builtin_target(callee_lvar)
+    )
+    resolved = visitor.walk.resolve_call(
+        callee_fact,
+        arg_types,
+        node.source,
+        keywords,
+    )
+    if resolved is BOTTOM:
+        return NO_FACT
+    if resolved is UNKNOWN and target is not None:
+        resolved = target.derive_return_type(arg_types, keywords)
+        if resolved is BOTTOM:
+            return NO_FACT
+    if resolved is UNKNOWN and visitor.walk.imported_returns:
+        callee_name = callee_lvar.use().accept(_IMPORTED_CALLEE_NAME)
+        if callee_name is not None:
+            resolved = visitor.walk.imported_returns.get(callee_name, UNKNOWN)
+    builtin_type = UNKNOWN
+    if resolved is UNKNOWN:
+        builtin_type = visitor.walk.builtin_return_type(
+            callee_lvar, arg_types, keywords
+        )
+        if builtin_type is BOTTOM:
+            return NO_FACT
+        resolved = builtin_type
+    if builtin_type is UNKNOWN and target is None:
+        for arg in args[1:]:
+            visitor.widen_escaped_container(visitor.origins.get(arg))
+    visitor.invalidate()
+    return _fact(resolved)
+
+
+@defpropagate("%call_expanded")
+def _propagate_call_expanded(visitor: _Propagation, node: Combination):
+    return _propagate_call_with_helper(visitor, node, expanded_positional=False)
+
+
+@defpropagate("%call_expanded_positional")
+def _propagate_call_expanded_positional(visitor: _Propagation, node: Combination):
+    return _propagate_call_with_helper(visitor, node, expanded_positional=True)
+
+
+@defpropagate("%import")
+def _propagate_import(visitor: _Propagation, node: Combination):
+    visitor.invalidate()
+    return UNKNOWN_FACT
+
+
+@defpropagate("%catch_exception")
+def _propagate_catch_exception(visitor: _Propagation, node: Combination):
+    visitor.invalidate()
+    return UNKNOWN_FACT
+
+
+@defpropagate("%format")
+def _propagate_format(visitor: _Propagation, node: Combination):
+    visitor.invalidate()
+    return TEXT_FACT
+
+
+@defpropagate("%getitem")
+def _propagate_getitem(visitor: _Propagation, node: Combination):
+    args = node.args
+    recv_var = visitor.origins.get(args[0])
+    if recv_var is not None and node.lvar is not None:
+        visitor.parent_origins[node.lvar] = recv_var
+    receiver_type = visitor.type_of(args[0])
+    index_type = visitor.type_of(args[1])
+    if receiver_type is BOTTOM or index_type is BOTTOM:
+        return NO_FACT
+    if receiver_type.may_run_user_code or index_type.may_run_user_code:
+        visitor.invalidate()
+    return _fact(receiver_type.getitem_type(index_type))
+
+
+@defpropagate("%setitem")
+def _propagate_setitem(visitor: _Propagation, node: Combination):
+    args = node.args
+    if len(args) != 3:
+        return None
+    recv_var = visitor.origins.get(args[0])
+    val_var = visitor.origins.get(args[2])
+    visitor.record_container_child(recv_var, val_var)
+    recv_type = visitor.type_of(args[0])
+    key_type = visitor.type_of(args[1])
+    val_type = visitor.type_of(args[2])
+    if not recv_type.fits_list(LIST_TYPE) or key_type.may_run_user_code:
+        visitor.invalidate()
+    if recv_type.fits_list(LIST_TYPE):
+        elem_type = (
+            val_type
+            if key_type.fits(PYTHON_INTEGER)
+            else val_type.iterate_type().next_item_type()
+        )
+        visitor.mutate_list(recv_var, recv_type, elem_type)
+    else:
+        visitor.mutate_dict(recv_var, recv_type, key_type, val_type)
+    return NONE_FACT
+
+
+@defpropagate("%iterate")
+def _propagate_iterate(visitor: _Propagation, node: Combination):
+    args = node.args
+    if len(args) != 1:
+        return None
+    operand_type = visitor.type_of(args[0])
+    if operand_type is BOTTOM:
+        return NO_FACT
+    if operand_type.may_run_user_code:
+        visitor.invalidate()
+    return _fact(operand_type.flow_iterate_type())
+
+
+@defpropagate("%next_item")
+def _propagate_next_item(visitor: _Propagation, node: Combination):
+    iterator_var = _loop_iterator_var(node.block)
+    if iterator_var is not None and iterator_var in visitor.state:
+        iter_type = visitor.state[iterator_var].type
+        if iter_type.is_empty_iterator():
+            return NO_FACT
+        item_type = iter_type.next_item_type()
+        if iter_type.may_run_user_code:
+            visitor.invalidate()
+        if item_type is not UNKNOWN:
+            return _fact(item_type)
+    visitor.invalidate()
+    return UNKNOWN_FACT
 
 
 def _loop_headers(entry, successors) -> tuple[frozenset, frozenset]:
@@ -1207,7 +1593,6 @@ class _ImportedCalleeName(_GlobalCalleeName):
 
 _GLOBAL_CALLEE_NAME = _GlobalCalleeName()
 _IMPORTED_CALLEE_NAME = _ImportedCalleeName()
-_LENGTH_TYPE = IntegerType(0, (1 << 48) - 1)
 
 
 class _Walk:
@@ -1224,18 +1609,28 @@ class _Walk:
         graph: LambdaGraph | None = None,
         proven_globals: frozenset[str] = frozenset(),
         rebound_globals: frozenset[str] = frozenset(),
-        imported_returns: dict[str, ValueType] | None = None,
-        storage_methods: dict[tuple[str, str], ValueType] | None = None,
-        builtin_return_types: dict[str, ValueType] | None = None,
+        global_constants: Mapping[str, ValueType] | None = None,
+        imported_returns: Mapping[str, ValueType] | None = None,
+        imported_targets: (
+            Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
+        ) = None,
+        storage_methods: Mapping[tuple[str, str], ValueType] | None = None,
+        builtin_return_types: Mapping[str, ValueType] | None = None,
+        builtin_targets: (
+            Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
+        ) = None,
     ):
         self.lambda_ = lambda_
         self.global_targets = global_targets
         self.resolve_call = resolve_call
         self.annotations = annotations
         self.rebound_globals = rebound_globals
+        self.global_constants = global_constants
         self.imported_returns = imported_returns
+        self.imported_targets = imported_targets
         self.storage_methods = storage_methods
         self.builtin_return_types = builtin_return_types
+        self.builtin_targets = builtin_targets
         self.facts: dict[object, Fact] = {}
         if graph is None:
             graph = build_lambda_graph(lambda_)
@@ -1288,18 +1683,23 @@ class _Walk:
             )
         # What user code may leave behind in module globals and variables
         # captured by nested functions.
-        invalidated_globals: dict[object, Fact] = {
-            (_GLOBAL, name): (
-                Fact(
-                    FUNCTION_TYPE if name in proven_globals else UNKNOWN,
+        invalidated_globals: dict[object, Fact] = {}
+        for name in self.global_names:
+            const_type = (
+                global_constants.get(name, UNKNOWN)
+                if global_constants is not None
+                else UNKNOWN
+            )
+            if (target := global_targets.get(name)) is not None:
+                invalidated_globals[(_GLOBAL, name)] = Fact(
+                    const_type
+                    if const_type is not UNKNOWN
+                    else (FUNCTION_TYPE if name in proven_globals else UNKNOWN),
                     target,
                     name in proven_globals,
                 )
-                if (target := global_targets.get(name)) is not None
-                else UNKNOWN_FACT
-            )
-            for name in self.global_names
-        }
+            else:
+                invalidated_globals[(_GLOBAL, name)] = _fact(const_type)
         self.invalidated = {
             **invalidated_globals,
             **{
@@ -1313,103 +1713,51 @@ class _Walk:
         }
         self.initial.update(invalidated_globals)
 
+    def imported_target(
+        self, fun_lvar
+    ) -> Lambda | ClassConstructorTarget | ForeignCallTarget | None:
+        if self.imported_targets is None:
+            return None
+        name = fun_lvar.use().accept(_IMPORTED_CALLEE_NAME)
+        if name is None:
+            return None
+        return self.imported_targets.get(name)
+
+    def builtin_target(
+        self, fun_lvar
+    ) -> Lambda | ClassConstructorTarget | ForeignCallTarget | None:
+        if (
+            self.lambda_.kind is FunctionalKind.TOPLEVEL
+            or self.lambda_.policy.safety >= 3
+            or self.builtin_targets is None
+        ):
+            return None
+        name = fun_lvar.use().accept(_IMPORTED_CALLEE_NAME)
+        if name is None or name in self.rebound_globals or name in self.global_targets:
+            return None
+        return self.builtin_targets.get(name)
+
     def builtin_return_type(
-        self, fun_lvar, arg_types: tuple[ValueType, ...]
+        self,
+        fun_lvar,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
     ) -> ValueType:
         if (
             self.lambda_.kind is FunctionalKind.TOPLEVEL
             or self.lambda_.policy.safety >= 3
         ):
             return UNKNOWN
-        name = fun_lvar.use().accept(_GLOBAL_CALLEE_NAME)
+        name = fun_lvar.use().accept(_IMPORTED_CALLEE_NAME)
         if name is None or name in self.rebound_globals or name in self.global_targets:
             return UNKNOWN
-        arity = len(arg_types)
-        if name == "len" and arity == 1:
-            return _LENGTH_TYPE
-        if name == "int" and arity <= 2:
-            return INTEGER
-        if name == "bool" and arity <= 1:
-            return BOOLEAN
-        if name == "float" and arity <= 1:
-            return FLOAT
-        if name == "list" and arity <= 1:
-            if arity == 1:
-                elem = arg_types[0].iterate_type().next_item_type()
-                if elem is not UNKNOWN:
-                    return ListType(elem)
-            return LIST_TYPE
-        if name == "iter" and arity == 1:
-            it_type = arg_types[0].iterate_type()
-            return ITERATOR_TYPE if it_type is UNKNOWN else it_type
-        if name == "reversed" and arity == 1:
-            it_type = arg_types[0].iterate_type()
-            return ITERATOR_TYPE if it_type is UNKNOWN else it_type
-        if name == "range" and 1 <= arity <= 3:
-            if arity == 1 and arg_types[0].fits(PYTHON_INTEGER):
-                stop = arg_types[0]
-                if stop.maximum is not None and stop.maximum >= 1:
-                    return IteratorType(IntegerType(0, stop.maximum - 1))
-            return IteratorType(INTEGER)
-        if name == "next" and 1 <= arity <= 2:
-            elem = arg_types[0].next_item_type()
-            if arity == 2:
-                return elem.join(arg_types[1])
-            return elem
-        if name == "tuple" and arity <= 1:
-            return _UNBOUNDED_TUPLE
-        if (
-            name == "divmod"
-            and arity == 2
-            and arg_types[0].fits(PYTHON_INTEGER)
-            and arg_types[1].fits(PYTHON_INTEGER)
-        ):
-            return TupleType(2, (INTEGER, INTEGER))
-        if name == "abs" and arity == 1:
-            arg = arg_types[0]
-            if arg.fits(PYTHON_INTEGER):
-                if arg.minimum is not None and arg.minimum >= 0:
-                    return IntegerType(arg.minimum, arg.maximum)
-                if arg.minimum is not None and arg.maximum is not None:
-                    lo = (
-                        0
-                        if arg.minimum <= 0 <= arg.maximum
-                        else min(abs(arg.minimum), abs(arg.maximum))
-                    )
-                    hi = max(abs(arg.minimum), abs(arg.maximum))
-                    return IntegerType(lo, hi)
-                return IntegerType(0, None)
-            if arg is FLOAT:
-                return FLOAT
-        if name == "max" and arity >= 2:
-            if all(arg.fits(PYTHON_INTEGER) for arg in arg_types):
-                mins = [arg.minimum for arg in arg_types if arg.minimum is not None]
-                lo = max(mins) if mins else None
-                hi = (
-                    max(arg.maximum for arg in arg_types)
-                    if all(arg.maximum is not None for arg in arg_types)
-                    else None
-                )
-                return IntegerType(lo, hi)
-            if all(arg.fits_text(TEXT_TYPE) for arg in arg_types):
-                return TEXT_TYPE
-            if all(arg is FLOAT for arg in arg_types):
-                return FLOAT
-        if name == "min" and arity >= 2:
-            if all(arg.fits(PYTHON_INTEGER) for arg in arg_types):
-                lo = (
-                    min(arg.minimum for arg in arg_types)
-                    if all(arg.minimum is not None for arg in arg_types)
-                    else None
-                )
-                maxs = [arg.maximum for arg in arg_types if arg.maximum is not None]
-                hi = min(maxs) if maxs else None
-                return IntegerType(lo, hi)
-            if all(arg.fits_text(TEXT_TYPE) for arg in arg_types):
-                return TEXT_TYPE
-            if all(arg is FLOAT for arg in arg_types):
-                return FLOAT
-        if self.builtin_return_types is not None:
+        if self.builtin_targets is not None:
+            target = self.builtin_targets.get(name)
+            if target is not None:
+                derived = target.derive_return_type(arg_types, keywords)
+                if derived is not UNKNOWN:
+                    return derived
+        if not keywords and self.builtin_return_types is not None:
             return self.builtin_return_types.get(name, UNKNOWN)
         return UNKNOWN
 
@@ -1418,11 +1766,65 @@ class _Walk:
         if self.invalidated:
             state.update(self.invalidated)
 
+    def narrow_return_parameters(
+        self, body: Body, truth: bool
+    ) -> tuple[ValueType, ...] | None:
+        if not self.lambda_.vars or not body.return_states:
+            return None
+        joined: list[ValueType] = [BOTTOM] * len(self.lambda_.vars)
+        found_any = False
+        for use, ret_state, origins, type_of_origins in body.return_states:
+            ret_type = body.facts.get(use, NO_FACT).type
+            if ret_type is BOTTOM:
+                continue
+            ret_truth = ret_type.truth_value()
+            if (truth and ret_truth is False) or (not truth and ret_truth is True):
+                continue
+            path_state = ret_state
+            if ret_truth is None:
+                prop = _Propagation(self, ret_state, origins.copy())
+                prop.type_of_origins = type_of_origins.copy()
+                narrowed = use.accept(_ConstrainComparison(prop, ret_state, truth))
+                if narrowed is _DEAD_EDGE:
+                    continue
+                if narrowed is not None:
+                    path_state = narrowed
+            found_any = True
+            for i, var in enumerate(self.lambda_.vars):
+                var_fact = path_state.get(var, NO_FACT)
+                if not var_fact.type.may_be_unbound:
+                    joined[i] = joined[i].join(var_fact.type)
+        if not found_any:
+            return None
+        return tuple(joined)
+
     def run(self) -> Body:
-        incoming, edge_states = {}, {}
+        incoming, edge_states, out_states = {}, {}, {}
+        return_block_origins: dict[object, tuple[dict, dict]] = {}
+        return_blocks = (
+            frozenset(use.block for use in self.lambda_.return_.result.uses)
+            if self.lambda_.return_ is not None
+            else frozenset()
+        )
         widened_keys = defaultdict(set)
-        if self.propagate(incoming, edge_states, widened_keys, widening=True):
-            self.propagate(incoming, edge_states, widened_keys, widening=False)
+        if self.propagate(
+            incoming,
+            edge_states,
+            out_states,
+            widened_keys,
+            return_blocks,
+            return_block_origins,
+            widening=True,
+        ):
+            self.propagate(
+                incoming,
+                edge_states,
+                out_states,
+                widened_keys,
+                return_blocks,
+                return_block_origins,
+                widening=False,
+            )
         self.resolve_call = None
         returned = BOTTOM
         facts = self.facts
@@ -1435,13 +1837,42 @@ class _Walk:
             for block, node in self.graph.call_nodes
             if block in incoming
         )
+        self_type: ValueType | None = None
+        return_states = ()
         if self.lambda_.return_ is not None:
+            self_var = self.lambda_.vars[0] if self.lambda_.vars else None
+            joined_self = BOTTOM
+            collected_returns = []
             for use in self.lambda_.return_.result.uses:
                 if use.block in incoming:
                     returned = returned.join(facts.get(use, NO_FACT).type)
-        return Body(facts, returned, calls)
+                    if use.block in out_states:
+                        origins, type_of_origins = return_block_origins.get(
+                            use.block, ({}, {})
+                        )
+                        collected_returns.append(
+                            (use, out_states[use.block], origins, type_of_origins)
+                        )
+                        if self_var is not None:
+                            self_fact = out_states[use.block].get(self_var, NO_FACT)
+                            if not self_fact.type.may_be_unbound:
+                                joined_self = joined_self.join(self_fact.type)
+            return_states = tuple(collected_returns)
+            if self_var is not None and joined_self is not BOTTOM:
+                self_type = joined_self
+        return Body(facts, returned, calls, self_type, return_states)
 
-    def propagate(self, incoming, edge_states, widened_keys, *, widening: bool) -> bool:
+    def propagate(
+        self,
+        incoming,
+        edge_states,
+        out_states,
+        widened_keys,
+        return_blocks,
+        return_block_origins,
+        *,
+        widening: bool,
+    ) -> bool:
         visits = defaultdict(int)
         key_visits = defaultdict(int)
         did_widen = False
@@ -1578,6 +2009,12 @@ class _Walk:
                                 queued.add(consumer)
                 if has_handler:
                     visitor.note_handler_state()
+            out_states[block] = state
+            if block in return_blocks:
+                return_block_origins[block] = (
+                    visitor.origins.copy(),
+                    visitor.type_of_origins.copy(),
+                )
             for target in successors[block]:
                 if target is handler:
                     edge = linked(visitor.handler_state, visitor, "handler state")
@@ -1635,9 +2072,9 @@ class _NarrowTruthiness(ValueTypeVisitor):
             ):
                 return _SMALL_INTS[0]
             if self.truth:
-                if fact.minimum == 0:
+                if fact.minimum == 0 and (fact.maximum is None or fact.maximum > 0):
                     return fact.narrow(ast.ComparisonOperator.GREATER, 0, True)
-                if fact.maximum == 0:
+                if fact.maximum == 0 and (fact.minimum is None or fact.minimum < 0):
                     return fact.narrow(ast.ComparisonOperator.LESS, 0, True)
         return fact
 
@@ -1662,103 +2099,42 @@ class _ConstrainEdge(NodeVisitor):
             return self.state
         truth = self.target is node.consequent
         test_type = self.visitor.type_of(node.test)
-        if (truth and test_type is BOOLEAN_FALSE) or (
-            not truth and test_type is BOOLEAN_TRUE
+        if test_type is BOTTOM:
+            return None
+        test_truth = test_type.truth_value()
+        if (
+            (truth and test_truth is False) or (not truth and test_truth is True)
+        ) and not (
+            node.block in self.visitor.walk.headers
+            and self.visitor.origins.get(node.test) in self.visitor.walk.volatile_keys
         ):
             return None
-        if not self.visitor.origins:
-            return self.state
         narrowed_edge = node.test.use().accept(
             _ConstrainComparison(self.visitor, self.state, truth)
         )
+        if narrowed_edge is _DEAD_EDGE:
+            return None
         if narrowed_edge is not None:
             return narrowed_edge
+        if not self.visitor.origins:
+            return self.state
         local = self.visitor.origins.get(node.test)
         if local is not None and local in self.visitor.state:
             current = self.visitor.state[local]
             narrowed = current.type.accept(
                 _TRUE_NARROWING if truth else _FALSE_NARROWING
             )
+            if narrowed is BOTTOM:
+                return None
             if narrowed != current.type:
                 edge = self.state.copy()
-                edge[local] = (
-                    _fact(narrowed)
-                    if current.target is None
-                    else Fact(narrowed, current.target, current.proven)
-                )
+                edge[local] = self.visitor.narrowed_fact(current, narrowed)
                 return edge
         return self.state
 
 
-_NEGATED_COMPARISON = {
-    ast.ComparisonOperator.LESS: ast.ComparisonOperator.GREATER_EQUAL,
-    ast.ComparisonOperator.LESS_EQUAL: ast.ComparisonOperator.GREATER,
-    ast.ComparisonOperator.GREATER: ast.ComparisonOperator.LESS_EQUAL,
-    ast.ComparisonOperator.GREATER_EQUAL: ast.ComparisonOperator.LESS,
-    ast.ComparisonOperator.EQUAL: ast.ComparisonOperator.NOT_EQUAL,
-    ast.ComparisonOperator.NOT_EQUAL: ast.ComparisonOperator.EQUAL,
-}
-
-
-def _comparison_bound(
-    operator: ast.ComparisonOperator, other_type: ValueType, truth: bool
-) -> int | None:
-    if other_type.may_be_unbound:
-        return None
-    effective = operator if truth else _NEGATED_COMPARISON.get(operator, operator)
-    if effective in (
-        ast.ComparisonOperator.LESS,
-        ast.ComparisonOperator.LESS_EQUAL,
-    ):
-        return other_type.maximum
-    if effective in (
-        ast.ComparisonOperator.GREATER,
-        ast.ComparisonOperator.GREATER_EQUAL,
-    ):
-        return other_type.minimum
-    if effective is ast.ComparisonOperator.EQUAL:
-        return other_type.exact_integer()
-    return None
-
-
-_EXACT_TYPE_FACTS = {
-    "int": INTEGER_FACT,
-    "bool": BOOLEAN_FACT,
-    "float": FLOAT_FACT,
-    "str": TEXT_FACT,
-    "bytes": BYTES_FACT,
-    "list": _fact(LIST_TYPE),
-    "tuple": _fact(TupleType()),
-    "dict": _fact(DICT_TYPE),
-}
-
-
-class _TypeOfArg(NodeVisitor):
-    def visit_Node(self, node):
-        return None
-
-    def visit_Combination(self, node: Combination):
-        if len(node.args) != 1:
-            return None
-        if node.kind is CallKind.KNOWN and node.fun_info is not None:
-            if node.fun_info.name == "_type_of":
-                return node.args[0]
-            return None
-        callee = (
-            node.fun.use().accept(_GLOBAL_CALLEE_NAME)
-            if len(node.fun.uses) == 1
-            else None
-        )
-        if callee in ("type_of", "type"):
-            return node.args[0]
-        return None
-
-
-_TYPE_OF_ARG = _TypeOfArg()
-
-
 class _ConstrainComparison(NodeVisitor):
-    """A known comparison of a local against an integer interval narrows the local."""
+    """A known comparison or predicate call on a branch edge narrows its operands."""
 
     def __init__(self, visitor: _Propagation, state, truth: bool):
         self.visitor = visitor
@@ -1770,132 +2146,18 @@ class _ConstrainComparison(NodeVisitor):
 
     def visit_Combination(self, node):
         if node.kind is not CallKind.KNOWN:
-            if not self.truth or len(node.args) != 2:
-                return None
-            callee_name = node.fun.use().accept(_GLOBAL_CALLEE_NAME)
-            if callee_name not in (
-                "is_instance",
-                "isinstance",
-                "is_subclass",
-                "issubclass",
-            ):
-                return None
-            type_name = node.args[1].use().accept(_GLOBAL_CALLEE_NAME)
-            if callee_name in ("is_instance", "is_subclass"):
-                target_fact = _EXACT_TYPE_FACTS.get(type_name)
-            elif type_name in ("str", "bytes"):
-                target_fact = _EXACT_TYPE_FACTS[type_name]
-            else:
-                target_fact = None
-            if target_fact is None:
-                return None
-            local = self.visitor.origins.get(node.args[0])
-            if local is None or local not in self.visitor.state:
-                return None
-            current = self.visitor.state[local]
-            if current.type is not UNKNOWN:
-                return None
-            edge = self.state.copy()
-            edge[local] = target_fact
-            return edge
-        name = node.fun_info.name
-        if name == "%unary_not" and len(node.args) == 1:
-            return (
-                node.args[0]
-                .use()
-                .accept(_ConstrainComparison(self.visitor, self.state, not self.truth))
-            )
-        if (
-            name in ("_text_storage", "_bytes_storage", "_tuple_storage")
-            and len(node.args) == 1
-        ):
-            if not self.truth:
-                return None
-            local = self.visitor.origins.get(node.args[0])
-            if local is None or local not in self.visitor.state:
-                return None
-            current = self.visitor.state[local]
-            if current.type is not UNKNOWN:
-                return None
-            edge = self.state.copy()
-            edge[local] = (
-                TEXT_FACT
-                if name == "_text_storage"
-                else (BYTES_FACT if name == "_bytes_storage" else _fact(TupleType()))
-            )
-            return edge
-        operator = _COMPARISON_OPERATORS.get(name)
-        if operator is None:
-            return None
-        visitor = self.visitor
-        left, right = node.args
-        if operator in (ast.ComparisonOperator.IS, ast.ComparisonOperator.IS_NOT):
-            is_identity = (operator is ast.ComparisonOperator.IS) == self.truth
-            if is_identity:
-                for type_call, cls_lvar in ((left, right), (right, left)):
-                    if len(type_call.uses) != 1 or len(cls_lvar.uses) != 1:
-                        continue
-                    subject = type_call.uses[0].accept(_TYPE_OF_ARG)
-                    if subject is None:
-                        continue
-                    cls_name = cls_lvar.uses[0].accept(_GLOBAL_CALLEE_NAME)
-                    target_fact = _EXACT_TYPE_FACTS.get(cls_name)
-                    if target_fact is None:
-                        continue
-                    local = visitor.origins.get(subject)
-                    if local is None or local not in visitor.state:
-                        continue
-                    if visitor.state[local].type is not UNKNOWN:
-                        continue
-                    edge = self.state.copy()
-                    edge[local] = target_fact
-                    return edge
-        swapped = _SWAPPED.get(
-            operator,
-            operator
-            if operator
-            in (
-                ast.ComparisonOperator.EQUAL,
-                ast.ComparisonOperator.NOT_EQUAL,
-                ast.ComparisonOperator.IS,
-                ast.ComparisonOperator.IS_NOT,
-            )
-            else None,
-        )
-        edge = None
-        for operand, other, op in (
-            (left, right, operator),
-            (right, left, swapped),
-        ):
-            if op is None:
-                continue
-            local = visitor.origins.get(operand)
-            if local is None or local not in visitor.state:
-                continue
-            other_type = visitor.type_of(other)
-            if op in (ast.ComparisonOperator.IS, ast.ComparisonOperator.IS_NOT):
-                if other_type is not NONE_TYPE:
-                    continue
-                current = (edge or visitor.state)[local]
-                narrowed = current.type.narrow_none(
-                    (op is ast.ComparisonOperator.IS) == self.truth
-                )
-            else:
-                bound = _comparison_bound(op, other_type, self.truth)
-                if bound is None:
-                    continue
-                current = (edge or visitor.state)[local]
-                narrowed = current.type.narrow(op, bound, self.truth)
-            if narrowed == current.type:
-                continue
-            if edge is None:
+            target = self.visitor.resolve_call_target(node)
+            if target is not None:
                 edge = self.state.copy()
-            edge[local] = (
-                _fact(narrowed)
-                if current.target is None
-                else Fact(narrowed, current.target, current.proven)
-            )
-        return edge
+                if target.constrain_call(node, self.visitor, edge, self.truth):
+                    return _DEAD_EDGE if edge.get(_DEAD_EDGE) else edge
+            return None
+        info = node.fun_info
+        if info is not None and info.constrain_branch is not None:
+            edge = self.state.copy()
+            if info.constrain_branch(self.visitor, node, edge, self.truth):
+                return _DEAD_EDGE if edge.get(_DEAD_EDGE) else edge
+        return None
 
 
 def _successors(block, handler):
@@ -1905,6 +2167,62 @@ def _successors(block, handler):
             yield successor
     if handler is not None:
         yield handler
+
+
+def _derive_builtin_len(
+    arg_types: tuple[ValueType, ...],
+    keywords: tuple[str | None, ...] = (),
+    *,
+    receiver_type: ValueType | None = None,
+) -> ValueType:
+    if len(arg_types) == 1 and not keywords:
+        if arg_types[0] is BOTTOM:
+            return BOTTOM
+        exact = arg_types[0].exact_length()
+        if exact is not None:
+            return IntegerType(exact, exact)
+    return IntegerType(0, (1 << 60) - 1)
+
+
+BOOTSTRAP_CLASS_TARGETS: dict[str, ClassConstructorTarget] = {
+    "int": ClassConstructorTarget(base_type=INTEGER, cls_type=CLASS_INT_TYPE),
+    "bool": ClassConstructorTarget(base_type=BOOLEAN, cls_type=CLASS_BOOL_TYPE),
+    "float": ClassConstructorTarget(base_type=FLOAT, cls_type=CLASS_FLOAT_TYPE),
+    "str": ClassConstructorTarget(base_type=TEXT_TYPE, cls_type=CLASS_STR_TYPE),
+    "TextStorage": ClassConstructorTarget(base_type=TEXT_TYPE, cls_type=CLASS_STR_TYPE),
+    "bytes": ClassConstructorTarget(base_type=BYTES_TYPE, cls_type=CLASS_BYTES_TYPE),
+    "BytesStorage": ClassConstructorTarget(
+        base_type=BYTES_TYPE, cls_type=CLASS_BYTES_TYPE
+    ),
+    "tuple": ClassConstructorTarget(base_type=TupleType(), cls_type=CLASS_TUPLE_TYPE),
+    "TupleStorage": ClassConstructorTarget(
+        base_type=TupleType(), cls_type=CLASS_TUPLE_TYPE
+    ),
+    "list": ClassConstructorTarget(base_type=EMPTY_LIST_TYPE, cls_type=CLASS_LIST_TYPE),
+    "ListStorage": ClassConstructorTarget(
+        base_type=EMPTY_LIST_TYPE, cls_type=CLASS_LIST_TYPE
+    ),
+    "dict": ClassConstructorTarget(base_type=EMPTY_DICT_TYPE, cls_type=CLASS_DICT_TYPE),
+    "_Table": ClassConstructorTarget(
+        base_type=EMPTY_DICT_TYPE, cls_type=CLASS_DICT_TYPE
+    ),
+    "object": ClassConstructorTarget(base_type=UNKNOWN, cls_type=CLASS_OBJECT_TYPE),
+    "type": ClassConstructorTarget(
+        base_type=ANY_CLASS_TYPE,
+        cls_type=CLASS_TYPE_TYPE,
+        records_type_origin=True,
+    ),
+}
+
+BOOTSTRAP_BUILTIN_TARGETS: dict[str, ClassConstructorTarget | ForeignCallTarget] = {
+    **BOOTSTRAP_CLASS_TARGETS,
+    "len": ForeignCallTarget(
+        return_type=IntegerType(0, (1 << 60) - 1),
+        derive_fn=_derive_builtin_len,
+    ),
+    "ord": ForeignCallTarget(return_type=IntegerType(0, 0x10FFFF)),
+    "chr": ForeignCallTarget(return_type=TEXT_TYPE),
+}
 
 
 def propagate(
@@ -1917,9 +2235,16 @@ def propagate(
     graph: LambdaGraph | None = None,
     proven_globals: frozenset[str] = frozenset(),
     rebound_globals: frozenset[str] = frozenset(),
-    imported_returns: dict[str, ValueType] | None = None,
-    storage_methods: dict[tuple[str, str], ValueType] | None = None,
-    builtin_return_types: dict[str, ValueType] | None = None,
+    global_constants: Mapping[str, ValueType] | None = None,
+    imported_returns: Mapping[str, ValueType] | None = None,
+    imported_targets: (
+        Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
+    ) = None,
+    storage_methods: Mapping[tuple[str, str], ValueType] | None = None,
+    builtin_return_types: Mapping[str, ValueType] | None = None,
+    builtin_targets: (
+        Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
+    ) = None,
 ) -> Body:
     """Propagate facts through ``lambda_`` from the given parameter types.
 
@@ -1938,13 +2263,17 @@ def propagate(
         graph=graph,
         proven_globals=proven_globals,
         rebound_globals=rebound_globals,
+        global_constants=global_constants,
         imported_returns=imported_returns,
+        imported_targets=imported_targets,
         storage_methods=storage_methods,
         builtin_return_types=builtin_return_types,
+        builtin_targets=builtin_targets,
     ).run()
 
 
 __all__ = [
+    "BOOTSTRAP_BUILTIN_TARGETS",
     "NO_FACT",
     "Body",
     "CallSite",

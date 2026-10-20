@@ -39,9 +39,16 @@ class FunInfo:
     result: bool = True
     # The compiled stdlib protocol name this operation invokes, if any.
     protocol: str | None = None
-    derive_type: Callable[[Combination], ValueType | None] | None = None
-    optimizer: Callable[[Combination], bool] | None = None
-    transforms: tuple[Transform, ...] = field(default_factory=tuple)
+    derive_type: Callable[[Combination], ValueType | None] | None = field(
+        default=None, compare=False
+    )
+    optimizer: Callable[[Combination], bool] | None = field(default=None, compare=False)
+    transforms: tuple[Transform, ...] = field(default_factory=tuple, compare=False)
+    propagate: Callable[..., object] | None = field(default=None, compare=False)
+    constrain_branch: Callable[..., object] | None = field(default=None, compare=False)
+    numeric: bool = False
+    non_integer_first_arg: bool = False
+    index_second_arg: bool = False
 
     @property
     def foldable(self) -> bool:
@@ -68,7 +75,16 @@ KNOWN: dict[str, FunInfo] = {}
 
 
 def defknown(
-    name: str, *attributes: str, result: bool = True, protocol=None, derive_type=None
+    name: str,
+    *attributes: str,
+    result: bool = True,
+    protocol=None,
+    derive_type=None,
+    propagate=None,
+    constrain_branch=None,
+    numeric: bool = False,
+    non_integer_first_arg: bool = False,
+    index_second_arg: bool = False,
 ) -> FunInfo:
     info = FunInfo(
         name,
@@ -76,6 +92,11 @@ def defknown(
         result=result,
         protocol=protocol,
         derive_type=derive_type,
+        propagate=propagate,
+        constrain_branch=constrain_branch,
+        numeric=numeric,
+        non_integer_first_arg=non_integer_first_arg,
+        index_second_arg=index_second_arg,
     )
     if name in KNOWN:
         raise ValueError(f"known function {name} is already defined")
@@ -138,13 +159,43 @@ def defderive(
     return register(fun) if fun is not None else register
 
 
+def defpropagate(
+    name: str,
+    fun: Callable[..., object] | None = None,
+):
+    """Register a flow-propagation handler on the known function ``name``."""
+    info = fun_info(name)
+
+    def register(fn: Callable[..., object]) -> Callable[..., object]:
+        object.__setattr__(info, "propagate", fn)
+        return fn
+
+    return register(fun) if fun is not None else register
+
+
+def defconstrain(
+    name: str,
+    fun: Callable[..., object] | None = None,
+):
+    """Register a branch-constraint handler on the known function ``name``."""
+    info = fun_info(name)
+
+    def register(fn: Callable[..., object]) -> Callable[..., object]:
+        object.__setattr__(info, "constrain_branch", fn)
+        return fn
+
+    return register(fun) if fun is not None else register
+
+
 __all__ = [
     "KNOWN",
     "FunInfo",
     "Transform",
+    "defconstrain",
     "defderive",
     "defknown",
     "defoptimizer",
+    "defpropagate",
     "deftransform",
     "fun_info",
 ]

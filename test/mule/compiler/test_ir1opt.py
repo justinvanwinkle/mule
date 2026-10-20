@@ -94,7 +94,8 @@ def test_node_derived_type_and_lvar_type_for_constants_and_lambdas():
 
     make_fn = next(known_calls(compilation.entry, "%make_function"))
     lambda_lvar = make_fn.args[0]
-    assert isinstance(lambda_lvar.use().leaf, Lambda)
+    lambda_use = lambda_lvar.use()
+    assert isinstance(lambda_use, Ref) and isinstance(lambda_use.leaf, Lambda)
     assert node_derived_type(lambda_lvar.use()) == FUNCTION_TYPE
     assert lvar_type(lambda_lvar) == FUNCTION_TYPE
 
@@ -107,6 +108,7 @@ def test_node_derived_type_for_cast_and_lambda_var():
         "import mule\ndef f(x: mule.int64) -> mule.int64:\n return x\n"
     )
     fn = compilation.lambdas[1]
+    assert fn.component is not None
     casts = [
         node
         for block in fn.component.blocks()
@@ -130,6 +132,7 @@ def test_node_derived_type_for_cast_and_lambda_var():
 def test_lvar_type_joins_if_branch_uses():
     compilation = compile_toplevel("def f(c):\n return 10 if c else 20\n")
     fn = compilation.lambdas[1]
+    assert fn.component is not None
     branch_sets = [
         node
         for block in fn.component.blocks()
@@ -168,8 +171,10 @@ def test_defderive_computes_combination_derived_type_and_reoptimizes_lvar():
         compilation = compile_toplevel("def f():\n return 15 // 2\n")
         fn = compilation.lambdas[1]
         call = next(known_calls(fn, "%floor_divide"))
+        assert fn.component is not None
         ir1_optimize(fn.component)
         assert call.derived_type == IntegerType(7, 7)
+        assert call.lvar is not None
         assert lvar_type(call.lvar) == IntegerType(7, 7)
         check_ir1_consistency(compilation.components)
 
@@ -201,6 +206,10 @@ def test_constant_lvar_value_for_literals_and_singleton_types():
         val = constant_lvar_value(div_call.args[1])
         assert isinstance(val, ast.IntegerLiteral) and val.value == 2
 
+        assert div_call.lvar is not None
+        assert mod_call.lvar is not None
+        assert pow_call.lvar is not None
+        assert lshift_call.lvar is not None
         assert constant_literal(div_call.lvar) is None
         assert constant_lvar_value(div_call.lvar) == ast.IntegerLiteral(99)
         assert constant_lvar_value(mod_call.lvar) == ast.BooleanLiteral(True)
@@ -242,6 +251,7 @@ def test_deftransform_matches_arg_types_and_policy_and_replaces_with_lvar():
         fn = compilation.lambdas[1]
         fn.vars[0].type = INTEGER
         assert list(known_calls(fn, "%add"))
+        assert fn.component is not None
         changed = ir1_optimize_until_done(fn.component)
         assert changed
         assert list(known_calls(fn, "%add")) == []
@@ -250,6 +260,7 @@ def test_deftransform_matches_arg_types_and_policy_and_replaces_with_lvar():
         # Unannotated unknown operand does not match (INTEGER, INTEGER)
         compilation_unknown = compile_toplevel("def f(x):\n return x + 0\n")
         fn_unknown = compilation_unknown.lambdas[1]
+        assert fn_unknown.component is not None
         ir1_optimize_until_done(fn_unknown.component)
         assert len(list(known_calls(fn_unknown, "%add"))) == 1
         check_ir1_consistency(compilation_unknown.components)
@@ -262,6 +273,7 @@ def test_deftransform_matches_arg_types_and_policy_and_replaces_with_lvar():
         add_call.lexenv = add_call.lexenv.derive(
             policy=add_call.lexenv.policy.__class__(speed=0)
         )
+        assert fn_slow.component is not None
         ir1_optimize_until_done(fn_slow.component)
         assert len(list(known_calls(fn_slow, "%add"))) == 1
         check_ir1_consistency(compilation_slow.components)
@@ -283,6 +295,7 @@ def test_replace_combination_with_lvar_positions_and_multi_use():
         )
         fn = compilation.lambdas[1]
         assert len(list(known_calls(fn, "%floor_divide"))) == 3
+        assert fn.component is not None
         assert ir1_optimize_until_done(fn.component)
         assert list(known_calls(fn, "%floor_divide")) == []
         check_ir1_consistency(compilation.components)
@@ -292,6 +305,7 @@ def test_replace_combination_with_lvar_positions_and_multi_use():
         )
         fn2 = compilation2.lambdas[1]
         assert list(known_calls(fn2, "%floor_divide"))
+        assert fn2.component is not None
         assert ir1_optimize_until_done(fn2.component)
         assert list(known_calls(fn2, "%floor_divide")) == []
         check_ir1_consistency(compilation2.components)
@@ -304,6 +318,7 @@ def test_replace_combination_with_lvar_with_multiple_producers_on_value():
     )
     fn = compilation.lambdas[1]
     call = next(known_calls(fn, "%floor_divide"))
+    assert fn.component is not None
     sets = [
         node
         for block in fn.component.blocks()
@@ -313,6 +328,7 @@ def test_replace_combination_with_lvar_with_multiple_producers_on_value():
     assert len(sets) == 2
     value_lvar = call.args[0]
     old_ref = value_lvar.use()
+    assert isinstance(old_ref, Ref)
     old_ref.lvar = None
     value_lvar.uses.clear()
     for s in sets:
@@ -320,7 +336,7 @@ def test_replace_combination_with_lvar_with_multiple_producers_on_value():
         s.value.uses.remove(producer)
         producer.lvar = value_lvar
         value_lvar.uses.append(producer)
-        const = Constant(ast.NoneLiteral())
+        const = Constant(ast.Tuple([]))
         dummy_ref = Ref(s.lexenv, s.source, const)
         const.refs.append(dummy_ref)
         insert_node_before(s, dummy_ref)
@@ -375,6 +391,7 @@ def test_deftransform_retarget_known_combination_and_constant_replacement():
         )
         fn = compilation.lambdas[1]
         fn.vars[0].type = INTEGER
+        assert fn.component is not None
         assert ir1_optimize_until_done(fn.component)
         assert list(known_calls(fn, "%modulo")) == []
         assert list(known_calls(fn, "%left_shift")) == []

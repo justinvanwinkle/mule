@@ -12,6 +12,7 @@ import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from . import history
 from .report import update_site, write_report
@@ -216,10 +217,10 @@ def revision(cwd):
 
 def measure_group(case, entries, baseline, args, reference):
     """Validate all candidates before rotating serial timed process samples."""
-    rows = []
+    rows: list[dict[str, Any]] = []
     active = []
     for entry in entries:
-        row = {
+        row: dict[str, Any] = {
             "case": case,
             "runtime": entry["runtime"],
             "samples": [],
@@ -255,11 +256,11 @@ def measure_group(case, entries, baseline, args, reference):
         order = active[offset:] + active[:offset]
         if index % 2:
             order = list(reversed(order))
-        for row, sample in order:
+        for row, run_sample in order:
             if row["status"] != "ok":
                 continue
             try:
-                row["samples"].append(sample())
+                row["samples"].append(run_sample())
             except RunFailure as error:
                 row.update(status=error.status, error=str(error))
     for row in rows:

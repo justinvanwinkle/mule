@@ -371,11 +371,13 @@ def _disjoint_equality_comparison(
         return None
     if left_family != right_family:
         return False
+    left_arity = left_type.exact_length()
+    right_arity = right_type.exact_length()
     if (
         left_family == "tuple"
-        and left_type.arity is not None
-        and right_type.arity is not None
-        and left_type.arity != right_type.arity
+        and left_arity is not None
+        and right_arity is not None
+        and left_arity != right_arity
     ):
         return False
     return None
@@ -417,7 +419,7 @@ _TEXT_LITERAL_VALUE = _TextLiteralValue()
 
 def _lvar_text_type(lvar: Lvar) -> ValueType:
     value_type = lvar_type(lvar)
-    if value_type.fits(TEXT_TYPE) and value_type.literal is None:
+    if value_type.fits(TEXT_TYPE) and value_type.interned_text() is None:
         constant = constant_literal(lvar)
         if constant is not None:
             literal = constant.accept(_TEXT_LITERAL_VALUE)
@@ -433,7 +435,7 @@ def _text_literal_comparison(
 ) -> bool | None:
     if not (left_type.fits(TEXT_TYPE) and right_type.fits(TEXT_TYPE)):
         return None
-    left_literal, right_literal = left_type.literal, right_type.literal
+    left_literal, right_literal = left_type.interned_text(), right_type.interned_text()
     if left_literal is None or right_literal is None:
         return None
     if operator is ast.ComparisonOperator.LESS:

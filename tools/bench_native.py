@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from mule.compiler import build
 
@@ -52,7 +53,7 @@ def benchmark(
     rebuild,
     baseline_directory=None,
     lto=False,
-):
+) -> dict[str, Any]:
     source = SOURCES.get(name, ROOT / "examples/performance" / (name + ".py"))
     executable = directory / name
     built_seconds = None
@@ -93,7 +94,7 @@ def benchmark(
                 raise AssertionError(f"{name}: unstable {runtime} output")
             measurements[runtime].append(elapsed)
     medians = {key: statistics.median(values) for key, values in measurements.items()}
-    report = {
+    report: dict[str, Any] = {
         "name": name,
         "input": count,
         "source_sha3_256": hashlib.sha3_256(source.read_bytes()).hexdigest(),
@@ -173,7 +174,7 @@ def main():
             )
         except subprocess.TimeoutExpired as error:
             timed_out = True
-            result = {
+            result: dict[str, Any] = {
                 "name": name,
                 "input": count,
                 "status": "timeout",

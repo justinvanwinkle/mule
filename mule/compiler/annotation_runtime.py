@@ -49,6 +49,7 @@ class AnnotationThunk:
             ],
             span=span,
         )
+        values: list[ast.Statement]
         if self.converter.future_annotations:
             values = [ast.Return(strings, span=span)]
         elif all(

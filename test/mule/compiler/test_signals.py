@@ -117,6 +117,7 @@ while True:
         stderr=subprocess.PIPE,
         text=True,
     )
+    assert proc.stdout is not None
     assert proc.stdout.readline() == "ready\n"
     proc.send_signal(signal.SIGINT)
     _, stderr = proc.communicate(timeout=5)

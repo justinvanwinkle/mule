@@ -13,6 +13,7 @@ import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 HERE = Path(__file__).resolve().parent
 BENCHMARKS_DIR = HERE / "benchmarks"
@@ -111,7 +112,7 @@ def invoke(
 
 def parse_bench_output(
     process: subprocess.CompletedProcess[str], wall: float
-) -> dict[str, object]:
+) -> dict[str, Any]:
     sub_benchmarks: dict[str, float] = {}
     total_loops = 0
     for line in process.stdout.splitlines():
@@ -148,7 +149,7 @@ def parse_bench_output(
 
 def load_runtimes(
     path: Path | None, selected_runtimes: list[str] | None = None
-) -> tuple[str, list[dict[str, object]]]:
+) -> tuple[str, list[dict[str, Any]]]:
     if path is None:
         path = HERE / "runtimes.toml"
     config = tomllib.loads(path.read_text())
@@ -178,7 +179,7 @@ def expand(tokens: list[str], source: Path, binary: Path) -> list[str]:
     return [token.format_map(substitutions) for token in tokens]
 
 
-def summarize(samples: list[dict[str, object]]) -> dict[str, dict[str, float]]:
+def summarize(samples: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
     summary: dict[str, dict[str, float]] = {}
     for field in ("kernel_seconds", "process_seconds"):
         values = [float(sample[field]) for sample in samples]
@@ -194,8 +195,8 @@ def summarize(samples: list[dict[str, object]]) -> dict[str, dict[str, float]]:
 def format_table(
     cases: list[str],
     baseline: str,
-    runtimes: list[dict[str, object]],
-    rows_by_case: dict[str, list[dict[str, object]]],
+    runtimes: list[dict[str, Any]],
+    rows_by_case: dict[str, list[dict[str, Any]]],
 ) -> str:
     runtime_names = [str(r["name"]) for r in runtimes]
     candidates = [name for name in runtime_names if name != baseline]
@@ -316,7 +317,7 @@ def main() -> int:
     artifacts = output / "build"
     artifacts.mkdir(exist_ok=True)
 
-    entries_by_case: dict[str, list[dict[str, object]]] = {}
+    entries_by_case: dict[str, list[dict[str, Any]]] = {}
     build_tasks = []
     for case_idx, case in enumerate(cases):
         source = available[case]
@@ -324,7 +325,7 @@ def main() -> int:
         entries = []
         for rt_idx, runtime in enumerate(runtimes):
             binary = artifacts / f"{case_idx}-{rt_idx}-{case}"
-            entry: dict[str, object] = {
+            entry: dict[str, Any] = {
                 "runtime": runtime["name"],
                 "cwd": runtime["cwd"],
                 "env": env,
@@ -351,7 +352,7 @@ def main() -> int:
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
             list(pool.map(_run_build, build_tasks))
 
-    def _case_command(entry: dict[str, object], case: str) -> list[str]:
+    def _case_command(entry: dict[str, Any], case: str) -> list[str]:
         extra = list(DEFAULT_BENCHMARK_ARGS.get(case, ()))
         return [
             *entry["command"],
@@ -362,12 +363,12 @@ def main() -> int:
             *extra,
         ]
 
-    def _measure_case(case: str) -> tuple[str, list[dict[str, object]]]:
+    def _measure_case(case: str) -> tuple[str, list[dict[str, Any]]]:
         entries = entries_by_case[case]
-        rows: list[dict[str, object]] = []
-        active: list[tuple[dict[str, object], dict[str, object]]] = []
+        rows: list[dict[str, Any]] = []
+        active: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for entry in entries:
-            row: dict[str, object] = {
+            row: dict[str, Any] = {
                 "case": case,
                 "runtime": entry["runtime"],
                 "samples": [],
@@ -416,8 +417,8 @@ def main() -> int:
         print(f"Measured {case.removeprefix('bm_')}: {statuses}", flush=True)
         return case, rows
 
-    rows_by_case: dict[str, list[dict[str, object]]] = {}
-    all_rows: list[dict[str, object]] = []
+    rows_by_case: dict[str, list[dict[str, Any]]] = {}
+    all_rows: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for case, rows in pool.map(_measure_case, cases):
             rows_by_case[case] = rows

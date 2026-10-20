@@ -37,7 +37,6 @@ class _Checker(NodeVisitor, LeafVisitor):
         self.leaf_refs: dict[object, set] = {}
         self.var_sets: dict[object, set] = {}
         self._current_ref: Node | None = None
-        self._successor_checker = _SuccessorChecker()
 
     def run(self) -> None:
         for component in self.components:
@@ -205,10 +204,7 @@ class _Checker(NodeVisitor, LeafVisitor):
                 )
         if last is None:
             barf(f"{block!r} has no LAST")
-        checker = self._successor_checker
-        checker.block = block
-        last.accept(checker)
-        checker.block = None
+        last.accept(_SuccessorChecker(block))
 
     def check_dest(self, lvar, node) -> None:
         seen_blocks = self.seen_blocks
@@ -299,7 +295,7 @@ class _Checker(NodeVisitor, LeafVisitor):
 class _SuccessorChecker(NodeVisitor):
     """Checks a block's successors against the node that ends it."""
 
-    def __init__(self, block=None):
+    def __init__(self, block):
         self.block = block
 
     def visit_Node(self, node):

@@ -138,14 +138,9 @@ class _DeriveNodeType(NodeVisitor, LeafVisitor):
             derived = node.fun_info.derive_type(node)
             if derived is not None:
                 return derived
-        derived = fndb.derive_builtin_call_type(node)
-        if (
-            derived is UNKNOWN
-            and node.kind is not CallKind.KNOWN
-            and node.derived_type is not None
-        ):
+        if node.kind is not CallKind.KNOWN and node.derived_type is not None:
             return node.derived_type
-        return derived
+        return UNKNOWN
 
     def visit_Exit(self, node: Exit):
         return lvar_type(node.value) if node.value is not None else UNKNOWN

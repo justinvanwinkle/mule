@@ -54,7 +54,13 @@ include_modules = [
 [tool.ruff]
 target-version = "py315"
 # Conformance and corpus programs exercise unusual Python on purpose.
-extend-exclude = ["old", "examples", "conformance", "corpus"]
+extend-exclude = [
+    "old",
+    "examples",
+    "conformance",
+    "corpus",
+    "perf/pyperformance/benchmarks",
+]
 force-exclude = true
 
 [tool.ruff.lint]
@@ -66,4 +72,11 @@ ignore = ["C408"]
 # Mule's compiler-bound protocol modules, programs that exercise runtime errors
 # on purpose, third-party and corpus benchmark programs, and the retired
 # bootstrap.
-exclude = ["stdlib", "conformance", "examples", "corpus", "old"]
+exclude = [
+    "stdlib",
+    "conformance",
+    "examples",
+    "corpus",
+    "old",
+    "perf/pyperformance/benchmarks",
+]

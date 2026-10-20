@@ -195,7 +195,7 @@ class Text(Node):
         self.text = text
 
     @cached_property
-    def output_hash(self) -> str:
+    def output_hash(self) -> str | None:
         return digest(self.text.encode())
 
 
@@ -278,7 +278,7 @@ class Step(Node):
         )
 
     @cached_property
-    def output_hash(self) -> str:
+    def output_hash(self) -> str | None:
         if self.output_digests is None:
             raise RuntimeError(f"{self.name} has not produced its outputs")
         return digest(
@@ -522,7 +522,9 @@ class Graph:
 
     def _drain(self) -> None:
         while self._pending:
-            self._execute(self._ready.get_nowait())
+            step = self._ready.get_nowait()
+            if step is not None:
+                self._execute(step)
 
     def _wait(self) -> None:
         with self.lock:

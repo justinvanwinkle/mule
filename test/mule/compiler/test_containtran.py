@@ -35,6 +35,7 @@ def test_empty_tuple_and_list_containment_fold_to_boolean():
         comp_top = compile_toplevel(f"def f(x):\n return {expr}\n")
         fn_top = comp_top.lambdas[1]
         fn_top.vars[0].type = INTEGER
+        assert fn_top.component is not None
         assert ir1_optimize_until_done(fn_top.component)
         assert fn_top.vars[0].refs == []
         check_ir1_consistency(comp_top.components)
@@ -79,6 +80,7 @@ def test_empty_containment_preserves_unbound_or_side_effecting_left_operand():
     comp_unbound = compile_toplevel("def f(x):\n return x in []\n")
     fn_unbound = comp_unbound.lambdas[1]
     fn_unbound.vars[0].type = UNKNOWN_UNBOUND
+    assert fn_unbound.component is not None
     ir1_optimize_until_done(fn_unbound.component)
     assert len(list(known_calls(fn_unbound, "%compare_in"))) == 1
     check_ir1_consistency(comp_unbound.components)
@@ -198,6 +200,7 @@ def test_multi_element_constant_and_text_literal_containment_folding():
         comp_text = compile_toplevel(f"def f(s):\n return s {op} {container}\n")
         fn_text = comp_text.lambdas[1]
         fn_text.vars[0].type = TextType("mem")
+        assert fn_text.component is not None
         assert ir1_optimize_until_done(fn_text.component)
         assert list(known_calls(fn_text, "%build_tuple")) == []
         assert list(known_calls(fn_text, "%build_list")) == []
@@ -257,6 +260,7 @@ def test_type_disjoint_primitive_containment_folding():
         comp_top = compile_toplevel(f"def f(s):\n return {expr}\n")
         fn_top = comp_top.lambdas[1]
         fn_top.vars[0].type = TEXT_TYPE
+        assert fn_top.component is not None
         assert ir1_optimize_until_done(fn_top.component)
         assert list(known_calls(fn_top, "%build_tuple")) == []
         assert list(known_calls(fn_top, "%build_list")) == []

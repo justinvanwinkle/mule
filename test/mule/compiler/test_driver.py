@@ -239,6 +239,10 @@ def test_partitioned_objects_keep_linkonce_and_local_definitions(tmp_path):
         builder = Build(graph, toolchain)
         for name, text in units.items():
             source = graph.text(name + " source", text)
+
+            def write_unit(inputs, directory):
+                (directory / "unit.ll").write_text(inputs[0].text)
+
             unit = graph.step(
                 name,
                 lambda name=name, source=source: Step(
@@ -247,9 +251,7 @@ def test_partitioned_objects_keep_linkonce_and_local_definitions(tmp_path):
                     inputs=[source],
                     settings={"step": "partition probe"},
                     outputs=("unit.ll",),
-                    action=lambda inputs, directory: (directory / "unit.ll").write_text(
-                        inputs[0].text
-                    ),
+                    action=write_unit,
                 ),
             )
             object_file = builder.object(unit)

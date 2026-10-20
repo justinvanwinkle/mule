@@ -29,7 +29,7 @@ from mule.compiler.debug import check_ir1_consistency
 from mule.compiler.ir1opt import constant_literal, ir1_optimize_until_done
 from mule.compiler.ir1util import known_calls
 from mule.compiler.main import compile_source, compile_toplevel
-from mule.compiler.node import If, Return, Set
+from mule.compiler.node import If, Ref, Return, Set
 
 
 def test_double_negation_eliminated_for_boolean_operand():
@@ -37,11 +37,13 @@ def test_double_negation_eliminated_for_boolean_operand():
     fn = compilation.lambdas[1]
     fn.vars[0].type = BOOLEAN
     assert len(list(known_calls(fn, "%unary_not"))) == 2
+    assert fn.component is not None
     assert ir1_optimize_until_done(fn.component)
     assert list(known_calls(fn, "%unary_not")) == []
     ret = fn.return_
     assert isinstance(ret, Return)
-    assert ret.result.use().leaf is fn.vars[0]
+    ret_use = ret.result.use()
+    assert isinstance(ret_use, Ref) and ret_use.leaf is fn.vars[0]
     check_ir1_consistency(compilation.components)
 
 
@@ -57,6 +59,7 @@ def test_double_negation_preserved_for_non_boolean_operand(operand_type):
     compilation = compile_toplevel("def f(x):\n return not (not x)\n")
     fn = compilation.lambdas[1]
     fn.vars[0].type = operand_type
+    assert fn.component is not None
     ir1_optimize_until_done(fn.component)
     assert len(list(known_calls(fn, "%unary_not"))) == 2
     check_ir1_consistency(compilation.components)
@@ -80,7 +83,9 @@ def test_negated_identity_and_containment_comparisons_invert(
     assert list(known_calls(fn, original_known)) == []
     inverted = list(known_calls(fn, inverted_known))
     assert len(inverted) == 1
-    assert [arg.use().leaf for arg in inverted[0].args] == list(fn.vars)
+    assert [
+        u.leaf for arg in inverted[0].args if isinstance(u := arg.use(), Ref)
+    ] == list(fn.vars)
     check_ir1_consistency(compilation.components)
 
 
@@ -137,6 +142,7 @@ def test_identity_comparison_with_none_folds_for_disjoint_types(disjoint_type):
     )
     fn = compilation.lambdas[1]
     fn.vars[0].type = disjoint_type
+    assert fn.component is not None
     assert ir1_optimize_until_done(fn.component)
     assert list(known_calls(fn, "%compare_is")) == []
     assert list(known_calls(fn, "%compare_is_not")) == []
@@ -160,6 +166,7 @@ def test_annotated_int_is_none_folds_and_eliminates_dead_branch():
     fn = compilation.lambdas[1]
     assert list(known_calls(fn, "%compare_is")) == []
     assert list(known_calls(fn, "%compare_is_not")) == []
+    assert fn.component is not None
     branches = [
         node
         for block in fn.component.blocks()
@@ -179,6 +186,7 @@ def test_negated_is_none_on_annotated_int_inverts_and_folds():
     assert list(known_calls(fn, "%unary_not")) == []
     assert list(known_calls(fn, "%compare_is")) == []
     assert list(known_calls(fn, "%compare_is_not")) == []
+    assert fn.component is not None
     branches = [
         node
         for block in fn.component.blocks()
@@ -205,6 +213,7 @@ def test_optional_integer_and_nullable_types_do_not_fold_is_none(non_disjoint_ty
     compilation = compile_toplevel("def f(x):\n return x is None, x is not None\n")
     fn = compilation.lambdas[1]
     fn.vars[0].type = non_disjoint_type
+    assert fn.component is not None
     ir1_optimize_until_done(fn.component)
     assert len(list(known_calls(fn, "%compare_is"))) == 1
     assert len(list(known_calls(fn, "%compare_is_not"))) == 1
@@ -231,6 +240,7 @@ def test_negative_index_check_eliminated_by_interval_comparison_folding():
     )
     fn = compilation.lambdas[1]
     assert list(known_calls(fn, "%compare_less")) == []
+    assert fn.component is not None
     branches = [
         node
         for block in fn.component.blocks()
@@ -245,6 +255,7 @@ def test_negative_index_check_eliminated_by_interval_comparison_folding():
         if isinstance(node, Set) and node.var.name == "i"
     )
     assert len(i_var.refs) == 1
+    assert fn.return_ is not None
     assert i_var.refs[0].lvar is fn.return_.result
     check_ir1_consistency(compilation.components)
 
@@ -278,6 +289,7 @@ def test_integer_interval_comparisons_fold_across_all_six_operators():
         "%compare_not_equal",
     ):
         assert list(known_calls(fn, name)) == []
+    assert fn.component is not None
     i_var = next(
         node.var
         for block in fn.component.blocks()
@@ -313,6 +325,7 @@ def test_disjoint_two_variable_intervals_fold():
     fn = compilation.lambdas[1]
     fn.vars[0].type = IntegerType(0, 15)
     fn.vars[1].type = IntegerType(16, 31)
+    assert fn.component is not None
     assert ir1_optimize_until_done(fn.component)
     for name in (
         "%compare_less",
@@ -364,6 +377,7 @@ def test_singleton_variable_comparisons_and_side_effects_are_preserved():
     fn = compilation.lambdas[1]
     fn.vars[0].type = IntegerType(1, 1)
     fn.vars[1].type = IntegerType(2, 2)
+    assert fn.component is not None
     ir1_optimize_until_done(fn.component)
     assert len(list(known_calls(fn, "%compare_less"))) == 1
     assert len(list(known_calls(fn, "%compare_equal"))) == 1
@@ -386,6 +400,7 @@ def test_text_literal_comparisons_fold_across_all_six_operators():
     )
     fn = compilation.lambdas[1]
     fn.vars[0].type = TextType("true")
+    assert fn.component is not None
     assert ir1_optimize_until_done(fn.component)
     for name in (
         "%compare_less",
@@ -485,6 +500,7 @@ def test_non_disjoint_equality_families_do_not_fold(left_type, right_type):
     fn = compilation.lambdas[1]
     fn.vars[0].type = left_type
     fn.vars[1].type = right_type
+    assert fn.component is not None
     ir1_optimize_until_done(fn.component)
     assert len(list(known_calls(fn, "%compare_equal"))) == 1
     assert len(list(known_calls(fn, "%compare_not_equal"))) == 1
@@ -513,12 +529,15 @@ def test_negated_order_comparisons_invert_for_exact_total_order_domains(
     fn = compilation.lambdas[1]
     fn.vars[0].type = domain_type
     fn.vars[1].type = domain_type if domain_type != TextType("tag") else TEXT_TYPE
+    assert fn.component is not None
     assert ir1_optimize_until_done(fn.component)
     assert list(known_calls(fn, "%unary_not")) == []
     assert list(known_calls(fn, original_known)) == []
     inverted = list(known_calls(fn, inverted_known))
     assert len(inverted) == 1
-    assert [arg.use().leaf for arg in inverted[0].args] == list(fn.vars)
+    assert [
+        u.leaf for arg in inverted[0].args if isinstance(u := arg.use(), Ref)
+    ] == list(fn.vars)
     check_ir1_consistency(compilation.components)
 
 
@@ -555,6 +574,7 @@ def test_negated_order_comparisons_do_not_invert_for_float_or_dynamic_types(
     fn = compilation.lambdas[1]
     fn.vars[0].type = left_type
     fn.vars[1].type = right_type
+    assert fn.component is not None
     ir1_optimize_until_done(fn.component)
     assert len(list(known_calls(fn, "%unary_not"))) == 2
     assert len(list(known_calls(fn, "%compare_less"))) == 1

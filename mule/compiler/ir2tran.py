@@ -26,10 +26,14 @@ Python adaptations (``spec/python-changes.md``):
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 from mule import ast
 
 from . import fndb, vops
+
+if TYPE_CHECKING:
+    from .annotation_types import Contract
 from .ctype import (
     BOOLEAN,
     NONE_TYPE,
@@ -235,7 +239,7 @@ def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
         return True
     if name == "call-resolved":
         info = vop.codegen_info
-        if (
+        if info is not None and (
             info.exact_text_find
             or info.exact_text_split
             or info.exact_text_partition
@@ -252,8 +256,12 @@ def _safe_borrow_step(step: VOP, source) -> bool:
     if name in vops.TERMINATORS or name == "coroutine-yield":
         return False
     if name == "load-local":
+        info = step.codegen_info
         return not (
-            source is not None and step.args[0].tn is source and step.codegen_info.move
+            source is not None
+            and step.args[0].tn is source
+            and info is not None
+            and info.move
         )
     if (
         source is not None
@@ -342,7 +350,7 @@ class FunctionObject:
 
 @dataclass(frozen=True, slots=True)
 class TypeCheck:
-    contract: object
+    contract: Contract
     location: tuple | None
     safety: int
 
@@ -511,7 +519,11 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
             has_comparison = False
             valid_local = True
             for reader, _ in tn_reads:
-                if reader.info is not vops.LOAD_LOCAL or not reader.codegen_info.bound:
+                if (
+                    reader.info is not vops.LOAD_LOCAL
+                    or reader.codegen_info is None
+                    or not reader.codegen_info.bound
+                ):
                     valid_local = False
                     break
                 load_res = reader.results[0].tn
@@ -570,7 +582,7 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
             if constant_match is None:
                 continue
             const_vop, code = constant_match
-            literal = const_vop.codegen_info
+            literal = linked(const_vop.codegen_info, const_vop, "constant literal")
             const_vop.codegen_info = ast.IntegerLiteral(code, span=literal.span)
             const_tn = const_vop.results[0].tn
             const_tn.primitive_type = FIXNUM
@@ -600,11 +612,12 @@ def _safe_slice_compare_intervening_step(vop: VOP) -> bool:
     if name in ("constant", "move"):
         return True
     if name == "type-check":
-        check = vop.codegen_info
+        check: TypeCheck = linked(vop.codegen_info, vop, "type-check info")
         actual = vop.args[0].tn.type or UNKNOWN
         return not check.safety or actual.fits(check.contract.fact)
     if name == "load-local":
-        return bool(vop.codegen_info.bound)
+        access: LocalAccess = linked(vop.codegen_info, vop, "local access")
+        return bool(access.bound)
     if name in _PURE_FIXNUM_VOPS and vop.results:
         return (vop.results[0].tn.type or UNKNOWN).is_fixnum and all(
             (arg.tn.type or UNKNOWN).is_fixnum for arg in vop.args
@@ -633,8 +646,10 @@ def _fuse_text_slice_compares(component: IR2Component) -> None:
     writes = component.writes
     local_candidates = {
         tn
-        for var, tn in component.environment.vars.items()
-        if not var.indirect and not var.expression_temporary
+        for var in component.lambda_.locals
+        if not var.indirect
+        and not var.expression_temporary
+        and (tn := component.environment.vars.get(var)) is not None
     }
     for block in component.blocks:
         vop_list = block.vops
@@ -696,6 +711,7 @@ def _fuse_text_slice_compares(component: IR2Component) -> None:
                     reader, _ = local_reads[0]
                     if (
                         reader.info is vops.LOAD_LOCAL
+                        and reader.codegen_info is not None
                         and reader.codegen_info.move
                         and reader.codegen_info.bound
                         and reader in positions
@@ -881,15 +897,17 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
             if not is_load and not is_const:
                 continue
             if is_load:
-                access = vop.codegen_info
+                access: LocalAccess = linked(vop.codegen_info, vop, "local access")
                 if not access.bound or access.move:
                     continue
                 source = vop.args[0].tn
             else:
+                access = None
                 result_tn = vop.results[0].tn
                 if (
                     result_tn.leaf is not None
                     or result_tn.primitive_type is not T
+                    or vop.codegen_info is None
                     or not vop.codegen_info.accept(_BORROWABLE_CONSTANT)
                 ):
                     continue
@@ -913,7 +931,11 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
             if not _borrows_operand(reader, reader_ref, source):
                 continue
             end_index = reader_index
-            if reader.info.name == "resolve-method" and reader.codegen_info.is_exact:
+            if (
+                reader.info.name == "resolve-method"
+                and reader.codegen_info is not None
+                and reader.codegen_info.is_exact
+            ):
                 bound = reader.results[1].tn
                 bound_reads = reads.get(bound)
                 bound_writes = writes.get(bound)
@@ -933,8 +955,8 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
                 for step in block.vops[index + 1 : end_index]
             ):
                 continue
-            if is_load:
-                vop.codegen_info = replace(vop.codegen_info, borrow=True)
+            if access is not None:
+                vop.codegen_info = replace(access, borrow=True)
             else:
                 result.primitive_type = IMMORTAL_T
 
@@ -958,9 +980,8 @@ def _safe_list_borrow_step(step: VOP, seq_local) -> bool:
     if name == "constant":
         return True
     if name == "load-local":
-        return bool(step.codegen_info.bound) and not (
-            step.args[0].tn is seq_local and step.codegen_info.move
-        )
+        access: LocalAccess = linked(step.codegen_info, step, "local access")
+        return bool(access.bound) and not (step.args[0].tn is seq_local and access.move)
     if name in _PURE_FIXNUM_VOPS and step.results:
         return (step.results[0].tn.type or UNKNOWN).is_fixnum and all(
             (arg.tn.type or UNKNOWN).is_fixnum for arg in step.args
@@ -1016,6 +1037,7 @@ def _specialize_list_getitems(component: IR2Component) -> None:
             seq_writer, _ = seq_writes[0]
             if (
                 seq_writer.info is not vops.LOAD_LOCAL
+                or seq_writer.codegen_info is None
                 or not seq_writer.codegen_info.bound
                 or seq_writer.codegen_info.move
             ):
@@ -1054,8 +1076,10 @@ def _mark_last_local_reads(component: IR2Component) -> None:
     environment = component.environment
     candidates = {
         tn
-        for var, tn in environment.vars.items()
-        if not var.indirect and not var.expression_temporary
+        for var in component.lambda_.locals
+        if not var.indirect
+        and not var.expression_temporary
+        and (tn := environment.vars.get(var)) is not None
     }
     if not candidates:
         return
@@ -1069,8 +1093,9 @@ def _mark_last_local_reads(component: IR2Component) -> None:
         for vop in reversed(blocks[0].vops):
             if vop.info is vops.LOAD_LOCAL:
                 tn = vop.args[0].tn
-                if tn in candidates and tn not in live and not vop.codegen_info.move:
-                    vop.codegen_info = replace(vop.codegen_info, move=True)
+                access: LocalAccess = linked(vop.codegen_info, vop, "local access")
+                if tn in candidates and tn not in live and not access.move:
+                    vop.codegen_info = replace(access, move=True)
             for ref in vop.results:
                 live.discard(ref.tn)
             for ref in vop.args:
@@ -1130,8 +1155,9 @@ def _mark_last_local_reads(component: IR2Component) -> None:
                 live.update(handler_live)
             if vop.info is vops.LOAD_LOCAL:
                 tn = vop.args[0].tn
-                if tn in candidates and tn not in live and not vop.codegen_info.move:
-                    vop.codegen_info = replace(vop.codegen_info, move=True)
+                access: LocalAccess = linked(vop.codegen_info, vop, "local access")
+                if tn in candidates and tn not in live and not access.move:
+                    vop.codegen_info = replace(access, move=True)
             for ref in vop.results:
                 live.discard(ref.tn)
             for ref in vop.args:
@@ -1890,9 +1916,10 @@ class _Converter(NodeVisitor):
             and node.lvar.info.kind is IR2LvarKind.DELAYED
         ):
             return
-        self._load_leaf.node = node
-        node.leaf.accept(self._load_leaf)
-        self._load_leaf.node = None
+        load_leaf = linked(self._load_leaf, self, "leaf loader")
+        load_leaf.node = node
+        node.leaf.accept(load_leaf)
+        load_leaf.node = None
 
     def borrows_unpack_capture(self, node: Ref, leaf: LambdaVar):
         if not (
@@ -1911,9 +1938,10 @@ class _Converter(NodeVisitor):
         return lvar.use().accept(_CONSTANT_INDEX)
 
     def visit_Set(self, node: Set):
-        self._store_var.node = node
-        node.var.accept(self._store_var)
-        self._store_var.node = None
+        store_var = linked(self._store_var, self, "variable storer")
+        store_var.node = node
+        node.var.accept(store_var)
+        store_var.node = None
 
     def visit_Cast(self, node: Cast):
         result, discard = self.result_tn(node)

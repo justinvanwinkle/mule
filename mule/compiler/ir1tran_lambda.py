@@ -122,6 +122,11 @@ def convert_function(
             for index, parameter in enumerate(definition.parameters)
             if parameter.default is not None
         ),
+        default_expressions=tuple(
+            parameter.default
+            for parameter in definition.parameters
+            if parameter.default is not None
+        ),
         variadic=variadic,
         annotations=tuple(
             None

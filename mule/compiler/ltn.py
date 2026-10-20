@@ -83,25 +83,25 @@ def primitive_type_of(value_type: ValueType) -> PrimitiveType:
 
 
 class _PrimitiveTypeOf(ValueTypeVisitor):
-    def visit_ValueType(self, value_type: ValueType) -> PrimitiveType:
-        return IMMORTAL_T if value_type.is_immortal else T
+    def visit_ValueType(self, fact: ValueType) -> PrimitiveType:
+        return IMMORTAL_T if fact.is_immortal else T
 
-    def visit_IntegerType(self, value_type: ValueType) -> PrimitiveType:
-        if value_type.is_fixnum:
+    def visit_IntegerType(self, fact: ValueType) -> PrimitiveType:
+        if fact.is_fixnum:
             return FIXNUM
-        return self.visit_ValueType(value_type)
+        return self.visit_ValueType(fact)
 
-    def visit_BooleanType(self, value_type: ValueType) -> PrimitiveType:
+    def visit_BooleanType(self, fact: ValueType) -> PrimitiveType:
         return BOOLEAN_T
 
-    def visit_NoneType(self, value_type: ValueType) -> PrimitiveType:
+    def visit_NoneType(self, fact: ValueType) -> PrimitiveType:
         return NONE_T
 
-    def visit_ImmortalType(self, value_type: ValueType) -> PrimitiveType:
+    def visit_ImmortalType(self, fact: ValueType) -> PrimitiveType:
         return IMMORTAL_T
 
-    def visit_FloatType(self, value_type: ValueType) -> PrimitiveType:
-        return T if value_type.may_be_unbound else BOXED_FLOAT
+    def visit_FloatType(self, fact: ValueType) -> PrimitiveType:
+        return T if fact.may_be_unbound else BOXED_FLOAT
 
     visit_TextType = visit_ValueType
     visit_BytesType = visit_ValueType

@@ -224,7 +224,7 @@ def _lower_into(codes, text, index, length):
 def _all_codepoints(text, predicate, empty):
     size = _text_length(text)
     if size == 0:
-        return empty
+        return True if empty else False
     index = 0
     while index < size:
         if not predicate(_text_codepoint(text, index)):
@@ -1116,6 +1116,8 @@ def str(object=_MISSING, encoding=_MISSING, errors=_MISSING):
     if encoding is _MISSING and errors is _MISSING:
         if object is _MISSING:
             return ""
+        if _type_of(object) is str:
+            return object
         return _string_protocol(object)
     if encoding is _MISSING:
         encoding = "utf-8"

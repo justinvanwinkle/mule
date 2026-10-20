@@ -14,7 +14,7 @@ references and whose version must match the running Python's.
 import unicodedata
 from pathlib import Path
 
-from generate_unicode_data import (
+from tools.generate_unicode_data import (
     ascii_ranges,
     render_bytes,
     require_matching_unicode_version,

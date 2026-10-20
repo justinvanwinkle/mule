@@ -12,16 +12,33 @@ the program being generated.
 from __future__ import annotations
 
 from .ctype import (
+    BOOLEAN,
+    BOOLEAN_FALSE,
+    BOOLEAN_TRUE,
+    BOTTOM,
+    BYTES_TYPE,
+    CLASS_STR_TYPE,
+    CLASS_TUPLE_TYPE,
+    EMPTY_LIST_TYPE,
     FIXNUM_MAX,
     FIXNUM_MIN,
+    FLOAT,
+    INTEGER,
     OPTIONAL_FIXNUM,
+    PYTHON_INTEGER,
     TEXT_TYPE,
+    UNKNOWN,
     BooleanType,
     IntegerType,
+    TextType,
     TupleType,
+    UniqueObjectType,
+    ValueType,
 )
 from .fndb import defknown
+from .knownfun import defconstrain, defpropagate
 from .main import compile_toplevel, ir1_phases
+from .node import ForeignCallTarget
 from .vops import (
     allocate,
     compiled_call,
@@ -145,10 +162,23 @@ _RESULT_TYPES = {
     "_text_from_codepoints": lambda node: TEXT_TYPE,
     "_type_name": lambda node: TEXT_TYPE,
     "_storage_tuple": lambda node: TupleType(),
+    "_binding_missing": lambda node: UniqueObjectType("_binding_missing"),
     "_binding_count": lambda node: IntegerType(0, (1 << 60) - 1),
     "_binding_keyword_count": lambda node: IntegerType(0, (1 << 60) - 1),
     "_binding_keyword_name": lambda node: TEXT_TYPE,
 }
+
+_NON_INTEGER_FIRST_PRIMITIVES = frozenset(
+    {
+        "_storage_length",
+        "_storage_read",
+        "_storage_write",
+        "_storage_append",
+        "_storage_insert",
+        "_storage_delete",
+        "_storage_tuple",
+    }
+)
 
 PRIMITIVES = {
     name: defknown(
@@ -158,6 +188,7 @@ PRIMITIVES = {
             name,
             (lambda node: TEXT_TYPE) if name in _COMPILED_CALLS else None,
         ),
+        non_integer_first_arg=(name in _NON_INTEGER_FIRST_PRIMITIVES),
     )
     for name in _EMITTERS
 }
@@ -168,6 +199,406 @@ for _name, _emit in _EMITTERS.items():
         _emit,
         consumes_arguments=_name in _COMPILED_CALLS or _name == "_initialize",
     )
+
+
+@defpropagate("_storage_append")
+def _propagate_storage_append(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 2:
+        visitor.mutate_container_element(args[0], visitor.type_of(args[1]))
+    return None
+
+
+@defpropagate("_storage_write")
+def _propagate_storage_write(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 3:
+        visitor.mutate_container_element(args[0], visitor.type_of(args[2]))
+    return None
+
+
+@defpropagate("_storage_read")
+def _propagate_storage_read(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 2:
+        seq_type = visitor.type_of(args[0])
+        idx_type = visitor.type_of(args[1])
+        if seq_type is BOTTOM or idx_type is BOTTOM:
+            return BOTTOM
+        if seq_type == EMPTY_LIST_TYPE and idx_type.fits(PYTHON_INTEGER):
+            return BOTTOM
+        return seq_type.getitem_type(idx_type)
+    return None
+
+
+@defpropagate("_storage_length")
+def _propagate_storage_length(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 1:
+        seq_type = visitor.type_of(args[0])
+        if seq_type is BOTTOM:
+            return BOTTOM
+        exact_len = seq_type.exact_length()
+        if exact_len is not None:
+            return IntegerType(exact_len, exact_len)
+    return None
+
+
+@defpropagate("_type_of")
+def _propagate_type_of(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 1:
+        src_var = visitor.origins.get(args[0])
+        if src_var is not None and node.lvar is not None:
+            visitor.type_of_origins[node.lvar] = src_var
+        arg_type = visitor.type_of(args[0])
+        if arg_type is BOTTOM:
+            return BOTTOM
+        return arg_type.runtime_class_type()
+    return None
+
+
+@defpropagate("_class_parent")
+def _propagate_class_parent(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 1:
+        arg_type = visitor.type_of(args[0])
+        if arg_type is BOTTOM:
+            return BOTTOM
+        return arg_type.parent_class_type()
+    return None
+
+
+@defpropagate("_class_is_subclass")
+def _propagate_class_is_subclass(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 2:
+        left_type = visitor.type_of(args[0])
+        right_type = visitor.type_of(args[1])
+        if left_type is BOTTOM or right_type is BOTTOM:
+            return BOTTOM
+        res = left_type.is_subclass_of(right_type)
+        if res is True:
+            return BOOLEAN_TRUE
+        if res is False:
+            return BOOLEAN_FALSE
+    return None
+
+
+@defpropagate("_storage_compatible")
+def _propagate_storage_compatible(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 2:
+        left_type = visitor.type_of(args[0])
+        right_type = visitor.type_of(args[1])
+        if left_type is BOTTOM or right_type is BOTTOM:
+            return BOTTOM
+        if (
+            left_type.fits_class()
+            and right_type.fits_class()
+            and left_type.compare_class_identity(right_type, True) is BOOLEAN_TRUE
+        ):
+            return BOOLEAN_TRUE
+    return None
+
+
+@defpropagate("_tuple_storage")
+def _propagate_tuple_storage(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 1:
+        arg_type = visitor.type_of(args[0])
+        if arg_type is BOTTOM:
+            return BOTTOM
+        if not arg_type.may_be_unbound:
+            if arg_type.fits_tuple(TupleType()):
+                return BOOLEAN_TRUE
+            if arg_type is not UNKNOWN:
+                return BOOLEAN_FALSE
+    return None
+
+
+@defpropagate("_text_storage")
+def _propagate_text_storage(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 1:
+        arg_type = visitor.type_of(args[0])
+        if arg_type is BOTTOM:
+            return BOTTOM
+        if not arg_type.may_be_unbound:
+            if arg_type.fits_text(TEXT_TYPE):
+                return BOOLEAN_TRUE
+            if arg_type is not UNKNOWN:
+                return BOOLEAN_FALSE
+    return None
+
+
+@defpropagate("_allocate_instance")
+def _propagate_allocate_instance(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 1:
+        arg_type = visitor.type_of(args[0])
+        if arg_type is BOTTOM:
+            return BOTTOM
+        return arg_type.allocate_instance_type()
+    return None
+
+
+@defpropagate("_text_length")
+def _propagate_text_length(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 1:
+        arg_type = visitor.type_of(args[0])
+        if arg_type is BOTTOM:
+            return BOTTOM
+        visitor.prove_argument_type(args[0], TEXT_TYPE)
+        exact_len = arg_type.exact_length()
+        if exact_len is not None:
+            return IntegerType(exact_len, exact_len)
+    return None
+
+
+@defpropagate("_text_codepoint")
+def _propagate_text_codepoint(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 2:
+        text_type = visitor.type_of(args[0])
+        idx_type = visitor.type_of(args[1])
+        if text_type is BOTTOM or idx_type is BOTTOM:
+            return BOTTOM
+        visitor.prove_argument_type(args[0], TEXT_TYPE)
+        idx = idx_type.exact_integer()
+        if idx is not None:
+            cp = text_type.codepoint_at(idx)
+            if cp is not None:
+                return IntegerType(cp, cp)
+    return None
+
+
+@defpropagate("_text_character")
+def _propagate_text_character(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 1:
+        arg_type = visitor.type_of(args[0])
+        if arg_type is BOTTOM:
+            return BOTTOM
+        visitor.prove_argument_type(args[0], TEXT_TYPE)
+        cp = arg_type.exact_integer()
+        if cp is not None and 0 <= cp <= 0x10FFFF and not (0xD800 <= cp <= 0xDFFF):
+            return TextType(chr(cp))
+    return None
+
+
+@defpropagate("_text_slice")
+def _propagate_text_slice(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 4:
+        arg_types = [visitor.type_of(arg) for arg in args]
+        if any(t is BOTTOM for t in arg_types):
+            return BOTTOM
+        visitor.prove_argument_type(args[0], TEXT_TYPE)
+        start = arg_types[1].exact_integer()
+        stop = arg_types[2].exact_integer()
+        step = arg_types[3].exact_integer()
+        if (
+            start is not None
+            and stop is not None
+            and step is not None
+            and step != 0
+            and arg_types[0].fits_text(TEXT_TYPE)
+            and arg_types[0].literal is not None
+        ):
+            sliced = arg_types[0].literal[start:stop:step]
+            if len(sliced) <= 256:
+                return TextType(sliced)
+    return None
+
+
+@defconstrain("_tuple_storage")
+def _constrain_tuple_storage(visitor, node, state, truth: bool) -> bool:
+    if len(node.args) == 1:
+        src_var = visitor.origins.get(node.args[0])
+        if src_var is not None and src_var in state:
+            current = state[src_var]
+            narrowed = current.type.narrow_by_runtime_class(CLASS_TUPLE_TYPE, truth)
+            state[src_var] = current.with_type(narrowed)
+            return True
+    return False
+
+
+@defconstrain("_text_storage")
+def _constrain_text_storage(visitor, node, state, truth: bool) -> bool:
+    if len(node.args) == 1:
+        src_var = visitor.origins.get(node.args[0])
+        if src_var is not None and src_var in state:
+            current = state[src_var]
+            narrowed = current.type.narrow_by_runtime_class(CLASS_STR_TYPE, truth)
+            state[src_var] = current.with_type(narrowed)
+            return True
+    return False
+
+
+NATIVE_MODULE_EXPORTS: dict[tuple[str, str], ValueType] = {
+    ("_mule_native", "text_from_codepoints"): TEXT_TYPE,
+    ("_mule_native", "bytes_from_values"): BYTES_TYPE,
+    ("_mule_native", "byte_copy"): BYTES_TYPE,
+    ("_mule_native", "byte_length"): IntegerType(0, (1 << 48) - 1),
+    ("_mule_native", "read_byte"): IntegerType(0, 255),
+    ("_mule_native", "identity"): INTEGER,
+    ("_mule_native", "identity_hash"): IntegerType(FIXNUM_MIN, FIXNUM_MAX),
+    ("_mule_native", "is_class"): BOOLEAN,
+    ("_mule_native", "is_subclass"): BOOLEAN,
+    ("_mule_native", "is_instance"): BOOLEAN,
+    ("_mule_native", "overriding_new"): BOOLEAN,
+    ("_mule_native", "buffer_exports"): IntegerType(0, (1 << 48) - 1),
+    ("_mule_native", "numeric_invert"): INTEGER,
+    ("_mule_native", "integer_decimal"): TEXT_TYPE,
+    ("_mule_native", "math_fabs"): FLOAT,
+    ("_mule_native", "math_float_bits"): INTEGER,
+    ("_mule_native", "math_float_format"): TEXT_TYPE,
+}
+
+
+def _propagate_native_type_of(node, visitor, args, arg_types, keywords=()) -> ValueType:
+    if len(args) == 1:
+        src_var = visitor.origins.get(args[0])
+        if src_var is not None and node.lvar is not None:
+            visitor.type_of_origins[node.lvar] = src_var
+        if arg_types[0] is BOTTOM:
+            return BOTTOM
+        return arg_types[0].runtime_class_type()
+    return UNKNOWN
+
+
+def _derive_native_type_of(arg_types, keywords=(), *, receiver_type=None) -> ValueType:
+    if len(arg_types) == 1:
+        if arg_types[0] is BOTTOM:
+            return BOTTOM
+        return arg_types[0].runtime_class_type()
+    return UNKNOWN
+
+
+def _derive_native_is_class(arg_types, keywords=(), *, receiver_type=None) -> ValueType:
+    if len(arg_types) == 1:
+        if arg_types[0] is BOTTOM:
+            return BOTTOM
+        res = arg_types[0].is_class_object()
+        if res is True:
+            return BOOLEAN_TRUE
+        if res is False:
+            return BOOLEAN_FALSE
+    return BOOLEAN
+
+
+def _derive_native_is_subclass(
+    arg_types, keywords=(), *, receiver_type=None
+) -> ValueType:
+    if len(arg_types) == 2:
+        if arg_types[0] is BOTTOM or arg_types[1] is BOTTOM:
+            return BOTTOM
+        res = arg_types[0].is_subclass_of(arg_types[1])
+        if res is True:
+            return BOOLEAN_TRUE
+        if res is False:
+            return BOOLEAN_FALSE
+    return BOOLEAN
+
+
+def _constrain_native_is_subclass(node, visitor, state, truth: bool) -> bool:
+    if len(node.args) == 2:
+        cls_var = visitor.origins.get(node.args[0])
+        if cls_var is not None and cls_var in visitor.state:
+            target_type = visitor.lvar_fact(node.args[1]).type
+            current = visitor.state[cls_var]
+            narrowed = current.type.narrow_identity(target_type, truth)
+            if narrowed is not current.type:
+                state[cls_var] = visitor.narrowed_fact(current, narrowed)
+            src_var = visitor.type_of_origins.get(node.args[0])
+            if src_var is not None and src_var in visitor.state:
+                src_curr = visitor.state[src_var]
+                src_narrow = src_curr.type.narrow_by_runtime_class(target_type, truth)
+                if src_narrow is not src_curr.type:
+                    state[src_var] = visitor.narrowed_fact(src_curr, src_narrow)
+            return True
+    return False
+
+
+def _derive_native_is_instance(
+    arg_types, keywords=(), *, receiver_type=None
+) -> ValueType:
+    if len(arg_types) == 2:
+        if arg_types[0] is BOTTOM or arg_types[1] is BOTTOM:
+            return BOTTOM
+        res = arg_types[0].is_instance_of(arg_types[1])
+        if res is True:
+            return BOOLEAN_TRUE
+        if res is False:
+            return BOOLEAN_FALSE
+    return BOOLEAN
+
+
+def _constrain_native_is_instance(node, visitor, state, truth: bool) -> bool:
+    if len(node.args) == 2:
+        src_var = visitor.origins.get(node.args[0])
+        if src_var is not None and src_var in visitor.state:
+            target_type = visitor.lvar_fact(node.args[1]).type
+            src_curr = visitor.state[src_var]
+            src_narrow = src_curr.type.narrow_by_runtime_class(target_type, truth)
+            if src_narrow is not src_curr.type:
+                state[src_var] = visitor.narrowed_fact(src_curr, src_narrow)
+            return True
+    return False
+
+
+def _derive_native_byte_length(
+    arg_types, keywords=(), *, receiver_type=None
+) -> ValueType:
+    if len(arg_types) == 1:
+        if arg_types[0] is BOTTOM:
+            return BOTTOM
+        exact_len = arg_types[0].exact_length()
+        if exact_len is not None:
+            return IntegerType(exact_len, exact_len)
+    return IntegerType(0, (1 << 48) - 1)
+
+
+def _derive_native_typed_value(
+    arg_types, keywords=(), *, receiver_type=None
+) -> ValueType:
+    if len(arg_types) >= 1:
+        return arg_types[0]
+    return UNKNOWN
+
+
+NATIVE_MODULE_TARGETS: dict[tuple[str, str], ForeignCallTarget] = {
+    key: ForeignCallTarget(return_type=ret_type)
+    for key, ret_type in NATIVE_MODULE_EXPORTS.items()
+}
+NATIVE_MODULE_TARGETS[("_mule_native", "type_of")] = ForeignCallTarget(
+    derive_fn=_derive_native_type_of,
+    propagate_fn=_propagate_native_type_of,
+)
+NATIVE_MODULE_TARGETS[("_mule_native", "is_class")] = ForeignCallTarget(
+    return_type=BOOLEAN,
+    derive_fn=_derive_native_is_class,
+)
+NATIVE_MODULE_TARGETS[("_mule_native", "is_subclass")] = ForeignCallTarget(
+    return_type=BOOLEAN,
+    derive_fn=_derive_native_is_subclass,
+    constrain_fn=_constrain_native_is_subclass,
+)
+NATIVE_MODULE_TARGETS[("_mule_native", "is_instance")] = ForeignCallTarget(
+    return_type=BOOLEAN,
+    derive_fn=_derive_native_is_instance,
+    constrain_fn=_constrain_native_is_instance,
+)
+NATIVE_MODULE_TARGETS[("_mule_native", "byte_length")] = ForeignCallTarget(
+    return_type=IntegerType(0, (1 << 48) - 1),
+    derive_fn=_derive_native_byte_length,
+)
+NATIVE_MODULE_TARGETS[("_mule_native", "typed_value")] = ForeignCallTarget(
+    return_type=UNKNOWN,
+    derive_fn=_derive_native_typed_value,
+)
 
 
 def compile_protocol(
@@ -190,6 +621,15 @@ def compile_protocol(
         primitives=PRIMITIVES,
         primitive_data=primitive_data,
     )
+    if imports is not None:
+        compilation.imported_function_types = imports.exported_types
+        compilation.imported_targets = imports.exported_targets
+        compilation.storage_methods = imports.storage_methods
+        compilation.builtin_return_types = imports.builtin_return_types
+        compilation.builtin_targets = imports.builtin_targets
+    else:
+        compilation.imported_function_types = NATIVE_MODULE_EXPORTS
+        compilation.imported_targets = NATIVE_MODULE_TARGETS
     ir1_phases(compilation)
     return compilation
 
@@ -200,4 +640,10 @@ def add_lambdas(program, lambdas, facts) -> None:
         program.facts[lambda_] = facts[lambda_]
 
 
-__all__ = ["PRIMITIVES", "add_lambdas", "compile_protocol"]
+__all__ = [
+    "NATIVE_MODULE_EXPORTS",
+    "NATIVE_MODULE_TARGETS",
+    "PRIMITIVES",
+    "add_lambdas",
+    "compile_protocol",
+]

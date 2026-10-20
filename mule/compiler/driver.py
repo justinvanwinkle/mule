@@ -434,7 +434,11 @@ class _ImportedModule(NodeVisitor):
         return None
 
     def visit_Combination(self, node: Combination):
-        if node.fun_info is not None and node.fun_info.name == "%import":
+        if (
+            node.fun_info is not None
+            and node.fun_info.name == "%import"
+            and node.info is not None
+        ):
             return node.info.module_name
         return None
 

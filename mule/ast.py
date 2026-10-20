@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import EllipsisType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from mule.parser.core import Parser
@@ -292,7 +292,7 @@ class Name(Expression):
 
 @dataclass(slots=True)
 class Literal(Expression):
-    value: str | bytes | int | float | complex | bool | None | EllipsisType
+    value: Any
 
     def children(self) -> Iterator[Node]:
         return iter(())
@@ -1554,7 +1554,7 @@ class Visitor:
         mro = [c for c in cls.__mro__ if "_explicit_visits" in c.__dict__]
         for child, parent in _AST_VISITOR_FALLBACKS:
             for c in mro:
-                if child in c._explicit_visits:
+                if child in c.__dict__["_explicit_visits"]:
                     setattr(cls, child, c.__dict__[child])
                     break
             else:

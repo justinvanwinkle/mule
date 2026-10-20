@@ -394,12 +394,31 @@ class dict(_Table):
     """Mapping with insertion-ordered keys."""
 
     def __init__(self, /, *args, **kwargs):
-        if len(args) > 1:
-            raise TypeError(f"dict expected at most 1 argument, got {len(args)}")
-        if args:
-            _dict_update_other(self, args[0])
+        count = _storage_length(args)
+        if count > 1:
+            raise TypeError(f"dict expected at most 1 argument, got {count}")
+        if count == 1:
+            other = _storage_read(args, 0)
+            if _is_dict(other):
+                for index in _table_live(other):
+                    _table_insert(
+                        self,
+                        _storage_read(other._keys, index),
+                        _storage_read(other._values, index),
+                    )
+            elif _type_of(other) is list or _type_of(other) is tuple:
+                for item in other:
+                    key, value = item
+                    _table_insert(self, key, value)
+            else:
+                _dict_update_other(self, other)
         if kwargs:
-            _dict_update_table(self, kwargs)
+            for index in _table_live(kwargs):
+                _table_insert(
+                    self,
+                    _storage_read(kwargs._keys, index),
+                    _storage_read(kwargs._values, index),
+                )
 
     @classmethod
     def fromkeys(cls, iterable, value=None):

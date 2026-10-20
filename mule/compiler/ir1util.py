@@ -10,7 +10,7 @@ depth-first block chain hanging off each component's head and tail.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
 from .node import (
     BasicVar,
@@ -893,6 +893,12 @@ class _CloneIR1Node(NodeVisitor):
         self.lexenv_map = lexenv_map
         self.saved_refs = saved_refs
         self.saved_sets = saved_sets
+        self.node_map: dict[Node, Node] = {}
+        self.valued_map: dict[ValuedNode, ValuedNode] = {}
+        self.bind_map: dict[Bind, Bind] = {}
+        self.return_map: dict[Return, Return] = {}
+        self.entry_map: dict[Entry, Entry] = {}
+        self.exit_map: dict[Exit, Exit] = {}
 
     def map_ctran(self, ctran: Ctran | None) -> Ctran | None:
         if ctran is None:
@@ -904,6 +910,12 @@ class _CloneIR1Node(NodeVisitor):
             mapped.block = self.block_map.get(ctran.block, ctran.block)
             self.ctran_map[ctran] = mapped
         return mapped
+
+    @overload
+    def map_lvar(self, lvar: Lvar) -> Lvar: ...
+
+    @overload
+    def map_lvar(self, lvar: None) -> None: ...
 
     def map_lvar(self, lvar: Lvar | None) -> Lvar | None:
         if lvar is None:
@@ -958,16 +970,18 @@ class _CloneIR1Node(NodeVisitor):
             self.lexenv_map[lexenv] = mapped
         return mapped
 
-    def _finish_node(self, old: Node, new: Node) -> Node:
+    def _finish_node[N: Node](self, old: N, new: N) -> N:
         new.prev = self.map_ctran(old.prev)
         new.next = self.map_ctran(old.next)
         new.reoptimize = False
+        self.node_map[old] = new
         return new
 
-    def _finish_valued(self, old: ValuedNode, new: ValuedNode) -> ValuedNode:
+    def _finish_valued[N: ValuedNode](self, old: N, new: N) -> N:
         self._finish_node(old, new)
         new.lvar = self.map_lvar(old.lvar)
         new.derived_type = old.derived_type
+        self.valued_map[old] = new
         return new
 
     def visit_Ref(self, node: Ref) -> Ref:
@@ -1025,6 +1039,7 @@ class _CloneIR1Node(NodeVisitor):
     def visit_Bind(self, node: Bind) -> Bind:
         cloned = Bind(self.map_lexenv(node.lexenv), node.source)
         cloned.lambda_ = node.lambda_
+        self.bind_map[node] = cloned
         return self._finish_node(node, cloned)
 
     def visit_Return(self, node: Return) -> Return:
@@ -1035,13 +1050,14 @@ class _CloneIR1Node(NodeVisitor):
             node.lambda_,
         )
         cloned.result_type = node.result_type
+        self.return_map[node] = cloned
         return self._finish_node(node, cloned)
 
     def visit_Cast(self, node: Cast) -> Cast:
         cloned = Cast(
             self.map_lexenv(node.lexenv),
             node.source,
-            self.map_lvar(node.value),
+            self.map_lvar(linked(node.value, node, "value")),
             node.contract,
             node.location,
             node.safety,
@@ -1053,6 +1069,7 @@ class _CloneIR1Node(NodeVisitor):
     def visit_Entry(self, node: Entry) -> Entry:
         cloned = Entry(self.map_lexenv(node.lexenv), node.source)
         cloned.cleanup = self.map_cleanup(node.cleanup)
+        self.entry_map[node] = cloned
         return self._finish_node(node, cloned)
 
     def visit_Exit(self, node: Exit) -> Exit:
@@ -1062,25 +1079,12 @@ class _CloneIR1Node(NodeVisitor):
             None,
             self.map_lvar(node.value),
         )
+        self.exit_map[node] = cloned
         return self._finish_valued(node, cloned)
 
     def visit_Enclose(self, node: Enclose) -> Enclose:
         cloned = Enclose(self.map_lexenv(node.lexenv), node.source, list(node.funs))
         return self._finish_node(node, cloned)
-
-
-class _LinkClonedExits(NodeVisitor):
-    def __init__(self, node_map: dict[Node, Node]):
-        self.node_map = node_map
-
-    def visit_Entry(self, node: Entry):
-        cloned = self.node_map[node]
-        cloned.exits = [self.node_map[ex] for ex in node.exits if ex in self.node_map]
-
-    def visit_Exit(self, node: Exit):
-        cloned = self.node_map[node]
-        if node.entry is not None:
-            cloned.entry = self.node_map.get(node.entry, node.entry)
 
 
 def clone_lambda_component(lambda_: Lambda):
@@ -1134,12 +1138,10 @@ def clone_lambda_component(lambda_: Lambda):
         saved_refs,
         saved_sets,
     )
-    node_map: dict[Node, Node] = {}
-    old_nodes: list[Node] = []
     for old_block in old_blocks:
         for old_node in old_block.nodes():
-            old_nodes.append(old_node)
-            node_map[old_node] = old_node.accept(cloner)
+            old_node.accept(cloner)
+    node_map = cloner.node_map
     for old_ctran, new_ctran in ctran_map.items():
         new_ctran.next = (
             node_map.get(old_ctran.next) if old_ctran.next is not None else None
@@ -1151,7 +1153,9 @@ def clone_lambda_component(lambda_: Lambda):
         new_lvar.dest = (
             node_map.get(old_lvar.dest) if old_lvar.dest is not None else None
         )
-        new_lvar.uses = [node_map[u] for u in old_lvar.uses if u in node_map]
+        new_lvar.uses = [
+            cloner.valued_map[u] for u in old_lvar.uses if u in cloner.valued_map
+        ]
     for old_cleanup, new_cleanup in cleanup_map.items():
         if old_cleanup.mess_up is not None:
             new_cleanup.mess_up = node_map.get(old_cleanup.mess_up, old_cleanup.mess_up)
@@ -1159,9 +1163,13 @@ def clone_lambda_component(lambda_: Lambda):
         nb = block_map[old_block]
         nb.start = cloner.map_ctran(old_block.start)
         nb.last = node_map.get(old_block.last) if old_block.last is not None else None
-    exit_linker = _LinkClonedExits(node_map)
-    for old_node in old_nodes:
-        old_node.accept(exit_linker)
+    for old_entry, new_entry in cloner.entry_map.items():
+        new_entry.exits = [
+            cloner.exit_map[ex] for ex in old_entry.exits if ex in cloner.exit_map
+        ]
+    for old_exit, new_exit in cloner.exit_map.items():
+        if old_exit.entry is not None:
+            new_exit.entry = cloner.entry_map.get(old_exit.entry, old_exit.entry)
     saved_lambda = (
         lambda_.component,
         lambda_.bind,
@@ -1170,10 +1178,10 @@ def clone_lambda_component(lambda_: Lambda):
     )
     lambda_.component = new_component
     if lambda_.bind is not None:
-        lambda_.bind = node_map.get(lambda_.bind, lambda_.bind)
+        lambda_.bind = cloner.bind_map.get(lambda_.bind, lambda_.bind)
     if lambda_.return_ is not None:
-        lambda_.return_ = node_map.get(lambda_.return_, lambda_.return_)
-    lambda_.entries = [node_map.get(e, e) for e in lambda_.entries]
+        lambda_.return_ = cloner.return_map.get(lambda_.return_, lambda_.return_)
+    lambda_.entries = [cloner.entry_map.get(e, e) for e in lambda_.entries]
 
     # Track any leaves whose refs or sets are mutated by IR1 transforms while
     # the cloned component is active so restore() leaves no dangling refs.
