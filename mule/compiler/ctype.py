@@ -432,6 +432,10 @@ class ValueType:
     def interned_text(self) -> str | None:
         return None
 
+    def exact_text(self) -> str | None:
+        """The one text value this type admits, when it is a known literal."""
+        return None
+
     def fixnum_domain(self):
         return None
 
@@ -1497,6 +1501,9 @@ class TextType(PrimitiveType):
         if self.literal == "" or (len(self.literal) == 1 and ord(self.literal) <= 0xFF):
             return self.literal
         return None
+
+    def exact_text(self) -> str | None:
+        return None if self.may_be_unbound else self.literal
 
     def exact_length(self) -> int | None:
         return (

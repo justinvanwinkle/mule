@@ -76,15 +76,16 @@ def test_float_division_by_zero_raises_in_native_entry(tmp_path):
     assert "ZeroDivisionError" in result.stderr
 
 
-def test_float_entry_rejects_integer_argument_with_type_error(tmp_path):
+def test_float_entry_ignores_contradicted_integer_argument(tmp_path):
+    # A call proven to pass an int contradicts the optional float64 contract;
+    # the contract is warned about and ignored, as CPython ignores it.
     result = run_native(
         tmp_path,
         HEADER + "def half(x: float64) -> float64:\n return x / 2\n"
         "print(half(3.0))\nprint(half(3))\n",
     )
-    assert result.returncode == 1
-    assert result.stdout == "1.5\n"
-    assert "float" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "1.5\n1.5\n"
 
 
 def test_narrow_float_widths_keep_boxed_bodies():

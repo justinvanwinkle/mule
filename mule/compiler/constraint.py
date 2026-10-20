@@ -1799,6 +1799,9 @@ class _Walk:
     ) -> tuple[ValueType, ...] | None:
         if not self.lambda_.vars or not body.return_states:
             return None
+        # The returned values' predicates read their operands' types from the
+        # propagation that produced ``body``; this walk has not run.
+        self.facts = body.facts
         joined: list[ValueType] = [BOTTOM] * len(self.lambda_.vars)
         found_any = False
         for use, ret_state, origins, type_of_origins in body.return_states:

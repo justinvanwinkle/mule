@@ -718,7 +718,32 @@ def _object_dictionary(owner):
     return _GlobalsDict(namespace)
 
 
-object.__dict__ = property(_object_dictionary)
+def _replace_dictionary(dictionary, value):
+    if not (
+        is_instance(value, dict)
+        or is_instance(value, _InstanceDict)
+        or is_instance(value, _GlobalsDict)
+    ):
+        raise TypeError(
+            f"__dict__ must be set to a dictionary, not a '{type_of(value).__name__}'"
+        )
+    entries = list(value.items())
+    dictionary.clear()
+    for key, item in entries:
+        dictionary[key] = item
+
+
+def _set_object_dictionary(owner, value):
+    _replace_dictionary(_object_dictionary(owner), value)
+
+
+def _delete_object_dictionary(owner):
+    _object_dictionary(owner).clear()
+
+
+object.__dict__ = property(
+    _object_dictionary, _set_object_dictionary, _delete_object_dictionary
+)
 
 
 def vars(*args):
@@ -1662,6 +1687,10 @@ class function(object):
     @property
     def __dict__(self):
         return _GlobalsDict(function_attributes(self))
+
+    @__dict__.setter
+    def __dict__(self, value):
+        _replace_dictionary(_GlobalsDict(function_attributes(self)), value)
 
     def __get__(self, instance, owner=None):
         # Functions are descriptors: reading one through an instance binds

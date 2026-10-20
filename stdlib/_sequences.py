@@ -814,7 +814,7 @@ def divmod(left, right, /):
         rcls is float or rcls is int or rcls is bool
     ):
         if right == 0:
-            raise ZeroDivisionError("float divmod()")
+            raise ZeroDivisionError("division by zero")
         return (left // right, left % right)
     left_owner, right_owner = type_of(left), type_of(right)
     forward = class_lookup_default(left_owner, '__divmod__', _DIVMOD_MISSING)

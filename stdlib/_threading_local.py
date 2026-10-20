@@ -76,7 +76,11 @@ def _patch(self):
         self.__init__(*args, **kw)
     with impl.locallock:
         object.__setattr__(self, '__dict__', dct)
-        yield
+        try:
+            yield
+        finally:
+            dct.clear()
+            dct.update(object.__getattribute__(self, '__dict__'))
 
 
 class local:
@@ -98,6 +102,8 @@ class local:
 
     def __getattribute__(self, name):
         with _patch(self):
+            if name == '__dict__':
+                return object.__getattribute__(self, '_local__impl').get_dict()
             return object.__getattribute__(self, name)
 
     def __setattr__(self, name, value):

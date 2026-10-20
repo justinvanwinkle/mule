@@ -791,8 +791,9 @@ It does not wrap calls in the generated executable.
 - `safety=0` trusts declarations and omits optional annotation checks.
   Generic values entering raw `int64` storage or an internal native entry still
   undergo physical representation validation at that boundary.
-  Statically detected contradictions are errors at every safety level. An
-  undetected violation under trusted compilation need not produce a clean error.
+  Statically detected contradictions are warned and ignored, as at every safety
+  level. An undetected violation under trusted compilation need not produce a
+  clean error.
 - `safety=1`, `2`, or `3` checks an unknown category or range before using its
   annotated facts. Checks disappear when analysis already proves the contract.
   Failures produce `TypeError`, and error cleanup owns the unrefined value until

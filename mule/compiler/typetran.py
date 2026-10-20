@@ -419,7 +419,7 @@ _TEXT_LITERAL_VALUE = _TextLiteralValue()
 
 def _lvar_text_type(lvar: Lvar) -> ValueType:
     value_type = lvar_type(lvar)
-    if value_type.fits(TEXT_TYPE) and value_type.interned_text() is None:
+    if value_type.fits(TEXT_TYPE) and value_type.exact_text() is None:
         constant = constant_literal(lvar)
         if constant is not None:
             literal = constant.accept(_TEXT_LITERAL_VALUE)
@@ -435,7 +435,7 @@ def _text_literal_comparison(
 ) -> bool | None:
     if not (left_type.fits(TEXT_TYPE) and right_type.fits(TEXT_TYPE)):
         return None
-    left_literal, right_literal = left_type.interned_text(), right_type.interned_text()
+    left_literal, right_literal = left_type.exact_text(), right_type.exact_text()
     if left_literal is None or right_literal is None:
         return None
     if operator is ast.ComparisonOperator.LESS:

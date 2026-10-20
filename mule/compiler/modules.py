@@ -164,6 +164,36 @@ def find_module(name, roots):
     raise ImportError(f"No module named {name}")
 
 
+def builtin_installs(compilation: Compilation, namespace: str):
+    """Each ``_install_builtin(name, function)`` call in ``compilation``'s
+    top level, as the builtin name and the export keys that may define the
+    function: the installing module's own binding, then the module it was
+    imported from."""
+    import_bindings: dict[str, tuple[str, str]] = {}
+    imp_visitor = _ImportBindingStores(import_bindings)
+    for block in lambda_blocks(compilation.entry):
+        for node in block.nodes():
+            node.accept(imp_visitor)
+    for call in known_calls(compilation.entry, "_install_builtin"):
+        if len(call.args) != 2:
+            continue
+        literal = constant_literal(call.args[0])
+        builtin_name = (
+            None if literal is None else literal.accept(_BUILTIN_NAME_LITERAL)
+        )
+        target_name = (
+            call.args[1].use().accept(_GLOBAL_VAR_NAME)
+            if len(call.args[1].uses) == 1
+            else None
+        )
+        if builtin_name is None or target_name is None:
+            continue
+        keys = ((namespace, target_name),)
+        if target_name in import_bindings:
+            keys += (import_bindings[target_name],)
+        yield builtin_name, keys
+
+
 class ModuleCompiler:
     def __init__(
         self, filename, *, prefix="", primitives=None, roots=None, package=None
@@ -191,6 +221,9 @@ class ModuleCompiler:
         self.builtin_targets: dict[
             str, Lambda | ClassConstructorTarget | ForeignCallTarget
         ] = dict(BOOTSTRAP_BUILTIN_TARGETS)
+        # Builtins an installing module binds, by name, to the export keys
+        # that define them; see ``expect_builtins``.
+        self.expected_builtins: dict[str, tuple[tuple[str, str], ...]] = {}
         # Imported modules awaiting compilation. An importer needs only the
         # descriptor, so modules compile one after another rather than nested
         # inside their importer, and stack depth does not grow with import
@@ -436,41 +469,43 @@ class ModuleCompiler:
             self.exported_targets[namespace, class_name] = cls_target
         for leaf, vtype in collect_global_constants(compilation.lambdas).items():
             self.exported_types.setdefault((namespace, leaf.name), vtype)
-        import_bindings: dict[str, tuple[str, str]] = {}
-        imp_visitor = _ImportBindingStores(import_bindings)
-        for block in lambda_blocks(compilation.entry):
-            for node in block.nodes():
-                node.accept(imp_visitor)
-        for call in known_calls(compilation.entry, "_install_builtin"):
-            if len(call.args) != 2:
-                continue
-            literal = constant_literal(call.args[0])
-            builtin_name = (
-                None if literal is None else literal.accept(_BUILTIN_NAME_LITERAL)
-            )
-            target_name = (
-                call.args[1].use().accept(_GLOBAL_VAR_NAME)
-                if len(call.args[1].uses) == 1
-                else None
-            )
-            if builtin_name is None or target_name is None:
-                continue
-            target_obj = self.exported_targets.get((namespace, target_name))
-            if target_obj is None and target_name in import_bindings:
-                target_obj = self.exported_targets.get(import_bindings[target_name])
-            if target_obj is not None:
-                self.builtin_targets[builtin_name] = target_obj
-            ret_type = self.exported_types.get((namespace, target_name), UNKNOWN)
-            if ret_type is UNKNOWN and target_name in import_bindings:
-                ret_type = self.exported_types.get(
-                    import_bindings[target_name], UNKNOWN
-                )
-            if ret_type is UNKNOWN and target_obj is not None:
-                ret_type = target_obj.summary_return_type()
-            if ret_type is UNKNOWN:
-                ret_type = self.storage_methods.get((target_name, "__new__"), UNKNOWN)
-            if ret_type is not UNKNOWN:
-                self.builtin_return_types[builtin_name] = ret_type
+        for builtin_name, keys in builtin_installs(compilation, namespace):
+            self.install_builtin(builtin_name, keys)
+        # Builtins installed by a module analyzed later but defined here are
+        # known from this point on, to the modules analyzed after this one.
+        for builtin_name, keys in self.expected_builtins.items():
+            if keys[-1][0] == namespace:
+                self.install_builtin(builtin_name, keys)
+
+    def expect_builtins(self, compilation: Compilation, namespace: str) -> None:
+        """Record the builtins ``compilation`` installs, before the modules
+        defining them are analyzed, so each becomes a known call target as
+        soon as its defining module has been analyzed."""
+        self.expected_builtins.update(builtin_installs(compilation, namespace))
+
+    def install_builtin(self, builtin_name: str, keys) -> None:
+        """Bind builtin ``builtin_name`` to the first recorded export among
+        ``keys``, the installing module's binding and then its import source."""
+        target_obj = next(
+            (t for key in keys if (t := self.exported_targets.get(key)) is not None),
+            None,
+        )
+        if target_obj is not None:
+            self.builtin_targets[builtin_name] = target_obj
+        ret_type = next(
+            (
+                t
+                for key in keys
+                if (t := self.exported_types.get(key, UNKNOWN)) is not UNKNOWN
+            ),
+            UNKNOWN,
+        )
+        if ret_type is UNKNOWN and target_obj is not None:
+            ret_type = target_obj.summary_return_type()
+        if ret_type is UNKNOWN:
+            ret_type = self.storage_methods.get((keys[0][1], "__new__"), UNKNOWN)
+        if ret_type is not UNKNOWN:
+            self.builtin_return_types[builtin_name] = ret_type
 
     def compile_pending(self):
         """Compile every module imported so far, and those they import."""

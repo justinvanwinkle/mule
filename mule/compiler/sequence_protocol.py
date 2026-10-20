@@ -102,6 +102,7 @@ def prepare(program):
         namespace="$mule.sequences",
         primitives=PRIMITIVES,
     )
+    imports.expect_builtins(compilation, "$mule.sequences")
     imports.compile_pending()
     compilation.imported_function_types = imports.exported_types
     compilation.imported_targets = imports.exported_targets

@@ -56,6 +56,9 @@ pub struct ClassLayout {
     /// The class's own class: `type` or a metaclass derived from it.
     pub metaclass: Value,
     pub fields: Vec<String>,
+    /// Which entries of `fields` come from `__slots__` declarations rather
+    /// than ordinary receiver attributes stored in fixed slots.
+    slot_fields: Vec<bool>,
     /// The class's own attributes, in definition order.
     pub attributes: Vec<(String, Value)>,
     field_lookup: HashMap<String, usize>,
@@ -162,6 +165,10 @@ impl ClassLayout {
 
     pub fn allows_instance_dictionary(&self) -> bool {
         self.dict_allowed
+    }
+
+    pub fn is_slot_field(&self, index: usize) -> bool {
+        self.slot_fields.get(index).copied().unwrap_or(false)
     }
 
     /// The class defining `name` (this class or a base), how many bases up
@@ -1511,6 +1518,7 @@ unsafe fn create_class_with(
         };
         // Validate all names before taking ownership, making every rejection atomic.
         let mut fields = inherited.map_or_else(Vec::new, |layout| layout.fields.clone());
+        let mut slot_fields = inherited.map_or_else(Vec::new, |layout| layout.slot_fields.clone());
         let mut field_lookup: HashMap<String, usize> = inherited
             .map_or_else(HashMap::new, |layout| layout.field_lookup.clone());
         // Fields declared on later bases (in MRO order) get slots after the
@@ -1519,20 +1527,44 @@ unsafe fn create_class_with(
             let Some(layout) = layout_of_class(*ancestor) else {
                 continue;
             };
-            for field in &layout.fields {
-                if !fields.iter().any(|known| known == field) {
+            for (index, field) in layout.fields.iter().enumerate() {
+                let is_slot = layout.is_slot_field(index);
+                if let Some(&existing) = field_lookup.get(field) {
+                    if is_slot {
+                        slot_fields[existing] = true;
+                    }
+                } else {
                     field_lookup.insert(field.clone(), fields.len());
                     fields.push(field.clone());
+                    slot_fields.push(is_slot);
                 }
             }
         }
+        let slots = Some(bindings.get("__slots__")).filter(|value| !value.is_null());
+        let declared_slots =
+            slots.map_or_else(Vec::new, |slots| declared_slot_names(class_name, slots));
         for index in 0..field_count as usize {
             let Some(attribute) = name(*field_names.add(index)) else {
                 return std::ptr::null_mut();
             };
-            if !fields.iter().any(|field| field == attribute) {
+            let is_slot = declared_slots.iter().any(|slot| slot == attribute);
+            if let Some(&existing) = field_lookup.get(attribute) {
+                if is_slot {
+                    slot_fields[existing] = true;
+                }
+            } else {
                 field_lookup.insert(attribute.into(), fields.len());
                 fields.push(attribute.into());
+                slot_fields.push(is_slot);
+            }
+        }
+        for slot in &declared_slots {
+            if let Some(&existing) = field_lookup.get(slot) {
+                slot_fields[existing] = true;
+            } else {
+                field_lookup.insert(slot.clone(), fields.len());
+                fields.push(slot.clone());
+                slot_fields.push(true);
             }
         }
         let mut attributes: Vec<(String, Value)> = Vec::with_capacity(bindings.len());
@@ -1561,7 +1593,6 @@ unsafe fn create_class_with(
                 attributes.push(("__hash__".into(), object::retain(none)));
             }
         }
-        let slots = Some(bindings.get("__slots__")).filter(|value| !value.is_null());
         let own_dict = match slots {
             None => !base.is_null(),
             Some(slots) => slot_names_include_dict(slots),
@@ -1581,6 +1612,7 @@ unsafe fn create_class_with(
             mro,
             metaclass: object::retain(metaclass),
             fields,
+            slot_fields,
             attributes,
             field_lookup,
             attribute_lookup,
@@ -1615,6 +1647,51 @@ unsafe fn slot_names_include_dict(slots: Value) -> bool {
             Data::Args(values, ..) | Data::List(values, ..) => values.iter().any(|value| is_dict(*value)),
             _ => is_dict(slots),
         }
+    }
+}
+
+/// The instance slot names declared by a `__slots__` value, mangled as
+/// `type.__new__` mangles private slot names and excluding `__dict__` and
+/// `__weakref__`.
+unsafe fn declared_slot_names(class_name: &str, slots: Value) -> Vec<String> {
+    unsafe {
+        let mut result = Vec::new();
+        let mut push_slot = |value: Value| {
+            if object::is_fixnum(value) || value.is_null() {
+                return;
+            }
+            let Data::Text(text, ..) = &(*value).data else {
+                return;
+            };
+            let Some(slot) = text.to_rust_string() else {
+                return;
+            };
+            if slot == "__dict__" || slot == "__weakref__" {
+                return;
+            }
+            let mangled = if slot.starts_with("__") && !slot.ends_with("__") {
+                let prefix = class_name.trim_start_matches('_');
+                if prefix.is_empty() {
+                    slot
+                } else {
+                    format!("_{prefix}{slot}")
+                }
+            } else {
+                slot
+            };
+            result.push(mangled);
+        };
+        if !object::is_fixnum(slots) && !slots.is_null() {
+            match &(*slots).data {
+                Data::Args(values, ..) | Data::List(values, ..) => {
+                    for value in values {
+                        push_slot(*value);
+                    }
+                }
+                _ => push_slot(slots),
+            }
+        }
+        result
     }
 }
 
@@ -2752,7 +2829,7 @@ unsafe fn delete_attribute_with(receiver: Value, attribute: &str, hooks: bool) -
             }
             return result;
         }
-        if remove_instance_binding(receiver, layout, attribute) {
+        if remove_instance_binding(receiver, layout, attribute, true) {
             return object::none_value();
         }
         missing(Some(layout), true, &attribute)
@@ -2957,7 +3034,10 @@ unsafe extern "C" fn instance_items(_: Value, args: Value) -> Value {
         };
         let mut pairs = Vec::new();
         for (index, field) in layout.fields.iter().enumerate() {
-            if !fields[index].is_null() && layout.field_lookup.contains_key(field) {
+            if !fields[index].is_null()
+                && !layout.is_slot_field(index)
+                && layout.field_lookup.contains_key(field)
+            {
                 let key = text(field);
                 pairs.push(object::mule_sequence_tuple(2, [key, fields[index]].as_ptr()));
                 object::release(key);
@@ -3050,10 +3130,12 @@ unsafe extern "C" fn instance_set_binding(_: Value, args: Value) -> Value {
             return missing(Some(layout), true, "__dict__");
         }
         let attributes = if let Data::Instance { fields, attributes, .. } = &mut (*receiver).data {
-            if let Some(index) = layout.field_lookup.get(&attribute) {
-                let old = std::mem::replace(&mut fields[*index], object::retain(value));
-                object::release(old);
-                return object::none_value();
+            if let Some(&index) = layout.field_lookup.get(&attribute) {
+                if !layout.is_slot_field(index) {
+                    let old = std::mem::replace(&mut fields[index], object::retain(value));
+                    object::release(old);
+                    return object::none_value();
+                }
             }
             if attributes.is_null() {
                 *attributes = object::namespace();
@@ -3074,14 +3156,21 @@ unsafe extern "C" fn instance_set_binding(_: Value, args: Value) -> Value {
 }
 
 /// Unbind raw instance storage. The caller owns absence/error translation.
-unsafe fn remove_instance_binding(receiver: Value, layout: &ClassLayout, attribute: &str) -> bool {
+unsafe fn remove_instance_binding(
+    receiver: Value,
+    layout: &ClassLayout,
+    attribute: &str,
+    allow_slots: bool,
+) -> bool {
     unsafe {
         let attributes = if let Data::Instance { fields, attributes, .. } = &mut (*receiver).data {
-            if let Some(index) = layout.field_lookup.get(attribute) {
-                let old = std::mem::replace(&mut fields[*index], std::ptr::null_mut());
-                if !old.is_null() {
-                    object::release(old);
-                    return true;
+            if let Some(&index) = layout.field_lookup.get(attribute) {
+                if allow_slots || !layout.is_slot_field(index) {
+                    let old = std::mem::replace(&mut fields[index], std::ptr::null_mut());
+                    if !old.is_null() {
+                        object::release(old);
+                        return true;
+                    }
                 }
             }
             *attributes
@@ -3117,7 +3206,7 @@ unsafe extern "C" fn instance_delete_binding(_: Value, args: Value) -> Value {
         if !layout.dict_allowed {
             return missing(Some(layout), true, "__dict__");
         }
-        object::bool_value(remove_instance_binding(receiver, layout, &attribute))
+        object::bool_value(remove_instance_binding(receiver, layout, &attribute, false))
     }
 }
 
