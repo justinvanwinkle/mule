@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mule performance · 20261019T173501.070793Z</title>
+<title>Mule performance · 20261020T005823.031436Z</title>
 <style>
 :root{color-scheme:light}*{box-sizing:border-box}
 body{margin:0;background:#faf8f3;color:#202b2b;font:16px/1.65 system-ui,sans-serif}
@@ -15,7 +15,7 @@ table{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap;font
 th{background:#eeeee6}small{display:block;color:#596564}pre{font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}article{border-top:1px solid #dedfd8;padding:12px 0}summary{cursor:pointer}footer{border-top:1px solid #dedfd8;padding-top:20px;font-size:13px;color:#596564}
 @media(max-width:600px){main{padding:24px 18px}section{margin:28px 0}}
 </style></head><body><main><header><div class="eyebrow">MULE / PERFORMANCE LABORATORY</div><h1>Measure the work.<br>Keep the evidence.</h1>
-<p>Linux-7.2.8+deb14-amd64-x86_64-with-glibc2.43<br>20261019T173501.070793Z</p>
+<p>Linux-7.2.8+deb14-amd64-x86_64-with-glibc2.43<br>20261020T005823.031436Z</p>
 <span class="pill">Baseline: cpython</span><span class="pill">42 validated / 42 comparisons</span>
 <p><a href="results.json">Raw results &amp; provenance</a> · <a href="kernel.svg">Kernel SVG</a> · <a href="process.svg">Process SVG</a></p></header>
 <section aria-labelledby="reading"><h2 id="reading">How to read this report</h2><p>Vertical bars show median elapsed time in milliseconds for the same scenario and input. Shorter bars mean faster execution.
@@ -27,48 +27,48 @@ Short kernels can be dominated by measurement overhead; increase workload size b
 <section aria-label="Kernel comparison"><figure><div class="chart" role="region" aria-label="Scrollable kernel chart" tabindex="0"><img src="kernel.svg" alt="Vertical bars compare median kernel milliseconds for each runtime within each scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Kernel elapsed medians. Preparation and compilation are excluded. Each scenario has its own scale.</figcaption></figure></section>
 <section aria-label="Whole-process comparison"><figure><div class="chart" role="region" aria-label="Scrollable whole-process chart" tabindex="0"><img src="process.svg" alt="Vertical bars compare median whole-process milliseconds by runtime and scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Whole-process elapsed medians. Includes startup and setup, not compilation. Each scenario has its own scale.</figcaption></figure></section>
 <section aria-labelledby="measurements"><h2 id="measurements">Every measurement</h2><div class="table" role="region" aria-label="Scrollable results table" tabindex="0"><table><thead><tr><th scope="col">Scenario</th><th scope="col">Runtime</th><th scope="col">Status</th>
-<th scope="col">Kernel median</th><th scope="col">Process median</th><th scope="col">Kernel ratio</th></tr></thead><tbody><tr><td>account_ledger</td><td>cpython</td><td>ok</td><td>7747.968 ms <small>σ 800.896</small></td><td>15311.209 ms <small>σ 1800.347</small></td><td>1×</td></tr>
-<tr><td>account_ledger</td><td>mule-o2</td><td>ok</td><td>3327.181 ms <small>σ 329.843</small></td><td>6802.612 ms <small>σ 552.199</small></td><td>2.33×</td></tr>
-<tr><td>account_ledger</td><td>sbcl</td><td>ok</td><td>1029.997 ms <small>σ 257.089</small></td><td>2155.817 ms <small>σ 261.568</small></td><td>7.52×</td></tr>
-<tr><td>closure_pipeline</td><td>cpython</td><td>ok</td><td>6471.393 ms <small>σ 482.890</small></td><td>13336.691 ms <small>σ 1139.396</small></td><td>1×</td></tr>
-<tr><td>closure_pipeline</td><td>mule-o2</td><td>ok</td><td>6815.694 ms <small>σ 1027.888</small></td><td>12746.714 ms <small>σ 1431.795</small></td><td>0.949×</td></tr>
-<tr><td>closure_pipeline</td><td>sbcl</td><td>ok</td><td>394.755 ms <small>σ 73.962</small></td><td>780.403 ms <small>σ 149.231</small></td><td>16.4×</td></tr>
-<tr><td>exception_validation</td><td>cpython</td><td>ok</td><td>7315.397 ms <small>σ 861.668</small></td><td>14382.215 ms <small>σ 1748.012</small></td><td>1×</td></tr>
-<tr><td>exception_validation</td><td>mule-o2</td><td>ok</td><td>4291.527 ms <small>σ 125.787</small></td><td>8756.173 ms <small>σ 379.344</small></td><td>1.7×</td></tr>
-<tr><td>exception_validation</td><td>sbcl</td><td>ok</td><td>920.046 ms <small>σ 220.583</small></td><td>1846.568 ms <small>σ 347.036</small></td><td>7.95×</td></tr>
-<tr><td>expression_tree</td><td>cpython</td><td>ok</td><td>6456.110 ms <small>σ 549.984</small></td><td>13149.007 ms <small>σ 1330.914</small></td><td>1×</td></tr>
-<tr><td>expression_tree</td><td>mule-o2</td><td>ok</td><td>15918.233 ms <small>σ 640.766</small></td><td>32236.845 ms <small>σ 1303.774</small></td><td>0.406×</td></tr>
-<tr><td>expression_tree</td><td>sbcl</td><td>ok</td><td>2185.547 ms <small>σ 128.443</small></td><td>4363.214 ms <small>σ 274.375</small></td><td>2.95×</td></tr>
-<tr><td>graph_paths</td><td>cpython</td><td>ok</td><td>45.574 ms <small>σ 14.130</small></td><td>153.872 ms <small>σ 30.026</small></td><td>1×</td></tr>
-<tr><td>graph_paths</td><td>mule-o2</td><td>ok</td><td>52.866 ms <small>σ 3.571</small></td><td>192.488 ms <small>σ 8.463</small></td><td>0.862×</td></tr>
-<tr><td>graph_paths</td><td>sbcl</td><td>ok</td><td>15.100 ms <small>σ 2.559</small></td><td>39.848 ms <small>σ 3.693</small></td><td>3.02×</td></tr>
-<tr><td>http_routing</td><td>cpython</td><td>ok</td><td>71.569 ms <small>σ 5.595</small></td><td>184.014 ms <small>σ 11.307</small></td><td>1×</td></tr>
-<tr><td>http_routing</td><td>mule-o2</td><td>ok</td><td>112.538 ms <small>σ 8.125</small></td><td>280.268 ms <small>σ 17.636</small></td><td>0.636×</td></tr>
-<tr><td>http_routing</td><td>sbcl</td><td>ok</td><td>71.163 ms <small>σ 4.321</small></td><td>164.003 ms <small>σ 8.164</small></td><td>1.01×</td></tr>
-<tr><td>integer_accumulation</td><td>cpython</td><td>ok</td><td>50.742 ms <small>σ 2.402</small></td><td>267.277 ms <small>σ 9.693</small></td><td>1×</td></tr>
-<tr><td>integer_accumulation</td><td>mule-o2</td><td>ok</td><td>9.982 ms <small>σ 0.733</small></td><td>34.132 ms <small>σ 2.350</small></td><td>5.08×</td></tr>
-<tr><td>integer_accumulation</td><td>sbcl</td><td>ok</td><td>5.065 ms <small>σ 0.537</small></td><td>17.971 ms <small>σ 1.177</small></td><td>10×</td></tr>
-<tr><td>interval_merging</td><td>cpython</td><td>ok</td><td>6024.820 ms <small>σ 375.622</small></td><td>12359.433 ms <small>σ 612.917</small></td><td>1×</td></tr>
-<tr><td>interval_merging</td><td>mule-o2</td><td>ok</td><td>1082.433 ms <small>σ 33.121</small></td><td>2214.889 ms <small>σ 54.106</small></td><td>5.57×</td></tr>
-<tr><td>interval_merging</td><td>sbcl</td><td>ok</td><td>611.531 ms <small>σ 21.269</small></td><td>1207.554 ms <small>σ 24.153</small></td><td>9.85×</td></tr>
-<tr><td>json_tokenizer</td><td>cpython</td><td>ok</td><td>5784.247 ms <small>σ 269.110</small></td><td>11929.344 ms <small>σ 461.466</small></td><td>1×</td></tr>
-<tr><td>json_tokenizer</td><td>mule-o2</td><td>ok</td><td>1379.368 ms <small>σ 45.379</small></td><td>2823.840 ms <small>σ 57.587</small></td><td>4.19×</td></tr>
-<tr><td>json_tokenizer</td><td>sbcl</td><td>ok</td><td>578.692 ms <small>σ 35.414</small></td><td>1180.302 ms <small>σ 72.086</small></td><td>10×</td></tr>
-<tr><td>kv_record_parse</td><td>cpython</td><td>ok</td><td>5750.290 ms <small>σ 506.262</small></td><td>11454.649 ms <small>σ 676.682</small></td><td>1×</td></tr>
-<tr><td>kv_record_parse</td><td>mule-o2</td><td>ok</td><td>2235.695 ms <small>σ 152.351</small></td><td>4381.820 ms <small>σ 288.003</small></td><td>2.57×</td></tr>
-<tr><td>kv_record_parse</td><td>sbcl</td><td>ok</td><td>3430.578 ms <small>σ 186.492</small></td><td>6960.557 ms <small>σ 233.425</small></td><td>1.68×</td></tr>
-<tr><td>log_aggregation</td><td>cpython</td><td>ok</td><td>77.414 ms <small>σ 11.838</small></td><td>233.410 ms <small>σ 22.564</small></td><td>1×</td></tr>
-<tr><td>log_aggregation</td><td>mule-o2</td><td>ok</td><td>342.865 ms <small>σ 12.675</small></td><td>1073.513 ms <small>σ 30.411</small></td><td>0.226×</td></tr>
-<tr><td>log_aggregation</td><td>sbcl</td><td>ok</td><td>27.098 ms <small>σ 0.880</small></td><td>87.327 ms <small>σ 3.399</small></td><td>2.86×</td></tr>
-<tr><td>lru_simulation</td><td>cpython</td><td>ok</td><td>4061.711 ms <small>σ 463.639</small></td><td>8134.517 ms <small>σ 1293.285</small></td><td>1×</td></tr>
-<tr><td>lru_simulation</td><td>mule-o2</td><td>ok</td><td>8811.979 ms <small>σ 107.610</small></td><td>17670.609 ms <small>σ 858.636</small></td><td>0.461×</td></tr>
-<tr><td>lru_simulation</td><td>sbcl</td><td>ok</td><td>1717.911 ms <small>σ 7.800</small></td><td>3262.102 ms <small>σ 40.103</small></td><td>2.36×</td></tr>
-<tr><td>matrix_multiply</td><td>cpython</td><td>ok</td><td>5906.665 ms <small>σ 1289.338</small></td><td>10977.355 ms <small>σ 2183.670</small></td><td>1×</td></tr>
-<tr><td>matrix_multiply</td><td>mule-o2</td><td>ok</td><td>713.921 ms <small>σ 168.902</small></td><td>1468.645 ms <small>σ 352.787</small></td><td>8.27×</td></tr>
-<tr><td>matrix_multiply</td><td>sbcl</td><td>ok</td><td>100.642 ms <small>σ 16.947</small></td><td>209.518 ms <small>σ 39.776</small></td><td>58.7×</td></tr>
-<tr><td>word_frequency</td><td>cpython</td><td>ok</td><td>4796.290 ms <small>σ 144.798</small></td><td>9880.461 ms <small>σ 307.663</small></td><td>1×</td></tr>
-<tr><td>word_frequency</td><td>mule-o2</td><td>ok</td><td>15615.463 ms <small>σ 54.511</small></td><td>31271.075 ms <small>σ 82.507</small></td><td>0.307×</td></tr>
-<tr><td>word_frequency</td><td>sbcl</td><td>ok</td><td>3321.713 ms <small>σ 19.557</small></td><td>6698.077 ms <small>σ 25.899</small></td><td>1.44×</td></tr></tbody></table></div></section>
+<th scope="col">Kernel median</th><th scope="col">Process median</th><th scope="col">Kernel ratio</th></tr></thead><tbody><tr><td>account_ledger</td><td>cpython</td><td>ok</td><td>4252.599 ms <small>σ 0.000</small></td><td>8514.943 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>account_ledger</td><td>mule-o2</td><td>ok</td><td>2154.001 ms <small>σ 0.000</small></td><td>4323.672 ms <small>σ 0.000</small></td><td>1.97×</td></tr>
+<tr><td>account_ledger</td><td>sbcl</td><td>ok</td><td>659.039 ms <small>σ 0.000</small></td><td>1335.069 ms <small>σ 0.000</small></td><td>6.45×</td></tr>
+<tr><td>closure_pipeline</td><td>cpython</td><td>ok</td><td>4155.620 ms <small>σ 0.000</small></td><td>8346.607 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>closure_pipeline</td><td>mule-o2</td><td>ok</td><td>3899.974 ms <small>σ 0.000</small></td><td>7793.534 ms <small>σ 0.000</small></td><td>1.07×</td></tr>
+<tr><td>closure_pipeline</td><td>sbcl</td><td>ok</td><td>258.593 ms <small>σ 0.000</small></td><td>515.913 ms <small>σ 0.000</small></td><td>16.1×</td></tr>
+<tr><td>exception_validation</td><td>cpython</td><td>ok</td><td>3952.557 ms <small>σ 0.000</small></td><td>7929.957 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>exception_validation</td><td>mule-o2</td><td>ok</td><td>2772.950 ms <small>σ 0.000</small></td><td>5543.907 ms <small>σ 0.000</small></td><td>1.43×</td></tr>
+<tr><td>exception_validation</td><td>sbcl</td><td>ok</td><td>582.078 ms <small>σ 0.000</small></td><td>1174.839 ms <small>σ 0.000</small></td><td>6.79×</td></tr>
+<tr><td>expression_tree</td><td>cpython</td><td>ok</td><td>4030.991 ms <small>σ 0.000</small></td><td>8096.515 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>expression_tree</td><td>mule-o2</td><td>ok</td><td>11168.149 ms <small>σ 0.000</small></td><td>22347.592 ms <small>σ 0.000</small></td><td>0.361×</td></tr>
+<tr><td>expression_tree</td><td>sbcl</td><td>ok</td><td>1284.228 ms <small>σ 0.000</small></td><td>2579.184 ms <small>σ 0.000</small></td><td>3.14×</td></tr>
+<tr><td>graph_paths</td><td>cpython</td><td>ok</td><td>36.178 ms <small>σ 0.000</small></td><td>113.399 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>graph_paths</td><td>mule-o2</td><td>ok</td><td>39.317 ms <small>σ 0.000</small></td><td>138.964 ms <small>σ 0.000</small></td><td>0.92×</td></tr>
+<tr><td>graph_paths</td><td>sbcl</td><td>ok</td><td>11.701 ms <small>σ 0.000</small></td><td>31.709 ms <small>σ 0.000</small></td><td>3.09×</td></tr>
+<tr><td>http_routing</td><td>cpython</td><td>ok</td><td>45.483 ms <small>σ 0.000</small></td><td>122.119 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>http_routing</td><td>mule-o2</td><td>ok</td><td>94.026 ms <small>σ 0.000</small></td><td>229.851 ms <small>σ 0.000</small></td><td>0.484×</td></tr>
+<tr><td>http_routing</td><td>sbcl</td><td>ok</td><td>50.895 ms <small>σ 0.000</small></td><td>117.975 ms <small>σ 0.000</small></td><td>0.894×</td></tr>
+<tr><td>integer_accumulation</td><td>cpython</td><td>ok</td><td>30.375 ms <small>σ 0.000</small></td><td>175.189 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>integer_accumulation</td><td>mule-o2</td><td>ok</td><td>6.022 ms <small>σ 0.000</small></td><td>23.618 ms <small>σ 0.000</small></td><td>5.04×</td></tr>
+<tr><td>integer_accumulation</td><td>sbcl</td><td>ok</td><td>3.421 ms <small>σ 0.000</small></td><td>13.177 ms <small>σ 0.000</small></td><td>8.88×</td></tr>
+<tr><td>interval_merging</td><td>cpython</td><td>ok</td><td>4226.177 ms <small>σ 0.000</small></td><td>8364.279 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>interval_merging</td><td>mule-o2</td><td>ok</td><td>827.164 ms <small>σ 0.000</small></td><td>1652.794 ms <small>σ 0.000</small></td><td>5.11×</td></tr>
+<tr><td>interval_merging</td><td>sbcl</td><td>ok</td><td>440.987 ms <small>σ 0.000</small></td><td>887.166 ms <small>σ 0.000</small></td><td>9.58×</td></tr>
+<tr><td>json_tokenizer</td><td>cpython</td><td>ok</td><td>3973.001 ms <small>σ 0.000</small></td><td>7979.570 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>json_tokenizer</td><td>mule-o2</td><td>ok</td><td>2040.320 ms <small>σ 0.000</small></td><td>4121.246 ms <small>σ 0.000</small></td><td>1.95×</td></tr>
+<tr><td>json_tokenizer</td><td>sbcl</td><td>ok</td><td>420.838 ms <small>σ 0.000</small></td><td>857.210 ms <small>σ 0.000</small></td><td>9.44×</td></tr>
+<tr><td>kv_record_parse</td><td>cpython</td><td>ok</td><td>4014.003 ms <small>σ 0.000</small></td><td>8063.823 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>kv_record_parse</td><td>mule-o2</td><td>ok</td><td>1518.364 ms <small>σ 0.000</small></td><td>3031.204 ms <small>σ 0.000</small></td><td>2.64×</td></tr>
+<tr><td>kv_record_parse</td><td>sbcl</td><td>ok</td><td>2406.278 ms <small>σ 0.000</small></td><td>4880.167 ms <small>σ 0.000</small></td><td>1.67×</td></tr>
+<tr><td>log_aggregation</td><td>cpython</td><td>ok</td><td>52.554 ms <small>σ 0.000</small></td><td>162.315 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>log_aggregation</td><td>mule-o2</td><td>ok</td><td>214.308 ms <small>σ 0.000</small></td><td>663.152 ms <small>σ 0.000</small></td><td>0.245×</td></tr>
+<tr><td>log_aggregation</td><td>sbcl</td><td>ok</td><td>20.572 ms <small>σ 0.000</small></td><td>67.765 ms <small>σ 0.000</small></td><td>2.55×</td></tr>
+<tr><td>lru_simulation</td><td>cpython</td><td>ok</td><td>3975.982 ms <small>σ 0.000</small></td><td>7989.154 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>lru_simulation</td><td>mule-o2</td><td>ok</td><td>8484.733 ms <small>σ 0.000</small></td><td>16994.876 ms <small>σ 0.000</small></td><td>0.469×</td></tr>
+<tr><td>lru_simulation</td><td>sbcl</td><td>ok</td><td>1614.255 ms <small>σ 0.000</small></td><td>3053.637 ms <small>σ 0.000</small></td><td>2.46×</td></tr>
+<tr><td>matrix_multiply</td><td>cpython</td><td>ok</td><td>4462.515 ms <small>σ 0.000</small></td><td>9017.399 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>matrix_multiply</td><td>mule-o2</td><td>ok</td><td>709.099 ms <small>σ 0.000</small></td><td>1421.338 ms <small>σ 0.000</small></td><td>6.29×</td></tr>
+<tr><td>matrix_multiply</td><td>sbcl</td><td>ok</td><td>84.862 ms <small>σ 0.000</small></td><td>174.787 ms <small>σ 0.000</small></td><td>52.6×</td></tr>
+<tr><td>word_frequency</td><td>cpython</td><td>ok</td><td>4057.863 ms <small>σ 0.000</small></td><td>8236.617 ms <small>σ 0.000</small></td><td>1×</td></tr>
+<tr><td>word_frequency</td><td>mule-o2</td><td>ok</td><td>15409.517 ms <small>σ 0.000</small></td><td>30821.545 ms <small>σ 0.000</small></td><td>0.263×</td></tr>
+<tr><td>word_frequency</td><td>sbcl</td><td>ok</td><td>3274.756 ms <small>σ 0.000</small></td><td>6565.697 ms <small>σ 0.000</small></td><td>1.24×</td></tr></tbody></table></div></section>
 <section aria-labelledby="provenance"><h2 id="provenance">Reproduce, then compare</h2><details><summary>Platform, run options, runtime commands, and revisions</summary><pre>{
   &quot;platform&quot;: &quot;Linux-7.2.8+deb14-amd64-x86_64-with-glibc2.43&quot;,
   &quot;harness_python&quot;: &quot;3.15.0 free-threading build (main, Oct 14 2026, 01:06:54) [Clang 23.1.3 ]&quot;,
@@ -110,12 +110,12 @@ Short kernels can be dominated by measurement overhead; increase workload size b
     &quot;action&quot;: &quot;run&quot;,
     &quot;cases&quot;: [],
     &quot;config&quot;: &quot;perf/runtimes.example.toml&quot;,
-    &quot;output&quot;: &quot;/home/jvanwinkle/repos/mule/perf/results/20261019T173501.070793Z&quot;,
+    &quot;output&quot;: &quot;/home/jvanwinkle/repos/mule/perf/results/20261020T005823.031436Z&quot;,
     &quot;history&quot;: &quot;/home/jvanwinkle/repos/mule/perf/history.jsonl&quot;,
     &quot;no_history&quot;: false,
     &quot;runtime&quot;: null,
     &quot;last&quot;: null,
-    &quot;samples&quot;: 5,
+    &quot;samples&quot;: 1,
     &quot;size&quot;: null,
     &quot;seed&quot;: 42,
     &quot;loops&quot;: 1,
@@ -136,8 +136,8 @@ Short kernels can be dominated by measurement overhead; increase workload size b
     &quot;--version&quot;
   ],
   &quot;revision&quot;: {
-    &quot;commit&quot;: &quot;ae24f322765fa588e72f61624e2ac7df3e15a16f&quot;,
-    &quot;tracked_diff_sha256&quot;: &quot;b28e74c49ed285796b65f39c8df9cdeb21661e2e2f75b419e04e2bd822f60e45&quot;
+    &quot;commit&quot;: &quot;791a934b174dcbe2e64193763df2e85326615557&quot;,
+    &quot;tracked_diff_sha256&quot;: &quot;e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855&quot;
   },
   &quot;version&quot;: &quot;Python 3.15.0\n&quot;
 }</pre></article><article><h3>mule-o2</h3><pre>{
@@ -157,8 +157,8 @@ Short kernels can be dominated by measurement overhead; increase workload size b
     &quot;2&quot;
   ],
   &quot;revision&quot;: {
-    &quot;commit&quot;: &quot;ae24f322765fa588e72f61624e2ac7df3e15a16f&quot;,
-    &quot;tracked_diff_sha256&quot;: &quot;b28e74c49ed285796b65f39c8df9cdeb21661e2e2f75b419e04e2bd822f60e45&quot;
+    &quot;commit&quot;: &quot;791a934b174dcbe2e64193763df2e85326615557&quot;,
+    &quot;tracked_diff_sha256&quot;: &quot;e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855&quot;
   }
 }</pre></article><article><h3>sbcl</h3><pre>{
   &quot;name&quot;: &quot;sbcl&quot;,
@@ -182,8 +182,8 @@ Short kernels can be dominated by measurement overhead; increase workload size b
     &quot;--version&quot;
   ],
   &quot;revision&quot;: {
-    &quot;commit&quot;: &quot;ae24f322765fa588e72f61624e2ac7df3e15a16f&quot;,
-    &quot;tracked_diff_sha256&quot;: &quot;b28e74c49ed285796b65f39c8df9cdeb21661e2e2f75b419e04e2bd822f60e45&quot;
+    &quot;commit&quot;: &quot;791a934b174dcbe2e64193763df2e85326615557&quot;,
+    &quot;tracked_diff_sha256&quot;: &quot;e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855&quot;
   },
   &quot;version&quot;: &quot;SBCL 2.6.4.debian\n&quot;
 }</pre></article></details><p>Raw results retain samples, hashes, commands, and build diagnostics. A commit plus a tracked-diff digest identifies the measured working tree, not necessarily a clean release.</p></section>
