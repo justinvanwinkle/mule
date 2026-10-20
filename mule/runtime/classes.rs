@@ -1332,6 +1332,100 @@ pub unsafe fn is_instance(value: Value, class: Value) -> bool {
     unsafe { is_subclass(class_of_value(value), class) }
 }
 
+/// `isinstance(value, class)` for a call site that names one class: 1 or 0,
+/// or -1 when the answer needs the full compiled protocol (`class` is not a
+/// class, or its metaclass defines `__instancecheck__`). Exact class identity
+/// is answered without touching the class; a subclass is one MRO scan, as
+/// CPython's `PyObject_IsInstance` does for a plain `type`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_isinstance_class(value: Value, class: Value) -> i32 {
+    unsafe {
+        let actual = class_of_value(value);
+        if actual == class && !class.is_null() {
+            return 1;
+        }
+        if class.is_null() || object::is_fixnum(class) {
+            return -1;
+        }
+        let Data::Class(layout) = &(*class).data else {
+            return -1;
+        };
+        if !layout.metaclass.is_null() {
+            if let Some(meta) = layout_of_class(layout.metaclass) {
+                if !meta.special_slot(Special::InstanceCheck).is_null() {
+                    return -1;
+                }
+            }
+        }
+        match class_layout_quiet(actual) {
+            Some(actual_layout) => i32::from(actual_layout.mro.contains(&class)),
+            None => 0,
+        }
+    }
+}
+
+unsafe fn class_layout_quiet<'a>(value: Value) -> Option<&'a ClassLayout> {
+    unsafe {
+        if value.is_null() || object::is_fixnum(value) {
+            return None;
+        }
+        match &(*value).data {
+            Data::Class(layout) => Some(layout),
+            _ => None,
+        }
+    }
+}
+
+/// `isinstance(value, (classes[0], ..., classes[count - 1]))` for a call
+/// site whose class operands the compiler separated, so no tuple is built.
+/// Classes are tried in order and the first match ends the test, as CPython
+/// does. A class `mule_isinstance_class` cannot answer goes through the
+/// compiled `isinstance` protocol. Returns `True`/`False`, or NULL with an
+/// error. All operands are borrowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_isinstance_any(
+    value: Value,
+    classes: *const Value,
+    count: i64,
+) -> Value {
+    unsafe {
+        for index in 0..count.max(0) as usize {
+            let class = *classes.add(index);
+            let matched = match mule_isinstance_class(value, class) {
+                1 => true,
+                0 => false,
+                _ => match isinstance_protocol(value, class) {
+                    Some(matched) => matched,
+                    None => return std::ptr::null_mut(),
+                },
+            };
+            if matched {
+                return object::bool_value(true);
+            }
+        }
+        object::bool_value(false)
+    }
+}
+
+/// The compiled `isinstance` for one operand: `__instancecheck__`, nested
+/// tuples, and the `TypeError` for an operand that is not a class.
+unsafe fn isinstance_protocol(value: Value, class: Value) -> Option<bool> {
+    unsafe {
+        let protocol = object::lookup(crate::sequences::mule_protocol_globals(), "isinstance");
+        if protocol.is_null() {
+            object::error("SystemError", "isinstance protocol is not installed");
+            return None;
+        }
+        let result = object::call(protocol, &[value, class]);
+        if result.is_null() {
+            return None;
+        }
+        let truth = object::truth(result);
+        object::release(result);
+        truth
+    }
+}
+
 /// Whether `derived` is `class` or has it among its bases.
 pub unsafe fn is_subclass(derived: Value, class: Value) -> bool {
     unsafe {

@@ -268,6 +268,59 @@ HASATTR = defknown(
 # emitted as known calls: without a constant name the call stays generic.
 GETATTR_BUILTIN = defknown("getattr", "call", "unsafe")
 HASATTR_BUILTIN = defknown("hasattr", "call", "unsafe")
+
+
+def _isinstance_answer(node) -> ValueType | None:
+    """``True`` when the operand's class is proven to be one of the classes
+    or a subclass. ``False`` is never derived: a metaclass ``__instancecheck__``
+    (``abc.ABCMeta`` with registered virtual subclasses) can accept an
+    instance whose class is unrelated, and the compiler cannot see that."""
+    if _DERIVATION_MODE.active:
+        return None
+    value, *classes = (_arg_type(arg) for arg in node.args)
+    if any(value.is_instance_of(cls) is True for cls in classes):
+        return BOOLEAN_TRUE
+    return BOOLEAN
+
+
+def _constrain_isinstance(visitor, node, state, truth: bool) -> bool:
+    """Narrow the tested variable on each branch. True narrows to the union of
+    the matching classes; false removes each of them. A true branch the
+    classes would make impossible is left unnarrowed, not dead: a metaclass
+    ``__instancecheck__`` may accept a virtual subclass."""
+    source = visitor.origins.get(node.args[0])
+    if source is None or source not in visitor.state:
+        return False
+    classes = [visitor.lvar_fact(arg).type for arg in node.args[1:]]
+    if not all(cls.fits_class() for cls in classes):
+        # A nested tuple or non-class operand: no class to narrow by.
+        return False
+    current = visitor.state[source]
+    if truth:
+        narrowed = BOTTOM
+        for cls in classes:
+            narrowed = narrowed.join(current.type.narrow_by_runtime_class(cls, True))
+        if narrowed is BOTTOM:
+            return True
+    else:
+        narrowed = current.type
+        for cls in classes:
+            narrowed = narrowed.narrow_by_runtime_class(cls, False)
+    if narrowed is not current.type:
+        state[source] = visitor.narrowed_fact(current, narrowed)
+    return True
+
+
+# ``isinstance(x, C)`` and ``isinstance(x, (A, B, ...))`` with the classes
+# separated at the call site: ``(x, A, B, ...)``. The tuple is never built.
+ISINSTANCE = defknown(
+    "%isinstance",
+    "call",
+    "unsafe",
+    derive_type=_isinstance_answer,
+    constrain_branch=_constrain_isinstance,
+)
+ISINSTANCE_BUILTIN = defknown("isinstance", "call", "unsafe")
 SETATTR = defknown(
     "%setattr", "call", "unsafe", result=False, non_integer_first_arg=True
 )

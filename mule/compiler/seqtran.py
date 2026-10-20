@@ -1248,6 +1248,40 @@ def _transform_hasattr(node: Combination) -> bool:
     return True
 
 
+@deftransform("isinstance")
+def _transform_isinstance(node: Combination) -> bool:
+    """``isinstance(x, C)`` with a class operand, or ``isinstance(x, (A, B))``
+    with the tuple built at the call site, becomes ``%isinstance`` with the
+    classes as separate operands, so the tuple is never allocated (SBCL's
+    ``typep`` with a constant type specifier is open-coded per type). The
+    tuple's elements are already evaluated in order before the call; only
+    the allocation goes away."""
+    if len(node.args) != 2:
+        return False
+    value, classinfo = node.args
+    if lvar_type(classinfo).fits_class():
+        retarget_known_combination(node, fndb.ISINSTANCE, [value, classinfo])
+        return True
+    if len(classinfo.uses) != 1:
+        return False
+    tuple_node = classinfo.uses[0].accept(_BUILD_TUPLE_PRODUCER)
+    if (
+        tuple_node is None
+        or tuple_node.prev is None
+        or tuple_node.block is not node.block
+        or not tuple_node.args
+    ):
+        return False
+    classes = list(tuple_node.args)
+    tuple_node.args = []
+    _flush_operand(tuple_node.fun)
+    unlink_node(tuple_node)
+    classinfo.dest = None
+    node.args = [value]
+    retarget_known_combination(node, fndb.ISINSTANCE, [value, *classes])
+    return True
+
+
 class _IfTestingLvar(NodeVisitor):
     """Return ``node`` when it is an ``If`` testing ``test``."""
 

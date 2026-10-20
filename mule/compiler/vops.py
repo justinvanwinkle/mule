@@ -910,6 +910,21 @@ def setattr_(gen, vop):
     gen.check_status(status)
 
 
+@define_vop("isinstance", translate=fndb.ISINSTANCE, results=(OBJECT,))
+def isinstance_(gen, vop):
+    """``isinstance(x, C)`` or ``isinstance(x, (A, B))`` without a tuple. The
+    class operands are passed in a stack buffer; the runtime answers plain
+    classes from the class pointer and its MRO, and only an
+    ``__instancecheck__`` metaclass or a non-class reaches compiled code."""
+    value, *classes = (gen.take(arg) for arg in vop.args)
+    gen.argv(classes)
+    gen.pointer_result(
+        vop.results[0],
+        f"call ptr @mule_isinstance_any(ptr {value}, ptr %argv, i64 {len(classes)})",
+        (value, *classes),
+    )
+
+
 @define_vop(
     "resolve-method",
     translate=fndb.RESOLVE_METHOD,

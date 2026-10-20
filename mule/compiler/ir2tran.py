@@ -99,6 +99,7 @@ _BORROWING_VOPS = frozenset(
         "getattr",
         "getattr-default",
         "hasattr",
+        "isinstance",
         "setattr",
         "resolve-method",
         "resolve-super-method",
