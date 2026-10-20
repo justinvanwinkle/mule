@@ -1350,9 +1350,16 @@ pub unsafe extern "C" fn mule_isinstance_class(value: Value, class: Value) -> i3
         let Data::Class(layout) = &(*class).data else {
             return -1;
         };
+        // `type.__instancecheck__` is the plain subclass test this function
+        // performs; only a metaclass overriding it needs the protocol. As
+        // CPython's `PyObject_IsInstance`, which skips the hook for an exact
+        // `type`, compare the metaclass's hook with `type`'s own.
         if !layout.metaclass.is_null() {
             if let Some(meta) = layout_of_class(layout.metaclass) {
-                if !meta.special_slot(Special::InstanceCheck).is_null() {
+                let hook = meta.special_slot(Special::InstanceCheck);
+                let plain = layout_of_class(builtin_type(Builtin::Type))
+                    .map_or(std::ptr::null_mut(), |ty| ty.special_slot(Special::InstanceCheck));
+                if !hook.is_null() && hook != plain {
                     return -1;
                 }
             }
