@@ -8,6 +8,63 @@
 use crate::object::{self, Data, Value};
 use std::ptr::null_mut;
 
+/// The hasher for the runtime's internal tables: attribute names fixed in
+/// compiled source, and object addresses. SipHash defends against chosen
+/// keys an attacker can supply; these keys are not chosen that way, and
+/// SipHash's setup and finalization dominated every attribute miss. This is
+/// the FxHash multiply-rotate used by rustc's own tables.
+#[derive(Default, Clone, Copy)]
+pub struct FastHasher(u64);
+
+const FX_SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+
+impl FastHasher {
+    #[inline]
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(FX_SEED);
+    }
+}
+
+impl std::hash::Hasher for FastHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            self.add(u64::from_le_bytes(chunk.try_into().expect("eight bytes")));
+        }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut word = [0u8; 8];
+            word[..rest.len()].copy_from_slice(rest);
+            self.add(u64::from_le_bytes(word));
+        }
+    }
+
+    #[inline]
+    fn write_u8(&mut self, value: u8) {
+        self.add(u64::from(value));
+    }
+
+    #[inline]
+    fn write_usize(&mut self, value: usize) {
+        self.add(value as u64);
+    }
+
+    #[inline]
+    fn write_u64(&mut self, value: u64) {
+        self.add(value);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+pub type FastBuild = std::hash::BuildHasherDefault<FastHasher>;
+/// A `HashMap` with the runtime's internal hasher.
+pub type FastMap<K, V> = std::collections::HashMap<K, V, FastBuild>;
+
 const MODULUS_BITS: i32 = 61;
 const MODULUS: u64 = (1 << MODULUS_BITS) - 1;
 const INFINITY_HASH: i64 = 314_159;

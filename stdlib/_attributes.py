@@ -7,6 +7,7 @@ apply it to names computed at run time, following CPython's
 
 from _mule_native import delete_attribute
 from _mule_native import get_attribute
+from _mule_native import get_attribute_or
 from _mule_native import set_attribute
 
 # Compiler-provided physical primitives are not host Python globals.
@@ -29,8 +30,10 @@ def getattr(obj, name, default=_MISSING, /):
     _require_name(name)
     if default is _MISSING:
         return get_attribute(obj, name)
+    # A lookup the runtime fails returns the default without raising; an
+    # AttributeError raised by compiled code still arrives here.
     try:
-        return get_attribute(obj, name)
+        return get_attribute_or(obj, name, default)
     except AttributeError:
         return default
 
@@ -38,10 +41,9 @@ def getattr(obj, name, default=_MISSING, /):
 def hasattr(obj, name, /):
     _require_name(name)
     try:
-        get_attribute(obj, name)
+        return get_attribute_or(obj, name, _MISSING) is not _MISSING
     except AttributeError:
         return False
-    return True
 
 
 def setattr(obj, name, value, /):

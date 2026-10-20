@@ -9,7 +9,7 @@
 //! stderr and discarded, matching CPython's unraisable-exception handling.
 use crate::object::{self, Data, Value};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use crate::hashing::FastMap as HashMap;
 use std::io::Write;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,7 +18,7 @@ static HAS_ANY_WEAKREFS: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     // Referent address to live handles. Empty in programs without weak references.
-    static REGISTRY: RefCell<HashMap<usize, Vec<Value>>> = RefCell::new(HashMap::new());
+    static REGISTRY: RefCell<HashMap<usize, Vec<Value>>> = RefCell::new(HashMap::with_hasher(crate::hashing::FastBuild::new()));
 }
 
 #[inline]

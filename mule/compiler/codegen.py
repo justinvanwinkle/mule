@@ -144,6 +144,10 @@ declare ptr @mule_construct_arguments(ptr, i64, ptr)
 declare i32 @mule_binding_positional(ptr, i32, i32, i32)
 declare ptr @mule_arg_or_default(ptr, i32, i32)
 declare ptr @mule_binding_default_at(ptr, i32)
+declare i64 @mule_binding_view(ptr, ptr, i64, ptr, ptr, ptr)
+declare i64 @mule_binding_name_index(ptr, ptr, i64)
+declare void @mule_binding_error(i32, ptr)
+declare ptr @mule_binding_keyword_text(ptr, i64)
 declare ptr @mule_binding_missing()
 declare ptr @mule_binding_count(ptr)
 declare ptr @mule_binding_pos(ptr, ptr)
@@ -265,6 +269,7 @@ declare void @mule_register_compiled_module(ptr, ptr, ptr, ptr, ptr, ptr, i64)
 declare void @mule_set_image_search_path(ptr, i64)
 declare void @mule_set_attribute_lookup(ptr)
 declare ptr @mule_attribute_lookup_once(ptr, ptr)
+declare ptr @mule_attribute_lookup_or(ptr, ptr, ptr)
 declare ptr @mule_builtins_module_init(ptr)
 declare void @mule_register_finalizer(ptr)
 declare void @mule_run_finalizers()
@@ -4634,28 +4639,10 @@ class FunctionGenerator:
             lines.append("  br label %invoke")
         else:
             lines.append("  br label %binding")
-        binder = module.bodies[
-            linked(module.program.argument_binder, module.program, "argument binder")
-        ]
-        lines += [
-            "binding:",
-            "  %private = call ptr @mule_protocol_globals()",
-            "  %owned.view = call ptr @mule.fast.retain(ptr %args)",
-            f"  %signature = {module.constant_tuple(lambda_.binding)}",
-            f"  %bound = call ptr {binder}(ptr %private, ptr %owned.view, ptr %signature)",
-            "  %unbound = icmp eq ptr %bound, null",
-            "  br i1 %unbound, label %failed, label %bound.ok",
-            "bound.ok:",
-        ]
-        for index in range(count):
-            lines.append(
-                f"  %bound.{index} = call ptr @mule_arg(ptr %bound, i32 {index})"
-            )
-        lines += [
-            "  call void @mule.fast.release(ptr %bound)",
-            "  br label %invoke",
-            "invoke:",
-        ]
+        lines += self.keyword_entry(
+            positional, default_offsets, rest_idx, keywords_idx
+        )
+        lines += ["invoke:"]
         for index in range(count):
             if fast:
                 lines.append(
@@ -4680,6 +4667,263 @@ class FunctionGenerator:
             "}",
         ]
         return "\n".join(lines)
+
+    def keyword_entry(
+        self,
+        positional: int,
+        default_offsets: dict[int, int],
+        rest_idx: int | None,
+        keywords_idx: int | None,
+    ) -> list[str]:
+        """The ``binding:`` blocks of the external entry: this function's own
+        keyword parser, after SBCL's ``convert-more-entry``. Each supplied
+        keyword is matched against this function's parameter names, first by
+        the address of the unit's shared name constant and then by text, and
+        stored straight into its parameter slot. Unmatched keywords go to
+        ``**kwargs``. Ends defining ``%bound.N`` for every parameter, owned,
+        and branching from ``%bound.ok`` to ``%invoke``."""
+        lambda_ = self.lambda_
+        module = self.module
+        from mule import ast
+
+        kinds = lambda_.signature.kinds
+        names = lambda_.parameters
+        count = len(names)
+        keyword_params = [
+            index
+            for index, kind in enumerate(kinds)
+            if kind
+            in (ast.ParameterKind.POSITIONAL_OR_KEYWORD, ast.ParameterKind.KEYWORD_ONLY)
+        ]
+        table = module.names(tuple(names[index] for index in keyword_params))
+        variadic = {rest_idx, keywords_idx} - {None}
+        lines = [
+            "binding:",
+            f"  %kw.slots = alloca [{count} x ptr]",
+            f"  %kw.positional = alloca [{max(positional, 1)} x ptr]",
+            "  %kw.count.slot = alloca i64",
+            "  %kw.names.slot = alloca ptr",
+            "  %kw.values.slot = alloca ptr",
+            (
+                "  %kw.count = call i64 @mule_binding_view(ptr %args, ptr %kw.positional, "
+                f"i64 {positional}, ptr %kw.count.slot, ptr %kw.names.slot, "
+                "ptr %kw.values.slot)"
+            ),
+            "  %kw.view.bad = icmp slt i64 %kw.count, 0",
+            "  br i1 %kw.view.bad, label %failed, label %kw.view.ok",
+            "kw.view.ok:",
+            "  %kw.npos = load i64, ptr %kw.count.slot",
+            "  %kw.names = load ptr, ptr %kw.names.slot",
+            "  %kw.values = load ptr, ptr %kw.values.slot",
+            "  %kw.extra = alloca i8, i64 %kw.count",
+        ]
+        if rest_idx is None:
+            lines += [
+                f"  %kw.too.many = icmp sgt i64 %kw.npos, {positional}",
+                "  br i1 %kw.too.many, label %kw.too.many.error, label %kw.slots.init",
+                "kw.too.many.error:",
+                "  call void @mule_binding_error(i32 0, ptr null)",
+                "  br label %failed",
+            ]
+        else:
+            lines.append("  br label %kw.slots.init")
+        lines.append("kw.slots.init:")
+        for index in range(count):
+            lines.append(
+                f"  %kw.slot.{index} = getelementptr [{count} x ptr], ptr %kw.slots, i64 0, i64 {index}"
+            )
+            if index < positional:
+                lines += [
+                    f"  %kw.given.{index} = icmp sgt i64 %kw.npos, {index}",
+                    f"  %kw.pos.addr.{index} = getelementptr ptr, ptr %kw.positional, i64 {index}",
+                    f"  %kw.pos.{index} = load ptr, ptr %kw.pos.addr.{index}",
+                    f"  %kw.init.{index} = select i1 %kw.given.{index}, ptr %kw.pos.{index}, ptr null",
+                    f"  store ptr %kw.init.{index}, ptr %kw.slot.{index}",
+                ]
+            else:
+                lines.append(f"  store ptr null, ptr %kw.slot.{index}")
+        # Each supplied keyword: find its parameter, then bind or reject it.
+        fast = []
+        previous = "-1"
+        for position, index in enumerate(keyword_params):
+            fast += [
+                f"  %kw.is.{position} = icmp eq ptr %kw.name, {module.text(names[index])}",
+                f"  %kw.fast.{position} = select i1 %kw.is.{position}, i64 {position}, i64 {previous}",
+            ]
+            previous = f"%kw.fast.{position}"
+        cases = " ".join(
+            f"i64 {position}, label %kw.bind.{position}"
+            for position in range(len(keyword_params))
+        )
+        lines += [
+            "  br label %kw.head",
+            "kw.head:",
+            "  %kw.k = phi i64 [0, %kw.slots.init], [%kw.k.next, %kw.next]",
+            "  %kw.done = icmp eq i64 %kw.k, %kw.count",
+            "  br i1 %kw.done, label %kw.end, label %kw.body",
+            "kw.body:",
+            "  %kw.name.addr = getelementptr ptr, ptr %kw.names, i64 %kw.k",
+            "  %kw.name = load ptr, ptr %kw.name.addr",
+            "  %kw.extra.addr = getelementptr i8, ptr %kw.extra, i64 %kw.k",
+            "  store i8 0, ptr %kw.extra.addr",
+            *fast,
+            f"  %kw.fast = add i64 {previous}, 0",
+            "  %kw.miss = icmp eq i64 %kw.fast, -1",
+            "  br i1 %kw.miss, label %kw.slow, label %kw.dispatch",
+            "kw.slow:",
+            (
+                "  %kw.slow.index = call i64 @mule_binding_name_index(ptr %kw.name, "
+                f"ptr {table}, i64 {len(keyword_params)})"
+            ),
+            "  br label %kw.dispatch",
+            "kw.dispatch:",
+            "  %kw.j = phi i64 [%kw.fast, %kw.body], [%kw.slow.index, %kw.slow]",
+            f"  switch i64 %kw.j, label %kw.unknown [{cases}]",
+        ]
+        for position, index in enumerate(keyword_params):
+            lines += [
+                f"kw.bind.{position}:",
+                f"  %kw.old.{position} = load ptr, ptr %kw.slot.{index}",
+                f"  %kw.bound.{position} = icmp ne ptr %kw.old.{position}, null",
+                f"  br i1 %kw.bound.{position}, label %kw.duplicate, label %kw.store.{position}",
+                f"kw.store.{position}:",
+                f"  %kw.value.addr.{position} = getelementptr ptr, ptr %kw.values, i64 %kw.k",
+                f"  %kw.value.{position} = load ptr, ptr %kw.value.addr.{position}",
+                f"  store ptr %kw.value.{position}, ptr %kw.slot.{index}",
+                "  br label %kw.next",
+            ]
+        lines += [
+            "kw.duplicate:",
+            "  call void @mule_binding_error(i32 2, ptr %kw.name)",
+            "  br label %failed",
+            "kw.unknown:",
+        ]
+        if keywords_idx is not None:
+            lines += ["  store i8 1, ptr %kw.extra.addr", "  br label %kw.next"]
+        else:
+            lines += [
+                "  call void @mule_binding_error(i32 1, ptr %kw.name)",
+                "  br label %failed",
+            ]
+        lines += [
+            "kw.next:",
+            "  %kw.k.next = add i64 %kw.k, 1",
+            "  br label %kw.head",
+            "kw.end:",
+        ]
+        # Required parameters nothing supplied.
+        for index in range(count):
+            if index in variadic or index in default_offsets:
+                continue
+            lines += [
+                f"  %kw.check.{index} = load ptr, ptr %kw.slot.{index}",
+                f"  %kw.missing.{index} = icmp eq ptr %kw.check.{index}, null",
+                f"  br i1 %kw.missing.{index}, label %kw.missing.error.{index}, label %kw.present.{index}",
+                f"kw.missing.error.{index}:",
+                f"  call void @mule_binding_error(i32 3, ptr {module.text(names[index])})",
+                "  br label %failed",
+                f"kw.present.{index}:",
+            ]
+        # Binding succeeded: acquire owned references.
+        owned: list[str] = []
+
+        def fail_block(label: str) -> list[str]:
+            return [
+                f"{label}:",
+                *(f"  call void @mule.fast.release(ptr {value})" for value in owned),
+                "  br label %failed",
+            ]
+
+        if rest_idx is not None:
+            lines += [
+                f"  %kw.rest.many = icmp sgt i64 %kw.npos, {positional}",
+                f"  %kw.rest.from = select i1 %kw.rest.many, i64 {positional}, i64 %kw.npos",
+                "  %kw.rest.start = trunc i64 %kw.rest.from to i32",
+                f"  %bound.{rest_idx} = call ptr @mule_rest_args(ptr %args, i32 %kw.rest.start)",
+                f"  %kw.rest.bad = icmp eq ptr %bound.{rest_idx}, null",
+                "  br i1 %kw.rest.bad, label %failed, label %kw.rest.ok",
+                "kw.rest.ok:",
+            ]
+            owned.append(f"%bound.{rest_idx}")
+        if keywords_idx is not None:
+            build_dict = module.protocol_helper("build_dict", 1)
+            setitem = module.protocol_helper("setitem", 3)
+            extra = f"%bound.{keywords_idx}"
+            lines += [
+                f"  %kw.empty = {module.constant_tuple(ast.Tuple([]))}",
+                "  %kw.empty.bad = icmp eq ptr %kw.empty, null",
+                "  br i1 %kw.empty.bad, label %kw.dict.fail, label %kw.dict.make",
+                "kw.dict.make:",
+                f"  {extra} = call ptr {build_dict}(ptr %kw.empty)",
+                f"  %kw.dict.bad = icmp eq ptr {extra}, null",
+                "  br i1 %kw.dict.bad, label %kw.dict.fail, label %kw.dict.ok",
+                *fail_block("kw.dict.fail"),
+                "kw.dict.ok:",
+            ]
+            owned.append(extra)
+            lines += [
+                "  br label %kw.extra.head",
+                "kw.extra.head:",
+                "  %kw.e = phi i64 [0, %kw.dict.ok], [%kw.e.next, %kw.extra.next]",
+                "  %kw.e.done = icmp eq i64 %kw.e, %kw.count",
+                "  br i1 %kw.e.done, label %kw.extra.end, label %kw.extra.test",
+                "kw.extra.test:",
+                "  %kw.e.flag.addr = getelementptr i8, ptr %kw.extra, i64 %kw.e",
+                "  %kw.e.flag = load i8, ptr %kw.e.flag.addr",
+                "  %kw.e.set = icmp ne i8 %kw.e.flag, 0",
+                "  br i1 %kw.e.set, label %kw.extra.insert, label %kw.extra.next",
+                "kw.extra.insert:",
+                "  %kw.e.key = call ptr @mule_binding_keyword_text(ptr %args, i64 %kw.e)",
+                "  %kw.e.key.bad = icmp eq ptr %kw.e.key, null",
+                "  br i1 %kw.e.key.bad, label %kw.extra.fail, label %kw.extra.store",
+                "kw.extra.store:",
+                "  %kw.e.value.addr = getelementptr ptr, ptr %kw.values, i64 %kw.e",
+                "  %kw.e.value.borrowed = load ptr, ptr %kw.e.value.addr",
+                "  %kw.e.value = call ptr @mule.fast.retain(ptr %kw.e.value.borrowed)",
+                f"  %kw.e.dict = call ptr @mule.fast.retain(ptr {extra})",
+                f"  %kw.e.result = call ptr {setitem}(ptr %kw.e.dict, ptr %kw.e.key, ptr %kw.e.value)",
+                "  %kw.e.result.bad = icmp eq ptr %kw.e.result, null",
+                "  br i1 %kw.e.result.bad, label %kw.extra.fail, label %kw.extra.done",
+                "kw.extra.done:",
+                "  call void @mule.fast.release(ptr %kw.e.result)",
+                "  br label %kw.extra.next",
+                "kw.extra.next:",
+                "  %kw.e.next = add i64 %kw.e, 1",
+                "  br label %kw.extra.head",
+                *fail_block("kw.extra.fail"),
+                "kw.extra.end:",
+            ]
+        for index in range(count):
+            if index in variadic:
+                continue
+            if index not in default_offsets:
+                lines.append(
+                    f"  %bound.{index} = call ptr @mule.fast.retain(ptr %kw.check.{index})"
+                )
+                owned.append(f"%bound.{index}")
+                continue
+            offset = default_offsets[index]
+            lines += [
+                f"  %kw.given.value.{index} = load ptr, ptr %kw.slot.{index}",
+                f"  %kw.defaulted.{index} = icmp eq ptr %kw.given.value.{index}, null",
+                f"  br i1 %kw.defaulted.{index}, label %kw.default.{index}, label %kw.supplied.{index}",
+                f"kw.supplied.{index}:",
+                f"  %kw.owned.{index} = call ptr @mule.fast.retain(ptr %kw.given.value.{index})",
+                f"  br label %kw.acquired.{index}",
+                f"kw.default.{index}:",
+                f"  %kw.default.value.{index} = call ptr @mule_binding_default_at(ptr %args, i32 {offset})",
+                f"  %kw.default.bad.{index} = icmp eq ptr %kw.default.value.{index}, null",
+                f"  br i1 %kw.default.bad.{index}, label %kw.default.fail.{index}, label %kw.acquired.{index}",
+                *fail_block(f"kw.default.fail.{index}"),
+                f"kw.acquired.{index}:",
+                (
+                    f"  %bound.{index} = phi ptr [%kw.owned.{index}, %kw.supplied.{index}], "
+                    f"[%kw.default.value.{index}, %kw.default.{index}]"
+                ),
+            ]
+            owned.append(f"%bound.{index}")
+        lines += ["  br label %bound.ok", "bound.ok:", "  br label %invoke"]
+        return lines
 
     def wrapper(self) -> str:
         """General entry validates an argument view and transfers owned arguments."""

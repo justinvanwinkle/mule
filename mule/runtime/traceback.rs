@@ -17,7 +17,7 @@
 //! exception reaches the calling frame.
 use crate::object::{self, Data, Value};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use crate::hashing::FastMap as HashMap;
 use std::ffi::{CStr, c_char};
 use std::io::Write;
 use std::ptr::null_mut;
@@ -54,7 +54,7 @@ impl CodeInfo {
 }
 
 thread_local! {
-    static CODES: RefCell<HashMap<usize, (Value, Value)>> = RefCell::new(HashMap::new());
+    static CODES: RefCell<HashMap<usize, (Value, Value)>> = RefCell::new(HashMap::with_hasher(crate::hashing::FastBuild::new()));
     /// The pending error's traceback, outermost entry first, or NULL.
     static PENDING: Cell<Value> = const { Cell::new(null_mut()) };
     /// Live activations, innermost last: code metadata and retained globals.

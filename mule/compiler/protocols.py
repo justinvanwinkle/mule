@@ -121,6 +121,7 @@ _TEXT_ACCESS = {
     )
 }
 _TEXT_ACCESS["_attribute_lookup"] = "mule_attribute_lookup_once"
+_TEXT_ACCESS["_attribute_lookup_or"] = "mule_attribute_lookup_or"
 _COMPILED_CALLS = {
     "_string_protocol": "mule_format_string",
     "_decimal_protocol": "mule_format_decimal_integer",

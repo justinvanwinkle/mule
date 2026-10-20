@@ -15,7 +15,7 @@
 use crate::object::{self, Data, Value};
 use crate::text::Text;
 use std::cell::Cell;
-use std::collections::HashMap;
+use crate::hashing::FastMap as HashMap;
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1122,6 +1122,25 @@ pub unsafe extern "C" fn mule_attribute_lookup_once(receiver: Value, attribute: 
     }
 }
 
+/// `mule_attribute_lookup_once`, returning `missing` (owned, like any result)
+/// in place of raising when the runtime finds no attribute. Errors raised by
+/// getters still propagate. The compiled protocol uses it to reach
+/// `__getattr__` without building an `AttributeError` it would discard.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_attribute_lookup_or(
+    receiver: Value,
+    attribute: Value,
+    missing: Value,
+) -> Value {
+    unsafe {
+        let value = mule_attribute_lookup_once(receiver, attribute);
+        if value.is_null() && object::clear_native_error_of("AttributeError") {
+            return object::retain(missing);
+        }
+        value
+    }
+}
+
 /// Attribute lookup on a value that is neither a class nor an instance of a
 /// compiled class: module bindings and function attributes first, then the
 /// value's builtin class with the descriptor protocol.
@@ -1520,7 +1539,7 @@ unsafe fn create_class_with(
         let mut fields = inherited.map_or_else(Vec::new, |layout| layout.fields.clone());
         let mut slot_fields = inherited.map_or_else(Vec::new, |layout| layout.slot_fields.clone());
         let mut field_lookup: HashMap<String, usize> = inherited
-            .map_or_else(HashMap::new, |layout| layout.field_lookup.clone());
+            .map_or_else(HashMap::default, |layout| layout.field_lookup.clone());
         // Fields declared on later bases (in MRO order) get slots after the
         // primary base's, so every base's methods find their fields.
         for ancestor in &mro {
@@ -1568,7 +1587,7 @@ unsafe fn create_class_with(
             }
         }
         let mut attributes: Vec<(String, Value)> = Vec::with_capacity(bindings.len());
-        let mut attribute_lookup: HashMap<String, usize> = HashMap::new();
+        let mut attribute_lookup: HashMap<String, usize> = HashMap::default();
         for (attribute, value) in bindings.iter() {
             if let Some(index) = attribute_lookup.get(attribute) {
                 let old = attributes[*index].1;
@@ -2715,6 +2734,20 @@ unsafe extern "C" fn instance_field(_: Value, args: Value) -> Value {
 
 unsafe fn c_name(attribute: Value) -> Option<std::ffi::CString> {
     unsafe {
+        if !attribute.is_null() && !object::is_fixnum(attribute) {
+            if let Data::Text(text, ..) = &(*attribute).data {
+                // ASCII names, nearly all of them, need no transcoding.
+                if let Some(bytes) = text.as_latin1().filter(|bytes| bytes.is_ascii()) {
+                    return match std::ffi::CString::new(bytes) {
+                        Ok(name) => Some(name),
+                        Err(_) => {
+                            object::error("ValueError", "attribute name contains a NUL character");
+                            None
+                        }
+                    };
+                }
+            }
+        }
         let attribute = text_argument(attribute)?;
         let Ok(attribute) = std::ffi::CString::new(attribute) else {
             object::error("ValueError", "attribute name contains a NUL character");
@@ -2733,6 +2766,27 @@ unsafe extern "C" fn get_attribute(_: Value, args: Value) -> Value {
             return std::ptr::null_mut();
         };
         mule_get_attr(receiver, attribute.as_ptr())
+    }
+}
+
+/// `getattr(receiver, attribute, default)`: the default when lookup raises
+/// `AttributeError`. A runtime-raised `AttributeError` is cleared without
+/// building an exception object, as CPython's `_PyObject_LookupAttr` does.
+/// An exception object raised by compiled code is left pending, and the
+/// result is NULL, for the caller's compiled handler to match by class.
+unsafe extern "C" fn get_attribute_or(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([receiver, attribute, default]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(attribute) = c_name(attribute) else {
+            return std::ptr::null_mut();
+        };
+        let value = mule_get_attr(receiver, attribute.as_ptr());
+        if value.is_null() && object::clear_native_error_of("AttributeError") {
+            return object::retain(default);
+        }
+        value
     }
 }
 
@@ -3613,7 +3667,7 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 62] = [
+        let exports: [(&str, object::Native); 63] = [
             ("delete_instance_field", delete_instance_field),
             ("class_lookup_default", class_lookup_default),
             ("class_own_lookup_default", class_own_lookup_default),
@@ -3657,6 +3711,7 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("set_instance_field", set_instance_field),
             ("is_instance", is_instance_export),
             ("get_attribute", get_attribute),
+            ("get_attribute_or", get_attribute_or),
             ("set_attribute", set_attribute),
             ("delete_attribute", delete_attribute),
             ("new_class", new_class),

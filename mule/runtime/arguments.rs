@@ -58,6 +58,114 @@ pub unsafe extern "C" fn mule_binding_positional(view: Value, required: i32, pos
     }
 }
 
+/// The shape of a call, for a generated keyword entry (SBCL's more-arg
+/// context): returns the keyword count, writes the positional count (receiver
+/// included) to `count`, the first `capacity` positional values to
+/// `positional`, and the keyword name and value buffers to `names` and
+/// `values`. Everything written is borrowed from the caller for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_binding_view(
+    view: Value,
+    positional: *mut Value,
+    capacity: i64,
+    count: *mut i64,
+    names: *mut *const *const c_char,
+    values: *mut *const Value,
+) -> i64 {
+    unsafe {
+        let Some(actual) = object::argument_count(view) else {
+            return -1;
+        };
+        *count = actual as i64;
+        for index in 0..actual.min(capacity.max(0) as usize) {
+            let Some(value) = object::argument(view, index) else {
+                return -1;
+            };
+            *positional.add(index) = value;
+        }
+        *names = std::ptr::null();
+        *values = std::ptr::null();
+        if let Data::KeywordArgs {
+            names: keyword_names,
+            keyword_values,
+            keyword_count,
+            ..
+        } = &(*view).data
+        {
+            *names = *keyword_names;
+            *values = *keyword_values;
+            return *keyword_count as i64;
+        }
+        0
+    }
+}
+
+/// The position of keyword `name` in a function's parameter-name table, or
+/// -1. Generated keyword entries compare the call site's shared name
+/// constants by address first; this compares the text of names built at run
+/// time, such as the keys of `f(**mapping)`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_binding_name_index(
+    name: *const c_char,
+    table: *const *const c_char,
+    count: i64,
+) -> i64 {
+    unsafe {
+        let name = std::ffi::CStr::from_ptr(name);
+        for index in 0..count.max(0) as usize {
+            if std::ffi::CStr::from_ptr(*table.add(index)) == name {
+                return index as i64;
+            }
+        }
+        -1
+    }
+}
+
+/// Raise the `TypeError` a generated keyword entry found: 0 too many
+/// positional arguments, 1 an unexpected keyword, 2 a parameter bound twice,
+/// 3 a missing required parameter. `name` is the parameter or keyword.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_binding_error(kind: i32, name: *const c_char) {
+    unsafe {
+        let name = if name.is_null() {
+            ""
+        } else {
+            std::ffi::CStr::from_ptr(name).to_str().unwrap_or("?")
+        };
+        let message = match kind {
+            0 => "too many positional arguments".to_string(),
+            1 => format!("got an unexpected keyword argument '{name}'"),
+            2 => format!("got multiple values for argument '{name}'"),
+            _ => format!("missing required argument '{name}'"),
+        };
+        object::error("TypeError", &message);
+    }
+}
+
+/// Keyword `index`'s name as an owned `str`, for a `**kwargs` dictionary.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_binding_keyword_text(view: Value, index: i64) -> Value {
+    unsafe {
+        let Data::KeywordArgs {
+            names,
+            keyword_count,
+            ..
+        } = &(*view).data
+        else {
+            object::error("SystemError", "invalid keyword view");
+            return std::ptr::null_mut();
+        };
+        if index < 0 || index as usize >= *keyword_count {
+            object::error("SystemError", "keyword index out of range");
+            return std::ptr::null_mut();
+        }
+        let Some(name) = object::name_from_c(*names.add(index as usize)) else {
+            return std::ptr::null_mut();
+        };
+        object::text_value(name.as_bytes())
+    }
+}
+
 /// Positional argument `index`, or the callee's default at `offset` when the
 /// call supplied fewer arguments. Owned; NULL with an error when neither exists.
 #[unsafe(no_mangle)]

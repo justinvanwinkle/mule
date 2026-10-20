@@ -2304,13 +2304,21 @@ def sequence_equal(left, right):
 
 
 def get_attribute(value, name):
+    missing = _binding_missing()
     try:
-        return _attribute_lookup(value, name)
+        found = _attribute_lookup_or(value, name, missing)
     except AttributeError:
         fallback = _getattr_method(value)
         if fallback is None:
             raise
         return fallback(name)
+    if found is not missing:
+        return found
+    fallback = _getattr_method(value)
+    if fallback is None:
+        # The runtime's lookup failed without raising; raise its error now.
+        return _attribute_lookup(value, name)
+    return fallback(name)
 
 
 def iterate(value):

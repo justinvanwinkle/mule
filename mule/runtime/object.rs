@@ -548,6 +548,19 @@ pub fn take_native_error() -> Option<(String, String)> {
     });
     taken
 }
+/// Clear a pending runtime-raised error of class `kind`, reporting whether
+/// one was cleared. A pending exception object (raised by compiled code) is
+/// left in place: matching it needs the class hierarchy.
+pub fn clear_native_error_of(kind: &str) -> bool {
+    if crate::sequences::has_pending() {
+        return false;
+    }
+    let matched = ERROR.with_borrow(|current| current.as_ref().is_some_and(|value| value.0 == kind));
+    if matched {
+        clear_error();
+    }
+    matched
+}
 pub fn error_kind() -> String {
     if crate::sequences::has_pending() {
         return crate::sequences::pending_kind();
