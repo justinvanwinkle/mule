@@ -868,6 +868,7 @@ class Lambda(Functional):
         "lets",
         "local_annotations",
         "locals",
+        "method_class",
         "name",
         "namespace",
         "optional_dispatch",
@@ -906,6 +907,9 @@ class Lambda(Functional):
         self.namespace = namespace
         self.code: CodeInfo | None = None
         self.owner_class: str | None = None
+        # The identity of the class whose body defines this function, for
+        # receiver typing; ``owner_class`` names native layouts only.
+        self.method_class: str | None = None
         self.is_protocol: bool = name.startswith(
             (
                 "mule_sequences_",

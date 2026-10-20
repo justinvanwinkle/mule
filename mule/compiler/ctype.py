@@ -88,6 +88,9 @@ class ValueTypeVisitor:
     def visit_UniqueObjectType(self, fact):
         return self.visit_ValueType(fact)
 
+    def visit_InstanceType(self, fact):
+        return self.visit_ValueType(fact)
+
 
 @dataclass(frozen=True, slots=True)
 class ValueType:
@@ -228,6 +231,9 @@ class ValueType:
         return self.join_unknown(left)
 
     def join_unique_object(self, left):
+        return self.join_unknown(left)
+
+    def join_instance(self, left):
         return self.join_unknown(left)
 
     def join_unbound(self, left):
@@ -601,6 +607,17 @@ class ValueType:
     def fits_unique_object(self, expected=None):
         return False
 
+    def fits_instance(self, expected):
+        return False
+
+    def fits_possible_instance(self, expected):
+        return self.fits_instance(expected)
+
+    def instance_class(self) -> str | None:
+        """The identity of the user class every value of this type is an
+        exact instance of, or None."""
+        return None
+
     def proves_tuple_index(self, index):
         """Whether every value of this type is a bound tuple with an element
         at ``index``."""
@@ -657,6 +674,9 @@ class UnknownType(ValueType):
         return not self.may_be_unbound and (
             expected is None or expected.element is UNKNOWN
         )
+
+    def fits_possible_instance(self, expected):
+        return not self.may_be_unbound
 
     def runtime_parent_class_type(self):
         return NONE_TYPE
@@ -1452,6 +1472,11 @@ class NoneType(PrimitiveType):
 
     def accepts(self, actual):
         return actual.fits_none(self)
+
+    def join_instance(self, left):
+        return OptionalValueType(
+            left.as_bound(), left.may_be_unbound or self.may_be_unbound
+        )
 
     def accepts_dispatch(self, actual):
         return actual.fits_none(self)
@@ -3178,6 +3203,98 @@ def _merge_class_instances(
 
 
 @dataclass(frozen=True, slots=True)
+class InstanceType(ValueType):
+    """An instance of exactly one user-defined class, identified by the
+    class definition's compile-time identity (SBCL's structure classoid
+    type, ``(typep x 'node)``, adapted to Python classes).
+
+    The fact is evidence for specialization, not a layout proof: classes
+    and instances stay mutable, so code generated from it guards on the
+    runtime class before using a field index or a resolved method.
+    Subclass instances are a different class and do not fit."""
+
+    identity: str = ""
+    may_be_unbound: bool = False
+
+    def accept(self, visitor):
+        return visitor.visit_InstanceType(self)
+
+    @property
+    def is_heap_object(self):
+        return not self.may_be_unbound
+
+    def instance_class(self) -> str | None:
+        return None if self.may_be_unbound else self.identity
+
+    def as_optional(self, may_be_unbound: bool = False):
+        return OptionalValueType(
+            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
+        )
+
+    def same_runtime_class(self, other) -> bool:
+        return other.fits_instance(self)
+
+    def join(self, other):
+        return other.join_instance(self)
+
+    def join_instance(self, left):
+        if left.identity != self.identity:
+            return self.join_unknown(left)
+        if left.may_be_unbound or not self.may_be_unbound:
+            return left
+        return self
+
+    def join_none(self, left):
+        return OptionalValueType(
+            self.as_bound(), left.may_be_unbound or self.may_be_unbound
+        )
+
+    def join_optional_value(self, left):
+        joined = left.inner.join(self.as_bound())
+        unbound = left.may_be_unbound or self.may_be_unbound
+        if joined is UNKNOWN:
+            return UNKNOWN_UNBOUND if unbound else UNKNOWN
+        return OptionalValueType(joined, unbound)
+
+    def compare_identity_with(self, left, operator):
+        # Two values of one class may still be distinct objects; only None
+        # can be ruled out.
+        if not self.may_be_unbound and left.fits_none(NONE_TYPE):
+            is_same = operator is ast.ComparisonOperator.IS
+            return BOOLEAN_FALSE if is_same else BOOLEAN_TRUE
+        return BOOLEAN
+
+    def narrow_none(self, is_none: bool):
+        if self.may_be_unbound:
+            return self
+        return BOTTOM if is_none else self
+
+    def truth_value(self) -> bool | None:
+        # ``__bool__`` and ``__len__`` may be defined by the class.
+        return None
+
+    def dispatch_domain(self):
+        return None if self.may_be_unbound else self
+
+    def dispatch_rank(self) -> int:
+        return 2**64 if self.may_be_unbound else 0
+
+    def accepts(self, actual):
+        return actual.fits_instance(self)
+
+    def accepts_dispatch(self, actual):
+        return actual.fits_instance(self)
+
+    def accepts_possible_dispatch(self, actual):
+        return actual.fits_possible_instance(self)
+
+    def fits_instance(self, expected):
+        return self.identity == expected.identity and (
+            expected.may_be_unbound or not self.may_be_unbound
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ClassType(ValueType):
     """Compile-time type of a class object, parameterized by the ``ValueType``s
     of instances of the classes it may represent."""
@@ -3876,6 +3993,13 @@ class _SerializeValueType(ValueTypeVisitor):
             "unbound": fact.may_be_unbound,
         }
 
+    def visit_InstanceType(self, fact):
+        return {
+            "kind": "instance",
+            "class": fact.identity,
+            "unbound": fact.may_be_unbound,
+        }
+
 
 _SERIALIZE_VALUE_TYPE = _SerializeValueType()
 
@@ -3980,4 +4104,6 @@ def value_type_from_dict(data: dict | None) -> ValueType:
         )
     if kind == "unique_obj":
         return UniqueObjectType(data.get("id"), may_be_unbound=unbound)
+    if kind == "instance":
+        return InstanceType(data["class"], may_be_unbound=unbound)
     return UNKNOWN

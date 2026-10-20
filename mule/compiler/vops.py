@@ -860,12 +860,45 @@ for _operator, _opcode in COMPARE_OPCODES.items():
 def getattr_(gen, vop):
     receiver = gen.take(vop.args[0])
     info = vop.codegen_info
+    cache = gen.module.attribute_cache()
+    labels = _AttributeSite(gen, receiver, cache, ATTR_FIELD)
+    slot = gen.operation(f"call ptr @mule.attr.field(ptr {receiver}, i64 {labels.encoded})")
+    field = gen.operation(f"load ptr, ptr {slot}")
+    unset = gen.operation(f"icmp eq ptr {field}, null")
+    loaded = gen.fresh("attr.loaded")[1:]
+    gen.line(f"br i1 {unset}, label %{labels.slow}, label %{loaded}")
+    gen.lines.append(f"{loaded}:")
+    gen.line(f"call ptr @mule.fast.retain(ptr {field})")
+    gen.line(f"br label %{labels.join}")
+    gen.lines.append(f"{labels.slow}:")
+    slow = gen.operation(
+        f"call ptr @mule_get_attr_cached(ptr {receiver}, ptr {gen.module.text(info.name)}, "
+        f"ptr {cache})"
+    )
+    gen.line(f"br label %{labels.join}")
+    gen.lines.append(f"{labels.join}:")
     gen.pointer_result(
         vop.results[0],
-        f"call ptr @mule_get_attr_cached(ptr {receiver}, ptr {gen.module.text(info.name)}, "
-        f"ptr {gen.module.attribute_cache()})",
+        f"phi ptr [{field}, %{loaded}], [{slow}, %{labels.slow}]",
         (receiver,),
     )
+
+
+class _AttributeSite:
+    """The inline cache probe opening one attribute site: falls through to
+    the hit block when the site's cache holds an encoding of ``kind`` for
+    the receiver's class, else branches to ``slow``. ``join`` is the label
+    the caller merges both paths at."""
+
+    def __init__(self, gen, receiver: str, cache: str, kind: int):
+        self.encoded = gen.operation(f"call i64 @mule.attr.hit(ptr {receiver}, ptr {cache})")
+        found = gen.operation(f"and i64 {self.encoded}, {ATTR_KIND_MASK}")
+        matched = gen.operation(f"icmp eq i64 {found}, {kind}")
+        hit = gen.fresh("attr.hit")[1:]
+        self.slow = gen.fresh("attr.slow")[1:]
+        self.join = gen.fresh("attr.join")[1:]
+        gen.line(f"br i1 {matched}, label %{hit}, label %{self.slow}")
+        gen.lines.append(f"{hit}:")
 
 
 @define_vop(
@@ -903,10 +936,23 @@ def hasattr_(gen, vop):
 def setattr_(gen, vop):
     receiver, value = gen.take(vop.args[0]), gen.take(vop.args[1])
     info = vop.codegen_info
-    status = gen.operation(
+    cache = gen.module.attribute_cache()
+    site = _AttributeSite(gen, receiver, cache, ATTR_FIELD)
+    slot = gen.operation(f"call ptr @mule.attr.field(ptr {receiver}, i64 {site.encoded})")
+    old = gen.operation(f"load ptr, ptr {slot}")
+    gen.line(f"call ptr @mule.fast.retain(ptr {value})")
+    gen.line(f"store ptr {value}, ptr {slot}")
+    gen.line(f"call void @mule.fast.release(ptr {old})")
+    stored = gen.current_block()
+    gen.line(f"br label %{site.join}")
+    gen.lines.append(f"{site.slow}:")
+    slow = gen.operation(
         f"call i32 @mule_set_attr_cached(ptr {receiver}, ptr {gen.module.text(info.name)}, "
-        f"ptr {value}, ptr {gen.module.attribute_cache()})"
+        f"ptr {value}, ptr {cache})"
     )
+    gen.line(f"br label %{site.join}")
+    gen.lines.append(f"{site.join}:")
+    status = gen.operation(f"phi i32 [0, %{stored}], [{slow}, %{site.slow}]")
     gen.release(receiver)
     gen.release(value)
     gen.check_status(status)
@@ -942,13 +988,32 @@ def resolve_method(gen, vop):
         gen.publish(method, "@mule.none")
         gen.publish(bound, receiver)
         return
+    cache = gen.module.attribute_cache()
+    site = _AttributeSite(gen, receiver, cache, ATTR_METHOD)
+    # A hit binds the receiver without allocating: the cached function is
+    # borrowed from the class and ``bound`` takes its own receiver reference,
+    # as the runtime's resolution does; the operand itself may be borrowed.
+    cached_address = gen.operation(f"getelementptr i64, ptr {cache}, i64 3")
+    cached = gen.operation(f"load ptr, ptr {cached_address}")
+    gen.line(f"call ptr @mule.heap.retain(ptr {cached})")
+    gen.line(f"call ptr @mule.heap.retain(ptr {receiver})")
+    gen.line(f"br label %{site.join}")
+    hit = gen.current_block()
+    gen.lines.append(f"{site.slow}:")
     out = gen.out_pointer()
-    value = gen.operation(
+    resolved = gen.operation(
         f"call ptr @mule_resolve_method(ptr {receiver}, ptr {gen.module.text(info.name)}, "
-        f"ptr {gen.module.attribute_cache()}, ptr {out})"
+        f"ptr {cache}, ptr {out})"
+    )
+    resolved_bound = gen.operation(f"load ptr, ptr {out}")
+    gen.line(f"br label %{site.join}")
+    gen.lines.append(f"{site.join}:")
+    value = gen.operation(f"phi ptr [{cached}, %{hit}], [{resolved}, %{site.slow}]")
+    receiver_bound = gen.operation(
+        f"phi ptr [{receiver}, %{hit}], [{resolved_bound}, %{site.slow}]"
     )
     gen.publish(method, value)
-    gen.publish(bound, gen.operation(f"load ptr, ptr {out}"))
+    gen.publish(bound, receiver_bound)
     gen.release(receiver)
     gen.check_pointer(value)
     gen.refine(method.tn, value)
@@ -993,6 +1058,7 @@ def call_resolved(gen, vop):
         receiver,
         values,
         unpack_arity=gen.unpacked_call_arity(vop),
+        argument_refs=arguments,
     )
     gen.publish(vop.results[0], value)
     gen.release(function)
@@ -1085,6 +1151,12 @@ def make_class(gen, vop):
         f"ptr {keywords})",
         operands,
     )
+    # Record the class object's layout for receiver guards on its instances.
+    # A metaclass may return something other than a class; the slot then
+    # holds zero and every guard fails.
+    created = gen.load(vop.results[0])
+    layout = gen.operation(f"call i64 @mule.class.layout(ptr {created})")
+    gen.line(f"store i64 {layout}, ptr {module.class_layout_slot(info.identity)}")
 
 
 @define_vop(
@@ -2010,6 +2082,118 @@ declare {i64, i1} @llvm.smul.with.overflow.i64(i64, i64)
 """
 
 
+# Byte offsets of runtime object storage that compiled attribute sites read;
+# `mule/runtime/object.rs` defines them and its tests check them.
+DATA_OFFSET = 16
+INSTANCE_TAG = 16
+CLASS_TAG = 15
+INSTANCE_CLASS_OFFSET = 24
+INSTANCE_FIELDS_OFFSET = 32
+INSTANCE_ATTRIBUTES_OFFSET = 48
+CLASS_LAYOUT_OFFSET = 24
+# `AttrCache` words (`mule/runtime/classes.rs`): layout address, encoding,
+# epoch, and the borrowed method a METHOD encoding resolved to.
+ATTR_CACHE_WORDS = 29
+ATTR_FIELD = 1
+ATTR_METHOD = 2
+ATTR_KIND_MASK = 7
+ATTR_SHIFT = 3
+
+
+def _attribute_cache_helpers() -> str:
+    """Inline attribute-cache probes, the compiled half of the runtime's
+    per-site caches, as SBCL's PCL emits inline cache checks before a
+    generic function's slow path.
+
+    ``@mule.attr.layout`` returns the receiver's class layout address when
+    the receiver is a plain instance without an instance ``__dict__``, or
+    zero. ``@mule.attr.hit`` returns the cached encoding when the site's
+    cache matches that layout and the current attribute epoch, or zero;
+    a zero layout never matches because caches store zero for entries that
+    are not keyed by one layout."""
+    return f"""@mule_attribute_epoch = external global i64
+
+define internal i64 @mule.attr.layout(ptr %value) alwaysinline {{
+entry:
+  %bits = ptrtoint ptr %value to i64
+  %tag = and i64 %bits, 1
+  %integer = icmp ne i64 %tag, 0
+  %null = icmp eq ptr %value, null
+  %skip = or i1 %integer, %null
+  br i1 %skip, label %none, label %object
+object:
+  %tag.addr = getelementptr i8, ptr %value, i64 {DATA_OFFSET}
+  %kind = load i32, ptr %tag.addr
+  %instance = icmp eq i32 %kind, {INSTANCE_TAG}
+  br i1 %instance, label %fields, label %none
+fields:
+  %attrs.addr = getelementptr i8, ptr %value, i64 {INSTANCE_ATTRIBUTES_OFFSET}
+  %attrs = load ptr, ptr %attrs.addr
+  %plain = icmp eq ptr %attrs, null
+  br i1 %plain, label %owner, label %none
+owner:
+  %class.addr = getelementptr i8, ptr %value, i64 {INSTANCE_CLASS_OFFSET}
+  %class = load ptr, ptr %class.addr
+  %layout.addr = getelementptr i8, ptr %class, i64 {CLASS_LAYOUT_OFFSET}
+  %layout = load i64, ptr %layout.addr
+  ret i64 %layout
+none:
+  ret i64 0
+}}
+
+define internal i64 @mule.attr.hit(ptr %value, ptr %cache) alwaysinline {{
+entry:
+  %layout = call i64 @mule.attr.layout(ptr %value)
+  %cached = load i64, ptr %cache
+  %same = icmp eq i64 %layout, %cached
+  %known = icmp ne i64 %layout, 0
+  %match = and i1 %same, %known
+  br i1 %match, label %epoch, label %miss
+epoch:
+  %epoch.addr = getelementptr i64, ptr %cache, i64 2
+  %cache.epoch = load i64, ptr %epoch.addr
+  %current = load atomic i64, ptr @mule_attribute_epoch monotonic, align 8
+  %fresh = icmp eq i64 %cache.epoch, %current
+  br i1 %fresh, label %hit, label %miss
+hit:
+  %encoded.addr = getelementptr i64, ptr %cache, i64 1
+  %encoded = load i64, ptr %encoded.addr
+  ret i64 %encoded
+miss:
+  ret i64 0
+}}
+
+define internal i64 @mule.class.layout(ptr %value) alwaysinline {{
+entry:
+  %bits = ptrtoint ptr %value to i64
+  %tag = and i64 %bits, 1
+  %integer = icmp ne i64 %tag, 0
+  %null = icmp eq ptr %value, null
+  %skip = or i1 %integer, %null
+  br i1 %skip, label %none, label %object
+object:
+  %tag.addr = getelementptr i8, ptr %value, i64 {DATA_OFFSET}
+  %kind = load i32, ptr %tag.addr
+  %class = icmp eq i32 %kind, {CLASS_TAG}
+  br i1 %class, label %layout, label %none
+layout:
+  %layout.addr = getelementptr i8, ptr %value, i64 {CLASS_LAYOUT_OFFSET}
+  %address = load i64, ptr %layout.addr
+  ret i64 %address
+none:
+  ret i64 0
+}}
+
+define internal ptr @mule.attr.field(ptr %value, i64 %encoded) alwaysinline {{
+entry:
+  %fields.addr = getelementptr i8, ptr %value, i64 {INSTANCE_FIELDS_OFFSET}
+  %fields = load ptr, ptr %fields.addr
+  %index = lshr i64 %encoded, {ATTR_SHIFT}
+  %slot = getelementptr ptr, ptr %fields, i64 %index
+  ret ptr %slot
+}}"""
+
+
 def _ownership() -> str:
     return """define internal ptr @mule.fast.retain(ptr %value) alwaysinline {
 entry:
@@ -2639,6 +2823,7 @@ def helpers(*, bootstrap: bool = False) -> str:
             LITERAL_HELPERS,
             _ownership(),
             _truth(),
+            _attribute_cache_helpers(),
             *(_binary_helper(op) for op in (0, 1, 2, 4, 5, 8, 9, 10, 11, 12)),
             *(
                 _binary_helper(op, fixnums=True)

@@ -20,8 +20,18 @@ use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_CLASS_ID: AtomicUsize = AtomicUsize::new(1);
-/// Advanced by every class attribute assignment; caches record the epoch.
-static ATTRIBUTE_EPOCH: AtomicUsize = AtomicUsize::new(1);
+/// Advanced by every class attribute assignment and class destruction;
+/// caches record the epoch. Exported so compiled attribute sites can check
+/// their inline cache without calling the runtime.
+#[unsafe(no_mangle)]
+pub static mule_attribute_epoch: AtomicUsize = AtomicUsize::new(1);
+use mule_attribute_epoch as ATTRIBUTE_EPOCH;
+
+/// Invalidate every attribute cache. A destroyed class's layout address
+/// may be reused, and compiled sites compare layout addresses.
+pub fn invalidate_attribute_caches() {
+    ATTRIBUTE_EPOCH.fetch_add(1, Ordering::Relaxed);
+}
 
 /// Compiled primary/fallback lookup. Arguments are borrowed, the result owned.
 /// Registered after sequence and print initialization; sequence shutdown clears
@@ -161,6 +171,28 @@ impl ClassLayout {
     }
     pub(crate) fn remove_subclass(&mut self, child: Value) {
         self.subclasses.retain(|entry| *entry != child);
+    }
+
+    /// An empty base-less layout for runtime tests of object storage.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        ClassLayout {
+            id: NEXT_CLASS_ID.fetch_add(1, Ordering::Relaxed),
+            name: "Probe".into(),
+            base: std::ptr::null_mut(),
+            bases: Vec::new(),
+            subclasses: Vec::new(),
+            mro: Vec::new(),
+            metaclass: std::ptr::null_mut(),
+            fields: Vec::new(),
+            slot_fields: Vec::new(),
+            attributes: Vec::new(),
+            field_lookup: HashMap::default(),
+            attribute_lookup: HashMap::default(),
+            dict_allowed: false,
+            native: None,
+            specials: SpecialTable::new(),
+        }
     }
 
     pub fn allows_instance_dictionary(&self) -> bool {
@@ -592,14 +624,29 @@ pub type NativeSetter = unsafe extern "C" fn(Value, Value, i64, Value) -> i32;
 /// cache entry valid again.
 const EXTRA_CACHE_SLOTS: usize = 8;
 
+/// One attribute site's cache. Compiled code reads the first four words
+/// directly (see `ATTR_CACHE_*` in `mule/compiler/codegen.py`): a hit needs
+/// the receiver's class layout address to equal `layout` and `epoch` to
+/// equal the current attribute epoch. `value` is the borrowed class
+/// attribute a `METHOD` encoding resolved to; the epoch keeps it valid.
 #[repr(C)]
 #[derive(Default)]
 pub struct AttrCache {
-    pub class_id: usize,
+    pub layout: usize,
     pub encoded: usize,
     pub epoch: usize,
+    pub value: usize,
+    pub class_id: usize,
     pub extra: [[usize; 3]; EXTRA_CACHE_SLOTS],
 }
+// Compiled sites read these words; see `ATTR_CACHE_*` in codegen.py.
+const _: () = {
+    assert!(std::mem::offset_of!(AttrCache, layout) == 0);
+    assert!(std::mem::offset_of!(AttrCache, encoded) == 8);
+    assert!(std::mem::offset_of!(AttrCache, epoch) == 16);
+    assert!(std::mem::offset_of!(AttrCache, value) == 24);
+    assert!(std::mem::size_of::<AttrCache>() == 29 * 8);
+};
 const FIELD: usize = 1;
 const METHOD: usize = 2;
 const VALUE: usize = 3;
@@ -706,13 +753,7 @@ fn encoded(layout: &ClassLayout, attribute: &str, cache: *mut AttrCache) -> Opti
                 .or(class_attribute),
         };
         if let Some(encoded) = resolved {
-            if !cache.is_null() {
-                let epoch = ATTRIBUTE_EPOCH.load(Ordering::Relaxed);
-                (*cache).encoded = encoded;
-                (*cache).class_id = layout.id;
-                (*cache).epoch = epoch;
-                (*cache).extra[layout.id & (EXTRA_CACHE_SLOTS - 1)] = [layout.id, encoded, epoch];
-            }
+            store_cached(layout, cache, encoded);
         }
         resolved
     }
@@ -762,6 +803,9 @@ unsafe fn encoded_super(
                 let encoded = (((depth << DEPTH_SHIFT) | index) << SHIFT) | kind;
                 if !cache.is_null() {
                     let epoch = ATTRIBUTE_EPOCH.load(Ordering::Relaxed);
+                    // Keyed by the (class, thisclass) pair, never by one
+                    // layout: compiled sites must not match it.
+                    (*cache).layout = 0;
                     (*cache).encoded = encoded;
                     (*cache).class_id = cache_key;
                     (*cache).epoch = epoch;
@@ -1980,6 +2024,9 @@ unsafe fn resolve_namespace_cached(
         } else if let Some(attr) = name(attribute) {
             if let Some((index, val)) = bindings.lookup_index(attr) {
                 if !cache.is_null() {
+                    // A namespace entry, not a class layout: compiled sites
+                    // must not match it.
+                    (*cache).layout = 0;
                     (*cache).class_id = key;
                     (*cache).encoded = index;
                     (*cache).epoch = version;
@@ -2358,6 +2405,16 @@ unsafe fn store_cached(layout: &ClassLayout, cache: *mut AttrCache, encoded: usi
             return;
         }
         let epoch = ATTRIBUTE_EPOCH.load(Ordering::Relaxed);
+        // The class attribute a method encoding names, for compiled sites
+        // that bind the receiver without calling the runtime.
+        let value = if encoded & KIND == METHOD {
+            let position = encoded >> SHIFT;
+            layout.ancestor(position >> DEPTH_SHIFT).attributes[position & INDEX_MASK].1 as usize
+        } else {
+            0
+        };
+        (*cache).layout = layout as *const ClassLayout as usize;
+        (*cache).value = value;
         (*cache).encoded = encoded;
         (*cache).class_id = layout.id;
         (*cache).epoch = epoch;

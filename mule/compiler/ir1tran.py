@@ -117,6 +117,9 @@ class ClassInfo:
     # The identity again when the class has a typed native layout, else None.
     class_id: str | None
     annotation_expressions: tuple
+    # Class keywords (a metaclass among them) may change what calling the
+    # class constructs.
+    has_keywords: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -3341,6 +3344,7 @@ class _Statements(ast.Visitor):
             identity,
             identity if native is not None else None,
             declarations,
+            bool(keywords),
         )
         following, created = Ctran(), Lvar()
         function.known(ctran, following, created, fndb.MAKE_CLASS, operands, node, info)

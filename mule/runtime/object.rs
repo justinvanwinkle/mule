@@ -238,6 +238,13 @@ impl Namespace {
     }
 }
 
+/// `repr(C)` fixes the variant tag and payload offsets so compiled code can
+/// test an object's variant and read instance fields and class layouts
+/// directly, as SBCL's generated code reads instance headers and slots.
+/// The offsets compiled code uses are the `*_OFFSET` and `*_TAG` constants
+/// after this enum, mirrored in `mule/compiler/vops.py`; the runtime's
+/// tests check them against real objects.
+#[repr(C)]
 pub enum Data {
     None,
     Bool(bool),
@@ -365,6 +372,20 @@ pub enum Data {
         back: Value,
     },
 }
+
+/// Byte offsets compiled code reads, from the object address. `Data`'s
+/// `repr(C)` tag is a `u32` at `DATA_OFFSET`; payload fields follow it.
+pub const DATA_OFFSET: usize = 16;
+pub const INSTANCE_TAG: u32 = 16;
+pub const CLASS_TAG: u32 = 15;
+/// `Data::Instance.ty`, the class object.
+pub const INSTANCE_CLASS_OFFSET: usize = 24;
+/// The data pointer of `Data::Instance.fields`.
+pub const INSTANCE_FIELDS_OFFSET: usize = 32;
+/// `Data::Instance.attributes`, NULL without an instance `__dict__`.
+pub const INSTANCE_ATTRIBUTES_OFFSET: usize = 48;
+/// The `Box<ClassLayout>` pointer of `Data::Class`.
+pub const CLASS_LAYOUT_OFFSET: usize = 24;
 
 impl Data {
     /// Physical ownership edges only: borrowed globals, class MRO links,
@@ -931,6 +952,9 @@ pub unsafe fn release_data(value: Value, mut data: Data) {
                 for base in &layout.bases {
                     if let Data::Class(parent) = &mut (**base).data { parent.remove_subclass(value); }
                 }
+                // Compiled attribute sites compare layout addresses; a later
+                // class may reuse this one's.
+                crate::classes::invalidate_attribute_caches();
             }
             Data::WeakHandle { referent, .. } => {
                 crate::weakref::unregister(*referent, value);
@@ -3724,6 +3748,36 @@ pub unsafe extern "C" fn mule_run(native: *mut c_void) -> i32 {
 #[cfg(test)]
 mod lifetime_tests {
     use super::*;
+
+    unsafe fn word<T: Copy>(value: Value, offset: usize) -> T {
+        unsafe { *((value as *const u8).add(offset) as *const T) }
+    }
+
+    #[test]
+    fn compiled_object_offsets_match_instance_and_class_storage() {
+        unsafe {
+            let class = new_value(Data::Class(Box::new(crate::classes::ClassLayout::for_test())));
+            let fields = vec![none_value(); 2].into_boxed_slice();
+            let field_data = fields.as_ptr();
+            let instance = new_value(Data::Instance {
+                ty: retain(class),
+                fields,
+                attributes: std::ptr::null_mut(),
+            });
+            assert_eq!(word::<u32>(instance, DATA_OFFSET), INSTANCE_TAG);
+            assert_eq!(word::<Value>(instance, INSTANCE_CLASS_OFFSET), class);
+            assert_eq!(word::<*const Value>(instance, INSTANCE_FIELDS_OFFSET), field_data);
+            assert!(word::<Value>(instance, INSTANCE_ATTRIBUTES_OFFSET).is_null());
+            assert_eq!(word::<u32>(class, DATA_OFFSET), CLASS_TAG);
+            let Data::Class(layout) = &(*class).data else { unreachable!() };
+            assert_eq!(
+                word::<*const crate::classes::ClassLayout>(class, CLASS_LAYOUT_OFFSET),
+                &**layout as *const _
+            );
+            release(instance);
+            release(class);
+        }
+    }
 
     #[test]
     fn concurrent_owned_reference_transfers_preserve_parent_lifetime() {

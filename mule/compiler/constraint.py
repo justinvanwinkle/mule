@@ -191,6 +191,8 @@ class Body:
     calls: tuple[CallSite, ...]
     self_type: ValueType | None = None
     return_states: tuple[tuple[ValuedNode, dict, dict, dict], ...] = ()
+    # ``%call_resolved`` nodes whose receiver's class resolved the method.
+    method_targets: dict[object, Lambda] | None = None
 
     def types(self) -> dict[object, ValueType]:
         return {
@@ -198,11 +200,14 @@ class Body:
         }
 
     def targets(self) -> dict[object, Lambda]:
-        return {
+        targets = {
             node: lam
             for node, fact in self.facts.items()
             if fact.target is not None and (lam := fact.target.as_lambda()) is not None
         }
+        if self.method_targets:
+            targets.update(self.method_targets)
+        return targets
 
 
 def join_fact(left: Fact, right: Fact) -> Fact:
@@ -1235,6 +1240,20 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
         arg_types = tuple(visitor.type_of(arg) for arg in args[1:])
         if any(t is BOTTOM for t in arg_types):
             return NO_FACT
+        method = visitor.walk.instance_method(receiver_type, method_name)
+        if method is not None:
+            # The class's method, bound to the receiver: predicted, not
+            # proven, because class attributes stay mutable. Code generation
+            # guards the resolved function's identity before calling the
+            # method's body directly, as it guards predicted global calls;
+            # like those, the prediction seeds the callee's guarded entry
+            # contexts but publishes no return type.
+            visitor.walk.method_calls.append(
+                CallSite(method, (receiver_type, *arg_types), False)
+            )
+            visitor.walk.method_targets[node] = method
+            visitor.invalidate()
+            return UNKNOWN_FACT
         recv_var = visitor.origins.get(receiver_lvar)
         (
             result_type,
@@ -1647,6 +1666,7 @@ class _Walk:
         builtin_targets: (
             Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
         ) = None,
+        class_facts: Mapping | None = None,
     ):
         self.lambda_ = lambda_
         self.global_targets = global_targets
@@ -1659,6 +1679,10 @@ class _Walk:
         self.storage_methods = storage_methods
         self.builtin_return_types = builtin_return_types
         self.builtin_targets = builtin_targets
+        self.class_facts = class_facts or {}
+        # Calls this walk resolved to methods of typed classes.
+        self.method_calls: list[CallSite] = []
+        self.method_targets: dict[object, Lambda] = {}
         self.facts: dict[object, Fact] = {}
         if graph is None:
             graph = build_lambda_graph(lambda_)
@@ -1750,6 +1774,15 @@ class _Walk:
         if name is None:
             return None
         return self.imported_targets.get(name)
+
+    def instance_method(self, receiver_type: ValueType, name: str) -> Lambda | None:
+        """The method ``name`` resolves to on instances of the receiver's
+        class, when the receiver is a typed instance and the class defines
+        it as a plain function."""
+        facts = self.class_facts.get(receiver_type.instance_class())
+        if facts is None:
+            return None
+        return facts.methods.get(name)
 
     def builtin_target(
         self, fun_lvar
@@ -1867,7 +1900,7 @@ class _Walk:
             )
             for block, node in self.graph.call_nodes
             if block in incoming
-        )
+        ) + tuple(self.method_calls)
         self_type: ValueType | None = None
         return_states = ()
         if self.lambda_.return_ is not None:
@@ -1891,7 +1924,9 @@ class _Walk:
             return_states = tuple(collected_returns)
             if self_var is not None and joined_self is not BOTTOM:
                 self_type = joined_self
-        return Body(facts, returned, calls, self_type, return_states)
+        return Body(
+            facts, returned, calls, self_type, return_states, dict(self.method_targets)
+        )
 
     def propagate(
         self,
@@ -2274,6 +2309,7 @@ def propagate(
     builtin_targets: (
         Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
     ) = None,
+    class_facts: Mapping | None = None,
 ) -> Body:
     """Propagate facts through ``lambda_`` from the given parameter types.
 
@@ -2298,6 +2334,7 @@ def propagate(
         storage_methods=storage_methods,
         builtin_return_types=builtin_return_types,
         builtin_targets=builtin_targets,
+        class_facts=class_facts,
     ).run()
 
 

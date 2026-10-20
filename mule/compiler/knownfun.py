@@ -97,6 +97,8 @@ def defknown(
     numeric: bool = False,
     non_integer_first_arg: bool = False,
     index_second_arg: bool = False,
+    borrowed_args: frozenset[int] = frozenset(),
+    result_arg: int | None = None,
 ) -> FunInfo:
     info = FunInfo(
         name,
@@ -109,6 +111,8 @@ def defknown(
         numeric=numeric,
         non_integer_first_arg=non_integer_first_arg,
         index_second_arg=index_second_arg,
+        borrowed_args=borrowed_args,
+        result_arg=result_arg,
     )
     if name in KNOWN:
         raise ValueError(f"known function {name} is already defined")

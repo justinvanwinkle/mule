@@ -153,6 +153,8 @@ def convert_function(
         interface_declaration=interface_declaration,
     )
     lambda_.owner_class = owner_class
+    if defining_class is not None and definition.parameters:
+        lambda_.method_class = defining_class.identity
     converter.functions.append(lambda_)
     for name in names:
         var = LambdaVar(name)

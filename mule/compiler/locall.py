@@ -62,6 +62,7 @@ from .ctype import (
     TEXT_TYPE,
     UNBOUND,
     UNKNOWN,
+    InstanceType,
     IntegerType,
     TupleType,
     UniqueObjectType,
@@ -391,7 +392,20 @@ def _specializes_body(
     graph: LambdaGraph,
     general: dict[object, ValueType],
     candidate: dict[object, ValueType],
+    general_targets: dict[object, Lambda] | None = None,
+    candidate_targets: dict[object, Lambda] | None = None,
 ) -> bool:
+    # A context whose argument types resolve calls the general body cannot
+    # resolve (methods of a typed receiver) specializes those calls.
+    if (
+        candidate_targets is not None
+        and general_targets is not None
+        and any(
+            general_targets.get(node) is not target
+            for node, target in candidate_targets.items()
+        )
+    ):
+        return True
     visitor = _SpecializesBody(general, candidate)
     for block in graph.blocks:
         for node in graph.block_nodes[block]:
@@ -730,30 +744,66 @@ class _ModuleClassCollector(NodeVisitor):
         self.methods: dict[str, dict[str, Lambda]] = defaultdict(dict)
         self.public_names: dict[str, str] = {}
         self.bases: dict[str, tuple[str, ...]] = {}
+        # Identities whose definitions pass class keywords (a metaclass
+        # among them), so calling the class may construct anything.
+        self.keyword_classes: set[str] = set()
+        self.definitions: dict[str, int] = defaultdict(int)
+        # Names a class body binds to anything other than a plain function.
+        self.other_bindings: dict[str, set[str]] = defaultdict(set)
 
     def visit_Combination(self, node: Combination):
         if node.kind is not CallKind.KNOWN or node.fun_info is None:
             return
-        if node.fun_info is CLASS_STORE and len(node.args) == 1:
+        if node.fun_info is CLASS_STORE and len(node.args) == 2:
+            # (class namespace, value): a function stored in a class body.
             info = linked(node.info, node, "info")
-            if info.class_name is not None:
-                lam = made_function(node.args[0].use())
-                if lam is not None:
-                    self.methods[info.class_name][info.name] = lam
+            value = node.args[1]
+            lam = made_function(value.uses[0]) if len(value.uses) == 1 else None
+            if lam is not None:
+                self.methods[info.identity][info.name] = lam
+            else:
+                # Any other binding (a decorated function, a descriptor, a
+                # rebinding) shadows a method of the same name.
+                self.methods[info.identity].pop(info.name, None)
+                self.other_bindings[info.identity].add(info.name)
         elif node.fun_info is MAKE_CLASS:
             info = linked(node.info, node, "class definition")
             self.public_names[info.identity] = info.public_name
+            self.definitions[info.public_name] += 1
+            if info.has_keywords:
+                self.keyword_classes.add(info.identity)
             self.bases[info.public_name] = (
                 node.args[0].uses[0].accept(_CLASS_BASE_NAMES)
                 if node.args and len(node.args[0].uses) == 1
                 else ()
             )
+            if len(self.bases[info.public_name]) != info.base_count:
+                # A base the analysis cannot name may define anything.
+                self.keyword_classes.add(info.identity)
 
 
 def _collect_module_classes(
     lambdas,
 ) -> dict[str, dict[str, ClassConstructorTarget]]:
+    return _collect_class_tables(lambdas)[0]
+
+
+@dataclass(slots=True)
+class ClassFacts:
+    """What analysis knows about one user class whose instances it types:
+    its resolved methods, including inherited ones defined in the module.
+    Instance fields have no facts: other units and dynamic ``setattr`` may
+    store any value into them."""
+
+    identity: str
+    methods: dict[str, Lambda]
+
+
+def _collect_class_tables(lambdas):
+    """Constructor targets by namespace and name, and the facts of every
+    class whose instances analysis types, by identity."""
     by_ns: dict[str, dict[str, ClassConstructorTarget]] = defaultdict(dict)
+    typed: dict[str, ClassFacts] = {}
     collectors: dict[str, _ModuleClassCollector] = defaultdict(_ModuleClassCollector)
     visited_components = set()
     for lambda_ in lambdas:
@@ -779,7 +829,12 @@ def _collect_module_classes(
                 records_type_origin = base_target.records_type_origin
             else:
                 cls_type = BUILTIN_CLASS_TYPES.get(cls_name, ANY_CLASS_TYPE)
-                base_type = STORAGE_CLASS_TYPES.get(cls_name, UNKNOWN)
+                base_type = STORAGE_CLASS_TYPES.get(
+                    cls_name,
+                    InstanceType(class_id)
+                    if _constructs_own_instances(collector, class_id, cls_name)
+                    else UNKNOWN,
+                )
                 records_type_origin = False
             by_ns[ns][cls_name] = ClassConstructorTarget(
                 base_type=base_type,
@@ -788,7 +843,67 @@ def _collect_module_classes(
                 init_target=methods.get("__init__"),
                 records_type_origin=records_type_origin,
             )
-    return by_ns
+            if base_target is None and _constructs_own_instances(
+                collector, class_id, cls_name
+            ):
+                typed[class_id] = ClassFacts(
+                    class_id, _resolved_methods(collector, class_id, cls_name)
+                )
+    return by_ns, typed
+
+
+def _resolved_methods(collector, class_id: str, cls_name: str) -> dict[str, Lambda]:
+    """The class's methods in method-resolution order over its module
+    bases. Only single inheritance chains are resolved; with several bases
+    only the class's own methods are known."""
+    identities = {name: identity for identity, name in collector.public_names.items()}
+    chain = [class_id]
+    current = cls_name
+    while True:
+        bases = [base for base in collector.bases.get(current, ()) if base != "object"]
+        if len(bases) != 1 or bases[0] not in identities:
+            if bases:
+                chain = [class_id]
+            break
+        current = bases[0]
+        chain.append(identities[current])
+    resolved: dict[str, Lambda] = {}
+    for identity in reversed(chain):
+        for name in collector.other_bindings.get(identity, ()):
+            resolved.pop(name, None)
+        resolved.update(collector.methods.get(identity, {}))
+    return resolved
+
+
+def _constructs_own_instances(collector, class_id: str, cls_name: str) -> bool:
+    """Whether calling the class returns an exact instance of it, as
+    ``type.__call__`` does through ``object.__new__``: one definition under
+    the name, no class keywords or metaclass, and no ``__new__`` on the class
+    or on a base defined in the module. Bases imported from elsewhere are
+    not inspected, so a class with such a base is excluded."""
+    if collector.definitions.get(cls_name, 0) != 1:
+        return False
+    if class_id in collector.keyword_classes:
+        return False
+    if "__new__" in collector.methods.get(class_id, {}):
+        return False
+    identities = {name: identity for identity, name in collector.public_names.items()}
+    pending = list(collector.bases.get(cls_name, ()))
+    seen = set()
+    while pending:
+        base = pending.pop()
+        if base == "object" or base in seen:
+            continue
+        seen.add(base)
+        base_id = identities.get(base)
+        if (
+            base_id is None
+            or base_id in collector.keyword_classes
+            or "__new__" in collector.methods.get(base_id, {})
+        ):
+            return False
+        pending.extend(collector.bases.get(base, ()))
+    return True
 
 
 def collect_global_constants(
@@ -1157,7 +1272,7 @@ def analyze(
         lambda_: build_lambda_graph(lambda_) for lambda_ in lambdas
     }
     closed_lambdas = _collect_closed_lambdas(lambdas)
-    class_targets_by_ns = _collect_module_classes(lambdas)
+    class_targets_by_ns, class_facts = _collect_class_tables(lambdas)
     global_constants = collect_global_constants(lambdas, class_targets_by_ns)
     old_constant_ref_types: dict[Ref, ValueType | None] = {}
     for leaf, vtype in global_constants.items():
@@ -1478,6 +1593,7 @@ def analyze(
                     storage_methods=storage_methods,
                     builtin_return_types=builtin_return_types,
                     builtin_targets=builtin_targets,
+                    class_facts=class_facts,
                 )
             if len(deriver_cache) > 64:
                 deriver_cache.clear()
@@ -1536,6 +1652,7 @@ def analyze(
                     storage_methods=storage_methods,
                     builtin_return_types=builtin_return_types,
                     builtin_targets=builtin_targets,
+                    class_facts=class_facts,
                 )
                 return walk.narrow_return_parameters(body, truth)
             finally:
@@ -1685,6 +1802,7 @@ def analyze(
                         storage_methods=storage_methods,
                         builtin_return_types=builtin_return_types,
                         builtin_targets=builtin_targets,
+                        class_facts=class_facts,
                     )
                 bodies[key] = body
                 inputs[key] = (
@@ -1975,7 +2093,13 @@ def analyze(
             if (
                 identifier == "observed"
                 and not any(param.is_fixnum for param in parameters[key])
-                and not _specializes_body(graph, facts.types, candidate_types)
+                and not _specializes_body(
+                    graph,
+                    facts.types,
+                    candidate_types,
+                    facts.targets,
+                    body.targets(),
+                )
                 and ret_type == facts.return_type
             ):
                 continue

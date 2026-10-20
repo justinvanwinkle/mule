@@ -688,6 +688,42 @@ class _NestedTuples(ast.Visitor):
         self.module.constant_tuple(node)
 
 
+def _entry_steps(module, function, sources) -> tuple:
+    """The entry contexts a direct call of ``function`` tries in order, each
+    with the parameter checks its arguments' static types do not already
+    prove, ending in the general body when no context fits statically."""
+    sources = tuple(sources)
+    contexts = sorted(
+        (
+            context
+            for context in module.variants_of(function)
+            if all(
+                source.may_dispatch_fit(expected)
+                for source, expected in zip(sources, context.parameters, strict=True)
+            )
+        ),
+        key=lambda context: (
+            sum(
+                0 if source.dispatch_fits(expected) else 1
+                for source, expected in zip(sources, context.parameters, strict=True)
+            ),
+            sum(fact.dispatch_rank() for fact in context.parameters),
+        ),
+    )
+    steps: list[tuple[EntryContext | None, tuple[ValueType | None, ...]]] = []
+    for context in contexts:
+        needed = tuple(
+            None if source.dispatch_fits(expected) else expected
+            for source, expected in zip(sources, context.parameters, strict=True)
+        )
+        steps.append((context, needed))
+        if all(expected is None for expected in needed):
+            break
+    else:
+        steps.append((None, ()))
+    return tuple(steps)
+
+
 class _ModuleCollector(NodeVisitor):
     """Collects native method predictions and imported modules in first-use order."""
 
@@ -775,6 +811,7 @@ class ModuleGenerator:
         self.bigint_constants: dict[int, tuple[str, str]] = {}
         self.protocol_helpers: dict[object, str] = {}
         self.auxiliary: list[str] = []
+        self.class_layout_slots: set[str] = set()
         # Each runtime namespace's static cells (the runtime's ``GlobalCell``),
         # by name, linked once per namespace.
         self.global_cells: dict[str, dict[str, str]] = {}
@@ -1073,9 +1110,23 @@ class ModuleGenerator:
             ]
         )
 
+    def class_layout_slot(self, identity: str) -> str:
+        """The word holding the layout address of the class object the
+        definition ``identity`` created most recently, or zero before it
+        runs. One definition shared by every unit: a class may be typed in
+        units other than the one defining it."""
+        name = _symbol(f"mule.class.layout.{identity}")
+        if identity not in self.class_layout_slots:
+            self.class_layout_slots.add(identity)
+            self.auxiliary.append(f"{name} = linkonce_odr global i64 0")
+        return name
+
     def attribute_cache(self) -> str:
         name = f"@mule.cache.{len(self.auxiliary)}"
-        self.auxiliary.append(f"{name} = internal global [27 x i64] zeroinitializer")
+        # One runtime `AttrCache`; compiled sites probe its first words.
+        self.auxiliary.append(
+            f"{name} = internal global [{vops.ATTR_CACHE_WORDS} x i64] zeroinitializer"
+        )
         return name
 
     def names(self, names: tuple[str, ...]) -> str:
@@ -1891,11 +1942,20 @@ class ModuleGenerator:
         steps: tuple[tuple[EntryContext | None, tuple[ValueType | None, ...]], ...],
         *,
         proven: bool = False,
+        receiver_call: bool = False,
     ) -> str:
         step_key = tuple(
             (None if ctx is None else ctx.id, needed) for ctx, needed in steps
         )
-        key = ("$call.direct", function, keywords, arity, step_key, proven)
+        key = (
+            "$call.direct",
+            function,
+            keywords,
+            arity,
+            step_key,
+            proven,
+            receiver_call,
+        )
         existing = self.protocol_helpers.get(key)
         if existing is not None:
             return existing
@@ -1908,29 +1968,49 @@ class ModuleGenerator:
             "ptr %callee",
             *(f"ptr %arg.{i}" for i in range(arity)),
         ]
-        builder = _HelperBuilder()
+        builder = _HelperBuilder(self)
         if proven:
             builder.lines = [
                 f"define internal ptr {symbol}({', '.join(params)}) {{",
                 "entry:",
             ]
         else:
-            fallback_helper = (
-                self.keyword_call_helper(keywords, resolved=False)
-                if keywords
-                else self.positional_call_helper(arity)
-            )
-            fallback_args = ", ".join(
-                ["ptr %callee", *(f"ptr %arg.{i}" for i in range(arity))]
-            )
+            if receiver_call:
+                # The callee was resolved from the receiver (``%arg.0``);
+                # any other function takes the bound-call path.
+                fallback_helper = self.resolved_call_helper(arity - 1)
+                fallback_args = ", ".join(
+                    ["ptr %callee", *(f"ptr %arg.{i}" for i in range(arity))]
+                )
+            else:
+                fallback_helper = (
+                    self.keyword_call_helper(keywords, resolved=False)
+                    if keywords
+                    else self.positional_call_helper(arity)
+                )
+                fallback_args = ", ".join(
+                    ["ptr %callee", *(f"ptr %arg.{i}" for i in range(arity))]
+                )
             builder.lines = [
                 f"define internal ptr {symbol}({', '.join(params)}) {{",
                 "entry:",
                 f"  %matched = call i32 @mule_function_matches(ptr %callee, ptr {self.functions[function]}, ptr %globals)",
                 "  %matching = icmp ne i32 %matched, 0",
-                "  br i1 %matching, label %direct, label %fallback",
-                "direct:",
             ]
+            if receiver_call:
+                # Resolution binds a receiver only for a class's method; a
+                # function found elsewhere (an instance field) is unbound.
+                builder.lines += [
+                    "  %bound.receiver = icmp ne ptr %arg.0, null",
+                    "  %matching.bound = and i1 %matching, %bound.receiver",
+                    "  br i1 %matching.bound, label %direct, label %fallback",
+                    "direct:",
+                ]
+            else:
+                builder.lines += [
+                    "  br i1 %matching, label %direct, label %fallback",
+                    "direct:",
+                ]
 
         def emit_invoke(context: EntryContext | None, tag: int) -> None:
             entered = f"entered.{tag}"
@@ -2048,7 +2128,7 @@ class ModuleGenerator:
             *(f"ptr %arg.{i}" for i in range(arity)),
             "ptr %tuple.out",
         ]
-        builder = _HelperBuilder()
+        builder = _HelperBuilder(self)
         if proven:
             builder.lines = [
                 f"define internal ptr {symbol}({', '.join(params)}) {{",
@@ -3004,9 +3084,11 @@ def _pack_slot_tns(component, candidates, fixed, prefix: str) -> list[list]:
 class _HelperBuilder:
     """Line and SSA temporary emitter for shared module-level call helpers."""
 
-    def __init__(self) -> None:
+    def __init__(self, module=None) -> None:
         self.lines: list[str] = []
         self.serial = 0
+        # The module generator, for guards that name module-level data.
+        self.module = module
 
     def line(self, text: str) -> None:
         self.lines.append(text if text.startswith("  ") else "  " + text)
@@ -3059,6 +3141,17 @@ class _ArgumentGuard(ValueTypeVisitor):
             return self.visit_ValueType(fact)
         matched = self.gen.operation(f"call i32 @mule_exact_list(ptr {self.value})")
         return self.gen.operation(f"icmp ne i32 {matched}, 0")
+
+    def visit_InstanceType(self, fact) -> str:
+        if fact.may_be_unbound:
+            return self.visit_ValueType(fact)
+        layout = self.gen.operation(f"call i64 @mule.attr.layout(ptr {self.value})")
+        expected = self.gen.operation(
+            f"load i64, ptr {self.gen.module.class_layout_slot(fact.identity)}"
+        )
+        known = self.gen.operation(f"icmp ne i64 {expected}, 0")
+        same = self.gen.operation(f"icmp eq i64 {layout}, {expected}")
+        return self.gen.operation(f"and i1 {known}, {same}")
 
     def visit_NoneType(self, fact: ValueType) -> str:
         return self.gen.operation(f"icmp eq ptr {self.value}, @mule.none")
@@ -4033,6 +4126,7 @@ class FunctionGenerator:
         receiver,
         arguments,
         unpack_arity: int | None = None,
+        argument_refs=(),
     ) -> str:
         """Consume receiver/arguments on direct, fallback, and rejected arms."""
         if info.exact_list_append:
@@ -4112,6 +4206,15 @@ class FunctionGenerator:
             self.immortal_values.add(result)
             return result
         module = self.module
+        if (
+            info.target is not None
+            and not info.keywords
+            and unpack_arity is None
+            and info.target.call_order((), len(arguments) + 1) is not None
+        ):
+            return self.call_resolved_target(
+                info, callable_value, receiver, arguments, argument_refs
+            )
         candidates = module.method_targets.get(info.name, ())
         functions = tuple(
             target
@@ -4151,6 +4254,40 @@ class FunctionGenerator:
     def argument_guard(self, value: str, expected: ValueType) -> str:
         """Check representation/range without touching or invoking an object."""
         return expected.accept(_ArgumentGuard(self, value))
+
+    def call_resolved_target(
+        self, info, callable_value, receiver, arguments, argument_refs
+    ) -> str:
+        """Call a method analysis resolved from the receiver's class: guard
+        that resolution produced that very function, then enter its body
+        with the receiver as the first argument, choosing an entry context
+        by argument types as a guarded global call does. Any other callable
+        takes the general resolved-call path."""
+        module = self.module
+        target = info.target
+        values = (receiver, *arguments)
+        supplied = (
+            info.receiver_type,
+            *((ref.tn.type or UNKNOWN) for ref in argument_refs),
+        )
+        # Parameters the call leaves to their defaults have no argument type;
+        # as for global calls, such calls only take the general body.
+        order = target.call_order((), len(values))
+        if any(index < 0 for index in order):
+            steps = ((None, ()),)
+        else:
+            steps = _entry_steps(module, target, (supplied[index] for index in order))
+        helper = module.direct_call_helper(
+            target, (), len(values), steps, receiver_call=True
+        )
+        operands = ", ".join(
+            [
+                "ptr %globals",
+                f"ptr {callable_value}",
+                *(f"ptr {value}" for value in values),
+            ]
+        )
+        return self.operation(f"call ptr {helper}({operands})")
 
     def call(
         self,
@@ -4193,42 +4330,9 @@ class FunctionGenerator:
         )
         supplied_sources = [source for source in argument_types if source is not None]
         if len(supplied_sources) != len(order):
-            contexts = []
+            steps = ((None, ()),)
         else:
-            contexts = sorted(
-                (
-                    context
-                    for context in module.variants_of(function)
-                    if all(
-                        source.may_dispatch_fit(expected)
-                        for source, expected in zip(
-                            supplied_sources, context.parameters, strict=True
-                        )
-                    )
-                ),
-                key=lambda context: (
-                    sum(
-                        0 if source.dispatch_fits(expected) else 1
-                        for source, expected in zip(
-                            supplied_sources, context.parameters, strict=True
-                        )
-                    ),
-                    sum(fact.dispatch_rank() for fact in context.parameters),
-                ),
-            )
-        steps: list[tuple[EntryContext | None, tuple[ValueType | None, ...]]] = []
-        for context in contexts:
-            needed = tuple(
-                None if source.dispatch_fits(expected) else expected
-                for source, expected in zip(
-                    supplied_sources, context.parameters, strict=True
-                )
-            )
-            steps.append((context, needed))
-            if all(expected is None for expected in needed):
-                break
-        else:
-            steps.append((None, ()))
+            steps = _entry_steps(module, function, supplied_sources)
         if unpack_arity is not None:
             helper = module.unpacked_direct_call_helper(
                 function,
@@ -4470,7 +4574,7 @@ class FunctionGenerator:
             and module.native_plans.get(lambda_) is None
             and fixnum_variant is not None
         ):
-            builder = _HelperBuilder()
+            builder = _HelperBuilder(self.module)
             combined = None
             guard_ok = None
             for index, (name, expected) in enumerate(

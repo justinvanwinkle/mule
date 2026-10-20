@@ -43,6 +43,7 @@ from .ctype import (
     IntegerType,
     NoneType,
     TupleType,
+    ValueType,
 )
 from .ir1util import block_exception_target, made_lambda
 from .ltn import EntryContext, primitive_type_of
@@ -343,6 +344,12 @@ class MethodCall:
     exact_text_split: bool = False
     exact_text_partition: bool = False
     exact_text_affix: bool = False
+    # The method the receiver's class resolves the name to, when analysis
+    # typed the receiver; code generation guards the resolved function's
+    # identity and calls this method's body directly.
+    target: Lambda | None = None
+    # The receiver's analyzed type, for selecting the target's entry context.
+    receiver_type: ValueType = UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -2252,6 +2259,10 @@ class _Converter(NodeVisitor):
                 exact_text_split,
                 exact_text_partition,
                 exact_text_affix,
+                self.context.targets.get(node),
+                self.context.type_of(resolve.args[0].use())
+                if len(resolve.args[0].uses) == 1
+                else UNKNOWN,
             ),
         )
         if discard:
