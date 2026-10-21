@@ -251,6 +251,11 @@ COMPARE = {
                 ast.ComparisonOperator.NOT_IN,
             )
         ),
+        borrowed_args=(
+            frozenset({0, 1})
+            if operator in (ast.ComparisonOperator.IS, ast.ComparisonOperator.IS_NOT)
+            else frozenset()
+        ),
     )
     for operator in ast.ComparisonOperator
 }

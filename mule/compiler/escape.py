@@ -7,7 +7,7 @@ function marked ``dx-safe`` or a local call whose corresponding variable's
 references do not escape either, and ``leaf-refs-not-escape-elsewhere-p``
 checks every other reference of the same leaf. Mule asks it for every value
 without a declaration, because reference counting makes each avoided escape
-worth a retain and a release. ``spec/escape-analysis.md`` records the
+worth a retain and a release. ``spec/native-lowering.md`` records the
 departure and its consequences.
 
 The facts are conservative. A value escapes when any of its uses may keep
@@ -15,14 +15,15 @@ it: storing it into a variable that escapes, into a global, cell, object, or
 container; returning, yielding, or raising it; or passing it to a callee
 that may keep its argument. A full call to an unknown function keeps every
 argument. Known functions keep their arguments unless the function database
-declares otherwise (``FunInfo.borrows``).
+declares otherwise (``FunInfo.borrowed_args``).
 
 Parameters of local functions are solved together: a parameter escapes when
 a use of it escapes, and a local call's argument escapes when the callee's
 parameter does. Solving starts from "does not escape" and moves monotonically
-to "escapes", which is sound because every caller of a local lambda is in
-the program being compiled; a lambda reachable from outside (an external
-entry, a closure, a generator) has its parameters treated as escaping.
+to "escapes" over the uses of each body. Unknown and guarded calls remain
+escaping: a predicted callee does not establish effects for its fallback.
+These facts describe capture, not a backend ownership convention; callers
+must separately prove an owner's lifetime before selecting a borrowed entry.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from .node import (
     NodeVisitor,
     Ref,
     Set,
+    linked,
 )
 
 
@@ -116,6 +118,14 @@ class _UseClassifier(NodeVisitor):
         self.var: LambdaVar | None = None
         self.lvar: Lvar | None = None
 
+    @property
+    def source(self) -> LambdaVar:
+        return linked(self.var, self, "active escape-analysis variable")
+
+    @property
+    def operand(self) -> Lvar:
+        return linked(self.lvar, self, "active escape-analysis operand")
+
     def classify(self, var: LambdaVar, lvar: Lvar | None) -> None:
         if lvar is None or lvar.dest is None:
             # The value is computed and discarded.
@@ -130,29 +140,30 @@ class _UseClassifier(NodeVisitor):
     def visit_Node(self, node):
         # Returns, exits carrying values, and any consumer not classified
         # below may keep the value.
-        self.solver.escape(self.var)
+        self.solver.escape(self.source)
 
     def visit_If(self, node):
-        # A truth test reads the value and keeps nothing.
-        return
+        # __bool__ and __len__ may publish their receiver through user code.
+        self.solver.escape(self.source)
 
     def visit_Cast(self, node):
         # A cast passes its operand through: it escapes where the cast's
         # result goes.
-        self.classify(self.var, node.lvar)
+        self.classify(self.source, node.lvar)
 
     def visit_Set(self, node: Set):
         target = node.var.accept(_LOCAL_TARGET)
         if target is None:
-            self.solver.escape(self.var)
+            self.solver.escape(self.source)
             return
-        self.solver.escapes_with(self.var, target)
+        self.solver.escapes_with(self.source, target)
 
     def visit_Combination(self, node: Combination):
         if self.lvar is node.fun:
-            # Calling a value keeps nothing of it beyond the call.
+            # An arbitrary callable's __call__ may publish its receiver.
+            self.solver.escape(self.source)
             return
-        index = node.args.index(self.lvar)
+        index = node.args.index(self.operand)
         _CALL_KIND_USES[node.kind](self, node, index)
 
     def known_call(self, node: Combination, index: int) -> None:
@@ -161,19 +172,19 @@ class _UseClassifier(NodeVisitor):
             # The operation reads its argument; its result may still carry
             # the value onward when the function returns it.
             if info.returns_argument(index):
-                self.classify(self.var, node.lvar)
+                self.classify(self.source, node.lvar)
             return
-        self.solver.escape(self.var)
+        self.solver.escape(self.source)
 
     def local_call(self, node: Combination, index: int) -> None:
         callee = _callee_lambda(node)
         if callee is None or index >= len(callee.vars):
-            self.solver.escape(self.var)
+            self.solver.escape(self.source)
             return
-        self.solver.escapes_with(self.var, callee.vars[index])
+        self.solver.escapes_with(self.source, callee.vars[index])
 
     def unknown_call(self, node: Combination, index: int) -> None:
-        self.solver.escape(self.var)
+        self.solver.escape(self.source)
 
 
 # How each call kind treats an argument. GUARDED calls fall back to a full

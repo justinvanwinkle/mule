@@ -331,6 +331,97 @@ Keywords, default/reordered arguments, foreign units, and direct self-recursive
 edges retain the existing object convention in this increment. See
 [numeric calling conventions](compiler-gaps.md#numeric-internal-calling-conventions-implemented).
 
+## Borrowed local lifetimes
+
+Status: implemented for stable local roots and supported pooled constants,
+including control-flow branches, loop backedges, and exception successors.
+
+An owned local slot can keep a loaded temporary alive without giving that
+temporary a second counted reference. This does not require the object itself
+to be private or nonescaping. The proof concerns one reference's lifetime:
+every use must borrow it, or forward it into another temporary with the same
+proof, while the original local retains its ownership.
+
+The proof must cover every normal and exception path between the load and its
+uses. An overwrite, unbind, ownership move, suspension, ambiguous definition,
+or potentially aliasing uniqueness-dependent mutation invalidates it. Loop
+backedges require the same proof: an owner's next iteration is not evidence
+that the previous iteration's value remains alive. A copy into an independently
+owned local is not a borrowed forwarding operation.
+
+Borrowed lifetime information belongs to a TN/reference acquisition, not the
+underlying object or pointer. It must survive stack spills and reloads. Borrowed
+and owned stack slots have different cleanup policies and must not be packed
+together. Normal cleanup, exception unwinding, slot replacement, and repeated
+reads must not consume borrowed ownership. Acquiring a genuinely owned copy
+from a borrowed reference still requires a retain and a corresponding release.
+The owner's existing overwrite and cleanup points are not moved, preserving
+the observable lifetime boundary rather than deferring destruction.
+
+### SBCL correspondence and reference-counting adaptation
+
+SBCL's `src/compiler/envanal.lisp`, `ref-good-for-dx-p` and
+`leaf-refs-not-escape-elsewhere-p`, follow known operation contracts and local
+callee uses to establish bounded lifetimes. `src/compiler/life.lisp`,
+`lifetime-flow-analysis` and `propagate-live-tns`, propagate TN lifetime facts
+over the IR2 control-flow graph. Mule keeps that phase organization and uses
+the same normal/exception control flow already used by its last-use analysis.
+
+SBCL's tracing collector does not need to distinguish a counted owner from a
+borrowed reference. Mule does: it uses explicit ownership metadata to suppress
+only the redundant reference's retain/release operations. This is a concrete
+adaptation to Mule's reference-counted runtime, not a change to Python's
+evaluation or mutation semantics. It reduces ownership traffic without
+disabling reclamation or weakening alias-sensitive in-place reuse rules.
+
+Nonescaping argument metadata alone does not establish that a backend call
+borrows its operand. The private numeric-box cleanup below does not establish
+a generic container drop-fusion implementation.
+
+### Ownership-specialized calls
+
+An ownership-specialized `EntryContext` describes a body whose selected
+incoming parameters borrow independently live caller owners. This uses the
+existing per-context body compilation mechanism; it does not change the public
+ABI or the ordinary owning body. An owning temporary or last-use transfer must
+continue to use the owning body: releasing its parameter in a helper after the
+body returns could reorder destruction relative to the callee's other locals.
+
+Candidate parameter contracts must be established before caller IR2 conversion,
+then combined with its lifetime proof. A contract alone cannot establish that
+an actual caller owner survives. Borrowed roots cannot move on last use or
+participate in the two-count reuse rule, whose counted-local premise would no
+longer hold. A consuming use must acquire an independently owned reference.
+
+The ownership mask is in signature order; call helpers map it to evaluated
+arguments. A direct arm neither retains nor releases borrowed inputs. A
+frame-entry rejection releases only helper-owned inputs. A dynamic-target
+mismatch first acquires owners for borrowed inputs before calling the existing
+consuming fallback. Context identity, helper caching, symbol lookup, and lazy
+body emission must all agree on the same ownership mask. Ownership variants
+must not appear in ordinary type-guard selection used by owning callers.
+
+This extends SBCL's local-call use analysis and entry-context specialization
+to reference-counted parameter lifetimes. Foreign, generator, native, numeric,
+and protocol entry paths remain owning until their contracts explicitly support
+ownership specialization. Generic container drop fusion remains separate.
+
+The initial call-site support is explicit positional same-unit calls with
+matching arity and stable, noncaptured parameter locals. Default, variadic,
+method, closure, unpacked-return, and exported cross-unit entry contracts do
+not select borrowed bodies. Initial function-database noncapture declarations
+cover identity comparisons (`is` and `is not`); unused parameters and safe local
+assignment dependencies can also qualify. Other operations conservatively
+escape until their effects are declared. In particular, truth and callable
+operations may publish their receivers through user callbacks. Guarded recursive
+forwarding remains escaping; the local dependency solver is not a claim of
+general interprocedural borrowing for dynamic calls.
+
+Exact-dictionary protocol calls transfer operands they already own and acquire
+references only for borrowed operands. The consuming compiled protocol releases
+those references on both success and failure; the original ownership must not
+be lost by retaining an extra copy and abandoning the taken operand.
+
 ## LLVM-visible boxes
 
 Boxing separates raw pooled storage from LLVM-visible initialization and

@@ -70,7 +70,6 @@ from .vmdef import templates_for
 from .vop import (
     BOOLEAN_T,
     FIXNUM,
-    IMMORTAL_T,
     RANGE_T,
     VOP,
     IR2Block,
@@ -240,8 +239,11 @@ def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
             or source.leaf is None
             or info.reuse_local != source.leaf.name
         )
-    if name == "full-call" and vop.args and ref is vop.args[0]:
-        return True
+    if name == "full-call" and vop.args:
+        return ref is vop.args[0] or any(
+            ref is vop.args[index + 1]
+            for index in linked(vop.codegen_info, vop, "call site").borrowable_arguments
+        )
     if name == "call-resolved":
         info = vop.codegen_info
         if info is not None and (
@@ -258,7 +260,7 @@ def _safe_borrow_step(step: VOP, source) -> bool:
     if source is not None and any(ref.tn is source for ref in step.results):
         return False
     name = step.info.name
-    if name in vops.TERMINATORS or name == "coroutine-yield":
+    if name in vops.TERMINATORS or name == "yield":
         return False
     if name == "load-local":
         info = step.codegen_info
@@ -311,6 +313,7 @@ class CallSite:
     location: tuple | None
     target: Lambda | None
     proven: bool
+    borrowable_arguments: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -386,6 +389,15 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
     for block in blocks:
         converter.convert_block(block)
     converter.close()
+    borrowed_names = {lambda_.vars[index].name for index in context.borrowed_parameters}
+    for block in component.blocks:
+        for vop in block.vops:
+            if (
+                vop.info.reuses_local
+                and vop.codegen_info is not None
+                and vop.codegen_info.reuse_local in borrowed_names
+            ):
+                vop.codegen_info = replace(vop.codegen_info, reuse_local=None)
     _fuse_text_codepoint_comparisons(component)
     _mark_last_local_reads(component)
     _fuse_text_slice_compares(component)
@@ -1078,13 +1090,19 @@ def _mark_boolean_comparisons(component: IR2Component) -> None:
 
 
 def _mark_borrowed_local_reads(component: IR2Component) -> None:
-    """Mark bound ``LOAD_LOCAL`` and cached ``CONSTANT`` VOPs whose single
-    block-local consumer only borrows the value while the slot retains it."""
+    """Elide owned copies whose uses remain protected by a stable local root.
+
+    The CFG region includes exception successors and loop backedges. It is
+    deliberately conservative about mutable owner locations and operations
+    that can exploit reference-count uniqueness through an alias.
+    """
+    if component.context.plan is not None:
+        return
+    proof = _BorrowedLifetime(component)
     reads = component.reads
     writes = component.writes
     for block in component.blocks:
-        positions: dict[VOP, int] | None = None
-        for index, vop in enumerate(block.vops):
+        for vop in block.vops:
             is_load = vop.info is vops.LOAD_LOCAL
             is_const = vop.info is vops.CONSTANT
             if not is_load and not is_const:
@@ -1094,6 +1112,12 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
                 if not access.bound or access.move:
                     continue
                 source = vop.args[0].tn
+                if (
+                    source.leaf is None
+                    or source.leaf.indirect
+                    or source.leaf.expression_temporary
+                ):
+                    continue
             else:
                 access = None
                 result_tn = vop.results[0].tn
@@ -1108,50 +1132,153 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
             result = vop.results[0].tn
             result_reads = reads.get(result)
             result_writes = writes.get(result)
-            if (
-                result_writes is None
-                or len(result_writes) != 1
-                or result_reads is None
-                or len(result_reads) != 1
-            ):
+            if result_writes is None or len(result_writes) != 1 or result_reads is None:
                 continue
-            if positions is None:
-                positions = {step: pos for pos, step in enumerate(block.vops)}
-            reader, reader_ref = result_reads[0]
-            reader_index = positions.get(reader)
-            if reader_index is None or reader_index <= index:
+            aliases, consumers = proof.consumers(result, source)
+            if not aliases or not proof.protected(vop, consumers, source):
                 continue
-            if not _borrows_operand(reader, reader_ref, source):
-                continue
-            end_index = reader_index
-            if (
-                reader.info.name == "resolve-method"
-                and reader.codegen_info is not None
-                and reader.codegen_info.is_exact
-            ):
-                bound = reader.results[1].tn
-                bound_reads = reads.get(bound)
-                bound_writes = writes.get(bound)
-                if (
-                    bound_writes is None
-                    or len(bound_writes) != 1
-                    or bound_reads is None
-                    or len(bound_reads) != 1
-                ):
-                    continue
-                call_index = positions.get(bound_reads[0][0])
-                if call_index is None or call_index <= reader_index:
-                    continue
-                end_index = call_index
-            if any(
-                step is not reader and not _safe_borrow_step(step, source)
-                for step in block.vops[index + 1 : end_index]
-            ):
-                continue
+            root = source if source is not None else result
+            for alias in aliases:
+                alias.borrowed_from = root
             if access is not None:
                 vop.codegen_info = replace(access, borrow=True)
-            else:
-                result.primitive_type = IMMORTAL_T
+
+
+class _BorrowedLifetime:
+    """Definition-sensitive borrow regions over IR2's existing control graph."""
+
+    def __init__(self, component):
+        self.component = component
+        self.positions = {
+            vop: (block, index)
+            for block in component.blocks
+            for index, vop in enumerate(block.vops)
+        }
+        self.successors = {}
+        self.predecessors = {block: set() for block in component.blocks}
+        for block in component.blocks:
+            following = {
+                component.ir2_blocks[succ]
+                for succ in block.block.succ
+                if succ in component.ir2_blocks
+            }
+            handler = component.ir2_blocks.get(block_exception_target(block.block))
+            if handler is not None:
+                following.add(handler)
+            self.successors[block] = following
+            for successor in following:
+                self.predecessors[successor].add(block)
+
+    def consumers(self, result, source):
+        aliases, pending, consumers = set(), [result], set()
+        while pending:
+            tn = pending.pop()
+            if tn in aliases:
+                continue
+            if len(self.component.writes.get(tn, ())) != 1:
+                return (), ()
+            aliases.add(tn)
+            for reader, ref in self.component.reads.get(tn, ()):
+                if reader.info is vops.MOVE:
+                    target = reader.results[0].tn
+                    if target.leaf is not None or target is source:
+                        return (), ()
+                    pending.append(target)
+                    consumers.add(reader)
+                    continue
+                if not _borrows_operand(reader, ref, source):
+                    return (), ()
+                consumers.add(reader)
+                # Exact method resolution can forward the borrowed receiver
+                # without a new owner; its invocation must be in the region.
+                if (
+                    reader.info.name == "resolve-method"
+                    and reader.codegen_info is not None
+                    and reader.codegen_info.is_exact
+                ):
+                    bound = reader.results[1].tn
+                    uses = self.component.reads.get(bound, ())
+                    if len(uses) != 1:
+                        return (), ()
+                    pending.append(bound)
+                    consumers.add(uses[0][0])
+        return aliases, consumers
+
+    def protected(self, acquisition, consumers, source):
+        if not consumers:
+            return False
+        start, start_index = self.positions[acquisition]
+        ends = {}
+        ancestors, pending = set(), []
+        for consumer in consumers:
+            block, index = self.positions[consumer]
+            if block is start and index <= start_index:
+                return False
+            ends[block] = max(ends.get(block, -1), index)
+            pending.append(block)
+        # An acquisition must dominate every consumer, including handler uses.
+        bypass, pending_bypass = set(), list(ends)
+        entry = self.component.blocks[0]
+        while pending_bypass:
+            block = pending_bypass.pop()
+            if block is start or block in bypass:
+                continue
+            if block is entry:
+                return False
+            bypass.add(block)
+            pending_bypass.extend(self.predecessors[block])
+        while pending:
+            block = pending.pop()
+            if block in ancestors:
+                continue
+            ancestors.add(block)
+            pending.extend(self.predecessors[block])
+        reachable, pending = set(), [start]
+        while pending:
+            block = pending.pop()
+            if block in reachable or block not in ancestors:
+                continue
+            reachable.add(block)
+            pending.extend(self.successors[block])
+        reenters = any(start in self.successors[block] for block in reachable)
+        for block in reachable:
+            # If this block can reach a later consumer, every step in it can
+            # execute while the borrow is live. This also covers backedges.
+            has_later = any(succ in ancestors for succ in self.successors[block])
+            end = len(block.vops) if has_later else ends.get(block, -1) + 1
+            begin = start_index + 1 if block is start and not reenters else 0
+            for step in block.vops[begin:end]:
+                if step in consumers and step.info is vops.MOVE:
+                    continue
+                if not self.safe_step(step, source, consumer=step in consumers):
+                    return False
+        return True
+
+    @staticmethod
+    def safe_step(step, source, *, consumer=False):
+        name = step.info.name
+        if name == "yield":
+            return False
+        if source is not None and any(ref.tn is source for ref in step.results):
+            return False
+        if name == "load-local":
+            return not (step.args[0].tn is source and step.codegen_info.move)
+        if consumer:
+            # Every operand use was checked by _borrows_operand. Arithmetic
+            # borrows only an immutable left operand or a nonconsumed right
+            # operand; unrelated arithmetic remains a uniqueness barrier.
+            return True
+        # These can mutate an object selected through another alias. Borrowed
+        # temporaries must not make a uniqueness test observe fewer aliases.
+        if name.startswith(("inplace-", "boxed-float-")) or name in (
+            "binary-add",
+            "binary-subtract",
+            "binary-multiply",
+        ):
+            return False
+        if name in vops.TERMINATORS:
+            return True
+        return _safe_borrow_step(step, source)
 
 
 _BORROWED_LIST_GETITEM_READERS = _CODEPOINT_COMPARISON_VOPS | frozenset(
@@ -1261,6 +1388,7 @@ def _specialize_list_getitems(component: IR2Component) -> None:
             ):
                 continue
             vop.codegen_info = "list_borrow"
+            res_tn.borrowed_from = seq_local
 
 
 def _mark_last_local_reads(component: IR2Component) -> None:
@@ -1273,6 +1401,7 @@ def _mark_last_local_reads(component: IR2Component) -> None:
         if not var.indirect
         and not var.expression_temporary
         and (tn := environment.vars.get(var)) is not None
+        and tn.borrowed_from is not tn
     }
     if not candidates:
         return
@@ -1856,6 +1985,9 @@ class _Converter(NodeVisitor):
         environment = self.environment
         for var in lambda_.locals:
             self.var_tn(var)
+        for index in self.context.borrowed_parameters:
+            root = self.var_tn(lambda_.vars[index])
+            root.borrowed_from = root
         closure = lambda_.environment.closure if lambda_.environment else ()
         environment.captured = list(closure)
         for var in closure:
@@ -2275,6 +2407,13 @@ class _Converter(NodeVisitor):
             info.location if info is not None else None,
             target if node.kind is CallKind.GUARDED else None,
             node.proven if node.kind is CallKind.GUARDED else False,
+            self.context.borrowed_callees.get(target, frozenset())
+            if node.kind is CallKind.GUARDED
+            and (info is None or not info.keywords)
+            and target is not None
+            and target in self.context.borrowed_callees
+            and target.call_order((), len(node.args)) == tuple(range(len(node.args)))
+            else frozenset(),
         )
         result, discard = self.result_tn(node)
         plan = self.context.plan

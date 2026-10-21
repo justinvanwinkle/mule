@@ -155,7 +155,7 @@ class _BoxedConstant(ast.Visitor):
         self.vop = vop
 
     def visit_Node(self, node):
-        if not self.result.tn.sc.owned:
+        if self.result.tn.borrowed_from is not None or not self.result.tn.sc.owned:
             self.gen.pointer_result(self.result, self.gen.borrowed_constant(node))
             return
         self.gen.pointer_result(self.result, self.gen.constant(node))
@@ -247,8 +247,6 @@ def load_local(gen, vop):
     if access.move:
         gen.line(f"store ptr null, ptr {source.tn.slot}")
     if access.bound:
-        if access.borrow:
-            gen.immortal_values.add(value)
         gen.record_facts(source.tn, value)
         gen.record_facts(result.tn, value)
         if (
@@ -1558,7 +1556,7 @@ def protocol_next_item(gen, vop):
 @define_vop("protocol-iterate", translate=fndb.PROTOCOLS["iterate"], results=(OBJECT,))
 def protocol_iterate(gen, vop):
     sequence = gen.take(vop.args[0])
-    move = sequence not in gen.immortal_values
+    move = gen.owns_reference(sequence)
     helper = gen.module.iterate_helper(move=move)
     result = gen.operation(f"call ptr {helper}(ptr {sequence})")
     if not move:
@@ -1606,10 +1604,12 @@ def structural_unpack(gen, vop):
 def _exact_dict_call(gen, vop, name):
     """Call the ``_sequences`` entry for an operand proven to be an exact
     ``dict``. The getitem and setitem VOPs borrow their operands; the compiled
-    entry consumes owned ones, so each operand is retained for the call."""
-    operands = [gen.take(value) for value in vop.args]
-    for operand in operands:
-        gen.line(f"call ptr @mule.fast.retain(ptr {operand})")
+    entry consumes owned ones. Transfer existing owners and acquire a new
+    reference only for an operand that the caller borrowed."""
+    operands = []
+    for ref in vop.args:
+        value = gen.take(ref)
+        operands.append(value if gen.owns_reference(value) else gen.retain(value))
     result = gen.sequence_call(name, operands)
     gen.publish(vop.results[0], result)
     gen.check_pointer(result)
@@ -1633,8 +1633,6 @@ def protocol_getitem(gen, vop):
     else:
         helper = gen.module.getitem_helper()
     result = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {index})")
-    if info == "list_borrow":
-        gen.immortal_values.add(result)
     gen.release(sequence)
     gen.release(index)
     gen.publish(vop.results[0], result)
@@ -1709,7 +1707,7 @@ def protocol_setitem(gen, vop):
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])
     item = gen.take(vop.args[2])
-    move_item = item not in gen.immortal_values and item != sequence and item != index
+    move_item = gen.owns_reference(item) and item != sequence and item != index
     helper = gen.module.setitem_helper(move=move_item)
     result = gen.operation(
         f"call ptr {helper}(ptr {sequence}, ptr {index}, ptr {item})"

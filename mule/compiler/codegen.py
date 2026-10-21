@@ -49,6 +49,7 @@ from .ctype import (
     ValueType,
     ValueTypeVisitor,
 )
+from .escape import analyze_escapes
 from .ir1util import block_exception_target, made_function
 from .ir2tran import ir2_convert
 from .locall import specialized_ir1_context
@@ -466,15 +467,19 @@ class _Symbols:
 class _SpecializedSymbols:
     """The guarded entry of a lambda for one of its entry contexts."""
 
-    def __init__(self, owned: set, foreign: dict, facts: dict):
+    def __init__(self, owned: set, foreign: dict, facts: dict, backend_contexts: dict):
         self.owned = owned
         self.foreign = foreign
         self.facts = facts
+        self.backend_contexts = backend_contexts
         self.requested: set[tuple[Function, object]] = set()
 
     def __getitem__(self, key: tuple[Function, object]) -> str:
         lambda_, context_id = key
         self.requested.add(key)
+        backend = self.backend_contexts.get(key)
+        if backend is not None:
+            return _symbol(f"{lambda_.name}.{context_id}")
         facts = self.facts.get(lambda_)
         variants = facts.variants if facts is not None else ()
         for variant, context in enumerate(variants):
@@ -823,7 +828,10 @@ class ModuleGenerator:
         self.foreign: dict[str, tuple[str, Function]] = {}
         self.functions = _Symbols(self.owned, self.foreign, "fn")
         self.bodies = _Symbols(self.owned, self.foreign, "body")
-        self.specialized = _SpecializedSymbols(self.owned, self.foreign, self.facts)
+        self.backend_contexts: dict[tuple[Lambda, str], EntryContext] = {}
+        self.specialized = _SpecializedSymbols(
+            self.owned, self.foreign, self.facts, self.backend_contexts
+        )
         self.unpacked = _UnpackedSymbols(self.owned, self.facts)
         self.numeric_entries: dict[tuple[Lambda, object], NumericEntry] = {}
         self.rejected_fixnum_entries: dict[Lambda, EntryContext] = {}
@@ -847,6 +855,32 @@ class ModuleGenerator:
                         self.return_tuple_arities[lambda_],
                         self.return_tuple_uses[lambda_],
                     ) = info
+        escapes = analyze_escapes(lambdas)
+        self.borrowed_callees = {}
+        if not program.bootstrap and not program.exports:
+            for function in lambdas:
+                if (
+                    function is program.entry
+                    or function in self.native_plans
+                    or function in self.return_tuple_arities
+                    or function.is_protocol
+                    or function.takes_closure
+                    or function.signature.variadic
+                    or function.signature.default_parameters
+                    or function.method_class is not None
+                    # CO_GENERATOR, CO_COROUTINE, CO_ASYNC_GENERATOR.
+                    or (function.code is not None and function.code.flags & 0x2A0)
+                ):
+                    continue
+                candidates = frozenset(
+                    index
+                    for index, var in enumerate(function.vars)
+                    if not var.indirect
+                    and not var.sets
+                    and not escapes.parameter_escapes(function, index)
+                )
+                if candidates:
+                    self.borrowed_callees[function] = candidates
         logger.debug(
             "Backend input: %d lambdas, %d native entries, %d class layouts",
             len(lambdas),
@@ -2006,6 +2040,7 @@ class ModuleGenerator:
         *,
         proven: bool = False,
         receiver_call: bool = False,
+        borrowed_arguments: frozenset[int] = frozenset(),
     ) -> str:
         step_key = tuple(
             (None if ctx is None else ctx.id, needed) for ctx, needed in steps
@@ -2018,6 +2053,7 @@ class ModuleGenerator:
             step_key,
             proven,
             receiver_call,
+            borrowed_arguments,
         )
         existing = self.protocol_helpers.get(key)
         if existing is not None:
@@ -2076,6 +2112,8 @@ class ModuleGenerator:
                 ]
 
         def emit_invoke(context: EntryContext | None, tag: int) -> None:
+            if borrowed_arguments:
+                context = self.borrowed_context(function, context, borrowed_arguments)
             entered = f"entered.{tag}"
             builder.line("  %frame." + str(tag) + " = call i32 @mule_enter_frame()")
             builder.line(f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0")
@@ -2140,12 +2178,15 @@ class ModuleGenerator:
 
         builder.lines.append("failed:")
         for i in range(arity):
-            builder.line(f"  call void @mule.fast.release(ptr %arg.{i})")
+            if i not in borrowed_arguments:
+                builder.line(f"  call void @mule.fast.release(ptr %arg.{i})")
         builder.line("  ret ptr null")
         if not proven:
+            builder.lines.append("fallback:")
+            for index in borrowed_arguments:
+                builder.line(f"  call ptr @mule.fast.retain(ptr %arg.{index})")
             builder.lines.extend(
                 [
-                    "fallback:",
                     f"  %fallback.res = call ptr {fallback_helper}({fallback_args})",
                     "  ret ptr %fallback.res",
                 ]
@@ -2320,6 +2361,7 @@ class ModuleGenerator:
             facts.targets,
             facts.parameters or (UNKNOWN,) * len(lambda_.vars),
             facts.return_type,
+            borrowed_callees=self.borrowed_callees,
         )
         variants = [
             EntryContext(
@@ -2328,10 +2370,29 @@ class ModuleGenerator:
                 context.targets,
                 context.parameters,
                 context.return_type,
+                borrowed_callees=self.borrowed_callees,
             )
             for context in facts.variants
         ]
         return general, variants
+
+    def borrowed_context(self, function: Function, base, borrowed: frozenset[int]):
+        if function not in self.owned:
+            raise ValueError("borrowed contexts require a function owned by this unit")
+        if base is None:
+            base, _variants = self.contexts(function)
+        identity = (
+            "borrow."
+            + str(base.id or "general")
+            + "."
+            + ".".join(map(str, sorted(borrowed)))
+        )
+        key = function, identity
+        context = self.backend_contexts.get(key)
+        if context is None:
+            context = replace(base, id=identity, borrowed_parameters=borrowed)
+            self.backend_contexts[key] = context
+        return context
 
     def numeric_entry(self, function: Lambda, context: EntryContext) -> NumericEntry:
         """Select an internal ABI without changing the entry's semantic facts."""
@@ -2372,7 +2433,7 @@ class ModuleGenerator:
 
     def select_numeric_calls(self, component) -> bool:
         """Use scalar locations only for proven calls and compatible consumers."""
-        if component.context.plan is not None:
+        if component.context.plan is not None or component.context.borrowed_parameters:
             return False
         changed = False
         pending = [
@@ -2386,6 +2447,8 @@ class ModuleGenerator:
             progress = False
             for vop in pending:
                 site = vop.codegen_info
+                if any(ref.tn.borrowed_from is not None for ref in vop.args[1:]):
+                    continue
                 target = site.target
                 if (
                     not site.proven
@@ -2538,6 +2601,8 @@ class ModuleGenerator:
         emitted_numeric = set()
         emitted_rejected_fixnum = set()
         while True:
+            for key, context in self.backend_contexts.items():
+                variants_by_key[key] = (key[0], context)
             pending_variants = (
                 self.specialized.requested & variants_by_key.keys()
             ) - emitted_variants
@@ -3136,7 +3201,7 @@ class ModuleGenerator:
 
 
 def _needs_cleanup_release(tn) -> bool:
-    if tn.sc is not DESCRIPTOR:
+    if tn.sc is not DESCRIPTOR or tn.borrowed_from is not None:
         return False
     fact = tn.type or UNKNOWN
     return not (fact.is_fixnum or fact.is_immortal)
@@ -3547,6 +3612,7 @@ class FunctionGenerator:
             self.return_uses = frozenset()
         self.environment = component.environment
         self.immortal_values: set[str] = set()
+        self.borrowed_values: set[str] = set()
         self.heap_values: set[str] = set()
         self.private_values: dict[str, BoxLayout] = {}
         self.lines: list[str] = []
@@ -4124,6 +4190,8 @@ class FunctionGenerator:
     def take(self, ref) -> str:
         """Consume a temporary: the failure paths no longer release it."""
         tn = ref.tn
+        if tn.borrowed_from is not None:
+            return self.load(ref)
         if tn in self.registers:
             self.live.pop(tn, None)
             return self.values[tn]
@@ -4149,7 +4217,11 @@ class FunctionGenerator:
             raise ValueError(f"{tn!r} redefined while it still owns a value")
         self.values[tn] = value
         self.record_facts(tn, value)
-        if tn.sc.owned and value not in self.immortal_values:
+        if (
+            tn.sc.owned
+            and tn.borrowed_from is None
+            and value not in self.immortal_values
+        ):
             self.live[tn] = value
 
     def out_pointer(self) -> str:
@@ -4174,7 +4246,7 @@ class FunctionGenerator:
         if tn in self.registers:
             self.define(tn, value)
             return
-        if tn.sc.owned and release:
+        if tn.sc.owned and tn.borrowed_from is None and release:
             old = self.operation(f"load ptr, ptr {tn.slot}")
             self.line(f"store ptr {value}, ptr {tn.slot}")
             self.record_facts(tn, old)
@@ -4186,6 +4258,8 @@ class FunctionGenerator:
 
     def record_facts(self, tn, value: str) -> None:
         self.mark_immortal(tn, value)
+        if tn.borrowed_from is not None:
+            self.borrowed_values.add(value)
         if tn.private_box is not None:
             self.private_values[value] = tn.private_box
         fact = tn.type or UNKNOWN
@@ -4201,16 +4275,25 @@ class FunctionGenerator:
             return value
         layout = self.private_values.get(value)
         if layout is not None:
-            self.line(f"call ptr @{layout.symbol('private.retain')}(ptr {value})")
-            return value
-        if value in self.heap_values:
-            self.line(f"call ptr @mule.heap.retain(ptr {value})")
-            return value
-        self.line(f"call ptr @mule.fast.retain(ptr {value})")
+            operation = f"call ptr @{layout.symbol('private.retain')}(ptr {value})"
+        elif value in self.heap_values:
+            operation = f"call ptr @mule.heap.retain(ptr {value})"
+        else:
+            operation = f"call ptr @mule.fast.retain(ptr {value})"
+        if value in self.borrowed_values:
+            # The acquired owner and the existing borrow have the same pointer,
+            # but only the newly acquired reference must be released.
+            owned = self.operation(operation)
+            if layout is not None:
+                self.private_values[owned] = layout
+            if value in self.heap_values:
+                self.heap_values.add(owned)
+            return owned
+        self.line(operation)
         return value
 
     def release(self, value: str) -> None:
-        if value in self.immortal_values:
+        if not self.owns_reference(value):
             return
         layout = self.private_values.get(value)
         if layout is not None:
@@ -4220,6 +4303,10 @@ class FunctionGenerator:
             self.line(f"call void @mule.heap.release(ptr {value})")
             return
         self.line(f"call void @mule.fast.release(ptr {value})")
+
+    def owns_reference(self, value: str) -> bool:
+        """Whether this acquisition may transfer or release a runtime owner."""
+        return value not in self.immortal_values and value not in self.borrowed_values
 
     def refine(self, tn, value: str) -> None:
         """Expose proven representation/range facts after the error check."""
@@ -4379,8 +4466,8 @@ class FunctionGenerator:
         return self.local_slots[name]
 
     def local_owned(self, name: str) -> bool:
-        sc = self.local_tns_by_name[name].sc
-        return sc is not None and sc.owned
+        tn = self.local_tns_by_name[name]
+        return tn.sc is not None and tn.sc.owned and tn.borrowed_from is None
 
     def dependency(self, var) -> str:
         return self.dependencies[var]
@@ -4565,7 +4652,7 @@ class FunctionGenerator:
         """Consume receiver/arguments on direct, fallback, and rejected arms."""
         if info.exact_list_append:
             arg = arguments[0]
-            move_arg = arg not in self.immortal_values and arg != receiver
+            move_arg = self.owns_reference(arg) and arg != receiver
             append_fn = (
                 "@mule_storage_append_move" if move_arg else "@mule_storage_append"
             )
@@ -4791,6 +4878,12 @@ class FunctionGenerator:
             len(arguments),
             tuple(steps),
             proven=site.proven and not keywords,
+            borrowed_arguments=frozenset(
+                index
+                for index, ref in enumerate(argument_refs)
+                if ref.tn.borrowed_from is not None
+                and index in site.borrowable_arguments
+            ),
         )
         operands = ", ".join(
             [

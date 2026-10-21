@@ -146,6 +146,8 @@ class EntryContext:
     plan: NativePlan | None = None
     convention: CallConvention | None = None
     rejected_fixnum_guard: FixnumGuard | None = None
+    borrowed_parameters: frozenset[int] = frozenset()
+    borrowed_callees: dict = field(default_factory=dict)
 
     def type_of(self, node) -> ValueType:
         return self.types.get(node, UNKNOWN)

@@ -12,8 +12,10 @@ Python and LLVM adaptations, recorded in ``spec/python-changes.md``:
 - Storage classes describe representations, not registers. LLVM allocates
   registers; Mule only decides whether a value is a tagged object pointer
   that owns a reference, an immortal tagged pointer, or a raw machine value.
-- A ``TN`` of descriptor storage owns one runtime reference and is backed by
-  an entry-block slot so the shared error path can release it.
+- A descriptor ``TN`` normally owns one runtime reference. A ``borrowed_from``
+  root instead proves that this acquisition remains alive without a count;
+  its spills and error cleanup retain that nonowning policy. Block-local TNs
+  use LLVM values, while cross-block values use entry-block slots.
 - ``IR2Lvar.locs`` holds one TN per value an lvar delivers. Lvars carry a
   single Python object, except that a resolved method carries its receiver
   as a second location, the way SBCL delivers multiple values.
@@ -178,6 +180,7 @@ class TN:
     """A temporary name: one value container of the IR2 program."""
 
     __slots__ = (
+        "borrowed_from",
         "kind",
         "leaf",
         "name",
@@ -196,6 +199,9 @@ class TN:
         self.sc: StorageClass | None = None
         # A whole-copy-group proof permits non-atomic local ownership operations.
         self.private_box: BoxLayout | None = None
+        # A non-owning acquisition protected by this root's live ownership.
+        # Self denotes an externally protected parameter or pooled constant.
+        self.borrowed_from: TN | None = None
         self.leaf = leaf
         self.name = name
         self.kind = kind or TNKind.NORMAL
