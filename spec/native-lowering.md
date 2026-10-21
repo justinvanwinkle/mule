@@ -349,6 +349,12 @@ backedges require the same proof: an owner's next iteration is not evidence
 that the previous iteration's value remains alive. A copy into an independently
 owned local is not a borrowed forwarding operation.
 
+The proof follows program points backward from consumers and stops at the
+reference's acquisition. Unrelated operations after its last use do not extend
+that lifetime through the next loop iteration. Treating the entire loop as one
+live interval would incorrectly restore retain/release traffic for otherwise
+safe iteration-local borrows.
+
 Borrowed lifetime information belongs to a TN/reference acquisition, not the
 underlying object or pointer. It must survive stack spills and reloads. Borrowed
 and owned stack slots have different cleanup policies and must not be packed
@@ -400,6 +406,11 @@ mismatch first acquires owners for borrowed inputs before calling the existing
 consuming fallback. Context identity, helper caching, symbol lookup, and lazy
 body emission must all agree on the same ownership mask. Ownership variants
 must not appear in ordinary type-guard selection used by owning callers.
+
+Type-analysis entry facts are converted to a backend `EntryContext` before
+ownership specialization. The ownership mask covers counted object references,
+not tagged integers, booleans, or `None`. A lifetime annotation on an uncounted
+immediate must not block an otherwise valid numeric calling convention.
 
 This extends SBCL's local-call use analysis and entry-context specialization
 to reference-counted parameter lifetimes. Foreign, generator, native, numeric,

@@ -72,6 +72,34 @@ def test_owner_reassignment_does_not_borrow_previous_value():
 
 
 @pytest.mark.parametrize(
+    "replace_owner", [False, True], ids=["arithmetic", "new-generation"]
+)
+def test_loop_borrow_ends_before_later_operations_and_next_acquisition(replace_owner):
+    component = component_for(
+        "def check(value, count):\n"
+        "    hits = 0\n"
+        "    saved = value\n"
+        "    for index in range(count):\n"
+        "        hits += value is None\n"
+        + ("        saved = value\n        value = index\n" if replace_owner else "")
+        + "    return hits, saved, value\n"
+    )
+    comparisons = [
+        vop
+        for block in component.blocks
+        for vop in block.vops
+        if vop.info.name == "compare-is"
+    ]
+    assert comparisons
+    compared = comparisons[0].args[0].tn
+    writer, _ = component.writes[compared][0]
+    assert writer.info.name == "load-local"
+    assert not writer.codegen_info.move
+    assert writer.codegen_info.borrow
+    assert compared.borrowed_from is writer.args[0].tn
+
+
+@pytest.mark.parametrize(
     "expression",
     ["(alias := alias + 1.0)", "(yield flag)"],
     ids=["alias-sensitive-mutation", "coroutine-suspension"],

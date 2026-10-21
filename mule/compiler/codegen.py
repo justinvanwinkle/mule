@@ -2379,8 +2379,17 @@ class ModuleGenerator:
     def borrowed_context(self, function: Function, base, borrowed: frozenset[int]):
         if function not in self.owned:
             raise ValueError("borrowed contexts require a function owned by this unit")
+        context_id = base.id if base is not None else None
+        general, variants = self.contexts(function)
+        base = (
+            general
+            if context_id is None
+            else next((entry for entry in variants if entry.id == context_id), None)
+        )
         if base is None:
-            base, _variants = self.contexts(function)
+            raise ValueError(
+                f"{function.name}: no backend entry context {context_id!r}"
+            )
         identity = (
             "borrow."
             + str(base.id or "general")
@@ -2447,7 +2456,12 @@ class ModuleGenerator:
             progress = False
             for vop in pending:
                 site = vop.codegen_info
-                if any(ref.tn.borrowed_from is not None for ref in vop.args[1:]):
+                # Immediates have no counted ownership to specialize; borrowing
+                # one must not prevent an otherwise valid numeric convention.
+                if any(
+                    ref.tn.borrowed_from is not None and ref.tn.sc.owned
+                    for ref in vop.args[1:]
+                ):
                     continue
                 target = site.target
                 if (
@@ -4882,6 +4896,7 @@ class FunctionGenerator:
                 index
                 for index, ref in enumerate(argument_refs)
                 if ref.tn.borrowed_from is not None
+                and ref.tn.sc.owned
                 and index in site.borrowable_arguments
             ),
         )

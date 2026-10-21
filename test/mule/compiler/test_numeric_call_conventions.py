@@ -66,6 +66,26 @@ def test_mixed_object_body_returns_double_and_accepts_numeric_float_argument(tmp
     compare(tmp_path, FLOAT_CALL)
 
 
+@pytest.mark.parametrize("marker", ["None", "True", "5"])
+def test_immediate_borrow_does_not_replace_numeric_entry(tmp_path, marker):
+    source = f"""
+def outer():
+    def calculate(count, unused, weight):
+        total = 0.5
+        for index in range(count):
+            total += weight
+        return total
+    marker = {marker}
+    result = calculate(3, marker, 1.5)
+    print(marker)
+    return result * 2.0
+print(outer())
+"""
+    entries = numeric_entries(emit_llvm(source), "calculate", "double")
+    assert any("i64 %parameter.0" in parameters for _, parameters, _ in entries)
+    compare(tmp_path, source)
+
+
 def test_mixed_object_body_uses_proven_fixnum_argument_and_return_width(tmp_path):
     llvm = emit_llvm(INTEGER_CALL)
     entries = numeric_entries(llvm, "clipped", "i64")

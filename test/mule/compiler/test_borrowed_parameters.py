@@ -26,6 +26,27 @@ def test_rooted_argument_requests_ownership_specialized_body():
     assert "icmp eq ptr" in borrowed
 
 
+def test_typed_borrowed_entry_uses_backend_context_and_preserves_owners(tmp_path):
+    source = """
+def add_if_none(count, value):
+    return count + 1 if value is None else count
+def caller(value, count):
+    result = add_if_none(count, value)
+    return result, value
+"""
+    borrowed = function_body(emit_llvm(source), '"mule_fn_add_if_none.borrow.fixnum.1"')
+    assert "icmp eq ptr" in borrowed
+    compare(
+        tmp_path,
+        source
+        + """
+for value in ([], None):
+    for count in (2, -3, 1.5):
+        print(caller(value, count))
+""",
+    )
+
+
 def test_unknown_truth_and_callable_callbacks_keep_escaping_contract():
     compilation = compile_source("""
 def truth(value):

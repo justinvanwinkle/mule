@@ -1112,12 +1112,6 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
                 if not access.bound or access.move:
                     continue
                 source = vop.args[0].tn
-                if (
-                    source.leaf is None
-                    or source.leaf.indirect
-                    or source.leaf.expression_temporary
-                ):
-                    continue
             else:
                 access = None
                 result_tn = vop.results[0].tn
@@ -1154,20 +1148,19 @@ class _BorrowedLifetime:
             for block in component.blocks
             for index, vop in enumerate(block.vops)
         }
-        self.successors = {}
         self.predecessors = {block: set() for block in component.blocks}
         for block in component.blocks:
-            following = {
-                component.ir2_blocks[succ]
-                for succ in block.block.succ
-                if succ in component.ir2_blocks
-            }
+            for successor in block.block.succ:
+                following = component.ir2_blocks.get(successor)
+                if following is not None:
+                    self.predecessors[following].add((block, len(block.vops)))
             handler = component.ir2_blocks.get(block_exception_target(block.block))
             if handler is not None:
-                following.add(handler)
-            self.successors[block] = following
-            for successor in following:
-                self.predecessors[successor].add(block)
+                # An error can leave before the block's normal transfer. Include
+                # the throwing operation itself in each conservative predecessor.
+                self.predecessors[handler].update(
+                    (block, index + 1) for index in range(len(block.vops))
+                )
 
     def consumers(self, result, source):
         aliases, pending, consumers = set(), [result], set()
@@ -1208,50 +1201,44 @@ class _BorrowedLifetime:
         if not consumers:
             return False
         start, start_index = self.positions[acquisition]
-        ends = {}
-        ancestors, pending = set(), []
+        boundary = start, start_index + 1
+        local_only = source is not None and (
+            source.leaf is None
+            or source.leaf.indirect
+            or source.leaf.expression_temporary
+        )
+        pending = []
         for consumer in consumers:
             block, index = self.positions[consumer]
             if block is start and index <= start_index:
                 return False
-            ends[block] = max(ends.get(block, -1), index)
-            pending.append(block)
-        # An acquisition must dominate every consumer, including handler uses.
-        bypass, pending_bypass = set(), list(ends)
-        entry = self.component.blocks[0]
-        while pending_bypass:
-            block = pending_bypass.pop()
-            if block is start or block in bypass:
+            pending.append((block, index + 1))
+        visited = set()
+        while pending:
+            point = pending.pop()
+            if point == boundary or point in visited:
                 continue
-            if block is entry:
+            visited.add(point)
+            block, index = point
+            if local_only and block is not start:
                 return False
-            bypass.add(block)
-            pending_bypass.extend(self.predecessors[block])
-        while pending:
-            block = pending.pop()
-            if block in ancestors:
+            if index == 0:
+                previous = self.predecessors[block]
+                if not previous or block is self.component.blocks[0]:
+                    return False
+                pending.extend(previous)
                 continue
-            ancestors.add(block)
-            pending.extend(self.predecessors[block])
-        reachable, pending = set(), [start]
-        while pending:
-            block = pending.pop()
-            if block in reachable or block not in ancestors:
-                continue
-            reachable.add(block)
-            pending.extend(self.successors[block])
-        reenters = any(start in self.successors[block] for block in reachable)
-        for block in reachable:
-            # If this block can reach a later consumer, every step in it can
-            # execute while the borrow is live. This also covers backedges.
-            has_later = any(succ in ancestors for succ in self.successors[block])
-            end = len(block.vops) if has_later else ends.get(block, -1) + 1
-            begin = start_index + 1 if block is start and not reenters else 0
-            for step in block.vops[begin:end]:
-                if step in consumers and step.info is vops.MOVE:
-                    continue
+            step = block.vops[index - 1]
+            if step not in consumers or step.info is not vops.MOVE:
                 if not self.safe_step(step, source, consumer=step in consumers):
                     return False
+                if (
+                    local_only
+                    and step not in consumers
+                    and not _safe_borrow_step(step, source)
+                ):
+                    return False
+            pending.append((block, index - 1))
         return True
 
     @staticmethod
