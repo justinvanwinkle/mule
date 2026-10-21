@@ -1477,7 +1477,7 @@ struct UtsName {
 
 unsafe extern "C" {
     fn access(path: *const c_char, mode: i32) -> i32;
-    fn open(path: *const c_char, flags: i32, mode: i32) -> i32;
+    fn open(path: *const c_char, flags: i32, ...) -> i32;
     fn read(fd: i32, buffer: *mut std::ffi::c_void, count: usize) -> isize;
     fn close(fd: i32) -> i32;
     fn lseek(fd: i32, offset: i64, whence: i32) -> i64;
