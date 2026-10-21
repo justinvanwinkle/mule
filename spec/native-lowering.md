@@ -83,17 +83,23 @@ separate ownership remain intact. Arithmetic and specialization remain in the co
 The optimization saves allocation, without relaxing arithmetic checks or relying
 on annotations to discard observable aliases.
 
-Representation selection also keeps a proven float arithmetic intermediate in
-the `double` storage class when every producer/consumer template permits that
-representation. This follows `src/compiler/represent.lisp`'s
-`select-tn-representation` cost comparison: descriptor boundaries outweigh a
-preference for machine storage. In object entries, unspecified operand
-restrictions on these float TNs require descriptors, because general coercion
-VOP insertion (`coerce-vop-operands` in SBCL) is still incomplete. Moves into
-locals, calls, identity operations, returns, and literal materialization
-therefore stay boxed. A multiply consumed directly by addition can remain a
-double, avoiding its temporary allocation. Arithmetic order is preserved;
-LLVM receives separate operations without fast-math or reassociation flags.
+Representation selection keeps numeric-only float intermediates and locals in
+the `double` storage class when their operand and copy costs favor it. This follows
+`src/compiler/represent.lisp`'s `add-representation-costs` and
+`select-tn-representation`, followed by `emit-moves-and-coercions`. Mule inserts
+explicit descriptor/double coercion VOPs after internal call conventions settle.
+It preserves local-read move/borrow metadata, assignment overwrite semantics,
+and the original exception region, then rebuilds operand indices for cleanup.
+
+Unspecified float operand restrictions still require descriptors at object
+boundaries. Identity demand propagates backward through every copy writer,
+including mixed-type destinations and mutable-local redefinitions. Numeric-only
+copies can independently extract a double without replacing an observable object.
+Deletion and possibly unbound reads retain descriptor storage. An object-returned
+accumulator still remains boxed because this analysis does not split local live
+ranges. Integer and other general coercion VOPs remain future work. Arithmetic
+order is preserved. LLVM receives separate operations without fast-math or
+reassociation flags.
 The constant VOP explicitly admits machine scalar results. A float literal used
 only by these arithmetic templates therefore becomes an exact LLVM double
 constant, as SBCL's float VOPs load `fp-immediate` constants. Literal uses that

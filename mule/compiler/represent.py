@@ -6,9 +6,8 @@ Two decisions live here:
   class from its primitive type's candidates by the cost of the VOP operands
   that read and write it (``select-tn-representation``). A local whose every
   writer delivers an immortal value becomes an immediate (never released).
-  Float locals and their assignment-connected temporaries can share raw
-  storage when every producer and consumer permits it without coercion.
-  Object boundaries keep the entire connected group boxed to preserve identity.
+  Identity demand propagates backward through float copies. Numeric-only
+  copies select storage independently; explicit coercion VOPs connect them.
 
 - ``select_native_plans`` decides which lambdas get a native entry: a body
   whose parameters, locals, and intermediate values all have proven machine
@@ -28,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from mule import ast
 
+from . import vops
 from .annotation_types import EXPORTS
 from .ctype import UNKNOWN
 from .ir1util import block_exception_target
@@ -70,6 +70,7 @@ from .vop import (
     IR2Component,
     PrimitiveType,
     T,
+    TNRef,
     instance_type,
 )
 
@@ -90,9 +91,9 @@ def select_representations(component: IR2Component) -> None:
         for tn in component.tns:
             if tn.leaf is not None:
                 tn.primitive_type = _variable_type(tn, component, writes)
-    shared = _select_float_move_representations(component) if not raw else {}
+    floats = _select_float_representations(component) if not raw else {}
     for tn in component.tns:
-        tn.sc = shared.get(tn) or select_tn_representation(
+        tn.sc = floats.get(tn) or select_tn_representation(
             tn,
             reads=reads.get(tn, ()),
             writes=writes.get(tn, ()),
@@ -137,28 +138,176 @@ def _representation_move(vop) -> bool:
     return False
 
 
-def _select_float_move_representations(component):
-    """Choose one raw storage class for a closed group of float copies.
+def _select_float_representations(component):
+    """Keep original objects on identity paths, not on numeric-only branches.
 
-    As in SBCL's move costing, copies inherit their operands' representation
-    rather than imposing an object boundary. Without coercion VOPs, every
-    connected TN must admit the same class. Any identity-bearing object use
-    therefore keeps all aliases boxed, including copies across loop backedges.
+    Demand flows backward through every copy writer, including loop-carried
+    assignments. It does not flow forward to an independent numeric read.
+    Moves impose no intrinsic descriptor cost, as in SBCL's initial costing
+    before their other operands have selected representations.
     """
-    selected = {}
-    visited = set()
-    for root in component.tns:
-        if (
-            root in visited
-            or root.leaf is None
-            or root.primitive_type is not BOXED_FLOAT
-        ):
+    convention = component.context.convention
+    demanded = set()
+    for tn in component.tns:
+        if tn.primitive_type is not BOXED_FLOAT:
+            if not tn.primitive_type.admits(DOUBLE):
+                demanded.add(tn)
             continue
-        group, candidates = _move_group_representations(component, root)
-        visited.update(group)
-        if candidates:
-            selected.update((tn, candidates[0]) for tn in group)
+        for reader, ref in component.reads.get(tn, ()):
+            if _representation_move(reader):
+                continue
+            restriction = _operand_restriction(reader, ref, convention=convention)
+            if restriction is not None and DOUBLE not in restriction:
+                demanded.add(tn)
+        if any(
+            writer.info is vops.UNBIND_LOCAL
+            for writer, _ref in component.writes.get(tn, ())
+        ):
+            demanded.add(tn)
+    pending = list(demanded)
+    while pending:
+        tn = pending.pop()
+        for writer, _ref in component.writes.get(tn, ()):
+            if not _representation_move(writer):
+                continue
+            for operand in writer.args:
+                source = operand.tn
+                if source not in demanded:
+                    demanded.add(source)
+                    pending.append(source)
+    selected = {
+        tn: DESCRIPTOR
+        if tn in demanded
+        else select_tn_representation(
+            tn,
+            reads=[
+                (vop, ref)
+                for vop, ref in component.reads.get(tn, ())
+                if not _representation_move(vop)
+            ],
+            writes=[
+                (vop, ref)
+                for vop, ref in component.writes.get(tn, ())
+                if not _representation_move(vop)
+            ],
+            convention=convention,
+        )
+        for tn in component.tns
+        if tn.primitive_type is BOXED_FLOAT
+    }
+    # Once both ends are selected, charge moves for actual representation
+    # changes. Keep ties stable: each update must reduce the graph's total
+    # operand/conversion cost, so cyclic copy graphs cannot oscillate.
+    changed = True
+    while changed:
+        changed = False
+        for tn, current in selected.items():
+            if tn in demanded:
+                continue
+            best = current
+            best_cost = _float_representation_cost(component, tn, current, selected)
+            for sc in tn.primitive_type.scs:
+                cost = _float_representation_cost(component, tn, sc, selected)
+                if cost < best_cost:
+                    best, best_cost = sc, cost
+            if best is not current:
+                selected[tn] = best
+                changed = True
     return selected
+
+
+def _float_representation_cost(component, tn, sc, selected):
+    cost = 0
+    for vop, ref in (*component.reads.get(tn, ()), *component.writes.get(tn, ())):
+        if _representation_move(vop):
+            other = vop.args[0].tn if ref.write_p else vop.results[0].tn
+            other_sc = selected.get(other, other.primitive_type.scs[0])
+            cost += sc.llvm_type != other_sc.llvm_type
+        else:
+            restriction = _operand_restriction(
+                vop, ref, convention=component.context.convention
+            )
+            cost += restriction is not None and sc not in restriction
+    return cost
+
+
+def emit_moves_and_coercions(component: IR2Component) -> None:
+    """Make float representation changes explicit after final call selection.
+
+    Keep local reads and assignment moves: their metadata governs borrowing,
+    last reads, and releasing overwritten locals. Only the intervening scalar
+    conversion consumes its new temporary. Native plans already define their
+    complete representation and use their existing native generators.
+    """
+    if component.context.plan is not None:
+        return
+
+    def temporary(tn, sc):
+        result = component.tn(tn.primitive_type)
+        result.type = tn.type
+        result.sc = sc
+        return result
+
+    def coerce(node, source, target):
+        if {source.sc, target.sc} != {DESCRIPTOR, DOUBLE}:
+            raise ValueError(
+                f"unsupported representation conversion: {source} -> {target}"
+            )
+        return VOP(vops.COERCE, node, [TNRef(source, False)], [TNRef(target, True)])
+
+    for block in component.blocks:
+        converted = []
+        for vop in block.vops:
+            if _representation_move(vop):
+                source, target = vop.args[0].tn, vop.results[0].tn
+                if source.sc is not target.sc and (
+                    source.primitive_type is BOXED_FLOAT
+                    or target.primitive_type is BOXED_FLOAT
+                ):
+                    if vop.info is vops.MOVE:
+                        intermediate = temporary(source, target.sc)
+                        converted.append(coerce(vop.node, source, intermediate))
+                        vop.args[0] = TNRef(intermediate, False)
+                        converted.append(vop)
+                    else:
+                        intermediate = temporary(target, source.sc)
+                        vop.results[0] = TNRef(intermediate, True)
+                        converted.extend((vop, coerce(vop.node, intermediate, target)))
+                    continue
+                converted.append(vop)
+                continue
+            before, after = [], []
+            for operands in (vop.args, vop.results):
+                for index, ref in enumerate(operands):
+                    tn = ref.tn
+                    if tn.primitive_type is not BOXED_FLOAT:
+                        continue
+                    restriction = _operand_restriction(
+                        vop, ref, convention=component.context.convention
+                    )
+                    if restriction is None or tn.sc in restriction:
+                        continue
+                    candidates = [
+                        sc for sc in tn.primitive_type.scs if sc in restriction
+                    ]
+                    if not candidates:
+                        raise ValueError(f"no legal representation for {ref} in {vop}")
+                    intermediate = temporary(tn, candidates[0])
+                    operands[index] = TNRef(intermediate, ref.write_p)
+                    if ref.write_p:
+                        after.append(coerce(vop.node, intermediate, tn))
+                    else:
+                        before.append(coerce(vop.node, tn, intermediate))
+            converted.extend((*before, vop, *after))
+        block.vops = converted
+    component.reads.clear()
+    component.writes.clear()
+    for block in component.blocks:
+        for vop in block.vops:
+            for ref in vop.args:
+                component.reads[ref.tn].append((vop, ref))
+            for ref in vop.results:
+                component.writes[ref.tn].append((vop, ref))
 
 
 def can_use_double(component, tn, *, ignore=()) -> bool:

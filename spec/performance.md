@@ -63,6 +63,56 @@ Mule implementation against CPython's hashing implementation. These broader
 cases supplement the small diagnostic kernels; results from a numeric loop
 alone do not establish application performance.
 
+## Mixed-boundary float coercions, 2026-10-21
+
+The representation pass now separates numeric-only copies from a float whose
+original object remains observable. This follows SBCL's representation selection
+and subsequent move/coercion insertion. The implementation and identity constraints
+are in [the representation contract](compiler-gaps.md#identity-aware-float-representation-coercions-implemented).
+
+The diagnostic program was:
+
+```python
+def calculate(n, label):
+    original = 1.25
+    saved = [original]
+    value = original
+    for index in range(n):
+        value = value * 1.00000001 + 0.00001
+    print(label, saved[0] is original, value > 20.0)
+calculate(2000000, 'result')
+```
+
+The general object entry keeps `original` boxed and selects double storage for
+the numeric recurrence. The focused LLVM regression checks one extraction before
+the recurrence and no float-result boxing in that body. LLVM `opt` with
+`-passes=default<O3>` retains `fmul double` and `fadd double` in the numeric loop
+blocks, without float boxing or extraction calls in those blocks. This is not
+a claim that all loop bookkeeping is native or allocation-free.
+
+Both executables used LLVM `-O3`, no LTO, and the same source. The baseline was
+an isolated archive of `d33fd0d`; the changed build used that revision plus the
+uncommitted coercion implementation. Builds preceded timing. One warmup preceded
+five whole-process samples per executable, with execution order alternating.
+Every run matched CPython's `result True True` output.
+
+| Build | Samples, seconds | Median, milliseconds |
+| --- | --- | --- |
+| Baseline | 0.020677, 0.018598, 0.018819, 0.021795, 0.021554 | 20.677 |
+| Float coercions | 0.019641, 0.020957, 0.020031, 0.021047, 0.019385 | 20.031 |
+
+The approximately 3% median difference is within the observed variation. This
+workload does not demonstrate a material speedup. The verified change is the
+representation capability, not an application-performance claim.
+
+The source SHA-256 was
+`bb06f01641986c209c7bab29a7fcf9e5a48e16f32e723e0c60b7d6842c4306a5`.
+The baseline executable SHA-256 was
+`6d041b8454419a86f5335eb6337110e7d1bbe528afcd3888f96c52b6c37a6517`;
+the changed executable SHA-256 was
+`7525e297c26b693030e0668fb979e407d5d61d4d25b8a7a8844347c74c5d4967`.
+The focused checks are in `test/mule/compiler/test_representation_coercions.py`.
+
 ## Scalar boxing kernels, 2026-10-20
 
 Four native LLVM kernels compare the real opaque runtime conversions with the

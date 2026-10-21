@@ -2,7 +2,7 @@
 
 Status: **implemented** for general-context flow-type feedback into IR1
 transforms (Section 1A) and entry-context IR1 specialization / closed-call
-parameter promotion (Section 1B), closed numeric-use float local storage,
+parameter promotion (Section 1B), identity-aware float storage and coercions,
 numeric internal calling conventions, and LLVM-visible private leaf boxes
 (parts of Section 5); **proposed** for
 Sections 1C–4 and the rest of Section 5.
@@ -223,8 +223,9 @@ suite failure or performance measurement.
 - **Current Mule state**: `mule/compiler/represent.py` and `vops.py` keep raw
   `i64` / `double` values for `mule.int64` / `mule.float64` annotated locals and
   range-loop counters, and unbox fixnum arithmetic inside basic blocks.
-  Ordinary float locals can also remain raw across blocks when their entire
-  assignment-connected group has only compatible numeric uses, as described below.
+  Ordinary float locals can also remain raw across blocks. Identity-aware
+  selection and explicit float coercions separate numeric-only copies from
+  object-observable sources, as described below.
 - **Proposed plan**:
   1. **Flow-proven unboxed local TNs (`SC_SIGNED_REG` / `SC_DOUBLE_REG`)**:
      When `represent.py` sees that every write and read of a non-closed-over
@@ -235,34 +236,63 @@ suite failure or performance measurement.
      function body and insert tag/box coercions only at boundaries where a
      generic runtime helper requires a `ptr` `Value`.
 
-### Closed numeric-use float groups (implemented)
+### Identity-aware float representation coercions (implemented)
+
+SBCL `src/compiler/represent.lisp`, `add-representation-costs` and
+`select-tn-representation`, choose storage using operand and move costs.
+`coerce-vop-operands` and `emit-moves-and-coercions` subsequently insert
+conversion VOPs and replace generic moves. Mule retains these separate
+selection and conversion stages, after internal call conventions settle.
+
+Initial float selection ignores unresolved copy costs. A subsequent cost pass
+charges representation changes across selected copy edges and VOP restrictions.
+It changes a selection only when the total cost decreases, retaining ties to
+terminate on cyclic copy graphs. This keeps profitable boxed arithmetic operands
+and guarded box reuse while allowing independent raw numeric branches.
+
+Python object identity requires an additional legality constraint. Float values
+that reach descriptor-only consumers retain their original objects. Demand for
+that identity propagates backward through moves, bound local reads, and unary
+positive operations, including every writer of a mutable local. Deletion and
+possibly unbound local reads also retain descriptor storage. This analysis does
+not split a local into separate live ranges. Numeric-only copies may independently
+use doubles, even when their source must retain its box. Fresh arithmetic can
+construct the one authoritative box for a descriptor result; copying a raw value
+must not reconstruct an identity demanded from its original object.
+
+Unlike SBCL's register moves under tracing collection, Mule copies also transfer,
+retain, borrow, and release references. A converted local read must retain the
+original read metadata and first produce a temporary in the source representation.
+A converted assignment must convert its input before the original move overwrites
+the destination. Conversion temporaries carry the original IR1 node and enter the
+ordinary cleanup analysis. The conversion stage rebuilds IR2 operand indices before
+ownership and liveness analysis. These adaptations preserve object aliases and
+exception cleanup while allowing numeric branches of a copy graph to use raw
+storage. Numeric-call eligibility and native object-adapter freshness proofs remain
+conservative independent legality checks.
+
+### Float locals and remaining representation work
 
 Representation selection preserves `BOXED_FLOAT` for a local when every value
-assigned to it has that primitive type. It connects the local and temporary TNs
-through assignment VOPs (`move`) and local reads (`load-local`) that flow analysis
-proves bound. These connections require the same storage representation because
-the current copy generators do not insert conversions. Selection chooses raw
-`double` storage only if every connected TN and every other producer or consumer
-permits it. This includes copies, branch joins, and loop-carried float locals in
-otherwise ordinary object-mode functions.
+assigned to it has that primitive type. Numeric-only float locals, branch joins,
+and loop-carried values can use doubles in ordinary object-mode functions.
+The explicit coercion stage supports `DESCRIPTOR` / `DOUBLE` changes on float
+copies and VOP operands. It preserves the original local-read and assignment
+operations instead of teaching those generators to perform implicit conversions.
 
 Returns, unknown calls, identity comparisons, captured values, deletion, and
-possibly unbound reads retain object boundaries. One such boundary keeps the
-entire assignment-connected group boxed. This increment introduces no conversion
-VOPs and does not independently reconstruct boxes for aliases. Existing float
-arithmetic generators still handle their descriptor operands normally. Generic
-object entries returning their float accumulator still use boxed local storage;
-the numeric internal conventions below remove that boundary for numeric callers.
+possibly unbound reads retain object boundaries. Backward identity demand includes
+copies into mixed-type descriptor locals, not only float destinations. It does not
+force independent numeric-only copies to remain boxed. Generic object entries
+returning their float accumulator still conservatively use boxed accumulator
+storage; the numeric internal conventions below remove that boundary for numeric
+callers. Splitting one mutable local's live ranges is not implemented.
 
-The SBCL reference is `src/compiler/represent.lisp`: `add-representation-costs`
-does not charge ordinary descriptor costs for a move whose other operand has no
-selected representation. `select-tn-representation` chooses storage, and
-`emit-moves-and-coercions` supplies representation-specific moves and conversions.
-Mule follows that move relationship but currently requires a common legal raw
-class throughout each group instead of inserting conversions. Python float
-identity requires this conservative boundary: reboxing separate aliases could
-change `is` results. Full costed coercion insertion and mixed-boundary local
-representations remain proposed work, not part of this increment.
+Generalizing explicit coercion insertion to integer and other storage classes,
+extending identity-safe materialization, and using target-specific conversion
+costs remain proposed work. Existing integer and whole-native entry conventions
+retain their implemented generators. This increment does not establish complete
+SBCL representation-selection parity.
 
 ### Numeric internal calling conventions (implemented)
 

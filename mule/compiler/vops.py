@@ -293,6 +293,27 @@ def move(gen, vop):
     gen.store(vop.results[0], value, release=vop.codegen_info is not False)
 
 
+@define_vop("coerce", args=(None,), results=(None,), arg_escapes=(False,))
+def coerce(gen, vop):
+    """Convert scalar storage while consuming only owned temporaries."""
+    source, target = vop.args[0], vop.results[0]
+    value = gen.load(source) if source.tn.leaf is not None else gen.take(source)
+    if source.tn.sc is DESCRIPTOR and target.tn.sc is DOUBLE:
+        raw = gen.operation(
+            f"call double @{FLOAT_BOX_LAYOUT.symbol('load')}(ptr {value})"
+        )
+        gen.store(target, raw)
+        if source.tn.leaf is None:
+            gen.release(value)
+        return
+    if source.tn.sc is DOUBLE and target.tn.sc is DESCRIPTOR:
+        gen.pointer_result(
+            target, f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {value})"
+        )
+        return
+    raise ValueError(f"unsupported scalar coercion: {source.tn} -> {target.tn}")
+
+
 @define_vop("move-argument", results=(None,))
 def move_argument(gen, vop):
     result = vop.results[0]
@@ -3095,6 +3116,7 @@ CONSTANT = constant
 LOAD_LOCAL = load_local
 LOAD_GLOBAL = load_global
 MOVE = move
+COERCE = coerce
 MOVE_ARGUMENT = move_argument
 LOAD_CLOSURE = load_closure
 UNBIND_LOCAL = unbind_local

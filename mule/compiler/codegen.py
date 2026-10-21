@@ -65,6 +65,7 @@ from .node import (
 )
 from .represent import (
     can_use_double,
+    emit_moves_and_coercions,
     fresh_box_returns,
     mark_private_boxes,
     select_native_plans,
@@ -667,6 +668,7 @@ def compile_component(lambda_: Lambda, context, *, select_calls=None):
             select_representations(component)
             if select_calls is not None and select_calls(component):
                 select_representations(component)
+            emit_moves_and_coercions(component)
         return component
 
 
