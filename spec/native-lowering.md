@@ -325,25 +325,25 @@ Keywords, default/reordered arguments, foreign units, and direct self-recursive
 edges retain the existing object convention in this increment. See
 [numeric calling conventions](compiler-gaps.md#numeric-internal-calling-conventions-implemented).
 
-## LLVM-visible leaf boxes
+## LLVM-visible boxes
 
-Leaf boxing separates raw pooled storage from LLVM-visible initialization and
+Boxing separates raw pooled storage from LLVM-visible initialization and
 payload loads. This follows SBCL's `move-from-double` in
 `src/compiler/x86-64/float.lisp`: allocation and the payload store are separate
 backend operations. `src/compiler/x86-64/alloc.lisp` similarly separates raw
 allocation from header initialization. Mule uses its existing C-layout object
 ABI and pool rather than introducing another object representation.
 
-Only `mule_allocate_object_storage` and terminal
-`mule_deallocate_object_storage` receive matching LLVM `allockind` and
-`alloc-family` contracts. Allocator-internal pool bookkeeping may disappear
+Raw object storage and GMP limb storage have separate matching LLVM `allockind`
+and `alloc-family` contracts for allocation and terminal deallocation.
+Allocator-internal bookkeeping may disappear
 with an unobservable allocation. Memory effects remain unspecified: these
 functions do access TLS. Generic `new_value` performs canonicalization and GC
 work; conditional `release` can leave references alive. Neither is an allocator
 or unconditional free for this purpose.
 
 A representation-stage ownership proof marks complete copy-connected groups
-private only when every origin creates fresh leaf storage and every use has an
+private only when every origin creates fresh boxed storage and every use has an
 explicit noncapture contract. Unknown uses, parameters, pooled constants,
 globals, containers, closures, and ordinary returns prevent this proof. A
 proven same-unit factory result can qualify only when every selected normal
@@ -351,12 +351,13 @@ object entry has a fresh return with no other escape. Numeric entry conventions
 are not used to infer object-return ownership. In-place box reuse is not fresh
 provenance. Physical slots with different ownership modes cannot be coalesced.
 
-Private groups use ordinary local reference counts and terminal raw storage
-deallocation; other groups retain their existing ownership helpers and generic
+Private groups use ordinary local reference counts, codec-defined payload
+cleanup, and terminal raw storage deallocation. Other groups retain their
+existing ownership helpers and generic
 destruction. This adapts SBCL's lifetime/representation separation to Mule's
 reference-counted runtime. It does not cancel box/unbox values: LLVM performs
-the payload forwarding and allocation elimination. The first leaf layout is a
-float; the allocation contracts and privacy proof are layout-driven.
+the payload forwarding and allocation elimination. Layouts cover a scalar float
+and tagged/GMP signed words; allocation and privacy mechanisms are layout-driven.
 
 Float type alone does not authorize raw deallocation. The physical weak-handle
 API can register heap floats even though public Python weakref constructors
@@ -364,7 +365,7 @@ reject builtin floats. Such registration captures the pointer and therefore
 prevents private ownership. This preserves weak callbacks, alias identity,
 shared-reference behavior, and pending-error cleanup.
 
-### Scalar and native-reference extension (implementation in progress)
+### Scalar and native-reference conversions
 
 SBCL's `src/compiler/x86-64/move.lisp`, word/descriptor moves, separates
 fixnum tagging from bignum allocation and digit loads. Mule retains its existing
@@ -394,8 +395,10 @@ payload pointer from that descriptor. This replaces detached payload pointers;
 there is no owner lookup, backlink, or parallel ownership cache. Instance,
 class, and method reference results become owned before raw-body cleanup.
 Native callers put those results in their existing per-function owner slots.
-Adapters consume that ownership; bound methods are materialized by the existing
-compiled attribute-binding protocol. Owned-result producers in loops retain
+Adapters consume that ownership. First-class method attributes are materialized
+at the attribute access through the existing compiled binding protocol, before
+subsequent effects or raw-body cleanup. Internal resolve-call recipes remain
+separate from materialized method objects. Owned-result producers in loops retain
 the ordinary path until replacement/liveness analysis can safely release roots.
 
 This ownership convention is a necessary adaptation to Mule's reference-counted
@@ -409,8 +412,9 @@ pending-error, type, and width validation.
 `represent.py` selects physical representations after semantic analysis,
 following SBCL's `represent.lisp` separation of semantic type from storage
 class. A native plan assigns every parameter, local, and value of a lambda a
-machine representation (`signed64`, `float64`, `boolean`, `none`, an instance
-payload, or a guarded class); the lambda is then generated a third time under that plan,
+machine representation (`signed64`, `float64`, `boolean`, `none`, a borrowed
+native-instance descriptor, or a guarded class). The lambda is generated under
+that plan,
 where template selection admits only the raw templates and storage-class
 selection prefers machine storage. Native
 class declarations carry stable compiler layout identities, aligned contracts,
@@ -425,16 +429,22 @@ operations are closed over the selected 64-bit operand representation. Native
 methods and scalar callers use raw entries; generic interfaces supply coercions
 at entry and exit when those conversions preserve object semantics. A generic
 Float64 result adapter requires every return copy group to have fresh producers
-and no identity-bearing use. Otherwise the ordinary object body remains in use,
-while the raw entry remains available. Safety-zero contract arithmetic uses LLVM
+and no identity-bearing use. Integer adapters distinguish forwarded object
+identities from computed machine values. When reboxing is not safe, an adapter
+still validates its parameters and class layout before transferring the original
+objects to its boxed body. The raw entry remains available to native callers.
+Safety-zero contract arithmetic uses LLVM
 `nsw`; positive safety uses overflow intrinsics and reports `OverflowError`
 before a field write.
 The boxed path remains available for unsupported signatures and operations.
 
-`float` and `float64` contracts select the `double` storage class, as SBCL's
+`mule.float64` contracts and concrete inferred float facts can select `double`,
+as SBCL's
 `double-float` declarations select `double-reg`. Float parameters are unboxed
 once at the adapter (`mule_unbox_f64`, which rejects integers the way the
-`float` contract does) and results are boxed at return (`mule_box_f64`).
+machine float contract does) and results use the LLVM-visible boxing helper.
+Builtin `float` annotations alone describe a real-number union and do not imply
+a binary64 representation.
 Addition, subtraction, multiplication, true division, negation, and the ordered
 comparisons use LLVM `fadd`/`fsub`/`fmul`/`fdiv`/`fneg`/`fcmp`; `fdiv` checks
 for a zero divisor under positive safety and raises `ZeroDivisionError`. A mixed
@@ -446,10 +456,15 @@ and narrower float widths (`float16`, `float32`, `float128`) keep the boxed
 body: the runtime stores every float as binary64, and a narrower contract would
 need its own rounding after each operation, as SBCL's `single-float` has.
 
-Local method edges require an available raw body with no mutable-global
-dependencies. Cyclic call components remain boxed until native stack checking
+Local method edges require an available raw body. Class dependencies propagate
+through the native call graph and travel as guarded, borrowed hidden arguments;
+conflicting layout requirements reject the plan. Cyclic call components remain
+boxed until native stack checking
 is implemented. Predicted class globals are loaded and checked at entry against
-the compiler layout and module environment. Calls in the selected region cannot
+the compiler layout and module environment. These speculative reads do not
+raise for an absent binding: they select the boxed fallback, whose actual
+lookup preserves conditional evaluation and NameError behavior. Calls in the
+selected region cannot
 write globals or invoke unknown code. Failed identity guards transfer the owned
 arguments to the compiled boxed fallback without re-evaluating arguments.
 This is a conservative implementation boundary, not a replacement for SBCL's
@@ -465,12 +480,14 @@ records callback addresses in the existing bootstrap class descriptor and
 forwards construction and indexed field operations to them; it does not perform
 new native-class initialization or field conversion algorithms.
 
-An instance's owned allocation keeps borrowed payload pointers alive for the
-native region. Aliased local pointers share the same storage; method field
+An instance's owned descriptor keeps its derived payload view alive for the
+native region. Aliased local references share the same object; method field
 operations do not retain or release scalars or receivers per iteration.
-Constructor sites in loops and instance returns retain the general path until
-escape and lifetime analysis can establish a safe ownership transformation.
-Cleanup releases each allocation on normal and error exits. Allocation currently
+Constructor and owned-call-result sites in loops retain the general path until
+replacement/liveness analysis is available. Native instance, class, and method
+returns transfer ownership before cleanup; callers root owned results until
+their last use or next ownership transfer. Cleanup releases every root on normal
+and error exits. Allocation currently
 uses a Rust primitive; inline allocation, stack allocation and scalar replacement
 of the owning box still require SBCL's corresponding analyses and primitives.
 LLVM can inline the raw methods and eliminate or unroll loops independently of

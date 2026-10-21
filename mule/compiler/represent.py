@@ -128,8 +128,8 @@ def _variable_type(tn, component, writes) -> PrimitiveType:
 
 
 def _representation_move(vop) -> bool:
-    """Whether this VOP copies a value without checking or changing its type."""
-    if vop.info.name == "move":
+    """Whether its inputs/results may alias and require matching storage."""
+    if vop.info.name in ("move", "boxed-float-positive"):
         return True
     if vop.info.name == "load-local":
         access = vop.codegen_info

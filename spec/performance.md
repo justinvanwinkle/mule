@@ -63,6 +63,43 @@ Mule implementation against CPython's hashing implementation. These broader
 cases supplement the small diagnostic kernels; results from a numeric loop
 alone do not establish application performance.
 
+## Scalar boxing kernels, 2026-10-20
+
+Four native LLVM kernels compare the real opaque runtime conversions with the
+compiler's LLVM-visible codecs and private lifetime operations. Every iteration
+changes its input: float uses multiplication/addition, and the integer kernel
+increments and masks into a positive wide-int64 range. The step functions remain
+non-inlined, and the iteration count comes from the command line. This isolates
+boxing overhead without allowing the arithmetic loop to disappear.
+
+Both builds use LLVM `-O3`, Rust level 3, and no LTO. Five alternating samples
+per pair run sequentially on CPU 0 after all builds and compiler tests finish.
+Every timed checksum matches an independent Python 3.15 numeric loop. Inputs
+0, 1, and 1,000 iterations also validate before timing.
+
+| Payload | Iterations | Opaque seconds | Visible seconds | Opaque / visible |
+| --- | ---: | ---: | ---: | ---: |
+| float64 | 96,000,000 | 1.035982 | 0.127182 | 8.15 |
+| positive wide int64 | 128,000,000 | 3.117412 | 0.119781 | 26.03 |
+
+The visible float step has only multiplication, addition, and return. The
+integer step retains its genuine GMP ABI guard, but its supported 64-bit-limb
+path has no object or limb allocation/deallocation calls. Other limb ABIs retain
+the checked fallback. The integer preparation supplies a real range proof; it
+does not assume the returned value. These are box/load/release microbenchmarks,
+not application-wide speed measurements.
+
+Source, input and optimized LLVM, machine code, executables, hashes, oracle
+checksums, raw samples, and medians are under
+`/tmp/mule-boxing-alltypes.ybS8ro/perf/`, with results in `results.json` and the
+reproduction script in `bench.py`. These artifacts are temporary local evidence.
+
+Range-proven fixnum, positive-wide, and negative-wide integer roundtrips reduce
+to `ret i64 %input` at one `-O3` pipeline. A fully generic tagged/heap pointer
+merge can still retain allocations in LLVM 21; the codec's correctness does not
+depend on elimination. Fallback scratch storage stays in the helper entry block
+so inlining does not introduce avoidable stack-save/restore barriers.
+
 ## Private leaf-box elimination, 2026-10-20
 
 The compiler's generated float construction, payload-load, and private-release

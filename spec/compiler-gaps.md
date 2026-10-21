@@ -310,12 +310,14 @@ can establish freshness; pooled constants, forwarded parameters, captures, and
 unknown calls cannot. Otherwise the generic object body remains authoritative,
 while the raw native entry remains available to native callers.
 
-### LLVM-visible private leaf boxes (implemented)
+### LLVM-visible private boxes and coercions (implemented)
 
-Leaf layouts describe allocation, active header fields, payload access, and
-private lifetime helpers. Float construction and proven extraction now expose
-ordinary LLVM stores and loads. Only raw pooled-storage allocation and terminal
-deallocation have matching allocation-family contracts, without restricted
+Layouts describe allocation, active fields, payload access, owned-resource
+cleanup, and private lifetime helpers. Float and signed-word construction and
+proven extraction expose ordinary LLVM stores and loads. Integer words retain
+the existing tagged/GMP representation, with guarded support for other limb
+ABIs. Raw object and limb storage have matching allocation-family contracts,
+without restricted
 memory-effect claims. Generic construction, shared ownership, and destruction
 retain their existing contracts.
 
@@ -329,7 +331,7 @@ share physical slots.
 
 Private counts and terminal storage release let LLVM eliminate eligible
 box/load/free sequences itself, including without LTO. No transform substitutes
-an unboxed value for a box/unbox pattern. This is a limited leaf ownership proof,
+an unboxed value for a box/unbox pattern. This is a limited private-box ownership proof,
 not complete closure/container escape analysis. See the
-[lowering contract](native-lowering.md#llvm-visible-leaf-boxes) and
+[lowering contract](native-lowering.md#llvm-visible-boxes) and
 [optimization evidence](performance.md#private-leaf-box-elimination-2026-10-20).

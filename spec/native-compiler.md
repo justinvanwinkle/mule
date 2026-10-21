@@ -497,7 +497,7 @@ It uses the existing module cache and system math services; no new library,
 CPython linkage or Rust integer/math algorithms are introduced. Binary64
 math operations described here currently use boxed primitive entries. General
 floating arithmetic separately supports native representations and
-[LLVM-visible leaf boxes](native-lowering.md#llvm-visible-leaf-boxes); this math
+[LLVM-visible boxes](native-lowering.md#llvm-visible-boxes); this math
 increment makes no speed claim.
 
 The added transcendental operations follow SBCL `src/code/irrat.lisp`,

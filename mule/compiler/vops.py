@@ -718,18 +718,55 @@ def _boxed_float_unary(operator, negate: bool):
     @define_vop(
         f"boxed-float-{operator.name.lower()}",
         translate=fndb.UNARY[operator],
-        args=((DESCRIPTOR, DOUBLE),),
-        results=((DESCRIPTOR, DOUBLE),),
+        args=((DESCRIPTOR, DOUBLE),) if negate else (None,),
+        results=((DESCRIPTOR, DOUBLE),) if negate else (None,),
         arg_types=((BOXED_FLOAT,),),
         result_types=((BOXED_FLOAT,),),
         cost=-1,
         fresh_result=negate,
-        arg_escapes=(False,),
+        arg_escapes=(not negate,),
     )
     def generator(gen, vop):
         operand = vop.args[0]
+        if not negate:
+            result = vop.results[0]
+            if operand.tn.sc is not result.tn.sc:
+                raise ValueError("float identity coercion requires matching storage")
+            taken = gen.take(operand)
+            if operand.tn.sc is DOUBLE:
+                gen.store(result, taken)
+                return
+            class_slot = gen.operation(
+                f"getelementptr i8, ptr {taken}, i64 {FLOAT_BOX_LAYOUT.null_pointer_offsets[0]}"
+            )
+            class_value = gen.operation(f"load ptr, ptr {class_slot}")
+            exact = gen.operation(f"icmp eq ptr {class_value}, null")
+            forward, convert, joined = (
+                gen.fresh("positive.identity")[1:],
+                gen.fresh("positive.convert")[1:],
+                gen.fresh("positive.done")[1:],
+            )
+            gen.line(f"br i1 {exact}, label %{forward}, label %{convert}")
+            gen.lines.append(forward + ":")
+            gen.line(f"br label %{joined}")
+            gen.lines.append(convert + ":")
+            raw = gen.operation(
+                f"call double @{FLOAT_BOX_LAYOUT.symbol('load')}(ptr {taken})"
+            )
+            boxed = gen.operation(
+                f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {raw})"
+            )
+            gen.line(f"br label %{joined}")
+            gen.lines.append(joined + ":")
+            value = gen.operation(
+                f"phi ptr [{taken}, %{forward}], [{boxed}, %{convert}]"
+            )
+            consumed = gen.operation(f"select i1 {exact}, ptr null, ptr {taken}")
+            gen.store(result, value)
+            gen.release(consumed)
+            return
         raw = unbox_float_operand(gen, operand)
-        value = gen.operation(f"fneg double {raw}") if negate else raw
+        value = gen.operation(f"fneg double {raw}")
         taken = gen.take(operand)
         consumed = [taken] if operand.tn.sc is DESCRIPTOR else []
         if vop.results[0].tn.sc is DOUBLE:

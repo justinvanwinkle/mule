@@ -16,6 +16,25 @@ def test_only_bound_concrete_float_facts_select_float_templates():
         assert primitive_type_of(fact) is T
 
 
+def test_float_unary_positive_preserves_identity_and_escaping_aliases(tmp_path):
+    compare(
+        tmp_path,
+        """
+def check(text):
+    original = float(text)
+    positive = +original
+    print(positive is original)
+    saved = [+positive]
+    del original, positive
+    print(saved[0])
+check('1.25')
+check('-0.0')
+check('inf')
+check('nan')
+""",
+    )
+
+
 @pytest.mark.parametrize(
     "operator, opcode", [("+", "fadd"), ("-", "fsub"), ("*", "fmul"), ("/", "fdiv")]
 )

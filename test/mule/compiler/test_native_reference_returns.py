@@ -267,7 +267,9 @@ except NameError:
 @pytest.mark.integration
 def test_optimized_native_reference_returns_preserve_lifetimes_and_fallbacks(tmp_path):
     source = tmp_path / "program.py"
-    source.write_text(NODE + """
+    source.write_text(
+        NODE
+        + """
 from _mule_native import weak_handle, weak_target
 original = Node(3)
 handle = weak_handle(original, None, None)
@@ -290,7 +292,8 @@ try:
     value.choose(1)
 except NameError:
     print('missing constructor')
-""")
+"""
+    )
     executable = build(source, tmp_path / "program", optimize=3, lto=False, workers=1)
     source.unlink()
     result = subprocess.run(
