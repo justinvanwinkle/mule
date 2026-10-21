@@ -144,6 +144,206 @@ This file is both the project overview and repository guidance for coding agents
 `README.md` is a relative symlink to `AGENTS.md`; edit this file, not a separate
 README copy. The instructions below apply whether this section is expanded or not.
 
+## Performance design goal
+
+Every operation in a compiled program must be as efficient as it theoretically
+could be with the technology available: given all the information derivable
+from the program, the compiler produces the most specialized, most efficient
+final machine code. A generic runtime call is acceptable only where the program
+leaves the operation genuinely unknown, and even then the dispatch itself must
+be the cheapest correct form. CPython has no effective JIT; a statically
+compiled program with the same information available to it has no reason to be
+slower on any operation, and should be faster on most.
+
+The way to reach that goal is architecture, not special cases. A fast path for
+one type in one runtime primitive hides the missing compiler work and does not
+transfer to the next program. Derive specialization from the program: known
+calls, inferred and declared types, constant bindings, ownership and escape
+facts, and representation selection, as SBCL does. Where a hot operation is
+slow, first identify which information the compiler already had and failed to
+use, or which analysis would have produced it, and build that. Measure the
+instruction count of the operation against what the information permits, and
+treat the gap as the defect. Special cases may be added later, when an
+operation is already as specialized as its information allows and a measured
+remainder justifies them.
+
+## Mandatory SBCL architecture
+
+ALWAYS refer to how SBCL does it. Before designing or implementing any compiler
+or runtime feature, inspect the corresponding source in `~/checkout/sbcl`.
+Follow its compiler stages, data structures, analyses, invariants, representation
+selection, optimization and safety policies, and runtime boundaries. This is a
+beat-by-beat compiler clone in the Python context, not loose inspiration.
+
+Doing anything differently from SBCL requires CLEAR REASONS AND JUSTIFICATION.
+Before implementing a departure, document the relevant SBCL files and functions,
+what SBCL does, the proposed difference, why it is necessary, and its semantic
+and performance consequences in the relevant `spec/` document. Python semantics,
+LLVM, and the approved implementation languages require adaptations, but they
+are not blanket justifications: explain each concrete departure. Convenience,
+missing compiler infrastructure, or an easier Rust implementation do not by
+themselves justify a different architecture. Identify missing stages explicitly
+and implement the corresponding compiler machinery.
+
+The compiler is written in Python and must eventually self host. Language-level
+runtime and standard-library code must be written in Mule Python and compiled
+by Mule, as SBCL compiles its Lisp language implementation. This includes class
+construction, attribute and descriptor semantics, method dispatch, containers,
+and builtin algorithms. Rust is limited to low-level primitives such as memory
+allocation and lifetime support, OS and thread services, and approved foreign
+library interfaces. Existing Rust language-level implementations are bootstrap
+debt to migrate, not a precedent for extending that boundary.
+
+When compiler proofs permit it, emit direct LLVM arithmetic, field access,
+native layouts, and direct calls, following SBCL's corresponding mechanisms.
+Dynamic language paths belong in compiled Mule code backed by low-level
+primitives. Do not replace missing compiler work with a Rust evaluator or
+per-operation Rust language dispatch. Verify optimization claims with optimized
+IR or machine code and representative benchmarks. Ordinary builds default to
+LLVM `-O1`; use explicit `-O3` for maximum-optimization measurements and record
+whether `--lto` is enabled. Rust remains at optimization level 3. Those flags
+alone do not establish efficient code.
+
+## Object-oriented design
+
+We want GOOD OO in the compiler and its tools (`mule/`). Behavior that varies by
+type belongs to the type: each class answers for itself through its own methods,
+through a visitor (`NodeVisitor`, `ast.Visitor`), or through double dispatch, as
+the value types in `mule/compiler/ctype.py` do. Do not use `isinstance` or
+`issubclass` in `mule/`, and do not substitute other type tests for them:
+`type(x) is C`, comparing type names, probing with `hasattr` or `getattr`
+defaults, or tag fields that a caller switches on.
+
+This departs from SBCL, whose compiler switches on IR structure types with
+`typecase`, `etypecase`, and `typep` (for example `ir1-optimize-block` in
+`src/compiler/ir1opt.lisp`). SBCL keeps its IR in `defstruct`s, where a type
+test compiles to a type-code check and generic functions would be slower. In
+Python a method call costs no more than a type test, and dispatch keeps each
+type's behavior beside its definition: a new IR class implements its methods
+instead of being added to every type switch that should have named it, and a
+switch cannot silently miss a case. Keep SBCL's phases, names, and data flow;
+express its type switches as methods or visitors.
+
+Good OO here means:
+
+- A class owns the behavior that differs by its type; callers ask, they do not
+  inspect. A method that only one family of types implements belongs on a base
+  class whose default states the general answer or raises with context when no
+  general answer exists. Never return a silent default that hides a missing case.
+- Choose the dispatch mechanism by what varies: a method when the receiver's
+  type decides; a visitor when an operation spans a class hierarchy and lives
+  apart from it (a compiler phase over IR nodes); double dispatch when two
+  operands' types decide together.
+- Keep classes cohesive and their state private to their methods. Prefer
+  composition for behavior that varies independently of the class hierarchy.
+- Tests may check types; they observe behavior from outside.
+
+Before finishing a change to `mule/`, `grep -rn "isinstance(\|issubclass(" mule/`
+must print nothing.
+
+## Contracts to preserve
+
+- Approved implementation languages are Python and Rust. The compiler is written
+  in Python and must eventually self host; language-level runtime code is compiled
+  Mule Python, and low-level runtime primitives are written in Rust.
+  Do not add C/C++ implementations or C test probes. LLVM IR is the compiler's
+  output. Historical `old/` code and explicitly requested comparison programs
+  do not establish permission to use other implementation languages.
+- Mule is an alternative implementation of Python. Never link generated programs,
+  Mule's runtime, or native test executables against CPython, for any reason.
+  Do not include CPython headers or use its runtime or evaluator fallbacks.
+  CPython-compatible C extension support must be implemented by Mule.
+- Discuss every new third-party library with the user before including it.
+  Linked libraries must be LGPL or more permissively licensed; GPL is allowed
+  for non-linked uses. GMP is approved under its LGPLv3-or-later option.
+  See `spec/dependencies.md`. Running the Python compiler host or an explicitly
+  requested external CPython benchmark does not permit CPython linking.
+- The parser builds `mule.ast` nodes directly, independently of the host Python
+  parser. Do not substitute `ast.parse`, `compile`, or host-AST conversion for
+  Mule's parser.
+- Python 3.14 grammar is the current syntax reference. Coverage includes modern
+  syntax, but the existing suite does not establish complete CPython parity.
+- `parse` supports `exec`, `eval`, and `single`; preserve their distinct root
+  types and input boundaries. See `spec/parser.md`.
+- Lines start at one, columns at zero, and columns count Unicode characters,
+  not UTF-8 bytes. Spans exclude the end position. See `spec/ast.md`.
+- Assignment targets and values share expression node types. Target grammar is
+  checked by the parser; scope and other semantic compiler validation are a
+  separate responsibility.
+- Source errors carry the supplied filename and source location. Do not recover
+  from invalid syntax by returning a partial or empty tree.
+- Keep shared token state in `Parser`; grammar mixins operate on that state.
+  Interpolation fragments must retain coordinates relative to the original source.
+- Reject unsupported compiler syntax explicitly, including unreachable source.
+  Do not add execution fallbacks through the host parser, compiler, or evaluator.
+- Preserve evaluation order, dynamic global lookup, and owned-reference cleanup
+  on success and error paths. `None` is an object, not an unbound-slot marker.
+
+## Change and verification workflow
+
+Use `~/bin/ws <branch>` for all repository work, then merge completed changes
+back to `master`:
+
+- Never edit or commit directly on `master` in `/home/jvanwinkle/repos/mule`.
+  Branch names must never contain `/` (use hyphenated names such as
+  `builtins-migration`).
+- From `/home/jvanwinkle/repos/mule`, start `~/bin/ws <branch>` as a background
+  daemon session (`IsDaemon=True`) so the interactive `ws` subshell and its lock
+  stay open while working in `/home/jvanwinkle/repos/mule-worktrees/<branch>`.
+  When local `master` has commits ahead of `origin/master`, run
+  `~/bin/ws <branch> --base master` and send `y` to confirm.
+- Do not run `git worktree add` directly, create `/tmp` worktrees, or launch
+  subagents with `Workspace="branch"` or `Workspace="share"`. Subagents must
+  use `Workspace="inherit"` (or their own `~/bin/ws` worktree).
+- Report the branch name and absolute worktree path when starting or handing off
+  work.
+- When changes are verified, commit them on `<branch>` inside
+  `/home/jvanwinkle/repos/mule-worktrees/<branch>`, merge `<branch>` into
+  `master` in `/home/jvanwinkle/repos/mule` (`git merge --ff-only <branch>`),
+  and send `exit` to the `ws` subshell so `ws` removes the clean worktree
+  directory. Report when `ws` removes the worktree.
+
+Read the relevant specification, implementation, and nearby tests before changing
+a contract. Keep changes in the active package unless the task explicitly concerns
+`old/`. Preserve unrelated worktree edits.
+
+Use pytest-native functions and parameterization. Existing tests construct
+expected Mule trees by hand; use `test/mule/parser/ast_query.py` for structural
+comparisons and targeted node/span queries. Do not make the parser under test
+generate its own expected tree. Test valid syntax and relevant rejection
+boundaries, including source positions when the change affects them.
+
+Run focused tests while developing, then the full suite for parser or AST changes:
+
+```sh
+uv run pytest test/mule/parser/test_entry_points.py
+uv run pytest test/mule/compiler
+uv run pytest
+uv run pytest -m integration
+```
+
+The default run excludes tests marked `integration`: suites that build
+hundreds of programs (conformance, corpus), run CPython's own stdlib suites,
+build at `-O3`, or compile large stdlib modules such as `typing`. Run them
+explicitly when a change affects what they cover. Keep default tests targeted:
+check compiler output directly where it shows the behavior, build small native
+programs that use only the builtins unit, pass `workers=1` to builds (pytest
+already runs tests in parallel), and mark anything heavier `integration`. Do
+not override `XDG_CACHE_HOME` when running tests or benchmarks; Mule's cache
+hashes every compiler and runtime input, so overriding `XDG_CACHE_HOME` adds
+no isolation or benefit.
+
+Check changed Python files with Ruff; format only intended files. Documentation
+changes do not require rerunning parser tests unless behavior also changes.
+Update affected specifications when changing behavior. Separate implemented
+contracts from proposals, and do not describe future compilation stages as available.
+
+## Specifications
+
+Start with `spec/index.md`. The files describe the current frontend and native
+compiler, document SBCL's architecture, and record requirements for later stages.
+They do not establish complete Python or C extension compatibility.
+
 ## Repository map
 
 - `mule/ast.py`: syntax node dataclasses, operator enums, source coordinates,
@@ -304,183 +504,5 @@ They are separate from the standalone performance suite above. The compiled
 remaining compatibility gaps are documented in `spec/compiled-modules.md`.
 Validate every new executable against the same upstream output before including
 it in comparisons.
-
-## Performance design goal
-
-Every operation in a compiled program must be as efficient as it theoretically
-could be with the technology available: given all the information derivable
-from the program, the compiler produces the most specialized, most efficient
-final machine code. A generic runtime call is acceptable only where the program
-leaves the operation genuinely unknown, and even then the dispatch itself must
-be the cheapest correct form. CPython has no effective JIT; a statically
-compiled program with the same information available to it has no reason to be
-slower on any operation, and should be faster on most.
-
-The way to reach that goal is architecture, not special cases. A fast path for
-one type in one runtime primitive hides the missing compiler work and does not
-transfer to the next program. Derive specialization from the program: known
-calls, inferred and declared types, constant bindings, ownership and escape
-facts, and representation selection, as SBCL does. Where a hot operation is
-slow, first identify which information the compiler already had and failed to
-use, or which analysis would have produced it, and build that. Measure the
-instruction count of the operation against what the information permits, and
-treat the gap as the defect. Special cases may be added later, when an
-operation is already as specialized as its information allows and a measured
-remainder justifies them.
-
-## Mandatory SBCL architecture
-
-ALWAYS refer to how SBCL does it. Before designing or implementing any compiler
-or runtime feature, inspect the corresponding source in `~/checkout/sbcl`.
-Follow its compiler stages, data structures, analyses, invariants, representation
-selection, optimization and safety policies, and runtime boundaries. This is a
-beat-by-beat compiler clone in the Python context, not loose inspiration.
-
-Doing anything differently from SBCL requires CLEAR REASONS AND JUSTIFICATION.
-Before implementing a departure, document the relevant SBCL files and functions,
-what SBCL does, the proposed difference, why it is necessary, and its semantic
-and performance consequences in the relevant `spec/` document. Python semantics,
-LLVM, and the approved implementation languages require adaptations, but they
-are not blanket justifications: explain each concrete departure. Convenience,
-missing compiler infrastructure, or an easier Rust implementation do not by
-themselves justify a different architecture. Identify missing stages explicitly
-and implement the corresponding compiler machinery.
-
-The compiler is written in Python and must eventually self host. Language-level
-runtime and standard-library code must be written in Mule Python and compiled
-by Mule, as SBCL compiles its Lisp language implementation. This includes class
-construction, attribute and descriptor semantics, method dispatch, containers,
-and builtin algorithms. Rust is limited to low-level primitives such as memory
-allocation and lifetime support, OS and thread services, and approved foreign
-library interfaces. Existing Rust language-level implementations are bootstrap
-debt to migrate, not a precedent for extending that boundary.
-
-When compiler proofs permit it, emit direct LLVM arithmetic, field access,
-native layouts, and direct calls, following SBCL's corresponding mechanisms.
-Dynamic language paths belong in compiled Mule code backed by low-level
-primitives. Do not replace missing compiler work with a Rust evaluator or
-per-operation Rust language dispatch. Verify optimization claims with optimized
-IR or machine code and representative benchmarks. Ordinary builds default to
-LLVM `-O1`; use explicit `-O3` for maximum-optimization measurements and record
-whether `--lto` is enabled. Rust remains at optimization level 3. Those flags
-alone do not establish efficient code.
-
-## Object-oriented design
-
-We want GOOD OO in the compiler and its tools (`mule/`). Behavior that varies by
-type belongs to the type: each class answers for itself through its own methods,
-through a visitor (`NodeVisitor`, `ast.Visitor`), or through double dispatch, as
-the value types in `mule/compiler/ctype.py` do. Do not use `isinstance` or
-`issubclass` in `mule/`, and do not substitute other type tests for them:
-`type(x) is C`, comparing type names, probing with `hasattr` or `getattr`
-defaults, or tag fields that a caller switches on.
-
-This departs from SBCL, whose compiler switches on IR structure types with
-`typecase`, `etypecase`, and `typep` (for example `ir1-optimize-block` in
-`src/compiler/ir1opt.lisp`). SBCL keeps its IR in `defstruct`s, where a type
-test compiles to a type-code check and generic functions would be slower. In
-Python a method call costs no more than a type test, and dispatch keeps each
-type's behavior beside its definition: a new IR class implements its methods
-instead of being added to every type switch that should have named it, and a
-switch cannot silently miss a case. Keep SBCL's phases, names, and data flow;
-express its type switches as methods or visitors.
-
-Good OO here means:
-
-- A class owns the behavior that differs by its type; callers ask, they do not
-  inspect. A method that only one family of types implements belongs on a base
-  class whose default states the general answer or raises with context when no
-  general answer exists. Never return a silent default that hides a missing case.
-- Choose the dispatch mechanism by what varies: a method when the receiver's
-  type decides; a visitor when an operation spans a class hierarchy and lives
-  apart from it (a compiler phase over IR nodes); double dispatch when two
-  operands' types decide together.
-- Keep classes cohesive and their state private to their methods. Prefer
-  composition for behavior that varies independently of the class hierarchy.
-- Tests may check types; they observe behavior from outside.
-
-Before finishing a change to `mule/`, `grep -rn "isinstance(\|issubclass(" mule/`
-must print nothing.
-
-## Contracts to preserve
-
-- Approved implementation languages are Python and Rust. The compiler is written
-  in Python and must eventually self host; language-level runtime code is compiled
-  Mule Python, and low-level runtime primitives are written in Rust.
-  Do not add C/C++ implementations or C test probes. LLVM IR is the compiler's
-  output. Historical `old/` code and explicitly requested comparison programs
-  do not establish permission to use other implementation languages.
-- Mule is an alternative implementation of Python. Never link generated programs,
-  Mule's runtime, or native test executables against CPython, for any reason.
-  Do not include CPython headers or use its runtime or evaluator fallbacks.
-  CPython-compatible C extension support must be implemented by Mule.
-- Discuss every new third-party library with the user before including it.
-  Linked libraries must be LGPL or more permissively licensed; GPL is allowed
-  for non-linked uses. GMP is approved under its LGPLv3-or-later option.
-  See `spec/dependencies.md`. Running the Python compiler host or an explicitly
-  requested external CPython benchmark does not permit CPython linking.
-- The parser builds `mule.ast` nodes directly, independently of the host Python
-  parser. Do not substitute `ast.parse`, `compile`, or host-AST conversion for
-  Mule's parser.
-- Python 3.14 grammar is the current syntax reference. Coverage includes modern
-  syntax, but the existing suite does not establish complete CPython parity.
-- `parse` supports `exec`, `eval`, and `single`; preserve their distinct root
-  types and input boundaries. See `spec/parser.md`.
-- Lines start at one, columns at zero, and columns count Unicode characters,
-  not UTF-8 bytes. Spans exclude the end position. See `spec/ast.md`.
-- Assignment targets and values share expression node types. Target grammar is
-  checked by the parser; scope and other semantic compiler validation are a
-  separate responsibility.
-- Source errors carry the supplied filename and source location. Do not recover
-  from invalid syntax by returning a partial or empty tree.
-- Keep shared token state in `Parser`; grammar mixins operate on that state.
-  Interpolation fragments must retain coordinates relative to the original source.
-- Reject unsupported compiler syntax explicitly, including unreachable source.
-  Do not add execution fallbacks through the host parser, compiler, or evaluator.
-- Preserve evaluation order, dynamic global lookup, and owned-reference cleanup
-  on success and error paths. `None` is an object, not an unbound-slot marker.
-
-## Change and verification workflow
-
-Read the relevant specification, implementation, and nearby tests before changing
-a contract. Keep changes in the active package unless the task explicitly concerns
-`old/`. Preserve unrelated worktree edits.
-
-Use pytest-native functions and parameterization. Existing tests construct
-expected Mule trees by hand; use `test/mule/parser/ast_query.py` for structural
-comparisons and targeted node/span queries. Do not make the parser under test
-generate its own expected tree. Test valid syntax and relevant rejection
-boundaries, including source positions when the change affects them.
-
-Run focused tests while developing, then the full suite for parser or AST changes:
-
-```sh
-uv run pytest test/mule/parser/test_entry_points.py
-uv run pytest test/mule/compiler
-uv run pytest
-uv run pytest -m integration
-```
-
-The default run excludes tests marked `integration`: suites that build
-hundreds of programs (conformance, corpus), run CPython's own stdlib suites,
-build at `-O3`, or compile large stdlib modules such as `typing`. Run them
-explicitly when a change affects what they cover. Keep default tests targeted:
-check compiler output directly where it shows the behavior, build small native
-programs that use only the builtins unit, pass `workers=1` to builds (pytest
-already runs tests in parallel), and mark anything heavier `integration`. Do
-not override `XDG_CACHE_HOME` when running tests or benchmarks; Mule's cache
-hashes every compiler and runtime input, so overriding `XDG_CACHE_HOME` adds
-no isolation or benefit.
-
-Check changed Python files with Ruff; format only intended files. Documentation
-changes do not require rerunning parser tests unless behavior also changes.
-Update affected specifications when changing behavior. Separate implemented
-contracts from proposals, and do not describe future compilation stages as available.
-
-## Specifications
-
-Start with `spec/index.md`. The files describe the current frontend and native
-compiler, document SBCL's architecture, and record requirements for later stages.
-They do not establish complete Python or C extension compatibility.
 
 </details>
