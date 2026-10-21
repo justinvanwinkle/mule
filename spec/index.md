@@ -33,6 +33,7 @@ frontend coverage does not establish complete Python compatibility.
 - [SBCL compiler](sbcl-compiler.md): source-backed baseline architecture.
 - [Python and LLVM changes](python-changes.md): retained analysis and required adaptations.
 - [Remaining compiler and IR1 transform gaps](compiler-gaps.md): implemented flow-type feedback (1A) and roadmap for remaining SBCL parity gaps (1B–5).
+- [Runtime migration](runtime-migration.md): Rust-to-Mule migration roadmap, C23 evaluation, and pure-Mule runtime requirements.
 - [CPython C interface](cpython-interface.md): extension build/runtime compatibility.
 
 ## Maintaining specifications
