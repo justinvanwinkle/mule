@@ -54,11 +54,11 @@ LLVM/ABI boundary matters more.
      `-std=c23`. Compiling a C23 runtime with the same `clang` that compiles
      Mule's `.ll` output eliminates `rustc` from the build and guarantees
      bitcode compatibility.
-   - `mule/compiler/driver.py` already runs `opt -passes=always-inline` before
-     `llvm-split`. A C23 runtime compiled with `clang -std=c23 -O3 -emit-llvm -c`
-     produces LLVM bitcode from the same LLVM installation, allowing hot
-     primitives (`retain`, `release`, tag checks, slot loads) to inline into
-     every compilation unit even on default `-O1` builds.
+   - A proposed C23 runtime compiled with `clang -std=c23 -O3 -emit-llvm -c`
+     would produce LLVM bitcode from the same LLVM installation. Inlining its
+     primitives into each compilation unit without full LTO would require a new
+     bitcode integration stage. The current driver compiles each LLVM unit whole
+     through Clang and does not link runtime bitcode into individual units.
 2. **Physical object layout transparency (`PyVarObject` vs. Rust `enum Data`):**
    - `Object` in `mule/runtime/object.rs` currently embeds a Rust `pub data: Data`
      enum holding `Vec<Value>`, `String`, and `HashMap`. Because Rust enum,

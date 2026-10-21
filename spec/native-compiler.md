@@ -40,6 +40,12 @@ unchanged, so editing an imported module or adding a file that would shadow one
 rebuilds the program. A first run costs a full native build; later runs start the
 cached executable directly.
 
+Each LLVM unit, including builtins, compiles whole in one Clang invocation.
+Independent units can compile in parallel within the build worker limit.
+Without LTO, each unit produces a native object. With LTO, each unit produces
+bitcode for optimization at the final link. Neither mode partitions a unit,
+so Clang can optimize across all functions in that unit.
+
 The build-step thread pool defaults to one worker per physical core available
 in the calling thread's Linux CPU affinity mask. Linux sysfs
 `thread_siblings_list` groups logical CPUs belonging to the same core, so SMT

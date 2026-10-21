@@ -58,7 +58,7 @@ At each guarded call site, code generation compares the caller's derived argumen
 To support **instant runtime imports (including dynamic `importlib.import_module`)**, **fast separate compilation**, and **whole-program optimization**, compiled libraries and future Mule wheels use a three-part layout:
 
 1. **One `.so` per package/wheel (compiled in parallel)**:
-   - Each package compiles its modules in parallel (producing per-module `.o` files across all CPU cores, or partitioning large units via `PARTITION_BYTES` as `mule/compiler/driver.py` does for `builtins`) and links them once into a single shared library (`.so`) for the package.
+   - Each package compiles its modules in parallel within the build worker limit and links their per-module `.o` files into one shared library (`.so`). Each LLVM unit compiles whole, including the builtins unit.
    - At runtime, loading the package `.so` registers all of its compiled modules via `@mule_register_compiled_module`, so both static imports and dynamic `importlib.import_module(name)` calls resolve immediately without arbitrary library splitting or hundreds of individual `.so` files.
 
 2. **Package type and symbol sidecar (`interface.json`, generalizing `BuiltinsInterface`)**:

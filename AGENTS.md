@@ -284,6 +284,12 @@ must print nothing.
 Use `~/bin/ws <branch>` for all repository work, then merge completed changes
 back to `master`:
 
+- A request to implement a change in this repository authorizes creating its
+  branch and worktree through `~/bin/ws`, committing the verified changes, and
+  merging them back into local `master`. Do not ask for separate approval for
+  these steps. Complete the workflow through the merge and worktree cleanup;
+  do not stop with uncommitted changes or a completed branch. This authorization
+  does not include pushing, amending commits, or rewriting history.
 - Never edit or commit directly on `master` in `/home/jvanwinkle/repos/mule`.
   Branch names must never contain `/` (use hyphenated names such as
   `builtins-migration`).
