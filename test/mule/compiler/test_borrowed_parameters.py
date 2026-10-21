@@ -82,9 +82,7 @@ def mixed(value):
     )
     assert "call void @mule.fast.release(ptr %arg.0)" in owning
     mixed = next(
-        body
-        for body in helpers
-        if 'call ptr @"mule_fn_choose.borrow.general.0"' in body
+        body for body in helpers if 'call ptr @"mule_fn_choose.borrow.' in body
     )
     failure = mixed.split("failed:\n", 1)[1].split("fallback:\n", 1)[0]
     assert "release(ptr %arg.1)" in failure
@@ -114,10 +112,11 @@ print(is_none([]))
     )
 
 
-def test_consuming_callee_read_acquires_owned_local_copy(tmp_path):
+def test_callee_copy_across_callback_acquires_owned_local_reference(tmp_path):
     source = """
 def copied(value):
     saved = value
+    print('copy')
     return saved is None
 def caller(value):
     result = copied(value)

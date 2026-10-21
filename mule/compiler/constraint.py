@@ -2142,6 +2142,18 @@ class _NarrowTruthiness(ValueTypeVisitor):
             return fact.narrow_none(False)
         return fact
 
+    def visit_UnionType(self, fact):
+        if fact.may_be_unbound:
+            return fact
+        return fact.map(
+            lambda member: (
+                BOTTOM
+                if member.truth_value() is not None
+                and member.truth_value() != self.truth
+                else member.accept(self)
+            )
+        )
+
     def visit_NoneType(self, fact):
         return fact
 

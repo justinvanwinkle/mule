@@ -65,7 +65,6 @@ from .ctype import (
     DictType,
     InstanceType,
     IntegerType,
-    OptionalValueType,
     TupleType,
     UniqueObjectType,
     ValueType,
@@ -833,7 +832,7 @@ class ClassFacts:
 
 class _SanitizeInstanceFieldType(ValueTypeVisitor):
     """Restricts a value type stored into an instance field to shapes whose
-    consumers guard their runtime operations (`OptionalValueType(InstanceType)`).
+    consumers guard their runtime operations (instance/None unions).
     Unboxed or immediate types are widened to `UNKNOWN` because dynamic
     `setattr` or cross-module code may store any value into a field."""
 
@@ -849,15 +848,12 @@ class _SanitizeInstanceFieldType(ValueTypeVisitor):
     def visit_InstanceType(self, fact):
         if fact.may_be_unbound:
             return UNKNOWN
-        return OptionalValueType(fact, False)
+        return fact.as_optional()
 
-    def visit_OptionalValueType(self, fact):
+    def visit_UnionType(self, fact):
         if fact.may_be_unbound:
             return UNKNOWN
-        inner = fact.inner.accept(self)
-        if inner is UNKNOWN or inner is BOTTOM:
-            return UNKNOWN
-        return inner
+        return fact.map(lambda member: member.accept(self))
 
     def visit_DictType(self, fact):
         if fact.may_be_unbound:

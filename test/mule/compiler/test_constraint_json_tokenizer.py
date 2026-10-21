@@ -12,7 +12,6 @@ from mule.compiler.ctype import (
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
-    OptionalIntegerType,
     PythonIntegerType,
 )
 from mule.compiler.main import compile_source
@@ -164,7 +163,7 @@ def test_direct_truthiness_branch_narrowing_on_optional_int():
     body = propagate(
         fn,
         {},
-        [OptionalIntegerType(IntegerType(1, 10))],
+        [IntegerType(1, 10).as_optional()],
         lambda *_args: UNKNOWN,
         AnnotationLedger(),
     )

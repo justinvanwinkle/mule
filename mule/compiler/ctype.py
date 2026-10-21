@@ -7,7 +7,8 @@ ordinary virtual methods and double dispatch; representation properties expose
 only proofs that LLVM may use after a successful language operation.
 """
 
-from dataclasses import dataclass, field, replace
+import json
+from dataclasses import dataclass, replace
 
 from mule import ast
 
@@ -76,10 +77,7 @@ class ValueTypeVisitor:
     def visit_UnboundType(self, fact):
         return self.visit_ValueType(fact)
 
-    def visit_OptionalIntegerType(self, fact):
-        return self.visit_ValueType(fact)
-
-    def visit_OptionalValueType(self, fact):
+    def visit_UnionType(self, fact):
         return self.visit_ValueType(fact)
 
     def visit_ClassType(self, fact):
@@ -168,7 +166,13 @@ class ValueType:
         return combine(left, right)
 
     def join(self, other):
-        return other.join_unknown(self)
+        return other.join_alternatives(self)
+
+    def union_members(self):
+        return (self.as_bound(),)
+
+    def join_alternatives(self, left):
+        return _union_result((left, self))
 
     def join_unknown(self, left):
         return (
@@ -176,65 +180,55 @@ class ValueType:
         )
 
     def join_integer(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_boolean(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_python_integer(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_float(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_real(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_none(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_immortal(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_text(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_bytes(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_function(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_tuple(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_list(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_dict(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_iterator(self, left):
-        return self.join_unknown(left)
-
-    def join_optional_integer(self, left):
-        return self.join_unknown(left)
-
-    def join_optional_value(self, left):
-        joined = left.inner.join(self)
-        unbound = left.may_be_unbound or self.may_be_unbound
-        if joined is UNKNOWN:
-            return UNKNOWN_UNBOUND if unbound else UNKNOWN
-        return OptionalValueType(joined, unbound)
+        return self.join_alternatives(left)
 
     def join_class(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_unique_object(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_instance(self, left):
-        return self.join_unknown(left)
+        return self.join_alternatives(left)
 
     def join_unbound(self, left):
         return self.with_unbound()
@@ -257,12 +251,6 @@ class ValueType:
     def widen_iterator(self, old):
         return self
 
-    def widen_optional_integer(self, old):
-        return self
-
-    def widen_optional_value(self, old):
-        return self
-
     def widen_class(self, old):
         return self
 
@@ -270,7 +258,8 @@ class ValueType:
         return self
 
     def as_optional(self, may_be_unbound: bool = False):
-        return UNKNOWN_UNBOUND if (self.may_be_unbound or may_be_unbound) else UNKNOWN
+        result = union_type(self, NONE_TYPE)
+        return result.with_unbound() if may_be_unbound else result
 
     def update_nested_lists(self, elem_type):
         return self
@@ -393,6 +382,13 @@ class ValueType:
         return self
 
     def narrow_none(self, is_none: bool):
+        if not self.may_be_unbound:
+            classes = self.runtime_class_type()
+            if (
+                classes.comparison(ast.ComparisonOperator.IS, CLASS_NONE_TYPE)
+                is BOOLEAN_FALSE
+            ):
+                return BOTTOM if is_none else self
         return self
 
     def narrow_identity(self, target, is_same: bool):
@@ -511,6 +507,12 @@ class ValueType:
     def fits(self, expected):
         return expected.accepts(self)
 
+    def fits_union(self, expected):
+        return any(self.fits(member) for member in expected.members)
+
+    def may_fit_union(self, expected):
+        return any(self.may_dispatch_fit(member) for member in expected.members)
+
     def dispatch_fits(self, expected):
         return expected.accepts_dispatch(self)
 
@@ -524,7 +526,7 @@ class ValueType:
         return self.accepts_dispatch(actual)
 
     def accepts(self, actual):
-        return actual.fits_unknown(self)
+        return actual == self
 
     def annotation_conflict(self, contract):
         return False
@@ -651,6 +653,9 @@ class UnknownType(ValueType):
 
     def accepts_dispatch(self, actual):
         return True
+
+    def accepts(self, actual):
+        return actual.fits_unknown(self)
 
     def fits_possible_integer(self, expected):
         return not self.may_be_unbound
@@ -800,21 +805,10 @@ class IntegerType(PrimitiveType):
         return IntegerType(lo, hi, may_be_unbound=unbound)
 
     def join_boolean(self, left):
-        return _join_python_integer(left, self)
+        return self.join_alternatives(left)
 
     def join_python_integer(self, left):
         return _join_python_integer(left, self)
-
-    def join_optional_integer(self, left):
-        joined = left.integer.join_integer(self.as_bound())
-        return OptionalIntegerType(
-            joined, may_be_unbound=left.may_be_unbound or self.may_be_unbound
-        )
-
-    def as_optional(self, may_be_unbound: bool = False):
-        return OptionalIntegerType(
-            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
-        )
 
     def widen(self, new):
         return new.widen_integer(self)
@@ -1021,14 +1015,6 @@ class PythonIntegerType(IntegerType):
     join_integer = join_python_integer
     join_boolean = join_python_integer
 
-    def join_optional_integer(self, left):
-        return self.join_unknown(left)
-
-    def as_optional(self, may_be_unbound: bool = False):
-        return OptionalValueType(
-            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
-        )
-
     def widen_constant(self):
         return (
             PythonIntegerType(may_be_unbound=True)
@@ -1106,7 +1092,7 @@ class BooleanType(IntegerType):
         return other.join_boolean(self)
 
     def join_integer(self, left):
-        return _join_python_integer(left, self)
+        return self.join_alternatives(left)
 
     def join_python_integer(self, left):
         return _join_python_integer(left, self)
@@ -1129,17 +1115,8 @@ class BooleanType(IntegerType):
             return BOOLEAN
         return BooleanType(lo, hi, may_be_unbound=unbound)
 
-    def join_none(self, left):
-        return _join_immortal(self, left)
-
     def join_immortal(self, left):
         return _join_immortal(self, left)
-
-    def join_optional_integer(self, left):
-        return self.join_unknown(left)
-
-    def as_optional(self, may_be_unbound: bool = False):
-        return IMMORTAL_UNBOUND if (self.may_be_unbound or may_be_unbound) else IMMORTAL
 
     def widen(self, new):
         return new
@@ -1251,11 +1228,6 @@ class FloatType(PrimitiveType):
             FloatType(may_be_unbound=True)
             if left.may_be_unbound or self.may_be_unbound
             else FLOAT
-        )
-
-    def as_optional(self, may_be_unbound: bool = False):
-        return OptionalValueType(
-            FLOAT, may_be_unbound=self.may_be_unbound or may_be_unbound
         )
 
     def binary(self, operator, right):
@@ -1445,38 +1417,14 @@ class NoneType(PrimitiveType):
             else NONE_TYPE
         )
 
-    def join_boolean(self, left):
-        return _join_immortal(self, left)
-
     def join_immortal(self, left):
         return _join_immortal(self, left)
 
-    def join_optional_integer(self, left):
-        unbound = left.may_be_unbound or self.may_be_unbound
-        if unbound == left.may_be_unbound:
-            return left
-        return OptionalIntegerType(left.integer, unbound)
-
-    def join_optional_value(self, left):
-        unbound = left.may_be_unbound or self.may_be_unbound
-        if unbound == left.may_be_unbound:
-            return left
-        return OptionalValueType(left.inner, unbound)
-
     def join_class(self, left):
-        return ClassType(
-            left.instance_types,
-            may_be_none=True,
-            may_be_unbound=left.may_be_unbound or self.may_be_unbound,
-        )
+        return self.join_alternatives(left)
 
     def accepts(self, actual):
         return actual.fits_none(self)
-
-    def join_instance(self, left):
-        return OptionalValueType(
-            left.as_bound(), left.may_be_unbound or self.may_be_unbound
-        )
 
     def accepts_dispatch(self, actual):
         return actual.fits_none(self)
@@ -1582,11 +1530,6 @@ class TextType(PrimitiveType):
     def widen_constant(self):
         return TextType(may_be_unbound=True) if self.may_be_unbound else TEXT_TYPE
 
-    def as_optional(self, may_be_unbound: bool = False):
-        return OptionalValueType(
-            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
-        )
-
     def binary(self, operator, right):
         if self.may_be_unbound:
             return right.binary_unknown(operator, self)
@@ -1680,11 +1623,6 @@ class BytesType(PrimitiveType):
             BytesType(may_be_unbound=True)
             if self.may_be_unbound or left.may_be_unbound
             else BYTES_TYPE
-        )
-
-    def as_optional(self, may_be_unbound: bool = False):
-        return OptionalValueType(
-            BYTES_TYPE, may_be_unbound=self.may_be_unbound or may_be_unbound
         )
 
     def binary(self, operator, right):
@@ -1897,11 +1835,6 @@ class TupleType(ValueType):
             if self.elements is None
             else tuple(el.widen_constant() for el in self.elements),
             self.may_be_unbound,
-        )
-
-    def as_optional(self, may_be_unbound: bool = False):
-        return OptionalValueType(
-            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
         )
 
     def limit_container_depth(self, max_depth: int = 3):
@@ -2138,11 +2071,6 @@ class ListType(ValueType):
         if self.may_be_unbound:
             return self
         return ListType(self.element, True)
-
-    def as_optional(self, may_be_unbound: bool = False):
-        return OptionalValueType(
-            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
-        )
 
     def limit_container_depth(self, max_depth: int = 3):
         if self.element is BOTTOM or self.element is UNKNOWN:
@@ -2458,11 +2386,6 @@ class DictType(ValueType):
         if self.may_be_unbound:
             return self
         return DictType(self.key, self.value, True, self.proven)
-
-    def as_optional(self, may_be_unbound: bool = False):
-        return OptionalValueType(
-            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
-        )
 
     def limit_container_depth(self, max_depth: int = 3):
         if self.key is UNKNOWN and self.value is UNKNOWN:
@@ -2889,6 +2812,12 @@ class IteratorType(ValueType):
 class BottomType(ValueType):
     may_be_unbound: bool = False
 
+    def as_bound(self):
+        return BOTTOM
+
+    def with_unbound(self):
+        return UNBOUND
+
     def accept(self, visitor):
         return visitor.visit_BottomType(self)
 
@@ -2922,8 +2851,6 @@ class BottomType(ValueType):
     join_list = join_unknown
     join_dict = join_unknown
     join_iterator = join_unknown
-    join_optional_integer = join_unknown
-    join_optional_value = join_unknown
     join_class = join_unknown
     join_unique_object = join_unknown
     join_unbound = join_unknown
@@ -3002,213 +2929,388 @@ class UnboundType(ValueType):
     join_list = join_unknown
     join_dict = join_unknown
     join_iterator = join_unknown
-    join_optional_integer = join_unknown
-    join_optional_value = join_unknown
     join_class = join_unknown
     join_unique_object = join_unknown
     join_unbound = join_unknown
 
 
 @dataclass(frozen=True, slots=True)
-class OptionalIntegerType(ValueType):
-    integer: IntegerType = field(default_factory=IntegerType)
+class UnionType(ValueType):
+    """A bounded disjunction. Construct through ``union_type`` to normalize it."""
+
+    members: frozenset[ValueType]
     may_be_unbound: bool = False
 
-    def runtime_class_type(self):
-        if self.may_be_unbound:
-            return UNKNOWN
-        return ClassType((self.integer, NONE_TYPE))
-
     def accept(self, visitor):
-        return visitor.visit_OptionalIntegerType(self)
+        return visitor.visit_UnionType(self)
+
+    def union_members(self):
+        return self.members
+
+    def join(self, other):
+        return union_type(self, other)
+
+    def join_alternatives(self, left):
+        return union_type(left, self)
+
+    def map(self, operation):
+        result = union_type(*(operation(member) for member in self.members))
+        return result.join(UNBOUND) if self.may_be_unbound else result
 
     @property
     def is_immortal(self):
-        return not self.may_be_unbound and self.integer.is_fixnum
+        return not self.may_be_unbound and all(m.is_immortal for m in self.members)
+
+    @property
+    def is_heap_object(self):
+        return not self.may_be_unbound and all(m.is_heap_object for m in self.members)
 
     @property
     def needs_release(self):
-        return self.may_be_unbound or self.integer.needs_release
+        return self.may_be_unbound or any(m.needs_release for m in self.members)
 
     @property
     def may_run_user_code(self):
-        return False
+        return self.may_be_unbound or any(m.may_run_user_code for m in self.members)
 
-    def as_bound(self):
-        if not self.may_be_unbound:
-            return self
-        return OptionalIntegerType(self.integer, False)
-
-    def with_unbound(self):
-        if self.may_be_unbound:
-            return self
-        return OptionalIntegerType(self.integer, True)
-
-    def join(self, other):
-        return other.join_optional_integer(self)
-
-    def join_optional_integer(self, left):
-        if left is self:
-            return self
-        joined = left.integer.join_integer(self.integer)
-        unbound = left.may_be_unbound or self.may_be_unbound
-        return OptionalIntegerType(joined, unbound)
-
-    def join_integer(self, left):
-        joined = left.as_bound().join_integer(self.integer)
-        unbound = left.may_be_unbound or self.may_be_unbound
-        return OptionalIntegerType(joined, unbound)
-
-    def join_none(self, left):
-        unbound = left.may_be_unbound or self.may_be_unbound
-        if unbound == self.may_be_unbound:
-            return self
-        return OptionalIntegerType(self.integer, unbound)
-
-    def widen(self, new):
-        return new.widen_optional_integer(self)
-
-    def widen_optional_integer(self, old):
-        integer = widen_fact(old.integer, self.integer)
-        unbound = old.may_be_unbound or self.may_be_unbound
-        if integer == self.integer and unbound == self.may_be_unbound:
-            return self
-        return OptionalIntegerType(
-            IntegerType(integer.minimum, integer.maximum), unbound
+    def fits(self, expected):
+        return (not self.may_be_unbound or expected.may_be_unbound) and all(
+            m.fits(expected.as_bound()) for m in self.members
         )
 
+    def accepts(self, actual):
+        return actual.fits_union(self)
+
+    def fits_union(self, expected):
+        return (not self.may_be_unbound or expected.may_be_unbound) and all(
+            m.fits_union(expected) for m in self.members
+        )
+
+    def accepts_dispatch(self, actual):
+        return actual.fits_union(self)
+
+    def accepts_possible_dispatch(self, actual):
+        return actual.may_fit_union(self)
+
+    def dispatch_fits(self, expected):
+        return not self.may_be_unbound and all(
+            m.dispatch_fits(expected) for m in self.members
+        )
+
+    def may_dispatch_fit(self, expected):
+        return not self.may_be_unbound and any(
+            m.may_dispatch_fit(expected) for m in self.members
+        )
+
+    def may_fit_union(self, expected):
+        return not self.may_be_unbound and any(
+            m.may_fit_union(expected) for m in self.members
+        )
+
+    def fits_integer(self, expected):
+        return self._fits_family(expected, lambda member: member.fits_integer(member))
+
+    def fits_python_integer(self, expected):
+        return self._fits_family(
+            expected, lambda member: member.fits_python_integer(member)
+        )
+
+    def fits_boolean(self, expected):
+        return self._fits_family(expected, lambda member: member.fits_boolean(member))
+
+    def fits_float(self, expected):
+        return self._fits_family(expected, lambda member: member.fits_float(member))
+
+    def fits_real(self, expected):
+        return self._fits_family(expected, lambda member: member.fits_real(member))
+
+    def fits_none(self, expected):
+        return self._fits_family(expected, lambda member: member.fits_none(member))
+
+    def fits_immortal(self, expected):
+        return self.is_immortal
+
+    def fits_text(self, expected):
+        return self._fits_family(expected, lambda member: member.fits_text(member))
+
+    def fits_bytes(self, expected):
+        return self._fits_family(expected, lambda member: member.fits_bytes(member))
+
+    def fits_function(self, expected):
+        return self._fits_family(expected, lambda member: member.fits_function(member))
+
+    def fits_tuple(self, expected):
+        return self._fits_family(expected, lambda member: member.fits_tuple(member))
+
+    def fits_list(self, expected=None):
+        return self._fits_family(expected, lambda member: member.fits_list(member))
+
+    def fits_dict(self, expected=None):
+        return self._fits_family(expected, lambda member: member.fits_dict(member))
+
+    def fits_iterator(self, expected=None):
+        return self._fits_family(expected, lambda member: member.fits_iterator(member))
+
+    def fits_class(self, expected=None):
+        return self._fits_family(expected, lambda member: member.fits_class(member))
+
+    def fits_instance(self, expected):
+        return self._fits_family(expected, lambda member: member.fits_instance(member))
+
+    def _fits_family(self, expected, proof):
+        # A family contract belongs to each concrete member, not to the union.
+        # Only after proving the family may generic inclusion check the caller's
+        # expected fact, which can itself be a heterogeneous union.
+        return (
+            not self.may_be_unbound
+            and all(proof(member) for member in self.members)
+            and (expected is None or self.fits(expected))
+        )
+
+    def fits_possible_integer(self, expected):
+        return self._may_fit_family(
+            expected, lambda member: member.fits_possible_integer(member)
+        )
+
+    def fits_possible_boolean(self, expected):
+        return self._may_fit_family(
+            expected, lambda member: member.fits_possible_boolean(member)
+        )
+
+    def fits_possible_none(self, expected):
+        return self._may_fit_family(
+            expected, lambda member: member.fits_possible_none(member)
+        )
+
+    def fits_possible_immortal(self, expected):
+        return self._may_fit_family(
+            expected, lambda member: member.fits_possible_immortal(member)
+        )
+
+    def fits_possible_text(self, expected):
+        return self._may_fit_family(
+            expected, lambda member: member.fits_possible_text(member)
+        )
+
+    def fits_possible_tuple(self, expected):
+        return self._may_fit_family(
+            expected, lambda member: member.fits_possible_tuple(member)
+        )
+
+    def fits_possible_list(self, expected=None):
+        return self._may_fit_family(
+            expected, lambda member: member.fits_possible_list(member)
+        )
+
+    def fits_possible_instance(self, expected):
+        return self._may_fit_family(
+            expected, lambda member: member.fits_possible_instance(member)
+        )
+
+    def _may_fit_family(self, expected, proof):
+        return not self.may_be_unbound and any(
+            proof(member) and (expected is None or member.may_dispatch_fit(expected))
+            for member in self.members
+        )
+
+    def truth_value(self):
+        values = {member.truth_value() for member in self.members}
+        return values.pop() if not self.may_be_unbound and len(values) == 1 else None
+
     def narrow_none(self, is_none: bool):
-        if self.may_be_unbound:
-            return self
-        return NONE_TYPE if is_none else self.integer
-
-
-@dataclass(frozen=True, slots=True)
-class OptionalValueType(ValueType):
-    inner: ValueType = UNKNOWN
-    may_be_unbound: bool = False
-
-    def runtime_class_type(self):
-        if self.may_be_unbound:
-            return UNKNOWN
-        return self.inner.runtime_class_type().join(CLASS_NONE_TYPE)
-
-    def accept(self, visitor):
-        return visitor.visit_OptionalValueType(self)
-
-    @property
-    def may_run_user_code(self):
-        return self.may_be_unbound or self.inner.may_run_user_code
-
-    def as_bound(self):
-        if not self.may_be_unbound:
-            return self
-        return OptionalValueType(self.inner, False)
-
-    def with_unbound(self):
-        if self.may_be_unbound:
-            return self
-        return OptionalValueType(self.inner, True)
-
-    def narrow_none(self, is_none: bool):
-        if self.may_be_unbound:
-            return self
-        return NONE_TYPE if is_none else self.inner
-
-    def instance_class(self) -> str | None:
-        return None if self.may_be_unbound else self.inner.instance_class()
+        return (
+            self if self.may_be_unbound else self.map(lambda m: m.narrow_none(is_none))
+        )
 
     def narrow_identity(self, target, is_same: bool):
-        if self.may_be_unbound:
-            return self
-        if target.fits_none(NONE_TYPE):
-            return self.narrow_none(is_same)
-        if (
-            is_same
-            and target.comparison(ast.ComparisonOperator.IS, NONE_TYPE) is BOOLEAN_FALSE
-        ):
-            return self.inner.narrow_identity(target, True)
-        if not is_same:
-            narrowed_inner = self.inner.narrow_identity(target, False)
-            if narrowed_inner is BOTTOM:
-                return NONE_TYPE
-            if narrowed_inner != self.inner:
-                return OptionalValueType(narrowed_inner, False)
-        return super().narrow_identity(target, is_same)
+        return (
+            self
+            if self.may_be_unbound
+            else self.map(lambda m: m.narrow_identity(target, is_same))
+        )
 
-    def join(self, other):
-        return other.join_optional_value(self)
+    def narrow_by_runtime_class(self, target_cls, is_same: bool):
+        return (
+            self
+            if self.may_be_unbound
+            else self.map(lambda m: m.narrow_by_runtime_class(target_cls, is_same))
+        )
 
-    def join_optional_value(self, left):
-        if left is self:
-            return self
-        joined = left.inner.join(self.inner)
-        unbound = left.may_be_unbound or self.may_be_unbound
-        if joined is UNKNOWN:
-            return UNKNOWN_UNBOUND if unbound else UNKNOWN
-        return OptionalValueType(joined, unbound)
+    def narrow(self, operator, bound, truth):
+        return (
+            self
+            if self.may_be_unbound
+            else self.map(lambda m: m.narrow(operator, bound, truth))
+        )
 
-    def join_none(self, left):
-        unbound = left.may_be_unbound or self.may_be_unbound
-        if unbound == self.may_be_unbound:
-            return self
-        return OptionalValueType(self.inner, unbound)
+    def binary(self, operator, right):
+        return (
+            UNKNOWN
+            if self.may_be_unbound
+            else self.map(lambda m: m.binary(operator, right))
+        )
 
-    def _join_with_inner(self, left):
-        joined = left.as_bound().join(self.inner)
-        unbound = left.may_be_unbound or self.may_be_unbound
-        if joined is UNKNOWN:
-            return UNKNOWN_UNBOUND if unbound else UNKNOWN
-        return OptionalValueType(joined, unbound)
+    def binary_unknown(self, operator, left):
+        return (
+            UNKNOWN
+            if self.may_be_unbound
+            else self.map(lambda m: left.binary(operator, m))
+        )
 
-    join_float = _join_with_inner
-    join_text = _join_with_inner
-    join_bytes = _join_with_inner
-    join_tuple = _join_with_inner
-    join_list = _join_with_inner
-    join_dict = _join_with_inner
-    join_iterator = _join_with_inner
-    join_python_integer = _join_with_inner
+    binary_integer = binary_unknown
+    binary_boolean = binary_unknown
+    binary_float = binary_unknown
+    binary_real = binary_unknown
+    binary_text = binary_unknown
+    binary_bytes = binary_unknown
+    binary_tuple = binary_unknown
+    binary_list = binary_unknown
+
+    def unary(self, operator):
+        return UNKNOWN if self.may_be_unbound else self.map(lambda m: m.unary(operator))
+
+    def comparison(self, operator, right):
+        return (
+            BOOLEAN
+            if self.may_be_unbound
+            else self.map(lambda m: m.comparison(operator, right))
+        )
+
+    def compare_identity_with(self, left, operator):
+        return (
+            BOOLEAN
+            if self.may_be_unbound
+            else self.map(lambda m: left.comparison(operator, m))
+        )
+
+    def compare_unknown(self, left):
+        return self.map(lambda m: m.compare_unknown(left))
+
+    def compare_primitive(self, left):
+        return self.map(lambda m: m.compare_primitive(left))
+
+    def runtime_class_type(self):
+        return (
+            UNKNOWN
+            if self.may_be_unbound
+            else self.map(lambda m: m.runtime_class_type())
+        )
+
+    def instance_class(self):
+        classes = {m.instance_class() for m in self.members if m is not NONE_TYPE}
+        return classes.pop() if not self.may_be_unbound and len(classes) == 1 else None
+
+    def getitem_type(self, index):
+        return (
+            UNKNOWN
+            if self.may_be_unbound
+            else self.map(lambda m: m.getitem_type(index))
+        )
+
+    def getslice_type(self):
+        return UNKNOWN if self.may_be_unbound else self.map(lambda m: m.getslice_type())
+
+    def iterate_type(self):
+        return UNKNOWN if self.may_be_unbound else self.map(lambda m: m.iterate_type())
+
+    def flow_iterate_type(self):
+        return (
+            UNKNOWN
+            if self.may_be_unbound
+            else self.map(lambda m: m.flow_iterate_type())
+        )
+
+    def next_item_type(self):
+        return (
+            UNKNOWN if self.may_be_unbound else self.map(lambda m: m.next_item_type())
+        )
 
     def widen(self, new):
-        return new.widen_optional_value(self)
+        members = []
+        for member in new.union_members():
+            previous = next(
+                (m for m in self.members if m.same_runtime_class(member)), None
+            )
+            members.append(member if previous is None else widen_fact(previous, member))
+        result = union_type(*members)
+        return result.join(UNBOUND) if new.may_be_unbound else result
 
-    def widen_optional_value(self, old):
-        inner = widen_fact(old.inner, self.inner)
-        unbound = old.may_be_unbound or self.may_be_unbound
-        if inner == self.inner and unbound == self.may_be_unbound:
-            return self
-        if inner is UNKNOWN:
-            return UNKNOWN_UNBOUND if unbound else UNKNOWN
-        return OptionalValueType(inner, unbound)
+    def widen_constant(self):
+        return self.map(lambda m: m.widen_constant())
 
     def limit_container_depth(self, max_depth: int = 3):
-        limited = self.inner.limit_container_depth(max_depth)
-        if limited == self.inner:
-            return self
-        return OptionalValueType(limited, self.may_be_unbound)
+        return self.map(lambda m: m.limit_container_depth(max_depth))
 
     def update_nested_lists(self, elem_type):
-        new_inner = self.inner._update_as_nested_list(elem_type).limit_container_depth(
-            3
-        )
-        if new_inner == self.inner:
-            return self
-        return OptionalValueType(new_inner, self.may_be_unbound)
+        return self.map(lambda m: m._update_as_nested_list(elem_type))
 
     def update_nested_dicts(self, key_type, val_type):
-        new_inner = self.inner._update_as_nested_dict(
-            key_type, val_type
-        ).limit_container_depth(3)
-        if new_inner == self.inner:
-            return self
-        return OptionalValueType(new_inner, self.may_be_unbound)
+        return self.map(lambda m: m._update_as_nested_dict(key_type, val_type))
 
     def widen_mutable_containers(self):
-        new_inner = self.inner.widen_mutable_containers()
-        if new_inner == self.inner:
-            return self
-        return OptionalValueType(new_inner, self.may_be_unbound)
+        return self.map(lambda m: m.widen_mutable_containers())
+
+
+MAX_UNION_MEMBERS = 8
+
+
+def union_type(*facts: ValueType) -> ValueType:
+    """Normalize alternatives as SBCL's ``type-union`` does before retaining a set.
+
+    The member budget bounds analysis work, not supported Python values. A
+    wider disjunction safely loses precision to the existing unknown domain.
+    """
+    unbound = any(fact.may_be_unbound for fact in facts)
+    members = []
+    for fact in facts:
+        for member in fact.union_members():
+            if member is UNKNOWN:
+                return UNKNOWN_UNBOUND if unbound else UNKNOWN
+            if member is BOTTOM:
+                continue
+            if member not in members:
+                members.append(member)
+    while True:
+        merged = False
+        for index, left in enumerate(members):
+            for following in range(index + 1, len(members)):
+                right = members[following]
+                combined = left.join(right)
+                alternatives = tuple(combined.union_members())
+                if len(alternatives) == 1:
+                    members[index] = alternatives[0]
+                    del members[following]
+                    merged = True
+                    break
+            if merged:
+                break
+        if not merged:
+            return _union_result(members, may_be_unbound=unbound)
+
+
+def _union_result(facts, *, may_be_unbound=False):
+    """Retain an unsimplified pair, or finish the common union simplifier.
+
+    Pair methods use this builder when they cannot simplify. Calling the full
+    simplifier there would recursively ask the same unmatched pair to join.
+    """
+    unbound = may_be_unbound or any(fact.may_be_unbound for fact in facts)
+    members = frozenset(
+        member
+        for fact in facts
+        for member in fact.union_members()
+        if member is not BOTTOM
+    )
+    if UNKNOWN in members:
+        return UNKNOWN_UNBOUND if unbound else UNKNOWN
+    if not members:
+        return UNBOUND if unbound else BOTTOM
+    if len(members) > MAX_UNION_MEMBERS:
+        return UNKNOWN_UNBOUND if unbound else UNKNOWN
+    if len(members) == 1:
+        member = next(iter(members))
+        return member.with_unbound() if unbound else member
+    return UnionType(members, unbound)
 
 
 def _merge_class_instances(
@@ -3257,11 +3359,6 @@ class InstanceType(ValueType):
     def runtime_parent_class_type(self):
         return None if self.may_be_unbound else CLASS_OBJECT_TYPE
 
-    def as_optional(self, may_be_unbound: bool = False):
-        return OptionalValueType(
-            self.as_bound(), may_be_unbound=self.may_be_unbound or may_be_unbound
-        )
-
     def same_runtime_class(self, other) -> bool:
         return other.fits_instance(self)
 
@@ -3270,22 +3367,10 @@ class InstanceType(ValueType):
 
     def join_instance(self, left):
         if left.identity != self.identity:
-            return self.join_unknown(left)
+            return self.join_alternatives(left)
         if left.may_be_unbound or not self.may_be_unbound:
             return left
         return self
-
-    def join_none(self, left):
-        return OptionalValueType(
-            self.as_bound(), left.may_be_unbound or self.may_be_unbound
-        )
-
-    def join_optional_value(self, left):
-        joined = left.inner.join(self.as_bound())
-        unbound = left.may_be_unbound or self.may_be_unbound
-        if joined is UNKNOWN:
-            return UNKNOWN_UNBOUND if unbound else UNKNOWN
-        return OptionalValueType(joined, unbound)
 
     def compare_identity_with(self, left, operator):
         # Two values of one class may still be distinct objects; only None
@@ -3331,7 +3416,6 @@ class ClassType(ValueType):
     of instances of the classes it may represent."""
 
     instance_types: tuple[ValueType, ...] = ()
-    may_be_none: bool = False
     may_be_unbound: bool = False
 
     def accept(self, visitor):
@@ -3339,41 +3423,32 @@ class ClassType(ValueType):
 
     @property
     def is_heap_object(self):
-        return not self.may_be_unbound and not self.may_be_none
+        return not self.may_be_unbound
 
     @property
     def may_run_user_code(self):
         return False
 
     def truth_value(self) -> bool | None:
-        return None if (self.may_be_unbound or self.may_be_none) else True
+        return None if self.may_be_unbound else True
 
     def is_class_object(self) -> bool | None:
-        return None if (self.may_be_unbound or self.may_be_none) else True
+        return None if self.may_be_unbound else True
 
     def fits_class(self, expected=None):
         return not self.may_be_unbound
 
     def runtime_class_type(self):
-        return UNKNOWN if (self.may_be_unbound or self.may_be_none) else CLASS_TYPE_TYPE
+        return UNKNOWN if self.may_be_unbound else CLASS_TYPE_TYPE
 
     def runtime_parent_class_type(self):
-        return None if (self.may_be_unbound or self.may_be_none) else CLASS_OBJECT_TYPE
+        return None if self.may_be_unbound else CLASS_OBJECT_TYPE
 
     def same_runtime_class(self, other) -> bool:
-        return (
-            not self.may_be_unbound
-            and not self.may_be_none
-            and other.fits_class()
-            and not other.may_be_none
-        )
+        return not self.may_be_unbound and other.fits_class()
 
     def general_instance_type(self):
-        if (
-            not self.may_be_unbound
-            and not self.may_be_none
-            and len(self.instance_types) == 1
-        ):
+        if not self.may_be_unbound and len(self.instance_types) == 1:
             inst = self.instance_types[0]
             if inst.fits_class():
                 return ANY_CLASS_TYPE
@@ -3381,7 +3456,7 @@ class ClassType(ValueType):
         return UNKNOWN
 
     def allocate_instance_type(self):
-        if self.may_be_unbound or self.may_be_none or not self.instance_types:
+        if self.may_be_unbound or not self.instance_types:
             return UNKNOWN
         result = self.instance_types[0]
         for inst in self.instance_types[1:]:
@@ -3389,7 +3464,7 @@ class ClassType(ValueType):
         return result
 
     def parent_class_type(self):
-        if self.may_be_unbound or self.may_be_none or not self.instance_types:
+        if self.may_be_unbound or not self.instance_types:
             return UNKNOWN
         result: ValueType = BOTTOM
         for inst in self.instance_types:
@@ -3400,12 +3475,12 @@ class ClassType(ValueType):
         return result
 
     def is_subclass_of(self, target) -> bool | None:
-        if self.may_be_unbound or self.may_be_none or not self.instance_types:
+        if self.may_be_unbound or not self.instance_types:
             return None
         return target.check_subclass_from(self.instance_types)
 
     def check_subclass_from(self, source_instances) -> bool | None:
-        if self.may_be_unbound or self.may_be_none or not self.instance_types:
+        if self.may_be_unbound or not self.instance_types:
             return None
         outcomes = set()
         for src in source_instances:
@@ -3430,20 +3505,12 @@ class ClassType(ValueType):
         if left is self:
             return self
         unbound = left.may_be_unbound or self.may_be_unbound
-        may_be_none = left.may_be_none or self.may_be_none
         if not left.instance_types or not self.instance_types:
             return UNKNOWN_UNBOUND if unbound else UNKNOWN
         merged = _merge_class_instances(left.instance_types, self.instance_types)
         if len(merged) > 8:
             return UNKNOWN_UNBOUND if unbound else UNKNOWN
-        return ClassType(merged, may_be_none=may_be_none, may_be_unbound=unbound)
-
-    def join_none(self, left):
-        return ClassType(
-            self.instance_types,
-            may_be_none=True,
-            may_be_unbound=left.may_be_unbound or self.may_be_unbound,
-        )
+        return ClassType(merged, may_be_unbound=unbound)
 
     def widen(self, new):
         return new.widen_class(self)
@@ -3460,22 +3527,14 @@ class ClassType(ValueType):
         }:
             is_same = operator is ast.ComparisonOperator.IS
             if right.fits_none(NONE_TYPE) and not self.may_be_unbound:
-                if not self.may_be_none:
-                    return BOOLEAN_FALSE if is_same else BOOLEAN_TRUE
-                if not self.instance_types:
-                    return BOOLEAN_TRUE if is_same else BOOLEAN_FALSE
-                return BOOLEAN
+                return BOOLEAN_FALSE if is_same else BOOLEAN_TRUE
             return right.compare_class_identity(self, is_same)
         return super().comparison(operator, right)
 
     def compare_identity_with(self, left, operator):
         is_same = operator is ast.ComparisonOperator.IS
         if left.fits_none(NONE_TYPE) and not self.may_be_unbound:
-            if not self.may_be_none:
-                return BOOLEAN_FALSE if is_same else BOOLEAN_TRUE
-            if not self.instance_types:
-                return BOOLEAN_TRUE if is_same else BOOLEAN_FALSE
-            return BOOLEAN
+            return BOOLEAN_FALSE if is_same else BOOLEAN_TRUE
         return left.compare_class_identity(self, is_same)
 
     def compare_class_identity(self, left, is_same: bool):
@@ -3486,12 +3545,7 @@ class ClassType(ValueType):
             or not self.instance_types
         ):
             return BOOLEAN
-        if (
-            not left.may_be_none
-            and not self.may_be_none
-            and len(left.instance_types) == 1
-            and len(self.instance_types) == 1
-        ):
+        if len(left.instance_types) == 1 and len(self.instance_types) == 1:
             same = left.instance_types[0].same_runtime_class(self.instance_types[0])
             res = same if is_same else not same
             return BOOLEAN_TRUE if res else BOOLEAN_FALSE
@@ -3499,7 +3553,7 @@ class ClassType(ValueType):
             l_inst.same_runtime_class(r_inst)
             for l_inst in left.instance_types
             for r_inst in self.instance_types
-        ) or (left.may_be_none and self.may_be_none)
+        )
         if not overlap:
             return BOOLEAN_FALSE if is_same else BOOLEAN_TRUE
         return BOOLEAN
@@ -3507,29 +3561,18 @@ class ClassType(ValueType):
     def narrow_none(self, is_none: bool):
         if self.may_be_unbound:
             return self
-        if is_none:
-            return NONE_TYPE if self.may_be_none else BOTTOM
-        if not self.may_be_none:
-            return self
-        if not self.instance_types:
-            return BOTTOM
-        return ClassType(self.instance_types, may_be_none=False, may_be_unbound=False)
+        return BOTTOM if is_none else self
 
     def narrow_identity(self, target, is_same: bool):
         if self.may_be_unbound:
             return self
         if target.fits_none(NONE_TYPE):
             return self.narrow_none(is_same)
-        if (
-            target.fits_class()
-            and not target.may_be_none
-            and len(target.instance_types) == 1
-        ):
-            if not self.instance_types and not self.may_be_none:
+        if target.fits_class() and len(target.instance_types) == 1:
+            if not self.instance_types:
                 return (
                     ClassType(
                         target.instance_types,
-                        may_be_none=False,
                         may_be_unbound=False,
                     )
                     if is_same
@@ -3545,20 +3588,16 @@ class ClassType(ValueType):
                 return (
                     BOTTOM
                     if not matching
-                    else ClassType(matching, may_be_none=False, may_be_unbound=False)
+                    else ClassType(matching, may_be_unbound=False)
                 )
             remaining = tuple(
                 inst
                 for inst in self.instance_types
                 if not inst.same_runtime_class(t_inst)
             )
-            if not remaining and not self.may_be_none:
+            if not remaining:
                 return BOTTOM
-            if not remaining and self.may_be_none:
-                return NONE_TYPE
-            return ClassType(
-                remaining, may_be_none=self.may_be_none, may_be_unbound=False
-            )
+            return ClassType(remaining, may_be_unbound=False)
         return super().narrow_identity(target, is_same)
 
 
@@ -3651,7 +3690,7 @@ EMPTY_LIST_TYPE = ListType(BOTTOM)
 DICT_TYPE = DictType()
 EMPTY_DICT_TYPE = DictType(BOTTOM, BOTTOM)
 ITERATOR_TYPE = IteratorType()
-OPTIONAL_FIXNUM = OptionalIntegerType(IntegerType(FIXNUM_MIN, FIXNUM_MAX))
+OPTIONAL_FIXNUM = union_type(IntegerType(FIXNUM_MIN, FIXNUM_MAX), NONE_TYPE)
 ANY_CLASS_TYPE = ClassType()
 CLASS_TYPE_TYPE = ClassType((ANY_CLASS_TYPE,))
 CLASS_INT_TYPE = ClassType((INTEGER,))
@@ -3995,17 +4034,13 @@ class _SerializeValueType(ValueTypeVisitor):
     def visit_UnboundType(self, fact):
         return {"kind": "unbound"}
 
-    def visit_OptionalIntegerType(self, fact):
+    def visit_UnionType(self, fact):
         return {
-            "kind": "opt_int",
-            "integer": fact.integer.to_dict(),
-            "unbound": fact.may_be_unbound,
-        }
-
-    def visit_OptionalValueType(self, fact):
-        return {
-            "kind": "opt_val",
-            "inner": fact.inner.to_dict(),
+            "kind": "union",
+            "members": sorted(
+                (member.to_dict() for member in fact.members),
+                key=lambda member: json.dumps(member, sort_keys=True),
+            ),
             "unbound": fact.may_be_unbound,
         }
 
@@ -4013,7 +4048,6 @@ class _SerializeValueType(ValueTypeVisitor):
         return {
             "kind": "class",
             "instances": [inst.to_dict() for inst in fact.instance_types],
-            "none": fact.may_be_none,
             "unbound": fact.may_be_unbound,
         }
 
@@ -4114,23 +4148,17 @@ def value_type_from_dict(data: dict | None) -> ValueType:
         return BOTTOM
     if kind == "unbound":
         return UNBOUND
-    if kind == "opt_int":
-        inner = value_type_from_dict(data.get("integer"))
-        return OptionalIntegerType(
-            IntegerType(inner.minimum, inner.maximum), may_be_unbound=unbound
+    if kind == "union":
+        result = union_type(
+            *(value_type_from_dict(member) for member in data["members"])
         )
-    if kind == "opt_val":
-        inner = value_type_from_dict(data.get("inner"))
-        if inner is UNKNOWN:
-            return UNKNOWN_UNBOUND if unbound else UNKNOWN
-        return OptionalValueType(inner, may_be_unbound=unbound)
+        return result.with_unbound() if unbound else result
     if kind == "class":
         instances = tuple(
             value_type_from_dict(inst) for inst in data.get("instances", ())
         )
         return ClassType(
             instances,
-            may_be_none=bool(data.get("none", False)),
             may_be_unbound=unbound,
         )
     if kind == "unique_obj":

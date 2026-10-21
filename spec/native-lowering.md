@@ -28,6 +28,14 @@ Rust supplies low-level primitives; the existing language-level Rust runtime is
 bootstrap debt. GMP supplies arbitrary-precision arithmetic. No additional
 library is introduced.
 
+LTN derives a shared value's primitive type by joining every producer's type
+under the current entry context. Multiple producers do not by themselves force
+the unknown descriptor representation. This follows SBCL's
+`src/compiler/ltn.lisp`, `annotate-ordinary-lvar`, which selects the primitive
+type from the lvar's derived type. A common float or fixnum representation can
+therefore survive a return or control-flow merge; genuinely heterogeneous
+alternatives retain the existing object representation.
+
 ## Proven floats in object entries
 
 LTN distinguishes a proven, bound Python float from an unknown descriptor and
@@ -363,6 +371,39 @@ reads must not consume borrowed ownership. Acquiring a genuinely owned copy
 from a borrowed reference still requires a retain and a corresponding release.
 The owner's existing overwrite and cleanup points are not moved, preserving
 the observable lifetime boundary rather than deferring destruction.
+
+### Local alias copy propagation
+
+Status: implemented for single-definition local aliases in proven nonthrowing,
+callback-free regions.
+
+IR2 copy propagation can replace reads of a single-definition, uncaptured local
+alias with reads of its original owning local. This proof is independent of the
+Python value's type. It must establish assignment dominance, source stability,
+and equivalent ownership lifetimes over normal paths, loop backedges, and
+exception successors. Source overwrites, unbound paths, capture, suspension,
+and potentially aliasing uniqueness-sensitive operations prevent substitution.
+Checking only paths to alias reads is insufficient: an alias can retain ownership
+until cleanup on a path that does not read it.
+
+Unknown operations, potentially throwing operations, unknown truth conversions,
+and safepoints remain barriers while the alias owns a reference. An unread exit
+also prevents substitution because it could change final cleanup order. The
+region ends at proven final consumption; unrelated effects afterward do not
+extend the alias's lifetime.
+
+After substitution, the existing final-read and borrowed-lifetime analyses
+recompute transfers and releases. A final read can transfer the original owner
+into a temporary. Borrowing across that transfer requires proof that the moved
+owner remains alive through the borrower's final consumer. It must not suppress
+the final release or postpone it to function exit.
+
+SBCL's `src/compiler/copyprop.lisp`, `copy-propagate`, propagates single-writer
+MOVE temporaries while source writes kill the available copy. Mule performs
+its corresponding transformation over IR2, where the selected operations also
+expose reference ownership and uniqueness-sensitive mutation. Its extra lifetime
+and effect restrictions preserve reference-counted reclamation and Python-visible
+behavior; they are not type-specific optimizations or LLVM text rewrites.
 
 ### SBCL correspondence and reference-counting adaptation
 

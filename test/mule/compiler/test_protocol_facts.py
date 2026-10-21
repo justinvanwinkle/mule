@@ -11,6 +11,7 @@ from mule.compiler.ctype import (
     BooleanType,
     IntegerType,
     TupleType,
+    UnionType,
 )
 from mule.compiler.driver import compile_program
 from mule.compiler.main import compile_source, compile_toplevel
@@ -68,7 +69,11 @@ def test_successful_unknown_iterable_unpack_proves_tuple_capture_arity():
         (TupleType(2), TupleType(3), TupleType()),
         (TupleType(2), TupleType(), TupleType()),
         (TupleType(2), UNKNOWN, UNKNOWN),
-        (TupleType(2), IntegerType(), UNKNOWN),
+        (
+            TupleType(2),
+            IntegerType(),
+            UnionType(frozenset((TupleType(2), IntegerType()))),
+        ),
         (TupleType(2), BOTTOM, TupleType(2)),
         (TupleType(2), UNBOUND, TupleType(2, may_be_unbound=True)),
         (TupleType(2), UNKNOWN.with_unbound(), UNKNOWN.with_unbound()),
@@ -111,7 +116,11 @@ def test_tuple_control_flow_join_with_non_tuple_discards_tuple_proof():
         "def choose(flag):\n if flag:\n  return (1, 2)\n return [1, 2]\n"
     )
     assert compilation.facts is not None
-    assert compilation.facts[compilation.lambdas[1]].return_type == UNKNOWN
+    result = compilation.facts[compilation.lambdas[1]].return_type
+    assert isinstance(result, UnionType)
+    assert not result.fits_tuple(TupleType())
+    assert any(member.fits_tuple(TupleType()) for member in result.members)
+    assert any(member.is_exact_list for member in result.members)
 
 
 @pytest.mark.parametrize(

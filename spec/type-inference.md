@@ -115,7 +115,7 @@ Following SBCL's `CTYPE` hierarchy, all lattice operations (`join`, `fits`, arit
 | Booleans | `BooleanType` (`BOOLEAN_TRUE`, `BOOLEAN_FALSE`, `BOOLEAN`) | Singleton truth values enable compile-time dead-branch pruning in `_ConstrainEdge` and constant branch folding in `ir1opt`. |
 | None | `NoneType` (`NONE_TYPE`) | Singleton `None`; participates in `is None` / `is not None` edge narrowing and immortal representation proofs (`proves_immortal`). |
 | Integers | `IntegerType(minimum, maximum, may_be_unbound)` | Closed/open integer intervals. Tracks exact constants (`[k, k]`), 49-bit signed fixnums (`FIXNUM_MIN..FIXNUM_MAX`, `is_fixnum`), signed 64-bit native integers (`INT64_MIN..INT64_MAX`, `fits_int64`), and unsigned 64-bit integers (`0..UINT64_MAX`, `fits_uint64`). |
-| Floats | `FloatType` (`FLOAT`) | IEEE-754 double-precision float (`fits_float`); enables unboxed `double` registers and raw float VOPs. `REAL` is the union `INTEGER \| FLOAT`. |
+| Floats | `FloatType` (`FLOAT`) | IEEE-754 double-precision float (`fits_float`); enables unboxed `double` registers and raw float VOPs. The annotation summary `REAL` admits integers, booleans, and floats without changing their objects. |
 | Strings & bytes | `TextType(literal)` (`TEXT_TYPE`), `BytesType` (`BYTES_TYPE`) | Exact `str` (optionally with known constant literal) and exact `bytes`; enables direct `_text_length`, `_text_slice`, `byte_length`, and `TextStorage` / `BytesStorage` method resolution. |
 | Tuples | `TupleType(arity, elements)` | Exact `tuple` with optional known length and per-element `ValueType` tuple; enables constant-bounds `len()` folding and per-index element type projection (`tuple_index_type`). |
 | Lists | `ListType(element)` (`LIST_TYPE`, `EMPTY_LIST_TYPE`) | Exact `list` with homogeneous element-type summary (`element` starts at `BOTTOM` for `[]` and joins on `append`/`insert`/`extend`/`__setitem__`); enables direct `_storage_length`, `_storage_read`, and typed iteration. |
@@ -123,6 +123,26 @@ Following SBCL's `CTYPE` hierarchy, all lattice operations (`join`, `fits`, arit
 | Iterators | `IteratorType(element)` (`ITERATOR_TYPE`) | Iterator object yielding `element` on each `%for_next` step; propagates loop-target variable types across `for` loops. |
 | Callables | `FunctionType` (`FUNCTION_TYPE`) | Function object; paired in `Fact(type, target, proven)` with the predicted `Lambda` target and whether its identity is proven against rebinding. |
 | Unions | `UnionType(members)` | Bounded disjunction of disjoint `ValueType` members (such as `T \| NoneType` or `IntegerType \| FloatType`). Supports `narrow_none` and distributes transfer operations across members before widening to `UNKNOWN`. |
+
+`union_type` normalizes all alternative joins. It flattens nested unions, removes
+bottom, absorbs unknown, and repeatedly applies the existing polymorphic pair
+joins before retaining the remaining alternatives. As in SBCL's
+`src/code/type.lisp`, `simplify-unions` and `type-union`, a new value type inherits
+the general union fallback rather than requiring another table of type pairs.
+`None` is an ordinary member; optional integers, optional values, and nullable
+class objects use this same representation. Possible-unbound state remains
+separate from `None`. Serialization uses a single union kind.
+
+Transfers and narrowing operate memberwise. Proof queries require every member
+to satisfy the property; possible-type queries require only one. The numeric
+annotation summaries retain their existing domains, but a join of exact integer
+and boolean facts preserves their alternatives rather than widening them into
+an annotation summary. Existing same-family interval and container joins still
+merge their facts. Loop widening reuses those domain-specific widening rules.
+More than eight distinct union members widens to unknown, and the existing
+container-depth limit remains three. These are analysis precision budgets, not
+limits on supported Python values. Heterogeneous unions retain object storage
+until narrowing proves a representation already supported by the backend.
 
 ### 3.3 Annotations and contracts (`mule/compiler/annotation_types.py`)
 

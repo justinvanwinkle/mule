@@ -23,8 +23,6 @@ from mule.compiler.ctype import (
     IntegerType,
     IteratorType,
     ListType,
-    OptionalIntegerType,
-    OptionalValueType,
     TextType,
     TupleType,
     ValueTypeVisitor,
@@ -65,7 +63,9 @@ def test_parameterized_list_type():
     # Join and fits
     assert EMPTY_LIST_TYPE.join(int_list) == int_list
     assert int_list.join(EMPTY_LIST_TYPE) == int_list
-    assert int_list.join(ListType(TEXT_TYPE)) is LIST_TYPE
+    assert int_list.join(ListType(TEXT_TYPE)) == ListType(
+        IntegerType(1, 10).join(TEXT_TYPE)
+    )
     assert EMPTY_LIST_TYPE.fits(int_list)
     assert int_list.fits(LIST_TYPE)
     assert int_list.fits(ListType(INTEGER))
@@ -92,12 +92,12 @@ def test_parameterized_dict_type():
     assert EMPTY_DICT_TYPE.getitem_type(TEXT_TYPE) is UNKNOWN
 
     assert d.dict_get_type(IntegerType(0, 0)) == IntegerType(0, 1)
-    assert d.dict_get_type(NONE_TYPE) == OptionalIntegerType(IntegerType(1, 1))
+    assert d.dict_get_type(NONE_TYPE) == IntegerType(1, 1).as_optional()
     assert EMPTY_DICT_TYPE.dict_get_type(IntegerType(0, 0)) == IntegerType(0, 0)
 
     d_list = EMPTY_DICT_TYPE.with_entry(TEXT_TYPE, ListType(IntegerType(0, 0)))
     opt_list = d_list.dict_get_type(NONE_TYPE)
-    assert opt_list == OptionalValueType(ListType(IntegerType(0, 0)))
+    assert opt_list == ListType(IntegerType(0, 0)).as_optional()
     assert opt_list.narrow_none(False) == ListType(IntegerType(0, 0))
     assert opt_list.narrow_none(True) is NONE_TYPE
 

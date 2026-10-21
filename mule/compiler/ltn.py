@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .ctype import FIXNUM_MAX, FIXNUM_MIN, UNKNOWN, ValueType, ValueTypeVisitor
+from .ctype import BOTTOM, FIXNUM_MAX, FIXNUM_MIN, UNKNOWN, ValueType, ValueTypeVisitor
 from .node import (
     CallKind,
     Cast,
@@ -237,10 +237,10 @@ class _Annotate(NodeVisitor, LeafVisitor):
             chosen = plan.lvar_type(lvar)
             if chosen is not None:
                 return chosen
-        uses = lvar.uses
-        if len(uses) != 1:
-            return T
-        return primitive_type_of(self.context.type_of(uses[0]))
+        value_type = BOTTOM
+        for producer in lvar.uses:
+            value_type = value_type.join(self.context.type_of(producer))
+        return primitive_type_of(value_type)
 
     def annotate_1_value_lvar(self, lvar) -> None:
         if lvar is None or lvar.info is not None:

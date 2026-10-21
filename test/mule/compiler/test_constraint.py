@@ -21,6 +21,7 @@ from mule.compiler.ctype import (
     PythonIntegerType,
     TextType,
     TupleType,
+    UnionType,
 )
 from mule.compiler.driver import emit_llvm
 from mule.compiler.main import Compilation, compile_source
@@ -746,7 +747,8 @@ def test_python_integer_annotation_propagates_arithmetic_and_masks():
 def test_boolean_and_integer_join_preserves_bounds_on_python_integer():
     compilation, fn = joined("True", 10)
     result = last_fact(compilation, fn, loads)
-    assert result == PythonIntegerType(1, 10)
+    assert result == UnionType(frozenset((BooleanType(1, 1), IntegerType(10, 10))))
+    assert result.fits(PythonIntegerType(1, 10))
     assert not result.is_fixnum
     assert not result.needs_release
     assert result.fits(PYTHON_INTEGER)

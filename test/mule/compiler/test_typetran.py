@@ -21,7 +21,6 @@ from mule.compiler.ctype import (
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
-    OptionalIntegerType,
     TextType,
     TupleType,
 )
@@ -201,8 +200,8 @@ def test_negated_is_none_on_annotated_int_inverts_and_folds():
     "non_disjoint_type",
     [
         OPTIONAL_FIXNUM,
-        OptionalIntegerType(),
-        OptionalIntegerType(IntegerType(0, 5)),
+        INTEGER.as_optional(),
+        IntegerType(0, 5).as_optional(),
         IMMORTAL,
         UNKNOWN,
         INTEGER.with_unbound(),

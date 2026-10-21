@@ -400,6 +400,8 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
                 vop.codegen_info = replace(vop.codegen_info, reuse_local=None)
     _fuse_text_codepoint_comparisons(component)
     _mark_last_local_reads(component)
+    if _propagate_local_aliases(component):
+        _mark_last_local_reads(component)
     _fuse_text_slice_compares(component)
     _mark_boolean_comparisons(component)
     _mark_borrowed_local_reads(component)
@@ -1089,6 +1091,94 @@ def _mark_boolean_comparisons(component: IR2Component) -> None:
             res_tn.primitive_type = BOOLEAN_T
 
 
+def _propagate_local_aliases(component: IR2Component) -> bool:
+    """Substitute stable, uncaptured local copies before ownership selection.
+
+    A local copy has the same value as its source, but may keep that value
+    alive independently. The lifetime proof must cover its consumers and every
+    reachable owner transfer, not just the textual assignment and last read.
+    """
+    if component.context.plan is not None:
+        return False
+    changed = False
+    while True:
+        proof = _BorrowedLifetime(component)
+        removed = set()
+        for block in component.blocks:
+            for acquisition in block.vops:
+                if acquisition.info is not vops.LOAD_LOCAL:
+                    continue
+                access = acquisition.codegen_info
+                if not access.bound:
+                    continue
+                source = acquisition.args[0].tn
+                if not _plain_local(source):
+                    continue
+                value = acquisition.results[0].tn
+                uses = component.reads.get(value, ())
+                if len(uses) != 1:
+                    continue
+                assignment, _ = uses[0]
+                if assignment.info is not vops.MOVE:
+                    continue
+                alias = assignment.results[0].tn
+                if (
+                    alias is source
+                    or not _plain_local(alias)
+                    or len(component.writes.get(alias, ())) != 1
+                ):
+                    continue
+                loads = {reader for reader, _ in component.reads.get(alias, ())}
+                if not loads or any(
+                    reader.info is not vops.LOAD_LOCAL or not reader.codegen_info.bound
+                    for reader in loads
+                ):
+                    continue
+                consumers = {assignment, *loads}
+                ends = set()
+                for load in loads:
+                    aliases, uses = proof.consumers(load.results[0].tn, source)
+                    if not aliases:
+                        break
+                    consumers.update(uses)
+                    if load.codegen_info.move:
+                        readers = component.reads.get(load.results[0].tn, ())
+                        if len(readers) == 1 and readers[0][0].info is not vops.MOVE:
+                            ends.add(readers[0][0])
+                else:
+                    if not proof.protected(acquisition, consumers, source):
+                        continue
+                    if not proof.stable_after(acquisition, consumers, source, ends):
+                        continue
+                    for load in loads:
+                        load.args[0] = TNRef(source, False)
+                    removed.update((acquisition, assignment))
+                    break
+            if removed:
+                break
+        if not removed:
+            return changed
+        changed = True
+        component.reads.clear()
+        component.writes.clear()
+        for block in component.blocks:
+            block.vops = [vop for vop in block.vops if vop not in removed]
+            for vop in block.vops:
+                for ref in vop.args:
+                    component.reads[ref.tn].append((vop, ref))
+                for ref in vop.results:
+                    component.writes[ref.tn].append((vop, ref))
+        _mark_last_local_reads(component)
+
+
+def _plain_local(tn) -> bool:
+    return (
+        tn.leaf is not None
+        and not tn.leaf.indirect
+        and not tn.leaf.expression_temporary
+    )
+
+
 def _mark_borrowed_local_reads(component: IR2Component) -> None:
     """Elide owned copies whose uses remain protected by a stable local root.
 
@@ -1230,7 +1320,9 @@ class _BorrowedLifetime:
                 continue
             step = block.vops[index - 1]
             if step not in consumers or step.info is not vops.MOVE:
-                if not self.safe_step(step, source, consumer=step in consumers):
+                if not self.safe_step(
+                    step, source, consumer=step in consumers
+                ) and not (self.transfers_to_consumer(step, source, consumers)):
                     return False
                 if (
                     local_only
@@ -1239,6 +1331,128 @@ class _BorrowedLifetime:
                 ):
                     return False
             pending.append((block, index - 1))
+        return True
+
+    def transfers_to_consumer(self, step, source, consumers):
+        """A moved owner still protects borrows consumed by the same operation."""
+        if (
+            step.info is not vops.LOAD_LOCAL
+            or step.args[0].tn is not source
+            or not step.codegen_info.move
+            or not step.codegen_info.bound
+        ):
+            return False
+        moved = step.results[0].tn
+        if moved.leaf is not None or len(self.component.writes.get(moved, ())) != 1:
+            return False
+        uses = self.component.reads.get(moved, ())
+        if len(uses) != 1:
+            return False
+        terminal, ref = uses[0]
+        if not (
+            terminal in consumers
+            and terminal.info not in (vops.MOVE, vops.LOAD_LOCAL)
+            and _borrows_operand(terminal, ref, source)
+        ):
+            return False
+        block, index = self.positions[step]
+        end_block, end = self.positions[terminal]
+        if block is not end_block or index >= end:
+            return False
+        if any(
+            not _safe_borrow_step(intermediate, None)
+            or not self.copy_safe_step(intermediate)
+            for intermediate in block.vops[index + 1 : end]
+        ):
+            return False
+        pending = [(block, end + 1)]
+        handler = self.component.ir2_blocks.get(block_exception_target(block.block))
+        if handler is not None:
+            pending.append((handler, 0))
+        visited = set()
+        while pending:
+            following, position = pending.pop()
+            if (following, position) in visited:
+                continue
+            visited.add((following, position))
+            if position == len(following.vops):
+                for successor in following.block.succ:
+                    target = self.component.ir2_blocks.get(successor)
+                    if target is not None:
+                        pending.append((target, 0))
+                continue
+            if following.vops[position] in consumers:
+                return False
+            handler = self.component.ir2_blocks.get(
+                block_exception_target(following.block)
+            )
+            if handler is not None:
+                pending.append((handler, 0))
+            pending.append((following, position + 1))
+        return True
+
+    def copy_safe_step(self, step):
+        """Prove that no implicit error exit can outlive an eliminated copy.
+
+        Stable-root borrowing alone permits throwing operations: the root still
+        owns the value on their error paths. Removing an independently owned
+        local also changes cleanup order, so it needs a nonthrowing region.
+        Selected operations without an established contract remain barriers.
+        """
+        if step.info is vops.LOAD_LOCAL:
+            return step.codegen_info.bound
+        if step.info is vops.MOVE:
+            return len(self.component.writes.get(step.results[0].tn, ())) == 1
+        if step.info is vops.CONSTANT:
+            return all(
+                not storage.owned
+                for result in step.results
+                for storage in result.tn.primitive_type.scs
+            )
+        name = step.info.name
+        if name in ("compare-is", "compare-is_not", "jump"):
+            return True
+        if name == "branch":
+            condition = step.args[0].tn.type
+            return (
+                condition is not None
+                and not condition.may_be_unbound
+                and not condition.may_run_user_code
+            )
+        return False
+
+    def stable_after(self, acquisition, consumers, source, ends):
+        """Keep the original owner valid on paths without an alias read, too."""
+        if not ends:
+            return False
+        start, index = self.positions[acquisition]
+        pending = [(start, index + 1, True)]
+        visited = set()
+        while pending:
+            block, index, live = pending.pop()
+            if (block, index, live) in visited:
+                continue
+            visited.add((block, index, live))
+            if not live:
+                continue
+            if index == len(block.vops):
+                if live and not block.block.succ:
+                    return False
+                for successor in block.block.succ:
+                    following = self.component.ir2_blocks.get(successor)
+                    if following is not None:
+                        pending.append((following, 0, live))
+                continue
+            step = block.vops[index]
+            if (step is acquisition or not self.copy_safe_step(step)) or (
+                not self.safe_step(step, source, consumer=step in consumers)
+                and not self.transfers_to_consumer(step, source, consumers)
+            ):
+                return False
+            handler = self.component.ir2_blocks.get(block_exception_target(block.block))
+            if handler is not None:
+                pending.append((handler, 0, live and step not in ends))
+            pending.append((block, index + 1, live and step not in ends))
         return True
 
     @staticmethod
@@ -1392,6 +1606,10 @@ def _mark_last_local_reads(component: IR2Component) -> None:
     }
     if not candidates:
         return
+    for block in component.blocks:
+        for vop in block.vops:
+            if vop.info is vops.LOAD_LOCAL and vop.args[0].tn in candidates:
+                vop.codegen_info = replace(vop.codegen_info, move=False)
     blocks = component.blocks
     if (
         len(blocks) == 1

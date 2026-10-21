@@ -4,7 +4,14 @@ import logging
 
 import pytest
 
-from mule.compiler.ctype import DICT_TYPE, TEXT_TYPE, UNKNOWN, IntegerType, TupleType
+from mule.compiler.ctype import (
+    DICT_TYPE,
+    TEXT_TYPE,
+    UNKNOWN,
+    IntegerType,
+    TupleType,
+    UnionType,
+)
 from mule.compiler.ir1util import known_calls
 from mule.compiler.main import compile_source
 from test.mule.compiler.test_native import run_native
@@ -60,8 +67,12 @@ def test_variadic_parameter_branch_join_does_not_preserve_replaced_container():
     assert compilation.facts is not None
     returned = compilation.facts[function].return_type
 
-    assert returned.getitem_type(IntegerType(0, 0)) is UNKNOWN
-    assert returned.getitem_type(IntegerType(1, 1)) is UNKNOWN
+    positional = returned.getitem_type(IntegerType(0, 0))
+    keywords = returned.getitem_type(IntegerType(1, 1))
+    assert positional == UnionType(frozenset((TupleType(), IntegerType(42, 42))))
+    assert keywords == UnionType(frozenset((DICT_TYPE, TEXT_TYPE)))
+    assert not positional.fits_tuple(TupleType())
+    assert not keywords.fits_dict()
 
 
 def test_varargs_length_selects_direct_storage_primitive():

@@ -250,7 +250,7 @@ class _BooleanSingletonValue(ValueTypeVisitor):
 class _DisjointFromNone(ValueTypeVisitor):
     """Whether a bound value type is proven never to be ``None``.
 
-    ``OptionalIntegerType`` and ``ImmortalType`` inherit from ``ValueType``
+    ``UnionType`` and ``ImmortalType`` inherit from ``ValueType``
     (not ``PrimitiveType``) and may be ``None``, so they fall back to
     ``visit_ValueType`` and return ``False``.
     """
