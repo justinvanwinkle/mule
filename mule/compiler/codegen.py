@@ -2074,6 +2074,7 @@ class ModuleGenerator:
             *(f"ptr %arg.{i}" for i in range(arity)),
         ]
         builder = _HelperBuilder(self)
+        body_globals = "%globals" if proven else "%callee.globals"
         if proven:
             builder.lines = [
                 f"define internal ptr {symbol}({', '.join(params)}) {{",
@@ -2099,8 +2100,9 @@ class ModuleGenerator:
             builder.lines = [
                 f"define internal ptr {symbol}({', '.join(params)}) {{",
                 "entry:",
-                f"  %matched = call i32 @mule_function_matches(ptr %callee, ptr {self.functions[function]}, ptr %globals)",
-                "  %matching = icmp ne i32 %matched, 0",
+                "  %fn.globals.slot = alloca ptr",
+                "  %callee.entry = call ptr @mule_method_entry(ptr %callee, ptr %fn.globals.slot)",
+                f"  %matching = icmp eq ptr %callee.entry, {self.functions[function]}",
             ]
             if receiver_call:
                 # Resolution binds a receiver only for a class's method; a
@@ -2116,6 +2118,7 @@ class ModuleGenerator:
                     "  br i1 %matching, label %direct, label %fallback",
                     "direct:",
                 ]
+            builder.line("  %callee.globals = load ptr, ptr %fn.globals.slot")
 
         def emit_invoke(context: EntryContext | None, tag: int) -> None:
             if borrowed_arguments:
@@ -2149,7 +2152,7 @@ class ModuleGenerator:
                 else self.bodies[function]
             )
             body_args = ", ".join(
-                ["ptr %globals", *closure_ops, *(f"ptr {v}" for v in owned)]
+                [f"ptr {body_globals}", *closure_ops, *(f"ptr {v}" for v in owned)]
             )
             builder.line(f"  %res.{tag} = call ptr {body}({body_args})")
             builder.line("  call void @mule_leave_frame()")
@@ -2260,6 +2263,7 @@ class ModuleGenerator:
             "ptr %tuple.out",
         ]
         builder = _HelperBuilder(self)
+        body_globals = "%globals" if proven else "%callee.globals"
         if proven:
             builder.lines = [
                 f"define internal ptr {symbol}({', '.join(params)}) {{",
@@ -2279,10 +2283,12 @@ class ModuleGenerator:
             builder.lines = [
                 f"define internal ptr {symbol}({', '.join(params)}) {{",
                 "entry:",
-                f"  %matched = call i32 @mule_function_matches(ptr %callee, ptr {self.functions[function]}, ptr %globals)",
-                "  %matching = icmp ne i32 %matched, 0",
+                "  %fn.globals.slot = alloca ptr",
+                "  %callee.entry = call ptr @mule_method_entry(ptr %callee, ptr %fn.globals.slot)",
+                f"  %matching = icmp eq ptr %callee.entry, {self.functions[function]}",
                 "  br i1 %matching, label %direct, label %fallback",
                 "direct:",
+                "  %callee.globals = load ptr, ptr %fn.globals.slot",
             ]
 
         def emit_invoke(context: EntryContext | None, tag: int) -> None:
@@ -2312,7 +2318,7 @@ class ModuleGenerator:
             body = self.unpacked[function, None if context is None else context.id]
             body_args = ", ".join(
                 [
-                    "ptr %globals",
+                    f"ptr {body_globals}",
                     *closure_ops,
                     *(f"ptr {v}" for v in owned),
                     "ptr %tuple.out",

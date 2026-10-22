@@ -116,6 +116,17 @@ entry:
 }
 """
     )
+    # Check entry selection before LLVM can inline away function boundaries.
+    # A direct-looking lookup alone must not hide general binding on updates.
+    initial_functions = {
+        **_llvm_functions(builtins_llvm.read_text()),
+        **_llvm_functions(source.read_text()),
+    }
+    initial_reachable = _reachable_functions("word_count_ir_probe", initial_functions)
+    for operation in ("mule_fn__table_lookup.body", "mule_fn__table_insert.body"):
+        assert any(operation in name for name in initial_reachable), (
+            f"word counting must select the known {operation} entry, not only dynamic binding"
+        )
     main_optimized = tmp_path / "word_count.main.optimized.ll"
     builtins_optimized = tmp_path / "word_count.builtins.optimized.ll"
     optimized = tmp_path / "word_count.optimized.ll"

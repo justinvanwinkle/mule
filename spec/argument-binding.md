@@ -114,12 +114,15 @@ All argument expressions execute before binding errors are raised.
 Imported function metadata remains a guarded target prediction when a call's
 result is unused or its inferred result is `None`. Constraint propagation keeps
 that prediction on the callee reference without marking the binding proven.
-The matching path can enter the known body directly; a rebound callable retains
-the existing dynamic fallback and actual namespace, capture, and default state.
+The guard compares the callable's actual entry with the expected code entry.
+It obtains the defining namespace from the callable, not the caller's namespace,
+and passes that namespace to the matched body. This uses the same physical entry
+and namespace extraction as resolved method calls. Captures and defaults likewise
+come from the actual callable. A rebound callable retains the dynamic fallback.
 This follows SBCL's local-call target and argument propagation while adapting
 Python's mutable imported bindings through an identity guard. An importing
-unit may use the definition's metadata and result derivation, but only the
-defining unit owns and specializes its function's entry contexts.
+analysis may use an imported definition's metadata and result derivation, but
+only the defining analysis owns and specializes its function's entry contexts.
 
 Resolved method calls predict compiled method bodies for both receiver shapes.
 A bound call supplies its receiver separately; an explicit class access such as

@@ -2243,7 +2243,7 @@ def analyze(
                     or len(call.arguments) != len(target.vars)
                 ):
                     # Imported targets still predict guarded calls, but their
-                    # defining unit owns their argument and entry contexts.
+                    # defining analysis owns their argument and entry contexts.
                     continue
                 for index, (actual, contract, var) in enumerate(
                     zip(
