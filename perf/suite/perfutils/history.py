@@ -102,6 +102,39 @@ def _candidates(run):
     return candidates or [run["baseline"]]
 
 
+def _order_cases(cases, available_in_runs):
+    """Place each ``<case>_typed`` column immediately adjacent to ``<case>``."""
+    suffix = "_typed"
+    expanded = []
+    for case in cases:
+        if case.endswith(suffix):
+            base = case[: -len(suffix)]
+            if base in available_in_runs and base not in expanded:
+                expanded.append(base)
+            if case not in expanded:
+                expanded.append(case)
+        else:
+            if case not in expanded:
+                expanded.append(case)
+            typed = f"{case}{suffix}"
+            if typed in available_in_runs and typed not in expanded:
+                expanded.append(typed)
+    ordered = []
+    seen = set()
+    for case in expanded:
+        if case in seen:
+            continue
+        if case.endswith(suffix) and case[: -len(suffix)] in expanded:
+            continue
+        seen.add(case)
+        ordered.append(case)
+        typed = f"{case}{suffix}"
+        if typed in expanded and typed not in seen:
+            seen.add(typed)
+            ordered.append(typed)
+    return ordered
+
+
 def table(runs, runtime_name=None, cases=None, limit=None):
     """Lines of a text table: one row per run/runtime, one column per scenario,
     each cell the kernel median and elapsed-time ratio of ``runtime_name``
@@ -110,12 +143,12 @@ def table(runs, runtime_name=None, cases=None, limit=None):
         runs = runs[-limit:]
     if not runs:
         return ["no history"]
-    if cases is None:
-        cases = []
-        for run in runs:
-            for result in run["results"]:
-                if result["case"] not in cases:
-                    cases.append(result["case"])
+    available_in_runs = []
+    for run in runs:
+        for result in run["results"]:
+            if result["case"] not in available_in_runs:
+                available_in_runs.append(result["case"])
+    cases = _order_cases(cases or available_in_runs, available_in_runs)
     header = ["run (UTC)", "runtime", "revision", "samples", *cases]
     rows = []
     for run in runs:

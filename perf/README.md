@@ -52,18 +52,21 @@ uv run python -m perfutils list
 
 ### Annotated and policy variations
 
-Separate variations pair explicit Mule type contracts (`from mule import int64, float64, optimize`)
-and high-speed/zero-safety compiler policy (`__speed__ = 3`, `__safety__ = 0`, `@optimize(speed=3, safety=0)`)
-with equivalent SBCL declarations (`(declaim (optimize (speed 3) (safety 0) (debug 0)))`, `(signed-byte 64)`, `double-float`, and typed `defstruct`s).
+Separate `<case>_typed` variations have the exact same code as their `<case>`
+counterparts apart from explicit Mule type contracts (`from mule import int64, float64, optimize`),
+high-speed/zero-safety/zero-debug compiler policy (`__speed__ = 3`, `__safety__ = 0`, `__debug_level__ = 0`, `@optimize(speed=3, safety=0, debug=0)`),
+and equivalent SBCL declarations (`(declaim (optimize (speed 3) (safety 0) (debug 0)))`, `(signed-byte 64)`, and `double-float`).
 Each Python script remains valid runnable CPython via the host markers in `mule` / `stdlib/mule.py`,
-and computes the exact same result tuple as its unannotated counterpart:
+computes the exact same result tuple as its unannotated counterpart, and is
+displayed visually alongside its untyped counterpart in SVG charts, HTML
+dashboards, and history tables:
 
 | Script | SBCL equivalent | Counterpart | Specialization and policy measured |
 | --- | --- | --- | --- |
-| `float_nbody_typed.py` | `float_nbody_typed.lisp` | `float_nbody.py` | `float64`/`int64` annotations + `speed=3, safety=0` vs SBCL `double-float`/`(signed-byte 64)` |
-| `integer_accumulation_typed.py` | `integer_accumulation_typed.lisp` | `integer_accumulation.py` | `int64` loop accumulator annotations + `speed=3, safety=0` vs SBCL `(signed-byte 64)` |
-| `matrix_multiply_typed.py` | `matrix_multiply_typed.lisp` | `matrix_multiply.py` | `int64` nested-loop index/dot-product annotations + `speed=3, safety=0` vs SBCL `(signed-byte 64)` |
-| `native_struct_ledger.py` | `native_struct_ledger.lisp` | `account_ledger.py` | `@optimize(speed=3, safety=0)` native `int64` struct class vs SBCL typed `defstruct` |
+| `account_ledger_typed.py` | `account_ledger_typed.lisp` | `account_ledger.py` | `int64` method/loop annotations + `speed=3, safety=0, debug=0` vs SBCL `(signed-byte 64)` |
+| `float_nbody_typed.py` | `float_nbody_typed.lisp` | `float_nbody.py` | `float64`/`int64` annotations + `speed=3, safety=0, debug=0` vs SBCL `double-float`/`(signed-byte 64)` |
+| `integer_accumulation_typed.py` | `integer_accumulation_typed.lisp` | `integer_accumulation.py` | `int64` loop accumulator annotations + `speed=3, safety=0, debug=0` vs SBCL `(signed-byte 64)` |
+| `matrix_multiply_typed.py` | `matrix_multiply_typed.lisp` | `matrix_multiply.py` | `int64` nested-loop index/dot-product annotations + `speed=3, safety=0, debug=0` vs SBCL `(signed-byte 64)` |
 
 The HTTP case executes handlers in process. It deliberately covers bounded
 generated requests rather than a production parser; socket throughput,
