@@ -2,7 +2,7 @@
 
 import pytest
 
-from mule.compiler.ctype import UNKNOWN
+from mule.compiler.ctype import NONE_TYPE, UNKNOWN, IntegerType, TupleType
 from mule.compiler.main import compile_source
 from mule.compiler.node import CallKind, Cast, Combination
 
@@ -40,3 +40,24 @@ def test_tail_call_does_not_introduce_inferred_result_assertion():
         for block in caller.component.blocks()
         for node in block.nodes()
     )
+
+
+def test_recursive_tuple_result_contract_includes_non_leaf_nodes():
+    compilation = compile_source(
+        "def make_tree(item, depth):\n"
+        " if depth <= 0:\n  return (item, None, None)\n"
+        " return (item, make_tree(item, depth - 1), make_tree(item, depth - 1))\n"
+        "def consume(depth):\n tree = make_tree(1, depth)\n return tree[0]\n"
+    )
+    caller = compilation.lambdas[2]
+    cast = next(
+        node
+        for block in caller.component.blocks()
+        for node in block.nodes()
+        if isinstance(node, Cast)
+    )
+    leaf = TupleType(3, (IntegerType(1, 1), NONE_TYPE, NONE_TYPE))
+    nested = TupleType(3, (IntegerType(1, 1), leaf, leaf))
+    assert leaf.fits(cast.contract.fact)
+    assert nested.fits(cast.contract.fact)
+    assert cast.type_check

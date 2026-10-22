@@ -1452,6 +1452,15 @@ class _OrderedSequence:
 class ListStorage(_OrderedSequence):
     __slots__ = ()
 
+    def __len__(self):
+        if not is_instance(self, list):
+            raise TypeError(
+                "descriptor '__len__' requires a 'list' object but received a '"
+                + _type_name(self)
+                + "'"
+            )
+        return _storage_length(self)
+
     def __repr__(self):
         return _sequence_representation(self, "[", "]", False)
 

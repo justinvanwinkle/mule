@@ -81,6 +81,29 @@ except TypeError:
     assert run_source(tmp_path, source) == "checked first\n"
 
 
+def test_recursive_tuple_contract_accepts_branches_and_checks_rebinding(tmp_path):
+    source = """def make_tree(item, depth):
+    if depth <= 0:
+        return (item, None, None)
+    return (item, make_tree(item, depth - 1), make_tree(item, depth - 1))
+def root_shape(depth):
+    tree = make_tree(1, depth)
+    return (tree[0], tree[1] is None)
+for depth in (0, 1, 3):
+    print(root_shape(depth))
+def incompatible(item, depth):
+    return ('wrong', None, None)
+globals()['make_tree'] = incompatible
+try:
+    root_shape(1)
+except TypeError:
+    print('incompatible tree')
+"""
+    assert run_source(tmp_path, source) == (
+        "(1, True)\n(1, False)\n(1, False)\nincompatible tree\n"
+    )
+
+
 @pytest.mark.parametrize("directive", ["__debug_level__ = 3", "__speed__ = 0"])
 def test_existing_policy_opt_out_keeps_result_type_dynamic(tmp_path, directive):
     source = f"""{directive}

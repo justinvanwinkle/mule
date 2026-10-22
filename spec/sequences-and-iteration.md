@@ -95,6 +95,14 @@ negative indices and mutable list lengths require different language rules from
 Common Lisp vectors. Storage guards are not source-language type tags: builtin
 storage uses shared class method tables, just as user instances do.
 
+List storage exposes its physical length through the compiled `list.__len__`
+descriptor. The descriptor accepts list subclasses, bypasses subclass length
+overrides when called explicitly, and rejects non-list receivers. Sequence
+patterns materialize a list and use this descriptor to check its length.
+SBCL `src/code/seq.lisp`, `length`, dispatches to sequence-specific length
+operations. Mule retains that language/storage boundary and adds Python's
+explicit descriptor receiver rules; no language algorithm moves into Rust.
+
 Tuple storage exposes its compiled hash as `tuple.__hash__`, so class-level
 hashability queries agree with `hash(tuple_value)`. The combination reads
 physical tuple elements and recursively calls the language hash operation;
