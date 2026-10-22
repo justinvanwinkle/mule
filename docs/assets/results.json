@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "created_utc": "20261022T032655.853789Z",
+  "created_utc": "20261022T064015.455540Z",
   "baseline": "cpython",
   "platform": "Linux-7.2.11+deb14-amd64-x86_64-with-glibc2.43",
   "harness_python": "3.15.0 free-threading build (main, Oct 14 2026, 01:06:54) [Clang 23.1.3 ]",
@@ -42,7 +42,7 @@
     "action": "run",
     "cases": [],
     "config": "perf/runtimes.example.toml",
-    "output": "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z",
+    "output": "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z",
     "history": "/home/jvanwinkle/repos/mule/perf/history.jsonl",
     "no_history": false,
     "runtime": null,
@@ -109,7 +109,7 @@
         "--version"
       ],
       "revision": {
-        "commit": "e4acb2678f416dd07f143ca8ebb901489b1c9cfd",
+        "commit": "45c936432ebcbb373508fd32da08a1eba3735f69",
         "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       },
       "version": "Python 3.15.0\n"
@@ -131,7 +131,7 @@
         "2"
       ],
       "revision": {
-        "commit": "e4acb2678f416dd07f143ca8ebb901489b1c9cfd",
+        "commit": "45c936432ebcbb373508fd32da08a1eba3735f69",
         "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       }
     },
@@ -157,7 +157,7 @@
         "--version"
       ],
       "revision": {
-        "commit": "e4acb2678f416dd07f143ca8ebb901489b1c9cfd",
+        "commit": "45c936432ebcbb373508fd32da08a1eba3735f69",
         "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       },
       "version": "SBCL 2.6.4.debian\n"
@@ -173,13 +173,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/account_ledger.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/0-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/0-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 1.5250920139988011,
-      "binary_sha256": "dd2e3d798e6b0732c065db659dbf47109b878859a1587f7b3e9cd9f4e0d4c7ed",
+      "seconds": 1.502149690000806,
+      "binary_sha256": "2cb35f245d0ae126473d5bb0d1937b62235d0f5ddc012c5b5e4c96c520cbf71e",
       "stdout": "",
       "stderr": ""
     },
@@ -193,13 +193,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/account_ledger.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/0-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/account_ledger.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/0-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/0-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/0-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.5603917879998335,
-      "binary_sha256": "b24651384601ca24a238456ba064788fdaa162e32247bc7e75dce6146d8aa0dd",
+      "seconds": 0.5680864189998829,
+      "binary_sha256": "31c44d6ae483d34a0f9f563cb518633eb03af207561bc22e8b53255abc1ed036",
       "stdout": "",
       "stderr": ""
     },
@@ -212,13 +212,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/closure_pipeline.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/1-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/1-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 0.804017168997234,
-      "binary_sha256": "ff670bf66dc74f7785b9df6b1589cc89cdacfa2af463c71b26bd33c5cdcd8597",
+      "seconds": 0.7906234230031259,
+      "binary_sha256": "b00c1e849c9c9443c09df1ef4951768dcf8103b3eee13855ff5935364761f37f",
       "stdout": "",
       "stderr": ""
     },
@@ -232,13 +232,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/closure_pipeline.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/1-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/closure_pipeline.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/1-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/1-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/1-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.5387772190006217,
-      "binary_sha256": "7c6892fdbcef8a8c3ae1ad2ac629ea361bcbab88cafdb9a40946dce81a99fadd",
+      "seconds": 0.5674778889951995,
+      "binary_sha256": "a26322b7bd2d61e8fb84fdbaf1f2a26b15d5a7f84cbd211bffc62c3ae93d86cf",
       "stdout": "",
       "stderr": "\n; file: /home/jvanwinkle/repos/mule/perf/suite/closure_pipeline.lisp\n; in: DEFUN APPLY-PIPELINE\n;     (THE FIXNUM (FUNCALL S3 (THE FIXNUM (FUNCALL S2 (THE FIXNUM #)))))\n; \n; note: Type assertion too complex to check efficiently:\n; FIXNUM.\n; It allows an unknown number of values, consider using\n; (VALUES FIXNUM &OPTIONAL).\n; \n; compilation unit finished\n;   printed 1 note\n"
     },
@@ -251,13 +251,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/exception_validation.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/2-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/2-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 1.147791537001467,
-      "binary_sha256": "fce7396ae1e883e116044b1df7baccc0254f00e8518c6fa1e3c976d8dba4dd24",
+      "seconds": 1.1382058659946779,
+      "binary_sha256": "e9d9b9cb5ead3805b7777654dbd18b817ba0ac3e26bf9bdf14964393d5f7d0e5",
       "stdout": "",
       "stderr": ""
     },
@@ -271,13 +271,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/exception_validation.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/2-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/exception_validation.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/2-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/2-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/2-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.5242456140003924,
-      "binary_sha256": "6e744e47e8186b8d17d2bc897a14922a5e2baf417195f204327a8cb12dce07f0",
+      "seconds": 0.5187545169974328,
+      "binary_sha256": "90d34a3b064bcd63bf26d03bc19bb5aaec2eb41db39d0f38b6976bbdb6a1c0a1",
       "stdout": "",
       "stderr": ""
     },
@@ -290,13 +290,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/expression_tree.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/3-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/3-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 1.525663082000392,
-      "binary_sha256": "d8013c9307915ea57fc931eaa25afd6f1ebde4603f0fcf8b3918ba4fb471519b",
+      "seconds": 1.4946841029959614,
+      "binary_sha256": "c9a2b4f2fa9f1c884418bc6c5a52d748cd802b06b500730fad84837bddcc2e9b",
       "stdout": "",
       "stderr": ""
     },
@@ -310,13 +310,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/expression_tree.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/3-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/expression_tree.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/3-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/3-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/3-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.5280837520003843,
-      "binary_sha256": "da01ac189b2e50ee151bb0b22b9a104cf35379e5eaf04eadbc8fdfbe3b4d8eaa",
+      "seconds": 0.5414369909995003,
+      "binary_sha256": "dbe642eba0b1b995333fdf62662634511b56db93aae2c05cfadb6b23eadfd3b3",
       "stdout": "",
       "stderr": "\n; file: /home/jvanwinkle/repos/mule/perf/suite/expression_tree.lisp\n; in: DEFMETHOD EVAL-NODE (LIT-EXPR HASH-TABLE)\n;     (THE FIXNUM (LIT-EXPR-VALUE NODE))\n; \n; note: Type assertion too complex to check efficiently:\n; FIXNUM.\n; It allows an unknown number of values, consider using\n; (VALUES FIXNUM &OPTIONAL).\n; \n; compilation unit finished\n;   printed 1 note\n"
     },
@@ -329,13 +329,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/graph_paths.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/4-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/4-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 1.9767731089996232,
-      "binary_sha256": "ac0bd33dad7ed9f39f6ec1537294c1597acef6308bae1f9aaf73d751487db7f3",
+      "seconds": 2.020176256999548,
+      "binary_sha256": "dafe4c47e73b7e61328b05d49340d98c85af3cacd92103187d3d9abb2f031322",
       "stdout": "",
       "stderr": ""
     },
@@ -349,13 +349,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/graph_paths.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/4-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/graph_paths.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/4-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/4-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/4-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.5598491220007418,
-      "binary_sha256": "efbf71e5900c662eace96e5d3afb94cba344698b096b8958644c5c4a28c9ebb3",
+      "seconds": 0.5550215700059198,
+      "binary_sha256": "c655d7677b595e313c2ceeb49a449c4c7271b2bc4da4a9ccd61630873f4df752",
       "stdout": "",
       "stderr": "\n; file: /home/jvanwinkle/repos/mule/perf/suite/graph_paths.lisp\n; in: DEFUN HEAP-PUSH\n;     (VECTOR-PUSH-EXTEND ITEM HEAP)\n; \n; note: unable to\n;   optimize\n; because:\n;   Upgraded element type of array is not known at compile time.\n\n;     (AREF HEAP PARENT)\n; \n; note: unable to\n;   avoid runtime dispatch on array element type\n; because:\n;   Upgraded element type of array is not known at compile time.\n\n;     (AREF HEAP IDX)\n; --> FUNCALL \n; ==>\n;   1\n; \n; note: unable to\n;   avoid runtime dispatch on array element type\n; because:\n;   Upgraded element type of array is not known at compile time.\n\n; in: DEFUN HEAP-POP\n;     (AREF HEAP 0)\n; \n; note: unable to\n;   avoid runtime dispatch on array element type\n; because:\n;   Upgraded element type of array is not known at compile time.\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a VECTOR, not a SIMPLE-ARRAY.\n\n;     (VECTOR-POP HEAP)\n; \n; note: unable to\n;   optimize\n; because:\n;   Upgraded element type of array is not known at compile time.\n\n;     (AREF HEAP RIGHT)\n; \n; note: unable to\n;   avoid runtime dispatch on array element type\n; because:\n;   Upgraded element type of array is not known at compile time.\n\n;     (AREF HEAP LEFT)\n; \n; note: unable to\n;   avoid runtime dispatch on array element type\n; because:\n;   Upgraded element type of array is not known at compile time.\n\n;     (AREF HEAP CHILD)\n; \n; note: unable to\n;   avoid runtime dispatch on array element type\n; because:\n;   Upgraded element type of array is not known at compile time.\n\n;     (AREF HEAP IDX)\n; --> FUNCALL \n; ==>\n;   1\n; \n; note: unable to\n;   avoid runtime dispatch on array element type\n; because:\n;   Upgraded element type of array is not known at compile time.\n\n; in: DEFUN RUN-KERNEL\n;     (LENGTH EDGES)\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SEQUENCE, not a VECTOR.\n\n;     (AREF EDGES I)\n; \n; note: unable to\n;   avoid runtime dispatch on array element type\n; because:\n;   Upgraded element type of array is not known at compile time.\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a VECTOR, not a SIMPLE-ARRAY.\n; \n; compilation unit finished\n;   printed 13 notes\n"
     },
@@ -368,13 +368,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/http_routing.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/5-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/5-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 1.1358753000022261,
-      "binary_sha256": "20f11bee8ff285339e7cfb0988f3015f3cfb5dae183d318a16090488f172d079",
+      "seconds": 1.1280834680001135,
+      "binary_sha256": "dbeac7b0b4628bf9201247745503d526cd4b2728ac083d6749227f7be68c1d88",
       "stdout": "",
       "stderr": ""
     },
@@ -388,13 +388,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/http_routing.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/5-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/http_routing.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/5-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/5-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/5-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.8223600310011534,
-      "binary_sha256": "1b982d7df29671aa73587b1b71857d50486ccf60b096ba007bbbf9077ce940f1",
+      "seconds": 0.8475095039975713,
+      "binary_sha256": "6c38004b41ae86ee70a6a0adaad50a653de0fa662d117f9aef00efcf34c47bc9",
       "stdout": "",
       "stderr": "\n; file: /home/jvanwinkle/repos/mule/perf/suite/http_routing.lisp\n; in: DEFUN PREPARE\n;     (CONCATENATE 'STRING METHOD \" \" TARGET \" HTTP/1.1\" *CRLF* \"Host: localhost\"\n;                  *CRLF* \"X-Request-ID: \" IDENTIFIER *CRLF* ...)\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a T, not a (NOT SB-KERNEL:EXTENDED-SEQUENCE).\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a T, not a (NOT SB-KERNEL:EXTENDED-SEQUENCE).\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a T, not a (NOT SB-KERNEL:EXTENDED-SEQUENCE).\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a T, not a (NOT SB-KERNEL:EXTENDED-SEQUENCE).\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a T, not a (NOT SB-KERNEL:EXTENDED-SEQUENCE).\n\n; in: DEFUN HANDLE\n;     (STRING= METHOD \"GET\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n\n;     (STRING= PATH \"/health\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n\n;     (STRING= PATH \"/items\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n\n;     (STRING= METHOD \"GET\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n\n;     (STRING= NAME \"id\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a (OR STRING SYMBOL CHARACTER), not a (SIMPLE-ARRAY\n;                                                                CHARACTER (*)).\n\n;     (STRING= METHOD \"POST\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n\n;     (STRING= PATH \"/events\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n\n;     (STRING= (STRING-DOWNCASE NAME) \"content-length\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n\n;     (CONCATENATE 'STRING \"{\\\"id\\\":\" IDENTIFIER \"}\" (STRING #\\Newline))\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a T, not a (NOT SB-KERNEL:EXTENDED-SEQUENCE).\n; \n; compilation unit finished\n;   printed 14 notes\n"
     },
@@ -407,13 +407,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/integer_accumulation.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/6-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/6-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 0.5152050329998019,
-      "binary_sha256": "c346b6964cf955271123f1d4caf65d9d9e69242004f494a65e00a4cd6f18b83a",
+      "seconds": 0.5456046170002082,
+      "binary_sha256": "5de6d24608d2e334b8f187943c4dfb9d1ba57f814ca49c43ef0b147573a5d98f",
       "stdout": "",
       "stderr": ""
     },
@@ -427,13 +427,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/integer_accumulation.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/6-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/integer_accumulation.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/6-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/6-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/6-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.5097021670007962,
-      "binary_sha256": "bb7a65de9aee8b86f4944e628452343279a335b4860f2399508c6a0c447f5f16",
+      "seconds": 0.510158049997699,
+      "binary_sha256": "2b6b21c9bd0069fdff9daabc831565e2ec8edfd036d1e9262bcbe291301a5c52",
       "stdout": "",
       "stderr": ""
     },
@@ -446,13 +446,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/interval_merging.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/7-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/7-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 0.7682348859998456,
-      "binary_sha256": "a1c326418dae444dd1405dbd6282d6a7de0e378b7a0d68513b6b4d4d3dcc03ba",
+      "seconds": 0.841436265000084,
+      "binary_sha256": "2cf1082f634e1c2e1cea397b4821e1c89cf8ddb255c70196c7fc6bf71e026fee",
       "stdout": "",
       "stderr": ""
     },
@@ -466,13 +466,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/interval_merging.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/7-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/interval_merging.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/7-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/7-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/7-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.5219293759982975,
-      "binary_sha256": "2bba6e0e3813d9449abbf5e3ebfbe6e7f96247c94a70a8f391a4070efbcb4bac",
+      "seconds": 0.5346737779982504,
+      "binary_sha256": "99e074399e013e1e8687af92aaab1079ad37273bf690b57796e42fdb8ba9c6d3",
       "stdout": "",
       "stderr": ""
     },
@@ -485,13 +485,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/json_tokenizer.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/8-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/8-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 1.0391473090021464,
-      "binary_sha256": "9903dfaa13e3b5adebafa6eef3bf6b928ea14cbee7b4a0bdd11069e984631742",
+      "seconds": 1.252090796995617,
+      "binary_sha256": "f61c4f314f29cb25e1a54e9d9226a6d38e6955be36bbae2bfad4fab983c2fdf0",
       "stdout": "",
       "stderr": ""
     },
@@ -505,13 +505,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/json_tokenizer.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/8-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/json_tokenizer.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/8-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/8-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/8-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.6070931100002781,
-      "binary_sha256": "f4eccee4ad320007cc425f71adec78914ab0d4645c5fd910ef7240972b2bdc33",
+      "seconds": 0.6017479690053733,
+      "binary_sha256": "853956cf7a1ba07da643beb5d375f89cadd47e458c30b38badaad7d9f8f0b0c2",
       "stdout": "",
       "stderr": "\n; file: /home/jvanwinkle/repos/mule/perf/suite/json_tokenizer.lisp\n; in: DEFUN PREPARE\n;     (LENGTH *TAGS*)\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SEQUENCE, not a VECTOR.\n\n; in: DEFUN SCAN-PAYLOAD\n;     (STRING= WORD \"tag\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n\n;     (STRING= TEXT \"true\" :START1 I :END1 (+ I 4))\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n; \n; compilation unit finished\n;   printed 3 notes\n"
     },
@@ -524,13 +524,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/kv_record_parse.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/9-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/9-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 0.737745836002432,
-      "binary_sha256": "a66b96619b121def80d8cb5fcc30ecc8ac32c05f164b28002e42f5ced3fe8700",
+      "seconds": 0.9499611499995808,
+      "binary_sha256": "01f5c8c1cc5aa1c9650f87e14221ca957d51d6573686e7700ba3e876b48de2f6",
       "stdout": "",
       "stderr": ""
     },
@@ -544,13 +544,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/kv_record_parse.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/9-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/kv_record_parse.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/9-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/9-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/9-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.5519060860024183,
-      "binary_sha256": "f61d77094e5623ebb51dfa72385cb9964cade34889df2125c7d7a3e8844b7a7b",
+      "seconds": 0.5822514529936598,
+      "binary_sha256": "77e24f3f1fc625a2b8eaf80e7077dca039660bdf8cfcd69b9dc63399d38ecdf5",
       "stdout": "",
       "stderr": "\n; file: /home/jvanwinkle/repos/mule/perf/suite/kv_record_parse.lisp\n; in: DEFUN PREPARE\n;     (LENGTH *RECORDS*)\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SEQUENCE, not a VECTOR.\n\n; in: DEFUN RUN-KERNEL\n;     (STRING= KEY \"svc\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n\n;     (STRING= KEY \"level\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n\n;     (STRING= KEY \"ms\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n\n;     (STRING= KEY \"seq\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n; \n; compilation unit finished\n;   printed 5 notes\n"
     },
@@ -563,13 +563,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/log_aggregation.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/10-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/10-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 0.9267768320023606,
-      "binary_sha256": "d783262c5eb2601121a90d350c2d6102ad1dd2bddf45539a8b47938167a8658d",
+      "seconds": 1.0219591439963551,
+      "binary_sha256": "48f93806671974592dd8aa3e4e7bd5782994e96a70f292c9655eaadfe6d51e1c",
       "stdout": "",
       "stderr": ""
     },
@@ -583,13 +583,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/log_aggregation.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/10-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/log_aggregation.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/10-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/10-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/10-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.5811331130025792,
-      "binary_sha256": "f6267dd457d1558f57f3b13f537299a87e2e6d35d3a4220f90ec246c48df8de3",
+      "seconds": 0.612065977002203,
+      "binary_sha256": "ea9e729f25a19a31d3ded33e4e727e69ec93f9c5c619726e01ec57fd9da9382f",
       "stdout": "",
       "stderr": "\n; file: /home/jvanwinkle/repos/mule/perf/suite/log_aggregation.lisp\n; in: DEFUN RUN-KERNEL\n;     (STRING= F1 \"POST\")\n; \n; note: unable to\n;   optimize\n; due to type uncertainty:\n;   The first argument is a SIMPLE-STRING, not a (SIMPLE-ARRAY CHARACTER (*)).\n; \n; compilation unit finished\n;   printed 1 note\n"
     },
@@ -602,13 +602,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/lru_simulation.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/11-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/11-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 1.2943418659997405,
-      "binary_sha256": "c4aae069885f0f050877449d0b702f8aed133268a6c0d173c6cb3aff430f46fb",
+      "seconds": 1.295011132999207,
+      "binary_sha256": "d1699bea4a2ba02641c6ae2a9b1b7c24e54153e01ae035e4ce12f686094dba0e",
       "stdout": "",
       "stderr": ""
     },
@@ -622,13 +622,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/lru_simulation.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/11-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/lru_simulation.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/11-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/11-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/11-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.5591520670022874,
-      "binary_sha256": "4246de74e41bd4dee70065e80b7887eb840d87bde71277fdbd65ad94bdde1a9d",
+      "seconds": 0.5507392540021101,
+      "binary_sha256": "3ff7a45b199b6e0287e935ec3516eb72de5e508d38af5b8c4ea8118421790677",
       "stdout": "",
       "stderr": "\n; file: /home/jvanwinkle/repos/mule/perf/suite/lru_simulation.lisp\n; in: DEFUN CACHE-GET\n;     (THE FIXNUM (NODE-VALUE N))\n; \n; note: Type assertion too complex to check efficiently:\n; FIXNUM.\n; It allows an unknown number of values, consider using\n; (VALUES FIXNUM &OPTIONAL).\n; \n; compilation unit finished\n;   printed 1 note\n"
     },
@@ -641,13 +641,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/matrix_multiply.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/12-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/12-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 1.1075477199992747,
-      "binary_sha256": "dd7ef028cbdfd4960d13178887eece4a8a8fa99bb3571eda71b974a19e5ce537",
+      "seconds": 1.1288094609990367,
+      "binary_sha256": "8a04ab2ddf7bad98afd2be32a237eac3db4168d85a56a6f55756ab62a307554e",
       "stdout": "",
       "stderr": ""
     },
@@ -661,13 +661,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/matrix_multiply.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/12-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/matrix_multiply.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/12-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/12-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/12-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.5203675119992113,
-      "binary_sha256": "d9c1a7588790497b96e106b36a02618efdd2308b0e466be4b0f8859861a61f55",
+      "seconds": 0.5337668580032187,
+      "binary_sha256": "6509521a2c47f71e57fcd39af6db20a09d7f899274d0b0a21653ec417da6525f",
       "stdout": "",
       "stderr": ""
     },
@@ -680,13 +680,13 @@
         "mule.compiler",
         "/home/jvanwinkle/repos/mule/perf/suite/word_frequency.py",
         "-o",
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/13-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/13-1",
         "-O",
         "2"
       ],
       "status": "ok",
-      "seconds": 0.9909436839989212,
-      "binary_sha256": "aab23b3c466945648bdddd52fc330d0efaa820abbeb53c25f9ceb7a308e8e29f",
+      "seconds": 1.013749612000538,
+      "binary_sha256": "982be4bb2a7d9655e10f84f9f9366e03ca88023429780efd40407cbf27b12592",
       "stdout": "",
       "stderr": ""
     },
@@ -700,13 +700,13 @@
         "--no-userinit",
         "--non-interactive",
         "--eval",
-        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/word_frequency.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/13-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
+        "(let ((fasl (compile-file \"/home/jvanwinkle/repos/mule/perf/suite/word_frequency.lisp\" :output-file \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/13-2.fasl\" :verbose nil :print nil))) (load fasl :verbose nil :print nil) (delete-file fasl))",
         "--eval",
-        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/13-2\" :toplevel #'main :executable t :save-runtime-options t)"
+        "(sb-ext:save-lisp-and-die \"/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/13-2\" :toplevel #'main :executable t :save-runtime-options t)"
       ],
       "status": "ok",
-      "seconds": 0.4874668449992896,
-      "binary_sha256": "0289151285d0e41d50df008148907e4c49f84d0f6b05cc00c15c1ba03992ea32",
+      "seconds": 0.5028679690003628,
+      "binary_sha256": "2101ec11766c98c5fdd411938cc51a6bfdda7e1dd732f1b0ef30c9efb86634f1",
       "stdout": "",
       "stderr": "\n; file: /home/jvanwinkle/repos/mule/perf/suite/word_frequency.lisp\n; in: DEFUN RUN-KERNEL\n;     (+ FREQ-CHECKSUM (THE FIXNUM (* COUNT 17))\n;        (THE FIXNUM (GETHASH TOKEN TOTALS 0)) (LENGTH TOKEN))\n; \n; note: forced to do +/SIGNED=>INTEGER (cost 7)\n;       unable to do inline fixnum arithmetic (cost 2) because:\n;       The first argument is a (INTEGER -4611686018427387904 4611686019501129726), not a FIXNUM.\n;       The result is a (VALUES\n;                        (INTEGER -9223372036854775808 9223372037928517629)\n;                        &OPTIONAL), not a (VALUES FIXNUM &OPTIONAL).\n; \n; compilation unit finished\n;   printed 1 note\n"
     }
@@ -717,9 +717,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 4.316384442001436,
-          "preparation_seconds": 0.019368913002836052,
-          "process_seconds": 8.693932087000576,
+          "kernel_seconds": 4.236103107999952,
+          "preparation_seconds": 0.018266731000039726,
+          "process_seconds": 8.50624699999753,
           "fields": {
             "CASE": "account_ledger",
             "SIZE": "100000",
@@ -730,9 +730,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.292131997000979,
-          "preparation_seconds": 0.018575358000816777,
-          "process_seconds": 8.618496522001806,
+          "kernel_seconds": 4.248651139998401,
+          "preparation_seconds": 0.017743090000294615,
+          "process_seconds": 8.55785866700171,
           "fields": {
             "CASE": "account_ledger",
             "SIZE": "100000",
@@ -743,9 +743,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.295649800002138,
-          "preparation_seconds": 0.019749155999306822,
-          "process_seconds": 8.618707437999547,
+          "kernel_seconds": 4.23604794700077,
+          "preparation_seconds": 0.01915392200317001,
+          "process_seconds": 8.536644337000325,
           "fields": {
             "CASE": "account_ledger",
             "SIZE": "100000",
@@ -767,9 +767,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 4.246880459002568,
-        "preparation_seconds": 0.019260712000686908,
-        "process_seconds": 8.524543788000301,
+        "kernel_seconds": 4.248065927000425,
+        "preparation_seconds": 0.019417738003539853,
+        "process_seconds": 8.503546689003997,
         "fields": {
           "CASE": "account_ledger",
           "SIZE": "100000",
@@ -782,22 +782,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 4.295649800002138,
-          "min": 4.292131997000979,
-          "max": 4.316384442001436,
-          "stdev": 0.01070037073757605
+          "median": 4.236103107999952,
+          "min": 4.23604794700077,
+          "max": 4.248651139998401,
+          "stdev": 0.005928243355192517
         },
         "process_seconds": {
-          "median": 8.618707437999547,
-          "min": 8.618496522001806,
-          "max": 8.693932087000576,
-          "stdev": 0.03551105738525496
+          "median": 8.536644337000325,
+          "min": 8.50624699999753,
+          "max": 8.55785866700171,
+          "stdev": 0.02118125498647774
         },
         "preparation_seconds": {
-          "median": 0.019368913002836052,
-          "min": 0.018575358000816777,
-          "max": 0.019749155999306822,
-          "stdev": 0.0004890030696170545
+          "median": 0.018266731000039726,
+          "min": 0.017743090000294615,
+          "max": 0.01915392200317001,
+          "stdev": 0.0005823090734296786
         }
       },
       "speedup": {
@@ -810,9 +810,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 2.007784052999341,
-          "preparation_seconds": 0.0057798950001597404,
-          "process_seconds": 4.018347981000261,
+          "kernel_seconds": 2.017031383998983,
+          "preparation_seconds": 0.006689722002192866,
+          "process_seconds": 4.020980827997846,
           "fields": {
             "CASE": "account_ledger",
             "SIZE": "100000",
@@ -823,9 +823,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 2.0054009609993955,
-          "preparation_seconds": 0.006002130998240318,
-          "process_seconds": 4.02471363800214,
+          "kernel_seconds": 2.0007186800066847,
+          "preparation_seconds": 0.007051709995721467,
+          "process_seconds": 4.004803363000974,
           "fields": {
             "CASE": "account_ledger",
             "SIZE": "100000",
@@ -836,9 +836,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 1.9707502700002806,
-          "preparation_seconds": 0.006161860001157038,
-          "process_seconds": 3.9672147979981673,
+          "kernel_seconds": 2.000089062996267,
+          "preparation_seconds": 0.006345608002447989,
+          "process_seconds": 4.014738138997927,
           "fields": {
             "CASE": "account_ledger",
             "SIZE": "100000",
@@ -850,7 +850,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/0-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/0-1",
         "--seed",
         "42",
         "--loops",
@@ -859,9 +859,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 2.0161711380023917,
-        "preparation_seconds": 0.006196173999342136,
-        "process_seconds": 4.023950188002345,
+        "kernel_seconds": 2.000611272997048,
+        "preparation_seconds": 0.006953406998945866,
+        "process_seconds": 4.016943525995885,
         "fields": {
           "CASE": "account_ledger",
           "SIZE": "100000",
@@ -874,27 +874,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 2.0054009609993955,
-          "min": 1.9707502700002806,
-          "max": 2.007784052999341,
-          "stdev": 0.016924179275744435
+          "median": 2.0007186800066847,
+          "min": 2.000089062996267,
+          "max": 2.017031383998983,
+          "stdev": 0.007842497972792087
         },
         "process_seconds": {
-          "median": 4.018347981000261,
-          "min": 3.9672147979981673,
-          "max": 4.02471363800214,
-          "stdev": 0.02573635689230669
+          "median": 4.014738138997927,
+          "min": 4.004803363000974,
+          "max": 4.020980827997846,
+          "stdev": 0.006661508953052304
         },
         "preparation_seconds": {
-          "median": 0.006002130998240318,
-          "min": 0.0057798950001597404,
-          "max": 0.006161860001157038,
-          "stdev": 0.00015663100842514674
+          "median": 0.006689722002192866,
+          "min": 0.006345608002447989,
+          "max": 0.007051709995721467,
+          "stdev": 0.0002882957156933096
         }
       },
       "speedup": {
-        "kernel_seconds": 2.1420403617745314,
-        "process_seconds": 2.1448384955088304
+        "kernel_seconds": 2.1172907267431516,
+        "process_seconds": 2.126326560150461
       }
     },
     {
@@ -902,9 +902,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 0.7073505150001438,
-          "preparation_seconds": 0.0007825259999663103,
-          "process_seconds": 1.4252205789998698,
+          "kernel_seconds": 0.6629382690007333,
+          "preparation_seconds": 0.0008033550038817339,
+          "process_seconds": 1.358938006000244,
           "fields": {
             "CASE": "account_ledger",
             "SIZE": "100000",
@@ -915,9 +915,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.6666175209975336,
-          "preparation_seconds": 0.0007291049987543374,
-          "process_seconds": 1.3337484309995489,
+          "kernel_seconds": 0.7135473759990418,
+          "preparation_seconds": 0.0008445920029771514,
+          "process_seconds": 1.4428953349997755,
           "fields": {
             "CASE": "account_ledger",
             "SIZE": "100000",
@@ -928,9 +928,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.7043295380026393,
-          "preparation_seconds": 0.0008050270007515792,
-          "process_seconds": 1.413458062997961,
+          "kernel_seconds": 0.6796522419972462,
+          "preparation_seconds": 0.0007929459970910102,
+          "process_seconds": 1.3890868590024184,
           "fields": {
             "CASE": "account_ledger",
             "SIZE": "100000",
@@ -942,7 +942,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/0-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/0-2",
         "--seed",
         "42",
         "--loops",
@@ -951,9 +951,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.6778942780001671,
-        "preparation_seconds": 0.0007616860020789318,
-        "process_seconds": 1.3945102840007166,
+        "kernel_seconds": 0.693085784005234,
+        "preparation_seconds": 0.0007847500019124709,
+        "process_seconds": 1.4276932360007777,
         "fields": {
           "CASE": "account_ledger",
           "SIZE": "100000",
@@ -966,27 +966,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.7043295380026393,
-          "min": 0.6666175209975336,
-          "max": 0.7073505150001438,
-          "stdev": 0.018530753204784006
+          "median": 0.6796522419972462,
+          "min": 0.6629382690007333,
+          "max": 0.7135473759990418,
+          "stdev": 0.021054212335181267
         },
         "process_seconds": {
-          "median": 1.413458062997961,
-          "min": 1.3337484309995489,
-          "max": 1.4252205789998698,
-          "stdev": 0.04063268535962704
+          "median": 1.3890868590024184,
+          "min": 1.358938006000244,
+          "max": 1.4428953349997755,
+          "stdev": 0.03472613252171345
         },
         "preparation_seconds": {
-          "median": 0.0007825259999663103,
-          "min": 0.0007291049987543374,
-          "max": 0.0008050270007515792,
-          "stdev": 3.184031126679487e-05
+          "median": 0.0008033550038817339,
+          "min": 0.0007929459970910102,
+          "max": 0.0008445920029771514,
+          "stdev": 2.230133887549288e-05
         }
       },
       "speedup": {
-        "kernel_seconds": 6.0989204175418825,
-        "process_seconds": 6.09760392870742
+        "kernel_seconds": 6.232750877936655,
+        "process_seconds": 6.145507951267332
       }
     },
     {
@@ -994,9 +994,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 4.083181218000391,
-          "preparation_seconds": 0.009961716998077463,
-          "process_seconds": 8.215550254000846,
+          "kernel_seconds": 4.089527450996684,
+          "preparation_seconds": 0.010071057004097383,
+          "process_seconds": 8.203251302002172,
           "fields": {
             "CASE": "closure_pipeline",
             "SIZE": "100000",
@@ -1007,9 +1007,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.118556853998598,
-          "preparation_seconds": 0.008976862001873087,
-          "process_seconds": 8.259359126997879,
+          "kernel_seconds": 4.081848247995367,
+          "preparation_seconds": 0.009788227005628869,
+          "process_seconds": 8.198270274995593,
           "fields": {
             "CASE": "closure_pipeline",
             "SIZE": "100000",
@@ -1020,9 +1020,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.081567174001975,
-          "preparation_seconds": 0.009800253999856068,
-          "process_seconds": 8.233011080999859,
+          "kernel_seconds": 4.0605470040027285,
+          "preparation_seconds": 0.009427040997252334,
+          "process_seconds": 8.15017126800376,
           "fields": {
             "CASE": "closure_pipeline",
             "SIZE": "100000",
@@ -1044,9 +1044,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 4.08805418999691,
-        "preparation_seconds": 0.008988584002509015,
-        "process_seconds": 8.183020223001222,
+        "kernel_seconds": 4.132089888000337,
+        "preparation_seconds": 0.009057728995685466,
+        "process_seconds": 8.264018066001881,
         "fields": {
           "CASE": "closure_pipeline",
           "SIZE": "100000",
@@ -1059,22 +1059,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 4.083181218000391,
-          "min": 4.081567174001975,
-          "max": 4.118556853998598,
-          "stdev": 0.017069391665782682
+          "median": 4.081848247995367,
+          "min": 4.0605470040027285,
+          "max": 4.089527450996684,
+          "stdev": 0.012259143808869177
         },
         "process_seconds": {
-          "median": 8.233011080999859,
-          "min": 8.215550254000846,
-          "max": 8.259359126997879,
-          "stdev": 0.01800715092731968
+          "median": 8.198270274995593,
+          "min": 8.15017126800376,
+          "max": 8.203251302002172,
+          "stdev": 0.023934668284295493
         },
         "preparation_seconds": {
-          "median": 0.009800253999856068,
-          "min": 0.008976862001873087,
-          "max": 0.009961716998077463,
-          "stdev": 0.00043127511787537527
+          "median": 0.009788227005628869,
+          "min": 0.009427040997252334,
+          "max": 0.010071057004097383,
+          "stdev": 0.00026356630153705944
         }
       },
       "speedup": {
@@ -1087,9 +1087,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 1.611348377999093,
-          "preparation_seconds": 0.0011064919999626,
-          "process_seconds": 3.241284587998962,
+          "kernel_seconds": 1.6021996829949785,
+          "preparation_seconds": 0.0011935559959965758,
+          "process_seconds": 3.2198431709985016,
           "fields": {
             "CASE": "closure_pipeline",
             "SIZE": "100000",
@@ -1100,9 +1100,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 1.6102171820020885,
-          "preparation_seconds": 0.0010838300004252233,
-          "process_seconds": 3.2276673689993913,
+          "kernel_seconds": 1.607184865999443,
+          "preparation_seconds": 0.001753404998453334,
+          "process_seconds": 3.2259368550003273,
           "fields": {
             "CASE": "closure_pipeline",
             "SIZE": "100000",
@@ -1113,9 +1113,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 1.6065482210033224,
-          "preparation_seconds": 0.001136578997829929,
-          "process_seconds": 3.219606204998854,
+          "kernel_seconds": 1.6041973960018368,
+          "preparation_seconds": 0.0012542399999802,
+          "process_seconds": 3.2164193600037834,
           "fields": {
             "CASE": "closure_pipeline",
             "SIZE": "100000",
@@ -1127,7 +1127,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/1-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/1-1",
         "--seed",
         "42",
         "--loops",
@@ -1136,9 +1136,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 1.611523073999706,
-        "preparation_seconds": 0.0012421659994288348,
-        "process_seconds": 3.255540172998735,
+        "kernel_seconds": 1.6026317959986045,
+        "preparation_seconds": 0.0012478179996833205,
+        "process_seconds": 3.23973188099626,
         "fields": {
           "CASE": "closure_pipeline",
           "SIZE": "100000",
@@ -1151,27 +1151,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 1.6102171820020885,
-          "min": 1.6065482210033224,
-          "max": 1.611348377999093,
-          "stdev": 0.0020489126215887284
+          "median": 1.6041973960018368,
+          "min": 1.6021996829949785,
+          "max": 1.607184865999443,
+          "stdev": 0.0020485193523445073
         },
         "process_seconds": {
-          "median": 3.2276673689993913,
-          "min": 3.219606204998854,
-          "max": 3.241284587998962,
-          "stdev": 0.00894652823927422
+          "median": 3.2198431709985016,
+          "min": 3.2164193600037834,
+          "max": 3.2259368550003273,
+          "stdev": 0.0039361314545982564
         },
         "preparation_seconds": {
-          "median": 0.0011064919999626,
-          "min": 0.0010838300004252233,
-          "max": 0.001136578997829929,
-          "stdev": 2.1605684413810013e-05
+          "median": 0.0012542399999802,
+          "min": 0.0011935559959965758,
+          "max": 0.001753404998453334,
+          "stdev": 0.000250838405173972
         }
       },
       "speedup": {
-        "kernel_seconds": 2.5357953347159694,
-        "process_seconds": 2.5507619403644353
+        "kernel_seconds": 2.544480036040835,
+        "process_seconds": 2.546170679627616
       }
     },
     {
@@ -1179,9 +1179,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 0.26344468900060747,
-          "preparation_seconds": 0.0002614390032249503,
-          "process_seconds": 0.5324469449988101,
+          "kernel_seconds": 0.2634912329958752,
+          "preparation_seconds": 0.00025047900271601975,
+          "process_seconds": 0.5328824579992215,
           "fields": {
             "CASE": "closure_pipeline",
             "SIZE": "100000",
@@ -1192,9 +1192,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.24910934199942858,
-          "preparation_seconds": 0.00021065499822725542,
-          "process_seconds": 0.5019023919994652,
+          "kernel_seconds": 0.27229746500233887,
+          "preparation_seconds": 0.00021001300046918914,
+          "process_seconds": 0.5446254089983995,
           "fields": {
             "CASE": "closure_pipeline",
             "SIZE": "100000",
@@ -1205,9 +1205,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.27402460299708764,
-          "preparation_seconds": 0.00026806199821294285,
-          "process_seconds": 0.5510437930024636,
+          "kernel_seconds": 0.2662822350030183,
+          "preparation_seconds": 0.00023708400112809613,
+          "process_seconds": 0.5403566179957124,
           "fields": {
             "CASE": "closure_pipeline",
             "SIZE": "100000",
@@ -1219,7 +1219,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/1-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/1-2",
         "--seed",
         "42",
         "--loops",
@@ -1228,9 +1228,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.24914542899932712,
-        "preparation_seconds": 0.00021239800116745755,
-        "process_seconds": 0.5369378049981606,
+        "kernel_seconds": 0.2688619189939345,
+        "preparation_seconds": 0.00023933899501571432,
+        "process_seconds": 0.5635337720013922,
         "fields": {
           "CASE": "closure_pipeline",
           "SIZE": "100000",
@@ -1243,27 +1243,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.26344468900060747,
-          "min": 0.24910934199942858,
-          "max": 0.27402460299708764,
-          "stdev": 0.010210054871974633
+          "median": 0.2662822350030183,
+          "min": 0.2634912329958752,
+          "max": 0.27229746500233887,
+          "stdev": 0.003674573388696807
         },
         "process_seconds": {
-          "median": 0.5324469449988101,
-          "min": 0.5019023919994652,
-          "max": 0.5510437930024636,
-          "stdev": 0.020258577788565626
+          "median": 0.5403566179957124,
+          "min": 0.5328824579992215,
+          "max": 0.5446254089983995,
+          "stdev": 0.00485320675712762
         },
         "preparation_seconds": {
-          "median": 0.0002614390032249503,
-          "min": 0.00021065499822725542,
-          "max": 0.00026806199821294285,
-          "stdev": 2.5643805562560303e-05
+          "median": 0.00023708400112809613,
+          "min": 0.00021001300046918914,
+          "max": 0.00025047900271601975,
+          "stdev": 1.6831724286317586e-05
         }
       },
       "speedup": {
-        "kernel_seconds": 15.499197321039846,
-        "process_seconds": 15.462594270342294
+        "kernel_seconds": 15.329029546222262,
+        "process_seconds": 15.171962370710974
       }
     },
     {
@@ -1271,9 +1271,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 3.950514431002375,
-          "preparation_seconds": 0.0118455140000151,
-          "process_seconds": 7.9399730439981795,
+          "kernel_seconds": 3.941031545000442,
+          "preparation_seconds": 0.013014511998335365,
+          "process_seconds": 7.936128925997764,
           "fields": {
             "CASE": "exception_validation",
             "SIZE": "50000",
@@ -1284,9 +1284,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 3.9061814790002245,
-          "preparation_seconds": 0.011788036001235014,
-          "process_seconds": 7.84997199099962,
+          "kernel_seconds": 3.9168779559986433,
+          "preparation_seconds": 0.012816570997529197,
+          "process_seconds": 7.865928601000633,
           "fields": {
             "CASE": "exception_validation",
             "SIZE": "50000",
@@ -1297,9 +1297,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 3.9254858260028413,
-          "preparation_seconds": 0.011801142001786502,
-          "process_seconds": 7.865047854000295,
+          "kernel_seconds": 3.9030071860033786,
+          "preparation_seconds": 0.012466084001061972,
+          "process_seconds": 7.854966493003303,
           "fields": {
             "CASE": "exception_validation",
             "SIZE": "50000",
@@ -1321,9 +1321,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 3.928381695997814,
-        "preparation_seconds": 0.011470782999822404,
-        "process_seconds": 7.873152624000795,
+        "kernel_seconds": 3.950712385994848,
+        "preparation_seconds": 0.013166636999812908,
+        "process_seconds": 7.968391868998879,
         "fields": {
           "CASE": "exception_validation",
           "SIZE": "50000",
@@ -1336,22 +1336,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 3.9254858260028413,
-          "min": 3.9061814790002245,
-          "max": 3.950514431002375,
-          "stdev": 0.01814907256475025
+          "median": 3.9168779559986433,
+          "min": 3.9030071860033786,
+          "max": 3.941031545000442,
+          "stdev": 0.015711446637782147
         },
         "process_seconds": {
-          "median": 7.865047854000295,
-          "min": 7.84997199099962,
-          "max": 7.9399730439981795,
-          "stdev": 0.03935769765494658
+          "median": 7.865928601000633,
+          "min": 7.854966493003303,
+          "max": 7.936128925997764,
+          "stdev": 0.035956136813605245
         },
         "preparation_seconds": {
-          "median": 0.011801142001786502,
-          "min": 0.011788036001235014,
-          "max": 0.0118455140000151,
-          "stdev": 2.4595306284415755e-05
+          "median": 0.012816570997529197,
+          "min": 0.012466084001061972,
+          "max": 0.013014511998335365,
+          "stdev": 0.00022676347018327976
         }
       },
       "speedup": {
@@ -1364,9 +1364,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 2.584865508997609,
-          "preparation_seconds": 0.0032631309986754786,
-          "process_seconds": 5.166072015999816,
+          "kernel_seconds": 2.6192564349985332,
+          "preparation_seconds": 0.003493994998279959,
+          "process_seconds": 5.2447511089994805,
           "fields": {
             "CASE": "exception_validation",
             "SIZE": "50000",
@@ -1377,9 +1377,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 2.5890751670012833,
-          "preparation_seconds": 0.003015686997969169,
-          "process_seconds": 5.184650776001945,
+          "kernel_seconds": 2.6069958560037776,
+          "preparation_seconds": 0.0029463499959092587,
+          "process_seconds": 5.23378041399701,
           "fields": {
             "CASE": "exception_validation",
             "SIZE": "50000",
@@ -1390,9 +1390,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 2.5609141290005937,
-          "preparation_seconds": 0.0027064790010626893,
-          "process_seconds": 5.156438185997104,
+          "kernel_seconds": 2.6073106709955027,
+          "preparation_seconds": 0.002796628999931272,
+          "process_seconds": 5.248241305002011,
           "fields": {
             "CASE": "exception_validation",
             "SIZE": "50000",
@@ -1404,7 +1404,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/2-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/2-1",
         "--seed",
         "42",
         "--loops",
@@ -1413,9 +1413,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 2.599848686000769,
-        "preparation_seconds": 0.003219608999643242,
-        "process_seconds": 5.200268161002896,
+        "kernel_seconds": 2.6084521429947927,
+        "preparation_seconds": 0.003024926998477895,
+        "process_seconds": 5.2374307319987565,
         "fields": {
           "CASE": "exception_validation",
           "SIZE": "50000",
@@ -1428,27 +1428,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 2.584865508997609,
-          "min": 2.5609141290005937,
-          "max": 2.5890751670012833,
-          "stdev": 0.01240266049212208
+          "median": 2.6073106709955027,
+          "min": 2.6069958560037776,
+          "max": 2.6192564349985332,
+          "stdev": 0.0057069371371044455
         },
         "process_seconds": {
-          "median": 5.166072015999816,
-          "min": 5.156438185997104,
-          "max": 5.184650776001945,
-          "stdev": 0.0117091191362361
+          "median": 5.2447511089994805,
+          "min": 5.23378041399701,
+          "max": 5.248241305002011,
+          "stdev": 0.006161303844983048
         },
         "preparation_seconds": {
-          "median": 0.003015686997969169,
-          "min": 0.0027064790010626893,
-          "max": 0.0032631309986754786,
-          "stdev": 0.00022771804332033323
+          "median": 0.0029463499959092587,
+          "min": 0.002796628999931272,
+          "max": 0.003493994998279959,
+          "stdev": 0.00029975003677343954
         }
       },
       "speedup": {
-        "kernel_seconds": 1.5186421933128407,
-        "process_seconds": 1.5224425500925063
+        "kernel_seconds": 1.502267451121631,
+        "process_seconds": 1.4997715692368065
       }
     },
     {
@@ -1456,9 +1456,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 0.5953095039985783,
-          "preparation_seconds": 0.0002885710018745158,
-          "process_seconds": 1.2134387149999384,
+          "kernel_seconds": 0.6124528000000282,
+          "preparation_seconds": 0.00033813300251495093,
+          "process_seconds": 1.226901670001098,
           "fields": {
             "CASE": "exception_validation",
             "SIZE": "50000",
@@ -1469,9 +1469,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.6132790080009727,
-          "preparation_seconds": 0.00032550899777561426,
-          "process_seconds": 1.2313855560023512,
+          "kernel_seconds": 0.6170520659943577,
+          "preparation_seconds": 0.0003484429980744608,
+          "process_seconds": 1.2366385209970758,
           "fields": {
             "CASE": "exception_validation",
             "SIZE": "50000",
@@ -1482,9 +1482,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.6168029669970565,
-          "preparation_seconds": 0.0006667589987046085,
-          "process_seconds": 1.245876805998705,
+          "kernel_seconds": 0.6138781330009806,
+          "preparation_seconds": 0.00034521699853939936,
+          "process_seconds": 1.234968407996348,
           "fields": {
             "CASE": "exception_validation",
             "SIZE": "50000",
@@ -1496,7 +1496,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/2-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/2-2",
         "--seed",
         "42",
         "--loops",
@@ -1505,9 +1505,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.5977748510013043,
-        "preparation_seconds": 0.0002783009986160323,
-        "process_seconds": 1.2198372960010602,
+        "kernel_seconds": 0.6127604329958558,
+        "preparation_seconds": 0.000339054997311905,
+        "process_seconds": 1.25600730899896,
         "fields": {
           "CASE": "exception_validation",
           "SIZE": "50000",
@@ -1520,27 +1520,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.6132790080009727,
-          "min": 0.5953095039985783,
-          "max": 0.6168029669970565,
-          "stdev": 0.009412109887238649
+          "median": 0.6138781330009806,
+          "min": 0.6124528000000282,
+          "max": 0.6170520659943577,
+          "stdev": 0.0019223444163788664
         },
         "process_seconds": {
-          "median": 1.2313855560023512,
-          "min": 1.2134387149999384,
-          "max": 1.245876805998705,
-          "stdev": 0.013267818945214699
+          "median": 1.234968407996348,
+          "min": 1.226901670001098,
+          "max": 1.2366385209970758,
+          "stdev": 0.0042513763344891225
         },
         "preparation_seconds": {
-          "median": 0.00032550899777561426,
-          "min": 0.0002885710018745158,
-          "max": 0.0006667589987046085,
-          "stdev": 0.00017024235653313204
+          "median": 0.00034521699853939936,
+          "min": 0.00033813300251495093,
+          "max": 0.0003484429980744608,
+          "stdev": 4.306146525758658e-06
         }
       },
       "speedup": {
-        "kernel_seconds": 6.4008155746244215,
-        "process_seconds": 6.387152923519657
+        "kernel_seconds": 6.380546472393058,
+        "process_seconds": 6.369335887516803
       }
     },
     {
@@ -1548,9 +1548,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 4.018720060998021,
-          "preparation_seconds": 0.008546517001377651,
-          "process_seconds": 8.104589479000424,
+          "kernel_seconds": 4.101849204998871,
+          "preparation_seconds": 0.009428042998479214,
+          "process_seconds": 8.253406231000554,
           "fields": {
             "CASE": "expression_tree",
             "SIZE": "40000",
@@ -1561,9 +1561,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.009599250002793,
-          "preparation_seconds": 0.009225638001225889,
-          "process_seconds": 8.094372064002528,
+          "kernel_seconds": 3.994495047998498,
+          "preparation_seconds": 0.00913380100246286,
+          "process_seconds": 8.069617363995349,
           "fields": {
             "CASE": "expression_tree",
             "SIZE": "40000",
@@ -1574,9 +1574,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.060394258998713,
-          "preparation_seconds": 0.008236354999098694,
-          "process_seconds": 8.109052136001992,
+          "kernel_seconds": 3.9954686260025483,
+          "preparation_seconds": 0.008997144002933055,
+          "process_seconds": 8.0130911150045,
           "fields": {
             "CASE": "expression_tree",
             "SIZE": "40000",
@@ -1598,9 +1598,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 3.9918214559984335,
-        "preparation_seconds": 0.0086648869983037,
-        "process_seconds": 8.033782341000915,
+        "kernel_seconds": 4.039470074996643,
+        "preparation_seconds": 0.00868857699970249,
+        "process_seconds": 8.078559237001173,
         "fields": {
           "CASE": "expression_tree",
           "SIZE": "40000",
@@ -1613,22 +1613,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 4.018720060998021,
-          "min": 4.009599250002793,
-          "max": 4.060394258998713,
-          "stdev": 0.02211098498008795
+          "median": 3.9954686260025483,
+          "min": 3.994495047998498,
+          "max": 4.101849204998871,
+          "stdev": 0.05037932828605119
         },
         "process_seconds": {
-          "median": 8.104589479000424,
-          "min": 8.094372064002528,
-          "max": 8.109052136001992,
-          "stdev": 0.006144694103789795
+          "median": 8.069617363995349,
+          "min": 8.0130911150045,
+          "max": 8.253406231000554,
+          "stdev": 0.10259137901631868
         },
         "preparation_seconds": {
-          "median": 0.008546517001377651,
-          "min": 0.008236354999098694,
-          "max": 0.009225638001225889,
-          "stdev": 0.0004131298771291012
+          "median": 0.00913380100246286,
+          "min": 0.008997144002933055,
+          "max": 0.009428042998479214,
+          "stdev": 0.0001797922974814318
         }
       },
       "speedup": {
@@ -1641,9 +1641,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 10.003086085001996,
-          "preparation_seconds": 0.003292125998996198,
-          "process_seconds": 20.029178638000303,
+          "kernel_seconds": 9.63829480700224,
+          "preparation_seconds": 0.0024786740032141097,
+          "process_seconds": 19.338034984000842,
           "fields": {
             "CASE": "expression_tree",
             "SIZE": "40000",
@@ -1654,9 +1654,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 10.005468662999192,
-          "preparation_seconds": 0.0033286739999311976,
-          "process_seconds": 19.995180619000166,
+          "kernel_seconds": 9.645770709001226,
+          "preparation_seconds": 0.002286693998030387,
+          "process_seconds": 19.306562706995464,
           "fields": {
             "CASE": "expression_tree",
             "SIZE": "40000",
@@ -1667,9 +1667,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 10.04276942100114,
-          "preparation_seconds": 0.0027070799987995997,
-          "process_seconds": 20.11375156199938,
+          "kernel_seconds": 9.631461921002483,
+          "preparation_seconds": 0.002421516997856088,
+          "process_seconds": 19.263014623000345,
           "fields": {
             "CASE": "expression_tree",
             "SIZE": "40000",
@@ -1681,7 +1681,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/3-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/3-1",
         "--seed",
         "42",
         "--loops",
@@ -1690,9 +1690,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 10.01084754600015,
-        "preparation_seconds": 0.0030721340008312836,
-        "process_seconds": 20.071420058000513,
+        "kernel_seconds": 9.638803989000735,
+        "preparation_seconds": 0.003844642997137271,
+        "process_seconds": 19.30989424099971,
         "fields": {
           "CASE": "expression_tree",
           "SIZE": "40000",
@@ -1705,27 +1705,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 10.005468662999192,
-          "min": 10.003086085001996,
-          "max": 10.04276942100114,
-          "stdev": 0.01817137670273248
+          "median": 9.63829480700224,
+          "min": 9.631461921002483,
+          "max": 9.645770709001226,
+          "stdev": 0.005843504045586823
         },
         "process_seconds": {
-          "median": 20.029178638000303,
-          "min": 19.995180619000166,
-          "max": 20.11375156199938,
-          "stdev": 0.04985257520753877
+          "median": 19.306562706995464,
+          "min": 19.263014623000345,
+          "max": 19.338034984000842,
+          "stdev": 0.030758909105410542
         },
         "preparation_seconds": {
-          "median": 0.003292125998996198,
-          "min": 0.0027070799987995997,
-          "max": 0.0033286739999311976,
-          "stdev": 0.0002847988921953275
+          "median": 0.002421516997856088,
+          "min": 0.002286693998030387,
+          "max": 0.0024786740032141097,
+          "stdev": 8.048497922928102e-05
         }
       },
       "speedup": {
-        "kernel_seconds": 0.4016523559620433,
-        "process_seconds": 0.40463913301087717
+        "kernel_seconds": 0.41454102681107374,
+        "process_seconds": 0.4179727632755382
       }
     },
     {
@@ -1733,9 +1733,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 1.3504027140006656,
-          "preparation_seconds": 0.000603599997702986,
-          "process_seconds": 2.706937793001998,
+          "kernel_seconds": 1.276607760002662,
+          "preparation_seconds": 0.00037916000292170793,
+          "process_seconds": 2.5668918220035266,
           "fields": {
             "CASE": "expression_tree",
             "SIZE": "40000",
@@ -1746,9 +1746,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 1.349715678999928,
-          "preparation_seconds": 0.00037988199983374216,
-          "process_seconds": 2.7117418620000535,
+          "kernel_seconds": 1.275223504002497,
+          "preparation_seconds": 0.00040832499507814646,
+          "process_seconds": 2.5596002969978144,
           "fields": {
             "CASE": "expression_tree",
             "SIZE": "40000",
@@ -1759,9 +1759,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 1.269477089997963,
-          "preparation_seconds": 0.0003549450011632871,
-          "process_seconds": 2.548739404999651,
+          "kernel_seconds": 1.275149610999506,
+          "preparation_seconds": 0.0003703640031744726,
+          "process_seconds": 2.564452506005182,
           "fields": {
             "CASE": "expression_tree",
             "SIZE": "40000",
@@ -1773,7 +1773,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/3-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/3-2",
         "--seed",
         "42",
         "--loops",
@@ -1782,9 +1782,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 1.3537361239978054,
-        "preparation_seconds": 0.0004119420009374153,
-        "process_seconds": 2.749809967001056,
+        "kernel_seconds": 1.276202615998045,
+        "preparation_seconds": 0.00040280500252265483,
+        "process_seconds": 2.580320922003011,
         "fields": {
           "CASE": "expression_tree",
           "SIZE": "40000",
@@ -1797,27 +1797,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 1.349715678999928,
-          "min": 1.269477089997963,
-          "max": 1.3504027140006656,
-          "stdev": 0.037987804771685584
+          "median": 1.275223504002497,
+          "min": 1.275149610999506,
+          "max": 1.276607760002662,
+          "stdev": 0.0006706401059426055
         },
         "process_seconds": {
-          "median": 2.706937793001998,
-          "min": 2.548739404999651,
-          "max": 2.7117418620000535,
-          "stdev": 0.07573316463717078
+          "median": 2.564452506005182,
+          "min": 2.5596002969978144,
+          "max": 2.5668918220035266,
+          "stdev": 0.003030594582290641
         },
         "preparation_seconds": {
-          "median": 0.00037988199983374216,
-          "min": 0.0003549450011632871,
-          "max": 0.000603599997702986,
-          "stdev": 0.00011180384796472345
+          "median": 0.00037916000292170793,
+          "min": 0.0003703640031744726,
+          "max": 0.00040832499507814646,
+          "stdev": 1.6224135948056858e-05
         }
       },
       "speedup": {
-        "kernel_seconds": 2.977456751466125,
-        "process_seconds": 2.994006548636798
+        "kernel_seconds": 3.133151650249637,
+        "process_seconds": 3.1467213157969254
       }
     },
     {
@@ -1825,9 +1825,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 0.03336999599923729,
-          "preparation_seconds": 0.028532115000416525,
-          "process_seconds": 0.11448055899745668,
+          "kernel_seconds": 0.02530198799649952,
+          "preparation_seconds": 0.02922296400356572,
+          "process_seconds": 0.0987070120027056,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -1838,9 +1838,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.04350834200158715,
-          "preparation_seconds": 0.030548431001079734,
-          "process_seconds": 0.14655289399888716,
+          "kernel_seconds": 0.040878539002733305,
+          "preparation_seconds": 0.031669919000705704,
+          "process_seconds": 0.12807196399808163,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -1851,9 +1851,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.04438508399834973,
-          "preparation_seconds": 0.029205516002548393,
-          "process_seconds": 0.13340254699869547,
+          "kernel_seconds": 0.028847581997979432,
+          "preparation_seconds": 0.027815948000352364,
+          "process_seconds": 0.10352224300004309,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -1875,9 +1875,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.037184758999501355,
-        "preparation_seconds": 0.028274191998207243,
-        "process_seconds": 0.11837835899859783,
+        "kernel_seconds": 0.03194201900623739,
+        "preparation_seconds": 0.027665838002576493,
+        "process_seconds": 0.1037325469951611,
         "fields": {
           "CASE": "graph_paths",
           "SIZE": "20000",
@@ -1890,22 +1890,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.04350834200158715,
-          "min": 0.03336999599923729,
-          "max": 0.04438508399834973,
-          "stdev": 0.004998743173376923
+          "median": 0.028847581997979432,
+          "min": 0.02530198799649952,
+          "max": 0.040878539002733305,
+          "stdev": 0.006666200854754522
         },
         "process_seconds": {
-          "median": 0.13340254699869547,
-          "min": 0.11448055899745668,
-          "max": 0.14655289399888716,
-          "stdev": 0.01316395722581785
+          "median": 0.10352224300004309,
+          "min": 0.0987070120027056,
+          "max": 0.12807196399808163,
+          "stdev": 0.012858959938631606
         },
         "preparation_seconds": {
-          "median": 0.029205516002548393,
-          "min": 0.028532115000416525,
-          "max": 0.030548431001079734,
-          "stdev": 0.0008381474159307881
+          "median": 0.02922296400356572,
+          "min": 0.027815948000352364,
+          "max": 0.031669919000705704,
+          "stdev": 0.0015923558808986049
         }
       },
       "speedup": {
@@ -1918,9 +1918,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 0.048262877000524895,
-          "preparation_seconds": 0.039577720999659505,
-          "process_seconds": 0.1649968159981654,
+          "kernel_seconds": 0.040228992998891044,
+          "preparation_seconds": 0.04052198099816451,
+          "process_seconds": 0.1472677739948267,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -1931,9 +1931,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.04561377500067465,
-          "preparation_seconds": 0.03689792200020747,
-          "process_seconds": 0.16052847800165182,
+          "kernel_seconds": 0.04108666899992386,
+          "preparation_seconds": 0.038444910998805426,
+          "process_seconds": 0.14640297400183044,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -1944,9 +1944,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.0469694339990383,
-          "preparation_seconds": 0.04008864800198353,
-          "process_seconds": 0.15679347300101654,
+          "kernel_seconds": 0.04400347299815621,
+          "preparation_seconds": 0.0348061240001698,
+          "process_seconds": 0.1417782900025486,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -1958,7 +1958,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/4-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/4-1",
         "--seed",
         "42",
         "--loops",
@@ -1967,9 +1967,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.042346947000623913,
-        "preparation_seconds": 0.03838059899862856,
-        "process_seconds": 0.16149388600024395,
+        "kernel_seconds": 0.04207376900012605,
+        "preparation_seconds": 0.037022315998910926,
+        "process_seconds": 0.1581215370024438,
         "fields": {
           "CASE": "graph_paths",
           "SIZE": "20000",
@@ -1982,27 +1982,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.0469694339990383,
-          "min": 0.04561377500067465,
-          "max": 0.048262877000524895,
-          "stdev": 0.0010815907792357184
+          "median": 0.04108666899992386,
+          "min": 0.040228992998891044,
+          "max": 0.04400347299815621,
+          "stdev": 0.0016155512630439
         },
         "process_seconds": {
-          "median": 0.16052847800165182,
-          "min": 0.15679347300101654,
-          "max": 0.1649968159981654,
-          "stdev": 0.0033534583001023637
+          "median": 0.14640297400183044,
+          "min": 0.1417782900025486,
+          "max": 0.1472677739948267,
+          "stdev": 0.002409933508132479
         },
         "preparation_seconds": {
-          "median": 0.039577720999659505,
-          "min": 0.03689792200020747,
-          "max": 0.04008864800198353,
-          "stdev": 0.0013993292638331228
+          "median": 0.038444910998805426,
+          "min": 0.0348061240001698,
+          "max": 0.04052198099816451,
+          "stdev": 0.0023623437473361125
         }
       },
       "speedup": {
-        "kernel_seconds": 0.9263118223327533,
-        "process_seconds": 0.8310210665382548
+        "kernel_seconds": 0.7021153746494487,
+        "process_seconds": 0.7071047818929469
       }
     },
     {
@@ -2010,9 +2010,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 0.014078666998102563,
-          "preparation_seconds": 0.004372898998553865,
-          "process_seconds": 0.0384404309988895,
+          "kernel_seconds": 0.012783467995177489,
+          "preparation_seconds": 0.002562559995567426,
+          "process_seconds": 0.03197987900057342,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -2023,9 +2023,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.013407930000539636,
-          "preparation_seconds": 0.002955736003059428,
-          "process_seconds": 0.03339752600004431,
+          "kernel_seconds": 0.012080330998287536,
+          "preparation_seconds": 0.002519169000152033,
+          "process_seconds": 0.03131093699630583,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -2036,9 +2036,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.016643130002194084,
-          "preparation_seconds": 0.0035664299975906033,
-          "process_seconds": 0.03955705300177215,
+          "kernel_seconds": 0.012060422996000852,
+          "preparation_seconds": 0.0025054540019482374,
+          "process_seconds": 0.031386837996251415,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -2050,7 +2050,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/4-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/4-2",
         "--seed",
         "42",
         "--loops",
@@ -2059,9 +2059,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.011324227998557035,
-        "preparation_seconds": 0.002792098999634618,
-        "process_seconds": 0.045002841001405613,
+        "kernel_seconds": 0.012004839001747314,
+        "preparation_seconds": 0.0024626039958093315,
+        "process_seconds": 0.05423940900072921,
         "fields": {
           "CASE": "graph_paths",
           "SIZE": "20000",
@@ -2074,27 +2074,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.014078666998102563,
-          "min": 0.013407930000539636,
-          "max": 0.016643130002194084,
-          "stdev": 0.001394149588257969
+          "median": 0.012080330998287536,
+          "min": 0.012060422996000852,
+          "max": 0.012783467995177489,
+          "stdev": 0.000336252556501609
         },
         "process_seconds": {
-          "median": 0.0384404309988895,
-          "min": 0.03339752600004431,
-          "max": 0.03955705300177215,
-          "stdev": 0.00267950054238376
+          "median": 0.031386837996251415,
+          "min": 0.03131093699630583,
+          "max": 0.03197987900057342,
+          "stdev": 0.00029906186644860957
         },
         "preparation_seconds": {
-          "median": 0.0035664299975906033,
-          "min": 0.002955736003059428,
-          "max": 0.004372898998553865,
-          "stdev": 0.000580391664718259
+          "median": 0.002519169000152033,
+          "min": 0.0025054540019482374,
+          "max": 0.002562559995567426,
+          "stdev": 2.4340122719729904e-05
         }
       },
       "speedup": {
-        "kernel_seconds": 3.090373684344615,
-        "process_seconds": 3.470370740706558
+        "kernel_seconds": 2.387979435502948,
+        "process_seconds": 3.298269262179482
       }
     },
     {
@@ -2102,9 +2102,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 0.04713151800024207,
-          "preparation_seconds": 0.02000412399866036,
-          "process_seconds": 0.12218661100268946,
+          "kernel_seconds": 0.04162295399873983,
+          "preparation_seconds": 0.02065681699605193,
+          "process_seconds": 0.1148666349981795,
           "fields": {
             "CASE": "http_routing",
             "SIZE": "50000",
@@ -2115,9 +2115,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.0421682830019563,
-          "preparation_seconds": 0.019070946997089777,
-          "process_seconds": 0.11555307700109552,
+          "kernel_seconds": 0.04228609599522315,
+          "preparation_seconds": 0.021372727998823393,
+          "process_seconds": 0.1195450789964525,
           "fields": {
             "CASE": "http_routing",
             "SIZE": "50000",
@@ -2128,9 +2128,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.04252020200146944,
-          "preparation_seconds": 0.019693031998031074,
-          "process_seconds": 0.11704237700178055,
+          "kernel_seconds": 0.04240968800149858,
+          "preparation_seconds": 0.018989894997503143,
+          "process_seconds": 0.11547053699905518,
           "fields": {
             "CASE": "http_routing",
             "SIZE": "50000",
@@ -2152,9 +2152,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.04214169300030335,
-        "preparation_seconds": 0.019159901999955764,
-        "process_seconds": 0.11508956000034232,
+        "kernel_seconds": 0.042208341001241934,
+        "preparation_seconds": 0.02115205500012962,
+        "process_seconds": 0.11891985800320981,
         "fields": {
           "CASE": "http_routing",
           "SIZE": "50000",
@@ -2167,22 +2167,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.04252020200146944,
-          "min": 0.0421682830019563,
-          "max": 0.04713151800024207,
-          "stdev": 0.002261311907105732
+          "median": 0.04228609599522315,
+          "min": 0.04162295399873983,
+          "max": 0.04240968800149858,
+          "stdev": 0.0003454437858452468
         },
         "process_seconds": {
-          "median": 0.11704237700178055,
-          "min": 0.11555307700109552,
-          "max": 0.12218661100268946,
-          "stdev": 0.0028418486021612116
+          "median": 0.11547053699905518,
+          "min": 0.1148666349981795,
+          "max": 0.1195450789964525,
+          "stdev": 0.0020777773477175287
         },
         "preparation_seconds": {
-          "median": 0.019693031998031074,
-          "min": 0.019070946997089777,
-          "max": 0.02000412399866036,
-          "stdev": 0.0003879557960947974
+          "median": 0.02065681699605193,
+          "min": 0.018989894997503143,
+          "max": 0.021372727998823393,
+          "stdev": 0.0009982791095633856
         }
       },
       "speedup": {
@@ -2195,9 +2195,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 0.06950503900225158,
-          "preparation_seconds": 0.028370312000333797,
-          "process_seconds": 0.17415962599989143,
+          "kernel_seconds": 0.06793529599963222,
+          "preparation_seconds": 0.030828892995486967,
+          "process_seconds": 0.1771208390055108,
           "fields": {
             "CASE": "http_routing",
             "SIZE": "50000",
@@ -2208,9 +2208,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.06819140900188359,
-          "preparation_seconds": 0.029874417999963043,
-          "process_seconds": 0.17458767800053465,
+          "kernel_seconds": 0.06880126899341121,
+          "preparation_seconds": 0.029167189997679088,
+          "process_seconds": 0.17471639499854064,
           "fields": {
             "CASE": "http_routing",
             "SIZE": "50000",
@@ -2221,9 +2221,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.0687550540023949,
-          "preparation_seconds": 0.029518552000808995,
-          "process_seconds": 0.17512692699892796,
+          "kernel_seconds": 0.06854557000042405,
+          "preparation_seconds": 0.03010133000498172,
+          "process_seconds": 0.1750822500034701,
           "fields": {
             "CASE": "http_routing",
             "SIZE": "50000",
@@ -2235,7 +2235,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/5-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/5-1",
         "--seed",
         "42",
         "--loops",
@@ -2244,9 +2244,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.0678038430014567,
-        "preparation_seconds": 0.029675447000045097,
-        "process_seconds": 0.1875746590012568,
+        "kernel_seconds": 0.06795569499809062,
+        "preparation_seconds": 0.030844141998386476,
+        "process_seconds": 0.18882736000523437,
         "fields": {
           "CASE": "http_routing",
           "SIZE": "50000",
@@ -2259,27 +2259,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.0687550540023949,
-          "min": 0.06819140900188359,
-          "max": 0.06950503900225158,
-          "stdev": 0.0005380827037297681
+          "median": 0.06854557000042405,
+          "min": 0.06793529599963222,
+          "max": 0.06880126899341121,
+          "stdev": 0.0003632760745419807
         },
         "process_seconds": {
-          "median": 0.17458767800053465,
-          "min": 0.17415962599989143,
-          "max": 0.17512692699892796,
-          "stdev": 0.0003957677798715223
+          "median": 0.1750822500034701,
+          "min": 0.17471639499854064,
+          "max": 0.1771208390055108,
+          "stdev": 0.0010578303784701047
         },
         "preparation_seconds": {
-          "median": 0.029518552000808995,
-          "min": 0.028370312000333797,
-          "max": 0.029874417999963043,
-          "stdev": 0.0006418229737037988
+          "median": 0.03010133000498172,
+          "min": 0.029167189997679088,
+          "max": 0.030828892995486967,
+          "stdev": 0.0006801325288598776
         }
       },
       "speedup": {
-        "kernel_seconds": 0.6184302029635286,
-        "process_seconds": 0.6703931133182385
+        "kernel_seconds": 0.6169048706570177,
+        "process_seconds": 0.6595216647990677
       }
     },
     {
@@ -2287,9 +2287,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 0.05202558400196722,
-          "preparation_seconds": 0.008728437001991551,
-          "process_seconds": 0.11541253399991547,
+          "kernel_seconds": 0.0485960769947269,
+          "preparation_seconds": 0.009381474999827333,
+          "process_seconds": 0.11317130899988115,
           "fields": {
             "CASE": "http_routing",
             "SIZE": "50000",
@@ -2300,9 +2300,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.0505778629994893,
-          "preparation_seconds": 0.008839816000545397,
-          "process_seconds": 0.11502432699853671,
+          "kernel_seconds": 0.048467657004948705,
+          "preparation_seconds": 0.008626511000329629,
+          "process_seconds": 0.10961921399575658,
           "fields": {
             "CASE": "http_routing",
             "SIZE": "50000",
@@ -2313,9 +2313,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.05125021200001356,
-          "preparation_seconds": 0.008821731000352884,
-          "process_seconds": 0.11616337099985685,
+          "kernel_seconds": 0.04839937899669167,
+          "preparation_seconds": 0.008804373996099457,
+          "process_seconds": 0.11230171900388086,
           "fields": {
             "CASE": "http_routing",
             "SIZE": "50000",
@@ -2327,7 +2327,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/5-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/5-2",
         "--seed",
         "42",
         "--loops",
@@ -2336,9 +2336,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.049294397998892237,
-        "preparation_seconds": 0.008955662000516895,
-        "process_seconds": 0.13484149099895149,
+        "kernel_seconds": 0.047652901004767045,
+        "preparation_seconds": 0.01009070299915038,
+        "process_seconds": 0.1275868839948089,
         "fields": {
           "CASE": "http_routing",
           "SIZE": "50000",
@@ -2351,27 +2351,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.05125021200001356,
-          "min": 0.0505778629994893,
-          "max": 0.05202558400196722,
-          "stdev": 0.0005915282486853926
+          "median": 0.048467657004948705,
+          "min": 0.04839937899669167,
+          "max": 0.0485960769947269,
+          "stdev": 8.154322822027085e-05
         },
         "process_seconds": {
-          "median": 0.11541253399991547,
-          "min": 0.11502432699853671,
-          "max": 0.11616337099985685,
-          "stdev": 0.0004728027675872974
+          "median": 0.11230171900388086,
+          "min": 0.10961921399575658,
+          "max": 0.11317130899988115,
+          "stdev": 0.0015117833030373372
         },
         "preparation_seconds": {
-          "median": 0.008821731000352884,
-          "min": 0.008728437001991551,
-          "max": 0.008839816000545397,
-          "stdev": 4.880359581591087e-05
+          "median": 0.008804373996099457,
+          "min": 0.008626511000329629,
+          "max": 0.009381474999827333,
+          "stdev": 0.0003222579116010979
         }
       },
       "speedup": {
-        "kernel_seconds": 0.8296590461217641,
-        "process_seconds": 1.014121889065067
+        "kernel_seconds": 0.8724600818006449,
+        "process_seconds": 1.0282170034731597
       }
     },
     {
@@ -2379,9 +2379,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 0.029440255999361398,
-          "preparation_seconds": 0.0897934050008189,
-          "process_seconds": 0.17085355400195112,
+          "kernel_seconds": 0.029714635005802847,
+          "preparation_seconds": 0.08561259099951712,
+          "process_seconds": 0.16810867599997437,
           "fields": {
             "CASE": "integer_accumulation",
             "SIZE": "1000000",
@@ -2392,9 +2392,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.03123093899921514,
-          "preparation_seconds": 0.08559342899752664,
-          "process_seconds": 0.17166195800018613,
+          "kernel_seconds": 0.029703032996621914,
+          "preparation_seconds": 0.08771988899388816,
+          "process_seconds": 0.16790634599601617,
           "fields": {
             "CASE": "integer_accumulation",
             "SIZE": "1000000",
@@ -2405,9 +2405,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.030563930002244888,
-          "preparation_seconds": 0.08912615599911078,
-          "process_seconds": 0.17288514899701113,
+          "kernel_seconds": 0.029523617995437235,
+          "preparation_seconds": 0.08985585100163007,
+          "process_seconds": 0.17056848300126148,
           "fields": {
             "CASE": "integer_accumulation",
             "SIZE": "1000000",
@@ -2429,9 +2429,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.0295614429996931,
-        "preparation_seconds": 0.08790822499940987,
-        "process_seconds": 0.16927714199846378,
+        "kernel_seconds": 0.029514501002267934,
+        "preparation_seconds": 0.0854286370013142,
+        "process_seconds": 0.16689341900200816,
         "fields": {
           "CASE": "integer_accumulation",
           "SIZE": "1000000",
@@ -2444,22 +2444,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.030563930002244888,
-          "min": 0.029440255999361398,
-          "max": 0.03123093899921514,
-          "stdev": 0.0007389248851285878
+          "median": 0.029703032996621914,
+          "min": 0.029523617995437235,
+          "max": 0.029714635005802847,
+          "stdev": 8.744004137194664e-05
         },
         "process_seconds": {
-          "median": 0.17166195800018613,
-          "min": 0.17085355400195112,
-          "max": 0.17288514899701113,
-          "stdev": 0.0008351374779060121
+          "median": 0.16810867599997437,
+          "min": 0.16790634599601617,
+          "max": 0.17056848300126148,
+          "stdev": 0.0012100762762358472
         },
         "preparation_seconds": {
-          "median": 0.08912615599911078,
-          "min": 0.08559342899752664,
-          "max": 0.0897934050008189,
-          "stdev": 0.001842859484793276
+          "median": 0.08771988899388816,
+          "min": 0.08561259099951712,
+          "max": 0.08985585100163007,
+          "stdev": 0.0017323168167107123
         }
       },
       "speedup": {
@@ -2472,9 +2472,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 0.0057284979993710294,
-          "preparation_seconds": 0.010659153002052335,
-          "process_seconds": 0.0287726050009951,
+          "kernel_seconds": 0.005984260998957325,
+          "preparation_seconds": 0.011090506995969918,
+          "process_seconds": 0.02997222800331656,
           "fields": {
             "CASE": "integer_accumulation",
             "SIZE": "1000000",
@@ -2485,9 +2485,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.006066020996513544,
-          "preparation_seconds": 0.010351065997383557,
-          "process_seconds": 0.02856720099953236,
+          "kernel_seconds": 0.005983729999570642,
+          "preparation_seconds": 0.011492750003526453,
+          "process_seconds": 0.030145953001920134,
           "fields": {
             "CASE": "integer_accumulation",
             "SIZE": "1000000",
@@ -2498,9 +2498,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.006170175001898315,
-          "preparation_seconds": 0.010841554001672193,
-          "process_seconds": 0.029822911998053314,
+          "kernel_seconds": 0.00645241799793439,
+          "preparation_seconds": 0.011097518996393774,
+          "process_seconds": 0.030393287001061253,
           "fields": {
             "CASE": "integer_accumulation",
             "SIZE": "1000000",
@@ -2512,7 +2512,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/6-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/6-1",
         "--seed",
         "42",
         "--loops",
@@ -2521,9 +2521,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.005737455001508351,
-        "preparation_seconds": 0.010231742002360988,
-        "process_seconds": 0.03847360299914726,
+        "kernel_seconds": 0.005929839004238602,
+        "preparation_seconds": 0.011775109996960964,
+        "process_seconds": 0.04359256400493905,
         "fields": {
           "CASE": "integer_accumulation",
           "SIZE": "1000000",
@@ -2536,27 +2536,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.006066020996513544,
-          "min": 0.0057284979993710294,
-          "max": 0.006170175001898315,
-          "stdev": 0.0001885171389200003
+          "median": 0.005984260998957325,
+          "min": 0.005983729999570642,
+          "max": 0.00645241799793439,
+          "stdev": 0.0002208165899216857
         },
         "process_seconds": {
-          "median": 0.0287726050009951,
-          "min": 0.02856720099953236,
-          "max": 0.029822911998053314,
-          "stdev": 0.0005499642113298363
+          "median": 0.030145953001920134,
+          "min": 0.02997222800331656,
+          "max": 0.030393287001061253,
+          "stdev": 0.00017276996969404077
         },
         "preparation_seconds": {
-          "median": 0.010659153002052335,
-          "min": 0.010351065997383557,
-          "max": 0.010841554001672193,
-          "stdev": 0.00020242041219511222
+          "median": 0.011097518996393774,
+          "min": 0.011090506995969918,
+          "max": 0.011492750003526453,
+          "stdev": 0.00018798822489045632
         }
       },
       "speedup": {
-        "kernel_seconds": 5.038546688152178,
-        "process_seconds": 5.9661597548866085
+        "kernel_seconds": 4.963525655347796,
+        "process_seconds": 5.576492340091778
       }
     },
     {
@@ -2564,9 +2564,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 0.0034077119998983108,
-          "preparation_seconds": 0.001643779000005452,
-          "process_seconds": 0.01186227600192069,
+          "kernel_seconds": 0.0033336240012431517,
+          "preparation_seconds": 0.0016391909957746975,
+          "process_seconds": 0.013844535998941865,
           "fields": {
             "CASE": "integer_accumulation",
             "SIZE": "1000000",
@@ -2577,9 +2577,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.0034203450013592374,
-          "preparation_seconds": 0.0023974290015758015,
-          "process_seconds": 0.013477100001182407,
+          "kernel_seconds": 0.0034176429981016554,
+          "preparation_seconds": 0.0017160350034828298,
+          "process_seconds": 0.012397234000673052,
           "fields": {
             "CASE": "integer_accumulation",
             "SIZE": "1000000",
@@ -2590,9 +2590,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.0032055539995781146,
-          "preparation_seconds": 0.0015770429999975022,
-          "process_seconds": 0.011632695997832343,
+          "kernel_seconds": 0.003666519005491864,
+          "preparation_seconds": 0.0016138729988597333,
+          "process_seconds": 0.012927156996738631,
           "fields": {
             "CASE": "integer_accumulation",
             "SIZE": "1000000",
@@ -2604,7 +2604,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/6-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/6-2",
         "--seed",
         "42",
         "--loops",
@@ -2613,9 +2613,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.0034125710008083843,
-        "preparation_seconds": 0.0015858200022194069,
-        "process_seconds": 0.02934453600028064,
+        "kernel_seconds": 0.0032119069946929812,
+        "preparation_seconds": 0.0015615960001014173,
+        "process_seconds": 0.03640983800141839,
         "fields": {
           "CASE": "integer_accumulation",
           "SIZE": "1000000",
@@ -2628,27 +2628,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.0034077119998983108,
-          "min": 0.0032055539995781146,
-          "max": 0.0034203450013592374,
-          "stdev": 9.841105643931054e-05
+          "median": 0.0034176429981016554,
+          "min": 0.0033336240012431517,
+          "max": 0.003666519005491864,
+          "stdev": 0.00014134966208400064
         },
         "process_seconds": {
-          "median": 0.01186227600192069,
-          "min": 0.011632695997832343,
-          "max": 0.013477100001182407,
-          "stdev": 0.0008207171426693821
+          "median": 0.012927156996738631,
+          "min": 0.012397234000673052,
+          "max": 0.013844535998941865,
+          "stdev": 0.0005978745399455028
         },
         "preparation_seconds": {
-          "median": 0.001643779000005452,
-          "min": 0.0015770429999975022,
-          "max": 0.0023974290015758015,
-          "stdev": 0.0003720028688882323
+          "median": 0.0016391909957746975,
+          "min": 0.0016138729988597333,
+          "max": 0.0017160350034828298,
+          "stdev": 4.343971260013788e-05
         }
       },
       "speedup": {
-        "kernel_seconds": 8.969047267831597,
-        "process_seconds": 14.47124969714002
+        "kernel_seconds": 8.691087106851299,
+        "process_seconds": 13.004303733789742
       }
     },
     {
@@ -2656,9 +2656,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 3.995679753999866,
-          "preparation_seconds": 0.015756497999973362,
-          "process_seconds": 8.105179678997956,
+          "kernel_seconds": 4.177104226000665,
+          "preparation_seconds": 0.016270009000436403,
+          "process_seconds": 8.363850052999624,
           "fields": {
             "CASE": "interval_merging",
             "SIZE": "50000",
@@ -2669,9 +2669,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.016766828997788,
-          "preparation_seconds": 0.015413455999805592,
-          "process_seconds": 8.076828409997688,
+          "kernel_seconds": 4.073798694000288,
+          "preparation_seconds": 0.016116842001792975,
+          "process_seconds": 8.237928820999514,
           "fields": {
             "CASE": "interval_merging",
             "SIZE": "50000",
@@ -2682,9 +2682,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.172001556999021,
-          "preparation_seconds": 0.017377574997226475,
-          "process_seconds": 8.330100014998607,
+          "kernel_seconds": 4.029551050000009,
+          "preparation_seconds": 0.016132921999087557,
+          "process_seconds": 8.484130501004984,
           "fields": {
             "CASE": "interval_merging",
             "SIZE": "50000",
@@ -2706,9 +2706,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 4.0196489010013465,
-        "preparation_seconds": 0.014753691000805702,
-        "process_seconds": 8.085819384999922,
+        "kernel_seconds": 4.030547272996046,
+        "preparation_seconds": 0.01607588599290466,
+        "process_seconds": 8.101680083003885,
         "fields": {
           "CASE": "interval_merging",
           "SIZE": "50000",
@@ -2721,22 +2721,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 4.016766828997788,
-          "min": 3.995679753999866,
-          "max": 4.172001556999021,
-          "stdev": 0.07862135963835888
+          "median": 4.073798694000288,
+          "min": 4.029551050000009,
+          "max": 4.177104226000665,
+          "stdev": 0.06182576475632229
         },
         "process_seconds": {
-          "median": 8.105179678997956,
-          "min": 8.076828409997688,
-          "max": 8.330100014998607,
-          "stdev": 0.1133036519467892
+          "median": 8.363850052999624,
+          "min": 8.237928820999514,
+          "max": 8.484130501004984,
+          "stdev": 0.10052020807242434
         },
         "preparation_seconds": {
-          "median": 0.015756497999973362,
-          "min": 0.015413455999805592,
-          "max": 0.017377574997226475,
-          "stdev": 0.0008565649667863875
+          "median": 0.016132921999087557,
+          "min": 0.016116842001792975,
+          "max": 0.016270009000436403,
+          "stdev": 6.872775739203686e-05
         }
       },
       "speedup": {
@@ -2749,9 +2749,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 0.8230836519978766,
-          "preparation_seconds": 0.003967840999393957,
-          "process_seconds": 1.6497585400029493,
+          "kernel_seconds": 0.8313636609964306,
+          "preparation_seconds": 0.003707033996761311,
+          "process_seconds": 1.6784810140015907,
           "fields": {
             "CASE": "interval_merging",
             "SIZE": "50000",
@@ -2762,9 +2762,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.8283680890017422,
-          "preparation_seconds": 0.00350527499904274,
-          "process_seconds": 1.647753877001378,
+          "kernel_seconds": 0.8384127099998295,
+          "preparation_seconds": 0.0037673369952244684,
+          "process_seconds": 1.6698367999997572,
           "fields": {
             "CASE": "interval_merging",
             "SIZE": "50000",
@@ -2775,9 +2775,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.8333906469997601,
-          "preparation_seconds": 0.003313714998512296,
-          "process_seconds": 1.663536355998076,
+          "kernel_seconds": 0.8329765920061618,
+          "preparation_seconds": 0.004004431000794284,
+          "process_seconds": 1.6578740409968304,
           "fields": {
             "CASE": "interval_merging",
             "SIZE": "50000",
@@ -2789,7 +2789,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/7-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/7-1",
         "--seed",
         "42",
         "--loops",
@@ -2798,9 +2798,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.8166921920019377,
-        "preparation_seconds": 0.0034537390019977465,
-        "process_seconds": 1.6433430040015082,
+        "kernel_seconds": 0.8515674239970394,
+        "preparation_seconds": 0.003792053998040501,
+        "process_seconds": 1.6959489270011545,
         "fields": {
           "CASE": "interval_merging",
           "SIZE": "50000",
@@ -2813,27 +2813,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.8283680890017422,
-          "min": 0.8230836519978766,
-          "max": 0.8333906469997601,
-          "stdev": 0.004208265798271677
+          "median": 0.8329765920061618,
+          "min": 0.8313636609964306,
+          "max": 0.8384127099998295,
+          "stdev": 0.0030155525960436575
         },
         "process_seconds": {
-          "median": 1.6497585400029493,
-          "min": 1.647753877001378,
-          "max": 1.663536355998076,
-          "stdev": 0.00701532869766591
+          "median": 1.6698367999997572,
+          "min": 1.6578740409968304,
+          "max": 1.6784810140015907,
+          "stdev": 0.008449045804708202
         },
         "preparation_seconds": {
-          "median": 0.00350527499904274,
-          "min": 0.003313714998512296,
-          "max": 0.003967840999393957,
-          "stdev": 0.00027457914534258503
+          "median": 0.0037673369952244684,
+          "min": 0.003707033996761311,
+          "max": 0.004004431000794284,
+          "stdev": 0.00012836363153538797
         }
       },
       "speedup": {
-        "kernel_seconds": 4.849012030193428,
-        "process_seconds": 4.9129490664636695
+        "kernel_seconds": 4.8906520700525915,
+        "process_seconds": 5.00878292597267
       }
     },
     {
@@ -2841,9 +2841,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 0.46945017599864514,
-          "preparation_seconds": 0.0006848929988336749,
-          "process_seconds": 0.9387045680014126,
+          "kernel_seconds": 0.4681709919968853,
+          "preparation_seconds": 0.0007865730003686622,
+          "process_seconds": 0.9405144609991112,
           "fields": {
             "CASE": "interval_merging",
             "SIZE": "50000",
@@ -2854,9 +2854,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.43967442299981485,
-          "preparation_seconds": 0.0005552499969780911,
-          "process_seconds": 0.8845744930004003,
+          "kernel_seconds": 0.43446711800061166,
+          "preparation_seconds": 0.0006235180044313893,
+          "process_seconds": 0.8770076310029253,
           "fields": {
             "CASE": "interval_merging",
             "SIZE": "50000",
@@ -2867,9 +2867,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.4670058390001941,
-          "preparation_seconds": 0.0006995200019446202,
-          "process_seconds": 0.937958130001789,
+          "kernel_seconds": 0.44061609499476617,
+          "preparation_seconds": 0.0005800069993711077,
+          "process_seconds": 0.8871934089984279,
           "fields": {
             "CASE": "interval_merging",
             "SIZE": "50000",
@@ -2881,7 +2881,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/7-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/7-2",
         "--seed",
         "42",
         "--loops",
@@ -2890,9 +2890,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.46399826600099914,
-        "preparation_seconds": 0.0006193999979586806,
-        "process_seconds": 0.9468750979976903,
+        "kernel_seconds": 0.4385493200024939,
+        "preparation_seconds": 0.0005998439955874346,
+        "process_seconds": 0.909581399995659,
         "fields": {
           "CASE": "interval_merging",
           "SIZE": "50000",
@@ -2905,27 +2905,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.4670058390001941,
-          "min": 0.43967442299981485,
-          "max": 0.46945017599864514,
-          "stdev": 0.013497228318745601
+          "median": 0.44061609499476617,
+          "min": 0.43446711800061166,
+          "max": 0.4681709919968853,
+          "stdev": 0.014655425196563909
         },
         "process_seconds": {
-          "median": 0.937958130001789,
-          "min": 0.8845744930004003,
-          "max": 0.9387045680014126,
-          "stdev": 0.025343057100512507
+          "median": 0.8871934089984279,
+          "min": 0.8770076310029253,
+          "max": 0.9405144609991112,
+          "stdev": 0.027848802320143126
         },
         "preparation_seconds": {
-          "median": 0.0006848929988336749,
-          "min": 0.0005552499969780911,
-          "max": 0.0006995200019446202,
-          "stdev": 6.483748185799875e-05
+          "median": 0.0006235180044313893,
+          "min": 0.0005800069993711077,
+          "max": 0.0007865730003686622,
+          "stdev": 8.89129736999935e-05
         }
       },
       "speedup": {
-        "kernel_seconds": 8.601106225132485,
-        "process_seconds": 8.641302228472071
+        "kernel_seconds": 9.245687436925515,
+        "process_seconds": 9.427313106892619
       }
     },
     {
@@ -2933,9 +2933,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 4.011041584999475,
-          "preparation_seconds": 0.02378007500010426,
-          "process_seconds": 8.02895524899941,
+          "kernel_seconds": 3.9347498010029085,
+          "preparation_seconds": 0.023550767000415362,
+          "process_seconds": 7.91714494000189,
           "fields": {
             "CASE": "json_tokenizer",
             "SIZE": "50000",
@@ -2946,9 +2946,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 3.9802342929979204,
-          "preparation_seconds": 0.023896634000266204,
-          "process_seconds": 7.97995980700216,
+          "kernel_seconds": 3.968069300004572,
+          "preparation_seconds": 0.023839677996875253,
+          "process_seconds": 8.00091915899975,
           "fields": {
             "CASE": "json_tokenizer",
             "SIZE": "50000",
@@ -2959,9 +2959,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 3.9800507920008386,
-          "preparation_seconds": 0.024189312000089558,
-          "process_seconds": 7.978550424002606,
+          "kernel_seconds": 3.9440028259996325,
+          "preparation_seconds": 0.02373264800553443,
+          "process_seconds": 7.924564420005481,
           "fields": {
             "CASE": "json_tokenizer",
             "SIZE": "50000",
@@ -2983,9 +2983,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 3.985623137999937,
-        "preparation_seconds": 0.024315638998814393,
-        "process_seconds": 8.011122374999104,
+        "kernel_seconds": 3.9777562329982175,
+        "preparation_seconds": 0.023927294001623522,
+        "process_seconds": 7.996030827998766,
         "fields": {
           "CASE": "json_tokenizer",
           "SIZE": "50000",
@@ -2998,22 +2998,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 3.9802342929979204,
-          "min": 3.9800507920008386,
-          "max": 4.011041584999475,
-          "stdev": 0.014566140965988107
+          "median": 3.9440028259996325,
+          "min": 3.9347498010029085,
+          "max": 3.968069300004572,
+          "stdev": 0.014043593463617733
         },
         "process_seconds": {
-          "median": 7.97995980700216,
-          "min": 7.978550424002606,
-          "max": 8.02895524899941,
-          "stdev": 0.02343593176656459
+          "median": 7.924564420005481,
+          "min": 7.91714494000189,
+          "max": 8.00091915899975,
+          "stdev": 0.03786410586867487
         },
         "preparation_seconds": {
-          "median": 0.023896634000266204,
-          "min": 0.02378007500010426,
-          "max": 0.024189312000089558,
-          "stdev": 0.00017215023614929306
+          "median": 0.02373264800553443,
+          "min": 0.023550767000415362,
+          "max": 0.023839677996875253,
+          "stdev": 0.00011925960615629221
         }
       },
       "speedup": {
@@ -3026,9 +3026,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 0.9459412699980021,
-          "preparation_seconds": 0.03214178499911213,
-          "process_seconds": 1.9331356100010453,
+          "kernel_seconds": 0.923483001999557,
+          "preparation_seconds": 0.032953030000498984,
+          "process_seconds": 1.8856584970053518,
           "fields": {
             "CASE": "json_tokenizer",
             "SIZE": "50000",
@@ -3039,9 +3039,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.9444572220018017,
-          "preparation_seconds": 0.03463572599866893,
-          "process_seconds": 1.932223432999308,
+          "kernel_seconds": 0.9360556859974167,
+          "preparation_seconds": 0.03479552199860336,
+          "process_seconds": 1.9239965110027697,
           "fields": {
             "CASE": "json_tokenizer",
             "SIZE": "50000",
@@ -3052,9 +3052,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.9714572879965999,
-          "preparation_seconds": 0.032695934001822025,
-          "process_seconds": 1.9619037800002843,
+          "kernel_seconds": 0.9416334900015499,
+          "preparation_seconds": 0.03309825200267369,
+          "process_seconds": 1.9281631729973014,
           "fields": {
             "CASE": "json_tokenizer",
             "SIZE": "50000",
@@ -3066,7 +3066,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/8-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/8-1",
         "--seed",
         "42",
         "--loops",
@@ -3075,9 +3075,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.9435739870023099,
-        "preparation_seconds": 0.033628188000875525,
-        "process_seconds": 1.9423073649995786,
+        "kernel_seconds": 0.9357864659978077,
+        "preparation_seconds": 0.035473062001983635,
+        "process_seconds": 1.9199494369968306,
         "fields": {
           "CASE": "json_tokenizer",
           "SIZE": "50000",
@@ -3090,27 +3090,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.9459412699980021,
-          "min": 0.9444572220018017,
-          "max": 0.9714572879965999,
-          "stdev": 0.01239297801482424
+          "median": 0.9360556859974167,
+          "min": 0.923483001999557,
+          "max": 0.9416334900015499,
+          "stdev": 0.00759110953044599
         },
         "process_seconds": {
-          "median": 1.9331356100010453,
-          "min": 1.932223432999308,
-          "max": 1.9619037800002843,
-          "stdev": 0.013781479803167324
+          "median": 1.9239965110027697,
+          "min": 1.8856584970053518,
+          "max": 1.9281631729973014,
+          "stdev": 0.019130580146350627
         },
         "preparation_seconds": {
-          "median": 0.032695934001822025,
-          "min": 0.03214178499911213,
-          "max": 0.03463572599866893,
-          "stdev": 0.0010692477011383097
+          "median": 0.03309825200267369,
+          "min": 0.032953030000498984,
+          "max": 0.03479552199860336,
+          "stdev": 0.0008364336748679153
         }
       },
       "speedup": {
-        "kernel_seconds": 4.207697051854315,
-        "process_seconds": 4.12798758955035
+        "kernel_seconds": 4.213427560986491,
+        "process_seconds": 4.11880394516686
       }
     },
     {
@@ -3118,9 +3118,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 0.4387893549974251,
-          "preparation_seconds": 0.006882900001073722,
-          "process_seconds": 0.892872152999189,
+          "kernel_seconds": 0.4435212130047148,
+          "preparation_seconds": 0.006825655997090507,
+          "process_seconds": 0.876888284998131,
           "fields": {
             "CASE": "json_tokenizer",
             "SIZE": "50000",
@@ -3131,9 +3131,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.44219659699956537,
-          "preparation_seconds": 0.007195336002041586,
-          "process_seconds": 0.9008196770009818,
+          "kernel_seconds": 0.4329854509996949,
+          "preparation_seconds": 0.007765798000036739,
+          "process_seconds": 0.8764941940025892,
           "fields": {
             "CASE": "json_tokenizer",
             "SIZE": "50000",
@@ -3144,9 +3144,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.44016575400019065,
-          "preparation_seconds": 0.007154840001021512,
-          "process_seconds": 0.8979800389970478,
+          "kernel_seconds": 0.4445493609964615,
+          "preparation_seconds": 0.006943246997252572,
+          "process_seconds": 0.9016514169998118,
           "fields": {
             "CASE": "json_tokenizer",
             "SIZE": "50000",
@@ -3158,7 +3158,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/8-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/8-2",
         "--seed",
         "42",
         "--loops",
@@ -3167,9 +3167,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.4159924520026834,
-        "preparation_seconds": 0.006684998999844538,
-        "process_seconds": 0.8620813570014434,
+        "kernel_seconds": 0.442803385994921,
+        "preparation_seconds": 0.007144502997107338,
+        "process_seconds": 0.9262598980058101,
         "fields": {
           "CASE": "json_tokenizer",
           "SIZE": "50000",
@@ -3182,27 +3182,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.44016575400019065,
-          "min": 0.4387893549974251,
-          "max": 0.44219659699956537,
-          "stdev": 0.0013995275220219502
+          "median": 0.4435212130047148,
+          "min": 0.4329854509996949,
+          "max": 0.4445493609964615,
+          "stdev": 0.005225826715380626
         },
         "process_seconds": {
-          "median": 0.8979800389970478,
-          "min": 0.892872152999189,
-          "max": 0.9008196770009818,
-          "stdev": 0.0032883156971917744
+          "median": 0.876888284998131,
+          "min": 0.8764941940025892,
+          "max": 0.9016514169998118,
+          "stdev": 0.011767440405049
         },
         "preparation_seconds": {
-          "median": 0.007154840001021512,
-          "min": 0.006882900001073722,
-          "max": 0.007195336002041586,
-          "stdev": 0.00013872736827277567
+          "median": 0.006943246997252572,
+          "min": 0.006825655997090507,
+          "max": 0.007765798000036739,
+          "stdev": 0.0004182350191517928
         }
       },
       "speedup": {
-        "kernel_seconds": 9.042580566129633,
-        "process_seconds": 8.886567028722556
+        "kernel_seconds": 8.89247844377109,
+        "process_seconds": 9.03714253637494
       }
     },
     {
@@ -3210,9 +3210,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 3.992856529999699,
-          "preparation_seconds": 0.010942622997390572,
-          "process_seconds": 7.998815056998865,
+          "kernel_seconds": 4.005877121002413,
+          "preparation_seconds": 0.011397018999559805,
+          "process_seconds": 8.038638017002086,
           "fields": {
             "CASE": "kv_record_parse",
             "SIZE": "50000",
@@ -3223,9 +3223,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.152424644998973,
-          "preparation_seconds": 0.010456863998115296,
-          "process_seconds": 8.295421611001075,
+          "kernel_seconds": 3.979222377995029,
+          "preparation_seconds": 0.011203166999621317,
+          "process_seconds": 8.034286873000383,
           "fields": {
             "CASE": "kv_record_parse",
             "SIZE": "50000",
@@ -3236,9 +3236,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 3.99032290499963,
-          "preparation_seconds": 0.009871776997897541,
-          "process_seconds": 8.00429943799827,
+          "kernel_seconds": 4.037879930001509,
+          "preparation_seconds": 0.009936424001352862,
+          "process_seconds": 8.114921490996494,
           "fields": {
             "CASE": "kv_record_parse",
             "SIZE": "50000",
@@ -3260,9 +3260,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 4.025760807999177,
-        "preparation_seconds": 0.010603348000586266,
-        "process_seconds": 8.03913657999874,
+        "kernel_seconds": 4.028171310004836,
+        "preparation_seconds": 0.010230666004645173,
+        "process_seconds": 8.08892317799473,
         "fields": {
           "CASE": "kv_record_parse",
           "SIZE": "50000",
@@ -3275,22 +3275,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 3.992856529999699,
-          "min": 3.99032290499963,
-          "max": 4.152424644998973,
-          "stdev": 0.0758253671206831
+          "median": 4.005877121002413,
+          "min": 3.979222377995029,
+          "max": 4.037879930001509,
+          "stdev": 0.023979999805428545
         },
         "process_seconds": {
-          "median": 8.00429943799827,
-          "min": 7.998815056998865,
-          "max": 8.295421611001075,
-          "stdev": 0.1385470822203242
+          "median": 8.038638017002086,
+          "min": 8.034286873000383,
+          "max": 8.114921490996494,
+          "stdev": 0.03702858127050549
         },
         "preparation_seconds": {
-          "median": 0.010456863998115296,
-          "min": 0.009871776997897541,
-          "max": 0.010942622997390572,
-          "stdev": 0.0004377974871547291
+          "median": 0.011203166999621317,
+          "min": 0.009936424001352862,
+          "max": 0.011397018999559805,
+          "stdev": 0.0006476928430401977
         }
       },
       "speedup": {
@@ -3303,9 +3303,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 1.4452700360016024,
-          "preparation_seconds": 0.011776023999118479,
-          "process_seconds": 2.928175603999989,
+          "kernel_seconds": 1.6796750989960856,
+          "preparation_seconds": 0.012808804000087548,
+          "process_seconds": 3.3823181159968954,
           "fields": {
             "CASE": "kv_record_parse",
             "SIZE": "50000",
@@ -3316,9 +3316,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 1.4452186509988678,
-          "preparation_seconds": 0.011634999998932471,
-          "process_seconds": 2.937296128999151,
+          "kernel_seconds": 1.6953894600010244,
+          "preparation_seconds": 0.01262261500232853,
+          "process_seconds": 3.4106485859956592,
           "fields": {
             "CASE": "kv_record_parse",
             "SIZE": "50000",
@@ -3329,9 +3329,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 1.4582026490024873,
-          "preparation_seconds": 0.013022429000557167,
-          "process_seconds": 2.934434874001454,
+          "kernel_seconds": 1.6922879500052659,
+          "preparation_seconds": 0.012561019997519907,
+          "process_seconds": 3.413664653999149,
           "fields": {
             "CASE": "kv_record_parse",
             "SIZE": "50000",
@@ -3343,7 +3343,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/9-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/9-1",
         "--seed",
         "42",
         "--loops",
@@ -3352,9 +3352,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 1.4573735909980314,
-        "preparation_seconds": 0.012401485000737011,
-        "process_seconds": 2.9436631559983653,
+        "kernel_seconds": 1.7104210280012921,
+        "preparation_seconds": 0.012571910003316589,
+        "process_seconds": 3.4617941670003347,
         "fields": {
           "CASE": "kv_record_parse",
           "SIZE": "50000",
@@ -3367,27 +3367,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 1.4452700360016024,
-          "min": 1.4452186509988678,
-          "max": 1.4582026490024873,
-          "stdev": 0.006108639815932455
+          "median": 1.6922879500052659,
+          "min": 1.6796750989960856,
+          "max": 1.6953894600010244,
+          "stdev": 0.006795787229576807
         },
         "process_seconds": {
-          "median": 2.934434874001454,
-          "min": 2.928175603999989,
-          "max": 2.937296128999151,
-          "stdev": 0.003808604547212306
+          "median": 3.4106485859956592,
+          "min": 3.3823181159968954,
+          "max": 3.413664653999149,
+          "stdev": 0.014119795565404138
         },
         "preparation_seconds": {
-          "median": 0.011776023999118479,
-          "min": 0.011634999998932471,
-          "max": 0.013022429000557167,
-          "stdev": 0.0006234645522124414
+          "median": 0.01262261500232853,
+          "min": 0.012561019997519907,
+          "max": 0.012808804000087548,
+          "stdev": 0.00010533396594341833
         }
       },
       "speedup": {
-        "kernel_seconds": 2.7627062282741965,
-        "process_seconds": 2.727714119306198
+        "kernel_seconds": 2.3671368226606755,
+        "process_seconds": 2.356923562869903
       }
     },
     {
@@ -3395,9 +3395,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 2.5228302939976857,
-          "preparation_seconds": 0.003323273002024507,
-          "process_seconds": 5.039300174998061,
+          "kernel_seconds": 2.410576392998337,
+          "preparation_seconds": 0.0038873219964443706,
+          "process_seconds": 4.8451409509943915,
           "fields": {
             "CASE": "kv_record_parse",
             "SIZE": "50000",
@@ -3408,9 +3408,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 2.4348417510009313,
-          "preparation_seconds": 0.00337810600103694,
-          "process_seconds": 4.897644815999229,
+          "kernel_seconds": 2.5096851909984252,
+          "preparation_seconds": 0.003244697996706236,
+          "process_seconds": 5.034655693001696,
           "fields": {
             "CASE": "kv_record_parse",
             "SIZE": "50000",
@@ -3421,9 +3421,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 2.3863520200029598,
-          "preparation_seconds": 0.0031739949990878813,
-          "process_seconds": 4.80459938399872,
+          "kernel_seconds": 2.398928946000524,
+          "preparation_seconds": 0.0031602799936081283,
+          "process_seconds": 4.817502641999454,
           "fields": {
             "CASE": "kv_record_parse",
             "SIZE": "50000",
@@ -3435,7 +3435,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/9-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/9-2",
         "--seed",
         "42",
         "--loops",
@@ -3444,9 +3444,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 2.513689531999262,
-        "preparation_seconds": 0.00407850799820153,
-        "process_seconds": 5.031125458001043,
+        "kernel_seconds": 2.3760466599997017,
+        "preparation_seconds": 0.0037254189956001937,
+        "process_seconds": 4.784941213998536,
         "fields": {
           "CASE": "kv_record_parse",
           "SIZE": "50000",
@@ -3459,27 +3459,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 2.4348417510009313,
-          "min": 2.3863520200029598,
-          "max": 2.5228302939976857,
-          "stdev": 0.056489484747681444
+          "median": 2.410576392998337,
+          "min": 2.398928946000524,
+          "max": 2.5096851909984252,
+          "stdev": 0.04969368691027099
         },
         "process_seconds": {
-          "median": 4.897644815999229,
-          "min": 4.80459938399872,
-          "max": 5.039300174998061,
-          "stdev": 0.09649879357044694
+          "median": 4.8451409509943915,
+          "min": 4.817502641999454,
+          "max": 5.034655693001696,
+          "stdev": 0.0965143403977859
         },
         "preparation_seconds": {
-          "median": 0.003323273002024507,
-          "min": 0.0031739949990878813,
-          "max": 0.00337810600103694,
-          "stdev": 8.625020519015429e-05
+          "median": 0.003244697996706236,
+          "min": 0.0031602799936081283,
+          "max": 0.0038873219964443706,
+          "stdev": 0.0003246677067359529
         }
       },
       "speedup": {
-        "kernel_seconds": 1.6398833839440647,
-        "process_seconds": 1.6343160312177956
+        "kernel_seconds": 1.6617922305377764,
+        "process_seconds": 1.6591133464037362
       }
     },
     {
@@ -3487,9 +3487,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 0.05165044099703664,
-          "preparation_seconds": 0.04527586300173425,
-          "process_seconds": 0.15999159200146096,
+          "kernel_seconds": 0.05134079399431357,
+          "preparation_seconds": 0.04602693999913754,
+          "process_seconds": 0.16055087400309276,
           "fields": {
             "CASE": "log_aggregation",
             "SIZE": "100000",
@@ -3500,9 +3500,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.05108373999973992,
-          "preparation_seconds": 0.04719508700145525,
-          "process_seconds": 0.16212425800040364,
+          "kernel_seconds": 0.052877472997352015,
+          "preparation_seconds": 0.047165502997813746,
+          "process_seconds": 0.1663392760019633,
           "fields": {
             "CASE": "log_aggregation",
             "SIZE": "100000",
@@ -3513,9 +3513,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.05310009599998011,
-          "preparation_seconds": 0.045781150001857895,
-          "process_seconds": 0.16397058499933337,
+          "kernel_seconds": 0.054630457001621835,
+          "preparation_seconds": 0.04847530600090977,
+          "process_seconds": 0.17231451899715466,
           "fields": {
             "CASE": "log_aggregation",
             "SIZE": "100000",
@@ -3537,9 +3537,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.05139033399973414,
-        "preparation_seconds": 0.047367830000439426,
-        "process_seconds": 0.16193516199928126,
+        "kernel_seconds": 0.0512463680061046,
+        "preparation_seconds": 0.046106779998808634,
+        "process_seconds": 0.16019598899583798,
         "fields": {
           "CASE": "log_aggregation",
           "SIZE": "100000",
@@ -3552,22 +3552,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.05165044099703664,
-          "min": 0.05108373999973992,
-          "max": 0.05310009599998011,
-          "stdev": 0.0008490740818091703
+          "median": 0.052877472997352015,
+          "min": 0.05134079399431357,
+          "max": 0.054630457001621835,
+          "stdev": 0.0013439666819306663
         },
         "process_seconds": {
-          "median": 0.16212425800040364,
-          "min": 0.15999159200146096,
-          "max": 0.16397058499933337,
-          "stdev": 0.0016258185264024436
+          "median": 0.1663392760019633,
+          "min": 0.16055087400309276,
+          "max": 0.17231451899715466,
+          "stdev": 0.004802689872450295
         },
         "preparation_seconds": {
-          "median": 0.045781150001857895,
-          "min": 0.04527586300173425,
-          "max": 0.04719508700145525,
-          "stdev": 0.0008122638838066103
+          "median": 0.047165502997813746,
+          "min": 0.04602693999913754,
+          "max": 0.04847530600090977,
+          "stdev": 0.0010003558082284768
         }
       },
       "speedup": {
@@ -3580,9 +3580,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 0.175733335003315,
-          "preparation_seconds": 0.20491878299799282,
-          "process_seconds": 0.5652282110022497,
+          "kernel_seconds": 0.15276612999878125,
+          "preparation_seconds": 0.19609610900079133,
+          "process_seconds": 0.5113217479956802,
           "fields": {
             "CASE": "log_aggregation",
             "SIZE": "100000",
@@ -3593,9 +3593,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.17626964800001588,
-          "preparation_seconds": 0.208949711999594,
-          "process_seconds": 0.5713821470017137,
+          "kernel_seconds": 0.1529633489990374,
+          "preparation_seconds": 0.19837856400408782,
+          "process_seconds": 0.5144527419979568,
           "fields": {
             "CASE": "log_aggregation",
             "SIZE": "100000",
@@ -3606,9 +3606,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.17583662700053537,
-          "preparation_seconds": 0.21345792499778327,
-          "process_seconds": 0.582225803998881,
+          "kernel_seconds": 0.15374980299384333,
+          "preparation_seconds": 0.19839329100068426,
+          "process_seconds": 0.515431936000823,
           "fields": {
             "CASE": "log_aggregation",
             "SIZE": "100000",
@@ -3620,7 +3620,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/10-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/10-1",
         "--seed",
         "42",
         "--loops",
@@ -3629,9 +3629,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.17552075600178796,
-        "preparation_seconds": 0.2062360890013224,
-        "process_seconds": 0.5855087929994625,
+        "kernel_seconds": 0.15303348100133007,
+        "preparation_seconds": 0.1968522649985971,
+        "process_seconds": 0.5126483330022893,
         "fields": {
           "CASE": "log_aggregation",
           "SIZE": "100000",
@@ -3644,27 +3644,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.17583662700053537,
-          "min": 0.175733335003315,
-          "max": 0.17626964800001588,
-          "stdev": 0.0002323331069131218
+          "median": 0.1529633489990374,
+          "min": 0.15276612999878125,
+          "max": 0.15374980299384333,
+          "stdev": 0.0004249206175828134
         },
         "process_seconds": {
-          "median": 0.5713821470017137,
-          "min": 0.5652282110022497,
-          "max": 0.582225803998881,
-          "stdev": 0.00702672669990834
+          "median": 0.5144527419979568,
+          "min": 0.5113217479956802,
+          "max": 0.515431936000823,
+          "stdev": 0.001752952739908081
         },
         "preparation_seconds": {
-          "median": 0.208949711999594,
-          "min": 0.20491878299799282,
-          "max": 0.21345792499778327,
-          "stdev": 0.0034879048016057067
+          "median": 0.19837856400408782,
+          "min": 0.19609610900079133,
+          "max": 0.19839329100068426,
+          "stdev": 0.0010794475370471284
         }
       },
       "speedup": {
-        "kernel_seconds": 0.29374108158295925,
-        "process_seconds": 0.28374050335863465
+        "kernel_seconds": 0.345687207709376,
+        "process_seconds": 0.32333247045386326
       }
     },
     {
@@ -3672,9 +3672,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 0.02032476400199812,
-          "preparation_seconds": 0.02071094799975981,
-          "process_seconds": 0.06891953299782472,
+          "kernel_seconds": 0.02003304699610453,
+          "preparation_seconds": 0.019524745002854615,
+          "process_seconds": 0.06732015799934743,
           "fields": {
             "CASE": "log_aggregation",
             "SIZE": "100000",
@@ -3685,9 +3685,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.02244187900214456,
-          "preparation_seconds": 0.020603085002221633,
-          "process_seconds": 0.07224948799921549,
+          "kernel_seconds": 0.019237907996284775,
+          "preparation_seconds": 0.019545203998859506,
+          "process_seconds": 0.06550952600082383,
           "fields": {
             "CASE": "log_aggregation",
             "SIZE": "100000",
@@ -3698,9 +3698,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.020330825998826185,
-          "preparation_seconds": 0.02069609000318451,
-          "process_seconds": 0.06920379599978332,
+          "kernel_seconds": 0.019218591005483177,
+          "preparation_seconds": 0.019636614997580182,
+          "process_seconds": 0.0659711209955276,
           "fields": {
             "CASE": "log_aggregation",
             "SIZE": "100000",
@@ -3712,7 +3712,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/10-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/10-2",
         "--seed",
         "42",
         "--loops",
@@ -3721,9 +3721,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.020342959000117844,
-        "preparation_seconds": 0.019807434997346718,
-        "process_seconds": 0.073971474001155,
+        "kernel_seconds": 0.020157840997853782,
+        "preparation_seconds": 0.020332548003352713,
+        "process_seconds": 0.08950501599611016,
         "fields": {
           "CASE": "log_aggregation",
           "SIZE": "100000",
@@ -3736,27 +3736,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.020330825998826185,
-          "min": 0.02032476400199812,
-          "max": 0.02244187900214456,
-          "stdev": 0.0009965918285431124
+          "median": 0.019237907996284775,
+          "min": 0.019218591005483177,
+          "max": 0.02003304699610453,
+          "stdev": 0.0003794671316211432
         },
         "process_seconds": {
-          "median": 0.06920379599978332,
-          "min": 0.06891953299782472,
-          "max": 0.07224948799921549,
-          "stdev": 0.0015072287123125835
+          "median": 0.0659711209955276,
+          "min": 0.06550952600082383,
+          "max": 0.06732015799934743,
+          "stdev": 0.0007682128619138161
         },
         "preparation_seconds": {
-          "median": 0.02069609000318451,
-          "min": 0.020603085002221633,
-          "max": 0.02071094799975981,
-          "stdev": 4.7732025708645366e-05
+          "median": 0.019545203998859506,
+          "min": 0.019524745002854615,
+          "max": 0.019636614997580182,
+          "stdev": 4.863633406842363e-05
         }
       },
       "speedup": {
-        "kernel_seconds": 2.540498895618836,
-        "process_seconds": 2.3427075879032886
+        "kernel_seconds": 2.748608269026118,
+        "process_seconds": 2.521395324072786
       }
     },
     {
@@ -3764,9 +3764,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 3.9864277859996946,
-          "preparation_seconds": 0.016043988001911202,
-          "process_seconds": 8.022566290001123,
+          "kernel_seconds": 3.9722726849940955,
+          "preparation_seconds": 0.015156781002588104,
+          "process_seconds": 7.995035319996532,
           "fields": {
             "CASE": "lru_simulation",
             "SIZE": "80000",
@@ -3777,9 +3777,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 3.9611578570002166,
-          "preparation_seconds": 0.017300319999776548,
-          "process_seconds": 7.990082618001907,
+          "kernel_seconds": 3.9881232020052266,
+          "preparation_seconds": 0.016821630000777077,
+          "process_seconds": 8.058705686002213,
           "fields": {
             "CASE": "lru_simulation",
             "SIZE": "80000",
@@ -3790,9 +3790,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.008773891000601,
-          "preparation_seconds": 0.015211468999041244,
-          "process_seconds": 8.064933694000501,
+          "kernel_seconds": 3.978768406006566,
+          "preparation_seconds": 0.014837533002719283,
+          "process_seconds": 8.011615659997915,
           "fields": {
             "CASE": "lru_simulation",
             "SIZE": "80000",
@@ -3814,9 +3814,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 3.9825372630002676,
-        "preparation_seconds": 0.016744227999879513,
-        "process_seconds": 8.01014208900233,
+        "kernel_seconds": 4.071693934005452,
+        "preparation_seconds": 0.015081973004271276,
+        "process_seconds": 8.180040312996425,
         "fields": {
           "CASE": "lru_simulation",
           "SIZE": "80000",
@@ -3829,22 +3829,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 3.9864277859996946,
-          "min": 3.9611578570002166,
-          "max": 4.008773891000601,
-          "stdev": 0.019451376455939095
+          "median": 3.978768406006566,
+          "min": 3.9722726849940955,
+          "max": 3.9881232020052266,
+          "stdev": 0.006505941636249536
         },
         "process_seconds": {
-          "median": 8.022566290001123,
-          "min": 7.990082618001907,
-          "max": 8.064933694000501,
-          "stdev": 0.030646495986666016
+          "median": 8.011615659997915,
+          "min": 7.995035319996532,
+          "max": 8.058705686002213,
+          "stdev": 0.026969723211500023
         },
         "preparation_seconds": {
-          "median": 0.016043988001911202,
-          "min": 0.015211468999041244,
-          "max": 0.017300319999776548,
-          "stdev": 0.0008586007015469866
+          "median": 0.015156781002588104,
+          "min": 0.014837533002719283,
+          "max": 0.016821630000777077,
+          "stdev": 0.0008698839239227405
         }
       },
       "speedup": {
@@ -3857,9 +3857,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 7.610501490999013,
-          "preparation_seconds": 0.005822734998218948,
-          "process_seconds": 15.259729945999425,
+          "kernel_seconds": 7.473792320000939,
+          "preparation_seconds": 0.0048661149994586594,
+          "process_seconds": 14.992519507999532,
           "fields": {
             "CASE": "lru_simulation",
             "SIZE": "80000",
@@ -3870,9 +3870,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 7.660158612998202,
-          "preparation_seconds": 0.004887093000434106,
-          "process_seconds": 15.324827428998105,
+          "kernel_seconds": 7.524294934002683,
+          "preparation_seconds": 0.004972975002601743,
+          "process_seconds": 15.008619740998256,
           "fields": {
             "CASE": "lru_simulation",
             "SIZE": "80000",
@@ -3883,9 +3883,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 7.61652605999916,
-          "preparation_seconds": 0.004180338997684885,
-          "process_seconds": 15.237077683999814,
+          "kernel_seconds": 7.471203258995956,
+          "preparation_seconds": 0.005839217999891844,
+          "process_seconds": 14.968324204994133,
           "fields": {
             "CASE": "lru_simulation",
             "SIZE": "80000",
@@ -3897,7 +3897,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/11-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/11-1",
         "--seed",
         "42",
         "--loops",
@@ -3906,9 +3906,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 7.628958384000725,
-        "preparation_seconds": 0.004813924999325536,
-        "process_seconds": 15.290812469997036,
+        "kernel_seconds": 7.604687619001197,
+        "preparation_seconds": 0.004894548001175281,
+        "process_seconds": 15.155805512004008,
         "fields": {
           "CASE": "lru_simulation",
           "SIZE": "80000",
@@ -3921,27 +3921,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 7.61652605999916,
-          "min": 7.610501490999013,
-          "max": 7.660158612998202,
-          "stdev": 0.022125713743902792
+          "median": 7.473792320000939,
+          "min": 7.471203258995956,
+          "max": 7.524294934002683,
+          "stdev": 0.024440274623199
         },
         "process_seconds": {
-          "median": 15.259729945999425,
-          "min": 15.237077683999814,
-          "max": 15.324827428998105,
-          "stdev": 0.03719442164525877
+          "median": 14.992519507999532,
+          "min": 14.968324204994133,
+          "max": 15.008619740998256,
+          "stdev": 0.016560865557075876
         },
         "preparation_seconds": {
-          "median": 0.004887093000434106,
-          "min": 0.004180338997684885,
-          "max": 0.005822734998218948,
-          "stdev": 0.0006726722655028924
+          "median": 0.004972975002601743,
+          "min": 0.0048661149994586594,
+          "max": 0.005839217999891844,
+          "stdev": 0.00043572741735043775
         }
       },
       "speedup": {
-        "kernel_seconds": 0.5233918658712151,
-        "process_seconds": 0.5257344866777517
+        "kernel_seconds": 0.5323627197077462,
+        "process_seconds": 0.5343742027964794
       }
     },
     {
@@ -3949,9 +3949,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 1.7108246950010653,
-          "preparation_seconds": 0.0006783809985790867,
-          "process_seconds": 3.2319143730019277,
+          "kernel_seconds": 1.7283964489979553,
+          "preparation_seconds": 0.000661519996356219,
+          "process_seconds": 3.263081577999401,
           "fields": {
             "CASE": "lru_simulation",
             "SIZE": "80000",
@@ -3962,9 +3962,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 1.70758875699903,
-          "preparation_seconds": 0.0006626309987041168,
-          "process_seconds": 3.222070309002447,
+          "kernel_seconds": 1.7378320970019558,
+          "preparation_seconds": 0.0006035509941284545,
+          "process_seconds": 3.2807669150060974,
           "fields": {
             "CASE": "lru_simulation",
             "SIZE": "80000",
@@ -3975,9 +3975,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 1.6266767960005382,
-          "preparation_seconds": 0.0006172260000312235,
-          "process_seconds": 3.0666685750002216,
+          "kernel_seconds": 1.7312257820012746,
+          "preparation_seconds": 0.0006397290053428151,
+          "process_seconds": 3.268460826999217,
           "fields": {
             "CASE": "lru_simulation",
             "SIZE": "80000",
@@ -3989,7 +3989,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/11-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/11-2",
         "--seed",
         "42",
         "--loops",
@@ -3998,9 +3998,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 1.6184607229988615,
-        "preparation_seconds": 0.0006060250016162172,
-        "process_seconds": 3.093246439999348,
+        "kernel_seconds": 1.6163746720048948,
+        "preparation_seconds": 0.0006311030010692775,
+        "process_seconds": 3.045200890999695,
         "fields": {
           "CASE": "lru_simulation",
           "SIZE": "80000",
@@ -4013,27 +4013,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 1.70758875699903,
-          "min": 1.6266767960005382,
-          "max": 1.7108246950010653,
-          "stdev": 0.0389274048476811
+          "median": 1.7312257820012746,
+          "min": 1.7283964489979553,
+          "max": 1.7378320970019558,
+          "stdev": 0.003953619669047268
         },
         "process_seconds": {
-          "median": 3.222070309002447,
-          "min": 3.0666685750002216,
-          "max": 3.2319143730019277,
-          "stdev": 0.07568412301147522
+          "median": 3.268460826999217,
+          "min": 3.263081577999401,
+          "max": 3.2807669150060974,
+          "stdev": 0.007402306448935281
         },
         "preparation_seconds": {
-          "median": 0.0006626309987041168,
-          "min": 0.0006172260000312235,
-          "max": 0.0006783809985790867,
-          "stdev": 2.592641348967013e-05
+          "median": 0.0006397290053428151,
+          "min": 0.0006035509941284545,
+          "max": 0.000661519996356219,
+          "stdev": 2.3907462814534686e-05
         }
       },
       "speedup": {
-        "kernel_seconds": 2.3345362105836114,
-        "process_seconds": 2.4898793386308533
+        "kernel_seconds": 2.2982377269169136,
+        "process_seconds": 2.4511891327617357
       }
     },
     {
@@ -4041,9 +4041,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 4.3649935130015365,
-          "preparation_seconds": 0.05178133599838475,
-          "process_seconds": 8.981637247001345,
+          "kernel_seconds": 4.568789272998401,
+          "preparation_seconds": 0.05400713700510096,
+          "process_seconds": 9.601601135000237,
           "fields": {
             "CASE": "matrix_multiply",
             "SIZE": "490",
@@ -4054,9 +4054,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.280717915000423,
-          "preparation_seconds": 0.05132267700173543,
-          "process_seconds": 9.109473355001683,
+          "kernel_seconds": 4.2911257360028685,
+          "preparation_seconds": 0.049564004002604634,
+          "process_seconds": 9.06211809800152,
           "fields": {
             "CASE": "matrix_multiply",
             "SIZE": "490",
@@ -4067,9 +4067,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.237182953998854,
-          "preparation_seconds": 0.04924053699869546,
-          "process_seconds": 8.639879000998917,
+          "kernel_seconds": 5.13160788899404,
+          "preparation_seconds": 0.049664512000163086,
+          "process_seconds": 9.810836869000923,
           "fields": {
             "CASE": "matrix_multiply",
             "SIZE": "490",
@@ -4091,9 +4091,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 4.363906403999863,
-        "preparation_seconds": 0.05079256400131271,
-        "process_seconds": 8.68336144800196,
+        "kernel_seconds": 4.556729734998953,
+        "preparation_seconds": 0.049043369996070396,
+        "process_seconds": 9.337665853003273,
         "fields": {
           "CASE": "matrix_multiply",
           "SIZE": "490",
@@ -4106,22 +4106,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 4.280717915000423,
-          "min": 4.237182953998854,
-          "max": 4.3649935130015365,
-          "stdev": 0.053054697394326104
+          "median": 4.568789272998401,
+          "min": 4.2911257360028685,
+          "max": 5.13160788899404,
+          "stdev": 0.34964618366838446
         },
         "process_seconds": {
-          "median": 8.981637247001345,
-          "min": 8.639879000998917,
-          "max": 9.109473355001683,
-          "stdev": 0.19823096140350047
+          "median": 9.601601135000237,
+          "min": 9.06211809800152,
+          "max": 9.810836869000923,
+          "stdev": 0.3154188287268959
         },
         "preparation_seconds": {
-          "median": 0.05132267700173543,
-          "min": 0.04924053699869546,
-          "max": 0.05178133599838475,
-          "stdev": 0.0011056086621449098
+          "median": 0.049664512000163086,
+          "min": 0.049564004002604634,
+          "max": 0.05400713700510096,
+          "stdev": 0.002071229497154793
         }
       },
       "speedup": {
@@ -4134,9 +4134,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 0.5382312319998164,
-          "preparation_seconds": 0.005913855002290802,
-          "process_seconds": 1.100877009001124,
+          "kernel_seconds": 0.5458855479955673,
+          "preparation_seconds": 0.007086154000717215,
+          "process_seconds": 1.1122861059993738,
           "fields": {
             "CASE": "matrix_multiply",
             "SIZE": "490",
@@ -4147,9 +4147,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.5377114200018696,
-          "preparation_seconds": 0.005810562000988284,
-          "process_seconds": 1.0886571840019315,
+          "kernel_seconds": 0.5460655669958214,
+          "preparation_seconds": 0.006448199004807975,
+          "process_seconds": 1.10596118200192,
           "fields": {
             "CASE": "matrix_multiply",
             "SIZE": "490",
@@ -4160,9 +4160,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.5367092329979641,
-          "preparation_seconds": 0.005854563998582307,
-          "process_seconds": 1.0922593700015568,
+          "kernel_seconds": 0.5508564440024202,
+          "preparation_seconds": 0.0073887909966288134,
+          "process_seconds": 1.1188070670032175,
           "fields": {
             "CASE": "matrix_multiply",
             "SIZE": "490",
@@ -4174,7 +4174,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/12-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/12-1",
         "--seed",
         "42",
         "--loops",
@@ -4183,9 +4183,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.5366729140005191,
-        "preparation_seconds": 0.006194871999468887,
-        "process_seconds": 1.1024866829975508,
+        "kernel_seconds": 0.5480995449979673,
+        "preparation_seconds": 0.006624708999879658,
+        "process_seconds": 1.1130835570002091,
         "fields": {
           "CASE": "matrix_multiply",
           "SIZE": "490",
@@ -4198,27 +4198,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.5377114200018696,
-          "min": 0.5367092329979641,
-          "max": 0.5382312319998164,
-          "stdev": 0.0006316701201001101
+          "median": 0.5460655669958214,
+          "min": 0.5458855479955673,
+          "max": 0.5508564440024202,
+          "stdev": 0.0023020453814369016
         },
         "process_seconds": {
-          "median": 1.0922593700015568,
-          "min": 1.0886571840019315,
-          "max": 1.100877009001124,
-          "stdev": 0.0051268743880073025
+          "median": 1.1122861059993738,
+          "min": 1.10596118200192,
+          "max": 1.1188070670032175,
+          "stdev": 0.005244514143938938
         },
         "preparation_seconds": {
-          "median": 0.005854563998582307,
-          "min": 0.005810562000988284,
-          "max": 0.005913855002290802,
-          "stdev": 4.232288982874809e-05
+          "median": 0.007086154000717215,
+          "min": 0.006448199004807975,
+          "max": 0.0073887909966288134,
+          "stdev": 0.00039204436018523426
         }
       },
       "speedup": {
-        "kernel_seconds": 7.960994979399061,
-        "process_seconds": 8.222989423280062
+        "kernel_seconds": 8.366741192149481,
+        "process_seconds": 8.632312390860381
       }
     },
     {
@@ -4226,9 +4226,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 0.07940445900021587,
-          "preparation_seconds": 0.0008277599990833551,
-          "process_seconds": 0.1660587359983765,
+          "kernel_seconds": 0.08024527599627618,
+          "preparation_seconds": 0.0009822000065469183,
+          "process_seconds": 0.16572472799452953,
           "fields": {
             "CASE": "matrix_multiply",
             "SIZE": "490",
@@ -4239,9 +4239,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.0794072540011257,
-          "preparation_seconds": 0.000834162001410732,
-          "process_seconds": 0.1634918279996782,
+          "kernel_seconds": 0.07970690699585248,
+          "preparation_seconds": 0.0010110739967785776,
+          "process_seconds": 0.16438658800325356,
           "fields": {
             "CASE": "matrix_multiply",
             "SIZE": "490",
@@ -4252,9 +4252,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.08000013600030798,
-          "preparation_seconds": 0.0009206739996443503,
-          "process_seconds": 0.1666318500028865,
+          "kernel_seconds": 0.0806112709979061,
+          "preparation_seconds": 0.0008951970012276433,
+          "process_seconds": 0.16737171999557177,
           "fields": {
             "CASE": "matrix_multiply",
             "SIZE": "490",
@@ -4266,7 +4266,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/12-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/12-2",
         "--seed",
         "42",
         "--loops",
@@ -4275,9 +4275,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.08084268200036604,
-        "preparation_seconds": 0.0009003859995573293,
-        "process_seconds": 0.1658869439997943,
+        "kernel_seconds": 0.07905299399862997,
+        "preparation_seconds": 0.0008690679969731718,
+        "process_seconds": 0.1639321109978482,
         "fields": {
           "CASE": "matrix_multiply",
           "SIZE": "490",
@@ -4290,27 +4290,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.0794072540011257,
-          "min": 0.07940445900021587,
-          "max": 0.08000013600030798,
-          "stdev": 0.0002801483665296739
+          "median": 0.08024527599627618,
+          "min": 0.07970690699585248,
+          "max": 0.0806112709979061,
+          "stdev": 0.00037143382393185374
         },
         "process_seconds": {
-          "median": 0.1660587359983765,
-          "min": 0.1634918279996782,
-          "max": 0.1666318500028865,
-          "stdev": 0.0013653332729727755
+          "median": 0.16572472799452953,
+          "min": 0.16438658800325356,
+          "max": 0.16737171999557177,
+          "stdev": 0.001220847351423992
         },
         "preparation_seconds": {
-          "median": 0.000834162001410732,
-          "min": 0.0008277599990833551,
-          "max": 0.0009206739996443503,
-          "stdev": 4.2371797450167144e-05
+          "median": 0.0009822000065469183,
+          "min": 0.0008951970012276433,
+          "max": 0.0010110739967785776,
+          "stdev": 4.9250728527488104e-05
         }
       },
       "speedup": {
-        "kernel_seconds": 53.90839878356376,
-        "process_seconds": 54.08711076235794
+        "kernel_seconds": 56.93530511640858,
+        "process_seconds": 57.93704567321529
       }
     },
     {
@@ -4318,9 +4318,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 4.02729138399809,
-          "preparation_seconds": 0.02438970699950005,
-          "process_seconds": 8.117947497001296,
+          "kernel_seconds": 4.036285426001996,
+          "preparation_seconds": 0.022863346996018663,
+          "process_seconds": 8.41402809000283,
           "fields": {
             "CASE": "word_frequency",
             "SIZE": "80000",
@@ -4331,9 +4331,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.101640505999967,
-          "preparation_seconds": 0.022547757002030266,
-          "process_seconds": 8.23523918200226,
+          "kernel_seconds": 4.046739505000005,
+          "preparation_seconds": 0.02263496699742973,
+          "process_seconds": 8.397686128002533,
           "fields": {
             "CASE": "word_frequency",
             "SIZE": "80000",
@@ -4344,9 +4344,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 4.047101994998229,
-          "preparation_seconds": 0.02293667699996149,
-          "process_seconds": 8.134544699998514,
+          "kernel_seconds": 4.16862441500416,
+          "preparation_seconds": 0.02658144899760373,
+          "process_seconds": 8.376863511002739,
           "fields": {
             "CASE": "word_frequency",
             "SIZE": "80000",
@@ -4368,9 +4368,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 4.366846004002582,
-        "preparation_seconds": 0.0223711969993019,
-        "process_seconds": 8.65878359600174,
+        "kernel_seconds": 4.512120236002374,
+        "preparation_seconds": 0.022982431000855286,
+        "process_seconds": 9.052700865002407,
         "fields": {
           "CASE": "word_frequency",
           "SIZE": "80000",
@@ -4383,22 +4383,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 4.047101994998229,
-          "min": 4.02729138399809,
-          "max": 4.101640505999967,
-          "stdev": 0.031437241596791725
+          "median": 4.046739505000005,
+          "min": 4.036285426001996,
+          "max": 4.16862441500416,
+          "stdev": 0.06007294368287482
         },
         "process_seconds": {
-          "median": 8.134544699998514,
-          "min": 8.117947497001296,
-          "max": 8.23523918200226,
-          "stdev": 0.051824688693602204
+          "median": 8.397686128002533,
+          "min": 8.376863511002739,
+          "max": 8.41402809000283,
+          "stdev": 0.015209087316445198
         },
         "preparation_seconds": {
-          "median": 0.02293667699996149,
-          "min": 0.022547757002030266,
-          "max": 0.02438970699950005,
-          "stdev": 0.0007926982568367905
+          "median": 0.022863346996018663,
+          "min": 0.02263496699742973,
+          "max": 0.02658144899760373,
+          "stdev": 0.001808964101837898
         }
       },
       "speedup": {
@@ -4411,9 +4411,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 12.635772372999782,
-          "preparation_seconds": 0.017315128003247082,
-          "process_seconds": 25.28682248900077,
+          "kernel_seconds": 11.956106049998198,
+          "preparation_seconds": 0.015754870997625403,
+          "process_seconds": 23.916783758002566,
           "fields": {
             "CASE": "word_frequency",
             "SIZE": "80000",
@@ -4424,9 +4424,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 12.534733820997644,
-          "preparation_seconds": 0.018579856001451844,
-          "process_seconds": 25.156823281999095,
+          "kernel_seconds": 12.02069865699741,
+          "preparation_seconds": 0.016153536998899654,
+          "process_seconds": 24.028131006001786,
           "fields": {
             "CASE": "word_frequency",
             "SIZE": "80000",
@@ -4437,9 +4437,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 12.752225617001386,
-          "preparation_seconds": 0.01639984400026151,
-          "process_seconds": 25.41346902499936,
+          "kernel_seconds": 12.036506035998173,
+          "preparation_seconds": 0.017039486003341153,
+          "process_seconds": 24.040257430002384,
           "fields": {
             "CASE": "word_frequency",
             "SIZE": "80000",
@@ -4451,7 +4451,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/13-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/13-1",
         "--seed",
         "42",
         "--loops",
@@ -4460,9 +4460,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 12.601075671002036,
-        "preparation_seconds": 0.018368852001003688,
-        "process_seconds": 25.251315909998084,
+        "kernel_seconds": 12.022335208996083,
+        "preparation_seconds": 0.016188323999813292,
+        "process_seconds": 24.137091545002477,
         "fields": {
           "CASE": "word_frequency",
           "SIZE": "80000",
@@ -4475,27 +4475,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 12.635772372999782,
-          "min": 12.534733820997644,
-          "max": 12.752225617001386,
-          "stdev": 0.08886495894715704
+          "median": 12.02069865699741,
+          "min": 11.956106049998198,
+          "max": 12.036506035998173,
+          "stdev": 0.03477904199470431
         },
         "process_seconds": {
-          "median": 25.28682248900077,
-          "min": 25.156823281999095,
-          "max": 25.41346902499936,
-          "stdev": 0.10477816582436489
+          "median": 24.028131006001786,
+          "min": 23.916783758002566,
+          "max": 24.040257430002384,
+          "stdev": 0.05556878367608993
         },
         "preparation_seconds": {
-          "median": 0.017315128003247082,
-          "min": 0.01639984400026151,
-          "max": 0.018579856001451844,
-          "stdev": 0.0008937893140318799
+          "median": 0.016153536998899654,
+          "min": 0.015754870997625403,
+          "max": 0.017039486003341153,
+          "stdev": 0.0005368711755215442
         }
       },
       "speedup": {
-        "kernel_seconds": 0.3202892451312362,
-        "process_seconds": 0.321691058793048
+        "kernel_seconds": 0.33664761262810156,
+        "process_seconds": 0.34949393799729767
       }
     },
     {
@@ -4503,9 +4503,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 3.4691088319996197,
-          "preparation_seconds": 0.004109486999368528,
-          "process_seconds": 6.949082281000301,
+          "kernel_seconds": 3.2796221539974795,
+          "preparation_seconds": 0.004038594997837208,
+          "process_seconds": 6.572342855994066,
           "fields": {
             "CASE": "word_frequency",
             "SIZE": "80000",
@@ -4516,9 +4516,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 3.2754920570005197,
-          "preparation_seconds": 0.003978501001256518,
-          "process_seconds": 6.578932716998679,
+          "kernel_seconds": 3.269862973000272,
+          "preparation_seconds": 0.004191902000457048,
+          "process_seconds": 6.678031600000395,
           "fields": {
             "CASE": "word_frequency",
             "SIZE": "80000",
@@ -4529,9 +4529,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 3.268585638001241,
-          "preparation_seconds": 0.004122831000131555,
-          "process_seconds": 6.545692273997702,
+          "kernel_seconds": 3.2783219190023374,
+          "preparation_seconds": 0.004919544997392222,
+          "process_seconds": 6.5884942570046405,
           "fields": {
             "CASE": "word_frequency",
             "SIZE": "80000",
@@ -4543,7 +4543,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261022T032655.853789Z/build/13-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261022T064015.455540Z/build/13-2",
         "--seed",
         "42",
         "--loops",
@@ -4552,9 +4552,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 3.2702587059975485,
-        "preparation_seconds": 0.004131326997594442,
-        "process_seconds": 6.555213804000232,
+        "kernel_seconds": 3.275669665999885,
+        "preparation_seconds": 0.004739919000712689,
+        "process_seconds": 6.5661930209971615,
         "fields": {
           "CASE": "word_frequency",
           "SIZE": "80000",
@@ -4567,27 +4567,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 3.2754920570005197,
-          "min": 3.268585638001241,
-          "max": 3.4691088319996197,
-          "stdev": 0.0929424586120999
+          "median": 3.2783219190023374,
+          "min": 3.269862973000272,
+          "max": 3.2796221539974795,
+          "stdev": 0.004326738471986325
         },
         "process_seconds": {
-          "median": 6.578932716998679,
-          "min": 6.545692273997702,
-          "max": 6.949082281000301,
-          "stdev": 0.1828293449978389
+          "median": 6.5884942570046405,
+          "min": 6.572342855994066,
+          "max": 6.678031600000395,
+          "stdev": 0.04648525949753578
         },
         "preparation_seconds": {
-          "median": 0.004109486999368528,
-          "min": 0.003978501001256518,
-          "max": 0.004122831000131555,
-          "stdev": 6.512086423893416e-05
+          "median": 0.004191902000457048,
+          "min": 0.004038594997837208,
+          "max": 0.004919544997392222,
+          "stdev": 0.0003842800295150892
         }
       },
       "speedup": {
-        "kernel_seconds": 1.2355706942865552,
-        "process_seconds": 1.236453548001857
+        "kernel_seconds": 1.2343935723772708,
+        "process_seconds": 1.2745986868053238
       }
     }
   ],
