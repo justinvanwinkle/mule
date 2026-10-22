@@ -343,6 +343,17 @@ Use three measured runs per runtime and workload for performance comparisons.
 Keep warmups separate from measured runs. Preserve the actual sample counts in
 historical measurements when updating documentation or reports.
 
+Spot-check actual output for every behavior or performance change against its
+intended effect. Passing tests alone is not sufficient.
+
+For compiler changes, inspect representative generated output from the changed
+path. For optimizations, compare optimized IR or machine code before and after
+the change. Verify that the targeted calls, checks, allocations, or ownership
+operations disappear or become cheaper. Moving work into a new helper does not
+establish an improvement. Confirm claimed speedups with representative timings.
+If the expected improvement is absent, report the unmet goal instead of treating
+passing tests as completion.
+
 Check changed Python files with Ruff; format only intended files. Documentation
 changes do not require rerunning parser tests unless behavior also changes.
 Update affected specifications when changing behavior. Separate implemented
