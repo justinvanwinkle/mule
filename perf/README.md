@@ -99,6 +99,10 @@ all runtimes if a shortcut defeats the operation it was intended to measure.
 Use three measured samples per runtime and scenario, the harness default.
 Warmups are separate. Recorded historical runs retain their actual sample counts.
 
+As each scenario finishes, the harness prints kernel and whole-process medians
+and its kernel runtime/baseline ratio. These live timings are provisional until
+the CPU-noise check accepts the complete measurement attempt.
+
 Copy `runtimes.example.toml` and add named runtimes. `command` is an argument
 array, optionally accompanied by a `build` command and `version_command`.
 Tokens support `{source}`, `{lisp_source}`, `{binary}`, and `{python}` (the

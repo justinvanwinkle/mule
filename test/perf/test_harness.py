@@ -237,6 +237,23 @@ def test_harness_records_bad_results_and_continues(tmp_path):
             assert row["status"] == "ok"
             assert len(row["samples"]) == 2
             assert row["time_ratio"]["kernel_seconds"] > 0
+            line = next(
+                line
+                for line in process.stdout.splitlines()
+                if line.startswith(f"  integer_accumulation / {row['runtime']}:")
+            )
+            assert (
+                f"kernel median {row['summary']['kernel_seconds']['median']:.6f}s"
+                in line
+            )
+            assert (
+                f"process median {row['summary']['process_seconds']['median']:.6f}s"
+                in line
+            )
+            assert (
+                f"kernel / reference {row['time_ratio']['kernel_seconds']:.3f}" in line
+            )
+            assert "provisional" in line
     assert "incorrect_result" in (output / "index.html").read_text()
     for name in ("kernel.svg", "process.svg"):
         svg = (output / name).read_text()

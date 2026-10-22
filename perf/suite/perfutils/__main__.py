@@ -574,7 +574,17 @@ def main():
         print(f"Measuring {case}", flush=True)
         rows = measure_group(case, entries, baseline, args, reference)
         for row in rows:
-            print(f"  {case} / {row['runtime']}: {row['status']}", flush=True)
+            progress = f"  {case} / {row['runtime']}: {row['status']}"
+            if row["status"] == "ok":
+                kernel = row["summary"]["kernel_seconds"]["median"]
+                process = row["summary"]["process_seconds"]["median"]
+                ratio = row.get("time_ratio", {}).get("kernel_seconds")
+                ratio_text = f"{ratio:.3f}" if ratio is not None else "unavailable"
+                progress += (
+                    f", kernel median {kernel:.6f}s, process median {process:.6f}s"
+                    f", kernel / {baseline} {ratio_text} (provisional)"
+                )
+            print(progress, flush=True)
         return rows
 
     def _measure_all():
