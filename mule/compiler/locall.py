@@ -2237,10 +2237,13 @@ def analyze(
                 target = call.target.as_lambda() if call.target is not None else None
                 if (
                     target is None
+                    or target not in graphs
                     or not target.signature.positional_body
                     or not target.vars
                     or len(call.arguments) != len(target.vars)
                 ):
+                    # Imported targets still predict guarded calls, but their
+                    # defining unit owns their argument and entry contexts.
                     continue
                 for index, (actual, contract, var) in enumerate(
                     zip(
