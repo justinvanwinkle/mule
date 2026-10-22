@@ -343,6 +343,19 @@ Use three measured runs per runtime and workload for performance comparisons.
 Keep warmups separate from measured runs. Preserve the actual sample counts in
 historical measurements when updating documentation or reports.
 
+Run comparable benchmarks the same way every time. Keep the runtime configuration,
+optimization and LTO settings, workload inputs, seed, loops, warmups, sample count,
+CPU affinity, and concurrency unchanged. The standard suite uses `--jobs 4`;
+do not switch to serial timing or change established settings without the user's
+agreement. Record the exact invocation and settings with each result.
+
+Monitor system load before and throughout benchmark runs. Check CPU utilization
+and competing processes, memory pressure and swapping, and disk I/O contention.
+Distinguish the expected load from the configured benchmark jobs from unrelated
+activity. If unrelated activity materially interferes with timing, stop the run
+or mark its results unsuitable for comparison. Report the interference and rerun
+with the same settings after it clears; do not silently change concurrency.
+
 Spot-check actual output for every behavior or performance change against its
 intended effect. Passing tests alone is not sufficient.
 
