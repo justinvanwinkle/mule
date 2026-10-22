@@ -1349,6 +1349,11 @@ _FLOAT_INFINITY = _convert_float('inf')
 
 
 class float(object):
+    def __repr__(self):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__repr__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        return _render_representation(_convert_float(self))
+
     def __int__(self):
         if not is_instance(self, float):
             raise TypeError(f"descriptor '__int__' requires a 'float' object but received a '{type_of(self).__name__}'")

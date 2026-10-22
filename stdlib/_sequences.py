@@ -2579,6 +2579,11 @@ class range:
     def __iter__(self):
         return RangeIterator(self.start, self.stop, self.step)
 
+    def __repr__(self):
+        if self.step == 1:
+            return f"range({self.start}, {self.stop})"
+        return f"range({self.start}, {self.stop}, {self.step})"
+
     def __contains__(self, value):
         value_type = type(value)
         if value_type is int or value_type is bool:

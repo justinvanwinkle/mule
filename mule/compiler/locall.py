@@ -2308,7 +2308,7 @@ def analyze(
                     seeds[target] = domains
                 else:
                     seeds[target] = tuple(
-                        old.join(new)
+                        old.join(new).dispatch_domain() or UNKNOWN
                         for old, new in zip(seeds[target], domains, strict=True)
                     )
         for target, seed in seeds.items():
@@ -2318,7 +2318,7 @@ def analyze(
                 seed = tuple(
                     b
                     if a is UNKNOWN and b is not UNKNOWN and argument_changes[key] == 0
-                    else a.join(b)
+                    else (a.join(b).dispatch_domain() or UNKNOWN)
                     for a, b in zip(old, seed, strict=True)
                 )
                 if old != seed:
