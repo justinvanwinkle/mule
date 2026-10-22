@@ -188,7 +188,12 @@ def test_specialized_runtime_abi(runtime_probe):
 
 
 @pytest.mark.integration
-def test_known_fixnum_kernel_executes_machine_arithmetic(tmp_path):
+@pytest.mark.parametrize(
+    ("optimize", "lto"),
+    [(1, False), (3, False), (3, True)],
+    ids=["O1-no-lto", "O3-no-lto", "O3-lto"],
+)
+def test_known_fixnum_kernel_executes_machine_arithmetic(tmp_path, optimize, lto):
     source = tmp_path / "kernel.py"
     source.write_text(
         "a = bool(input())\nb = bool(input())\n"
@@ -196,7 +201,7 @@ def test_known_fixnum_kernel_executes_machine_arithmetic(tmp_path):
         "print(kernel())\n"
     )
     executable = tmp_path / "kernel"
-    build(source, executable)
+    build(source, executable, optimize=optimize, lto=lto, workers=1)
     assert executable.read_bytes().startswith(b"\x7fELF")
     source.unlink()
     for stdin, expected in [

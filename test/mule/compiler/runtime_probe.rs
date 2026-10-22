@@ -712,7 +712,7 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                         return ptr::null_mut();
                     }
                 }
-                let items = new_value(Data::Args(vec![retain(left)], ptr::null_mut(), ptr::null_mut()));
+                let items = new_value(Data::Args(vec![retain(left)].into(), ptr::null_mut(), ptr::null_mut()));
                 let success =
                     show(mule_compare(8, left, items)) && show(mule_compare(9, left, items));
                 release(items);
@@ -916,8 +916,8 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 std::thread::scope(|scope| {
                     scope.spawn(move || {
                         let mut registration = threads::Registration::enter();
-                        let live = object::new_value(Data::List(Vec::new(), ptr::null_mut(), ptr::null_mut()));
-                        let cycle = object::new_value(Data::List(Vec::new(), ptr::null_mut(), ptr::null_mut()));
+                        let live = object::new_value(Data::List(Vec::new().into(), ptr::null_mut(), ptr::null_mut()));
+                        let cycle = object::new_value(Data::List(Vec::new().into(), ptr::null_mut(), ptr::null_mut()));
                         let Data::List(values, ..) = &mut (*cycle).data else { unreachable!() };
                         values.push(retain(cycle));
                         release(cycle);

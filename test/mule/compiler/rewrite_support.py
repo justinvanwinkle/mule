@@ -210,7 +210,7 @@ def _build_artifacts(source_path, *, optimize, lto):
     }
 
 
-def _run_bounded_build(command, *, context, timeout=90):
+def _run_bounded_build(command, *, context, timeout=600):
     """Bound a real build and terminate its whole compiler process group."""
     with subprocess.Popen(
         command,
@@ -243,7 +243,8 @@ def build_case(tmp_path, source, *, optimize=3, lto=False):
     """Build the supplied source through the ordinary native artifact graph.
 
     Defaults: generated units at O3, Rust runtime at O3, no LTO, one worker.
-    Callers must mark O3 tests as integration tests. Builds stop after 90 seconds.
+    Callers must mark O3 tests as integration tests. The ten-minute build limit
+    accommodates cold transitive stdlib builds; it is not a speed assertion.
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="rewrite-", dir=tmp_path)).resolve()
@@ -287,7 +288,7 @@ def _main():
         f"LTO={arguments.lto}, workers=1",
         flush=True,
     )
-    faulthandler.dump_traceback_later(85)
+    faulthandler.dump_traceback_later(585)
     try:
         artifacts = _build_artifacts(
             arguments.source, optimize=arguments.optimize, lto=arguments.lto

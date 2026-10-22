@@ -158,8 +158,15 @@ def test_runtime_record_classifier_eliminates_disjoint_and_singleton_searches(tm
         assert "mule_storage_new" not in body
         assert "mule_resolve_method" not in body
     interval = case.function_ir(r"mule_fn_disjoint_interval\.body$")
-    assert re.search(r"\band i64\b", interval)
-    assert re.search(r"\badd i64\b", interval)
+    masked = re.search(r"(?P<result>%[\w.]+) = and i64 [^\n]+, (?:7|14|15)\b", interval)
+    assert masked, interval
+    # The source adds 200 to a value in [0, 7]. Those bit ranges do not
+    # overlap, so LLVM can replace addition with OR, including tagged encoding.
+    assert re.search(
+        rf"= (?:add(?: (?:nuw|nsw))*|or(?: disjoint)?) i64 "
+        rf"{re.escape(masked['result'])}, (?:200|400|401)\b",
+        interval,
+    ), interval
     assert "mule_compare" not in interval
     # Equality is still necessary for the runtime-selected singleton element.
     singleton = case.function_ir(r"mule_fn_late_singleton\.body$")

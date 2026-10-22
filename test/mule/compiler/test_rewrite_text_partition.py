@@ -2,6 +2,7 @@
 
 import pytest
 
+from mule.compiler.vops import ARGS_TAG, DATA_OFFSET
 from test.mule.compiler.rewrite_native_trace import trace_native
 from test.mule.compiler.rewrite_support import build_case
 
@@ -219,8 +220,14 @@ def test_partition_record_unpack_omits_intermediate_tuple(
     original_trace, name, control
 ):
     retained = original_trace[control]["watched"]["tuple"]
-    assert retained > 0, "The escaping result must exercise the real tuple constructor"
+    assert retained == 1, original_trace[control]
+    assert original_trace[control]["value_tags"]["object"] == retained, original_trace[
+        control
+    ]
     observed = original_trace[name]["watched"]["tuple"]
+    assert original_trace[name]["value_tags"]["object"] == observed, original_trace[
+        name
+    ]
     assert observed == retained, (
         f"{name} constructs extra tuples while unpacking and rebuilding the result: "
         f"root={original_trace[name]!r}, retained control={original_trace[control]!r}"
@@ -245,7 +252,11 @@ def original_trace(record_parser, request):
     trace = trace_native(
         record_parser,
         roots={name: rf"^mule_fn_{name}\.fn$" for name in roots},
-        watched={"tuple": r"^mule_sequence_tuple(?:_owned)?$"},
+        watched={
+            "tuple": r"^mule_sequence_tuple(?:_owned)?$",
+            "object": r"object9new_value",
+        },
+        value_tags={"object": {"offset": DATA_OFFSET, "tag": ARGS_TAG}},
         stdin=stdin,
     )
     for name in roots:
@@ -273,7 +284,13 @@ def checksum_trace(checksum_parser, request):
     trace = trace_native(
         checksum_parser,
         roots={name: rf"^mule_fn_{name}\.fn$" for name in roots},
-        watched={"tuple": r"^mule_sequence_tuple(?:_owned)?$"},
+        watched={
+            "tuple": r"^mule_sequence_tuple(?:_owned)?$",
+            "partition_slots": r"^mule_text_partition_into$",
+            "partition_object": r"^mule_text_partition$",
+            "object": r"object9new_value",
+        },
+        value_tags={"object": {"offset": DATA_OFFSET, "tag": ARGS_TAG}},
         stdin=stdin,
     )
     for name in roots:
@@ -283,7 +300,11 @@ def checksum_trace(checksum_parser, request):
 
 @pytest.mark.parametrize("name", ("escaped_header", "escaped_trailer"))
 def test_partition_escaping_result_exercises_tuple_constructor(checksum_trace, name):
-    assert checksum_trace[name]["watched"]["tuple"] > 0, checksum_trace[name]
+    observed = checksum_trace[name]["watched"]
+    assert observed["tuple"] == 1, checksum_trace[name]
+    assert observed["partition_object"] == 1, checksum_trace[name]
+    assert observed["partition_slots"] == 1, checksum_trace[name]
+    assert checksum_trace[name]["value_tags"]["object"] == 1, checksum_trace[name]
 
 
 @pytest.mark.parametrize(
@@ -295,11 +316,20 @@ def test_partition_scalar_header_parser_never_constructs_tuple(
 ):
     # The sibling root must prove that this executable and tracer observe real
     # tuple construction. All helper calls remain inside the measured root.
-    assert checksum_trace[control]["watched"]["tuple"] > 0, checksum_trace[control]
+    assert checksum_trace[control]["watched"]["tuple"] == 1, checksum_trace[control]
+    assert checksum_trace[control]["watched"]["partition_object"] == 1, checksum_trace[
+        control
+    ]
+    assert checksum_trace[control]["value_tags"]["object"] == 1, checksum_trace[control]
+    assert checksum_trace[name]["watched"]["partition_slots"] == 1, checksum_trace[name]
+    assert checksum_trace[name]["watched"]["partition_object"] == 0, checksum_trace[
+        name
+    ]
     assert checksum_trace[name]["watched"]["tuple"] == 0, (
         f"{name} constructs a tuple despite returning only a scalar checksum: "
         f"{checksum_trace[name]!r}"
     )
+    assert checksum_trace[name]["value_tags"]["object"] == 0, checksum_trace[name]
 
 
 def test_partition_near_misses_preserve_overrides_and_argument_errors(

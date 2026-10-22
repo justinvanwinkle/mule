@@ -16,7 +16,7 @@ import traceback
 from pathlib import Path
 
 
-def trace_native(case, *, roots, watched, stdin="", args=()):
+def trace_native(case, *, roots, watched, stdin="", args=(), value_tags=None):
     """Trace resolved symbol regexes on the inferior's original main thread.
 
     Every root must execute and return normally. Expected language errors must
@@ -24,23 +24,28 @@ def trace_native(case, *, roots, watched, stdin="", args=()):
     Unresolved watches fail even when the expected event count is zero.
     """
     assert roots and watched, "Native tracing requires roots and watched symbols"
+    value_tags = value_tags or {}
+    assert value_tags.keys() <= watched.keys()
     directory = Path(tempfile.mkdtemp(prefix="trace-", dir=case.source_path.parent))
     request = directory / "request.json"
     result = directory / "result.json"
     input_path = directory / "stdin"
     output_path = directory / "stdout"
     error_path = directory / "stderr"
+    pid_path = directory / "inferior.pid"
     input_path.write_text(stdin)
     request.write_text(
         json.dumps(
             {
                 "roots": roots,
                 "watched": watched,
+                "value_tags": value_tags,
                 "args": [str(arg) for arg in args],
                 "stdin": str(input_path),
                 "stdout": str(output_path),
                 "stderr": str(error_path),
                 "result": str(result),
+                "pid": str(pid_path),
             }
         )
     )
@@ -78,10 +83,18 @@ def trace_native(case, *, roots, watched, stdin="", args=()):
         try:
             output, _ = process.communicate(timeout=60)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            groups = {process.pid}
+            if pid_path.exists():
+                try:
+                    groups.add(os.getpgid(int(pid_path.read_text())))
+                except ProcessLookupError:
+                    pass
+            for group in groups:
+                assert group != os.getpgrp(), "Refusing to kill the test runner"
+                try:
+                    os.killpg(group, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             output, _ = process.communicate(timeout=10)
             raise AssertionError(
                 f"Native trace exceeded 60s for {case.executable}\n{output}"
@@ -112,6 +125,7 @@ def _trace_inferior(request_path):
     )
     gdb.execute("set args " + arguments + redirects)
     gdb.execute("start", to_string=True)
+    Path(request["pid"]).write_text(str(gdb.selected_inferior().pid))
     main_thread = gdb.selected_thread().global_num
     # GDB 18.1 exposes relocated minimal symbols even when a loaded library also
     # has full debug information. Exclude PLT stubs to avoid duplicate events.
@@ -145,6 +159,8 @@ def _trace_inferior(request_path):
             "entries": 0,
             "exits": 0,
             "watched": {watch: 0 for watch in watched_symbols},
+            "value_tags": {watch: 0 for watch in request["value_tags"]},
+            "value_returns": {watch: 0 for watch in request["value_tags"]},
             "symbols": sorted(matches),
             "watch_symbols": {
                 watch: sorted(names) for watch, names in watched_symbols.items()
@@ -156,12 +172,49 @@ def _trace_inferior(request_path):
     active = {label: [] for label in root_symbols}
     failures = []
     finishes = []
+    value_finishes = []
     exited = []
 
     def on_exit(event):
         exited.append(event.exit_code)
 
     gdb.events.exited.connect(on_exit)
+
+    class ValueFinish(gdb.FinishBreakpoint):
+        """Classify returned physical Values, including allocations from pools."""
+
+        def __init__(self, labels, watches):
+            super().__init__(gdb.newest_frame(), internal=True)
+            self.labels = labels
+            self.watches = watches
+            self.finished = False
+
+        def stop(self):
+            try:
+                assert gdb.selected_thread().global_num == main_thread
+                # The supported x86-64 ABI returns Value in RAX. Callers supply
+                # the offset and tag from the compiler's checked object layout.
+                value = int(gdb.parse_and_eval("$rax"))
+                assert value and not value & 1, "Allocator did not return a heap Value"
+                inferior = gdb.selected_inferior()
+                for watch in self.watches:
+                    layout = request["value_tags"][watch]
+                    tag = int.from_bytes(
+                        bytes(inferior.read_memory(value + layout["offset"], 4)),
+                        "little",
+                    )
+                    for label in self.labels:
+                        observation = observations[label]
+                        observation["value_returns"][watch] += 1
+                        observation["value_tags"][watch] += tag == layout["tag"]
+                self.finished = True
+            except Exception:  # noqa: BLE001 - GDB must not ignore observation errors.
+                failures.append(traceback.format_exc())
+                return True
+            return False
+
+        def out_of_scope(self):
+            failures.append("Watched allocator disappeared without returning")
 
     class RootFinish(gdb.FinishBreakpoint):
         def __init__(self, labels):
@@ -206,6 +259,14 @@ def _trace_inferior(request_path):
                     if frames:
                         for watch in self.watch_labels:
                             observations[label]["watched"][watch] += 1
+                labels = [label for label, frames in active.items() if frames]
+                classified = [
+                    watch
+                    for watch in self.watch_labels
+                    if watch in request["value_tags"]
+                ]
+                if labels and classified:
+                    value_finishes.append(ValueFinish(labels, classified))
             except Exception:  # noqa: BLE001 - GDB otherwise reports and ignores callback errors.
                 failures.append(traceback.format_exc())
                 return True
@@ -226,6 +287,9 @@ def _trace_inferior(request_path):
     assert entries
     gdb.execute("continue", to_string=True)
     assert not failures, "\n".join(failures)
+    assert all(finish.finished for finish in value_finishes), (
+        "A watched physical allocator did not finish"
+    )
     assert exited == [0], f"Inferior did not exit normally: {exited!r}\n" + (
         gdb.execute("bt", to_string=True) if not exited else ""
     )
@@ -235,4 +299,8 @@ def _trace_inferior(request_path):
             f"Root {label!r} did not return normally: {observation!r}"
         )
         observation["exit_code"] = 0
+        for watch in request["value_tags"]:
+            assert (
+                observation["value_returns"][watch] == observation["watched"][watch]
+            ), f"Unclassified allocator return: {label!r}, {watch!r}"
     Path(request["result"]).write_text(json.dumps(observations))

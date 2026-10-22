@@ -166,11 +166,15 @@ def _native_source():
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("optimize", [1, 3], ids=["O1-no-lto", "O3-no-lto"])
+@pytest.mark.parametrize(
+    ("optimize", "lto"),
+    [(1, False), (3, False), (3, True)],
+    ids=["O1-no-lto", "O3-no-lto", "O3-lto"],
+)
 def test_constant_slice_record_paths_remove_slicing_and_match_python(
-    tmp_path, optimize
+    tmp_path, optimize, lto
 ):
-    case = build_case(tmp_path, _native_source(), optimize=optimize, lto=False)
+    case = build_case(tmp_path, _native_source(), optimize=optimize, lto=lto)
     for function in ("encode_record", "packet_descriptor", "label_columns"):
         body = case.function_ir(rf"mule_fn_{function}\.")
         # GETSLICE lowers through mule.fast.getslice to mule_fast_getslice or

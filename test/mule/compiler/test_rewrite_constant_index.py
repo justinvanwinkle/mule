@@ -138,6 +138,9 @@ def test_constant_marker_indexing_disappears_from_optimized_classifier(tmp_path)
 INDEX_ERRORS = r"""
 def constant_lookup(kind):
     print('before', kind)
+    floating_index = 1.0
+    text_index = '1'
+    none_index = None
     if kind == 'text-high':
         return 'aé🚀Z'[4]
     if kind == 'text-low':
@@ -155,16 +158,16 @@ def constant_lookup(kind):
     if kind == 'bytes-bool-high':
         return b'x'[True]
     if kind == 'text-float':
-        return 'aé🚀Z'[1.0]
+        return 'aé🚀Z'[floating_index]
     if kind == 'bytes-float':
-        return b'\x00\x80\xffA'[1.0]
+        return b'\x00\x80\xffA'[floating_index]
     if kind == 'text-string':
-        return 'aé🚀Z'['1']
+        return 'aé🚀Z'[text_index]
     if kind == 'bytes-string':
-        return b'\x00\x80\xffA'['1']
+        return b'\x00\x80\xffA'[text_index]
     if kind == 'text-none':
-        return 'aé🚀Z'[None]
-    return b'\x00\x80\xffA'[None]
+        return 'aé🚀Z'[none_index]
+    return b'\x00\x80\xffA'[none_index]
 
 try:
     print(constant_lookup(input()))
@@ -177,6 +180,8 @@ except TypeError:
 
 @pytest.mark.integration
 def test_invalid_literal_index_reports_error_after_prior_effect(tmp_path):
+    # Local constants retain the invalid index values without CPython's
+    # compile-time SyntaxWarning for spelling them directly in a subscript.
     case = build_case(tmp_path, INDEX_ERRORS, optimize=3, lto=False)
     for kind in (
         "text-high",

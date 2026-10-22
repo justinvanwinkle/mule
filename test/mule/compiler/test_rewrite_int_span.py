@@ -95,11 +95,15 @@ else:
         "buffer": r"Text(?:5slice|7to_wtf8)",
         "allocator": r"^(?:__libc_)?(?:malloc|calloc|realloc|aligned_alloc|posix_memalign)$",
     }
-    # Short and heap-backed Latin1 records exercise nonempty positive/negative
-    # decimal fields. Bigint results are excluded because they must allocate.
+    # Short text can use pooled objects with inline bytes. Observe that copy
+    # through its physical substring entry, not an assumed libc allocation.
+    # The long field must allocate a backing buffer even when objects are pooled.
+    # Leading zeros keep its numeric result small, excluding legitimate bigint
+    # allocation from the zero-allocation parser assertion.
     for prefix, digits, suffix in (
         ("id=", "12345", ";active"),
         ("request-identifier-0123456789:", "-1729", ";ok"),
+        ("id=", "0" * 80 + "12345", ";active"),
     ):
         record = prefix + digits + suffix
         runtime_input = f"{record}\n{prefix}\n{suffix}\n"
@@ -124,8 +128,8 @@ else:
         )["retained"]
         assert control["entries"] == control["exits"] == 1
         assert control["watched"]["substring"] > 0, control
-        assert control["watched"]["object"] > 0, control
-        assert control["watched"]["allocator"] > 0, control
+        if len(digits) > 32:
+            assert control["watched"]["allocator"] > 0, control
 
 
 def test_int_span_bounds_errors_and_operand_effects_match_python(tmp_path):
