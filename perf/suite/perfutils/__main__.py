@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import json
 import math
 import os
 import platform
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import history
+from .cpu import CpuMeasurementError, CpuMonitor
 from .report import update_site, write_report
 
 SUITE = Path(__file__).resolve().parents[1]
@@ -280,6 +282,117 @@ def measure_group(case, entries, baseline, args, reference):
     return rows
 
 
+def measure_with_cpu_guard(
+    measure,
+    *,
+    max_external_cpu,
+    cpu_attempts,
+    monitor_factory=CpuMonitor,
+    record_attempt=None,
+):
+    """Retry a complete timing phase, never individual favorable samples."""
+    attempts = []
+    for number in range(1, cpu_attempts + 1):
+        print(f"Measurement attempt {number}/{cpu_attempts}", flush=True)
+        rows = []
+        try:
+            with monitor_factory() as monitor:
+                rows = measure()
+            cpu = monitor.result()
+        except CpuMeasurementError as error:
+            attempt = {
+                "attempt": number,
+                "status": "cpu_monitor_failed",
+                "error": str(error),
+                "rows": rows,
+            }
+            attempts.append(attempt)
+            if record_attempt is not None:
+                record_attempt(attempt)
+            print(f"CPU monitoring failed: {error}", file=sys.stderr, flush=True)
+            return failed_measurements(rows, "cpu_monitor_failed", str(error)), attempts
+        attempt = {"attempt": number, "cpu": cpu}
+        attempts.append(attempt)
+        if any(row["status"] != "ok" for row in rows):
+            attempt.update(status="benchmark_failed", rows=rows)
+            if record_attempt is not None:
+                record_attempt(attempt)
+            failed = []
+            for row in rows:
+                if row["status"] == "ok":
+                    failed.extend(
+                        failed_measurements(
+                            [row],
+                            "measurement_failed",
+                            "Another runtime failed in this measurement attempt; "
+                            "raw measurements remain in measurement_attempts",
+                        )
+                    )
+                else:
+                    failed.append(
+                        {
+                            key: value
+                            for key, value in row.items()
+                            if key not in ("summary", "time_ratio")
+                        }
+                    )
+            return failed, attempts
+        if cpu["external_cpu_cores"] <= max_external_cpu:
+            attempt["status"] = "accepted"
+            if record_attempt is not None:
+                record_attempt(attempt)
+            print(
+                f"Accepted attempt {number}: external CPU "
+                f"{cpu['external_cpu_cores']:.3f} cores "
+                f"(limit {max_external_cpu:.3f})",
+                flush=True,
+            )
+            return rows, attempts
+        attempt.update(status="cpu_noise", rows=rows)
+        if record_attempt is not None:
+            record_attempt(attempt)
+        print(
+            f"Rejected attempt {number}: external CPU "
+            f"{cpu['external_cpu_cores']:.3f} cores exceeds {max_external_cpu:.3f}. "
+            + (
+                "Repeating unchanged timing phase."
+                if number < cpu_attempts
+                else "CPU-noise attempts exhausted."
+            ),
+            flush=True,
+        )
+    return failed_measurements(
+        rows,
+        "cpu_noise",
+        f"No accepted CPU-noise attempt after {cpu_attempts} attempts; "
+        "raw measurements remain in measurement_attempts",
+    ), attempts
+
+
+def failed_measurements(rows, status, error):
+    return [
+        {
+            "case": row["case"],
+            "runtime": row["runtime"],
+            "status": status,
+            "samples": [],
+            "error": error,
+        }
+        for row in rows
+    ]
+
+
+def record_accepted_report(report, path, root):
+    """Rejected measurement attempts must not change history or site assets."""
+    if report["measurement_attempts"][-1]["status"] != "accepted":
+        return
+    history.record(report, path)
+    print(f"Recorded in {path}")
+    if path.resolve() == (root / "perf/history.jsonl").resolve():
+        update_site(report, root)
+        print(f"Updated {root / 'docs'}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("list", "run", "history"))
@@ -309,6 +422,18 @@ def main():
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--build-timeout", type=float, default=600)
     parser.add_argument(
+        "--max-external-cpu",
+        type=float,
+        default=0.5,
+        help="maximum average CPU cores used outside this benchmark run (default: 0.5)",
+    )
+    parser.add_argument(
+        "--cpu-attempts",
+        type=int,
+        default=3,
+        help="maximum complete timing attempts after CPU-noise rejection (default: 3)",
+    )
+    parser.add_argument(
         "--jobs",
         type=int,
         default=4,
@@ -337,6 +462,10 @@ def main():
         parser.error("samples/loops/jobs must be positive; warmups must be nonnegative")
     if args.size is not None and args.size < 1:
         parser.error("size must be positive")
+    if args.cpu_attempts < 1:
+        parser.error("cpu-attempts must be positive")
+    if not math.isfinite(args.max_external_cpu) or args.max_external_cpu < 0:
+        parser.error("max-external-cpu must be finite and nonnegative")
     if not all(
         math.isfinite(value) and value > 0
         for value in (args.timeout, args.build_timeout)
@@ -353,7 +482,7 @@ def main():
     options["output"] = str(output)
     options["history"] = str(args.history) if complete else None
     report = {
-        "schema_version": 3,
+        "schema_version": 4,
         "created_utc": stamp,
         "baseline": baseline,
         "platform": platform.platform(),
@@ -446,17 +575,38 @@ def main():
             print(f"  {case} / {row['runtime']}: {row['status']}", flush=True)
         return rows
 
-    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for rows in pool.map(_measure_case, cases):
-            report["rows"].extend(rows)
-            write_report(report, output)
+    def _measure_all():
+        rows = []
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            for case_rows in pool.map(_measure_case, cases):
+                rows.extend(case_rows)
+        return rows
+
+    def _record_attempt(attempt):
+        path = output / f"measurement-attempt-{attempt['attempt']}.json"
+        path.write_text(json.dumps(attempt, indent=2) + "\n")
+
+    report["rows"], report["measurement_attempts"] = measure_with_cpu_guard(
+        _measure_all,
+        max_external_cpu=args.max_external_cpu,
+        cpu_attempts=args.cpu_attempts,
+        record_attempt=_record_attempt,
+    )
+    if not report["rows"]:
+        last = report["measurement_attempts"][-1]
+        report["rows"] = failed_measurements(
+            [
+                {"case": case, "runtime": runtime["name"]}
+                for case in cases
+                for runtime in runtimes
+            ],
+            last["status"],
+            last["error"],
+        )
+    write_report(report, output)
     print(output / "index.html")
     if complete:
-        history.record(report, args.history)
-        print(f"Recorded in {args.history}")
-        if args.history.resolve() == (ROOT / "perf/history.jsonl").resolve():
-            update_site(report, ROOT)
-            print(f"Updated {ROOT / 'docs'}")
+        record_accepted_report(report, args.history, ROOT)
     return int(any(row["status"] != "ok" for row in report["rows"]))
 
 

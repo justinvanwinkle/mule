@@ -206,6 +206,28 @@ def dashboard(report):
         if jobs > 1
         else "One scenario job."
     )
+    attempts = report.get("measurement_attempts", [])
+    cpu_evidence = ""
+    if attempts:
+        last = attempts[-1]
+        cpu_evidence = (
+            "<section><h2>CPU-noise checks</h2><p>Measurement status: "
+            + html.escape(last["status"])
+            + ". Only accepted timing attempts supply published measurements. "
+            "CPU checks detect average external activity, not every brief burst.</p>"
+            "<details><summary>CPU utilization and attempt evidence</summary><pre>"
+            + html.escape(
+                json.dumps(
+                    [
+                        {key: value for key, value in attempt.items() if key != "rows"}
+                        for attempt in attempts
+                    ],
+                    indent=2,
+                )
+            )
+            + "</pre></details><p>Rejected raw rows are retained in results.json "
+            "and measurement-attempt JSON files.</p></section>"
+        )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mule performance · {stamp}</title>
@@ -233,6 +255,7 @@ Table ratios divide runtime elapsed time by baseline elapsed time; lower is bett
 startup, preparation, warmups, measured calls, and output; compilation is separate.
 σ describes sample variation, not a confidence interval.
 Short kernels can be dominated by measurement overhead; increase workload size before drawing conclusions.</p><p>{concurrency}</p></section>
+{cpu_evidence}
 <section aria-label="Kernel comparison"><figure><div class="chart" role="region" aria-label="Scrollable kernel chart" tabindex="0"><img src="kernel.svg" alt="Vertical bars compare median kernel milliseconds for each runtime within each scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Kernel elapsed medians. Preparation and compilation are excluded. Each scenario has its own scale.</figcaption></figure></section>
 <section aria-label="Whole-process comparison"><figure><div class="chart" role="region" aria-label="Scrollable whole-process chart" tabindex="0"><img src="process.svg" alt="Vertical bars compare median whole-process milliseconds by runtime and scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Whole-process elapsed medians. Includes startup and setup, not compilation. Each scenario has its own scale.</figcaption></figure></section>
 <section aria-labelledby="measurements"><h2 id="measurements">Every measurement</h2><div class="table" role="region" aria-label="Scrollable results table" tabindex="0"><table><thead><tr><th scope="col">Scenario</th><th scope="col">Runtime</th><th scope="col">Status</th>
