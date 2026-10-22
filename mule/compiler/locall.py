@@ -1817,9 +1817,17 @@ def analyze(
         cached_graph = post_graphs.get(target_lam)
         comp = target_lam.component
         current_blocks = tuple(comp.blocks()) if comp is not None else ()
-        if cached_graph is None or cached_graph.blocks != current_blocks:
+        current_nodes = {block: tuple(block.nodes()) for block in current_blocks}
+        if (
+            cached_graph is None
+            or cached_graph.blocks != current_blocks
+            or cached_graph.block_nodes != current_nodes
+        ):
+            # Inserting a checked result changes def-use edges within existing
+            # blocks. Cached propagation must include the new Cast producers.
             cached_graph = build_lambda_graph(target_lam)
             post_graphs[target_lam] = cached_graph
+            deriver_cache.clear()
         return cached_graph
 
     def _resolve_deriver_call(
@@ -1832,6 +1840,7 @@ def analyze(
     def _propagate_for_deriver(
         target_lam: Lambda, param_types: tuple[ValueType, ...], mode: str
     ) -> Body | None:
+        graph = _current_graph(target_lam)
         cache_key = (target_lam, param_types)
         cached = deriver_cache.get(cache_key)
         if cached is not None:
@@ -1856,7 +1865,7 @@ def analyze(
                     param_types,
                     _resolve_deriver_call,
                     AnnotationLedger(),
-                    graph=_current_graph(target_lam),
+                    graph=graph,
                     proven_globals=proven_globals,
                     rebound_globals=rebound_by_namespace.get(
                         target_lam.namespace, frozenset()

@@ -77,6 +77,15 @@ propagation, and check-generation stages rather than freezing function bindings.
 The initial scope excludes tail-position calls and result lvars with multiple
 producers, matching the corresponding SBCL restrictions.
 
+Result assertion insertion changes the IR1 def-use graph even when its block
+identities stay unchanged. Subsequent definition-derived return queries rebuild
+their cached graph when a block's node sequence changes and discard memoized
+propagation from the stale snapshot. This preserves the current producer edges
+that SBCL's `assert-call-type` and `reoptimize-lvar` operate on directly.
+In particular, inserted checks on recursive calls participate in the next
+return derivation instead of appearing as unavailable tuple elements. Leaf and
+non-leaf tuple results therefore remain alternatives in the checked contract.
+
 Only runtime-checkable facts become contracts. Immutable tuple element facts can
 be checked recursively. Mutable collection contents must not become trusted from
 a shallow object check; those facts are widened before the contract is formed.
