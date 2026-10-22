@@ -270,13 +270,12 @@ def measure_group(case, entries, baseline, args, reference):
     if baseline_row and baseline_row["status"] == "ok":
         for row in rows:
             if row["status"] == "ok":
-                row["speedup"] = {}
+                row["time_ratio"] = {}
                 for field in ("kernel_seconds", "process_seconds"):
                     seconds = row["summary"][field]["median"]
-                    row["speedup"][field] = (
-                        baseline_row["summary"][field]["median"] / seconds
-                        if seconds
-                        else None
+                    baseline_seconds = baseline_row["summary"][field]["median"]
+                    row["time_ratio"][field] = (
+                        seconds / baseline_seconds if baseline_seconds else None
                     )
     return rows
 
@@ -354,7 +353,7 @@ def main():
     options["output"] = str(output)
     options["history"] = str(args.history) if complete else None
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "created_utc": stamp,
         "baseline": baseline,
         "platform": platform.platform(),

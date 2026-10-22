@@ -1,8 +1,13 @@
 # Compiled program performance
 
-Status: measurement and optimization work in progress. The target is at least
-10 times CPython's speed for compiled programs; current measurements do not meet
-that target.
+Status: measurement and optimization work in progress. The target is a
+Mule / CPython elapsed-time ratio of at most 0.10 for compiled programs;
+current measurements do not meet that target.
+
+Performance comparisons use elapsed-time fractions: the measured implementation's
+time divided by its comparator's time. Lower is better. A ratio below 1 means
+the measured implementation takes less time. Before/after comparisons use
+after / before, with the changed executable in the numerator.
 
 ## Design goal
 
@@ -54,10 +59,11 @@ separate. Historical results below retain their actual sample counts.
 The current compiler revision does not establish the provenance of that
 executable. `--report` chooses a separate JSON path when remeasuring it.
 `--baseline-directory` adds an earlier native executable to the same alternating
-sample sequence, validates its output, and records its hash and relative speed.
+sample sequence, validates its output, and records its hash and Mule / baseline
+elapsed-time ratio.
 Increase `--count` until process startup is a small fraction of the measured
 time. Do not run simultaneous timing jobs or include builds in elapsed program
-runtime. A timeout is recorded as a timeout, without a validated speedup.
+runtime. A timeout is recorded as a timeout, without a validated time ratio.
 
 The `nbody` case uses the unmodified base Python program from Benchmarks Game;
 input 1000 must also match `1000_out` byte for byte. `sha3` measures the compiled
@@ -87,8 +93,8 @@ the recorded CPython result for the same input.
 | Before slot lowering | 3.236301, 3.258334, 3.241263, 3.230092, 3.216703 | 3.236301 |
 | After slot lowering | 1.570104, 1.559280, 1.566053, 1.567621, 1.561517 | 1.566053 |
 
-The changed executable is **2.07 times as fast** on this workload. This is a
-focused kernel result, not a claim of a twofold improvement across the suite.
+The changed / baseline kernel-time ratio is **0.484** on this workload. This is
+a focused kernel result, not a suite-wide performance claim.
 At size 10,000, three kernel loops, and no warmup, whole-process Callgrind
 instruction counts fall from 1,639,283,736 to 951,782,353, a 42% reduction.
 Profiling is separate from timing. The changed machine code uses closure-slot
@@ -144,9 +150,9 @@ Every run matched CPython's `result True True` output.
 | Baseline | 0.020677, 0.018598, 0.018819, 0.021795, 0.021554 | 20.677 |
 | Float coercions | 0.019641, 0.020957, 0.020031, 0.021047, 0.019385 | 20.031 |
 
-The approximately 3% median difference is within the observed variation. This
-workload does not demonstrate a material speedup. The verified change is the
-representation capability, not an application-performance claim.
+The changed / baseline median-time ratio is 0.969, within the observed variation.
+This workload does not demonstrate a material timing improvement. The verified
+change is the representation capability, not an application-performance claim.
 
 The source SHA-256 was
 `bb06f01641986c209c7bab29a7fcf9e5a48e16f32e723e0c60b7d6842c4306a5`.
@@ -170,10 +176,10 @@ per pair run sequentially on CPU 0 after all builds and compiler tests finish.
 Every timed checksum matches an independent Python 3.15 numeric loop. Inputs
 0, 1, and 1,000 iterations also validate before timing.
 
-| Payload | Iterations | Opaque seconds | Visible seconds | Opaque / visible |
+| Payload | Iterations | Opaque seconds | Visible seconds | Visible / opaque |
 | --- | ---: | ---: | ---: | ---: |
-| float64 | 96,000,000 | 1.035982 | 0.127182 | 8.15 |
-| positive wide int64 | 128,000,000 | 3.117412 | 0.119781 | 26.03 |
+| float64 | 96,000,000 | 1.035982 | 0.127182 | 0.123 |
+| positive wide int64 | 128,000,000 | 3.117412 | 0.119781 | 0.0384 |
 
 The visible float step has only multiplication, addition, and return. The
 integer step retains its genuine GMP ABI guard, but its supported 64-bit-limb
@@ -240,7 +246,7 @@ and compiler tests finished before timing started.
 | Before numeric calling conventions | 0.585985 |
 | After numeric calling conventions | 0.030313 |
 
-The changed executable is 19.33 times as fast on this diagnostic. The baseline
+The changed / baseline time ratio is 0.0517 on this diagnostic. The baseline
 uses a clean source snapshot of `a31c335`; the changed build includes this
 numeric-convention implementation and its float-identity adapter repair. Both
 executables match CPython 3.15 host output at counts 0, 1, 10,000, and 20,000,000.
@@ -283,7 +289,7 @@ other compiler tests finished before timing started.
 | Before closed-group representation selection | 0.260872 |
 | After closed-group representation selection | 0.030628 |
 
-The changed executable is 8.52 times as fast on this diagnostic. The source
+The changed / baseline time ratio is 0.117 on this diagnostic. The source
 snapshots differ only in `mule/compiler/represent.py`; both include the same
 other working-tree compiler and runtime changes. Both executables match the
 CPython 3.15 host's output at counts 0, 1, 10,000, and 20,000,000. Focused
@@ -307,11 +313,11 @@ the same preloaded source strings and run on CPU 0. Imports, source-file reads
 and compilation are outside the parser timer. Five samples per executable and
 input group produce these median times for one complete pass over the group:
 
-| Input group | Files | Before seconds | After seconds | Before / after |
+| Input group | Files | Before seconds | After seconds | After / before |
 | --- | ---: | ---: | ---: | ---: |
-| Small-program corpus | 44 | 0.257052 | 0.200906 | 1.279 |
-| Parser modules | 7 | 1.024453 | 0.744841 | 1.375 |
-| Compiler modules | 47 | 12.952870 | 9.677561 | 1.338 |
+| Small-program corpus | 44 | 0.257052 | 0.200906 | 0.782 |
+| Parser modules | 7 | 1.024453 | 0.744841 | 0.727 |
+| Compiler modules | 47 | 12.952870 | 9.677561 | 0.747 |
 
 The baseline source is revision `da5316f2cd4ebe1028e2bdcc2bebc972316349a1`.
 Both isolated source snapshots include the same globals-wrapper cache
@@ -360,16 +366,16 @@ Only guarded unbound-call lowering and its shape-partitioned dispatch differ.
 The input sets, five-sample methodology, CPU affinity, `-O3` and no-LTO settings
 match the experiment above. Median seconds per complete input pass are:
 
-| Input group | Before seconds | After seconds | Before / after |
+| Input group | Before seconds | After seconds | After / before |
 | --- | ---: | ---: | ---: |
-| Small-program corpus | 0.200366 | 0.198532 | 1.009 |
-| Parser modules | 0.764915 | 0.751739 | 1.018 |
-| Compiler modules | 9.732363 | 9.370380 | 1.039 |
+| Small-program corpus | 0.200366 | 0.198532 | 0.991 |
+| Parser modules | 0.764915 | 0.751739 | 0.983 |
+| Compiler modules | 9.732363 | 9.370380 | 0.963 |
 
 A separate one-million-call `Base.step(instance, value)` probe produced the
 validated result 1,000,000 in every run. Its five alternating process samples
 had kernel medians of 0.171629 seconds before and 0.160023 seconds after
-(1.073 times as fast). This isolates one invocation shape, not a whole parser
+(after / before = 0.932). This isolates one invocation shape, not a whole parser
 or SBCL comparison. GDB also confirmed internal-body entry through a real
 member-descriptor assignment chain, and native AST traversal still matched the
 hosted parser across all 98 inputs for node kinds, order and source spans.
@@ -392,15 +398,15 @@ These historical builds used LTO for the main unit and thin-LTO Rust bitcode;
 library units were already machine code. The build corrections below enable
 full LTO across all generated units and the Rust primitives.
 
-| Program | Input | CPython seconds | Mule seconds | CPython / Mule |
+| Program | Input | CPython seconds | Mule seconds | Mule / CPython |
 | --- | ---: | ---: | ---: | ---: |
-| Integer loop | 1,000,000 | 0.0290 | 0.00948 | 3.06 |
-| Float loop | 1,000,000 | 0.0341 | 0.111 | 0.307 |
-| Function calls | 500,000 | 0.0242 | 0.0206 | 1.18 |
-| List indexing | 1,000,000 | 0.0315 | 0.0197 | 1.60 |
-| Instance attributes | 250,000 | 0.0216 | 0.170 | 0.127 |
+| Integer loop | 1,000,000 | 0.0290 | 0.00948 | 0.327 |
+| Float loop | 1,000,000 | 0.0341 | 0.111 | 3.26 |
+| Function calls | 500,000 | 0.0242 | 0.0206 | 0.851 |
+| List indexing | 1,000,000 | 0.0315 | 0.0197 | 0.625 |
+| Instance attributes | 250,000 | 0.0216 | 0.170 | 7.87 |
 
-Ratios greater than one mean Mule is faster. These are exploratory measurements,
+Ratios below one mean Mule takes less time. These are exploratory measurements,
 not performance guarantees or optimized application benchmarks.
 
 Callgrind on the attribute case shows substantial cost in string hashing,
@@ -422,34 +428,34 @@ pinned to CPU 6 at input 10,000,000 measured:
 | Mule before this change | 1.0170 |
 | Mule after this change | 0.1444 |
 
-This is a 7.04-times improvement over Mule's earlier executable and 1.51 times
-CPython's speed. Exact output was verified for every sample.
+The after / before time ratio is 0.142, and Mule / CPython is 0.662.
+Exact output was verified for every sample.
 
 Inlining the inactive safepoint poll further removes native call overhead from
 entries and loops, while retaining the acquire flag read and active collection
 handshake. A nine-sample comparison pinned to CPU 6 with 10,000,000 integer-loop
 iterations measured CPython at 0.18429 seconds, the original Mule executable at
-0.02215 seconds, and the new Mule executable at 0.01787 seconds. This case reaches
-10.32 times CPython's speed and improves 1.24 times over the original Mule build
-before enabling complete cross-language LTO. With the final build settings,
+0.02215 seconds, and the new Mule executable at 0.01787 seconds. The Mule / CPython
+time ratio is 0.0970, and new / original Mule is 0.807 before enabling complete
+cross-language LTO. With the final build settings,
 the same input measured CPython at 0.18593 seconds and Mule at 0.01903 seconds,
-or 9.77 times CPython's speed. Full LTO modestly changed this case's startup and
-code layout; it remains enabled for the whole compiled implementation.
+for a Mule / CPython time ratio of 0.102. Full LTO modestly changed this case's
+startup and code layout; it remains enabled for the whole compiled implementation.
 At 1,000,000 iterations, startup has a greater effect on whole-process timings;
-the larger-input result does not establish a 10-times guarantee for every input
-or other programs.
+the larger-input result does not establish a Mule / CPython ratio of at most
+0.10 for every input or other programs.
 
 The unmodified nbody program at input 1000 matched the upstream reference, but
 took 0.303 seconds against CPython's 0.0166 seconds in a three-sample exploratory
-run. Guarded list unpacking reduced the same nbody workload to 0.0511 seconds,
-5.84 times its earlier Mule speed, while remaining 3.21 times slower than
-CPython in a five-sample comparison. The optimization snapshots list elements
+run. A five-sample comparison after guarded list unpacking measured the same
+nbody workload at 0.0511 seconds, with after / before = 0.171 and
+Mule / CPython = 3.21. The optimization snapshots list elements
 before target setters execute and preserves subclass iteration overrides.
 
 SHA3-256 over 4 MiB matched CPython's digest but took 19.29 seconds against
-0.0222 seconds in a three-sample run: approximately 868 times slower. The SHA3
-program imports `_sha3` directly in both implementations to measure one algorithm
-without building all algorithms exposed by `hashlib`. Its profile includes
+0.0222 seconds in a three-sample run: Mule / CPython was approximately 869.
+The SHA3 program imports `_sha3` directly in both implementations to measure one
+algorithm without building all algorithms exposed by `hashlib`. Its profile includes
 generic numeric calls, GMP integer allocation/operations, name lookup, and
 ownership work. Native unsigned-word representations and general dispatch
 specialization remain unresolved compiler work; replacing the algorithm with a
@@ -461,7 +467,8 @@ machine-code objects blocked optimization into compiled protocols, while thin
 Rust bitcode blocked the full-LTO main unit from eliminating even `mule_none`.
 Integration probes now verify that calls disappear in native machine code
 across both boundaries. These settings expose optimization opportunities;
-they do not establish a 10-times speedup for every program.
+they do not establish a Mule / CPython time ratio of at most 0.10 for every
+program.
 
 ```sh
 valgrind --tool=callgrind --callgrind-out-file=/tmp/attributes.callgrind \

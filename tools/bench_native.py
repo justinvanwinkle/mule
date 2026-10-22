@@ -104,13 +104,13 @@ def benchmark(
         "reused_executable": built_seconds is None,
         "samples_seconds": measurements,
         "medians_seconds": medians,
-        "speedup": medians["python"] / medians["mule"],
+        "time_ratio": medians["mule"] / medians["python"],
     }
     if baseline_executable is not None:
         report["baseline_executable_sha3_256"] = hashlib.sha3_256(
             baseline_executable.read_bytes()
         ).hexdigest()
-        report["speedup_over_baseline"] = medians["baseline"] / medians["mule"]
+        report["time_ratio_to_baseline"] = medians["mule"] / medians["baseline"]
     return report
 
 
@@ -187,19 +187,20 @@ def main():
         )
         if result.get("status") == "timeout":
             print(
-                f"{name}: exceeded {result['timeout_seconds']}s; no validated speedup",
+                f"{name}: exceeded {result['timeout_seconds']}s; no validated time ratio",
                 flush=True,
             )
             continue
         print(
             f"{name}: Python {result['medians_seconds']['python']:.6f}s, "
             f"Mule {result['medians_seconds']['mule']:.6f}s, "
-            f"{result['speedup']:.3f}x speedup",
+            f"Mule / CPython time = {result['time_ratio']:.3f} (lower is better)",
             flush=True,
         )
-        if "speedup_over_baseline" in result:
+        if "time_ratio_to_baseline" in result:
             print(
-                f"{name}: {result['speedup_over_baseline']:.3f}x faster than baseline",
+                f"{name}: Mule / baseline time = {result['time_ratio_to_baseline']:.3f} "
+                "(lower is better)",
                 flush=True,
             )
     if timed_out:

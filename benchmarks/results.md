@@ -22,15 +22,14 @@ Milliseconds; lower is faster.
 | Common Lisp / SBCL | 3.053 | 46.631 | 7.590 | 50.969 |
 | Rust | 1.898 | 38.463 | 5.469 | 42.091 |
 
-Mule is **4.31x faster than CPython** on the combined
-workload, and remains 4.63x slower than SBCL and
-5.61x slower than Rust.
+The combined workload's elapsed-time ratios are **Mule / CPython = 0.232**,
+Mule / SBCL = 4.63, and Mule / Rust = 5.61. Lower ratios are better.
 
 ## Change from the initial Rust runtime
 
 The [pre-optimization Rust runtime baseline](results-rust-runtime-baseline.json)
 measured 1.897354 seconds for the combined workload. The current run measured
-0.235975 seconds: **8.04x faster**, or 87.6% less elapsed time.
+0.235975 seconds: **current / baseline = 0.124** for elapsed time.
 These are separate repeated runs on the same workload and machine, not paired
 simultaneous samples. The source hashes and raw samples are retained for both.
 
@@ -64,8 +63,8 @@ fresh-process samples, after one warmup, pinned to CPU 0 measured:
 | Before GMP changes | 0.271663 |
 | Current | 0.108070 |
 
-This is **2.51x faster**. Both executables use the same current LLVM lowering
-and optimized link settings. The baseline uses the prior committed Rust numeric
+The current / before elapsed-time ratio is **0.398**. Both executables use the
+same current LLVM lowering and optimized link settings. The baseline uses the prior committed Rust numeric
 runtime with the new reuse ABI delegated to its original allocating operation;
 the current runtime borrows inputs, moves results, and reuses bigint storage.
 The source is unchanged between the two builds. The program prints nothing, so

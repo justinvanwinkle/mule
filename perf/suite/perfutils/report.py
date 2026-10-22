@@ -12,10 +12,10 @@ COLORS = ("#c14c32", "#267a77", "#71558a", "#a47116")
 
 
 def _ratio(row, metric):
-    value = row.get("speedup", {}).get(metric)
+    value = row.get("time_ratio", {}).get(metric)
     if row["status"] != "ok" or value is None:
         return None
-    return value if math.isfinite(value) and value > 0 else None
+    return value if math.isfinite(value) and value >= 0 else None
 
 
 def _milliseconds(row, metric):
@@ -169,8 +169,8 @@ def dashboard(report):
                     f"{summary['median'] * 1000:.3f} ms "
                     f"<small>σ {summary['stdev'] * 1000:.3f}</small>"
                 )
-            speedup = _ratio(row, "kernel_seconds")
-            cells.append(f"{speedup:.3g}×" if speedup is not None else "—")
+            time_ratio = _ratio(row, "kernel_seconds")
+            cells.append(f"{time_ratio:.3g}" if time_ratio is not None else "—")
         else:
             cells.extend(["—", "—", "—"])
         rows.append(
@@ -228,14 +228,15 @@ th{{background:#eeeee6}}small{{display:block;color:#596564}}pre{{font:12px/1.6 u
 <p><a href="results.json">Raw results &amp; provenance</a> · <a href="kernel.svg">Kernel SVG</a> · <a href="process.svg">Process SVG</a></p></header>
 <section aria-labelledby="reading"><h2 id="reading">How to read this report</h2><p>Vertical bars show median elapsed time in milliseconds for the same scenario and input. Shorter bars mean faster execution.
 Each scenario has an independent linear vertical scale starting at zero. Compare runtimes within a panel, not bar heights across panels.
-The baseline appears alongside every other runtime. Unavailable or failed results have no bar.</p><p>Preparation, warmups, output, and result checks are excluded from kernel time. Whole-process time includes
+The baseline appears alongside every other runtime. Unavailable or failed results have no bar.
+Table ratios divide runtime elapsed time by baseline elapsed time; lower is better. A ratio of 1 means equal time.</p><p>Preparation, warmups, output, and result checks are excluded from kernel time. Whole-process time includes
 startup, preparation, warmups, measured calls, and output; compilation is separate.
 σ describes sample variation, not a confidence interval.
 Short kernels can be dominated by measurement overhead; increase workload size before drawing conclusions.</p><p>{concurrency}</p></section>
 <section aria-label="Kernel comparison"><figure><div class="chart" role="region" aria-label="Scrollable kernel chart" tabindex="0"><img src="kernel.svg" alt="Vertical bars compare median kernel milliseconds for each runtime within each scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Kernel elapsed medians. Preparation and compilation are excluded. Each scenario has its own scale.</figcaption></figure></section>
 <section aria-label="Whole-process comparison"><figure><div class="chart" role="region" aria-label="Scrollable whole-process chart" tabindex="0"><img src="process.svg" alt="Vertical bars compare median whole-process milliseconds by runtime and scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Whole-process elapsed medians. Includes startup and setup, not compilation. Each scenario has its own scale.</figcaption></figure></section>
 <section aria-labelledby="measurements"><h2 id="measurements">Every measurement</h2><div class="table" role="region" aria-label="Scrollable results table" tabindex="0"><table><thead><tr><th scope="col">Scenario</th><th scope="col">Runtime</th><th scope="col">Status</th>
-<th scope="col">Kernel median</th><th scope="col">Process median</th><th scope="col">Kernel ratio</th></tr></thead><tbody>{content}</tbody></table></div></section>
+<th scope="col">Kernel median</th><th scope="col">Process median</th><th scope="col">Kernel runtime / {baseline}</th></tr></thead><tbody>{content}</tbody></table></div></section>
 <section aria-labelledby="provenance"><h2 id="provenance">Reproduce, then compare</h2><details><summary>Platform, run options, runtime commands, and revisions</summary><pre>{html.escape(json.dumps(context, indent=2))}</pre>{provenance}</details><p>Raw results retain samples, hashes, commands, and build diagnostics. A commit plus a tracked-diff digest identifies the measured working tree, not necessarily a clean release.</p></section>
 <footer>Generated locally by Mule’s dependency-free performance harness. No external fonts, scripts, or services.</footer></main></body></html>"""
 

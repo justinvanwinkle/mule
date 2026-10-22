@@ -5,11 +5,14 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from perf.pyperformance import pyperf
 from perf.pyperformance.__main__ import (
     BENCHMARKS_DIR,
     HERE,
     discover_benchmarks,
+    format_table,
     load_runtimes,
     parse_bench_output,
     resolve_case_name,
@@ -17,6 +20,92 @@ from perf.pyperformance.__main__ import (
 from test.python_host import python_host
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_comparison_table_uses_candidate_time_over_baseline_time():
+    cases = ["bm_fast", "bm_slow"]
+    rows = {
+        case: [
+            {
+                "runtime": runtime,
+                "status": "ok",
+                "summary": {"kernel_seconds": {"median": seconds}},
+            }
+            for runtime, seconds in (("cpython", 0.010), ("mule", candidate))
+        ]
+        for case, candidate in zip(cases, (0.005, 0.020), strict=True)
+    }
+    table = format_table(
+        cases, "cpython", [{"name": "cpython"}, {"name": "mule"}], rows
+    )
+    lines = table.splitlines()
+    assert "mule / cpython" in lines[0]
+    assert next(line for line in lines if line.startswith("fast")).split()[-1] == "0.50"
+    assert next(line for line in lines if line.startswith("slow")).split()[-1] == "2.00"
+    assert (
+        next(line for line in lines if line.startswith("GEOMEAN")).split()[-1] == "1.00"
+    )
+
+
+@pytest.mark.parametrize(
+    "baseline_seconds,candidate_seconds,expected_ratio",
+    [(0.010, 0.005, 0.5), (0.010, 0.020, 2.0), (0.010, 0.0, 0.0), (0.0, 0.010, None)],
+)
+def test_comparison_records_candidate_time_over_baseline_time(
+    tmp_path, baseline_seconds, candidate_seconds, expected_ratio
+):
+    host = python_host()
+    config = tmp_path / "runtimes.toml"
+    config.write_text(
+        'baseline = "cpython"\n'
+        + "".join(
+            "[[runtime]]\nname = "
+            + json.dumps(runtime)
+            + "\ncommand = "
+            + json.dumps([host, "-c", f"print('BENCH\\tsample\\t1\\t{seconds}')"])
+            + "\n"
+            for runtime, seconds in (
+                ("cpython", baseline_seconds),
+                ("mule", candidate_seconds),
+            )
+        )
+    )
+    output = tmp_path / "out"
+    subprocess.run(
+        [
+            host,
+            "-m",
+            "perf.pyperformance",
+            "run",
+            "unpack_sequence",
+            "--config",
+            str(config),
+            "--samples",
+            "1",
+            "--warmups",
+            "0",
+            "--output",
+            str(output),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    report = json.loads((output / "results.json").read_text())
+    reference, candidate = report["rows"]
+    assert candidate["time_ratio"]["kernel_seconds"] == expected_ratio
+    assert candidate["time_ratio"]["process_seconds"] == (
+        candidate["summary"]["process_seconds"]["median"]
+        / reference["summary"]["process_seconds"]["median"]
+    )
+    table = (output / "summary.txt").read_text()
+    candidate_line = next(
+        line for line in table.splitlines() if line.startswith("unpack_sequence")
+    )
+    assert candidate_line.split()[-1] == (
+        "-" if expected_ratio is None else f"{expected_ratio:.2f}"
+    )
 
 
 def test_upstream_manifest_matches_vendored_files():

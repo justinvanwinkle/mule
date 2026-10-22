@@ -106,8 +106,8 @@ directory selected with `--output`.
 A complete run, meaning every scenario with a `--config` of runtimes, appends
 one line to the committed `perf/history.jsonl`: the UTC stamp, platform, run
 options, each runtime's checkout commit and tracked-diff digest, and each
-row's status, kernel/process/preparation medians, and speedups. Runs of a
-subset of scenarios, baseline-only runs, and runs with `--no-history` are not
+row's status, kernel/process/preparation medians, and elapsed-time ratios. Runs
+of a subset of scenarios, baseline-only runs, and runs with `--no-history` are not
 recorded, so every line is comparable with every other. Commit the file with
 the compiler change it measures.
 
@@ -118,7 +118,11 @@ uv run python -m perf.suite.perfutils history graph_paths
 ```
 
 The table has one row per run and one column per scenario, each cell the
-selected runtime's kernel median and its speedup against that run's baseline.
+selected runtime's kernel median and its elapsed-time ratio against that run's
+baseline.
+Ratios divide the selected runtime's time by the baseline's time. Lower is
+better: 0.50 means half the baseline's elapsed time, and 3.30 means 3.30 times
+the baseline's elapsed time. Mule / CPython and Mule / SBCL use the same direction.
 A `+` after the commit means the tree had uncommitted tracked changes. Reports include raw samples, medians,
 variation, commands, source/helper/binary hashes, build diagnostics, platform,
 affinity, runtime version when configured, and checkout revision/diff identity.

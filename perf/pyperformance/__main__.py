@@ -202,9 +202,9 @@ def format_table(
     candidates = [name for name in runtime_names if name != baseline]
     header = ["Benchmark", f"{baseline} (ms)"]
     for cand in candidates:
-        header.extend([f"{cand} (ms)", f"vs {baseline}"])
+        header.extend([f"{cand} (ms)", f"{cand} / {baseline}"])
     table_rows = [header]
-    speedups_by_candidate: dict[str, list[float]] = {c: [] for c in candidates}
+    ratios_by_candidate: dict[str, list[float]] = {c: [] for c in candidates}
     for case in cases:
         display = case.removeprefix("bm_")
         case_rows = {str(r["runtime"]): r for r in rows_by_case.get(case, [])}
@@ -221,24 +221,28 @@ def format_table(
             if cand_row and cand_row.get("status") == "ok":
                 cand_sec = cand_row["summary"]["kernel_seconds"]["median"]
                 cand_cell = f"{cand_sec * 1000:.2f}"
-                if base_sec and cand_sec > 0:
-                    sp = base_sec / cand_sec
-                    speedups_by_candidate[cand].append(sp)
-                    sp_cell = f"{sp:.2f}x"
+                if base_sec:
+                    ratio = cand_sec / base_sec
+                    ratios_by_candidate[cand].append(ratio)
+                    ratio_cell = f"{ratio:.2f}"
                 else:
-                    sp_cell = "-"
+                    ratio_cell = "-"
             else:
                 cand_cell = cand_row.get("status", "missing") if cand_row else "missing"
-                sp_cell = "-"
-            line.extend([cand_cell, sp_cell])
+                ratio_cell = "-"
+            line.extend([cand_cell, ratio_cell])
         table_rows.append(line)
-    if any(speedups_by_candidate.values()):
-        footer = ["GEOMEAN", "1.00x"]
+    if any(ratios_by_candidate.values()):
+        footer = ["GEOMEAN", "1.00"]
         for cand in candidates:
-            vals = speedups_by_candidate[cand]
+            vals = ratios_by_candidate[cand]
             if vals:
-                gmean = math.exp(sum(math.log(v) for v in vals) / len(vals))
-                footer.extend([f"({len(vals)}/{len(cases)} ok)", f"{gmean:.2f}x"])
+                gmean = (
+                    0.0
+                    if 0.0 in vals
+                    else math.exp(sum(math.log(v) for v in vals) / len(vals))
+                )
+                footer.extend([f"({len(vals)}/{len(cases)} ok)", f"{gmean:.2f}"])
             else:
                 footer.extend(["-", "-"])
         table_rows.append(footer)
@@ -256,6 +260,7 @@ def format_table(
             and table_rows[-1][0] == "GEOMEAN"
         ):
             lines.append("  ".join("-" * w for w in widths))
+    lines.append("Elapsed-time ratios use runtime / baseline; lower is better.")
     return "\n".join(lines)
 
 
@@ -405,13 +410,12 @@ def main() -> int:
         if base_row and base_row.get("status") == "ok":
             for row in rows:
                 if row.get("status") == "ok":
-                    row["speedup"] = {}
+                    row["time_ratio"] = {}
                     for field in ("kernel_seconds", "process_seconds"):
                         sec = row["summary"][field]["median"]
-                        row["speedup"][field] = (
-                            base_row["summary"][field]["median"] / sec
-                            if sec > 0
-                            else None
+                        base_sec = base_row["summary"][field]["median"]
+                        row["time_ratio"][field] = (
+                            sec / base_sec if base_sec > 0 else None
                         )
         statuses = ", ".join(f"{r['runtime']}={r['status']}" for r in rows)
         print(f"Measured {case.removeprefix('bm_')}: {statuses}", flush=True)

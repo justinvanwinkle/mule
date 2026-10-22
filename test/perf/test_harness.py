@@ -1,11 +1,17 @@
 import json
 import subprocess
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
 from perf.suite.perfutils import history
-from perf.suite.perfutils.__main__ import RunFailure, load_runtimes, read_sample
+from perf.suite.perfutils.__main__ import (
+    RunFailure,
+    load_runtimes,
+    measure_group,
+    read_sample,
+)
 from test.python_host import python_host
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,7 +58,7 @@ def test_config_rejects_duplicate_names(tmp_path):
 
 def test_harness_records_bad_results_and_continues(tmp_path):
     # Execute the real case, then corrupt just the candidate's result. The
-    # candidate must never contribute a speedup or a timing sample.
+    # candidate must never contribute a time ratio or a timing sample.
     host = python_host()
     wrapper = tmp_path / "corrupt.py"
     wrapper.write_text(
@@ -102,11 +108,11 @@ def test_harness_records_bad_results_and_continues(tmp_path):
         if row["runtime"] == "corrupt":
             assert row["status"] == "incorrect_result"
             assert row["samples"] == []
-            assert "speedup" not in row
+            assert "time_ratio" not in row
         else:
             assert row["status"] == "ok"
             assert len(row["samples"]) == 2
-            assert row["speedup"]["kernel_seconds"] > 0
+            assert row["time_ratio"]["kernel_seconds"] > 0
     assert "incorrect_result" in (output / "index.html").read_text()
     for name in ("kernel.svg", "process.svg"):
         svg = (output / name).read_text()
@@ -124,10 +130,47 @@ def test_timeout_is_visible(tmp_path):
     assert error.value.status == "timeout"
 
 
+@pytest.mark.parametrize(
+    ("baseline_seconds", "runtime_seconds", "expected"),
+    [(2, 1, 0.5), (2, 6, 3), (2, 2, 1), (2, 0, 0), (0, 2, None)],
+)
+def test_measure_group_reports_runtime_time_over_baseline(
+    tmp_path, baseline_seconds, runtime_seconds, expected
+):
+    # Static reported kernel times distinguish the ratio direction without
+    # depending on process scheduling or clock resolution.
+    entries = []
+    for runtime, seconds in (
+        ("reference", baseline_seconds),
+        ("candidate", runtime_seconds),
+    ):
+        script = tmp_path / f"{runtime}.py"
+        script.write_text(f"print({protocol(KERNEL=str(seconds))!r}, end='')\n")
+        entries.append(
+            {
+                "runtime": runtime,
+                "command": [python_host(), str(script)],
+                "cwd": tmp_path,
+            }
+        )
+    args = Namespace(seed=42, loops=1, warmups=0, size=10, samples=1, timeout=10)
+    reference = read_sample(
+        subprocess.CompletedProcess([], 0, protocol(KERNEL=str(baseline_seconds)), ""),
+        0.1,
+        "integer_accumulation",
+    )
+    rows = measure_group("integer_accumulation", entries, "reference", args, reference)
+    assert rows[1]["time_ratio"]["kernel_seconds"] == expected
+    assert rows[1]["time_ratio"]["process_seconds"] == (
+        rows[1]["summary"]["process_seconds"]["median"]
+        / rows[0]["summary"]["process_seconds"]["median"]
+    )
+
+
 def _report(
     kernel_seconds, status="ok", commit="0123456789abcdef", diff=history._CLEAN_DIFF
 ):
-    def row(runtime, seconds, speedup):
+    def row(runtime, seconds, time_ratio):
         summary = {
             field: {"median": seconds, "min": seconds, "max": seconds, "stdev": 0.0}
             for field in ("kernel_seconds", "process_seconds", "preparation_seconds")
@@ -138,7 +181,7 @@ def _report(
             "status": status if runtime == "mule" else "ok",
             "samples": [],
             "summary": summary,
-            "speedup": {"kernel_seconds": speedup, "process_seconds": speedup},
+            "time_ratio": {"kernel_seconds": time_ratio, "process_seconds": time_ratio},
         }
 
     return {
@@ -155,7 +198,7 @@ def _report(
         ],
         "rows": [
             row("cpython", 0.010, 1.0),
-            row("mule", kernel_seconds, 0.010 / kernel_seconds),
+            row("mule", kernel_seconds, kernel_seconds / 0.010),
         ],
     }
 
@@ -166,12 +209,14 @@ def test_history_records_runs_and_tabulates_the_candidate_trend(tmp_path):
     history.record(_report(0.020, diff="not clean"), path)
     runs = history.load(path)
     assert [run["results"][1]["kernel_ms"] for run in runs] == [50.0, 20.0]
+    assert [run["results"][1]["kernel_time_ratio"] for run in runs] == [5.0, 2.0]
+    assert [run["results"][1]["process_time_ratio"] for run in runs] == [5.0, 2.0]
     assert runs[0]["runtimes"][1]["commit"] == "0123456789abcdef"
     lines = history.table(runs)
     assert "mule" in lines[2] and "mule" in lines[3]
     assert "integer_accumulation" in lines[1]
-    assert "012345678 " in lines[2] and "50 ms 0.2x" in lines[2]
-    assert "012345678+" in lines[3] and "20 ms 0.5x" in lines[3]
+    assert "012345678 " in lines[2] and "50 ms 5" in lines[2]
+    assert "012345678+" in lines[3] and "20 ms 2" in lines[3]
 
 
 def test_history_shows_failures_and_limits_runs(tmp_path):
@@ -211,15 +256,15 @@ def test_history_lists_all_candidate_runtimes_including_sbcl(tmp_path):
                     "preparation_seconds",
                 )
             },
-            "speedup": {"kernel_seconds": 5.0, "process_seconds": 5.0},
+            "time_ratio": {"kernel_seconds": 0.2, "process_seconds": 0.2},
         }
     )
     history.record(report, path)
     runs = history.load(path)
     lines = history.table(runs)
     assert len(lines) == 4
-    assert "mule" in lines[2] and "20 ms 0.5x" in lines[2]
-    assert "sbcl" in lines[3] and "2 ms 5x" in lines[3]
+    assert "mule" in lines[2] and "20 ms 2" in lines[2]
+    assert "sbcl" in lines[3] and "2 ms 0.2" in lines[3]
     sbcl_only = history.table(runs, runtime_name="sbcl")
     assert len(sbcl_only) == 3
     assert "sbcl" in sbcl_only[2]

@@ -1,14 +1,14 @@
 """Append-only history of complete suite runs, for comparison over time.
 
 Each line of the history file is one JSON object summarizing a run of every
-scenario against a configured set of runtimes: medians, speedups, status, and
+scenario against a configured set of runtimes: medians, time ratios, status, and
 the checkout revision of each runtime. The file is committed with the code so
 the trend survives the ignored per-run result directories.
 """
 
 import json
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _milliseconds(row, field):
@@ -45,8 +45,8 @@ def entry(report):
                 "kernel_ms": _milliseconds(row, "kernel_seconds"),
                 "process_ms": _milliseconds(row, "process_seconds"),
                 "preparation_ms": _milliseconds(row, "preparation_seconds"),
-                "kernel_speedup": row.get("speedup", {}).get("kernel_seconds"),
-                "process_speedup": row.get("speedup", {}).get("process_seconds"),
+                "kernel_time_ratio": row.get("time_ratio", {}).get("kernel_seconds"),
+                "process_time_ratio": row.get("time_ratio", {}).get("process_seconds"),
             }
             for row in report["rows"]
         ],
@@ -95,8 +95,8 @@ def _candidates(run):
 
 def table(runs, runtime_name=None, cases=None, limit=None):
     """Lines of a text table: one row per run/runtime, one column per scenario,
-    each cell the kernel median and speedup of ``runtime_name`` (default: each
-    run's non-baseline runtimes) against the run's baseline."""
+    each cell the kernel median and elapsed-time ratio of ``runtime_name``
+    (default: each run's non-baseline runtimes) divided by the run's baseline."""
     if limit is not None:
         runs = runs[-limit:]
     if not runs:
@@ -125,8 +125,8 @@ def table(runs, runtime_name=None, cases=None, limit=None):
                 elif result["status"] != "ok":
                     cells.append(result["status"])
                 else:
-                    speedup = result["kernel_speedup"]
-                    ratio = f" {speedup:.3g}x" if speedup is not None else ""
+                    time_ratio = result["kernel_time_ratio"]
+                    ratio = f" {time_ratio:.3g}" if time_ratio is not None else " —"
                     cells.append(f"{result['kernel_ms']:.3g} ms{ratio}")
             rows.append(
                 [
@@ -139,7 +139,7 @@ def table(runs, runtime_name=None, cases=None, limit=None):
             )
     widths = [max(len(row[i]) for row in [header, *rows]) for i in range(len(header))]
     lines = [
-        "kernel median and speedup of the runtime against the run's baseline",
+        "kernel median and elapsed-time ratio (runtime / baseline; lower is better)",
         "  ".join(
             cell.ljust(width) for cell, width in zip(header, widths, strict=True)
         ),

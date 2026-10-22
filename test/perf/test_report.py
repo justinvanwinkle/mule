@@ -21,7 +21,7 @@ def report(seconds=(0.010, 0.020, 0.040)):
                 "runtime": name,
                 "status": "ok",
                 "summary": {"kernel_seconds": {"median": value}},
-                "speedup": {"kernel_seconds": 999},
+                "time_ratio": {"kernel_seconds": 999},
             }
             for name, value in zip(runtimes, seconds, strict=False)
         ],
@@ -139,6 +139,31 @@ def test_dashboard_escapes_failure_details_and_provenance():
     assert "&lt;script&gt;bad()&lt;/script&gt;" in page
     assert "&lt;version &amp; build&gt;" in page
     assert "<script>" not in page
+
+
+@pytest.mark.parametrize("ratio", [0, 0.5, 1, 3])
+def test_dashboard_displays_elapsed_time_ratio(ratio):
+    source = report((0.1,))
+    row = source["rows"][0]
+    row["summary"] = {
+        metric: {"median": 0.1, "stdev": 0}
+        for metric in ("kernel_seconds", "process_seconds")
+    }
+    row["time_ratio"]["kernel_seconds"] = ratio
+    page = dashboard(source)
+    assert f"<td>{ratio:.3g}</td>" in page
+
+
+@pytest.mark.parametrize("ratio", [None, -1, float("nan"), float("inf")])
+def test_dashboard_displays_unavailable_ratio(ratio):
+    source = report((0.1,))
+    row = source["rows"][0]
+    row["summary"] = {
+        metric: {"median": 0.1, "stdev": 0}
+        for metric in ("kernel_seconds", "process_seconds")
+    }
+    row["time_ratio"]["kernel_seconds"] = ratio
+    assert "<td>—</td>" in dashboard(source)
 
 
 def test_update_site_writes_assets_and_updates_captions(tmp_path):

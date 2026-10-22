@@ -149,8 +149,9 @@ startup, input/output and shutdown are included.
 | Linear counter; native loop eliminated | 2.349 ms | 2.433 ms | 6.107 s | 6.050 s |
 | XOR/add recurrence; native loop retained | 90.092 ms | 89.958 ms | 8.239 s | — |
 
-The retained loop is about 92 times faster than standard Python and within
-0.2% of Rust in this run. The folded counter is dominated by process overhead;
+The retained loop's elapsed-time ratios are Mule / standard Python = 0.0109
+and Mule / Rust = 1.0015 in this run. Lower ratios are better.
+The folded counter is dominated by process overhead;
 its duration does not measure 200 million executed native method calls.
 These results establish this restricted class path, not general Python or the
 complete SBCL optimization pipeline.
@@ -162,13 +163,13 @@ CPU. Process wall time includes startup and shutdown but excludes compilation
 and `uv` startup. These measure the earlier boxed class backend.
 
 Those medians are 5.616 seconds for Mule `int32`, 5.907 seconds for Mule
-`int64`, and 6.122 seconds for Python 3.14. The `int64` annotations make this
-version 5.2% slower than `int32`, before native typed fields were implemented.
+`int64`, and 6.122 seconds for Python 3.14. The `int64` / `int32` elapsed-time
+ratio is 1.052, before native typed fields were implemented.
 
 [Earlier samples](results-classes.json) measured the unannotated example with
 two million iterations and output `6000000`. Mule's median was 60.03 ms and
-Python 3.14's was 67.67 ms, a 1.13x speedup; those durations do not describe the
-current 200-million-iteration program.
+Python 3.14's was 67.67 ms, for Mule / Python = 0.887. Those durations do not
+describe the current 200-million-iteration program.
 
 ## LLVM i128 and i256 versus GMP
 
