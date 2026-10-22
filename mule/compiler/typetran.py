@@ -38,7 +38,7 @@ from .ctype import (
     ValueTypeVisitor,
 )
 from .ir1opt import (
-    constant_literal,
+    bound_constant_literal,
     flush_combination,
     lvar_type,
     replace_combination_with_constant,
@@ -420,7 +420,7 @@ _TEXT_LITERAL_VALUE = _TextLiteralValue()
 def _lvar_text_type(lvar: Lvar) -> ValueType:
     value_type = lvar_type(lvar)
     if value_type.fits(TEXT_TYPE) and value_type.exact_text() is None:
-        constant = constant_literal(lvar)
+        constant = bound_constant_literal(lvar)
         if constant is not None:
             literal = constant.accept(_TEXT_LITERAL_VALUE)
             if literal is not None:

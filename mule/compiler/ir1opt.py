@@ -56,6 +56,7 @@ from .node import (
     Exit,
     GlobalVar,
     If,
+    LambdaVar,
     LeafVisitor,
     Lvar,
     Node,
@@ -434,6 +435,36 @@ def constant_literal(lvar):
     return lvar.uses[0].accept(_CONSTANT_VALUE)
 
 
+class _BoundConstantValue(_ConstantValue):
+    """The literal a bound single-assignment local or constant ``Ref`` delivers."""
+
+    def visit_Ref(self, node):
+        if node.final:
+            return None
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if (
+            leaf.indirect
+            or (leaf.home is not None and leaf in leaf.home.vars)
+            or len(leaf.sets) != 1
+            or leaf.sets[0].value is None
+        ):
+            return None
+        return constant_literal(leaf.sets[0].value)
+
+
+_BOUND_CONSTANT_VALUE = _BoundConstantValue()
+
+
+def bound_constant_literal(lvar):
+    """The literal a proven-bound ``lvar`` delivers through a ``Constant`` or
+    single-assignment local ``LambdaVar``, or None."""
+    if len(lvar.uses) != 1:
+        return None
+    return lvar.uses[0].accept(_BOUND_CONSTANT_VALUE)
+
+
 class _SingletonLiteral(ValueTypeVisitor):
     """The AST literal a singleton value type proves, or None."""
 
@@ -800,6 +831,7 @@ def _optimize_if(node: If) -> bool:
 
 __all__ = [
     "MAX_OPTIMIZE_ITERATIONS",
+    "bound_constant_literal",
     "constant_literal",
     "constant_lvar_value",
     "flush_combination",

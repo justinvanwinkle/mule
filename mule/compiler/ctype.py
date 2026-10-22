@@ -874,6 +874,15 @@ class IntegerType(PrimitiveType):
             return ListType(left.element)
         return UNKNOWN
 
+    def binary_tuple(self, operator, left):
+        if (
+            not left.may_be_unbound
+            and not self.may_be_unbound
+            and operator == ast.BinaryOperator.MULTIPLY
+        ):
+            return left.getslice_type()
+        return UNKNOWN
+
     def unary(self, operator):
         if operator == ast.UnaryOperator.NOT:
             return BOOLEAN
@@ -1882,6 +1891,8 @@ class TupleType(ValueType):
     def binary(self, operator, right):
         if self.may_be_unbound:
             return right.binary_unknown(operator, self)
+        if operator == ast.BinaryOperator.MULTIPLY and right.fits(PYTHON_INTEGER):
+            return self.getslice_type()
         return right.binary_tuple(operator, self)
 
     def binary_tuple(self, operator, left):
@@ -1894,6 +1905,24 @@ class TupleType(ValueType):
                 )
                 return TupleType(left.arity + self.arity, elements)
             return TupleType()
+        return UNKNOWN
+
+    def binary_integer(self, operator, left):
+        if (
+            not left.may_be_unbound
+            and not self.may_be_unbound
+            and operator == ast.BinaryOperator.MULTIPLY
+        ):
+            return self.getslice_type()
+        return UNKNOWN
+
+    def binary_boolean(self, operator, left):
+        if (
+            not left.may_be_unbound
+            and not self.may_be_unbound
+            and operator == ast.BinaryOperator.MULTIPLY
+        ):
+            return self.getslice_type()
         return UNKNOWN
 
     def getitem_type(self, index):

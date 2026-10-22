@@ -2165,6 +2165,7 @@ def analyze(
                     if call.target is target
                     and call.proven
                     and len(call.arguments) == len(target.vars)
+                    and all(arg is not BOTTOM for arg in call.arguments)
                 ]
                 if not matching:
                     if caller is not target:
@@ -2234,6 +2235,8 @@ def analyze(
             ):
                 continue
             for call in body.calls:
+                if any(arg is BOTTOM for arg in call.arguments):
+                    continue
                 target = call.target.as_lambda() if call.target is not None else None
                 if (
                     target is None

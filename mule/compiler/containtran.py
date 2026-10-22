@@ -28,6 +28,7 @@ from .ctype import (
 )
 from .ir1opt import (
     _flush_operand,
+    bound_constant_literal,
     constant_literal,
     lvar_type,
     replace_combination_with_constant,
@@ -309,7 +310,7 @@ _LEFT_TYPE_LITERAL = _LeftTypeLiteral()
 
 
 def _extract_left_constant_literal(left_lvar: Lvar) -> ast.Node | None:
-    literal = constant_literal(left_lvar)
+    literal = bound_constant_literal(left_lvar)
     if literal is not None:
         return literal
     return lvar_type(left_lvar).accept(_LEFT_TYPE_LITERAL)
