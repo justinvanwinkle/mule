@@ -14,6 +14,47 @@ SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`),
 together with the SBCL source references, Python semantic adaptations, and
 staged implementation plan for each area.
 
+## Builtin-type conformance coverage (known gap)
+
+Status: incomplete coverage; the systematic coverage work below is not implemented.
+
+The conformance suite contains useful builtin, container, and protocol programs,
+but it does not establish complete conformance for builtin types. Coverage needs
+an explicit inventory of builtin types and their exposed methods and protocols,
+not only programs that happen to exercise common operations. For example,
+`conformance/containers/list_methods.py` exercises ordinary list operations, while
+`conformance/builtins/type_and_len.py` exercises custom-object length protocols.
+Neither establishes the complete `list` descriptor and subclass contract.
+
+The runtime failures found in `perf/suite/dataclass_ast.py` exposed this gap:
+
+- Mule's compiled list implementation lacked `list.__len__`, although ordinary
+  builtin `len(list_value)` worked. Sequence-pattern lowering called the missing
+  method on its materialized list and raised `AttributeError`.
+- Investigation also found that builtin `len()` bypasses an overriding
+  `__len__` on a list subclass through the Rust `mule_fast_len` storage path.
+  This is a separate unresolved defect. Adding the missing base descriptor does
+  not fix it. The explicit base call `list.__len__(instance)` must return the
+  storage length, while `len(instance)` must honor the subclass override.
+
+Required coverage work:
+
+1. Inventory builtin types and exposed operations against the Python 3.14 oracle.
+   Record which contracts have executable conformance cases and which remain gaps.
+2. Test syntax and builtin dispatch separately from bound method calls and explicit
+   base-descriptor calls. Include builtin subclasses, inherited methods, overrides,
+   invalid receivers, argument errors, empty values, and relevant mutation effects.
+3. Compare observable results, exception classes, and evaluation effects with
+   CPython. Do not treat the presence of a method or successful compilation as
+   evidence that its semantics conform.
+4. Keep cases focused so an unsupported feature cannot hide unrelated builtin
+   coverage. Record remaining failures through the existing conformance-gap
+   mechanism. Focused compiler regressions supplement this matrix; they do not
+   establish that the rest of a builtin type conforms.
+
+This is a verification gap as well as an implementation gap. Passing the existing
+tests or a benchmark does not establish complete builtin-type compatibility.
+
 ## 0. High-impact architectural parity gaps from the 14-workload suite audit (proposed)
 
 An audit of the compiled IR1, `locall` summaries, and `stdlib/_dict.py` across
