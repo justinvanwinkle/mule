@@ -12,12 +12,13 @@ h1{font-size:clamp(36px,6vw,60px);line-height:1.1;letter-spacing:-.04em;margin:2
 a{color:#a13c26;text-underline-offset:4px}a:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:3px solid #267a77;outline-offset:4px}section{margin:40px 0}
 figure{margin:0}.chart,.table{overflow-x:auto;border:1px solid #dedfd8}img{width:100%;min-width:900px;display:block}figcaption{padding:12px 0;font-size:13px;color:#596564}
 table{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:12px 16px;border-bottom:1px solid #dedfd8}
+tr.paired-untyped td{border-bottom:1px dashed #dedfd8;background:#fffdf8}tr.paired-typed td{background:#f4f1ea;border-bottom:2px solid #c9cac2}
 th{background:#eeeee6}small{display:block;color:#596564}pre{font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}article{border-top:1px solid #dedfd8;padding:12px 0}summary{cursor:pointer}footer{border-top:1px solid #dedfd8;padding-top:20px;font-size:13px;color:#596564}
 @media(max-width:600px){main{padding:24px 18px}section{margin:28px 0}}
 </style></head><body><main><header><div class="eyebrow">MULE / PERFORMANCE LABORATORY</div><h1>Measure the work.<br>Keep the evidence.</h1>
 <p>Linux-7.2.11+deb14-amd64-x86_64-with-glibc2.43<br>20261022T064015.455540Z</p>
 <span class="pill">Baseline: cpython</span><span class="pill">42 validated / 42 comparisons</span>
-<p><a href="results.json">Raw results &amp; provenance</a> · <a href="kernel.svg">Kernel SVG</a> · <a href="process.svg">Process SVG</a></p></header>
+<p><a href="results.json">Raw results &amp; provenance</a> · <a href="kernel.svg">Kernel SVG</a> · <a href="process.svg">Process SVG</a> · <a href="trend.svg">Trend SVG</a></p></header>
 <section aria-labelledby="reading"><h2 id="reading">How to read this report</h2><p>Vertical bars show median elapsed time in milliseconds for the same scenario and input. Shorter bars mean faster execution.
 Each scenario has an independent linear vertical scale starting at zero. Compare runtimes within a panel, not bar heights across panels.
 The baseline appears alongside every other runtime. Unavailable or failed results have no bar.
@@ -25,8 +26,10 @@ Table ratios divide runtime elapsed time by baseline elapsed time; lower is bett
 startup, preparation, warmups, measured calls, and output; compilation is separate.
 σ describes sample variation, not a confidence interval.
 Short kernels can be dominated by measurement overhead; increase workload size before drawing conclusions.</p><p>4 concurrent scenario jobs; timings may include contention.</p></section>
+
 <section aria-label="Kernel comparison"><figure><div class="chart" role="region" aria-label="Scrollable kernel chart" tabindex="0"><img src="kernel.svg" alt="Vertical bars compare median kernel milliseconds for each runtime within each scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Kernel elapsed medians. Preparation and compilation are excluded. Each scenario has its own scale.</figcaption></figure></section>
 <section aria-label="Whole-process comparison"><figure><div class="chart" role="region" aria-label="Scrollable whole-process chart" tabindex="0"><img src="process.svg" alt="Vertical bars compare median whole-process milliseconds by runtime and scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Whole-process elapsed medians. Includes startup and setup, not compilation. Each scenario has its own scale.</figcaption></figure></section>
+<section aria-label="Historical trend"><figure><div class="chart" role="region" aria-label="Scrollable trend chart" tabindex="0"><img src="trend.svg" alt="Trend lines and points compare median kernel milliseconds over recorded runs for each runtime within each scenario. Lower is faster. Independent zero-based linear scales."></div><figcaption>Historical kernel elapsed medians across recorded runs (oldest on left, latest on right). Each scenario has its own scale.</figcaption></figure></section>
 <section aria-labelledby="measurements"><h2 id="measurements">Every measurement</h2><div class="table" role="region" aria-label="Scrollable results table" tabindex="0"><table><thead><tr><th scope="col">Scenario</th><th scope="col">Runtime</th><th scope="col">Status</th>
 <th scope="col">Kernel median</th><th scope="col">Process median</th><th scope="col">Kernel runtime / cpython</th></tr></thead><tbody><tr><td>account_ledger</td><td>cpython</td><td>ok</td><td>4236.103 ms <small>σ 5.928</small></td><td>8536.644 ms <small>σ 21.181</small></td><td>1</td></tr>
 <tr><td>account_ledger</td><td>mule-o2</td><td>ok</td><td>2000.719 ms <small>σ 7.842</small></td><td>4014.738 ms <small>σ 6.662</small></td><td>0.472</td></tr>

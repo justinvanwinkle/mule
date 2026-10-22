@@ -31,7 +31,7 @@ measurement of every later commit. The report retains individual samples,
 commands, input sizes, source and binary hashes, and revision metadata. The run
 used four concurrent scenario jobs, so timings may include contention.
 
-`assets/kernel.svg`, `assets/process.svg`, and `assets/index.html` come from the
+`assets/kernel.svg`, `assets/process.svg`, `assets/trend.svg`, and `assets/index.html` come from the
 same renderer as ordinary performance runs. The README embeds `kernel.svg`.
 To regenerate their appearance without running benchmarks or changing the data:
 

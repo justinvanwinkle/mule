@@ -7,23 +7,31 @@ the trend survives the ignored per-run result directories.
 """
 
 import json
+import math
 
 SCHEMA_VERSION = 3
 
 
 def _milliseconds(row, field):
-    return row["summary"][field]["median"] * 1000 if row["status"] == "ok" else None
+    if row.get("status") != "ok":
+        return None
+    seconds = row.get("summary", {}).get(field, {}).get("median")
+    if seconds is None or not math.isfinite(seconds) or seconds < 0:
+        return None
+    value = seconds * 1000
+    return value if math.isfinite(value) else None
 
 
 def entry(report):
     """The history line for ``report``, the full ``results.json`` object."""
+    options = report.get("options", {})
     return {
         "schema_version": SCHEMA_VERSION,
         "created_utc": report["created_utc"],
         "platform": report["platform"],
         "baseline": report["baseline"],
         "options": {
-            key: report["options"][key]
+            key: options.get(key)
             for key in (
                 "samples",
                 "size",

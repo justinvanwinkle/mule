@@ -555,10 +555,11 @@ def main():
             entry["error"] = {"status": "build_failed", "error": str(error)}
             build.update(entry["error"])
 
+    prior_runs = history.load(args.history)
     if build_tasks:
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
             list(pool.map(_run_build, build_tasks))
-    write_report(report, output)
+    write_report(report, output, history_runs=prior_runs)
 
     def _measure_case(case):
         entries = entries_by_case[case]
@@ -615,7 +616,7 @@ def main():
             last["status"],
             last["error"],
         )
-    write_report(report, output)
+    write_report(report, output, history_runs=prior_runs)
     print(output / "index.html")
     if complete:
         record_accepted_report(report, args.history, ROOT)

@@ -2,7 +2,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from perf.suite.perfutils.report import chart, dashboard, update_site
+from perf.suite.perfutils.report import chart, dashboard, trend_chart, update_site
 
 NS = {"svg": "http://www.w3.org/2000/svg"}
 
@@ -199,7 +199,9 @@ def test_update_site_writes_assets_and_updates_captions(tmp_path):
     assert (tmp_path / "docs/assets/results.json").is_file()
     assert (tmp_path / "docs/assets/kernel.svg").is_file()
     assert (tmp_path / "docs/assets/process.svg").is_file()
+    assert (tmp_path / "docs/assets/trend.svg").is_file()
     assert (tmp_path / "docs/assets/index.html").is_file()
+    assert "trend.svg" in (tmp_path / "docs/assets/index.html").read_text()
     assert "October 19, 2026 · " in (tmp_path / "docs/index.html").read_text()
     assert "<code>ae24f3227</code>" in (tmp_path / "docs/index.html").read_text()
     assert "20261019T173501.070793Z" in (tmp_path / "docs/README.md").read_text()
@@ -303,3 +305,78 @@ def test_paired_typed_and_untyped_scenarios_render_together_in_charts_dashboard_
     )
     filtered = history.table(runs, cases=["float_nbody"])
     assert "float_nbody" in filtered[1] and "float_nbody_typed" in filtered[1]
+
+
+def test_trend_chart_plots_historical_series_and_pairs_typed_variants():
+    from perf.suite.perfutils import history
+
+    run1 = report((0.020, 0.080, 0.010))
+    run1["created_utc"] = "20261020T100000.000000Z"
+    run2 = report((0.020, 0.040, 0.010))
+    run2["created_utc"] = "20261021T100000.000000Z"
+    run3 = report((0.020, 0.025, 0.010))
+    run3["created_utc"] = "20261022T100000.000000Z"
+    history_runs = [history.entry(run1), history.entry(run2)]
+
+    root = ET.fromstring(trend_chart(run3, history_runs))
+    assert "3 recorded runs" in " ".join(root.itertext())
+    panel = root.find(".//svg:g[@data-case='scenario_one']", NS)
+    assert panel is not None
+    lines = panel.findall(".//svg:polyline[@data-runtime='mule-o2']", NS)
+    assert len(lines) == 1
+    points = panel.findall(".//svg:circle[@data-runtime='mule-o2']", NS)
+    assert [float(pt.attrib["data-ms"]) for pt in points] == [80.0, 40.0, 25.0]
+    cxs = [float(pt.attrib["cx"]) for pt in points]
+    cys = [float(pt.attrib["cy"]) for pt in points]
+    assert cxs[0] < cxs[1] < cxs[2]
+    # Lower elapsed time is closer to the zero baseline (larger y coordinate in SVG).
+    assert cys[0] < cys[1] < cys[2]
+
+    # Paired untyped and typed scenarios share a single trend panel.
+    for r, typed_mule in ((run1, 0.030), (run2, 0.015), (run3, 0.012)):
+        for row in list(r["rows"]):
+            row["case"] = "float_nbody"
+        r["rows"].append(
+            {
+                "case": "float_nbody_typed",
+                "runtime": "mule-o2",
+                "status": "ok",
+                "summary": {"kernel_seconds": {"median": typed_mule}},
+                "time_ratio": {"kernel_seconds": typed_mule / 0.020},
+            }
+        )
+    paired_root = ET.fromstring(
+        trend_chart(run3, [history.entry(run1), history.entry(run2)])
+    )
+    paired_panels = paired_root.findall(".//svg:g[@data-case]", NS)
+    assert len(paired_panels) == 1
+    assert paired_panels[0].attrib["data-case"] == "float_nbody"
+    assert paired_panels[0].attrib["data-typed-case"] == "float_nbody_typed"
+    untyped_line = paired_panels[0].find(
+        ".//svg:polyline[@data-runtime='mule-o2'][@data-variant='untyped']", NS
+    )
+    typed_line = paired_panels[0].find(
+        ".//svg:polyline[@data-runtime='mule-o2'][@data-variant='typed']", NS
+    )
+    assert untyped_line is not None
+    assert typed_line is not None
+    assert "stroke-dasharray" in typed_line.attrib
+
+
+def test_trend_chart_breaks_lines_on_failed_runs():
+    from perf.suite.perfutils import history
+
+    run1 = report((0.020, 0.060, 0.010))
+    run1["created_utc"] = "20261020T100000.000000Z"
+    run2 = report((0.020, 0.050, 0.010))
+    run2["created_utc"] = "20261021T100000.000000Z"
+    run2["rows"][1]["status"] = "timeout"
+    run3 = report((0.020, 0.030, 0.010))
+    run3["created_utc"] = "20261022T100000.000000Z"
+
+    root = ET.fromstring(trend_chart(run3, [history.entry(run1), history.entry(run2)]))
+    panel = root.find(".//svg:g[@data-case='scenario_one']", NS)
+    points = panel.findall(".//svg:circle[@data-runtime='mule-o2']", NS)
+    # Failed middle run has no point and breaks the polyline so it does not bridge across failure.
+    assert [float(pt.attrib["data-ms"]) for pt in points] == [60.0, 30.0]
+    assert panel.findall(".//svg:polyline[@data-runtime='mule-o2']", NS) == []

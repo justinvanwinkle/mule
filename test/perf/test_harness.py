@@ -255,7 +255,7 @@ def test_harness_records_bad_results_and_continues(tmp_path):
             )
             assert "provisional" in line
     assert "incorrect_result" in (output / "index.html").read_text()
-    for name in ("kernel.svg", "process.svg"):
+    for name in ("kernel.svg", "process.svg", "trend.svg"):
         svg = (output / name).read_text()
         assert svg.startswith('<svg xmlns="http://www.w3.org/2000/svg"')
         assert svg.endswith("</svg>")

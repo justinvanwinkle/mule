@@ -5,6 +5,7 @@ import json
 import math
 import re
 from datetime import datetime
+from pathlib import Path
 
 from . import history
 
@@ -289,6 +290,305 @@ def chart(report, metric):
     return "\n".join(svg)
 
 
+def _history_milliseconds(result, metric):
+    if result is None or result.get("status") != "ok":
+        return None
+    value = result.get(metric)
+    if value is None or not math.isfinite(value) or value < 0:
+        return None
+    return value
+
+
+def _trend_runs(report, history_runs=None):
+    runs = [dict(run) for run in (history_runs or ())]
+    if report.get("rows"):
+        current = history.entry(report)
+        existing = next(
+            (
+                i
+                for i, run in enumerate(runs)
+                if run.get("created_utc") == current["created_utc"]
+            ),
+            None,
+        )
+        if existing is not None:
+            runs[existing] = current
+        else:
+            runs.append(current)
+    return runs
+
+
+def _short_run_label(run):
+    stamp = str(run.get("created_utc", ""))
+    try:
+        dt = datetime.strptime(stamp, "%Y%m%dT%H%M%S.%fZ")
+        date_part = f"{dt.strftime('%b')} {dt.day}"
+    except ValueError:
+        date_part = stamp[:10] or "run"
+    for runtime in run.get("runtimes", ()):
+        if runtime.get("name", "").lower().startswith("mule") and runtime.get("commit"):
+            return f"{date_part} ({runtime['commit'][:7]})"
+    for runtime in run.get("runtimes", ()):
+        if runtime.get("commit"):
+            return f"{date_part} ({runtime['commit'][:7]})"
+    return date_part
+
+
+def trend_chart(report, history_runs=None, metric="kernel_ms"):
+    """Plot median elapsed milliseconds across recorded runs for each scenario."""
+    runs = _trend_runs(report, history_runs)
+    runtimes = [runtime["name"] for runtime in report.get("runtimes", ())]
+    groups = {}
+    for row in report.get("rows", ()):
+        groups.setdefault(row["case"], {})[row["runtime"]] = row
+        if row["runtime"] not in runtimes:
+            runtimes.append(row["runtime"])
+    if not groups:
+        for run in runs:
+            for res in run.get("results", ()):
+                groups.setdefault(res["case"], {})
+                if res["runtime"] not in runtimes:
+                    runtimes.append(res["runtime"])
+    if report.get("baseline") in runtimes:
+        runtimes.remove(report["baseline"])
+        runtimes.insert(0, report["baseline"])
+    colors = {
+        name: "#788582"
+        if name == report.get("baseline")
+        else COLORS[0]
+        if name.lower().startswith("mule")
+        else COLORS[1]
+        if name.lower().startswith("sbcl")
+        else COLORS[2 + index % 2]
+        for index, name in enumerate(runtimes)
+    }
+    panels = _paired_panels(groups)
+    has_paired = any(typed_rows is not None for _, _, _, typed_rows in panels)
+    panel_width = max(
+        640 if has_paired else 532,
+        len(runtimes) * (190 if has_paired else 140) + 88,
+        max((len(case) for case in groups), default=20) * 10 + 48,
+    )
+    panel_height = 340
+    gap, margin, top = 24, 28, 196
+    width = 2 * panel_width + gap + 2 * margin
+    height = top + max(1, math.ceil(len(panels) / 2)) * (panel_height + gap) + 40
+    title = (
+        "Kernel elapsed time trend"
+        if metric == "kernel_ms"
+        else "Whole-process elapsed time trend"
+    )
+    stamp = report.get("created_utc", "")
+    samples = report.get("options", {}).get("samples", "?")
+    run_count_word = "run" if len(runs) == 1 else "runs"
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title description">',
+        f'<title id="title">{title}: median milliseconds over recorded runs by scenario and runtime</title>',
+        '<desc id="description">Trend lines and points show median elapsed time in milliseconds across recorded runs from oldest (left) to newest (right). Lower means faster. Every panel uses an independent linear scale starting at zero. Failed or unavailable results have no point.</desc>',
+        f'<rect width="{width}" height="{height}" fill="#faf8f3"/>',
+        '<g font-family="system-ui,sans-serif" fill="#202b2b" font-size="14">',
+        '<text x="36" y="35" font-size="11" font-weight="700" letter-spacing="2" fill="#c14c32">MULE / PERFORMANCE TREND</text>',
+        f'<text x="36" y="76" font-size="30" font-weight="650">{title}</text>',
+        f'<text x="36" y="105" fill="#596564">{html.escape(stamp)} · {len(runs)} recorded {run_count_word} · {html.escape(str(samples))} samples per runtime and scenario</text>',
+        '<text x="36" y="135" font-weight="600">Lower points are faster · Linear axes start at zero · Oldest run on left, latest on right</text>',
+    ]
+    for r_idx, runtime in enumerate(runtimes):
+        lx = 36 + r_idx * 170
+        color = colors[runtime]
+        svg.extend(
+            [
+                f'<line x1="{lx}" y1="160" x2="{lx + 24}" y2="160" stroke="{color}" stroke-width="2.5"/>',
+                f'<circle cx="{lx + 12}" cy="160" r="3.5" fill="{color}"/>',
+                f'<text x="{lx + 32}" y="164" font-size="13" font-weight="600">{html.escape(_runtime_label(runtime))}</text>',
+            ]
+        )
+    for index, (case, _, typed_case, typed_rows) in enumerate(panels):
+        px = margin + (index % 2) * (panel_width + gap)
+        py = top + (index // 2) * (panel_height + gap)
+        left, right = px + 70, px + panel_width - 24
+        zero, plot_height = py + 260, 160
+        target_cases = {case} if typed_case is None else {case, typed_case}
+        panel_runs = [
+            run
+            for run in runs
+            if any(
+                res.get("case") in target_cases and res.get("runtime") in runtimes
+                for res in run.get("results", ())
+            )
+        ]
+        if not panel_runs and runs:
+            panel_runs = [runs[-1]]
+        values = [
+            _history_milliseconds(res, metric)
+            for run in panel_runs
+            for res in run.get("results", ())
+            if res.get("case") in target_cases and res.get("runtime") in runtimes
+        ]
+        maximum = max((value for value in values if value is not None), default=0)
+        upper = maximum * 1.2 if maximum else 1.0
+        if not math.isfinite(upper):
+            upper = maximum
+        typed_attr = (
+            f' data-typed-case="{html.escape(typed_case)}"'
+            if typed_case is not None
+            else ""
+        )
+        n_runs = len(panel_runs)
+        runs_badge = f"{n_runs} RUN" if n_runs == 1 else f"{n_runs} RUNS"
+        subtitle = (
+            f"UNTYPED VS TYPED · MILLISECONDS · {runs_badge} · INDEPENDENT SCALE"
+            if typed_rows is not None
+            else f"MILLISECONDS · {runs_badge} · INDEPENDENT SCALE"
+        )
+        svg.extend(
+            [
+                f'<g data-case="{html.escape(case)}"{typed_attr}>',
+                f'<rect x="{px}" y="{py}" width="{panel_width}" height="{panel_height}" fill="#fffdf8" stroke="#dedfd8"/>',
+                f'<text x="{px + 22}" y="{py + 34}" font-size="18" font-weight="650">{html.escape(case.replace("_", " "))}</text>',
+                f'<text x="{px + 22}" y="{py + 58}" font-size="11" fill="#596564">{subtitle}</text>',
+            ]
+        )
+        if typed_rows is not None:
+            svg.extend(
+                [
+                    f'<line x1="{right - 166}" y1="{py + 28}" x2="{right - 144}" y2="{py + 28}" stroke="#596564" stroke-width="2"/>',
+                    f'<circle cx="{right - 155}" cy="{py + 28}" r="3" fill="#596564"/>',
+                    f'<text x="{right - 138}" y="{py + 32}" font-size="11" fill="#596564">untyped</text>',
+                    f'<line x1="{right - 82}" y1="{py + 28}" x2="{right - 60}" y2="{py + 28}" stroke="#596564" stroke-width="2" stroke-dasharray="4,3"/>',
+                    f'<circle cx="{right - 71}" cy="{py + 28}" r="3" fill="#fffdf8" stroke="#596564" stroke-width="1.5"/>',
+                    f'<text x="{right - 54}" y="{py + 32}" font-size="11" fill="#596564">typed</text>',
+                ]
+            )
+        for tick in range(5):
+            value = upper * (tick / 4)
+            y = zero - plot_height * (tick / 4)
+            svg.append(
+                f'<line x1="{left}" y1="{y:.2f}" x2="{right}" y2="{y:.2f}" stroke="#e2e3dc"/>'
+            )
+            svg.append(
+                f'<text x="{left - 10}" y="{y + 4:.2f}" font-size="11" fill="#596564" text-anchor="end">{value:.3g}</text>'
+            )
+        svg.append(
+            f'<line data-zero-y="{zero}" x1="{left}" y1="{zero}" x2="{right}" y2="{zero}" stroke="#788582"/>'
+        )
+        xs = [
+            (left + right) / 2
+            if n_runs <= 1
+            else left + (right - left) * (idx / (n_runs - 1))
+            for idx in range(n_runs)
+        ]
+        if n_runs == 1:
+            svg.append(
+                f'<text x="{xs[0]:.2f}" y="{zero + 16}" text-anchor="middle" font-size="10" fill="#596564">{html.escape(_short_run_label(panel_runs[0]))}</text>'
+            )
+        elif n_runs >= 2:
+            svg.append(
+                f'<text x="{left}" y="{zero + 16}" text-anchor="start" font-size="10" fill="#596564">{html.escape(_short_run_label(panel_runs[0]))}</text>'
+            )
+            if n_runs >= 3:
+                mid = n_runs // 2
+                svg.append(
+                    f'<text x="{xs[mid]:.2f}" y="{zero + 16}" text-anchor="middle" font-size="10" fill="#596564">{html.escape(_short_run_label(panel_runs[mid]))}</text>'
+                )
+            svg.append(
+                f'<text x="{right}" y="{zero + 16}" text-anchor="end" font-size="10" fill="#596564">{html.escape(_short_run_label(panel_runs[-1]))}</text>'
+            )
+        variants = (
+            (("untyped", case, False),)
+            if typed_case is None
+            else (("untyped", case, False), ("typed", typed_case, True))
+        )
+        for runtime in runtimes:
+            color = colors[runtime]
+            for variant, vcase, is_typed in variants:
+                v_attrs = (
+                    f' data-variant="{variant}" data-case="{html.escape(vcase)}"'
+                    if typed_case is not None
+                    else ""
+                )
+                dash = ' stroke-dasharray="5,4"' if is_typed else ""
+                segments = []
+                current_segment = []
+                circles = []
+                for r_idx, run in enumerate(panel_runs):
+                    res = next(
+                        (
+                            r
+                            for r in run.get("results", ())
+                            if r.get("case") == vcase and r.get("runtime") == runtime
+                        ),
+                        None,
+                    )
+                    val = _history_milliseconds(res, metric)
+                    if val is None:
+                        if len(current_segment) >= 2:
+                            segments.append(current_segment)
+                        current_segment = []
+                    else:
+                        x = xs[r_idx]
+                        y = zero - (val / upper) * plot_height
+                        current_segment.append(f"{x:.2f},{y:.2f}")
+                        run_stamp = str(run.get("created_utc", ""))
+                        circle_style = (
+                            f'fill="#fffdf8" stroke="{color}" stroke-width="1.8"'
+                            if is_typed
+                            else f'fill="{color}"'
+                        )
+                        v_title = f" ({variant})" if typed_case is not None else ""
+                        circles.append(
+                            f'<circle data-runtime="{html.escape(runtime)}"{v_attrs} data-run="{html.escape(run_stamp)}" data-ms="{val:.17g}" cx="{x:.2f}" cy="{y:.2f}" r="3.5" {circle_style}><title>{html.escape(runtime)}{v_title} @ {html.escape(run_stamp)}: {val:.6g} ms</title></circle>'
+                        )
+                if len(current_segment) >= 2:
+                    segments.append(current_segment)
+                for seg in segments:
+                    pts = " ".join(seg)
+                    svg.append(
+                        f'<polyline data-runtime="{html.escape(runtime)}"{v_attrs} fill="none" stroke="{color}" stroke-width="2"{dash} points="{pts}"/>'
+                    )
+                svg.extend(circles)
+        lane = (right - left) / max(1, len(runtimes))
+        latest_run = panel_runs[-1] if panel_runs else None
+        for runtime_index, runtime in enumerate(runtimes):
+            center = left + lane * (runtime_index + 0.5)
+            parts = []
+            for _, vcase, _ in variants:
+                res = (
+                    next(
+                        (
+                            r
+                            for r in latest_run.get("results", ())
+                            if r.get("case") == vcase and r.get("runtime") == runtime
+                        ),
+                        None,
+                    )
+                    if latest_run is not None
+                    else None
+                )
+                val = _history_milliseconds(res, metric)
+                if val is not None:
+                    parts.append(f"{val:.6g} ms")
+                elif res is None:
+                    parts.append("missing")
+                elif res.get("status") != "ok":
+                    parts.append(str(res["status"]))
+                else:
+                    parts.append("not available")
+            summary_label = f"{_runtime_label(runtime)}: {' / '.join(parts)}"
+            svg.append(
+                f'<text data-runtime="{html.escape(runtime)}" x="{center:.2f}" y="{zero + 38}" text-anchor="middle" font-size="12" font-weight="600">{html.escape(summary_label)}</text>'
+            )
+        svg.append("</g>")
+    if not panels:
+        svg.append(
+            f'<text x="36" y="{top + 35}">No scenario measurements in this report.</text>'
+        )
+    svg.append(
+        f'<text x="36" y="{height - 18}" font-size="11" fill="#596564">Compare runtimes within a panel, not heights across panels. Failures are not timings.</text>'
+    )
+    svg.append("</g></svg>")
+    return "\n".join(svg)
+
+
 def dashboard(report):
     rows = []
     for row, paired_base, variant, untyped_row in _ordered_dashboard_rows(report):
@@ -400,7 +700,7 @@ th{{background:#eeeee6}}small{{display:block;color:#596564}}pre{{font:12px/1.6 u
 </style></head><body><main><header><div class="eyebrow">MULE / PERFORMANCE LABORATORY</div><h1>Measure the work.<br>Keep the evidence.</h1>
 <p>{platform}<br>{stamp}</p>
 <span class="pill">Baseline: {baseline}</span><span class="pill">{successful} validated / {len(report["rows"])} comparisons</span>
-<p><a href="results.json">Raw results &amp; provenance</a> · <a href="kernel.svg">Kernel SVG</a> · <a href="process.svg">Process SVG</a></p></header>
+<p><a href="results.json">Raw results &amp; provenance</a> · <a href="kernel.svg">Kernel SVG</a> · <a href="process.svg">Process SVG</a> · <a href="trend.svg">Trend SVG</a></p></header>
 <section aria-labelledby="reading"><h2 id="reading">How to read this report</h2><p>Vertical bars show median elapsed time in milliseconds for the same scenario and input. Shorter bars mean faster execution.
 Each scenario has an independent linear vertical scale starting at zero. Compare runtimes within a panel, not bar heights across panels.
 The baseline appears alongside every other runtime. Unavailable or failed results have no bar.
@@ -411,16 +711,39 @@ Short kernels can be dominated by measurement overhead; increase workload size b
 {cpu_evidence}
 <section aria-label="Kernel comparison"><figure><div class="chart" role="region" aria-label="Scrollable kernel chart" tabindex="0"><img src="kernel.svg" alt="Vertical bars compare median kernel milliseconds for each runtime within each scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Kernel elapsed medians. Preparation and compilation are excluded. Each scenario has its own scale.</figcaption></figure></section>
 <section aria-label="Whole-process comparison"><figure><div class="chart" role="region" aria-label="Scrollable whole-process chart" tabindex="0"><img src="process.svg" alt="Vertical bars compare median whole-process milliseconds by runtime and scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Whole-process elapsed medians. Includes startup and setup, not compilation. Each scenario has its own scale.</figcaption></figure></section>
+<section aria-label="Historical trend"><figure><div class="chart" role="region" aria-label="Scrollable trend chart" tabindex="0"><img src="trend.svg" alt="Trend lines and points compare median kernel milliseconds over recorded runs for each runtime within each scenario. Lower is faster. Independent zero-based linear scales."></div><figcaption>Historical kernel elapsed medians across recorded runs (oldest on left, latest on right). Each scenario has its own scale.</figcaption></figure></section>
 <section aria-labelledby="measurements"><h2 id="measurements">Every measurement</h2><div class="table" role="region" aria-label="Scrollable results table" tabindex="0"><table><thead><tr><th scope="col">Scenario</th><th scope="col">Runtime</th><th scope="col">Status</th>
 <th scope="col">Kernel median</th><th scope="col">Process median</th><th scope="col">Kernel runtime / {baseline}</th></tr></thead><tbody>{content}</tbody></table></div></section>
 <section aria-labelledby="provenance"><h2 id="provenance">Reproduce, then compare</h2><details><summary>Platform, run options, runtime commands, and revisions</summary><pre>{html.escape(json.dumps(context, indent=2))}</pre>{provenance}</details><p>Raw results retain samples, hashes, commands, and build diagnostics. A commit plus a tracked-diff digest identifies the measured working tree, not necessarily a clean release.</p></section>
 <footer>Generated locally by Mule’s dependency-free performance harness. No external fonts, scripts, or services.</footer></main></body></html>"""
 
 
-def write_report(report, directory):
+def _resolve_history_runs(report, directory, history_runs):
+    if history_runs is not None:
+        return history_runs
+    configured = report.get("options", {}).get("history")
+    if configured:
+        path = Path(configured)
+        if path.is_file():
+            return history.load(path)
+    resolved = directory.resolve()
+    for candidate in (
+        resolved.parents[1] / "perf/history.jsonl"
+        if len(resolved.parents) > 1
+        else None,
+        resolved.parents[1] / "history.jsonl" if len(resolved.parents) > 1 else None,
+    ):
+        if candidate is not None and candidate.is_file():
+            return history.load(candidate)
+    return []
+
+
+def write_report(report, directory, history_runs=None):
+    resolved_runs = _resolve_history_runs(report, directory, history_runs)
     (directory / "results.json").write_text(json.dumps(report, indent=2) + "\n")
     (directory / "kernel.svg").write_text(chart(report, "kernel_seconds"))
     (directory / "process.svg").write_text(chart(report, "process_seconds"))
+    (directory / "trend.svg").write_text(trend_chart(report, resolved_runs))
     (directory / "index.html").write_text(dashboard(report))
 
 
@@ -436,11 +759,13 @@ def _measured_revision(report):
     return None
 
 
-def update_site(report, root):
+def update_site(report, root, history_runs=None):
     """Update the local GitHub Pages site assets and dated snapshot captions."""
+    if history_runs is None:
+        history_runs = history.load(root / "perf/history.jsonl")
     assets = root / "docs/assets"
     if assets.is_dir():
-        write_report(report, assets)
+        write_report(report, assets, history_runs=history_runs)
     stamp = report["created_utc"]
     dt = datetime.strptime(stamp, "%Y%m%dT%H%M%S.%fZ")
     month_day = f"{dt.strftime('%B')} {dt.day}"

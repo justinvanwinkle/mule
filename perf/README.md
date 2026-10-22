@@ -184,8 +184,8 @@ the baseline's elapsed time. Mule / CPython and Mule / SBCL use the same directi
 A `+` after the commit means the tree had uncommitted tracked changes. Reports include raw samples, medians,
 variation, commands, source/helper/binary hashes, build diagnostics, platform,
 affinity, runtime version when configured, and checkout revision/diff identity.
-`index.html` is an offline dashboard with exportable `kernel.svg` and
-`process.svg`; `results.json` contains the underlying measurements.
+`index.html` is an offline dashboard with exportable `kernel.svg`,
+`process.svg`, and `trend.svg`; `results.json` contains the underlying measurements.
 
 Kernel time excludes preparation, warmups, result validation, and printing.
 Whole-process time includes startup, setup, warmups, measured calls, and output;
