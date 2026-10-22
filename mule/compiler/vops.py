@@ -17,11 +17,12 @@ functions shared by the object templates are emitted once per module from
 from __future__ import annotations
 
 import struct
+from enum import IntEnum
 
 from mule import ast
 
 from . import fndb
-from .ctype import REAL, UNKNOWN
+from .ctype import REAL, UNKNOWN, ValueTypeVisitor
 from .vmdef import define_vop
 from .vop import (
     BOOLEAN,
@@ -364,6 +365,9 @@ def discard(gen, vop):
 @define_vop("type-check", args=(None,), results=(None,))
 def type_check(gen, vop):
     operand, result = vop.args[0], vop.results[0]
+    if gen.is_unpacked_result_check(vop):
+        gen.publish(result, gen.take(operand))
+        return
     check = vop.codegen_info
     if operand.tn.sc not in OBJECT:
         gen.store(result, gen.take(operand))
@@ -391,6 +395,20 @@ class _ContractAssertion:
 
     def visit_Contract(self, contract):
         raise TypeError(f"unsupported annotation contract {contract}")
+
+    def visit_InferredReturnContract(self, contract):
+        valid = contract.fact.accept(_InferredResultPredicate(self, self.value))
+        self.finish_inferred_check(contract, valid)
+
+    def finish_inferred_check(self, contract, valid):
+        accepted = self.gen.fresh("return.checked")[1:]
+        rejected = self.gen.fresh("return.incompatible")[1:]
+        self.gen.line(f"br i1 {valid}, label %{accepted}, label %{rejected}")
+        self.gen.lines.append(rejected + ":")
+        expected = self.gen.module.text(f"{contract.display_name}: {contract.fact}")
+        self.gen.line(f"call i32 @mule_inferred_return_error(ptr {expected})")
+        self.gen.propagate()
+        self.gen.lines.append(accepted + ":")
 
     def visit_IntegerContract(self, contract):
         fact = contract.fact
@@ -450,6 +468,200 @@ class _ContractAssertion:
         gen.lines.append(done + ":")
 
 
+class _UnpackedReturnShape(ValueTypeVisitor):
+    def __init__(self, arity):
+        self.arity = arity
+
+    def visit_ValueType(self, fact):
+        return False
+
+    def visit_TupleType(self, fact):
+        return (fact.arity is None or fact.arity == self.arity) and (
+            fact.elements is None or len(fact.elements) == self.arity
+        )
+
+
+def checks_unpacked_return(contract, arity):
+    return contract.fact.accept(_UnpackedReturnShape(arity))
+
+
+def assert_unpacked_return(gen, contract, slots, arity):
+    assertion = _ContractAssertion(gen, slots)
+    predicate = contract.fact.accept(_UnpackedResultPredicate(assertion, arity))
+    assertion.finish_inferred_check(contract, predicate)
+
+
+class _UnpackedResultPredicate(ValueTypeVisitor):
+    def __init__(self, assertion, arity):
+        self.assertion = assertion
+        self.arity = arity
+
+    def visit_ValueType(self, fact):
+        raise TypeError(f"unsupported unpacked return contract {fact!r}")
+
+    def visit_TupleType(self, fact):
+        if not fact.elements:
+            return "true"
+        gen = self.assertion.gen
+        predicates = []
+        for index, element in enumerate(fact.elements):
+            slot = gen.operation(
+                f"getelementptr ptr, ptr {self.assertion.value}, i64 {index}"
+            )
+            value = gen.operation(f"load ptr, ptr {slot}")
+            predicates.append(
+                element.accept(_InferredResultPredicate(self.assertion, value))
+            )
+        return _InferredResultPredicate(self.assertion, "null").combine(
+            "and", predicates, "true"
+        )
+
+
+class _ReturnValueKind(IntEnum):
+    """Physical borrowed-value categories in runtime/annotations.rs."""
+
+    INTEGER = 1
+    BOOLEAN = 2
+    FLOAT = 3
+    NONE = 4
+    TEXT = 5
+    BYTES = 6
+    TUPLE = 7
+    LIST = 8
+    DICT = 9
+    CLASS = 10
+    FUNCTION = 11
+
+
+class _InferredResultPredicate(ValueTypeVisitor):
+    """Check normalized return facts without acquiring the value or its fields."""
+
+    def __init__(self, assertion, value):
+        self.assertion = assertion
+        self.gen = assertion.gen
+        self.value = value
+
+    def visit_ValueType(self, fact):
+        raise TypeError(f"unsupported inferred return contract {fact!r}")
+
+    def visit_UnknownType(self, fact):
+        return "true"
+
+    def kind(self, expected):
+        actual = self.gen.operation(f"call i32 @mule_value_kind(ptr {self.value})")
+        return self.gen.operation(f"icmp eq i32 {actual}, {int(expected)}")
+
+    def combine(self, operator, values, identity):
+        result = identity
+        for value in values:
+            result = self.gen.operation(f"{operator} i1 {result}, {value}")
+        return result
+
+    def visit_IntegerType(self, fact):
+        if fact.is_fixnum:
+            bits = self.gen.operation(f"ptrtoint ptr {self.value} to i64")
+            tag = self.gen.operation(f"and i64 {bits}, 1")
+            valid = self.gen.operation(f"icmp ne i64 {tag}, 0")
+            decoded = self.gen.operation(f"ashr i64 {bits}, 1")
+            lower = self.gen.operation(f"icmp sge i64 {decoded}, {fact.minimum}")
+            upper = self.gen.operation(f"icmp sle i64 {decoded}, {fact.maximum}")
+            return self.combine("and", (valid, lower, upper), "true")
+        minimum = self.assertion.integer_bound(fact.minimum)
+        maximum = self.assertion.integer_bound(fact.maximum)
+        valid = self.gen.operation(
+            f"call i32 @mule_integer_in_bounds(ptr {self.value}, ptr {minimum}, ptr {maximum})"
+        )
+        return self.gen.operation(f"icmp ne i32 {valid}, 0")
+
+    def visit_PythonIntegerType(self, fact):
+        integer = self.visit_IntegerType(fact)
+        false = self.gen.operation(f"icmp eq ptr {self.value}, @mule.false")
+        true = self.gen.operation(f"icmp eq ptr {self.value}, @mule.true")
+        choices = [integer]
+        if (fact.minimum is None or fact.minimum <= 0) and (
+            fact.maximum is None or fact.maximum >= 0
+        ):
+            choices.append(false)
+        if (fact.minimum is None or fact.minimum <= 1) and (
+            fact.maximum is None or fact.maximum >= 1
+        ):
+            choices.append(true)
+        return self.combine("or", choices, "false")
+
+    def visit_BooleanType(self, fact):
+        choices = []
+        if (fact.minimum is None or fact.minimum <= 0) and (
+            fact.maximum is None or fact.maximum >= 0
+        ):
+            choices.append(self.gen.operation(f"icmp eq ptr {self.value}, @mule.false"))
+        if (fact.minimum is None or fact.minimum <= 1) and (
+            fact.maximum is None or fact.maximum >= 1
+        ):
+            choices.append(self.gen.operation(f"icmp eq ptr {self.value}, @mule.true"))
+        return self.combine("or", choices, "false")
+
+    def visit_NoneType(self, fact):
+        return self.gen.operation(f"icmp eq ptr {self.value}, @mule.none")
+
+    def visit_FloatType(self, fact):
+        return self.kind(_ReturnValueKind.FLOAT)
+
+    def visit_TextType(self, fact):
+        return self.kind(_ReturnValueKind.TEXT)
+
+    def visit_BytesType(self, fact):
+        return self.kind(_ReturnValueKind.BYTES)
+
+    def visit_ListType(self, fact):
+        return self.kind(_ReturnValueKind.LIST)
+
+    def visit_DictType(self, fact):
+        return self.kind(_ReturnValueKind.DICT)
+
+    def visit_ClassType(self, fact):
+        return self.kind(_ReturnValueKind.CLASS)
+
+    def visit_FunctionType(self, fact):
+        return self.kind(_ReturnValueKind.FUNCTION)
+
+    def visit_UnionType(self, fact):
+        return self.combine(
+            "or", (member.accept(self) for member in fact.members), "false"
+        )
+
+    def visit_TupleType(self, fact):
+        arity = fact.arity
+        if arity is None and fact.elements is not None:
+            arity = len(fact.elements)
+        if arity is None:
+            valid = self.kind(_ReturnValueKind.TUPLE)
+        else:
+            matched = self.gen.operation(
+                f"call i32 @mule_tuple_shape_matches(ptr {self.value}, i64 {arity})"
+            )
+            valid = self.gen.operation(f"icmp ne i32 {matched}, 0")
+        if not fact.elements:
+            return valid
+        source = self.gen.current_block()
+        fields = self.gen.fresh("return.tuple.fields")[1:]
+        done = self.gen.fresh("return.tuple.checked")[1:]
+        self.gen.line(f"br i1 {valid}, label %{fields}, label %{done}")
+        self.gen.lines.append(fields + ":")
+        predicates = []
+        for index, element in enumerate(fact.elements):
+            item = self.gen.operation(
+                f"call ptr @mule_tuple_borrow_item(ptr {self.value}, i64 {index})"
+            )
+            predicates.append(
+                element.accept(_InferredResultPredicate(self.assertion, item))
+            )
+        checked = self.combine("and", predicates, "true")
+        last = self.gen.current_block()
+        self.gen.line(f"br label %{done}")
+        self.gen.lines.append(done + ":")
+        return self.gen.operation(f"phi i1 [false, %{source}], [{checked}, %{last}]")
+
+
 @define_vop("branch", args=(None,))
 def branch(gen, vop):
     operand = vop.args[0]
@@ -484,7 +696,12 @@ def full_call(gen, vop):
     arguments = vop.args[1:]
     values = [gen.take(argument) for argument in arguments]
     value = gen.call(
-        site, function, arguments, values, unpack_arity=gen.unpacked_call_arity(vop)
+        site,
+        function,
+        arguments,
+        values,
+        unpack_arity=gen.unpacked_call_arity(vop),
+        result_contract=gen.unpacked_call_contract(vop),
     )
     gen.publish(result, value)
     gen.release(function)

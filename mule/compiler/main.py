@@ -58,6 +58,7 @@ from .node import (
     Set,
     linked,
 )
+from .return_checks import assert_inferred_results
 
 
 @dataclass(slots=True)
@@ -100,6 +101,8 @@ def ir1_phases(compilation: Compilation) -> None:
         while True:
             _ir1_optimize_phase_1(compilation)
             if ignore_contradicted_annotations(compilation):
+                continue
+            if assert_inferred_results(compilation):
                 continue
             facts = linked(compilation.facts, compilation, "facts")
             with phase("IR1 check generation", level=logging.DEBUG):

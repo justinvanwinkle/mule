@@ -3636,7 +3636,7 @@ def eval(expression, globals=None, locals=None, /):
     return _ast._eval(expression, globals, locals)
 
 
-_install_storage(list, tuple, str, bytes)
+_install_storage(list, tuple, str, bytes, dict)
 
 _install_builtin("open", open)
 _install_builtin("compile", compile)

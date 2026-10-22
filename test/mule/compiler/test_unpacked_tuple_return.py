@@ -60,11 +60,13 @@ def test_unpacked_tuple_return_execution_and_rebinding_fallback(tmp_path):
     completed = run_native(
         tmp_path,
         """
+from mule import optimize
 def step(label, index):
     if index == 0:
         return "zero", 1, index + 10
     return label + "!", index + 1, index * 2
 
+@optimize(debug=3)
 def run_once(s, i):
     tag, nxt, score = step(s, i)
     return f"{tag}:{nxt}:{score}"

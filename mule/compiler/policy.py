@@ -11,8 +11,8 @@ from dataclasses import dataclass
 @dataclass(frozen=True, slots=True)
 class OptimizationPolicy:
     speed: int = 3
-    # Safety 3 is exact Python. Safety 2, the default, also assumes builtins
-    # are never rebound once installed; safety 0 drops unbound-name checks.
+    # Safety 3 preserves dynamic builtin lookup. Safety 2, the default,
+    # assumes installed builtins stay bound; safety 0 drops unbound checks.
     safety: int = 2
     debug: int = 1
     # Compiler-private builtin implementations retain native debug metadata,
@@ -35,3 +35,8 @@ class OptimizationPolicy:
     @property
     def disables_optimization(self) -> bool:
         return self.speed == 0
+
+    @property
+    def infers_return_contracts(self) -> bool:
+        """Use checked definition-derived results unless optimization is disabled."""
+        return not self.disables_optimization and not self.prevents_inlining

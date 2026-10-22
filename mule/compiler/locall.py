@@ -454,16 +454,31 @@ class LambdaFacts:
     parameters: tuple[ValueType, ...] = ()
 
 
-def global_bindings(lambdas) -> dict[str, dict[str, Lambda]]:
+def global_bindings(
+    lambdas, *, unique_definitions=False
+) -> dict[str, dict[str, Lambda]]:
     """Per namespace, the lambda each global name is bound to by a store of a
     freshly created function object anywhere in the module."""
     targets = defaultdict(dict)
+    definitions = defaultdict(dict)
     for lambda_ in lambdas:
-        visitor = _GlobalFunctionStores(targets[lambda_.namespace])
+        visitor = _GlobalFunctionStores(
+            targets[lambda_.namespace],
+            definitions=definitions[lambda_.namespace] if unique_definitions else None,
+        )
         for block in lambda_.component.blocks():
             for node in block.nodes():
                 node.accept(visitor)
-    return targets
+    if not unique_definitions:
+        return targets
+    return {
+        namespace: {
+            name: next(iter(origins))
+            for name, origins in bindings.items()
+            if len(origins) == 1
+        }
+        for namespace, bindings in definitions.items()
+    }
 
 
 class _GlobalFunctionStores(NodeVisitor):
@@ -471,12 +486,16 @@ class _GlobalFunctionStores(NodeVisitor):
         self,
         namespace: dict[str, Lambda],
         counts: dict[str, int] | None = None,
+        definitions: dict[str, set[Lambda]] | None = None,
     ):
         self.namespace = namespace
         self.counts = counts
+        self.definitions = definitions
 
     def visit_Set(self, node):
-        node.var.accept(_GlobalFunctionStore(self.namespace, self.counts, node))
+        node.var.accept(
+            _GlobalFunctionStore(self.namespace, self.counts, node, self.definitions)
+        )
 
 
 class _GlobalFunctionStore(LeafVisitor):
@@ -488,10 +507,12 @@ class _GlobalFunctionStore(LeafVisitor):
         namespace: dict[str, Lambda],
         counts: dict[str, int] | None,
         store: Set,
+        definitions: dict[str, set[Lambda]] | None = None,
     ):
         self.namespace = namespace
         self.counts = counts
         self.store = store
+        self.definitions = definitions
 
     def visit_GlobalVar(self, leaf):
         if self.counts is not None:
@@ -501,6 +522,8 @@ class _GlobalFunctionStore(LeafVisitor):
         lambda_ = made_function(self.store.value.use())
         if lambda_ is not None:
             self.namespace[leaf.name] = lambda_
+            if self.definitions is not None and lambda_.source_name == leaf.name:
+                self.definitions.setdefault(leaf.name, set()).add(lambda_)
 
 
 _UNARY_CONSTANT_OPS = frozenset(

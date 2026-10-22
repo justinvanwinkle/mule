@@ -131,6 +131,7 @@ pub unsafe extern "C" fn mule_install_storage(
     tuple: Value,
     text: Value,
     bytes: Value,
+    dict: Value,
 ) -> Value {
     unsafe {
         use crate::classes::Builtin;
@@ -139,6 +140,7 @@ pub unsafe extern "C" fn mule_install_storage(
             (Builtin::Tuple, tuple),
             (Builtin::Str, text),
             (Builtin::Bytes, bytes),
+            (Builtin::Dict, dict),
         ] {
             crate::classes::register_builtin(kind, class);
         }

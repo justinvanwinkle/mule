@@ -742,6 +742,21 @@ def insert_cast_before(next_node: Node, lvar: Lvar, cast_factory) -> Lvar:
     return lvar
 
 
+def insert_cast_after(producer: ValuedNode, cast_factory) -> Lvar:
+    """Check a single producer immediately, before later operand side effects."""
+    result = linked(producer.lvar, producer, "asserted result")
+    aver(result.uses == [producer], "a result assertion requires one producer")
+    value = Lvar()
+    result.uses.remove(producer)
+    producer.lvar = None
+    add_lvar_use(producer, value)
+    cast = cast_factory(value)
+    value.dest = cast
+    insert_node_after(producer, cast)
+    use_lvar(cast, result)
+    return result
+
+
 def make_lexenv_cleanup(lexenv, kind: CleanupKind, **fields) -> Cleanup:
     cleanup = Cleanup(kind, **fields)
     cleanup.parent = lexenv.cleanup

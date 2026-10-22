@@ -278,9 +278,9 @@ impl ClassLayout {
     }
 }
 
-/// The classes of values that are not compiled-class instances, registered
-/// by the compiled builtins. `object` and `type` are the defaults for every
-/// class's base and metaclass.
+/// Original builtin class identities, registered by the compiled builtins.
+/// Storage routing and borrowed assertions share this registry. `object` and
+/// `type` are the defaults for every class's base and metaclass.
 #[derive(Clone, Copy)]
 pub enum Builtin {
     Object = 0,
@@ -299,8 +299,9 @@ pub enum Builtin {
     Module,
     Traceback,
     Frame,
+    Dict,
 }
-const BUILTIN_COUNT: usize = 16;
+const BUILTIN_COUNT: usize = 17;
 const BUILTIN_NAMES: [&str; BUILTIN_COUNT] = [
     "object",
     "type",
@@ -318,6 +319,7 @@ const BUILTIN_NAMES: [&str; BUILTIN_COUNT] = [
     "module",
     "traceback",
     "frame",
+    "dict",
 ];
 
 thread_local! {

@@ -53,6 +53,48 @@ Following SBCL's entry-point splitting in `src/compiler/locall.lisp`, Mule never
 
 At each guarded call site, code generation compares the caller's derived argument `ValueType`s against the target's published entry contexts (`observed`, `fixnum`, `general`) and calls the most specific matching entry directly.
 
+### Checked inferred results within a compilation unit
+
+Status: implemented for unambiguous same-unit named definitions and supported
+runtime-checkable result types.
+
+A named definition visible before the call in the same source unit can provide
+an untrusted inferred result contract. Ambiguous definitions do not establish a
+single inferred contract. Checked return declarations take precedence over
+definition-derived value ranges. Argument constants are widened to their type
+domains rather than fixing a contract to one observed argument value.
+The call still uses the current global
+binding. An IR1 `Cast` checks the actual returned object before its consumers
+can use the contract's type facts. Compatible replacements execute normally.
+An incompatible result raises `TypeError`; it does not discard the contract or
+continue through an unchecked generic path.
+
+This follows SBCL's `src/compiler/ir1opt.lisp`, `validate-call-type`, which applies
+the defined type for `:defined-here` calls through `assert-call-type` with
+`trusted` false. `src/compiler/ctype.lisp`, `assert-call-type`, inserts a result
+assertion and reoptimizes its consumers. Mule uses its existing `Cast`,
+propagation, and check-generation stages rather than freezing function bindings.
+The initial scope excludes tail-position calls and result lvars with multiple
+producers, matching the corresponding SBCL restrictions.
+
+Only runtime-checkable facts become contracts. Immutable tuple element facts can
+be checked recursively. Mutable collection contents must not become trusted from
+a shallow object check; those facts are widened before the contract is formed.
+The checked object remains owned through failure cleanup and transfers normally
+after success. Inferred contracts are separate from ignored annotation hints.
+Unpacked tuple-return calls retain their allocation-free convention. Proven
+result types can eliminate redundant checks on a guarded direct arm; an unknown
+replacement's original object is checked before unpack coercion. Tuple fields
+delivered through the unpacked ABI are checked without constructing a tuple.
+
+The existing `speed=0` and `debug=3` policies prevent establishing these inferred
+contracts at the call site or for the predicted callee. `debug=3` is the existing
+no-inlining policy and supplies the dynamic opt-out corresponding to SBCL's
+`NOTINLINE` behavior. An established inferred contract remains checked even at
+`safety=0`; incompatible replacement results must be errors. Explicit annotation
+contracts retain their existing policy rules. This mandatory inferred check is
+the user's requested boundary, not an assumption that rebinding cannot occur.
+
 ### 2.2 Hybrid package and wheel model (package `.so` + `interface.json` + `.py` source)
 
 To support **instant runtime imports (including dynamic `importlib.import_module`)**, **fast separate compilation**, and **whole-program optimization**, compiled libraries and future Mule wheels use a three-part layout:

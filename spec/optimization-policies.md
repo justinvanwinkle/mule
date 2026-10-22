@@ -140,11 +140,19 @@ before any statement other than the docstring and imports; a later one is a
 compilation error. They remain ordinary module bindings at run time.
 
 ```python
-"""A module compiled with exact Python semantics."""
+"""A module with dynamic builtin lookup and no inferred return contracts."""
 __safety__ = 3
+__debug_level__ = 3
 
 import builtins
 ```
+
+Optimized same-unit calls can establish checked inferred return contracts while
+retaining mutable function bindings. A replacement returning an incompatible
+value raises `TypeError` at the result assertion. These inferred assertions are
+mandatory regardless of safety. `speed=0` or `debug=3` on the caller or predicted
+callee prevents establishing the inferred contract; explicit annotations are
+unaffected. See [checked inferred results](type-inference.md#checked-inferred-results-within-a-compilation-unit).
 
 ### Safety and global names
 

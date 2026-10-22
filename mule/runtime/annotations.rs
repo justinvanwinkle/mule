@@ -49,6 +49,90 @@ fn failed(name: &str) -> i32 {
     -1
 }
 
+/// Exact physical categories used by compiler-generated borrowed assertions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_value_kind(value: Value) -> i32 {
+    unsafe {
+        if object::is_fixnum(value) {
+            return 1;
+        }
+        if value.is_null() {
+            return 0;
+        }
+        match &(*value).data {
+            Data::BigInt(_, class, ..) if class.is_null() => 1,
+            Data::Bool(_) => 2,
+            Data::Float(_, class, ..) if class.is_null() => 3,
+            Data::None => 4,
+            Data::Text(_, class, ..) if class.is_null() => 5,
+            Data::Bytes(_, class, ..) if class.is_null() => 6,
+            Data::Args(_, class, ..) if class.is_null() => 7,
+            Data::List(_, class, ..) if class.is_null() => 8,
+            Data::Class(_) => 10,
+            Data::Function { globals, .. } if !globals.is_null() => 11,
+            Data::Instance { ty, .. } | Data::NativeInstance { ty, .. } => {
+                let dictionary = crate::classes::builtin_type(crate::classes::Builtin::Dict);
+                if !dictionary.is_null() && *ty == dictionary {
+                    9
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        }
+    }
+}
+
+/// Nonthrowing interval comparison. All operands remain borrowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_integer_in_bounds(
+    value: Value,
+    minimum: Value,
+    maximum: Value,
+) -> i32 {
+    unsafe {
+        if mule_value_kind(value) != 1 {
+            return 0;
+        }
+        let Some(value) = Integer::borrowed(value) else {
+            return 0;
+        };
+        for (bound, excluded) in [(minimum, Ordering::Less), (maximum, Ordering::Greater)] {
+            if bound.is_null() {
+                continue;
+            }
+            let Some(bound) = Integer::borrowed(bound) else {
+                return 0;
+            };
+            if value.compare(&bound) == excluded {
+                return 0;
+            }
+        }
+        1
+    }
+}
+
+/// Borrow a field after the generated predicate proved an exact tuple shape.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_tuple_borrow_item(value: Value, index: usize) -> Value {
+    unsafe {
+        if value.is_null() || object::is_fixnum(value) {
+            return std::ptr::null_mut();
+        }
+        match &(*value).data {
+            Data::Args(values, class, ..) if class.is_null() => {
+                values.get(index).copied().unwrap_or(std::ptr::null_mut())
+            }
+            _ => std::ptr::null_mut(),
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_inferred_return_error(name: *const c_char) -> i32 {
+    failed(unsafe { annotation_name(name) })
+}
+
 /// Check an integer category and inclusive bounds without retaining or consuming
 /// the value or numeric bounds. Null means the corresponding side is unbounded.
 /// Booleans are intentionally excluded: the compiler may use an accepted narrow

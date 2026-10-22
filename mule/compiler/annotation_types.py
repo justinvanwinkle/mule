@@ -11,13 +11,19 @@ from .ctype import (
     BYTES_TYPE,
     FLOAT,
     LIST_TYPE,
+    NONE_TYPE,
     PYTHON_INTEGER,
     REAL,
     TEXT_TYPE,
     UNKNOWN,
+    ClassType,
+    DictType,
     IntegerType,
     ListType,
+    TupleType,
     ValueType,
+    ValueTypeVisitor,
+    union_type,
 )
 
 
@@ -68,6 +74,13 @@ class Contract:
     def general_parameter_type(self) -> ValueType:
         return UNKNOWN
 
+    def requires_check(self, policy_checks: bool) -> bool:
+        return policy_checks
+
+    # Annotation hints do not establish a checked callable interface.
+    def definition_contract(self):
+        pass
+
     def integer_conflict(self, actual):
         return True
 
@@ -103,6 +116,9 @@ class IntegerContract(Contract):
     def accept(self, visitor):
         return visitor.visit_IntegerContract(self)
 
+    def definition_contract(self):
+        return self
+
     def integer_conflict(self, actual):
         expected = self.fact
         return (actual.maximum is not None and actual.maximum < expected.minimum) or (
@@ -124,6 +140,9 @@ class FloatContract(Contract):
 
     def accept(self, visitor):
         return visitor.visit_FloatContract(self)
+
+    def definition_contract(self):
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +168,9 @@ class PythonIntegerContract(Contract):
 
 
 class PythonFloatContract(FloatContract):
+    def definition_contract(self):
+        pass
+
     @property
     def fact(self):
         return REAL
@@ -239,6 +261,158 @@ class ListContract(Contract):
 
     def refine(self, actual):
         return actual.annotated_list(self.fact)
+
+
+@dataclass(frozen=True, slots=True)
+class InferredReturnContract(Contract):
+    """A checked definition-derived result type for a mutable call binding.
+
+    This is separate from declaration annotations: a contradiction raises
+    TypeError at the call boundary instead of invalidating an annotation.
+    """
+
+    name: str
+    inferred_type: ValueType
+
+    @property
+    def display_name(self) -> str:
+        return f"return value of {self.name}"
+
+    @property
+    def fact(self) -> ValueType:
+        return self.inferred_type.accept(_RUNTIME_CHECKED_RETURN_FACT)
+
+    def accept(self, visitor):
+        return visitor.visit_InferredReturnContract(self)
+
+    def contradicts(self, actual) -> bool:
+        return False
+
+    def refine(self, actual):
+        expected = self.fact
+        return actual if actual.fits(expected) else expected
+
+    def requires_check(self, policy_checks: bool) -> bool:
+        # Inferred result contracts must reject an incompatible rebound value,
+        # including when safety=0 suppresses optional annotation checks.
+        return True
+
+
+@dataclass(frozen=True, slots=True)
+class DeclaredReturnContract(Contract):
+    """Retain an explicit return declaration at a mutable call boundary."""
+
+    annotation: Contract
+
+    @property
+    def fact(self):
+        return self.annotation.fact
+
+    def accept(self, visitor):
+        return self.annotation.accept(visitor)
+
+    def contradicts(self, actual):
+        return False
+
+    def refine(self, actual):
+        return self.annotation.refine(actual)
+
+    def requires_check(self, policy_checks):
+        return True
+
+
+class _RuntimeCheckedReturnFact(ValueTypeVisitor):
+    """Weaken definition facts to types the call boundary can check safely."""
+
+    def visit_ValueType(self, fact):
+        return UNKNOWN
+
+    def visit_UnknownType(self, fact):
+        return UNKNOWN
+
+    def visit_BottomType(self, fact):
+        return UNKNOWN
+
+    def visit_UnboundType(self, fact):
+        return UNKNOWN
+
+    def visit_IntegerType(self, fact):
+        return UNKNOWN if fact.may_be_unbound else fact
+
+    def visit_PythonIntegerType(self, fact):
+        return UNKNOWN if fact.may_be_unbound else fact
+
+    def visit_BooleanType(self, fact):
+        return UNKNOWN if fact.may_be_unbound else fact
+
+    def visit_FloatType(self, fact):
+        return UNKNOWN if fact.may_be_unbound else FLOAT
+
+    def visit_RealType(self, fact):
+        if fact.may_be_unbound:
+            return UNKNOWN
+        return PYTHON_INTEGER.join(FLOAT)
+
+    def visit_NoneType(self, fact):
+        return UNKNOWN if fact.may_be_unbound else NONE_TYPE
+
+    def visit_TextType(self, fact):
+        return UNKNOWN if fact.may_be_unbound else TEXT_TYPE
+
+    def visit_BytesType(self, fact):
+        return UNKNOWN if fact.may_be_unbound else BYTES_TYPE
+
+    def visit_TupleType(self, fact):
+        if fact.may_be_unbound:
+            return UNKNOWN
+        elements = (
+            None
+            if fact.elements is None
+            else tuple(element.accept(self) for element in fact.elements)
+        )
+        return TupleType(fact.arity, elements)
+
+    def visit_ListType(self, fact):
+        return UNKNOWN if fact.may_be_unbound else LIST_TYPE
+
+    def visit_DictType(self, fact):
+        if fact.may_be_unbound or not fact.proven:
+            return UNKNOWN
+        return DictType(UNKNOWN, UNKNOWN)
+
+    def visit_UnionType(self, fact):
+        if fact.may_be_unbound:
+            return UNKNOWN
+        checked_members = tuple(member.accept(self) for member in fact.members)
+        if any(member is UNKNOWN for member in checked_members):
+            return UNKNOWN
+        return union_type(*checked_members)
+
+    def visit_ClassType(self, fact):
+        # Class identity can change independently of the definition site.
+        return UNKNOWN if fact.may_be_unbound else ClassType(())
+
+    def visit_InstanceType(self, fact):
+        # Rebinding a class can change its runtime instance identity/layout.
+        return UNKNOWN
+
+    def visit_ImmortalType(self, fact):
+        # Immortality is a physical ownership fact, not a Python value category.
+        return UNKNOWN
+
+    def visit_FunctionType(self, fact):
+        # A callable's predicted target is not its mutable runtime identity.
+        return UNKNOWN
+
+    def visit_IteratorType(self, fact):
+        # User-defined iterator implementations have no single physical layout.
+        return UNKNOWN
+
+    def visit_UniqueObjectType(self, fact):
+        return UNKNOWN
+
+
+_RUNTIME_CHECKED_RETURN_FACT = _RuntimeCheckedReturnFact()
 
 
 BUILTINS = {"int": PythonIntegerContract(), "float": PythonFloatContract("float", 64)}
