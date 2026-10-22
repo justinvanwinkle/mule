@@ -26,6 +26,7 @@ pub mod networking;
 pub mod native_storage;
 pub mod numeric;
 pub mod object;
+pub mod value_buffer;
 pub mod process;
 pub mod sequences;
 pub mod signals;

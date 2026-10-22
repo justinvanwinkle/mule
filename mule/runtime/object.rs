@@ -1,6 +1,7 @@
 //! Mule values and the native-code ABI. Heap ownership is explicit at this boundary;
 //! generated code retains each live value and releases it on normal and error exits.
 use crate::{builtins, gmp::BigInt, numeric, text::Text};
+use crate::value_buffer::ValueBuffer;
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -282,7 +283,7 @@ pub enum Data {
         positional_defaults: Value,
         keyword_defaults: Value,
     },
-    Args(Vec<Value>, Value, Value),
+    Args(ValueBuffer, Value, Value),
     ArgumentView {
         values: *const Value,
         count: usize,
@@ -308,7 +309,7 @@ pub enum Data {
         defaults: Value,
         closure: Value,
     },
-    List(Vec<Value>, Value, Value),
+    List(ValueBuffer, Value, Value),
     Namespace(Namespace),
     Class(Box<crate::classes::ClassLayout>),
     Instance {
@@ -789,7 +790,7 @@ unsafe fn alloc_tuple2(v0: Value, v1: Value, tracked: bool) -> Value {
             references: std::sync::atomic::AtomicUsize::new(1),
             tracked,
             gc_slot: 0,
-            data: Data::Args(values, std::ptr::null_mut(), std::ptr::null_mut()),
+            data: Data::Args(values.into(), std::ptr::null_mut(), std::ptr::null_mut()),
         });
         if tracked {
             crate::gc::track(value);
@@ -1099,7 +1100,7 @@ pub unsafe fn namespace() -> Value {
     unsafe { new_value(Data::Namespace(Namespace::default())) }
 }
 pub unsafe fn list() -> Value {
-    unsafe { new_value(Data::List(Vec::new(), std::ptr::null_mut(), std::ptr::null_mut())) }
+    unsafe { new_value(Data::List(ValueBuffer::new(), std::ptr::null_mut(), std::ptr::null_mut())) }
 }
 pub unsafe fn list_append(list: Value, value: Value) -> bool {
     unsafe {
@@ -2762,7 +2763,7 @@ unsafe fn sequence_buffer(count: isize, values: *const Value) -> Option<Vec<Valu
 pub unsafe extern "C" fn mule_sequence_list(count: isize, values: *const Value) -> Value {
     unsafe {
         sequence_buffer(count, values)
-            .map_or(std::ptr::null_mut(), |values| new_value(Data::List(values, std::ptr::null_mut(), std::ptr::null_mut())))
+            .map_or(std::ptr::null_mut(), |values| new_value(Data::List(values.into(), std::ptr::null_mut(), std::ptr::null_mut())))
     }
 }
 #[unsafe(no_mangle)]
@@ -2775,7 +2776,7 @@ pub unsafe extern "C" fn mule_sequence_tuple(count: isize, values: *const Value)
             return alloc_tuple2(v0, v1, tracked);
         }
         sequence_buffer(count, values)
-            .map_or(std::ptr::null_mut(), |values| new_value(Data::Args(values, std::ptr::null_mut(), std::ptr::null_mut())))
+            .map_or(std::ptr::null_mut(), |values| new_value(Data::Args(values.into(), std::ptr::null_mut(), std::ptr::null_mut())))
     }
 }
 
@@ -2832,7 +2833,7 @@ pub unsafe extern "C" fn mule_sequence_tuple_owned(
         if count != 0 {
             result.extend_from_slice(slice);
         }
-        new_value(Data::Args(result, std::ptr::null_mut(), std::ptr::null_mut()))
+        new_value(Data::Args(result.into(), std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 /// Return an owned callable from the receiver's class method table, or None
@@ -3653,7 +3654,7 @@ unsafe fn closure_cells_of(closure: Value, cell_flags: *const bool) -> Value {
             }
             cells.push(cell);
         }
-        new_value(Data::Args(cells, std::ptr::null_mut(), std::ptr::null_mut()))
+        new_value(Data::Args(cells.into(), std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 

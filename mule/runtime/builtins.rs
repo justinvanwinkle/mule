@@ -478,7 +478,7 @@ unsafe extern "C" fn tuple(_: Value, args: Value) -> Value {
         if arity(args, 0, 0).is_none() {
             std::ptr::null_mut()
         } else {
-            object::new_value(Data::Args(Vec::new(), std::ptr::null_mut(), std::ptr::null_mut()))
+            object::new_value(Data::Args(crate::value_buffer::ValueBuffer::new(), std::ptr::null_mut(), std::ptr::null_mut()))
         }
     }
 }
@@ -544,7 +544,7 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
             references: std::sync::atomic::AtomicUsize::new(usize::MAX),
             tracked: false,
             gc_slot: 0,
-            data: Data::Args(Vec::new(), std::ptr::null_mut(), std::ptr::null_mut()),
+            data: Data::Args(crate::value_buffer::ValueBuffer::new(), std::ptr::null_mut(), std::ptr::null_mut()),
         };
         let entry = std::mem::transmute::<*mut c_void, Native>(native);
         let initialized = crate::sequences::initialize(protocols);

@@ -3197,7 +3197,7 @@ unsafe extern "C" fn new_class(_: Value, args: Value) -> Value {
             Vec::new()
         } else if !object::is_fixnum(bases_arg) {
             match &(*bases_arg).data {
-                Data::Args(values, ..) => values.clone(),
+                Data::Args(values, ..) => values.to_vec(),
                 _ => vec![bases_arg],
             }
         } else {
@@ -3828,12 +3828,12 @@ unsafe extern "C" fn typed_value(_: Value, args: Value) -> Value {
                 Data::Text(t, _, _) => Data::Text(t.clone(), object::retain(class), std::ptr::null_mut()),
                 Data::Bytes(b, _, _) => Data::Bytes(b.clone(), object::retain(class), std::ptr::null_mut()),
                 Data::List(v, _, _) => {
-                    let items = v.iter().map(|&item| object::retain(item)).collect();
-                    Data::List(items, object::retain(class), std::ptr::null_mut())
+                    let items: Vec<Value> = v.iter().map(|&item| object::retain(item)).collect();
+                    Data::List(items.into(), object::retain(class), std::ptr::null_mut())
                 }
                 Data::Args(v, _, _) => {
-                    let items = v.iter().map(|&item| object::retain(item)).collect();
-                    Data::Args(items, object::retain(class), std::ptr::null_mut())
+                    let items: Vec<Value> = v.iter().map(|&item| object::retain(item)).collect();
+                    Data::Args(items.into(), object::retain(class), std::ptr::null_mut())
                 }
                 _ => {
                     object::error("TypeError", "typed value storage is required");

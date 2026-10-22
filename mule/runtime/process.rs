@@ -1775,9 +1775,9 @@ mod tests {
             for tuple in [false, true] {
                 let values = codes.map(object::small).to_vec();
                 let sequence = object::new_value(if tuple {
-                    Data::Args(values, null_mut(), null_mut())
+                    Data::Args(values.into(), null_mut(), null_mut())
                 } else {
-                    Data::List(values, null_mut(), null_mut())
+                    Data::List(values.into(), null_mut(), null_mut())
                 });
                 let result = invoke(module, "text_from_codepoints", &[sequence]);
                 let Data::Text(text, ..) = &(*result).data else {
@@ -1792,14 +1792,14 @@ mod tests {
                 object::release(sequence);
             }
             for code in [-1, 0x110000] {
-                let sequence = object::new_value(Data::List(vec![object::small(code)], std::ptr::null_mut(), std::ptr::null_mut()));
+                let sequence = object::new_value(Data::List(vec![object::small(code)].into(), std::ptr::null_mut(), std::ptr::null_mut()));
                 assert!(invoke(module, "text_from_codepoints", &[sequence]).is_null());
                 assert_eq!(object::error_kind(), "ValueError");
                 object::clear_error();
                 object::release(sequence);
             }
             let sequence =
-                object::new_value(Data::List(vec![object::new_value(Data::Text(Text::empty(), std::ptr::null_mut(), std::ptr::null_mut()))], std::ptr::null_mut(), std::ptr::null_mut()));
+                object::new_value(Data::List(vec![object::new_value(Data::Text(Text::empty(), std::ptr::null_mut(), std::ptr::null_mut()))].into(), std::ptr::null_mut(), std::ptr::null_mut()));
             assert!(invoke(module, "text_from_codepoints", &[sequence]).is_null());
             assert_eq!(object::error_kind(), "TypeError");
             object::clear_error();

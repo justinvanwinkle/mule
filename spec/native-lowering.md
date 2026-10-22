@@ -139,6 +139,43 @@ its borrowed entry-storage address once at function entry; constant-index LLVM
 loads acquire the captured references. This avoids both a dependency on Rust
 `Vec` field order and the general argument-binding accessor.
 
+## Physical sequence storage operations
+
+SBCL's `src/code/target-hash-table.lisp`, `define-gethash/flat` and
+`define-ht-getter`, implement probes in Lisp over typed vectors. Its
+`src/compiler/array-tran.lisp:2480-2525` lowers typed accessors to array
+operations, and `src/compiler/x86-64/array.lisp:297-365` selects physical
+data-vector readers and writers. Mule keeps dictionary algorithms in compiled
+Python and lowers the general `_storage_read`, `_storage_write`, and
+`_storage_length` primitives through LLVM storage operations.
+
+SBCL's `src/compiler/generic/objdef.lisp:129-136` defines the native vector
+length and data layout used by those VOPs. Mule likewise requires a stable
+physical buffer layout, not an opaque accessor for every element. Rust `Vec`
+field order cannot serve as that ABI. List and tuple object storage therefore
+uses an explicit C-layout owned buffer with data, length, and capacity words.
+The header owns the allocation; it does not mirror a second stored `Vec`.
+Rust's allocation facilities still provide buffer growth and deallocation.
+
+This adapts SBCL's inline vector data to Python's growable list storage: the
+header points to a separately allocated buffer whose address changes on growth.
+The compiler validates the physical object tag and directly loads the header
+fields before checking bounds and accessing a slot. It never retains a raw
+buffer pointer across calls that can resize storage, safepoints, or suspension.
+Rust layout tests verify the header offsets used by the compiler.
+
+Unsupported storage or indices use the existing checked primitive and preserve
+its errors. Writes retain the replacement, publish it, perform GC tracking, and
+only then release the old element. They do not reuse the old buffer pointer
+after destruction can invoke Python. The dictionary algorithm remains Python;
+Rust supplies physical memory ownership and the GC barrier only.
+
+Current dictionary field inference does not establish exact-list field proofs.
+The guarded physical lowering must not treat these fields as statically proven
+lists or remove bounds checks without an independent proof. Making storage
+operations visible is an implementation capability; speedups require separate
+measurement.
+
 ## Fixed-length sequence unpacking
 
 SBCL `src/compiler/seqtran.lisp` transforms `elt` and `%setelt` into storage-specific

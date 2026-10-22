@@ -116,7 +116,7 @@ pub struct Coroutine {
 unsafe extern "C" fn coroutine_main(coroutine: *mut Coroutine) -> ! {
     unsafe {
         let arguments = match &(*(*coroutine).arguments).data {
-            Data::Args(values, ..) => values.clone(),
+            Data::Args(values, ..) => values.to_vec(),
             _ => Vec::new(),
         };
         let result = object::call((*coroutine).function, &arguments);
@@ -466,7 +466,7 @@ mod tests {
         unsafe {
             assert!(active_head().is_null());
             let function = object::function(null_mut(), migrating_body, "migrating_body");
-            let arguments = object::new_value(Data::Args(Vec::new(), null_mut(), null_mut()));
+            let arguments = object::new_value(Data::Args(crate::value_buffer::ValueBuffer::new(), null_mut(), null_mut()));
             let mut coroutine = Coroutine::new(function, arguments).unwrap();
             object::release(function);
             object::release(arguments);

@@ -295,6 +295,12 @@ pub unsafe extern "C" fn mule_storage_length(value: Value) -> Value {
         null_mut()
     }
 }
+/// The physical write barrier after publishing a compiler-emitted slot store.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_storage_track(container: Value, replacement: Value) {
+    unsafe { object::track_if_needed(container, replacement) }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_storage_read(value: Value, position: Value) -> Value {
     unsafe {
@@ -1200,7 +1206,7 @@ pub unsafe extern "C" fn mule_text_split(
                                 return null_mut();
                             }
                             parts.push(tail);
-                            return object::new_untracked_value(Data::List(parts, null_mut(), null_mut()));
+                            return object::new_untracked_value(Data::List(parts.into(), null_mut(), null_mut()));
                         }
                         if sep_text.is_empty() {
                             object::error("ValueError", "empty separator");
@@ -1235,7 +1241,7 @@ pub unsafe extern "C" fn mule_text_split(
                             return null_mut();
                         }
                         parts.push(tail);
-                        return object::new_untracked_value(Data::List(parts, null_mut(), null_mut()));
+                        return object::new_untracked_value(Data::List(parts.into(), null_mut(), null_mut()));
                     }
                 }
             }
@@ -1438,7 +1444,7 @@ pub unsafe extern "C" fn mule_storage_delete(value: Value, start: Value, stop: V
                     return object::none_value();
                 }
                 // Release after removal: a destructor may observe the list.
-                let removed: Vec<Value> = values.drain(start..stop).collect();
+                let removed = values.remove_range(start..stop);
                 for element in removed {
                     object::release(element);
                 }
@@ -1737,7 +1743,7 @@ pub unsafe extern "C" fn mule_rest_args(args: Value, start: i32) -> Value {
             };
             values.push(object::retain(value));
         }
-        object::new_value(Data::Args(values, std::ptr::null_mut(), std::ptr::null_mut()))
+        object::new_value(Data::Args(values.into(), std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 

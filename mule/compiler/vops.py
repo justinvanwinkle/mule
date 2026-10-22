@@ -2130,8 +2130,17 @@ def primitive(name, info, emit, *, consumes_arguments=False):
 
 
 def text_access(function):
+    storage_helper = {
+        "mule_storage_read": "@mule.fast.storage.read",
+        "mule_storage_write": "@mule.fast.storage.write",
+        "mule_storage_length": "@mule.fast.storage.length",
+    }.get(function)
+
     def emit(gen, vop, values):
         arg_type = (vop.args[0].tn.type or UNKNOWN) if vop.args else UNKNOWN
+        if storage_helper is not None:
+            operands = ", ".join(f"ptr {value}" for value in values)
+            return gen.operation(f"call ptr {storage_helper}({operands})")
         if function == "mule_integer_storage":
             if arg_type.is_fixnum:
                 return values[0]
@@ -2559,6 +2568,12 @@ declare {i64, i1} @llvm.smul.with.overflow.i64(i64, i64)
 # Byte offsets of runtime object storage that compiled attribute sites read;
 # `mule/runtime/object.rs` defines them and its tests check them.
 DATA_OFFSET = 16
+LIST_TAG = 13
+ARGS_TAG = 9
+# The authoritative repr(C) ValueBuffer header follows the Data discriminator.
+# Runtime layout tests check these offsets against both List and Args objects.
+VALUE_BUFFER_DATA_OFFSET = 24
+VALUE_BUFFER_LENGTH_OFFSET = 32
 INSTANCE_TAG = 16
 CLASS_TAG = 15
 INSTANCE_CLASS_OFFSET = 24
@@ -2665,6 +2680,109 @@ entry:
   %index = lshr i64 %encoded, {ATTR_SHIFT}
   %slot = getelementptr ptr, ptr %fields, i64 %index
   ret ptr %slot
+}}"""
+
+
+def _storage_helpers() -> str:
+    """Physical vector VOPs, following SBCL's data-vector-ref/set.
+
+    The runtime's authoritative buffer header exposes its data and length.
+    Mutable header loads stay local to each operation, before any destructor.
+    """
+    return f"""define internal i32 @mule.storage.kind(ptr %sequence) alwaysinline {{
+entry:
+  %bits = ptrtoint ptr %sequence to i64
+  %tag = and i64 %bits, 1
+  %fixnum = icmp ne i64 %tag, 0
+  %null = icmp eq ptr %sequence, null
+  %invalid = or i1 %fixnum, %null
+  br i1 %invalid, label %unsupported, label %object
+object:
+  %kind.addr = getelementptr i8, ptr %sequence, i64 {DATA_OFFSET}
+  %kind = load i32, ptr %kind.addr
+  ret i32 %kind
+unsupported:
+  ret i32 0
+}}
+
+define internal ptr @mule.fast.storage.read(ptr %sequence, ptr %position) alwaysinline {{
+entry:
+  %bits = ptrtoint ptr %position to i64
+  %tag = and i64 %bits, 1
+  %fixnum = icmp ne i64 %tag, 0
+  br i1 %fixnum, label %check.kind, label %slow
+check.kind:
+  %kind = call i32 @mule.storage.kind(ptr %sequence)
+  %list = icmp eq i32 %kind, {LIST_TAG}
+  %tuple = icmp eq i32 %kind, {ARGS_TAG}
+  %supported = or i1 %list, %tuple
+  br i1 %supported, label %bounds, label %slow
+bounds:
+  %length.addr = getelementptr i8, ptr %sequence, i64 {VALUE_BUFFER_LENGTH_OFFSET}
+  %length = load i64, ptr %length.addr
+  %index = ashr i64 %bits, 1
+  %inside = icmp ult i64 %index, %length
+  br i1 %inside, label %read, label %slow
+read:
+  %data.addr = getelementptr i8, ptr %sequence, i64 {VALUE_BUFFER_DATA_OFFSET}
+  %data = load ptr, ptr %data.addr
+  %slot = getelementptr ptr, ptr %data, i64 %index
+  %value = load ptr, ptr %slot
+  %owned = call ptr @mule.fast.retain(ptr %value)
+  ret ptr %owned
+slow:
+  %fallback = call ptr @mule_storage_read(ptr %sequence, ptr %position)
+  ret ptr %fallback
+}}
+
+define internal ptr @mule.fast.storage.write(ptr %sequence, ptr %position, ptr %replacement) alwaysinline {{
+entry:
+  %bits = ptrtoint ptr %position to i64
+  %tag = and i64 %bits, 1
+  %fixnum = icmp ne i64 %tag, 0
+  br i1 %fixnum, label %check.kind, label %slow
+check.kind:
+  %kind = call i32 @mule.storage.kind(ptr %sequence)
+  %supported = icmp eq i32 %kind, {LIST_TAG}
+  br i1 %supported, label %bounds, label %slow
+bounds:
+  %length.addr = getelementptr i8, ptr %sequence, i64 {VALUE_BUFFER_LENGTH_OFFSET}
+  %length = load i64, ptr %length.addr
+  %index = ashr i64 %bits, 1
+  %inside = icmp ult i64 %index, %length
+  br i1 %inside, label %write, label %slow
+write:
+  %data.addr = getelementptr i8, ptr %sequence, i64 {VALUE_BUFFER_DATA_OFFSET}
+  %data = load ptr, ptr %data.addr
+  %slot = getelementptr ptr, ptr %data, i64 %index
+  %old = load ptr, ptr %slot
+  %owned = call ptr @mule.fast.retain(ptr %replacement)
+  store ptr %owned, ptr %slot
+  call void @mule_storage_track(ptr %sequence, ptr %replacement)
+  call void @mule.fast.release(ptr %old)
+  ret ptr @mule.none
+slow:
+  %fallback = call ptr @mule_storage_write(ptr %sequence, ptr %position, ptr %replacement)
+  ret ptr %fallback
+}}
+
+define internal ptr @mule.fast.storage.length(ptr %sequence) alwaysinline {{
+entry:
+  %kind = call i32 @mule.storage.kind(ptr %sequence)
+  %list = icmp eq i32 %kind, {LIST_TAG}
+  %tuple = icmp eq i32 %kind, {ARGS_TAG}
+  %supported = or i1 %list, %tuple
+  br i1 %supported, label %length, label %slow
+length:
+  %length.addr = getelementptr i8, ptr %sequence, i64 {VALUE_BUFFER_LENGTH_OFFSET}
+  %count = load i64, ptr %length.addr
+  %shifted = shl i64 %count, 1
+  %tagged = or i64 %shifted, 1
+  %result = inttoptr i64 %tagged to ptr
+  ret ptr %result
+slow:
+  %fallback = call ptr @mule_storage_length(ptr %sequence)
+  ret ptr %fallback
 }}"""
 
 
@@ -3311,6 +3429,7 @@ def helpers(*, bootstrap: bool = False) -> str:
             MIXED_COMPARE,
             LITERAL_HELPERS,
             _ownership(),
+            _storage_helpers(),
             *(layout.codec.helpers(layout) for layout in BOX_LAYOUTS),
             _truth(),
             _attribute_cache_helpers(),

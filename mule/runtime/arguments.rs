@@ -661,7 +661,7 @@ unsafe fn with_call_buffers(args: Value, invoke: impl FnOnce(Value, &[Value], &[
         }
         let operand = |index| object::argument(args, index).unwrap_or(std::ptr::null_mut());
         let (callable, positional, names, values) = (operand(0), operand(1), operand(2), operand(3));
-        let tuple = |value: Value| -> Option<&Vec<Value>> {
+        let tuple = |value: Value| -> Option<&[Value]> {
             if value.is_null() || object::is_fixnum(value) {
                 return None;
             }
