@@ -315,7 +315,9 @@ def main():
         help="number of scenarios to build or measure concurrently (default: 4)",
     )
     args = parser.parse_args()
-    available = {path.stem: path for path in sorted(SUITE.glob("*.py"))}
+    available = {
+        path.stem: path for path in sorted(SUITE.glob("*.py")) if path.name != "mule.py"
+    }
     if args.action == "list":
         print("\n".join(available))
         return 0

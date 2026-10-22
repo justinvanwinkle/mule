@@ -25,14 +25,19 @@ cd perf/suite
 uv run python -m perfutils list
 ```
 
-## Initial scenarios
+## Scenarios
 
 | Script | SBCL equivalent | Size means | Work measured |
 | --- | --- | --- | --- |
 | `account_ledger.py` | `account_ledger.lisp` | Transactions | Polymorphic class hierarchy, `super()` calls, slot updates |
+| `binary_trees.py` | `binary_trees.lisp` | Tree requests | Recursive binary tree allocation, traversal, and deallocation churn |
+| `bytes_codec.py` | `bytes_codec.lisp` | Binary packets | LEB128 varint decoding, `bytearray` unmasking/mutation, and checksums |
 | `closure_pipeline.py` | `closure_pipeline.lisp` | Values | Higher-order function pipelines with mutable lexical closure state |
+| `dataclass_ast.py` | `dataclass_ast.lisp` | Expression trees | Slotted AST records, `match`/`case` structural pattern matching, and tree rewriting |
 | `exception_validation.py` | `exception_validation.lisp` | Records | Nested validation raising and catching domain exceptions |
 | `expression_tree.py` | `expression_tree.lisp` | Evaluations | Recursive AST evaluation with polymorphic nodes and `dict` environments |
+| `float_nbody.py` | `float_nbody.lisp` | Time steps | Floating-point N-body gravitational orbital simulation (`float`, `math.sqrt`) |
+| `generator_pipeline.py` | `generator_pipeline.lisp` | Signal samples | Chained `yield` generators with sliding-window deltas and run-length coalescing |
 | `graph_paths.py` | `graph_paths.lisp` | Vertices | Dijkstra traversal, heap operations, distance reduction |
 | `http_routing.py` | `http_routing.lisp` | Requests | HTTP parsing, query extraction, handler dispatch, response accounting |
 | `integer_accumulation.py` | `integer_accumulation.lisp` | Integers | Signed sum and data-dependent positive count |
@@ -42,7 +47,23 @@ uv run python -m perfutils list
 | `log_aggregation.py` | `log_aggregation.lisp` | Log records | Parsing, numeric conversion, dictionary grouping |
 | `lru_simulation.py` | `lru_simulation.lisp` | Operations | Doubly-linked list node mutation and `dict` LRU cache simulation |
 | `matrix_multiply.py` | `matrix_multiply.lisp` | Matrix dimension | Dense 2D matrix multiplication, transpose, and norm reduction |
+| `set_operations.py` | `set_operations.lisp` | Set operations | Mutable `set` updates, membership probes, and binary set algebra (`&`, `|`, `-`, `^`) |
 | `word_frequency.py` | `word_frequency.lisp` | Tokens | Dictionary frequency counting and bucketed list reduction |
+
+### Annotated and policy variations
+
+Separate variations pair explicit Mule type contracts (`from mule import int64, float64, optimize`)
+and high-speed/zero-safety compiler policy (`__speed__ = 3`, `__safety__ = 0`, `@optimize(speed=3, safety=0)`)
+with equivalent SBCL declarations (`(declaim (optimize (speed 3) (safety 0) (debug 0)))`, `(signed-byte 64)`, `double-float`, and typed `defstruct`s).
+Each Python script remains valid runnable CPython via the host markers in `mule` / `stdlib/mule.py`,
+and computes the exact same result tuple as its unannotated counterpart:
+
+| Script | SBCL equivalent | Counterpart | Specialization and policy measured |
+| --- | --- | --- | --- |
+| `float_nbody_typed.py` | `float_nbody_typed.lisp` | `float_nbody.py` | `float64`/`int64` annotations + `speed=3, safety=0` vs SBCL `double-float`/`(signed-byte 64)` |
+| `integer_accumulation_typed.py` | `integer_accumulation_typed.lisp` | `integer_accumulation.py` | `int64` loop accumulator annotations + `speed=3, safety=0` vs SBCL `(signed-byte 64)` |
+| `matrix_multiply_typed.py` | `matrix_multiply_typed.lisp` | `matrix_multiply.py` | `int64` nested-loop index/dot-product annotations + `speed=3, safety=0` vs SBCL `(signed-byte 64)` |
+| `native_struct_ledger.py` | `native_struct_ledger.lisp` | `account_ledger.py` | `@optimize(speed=3, safety=0)` native `int64` struct class vs SBCL typed `defstruct` |
 
 The HTTP case executes handlers in process. It deliberately covers bounded
 generated requests rather than a production parser; socket throughput,

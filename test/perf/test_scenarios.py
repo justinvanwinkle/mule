@@ -12,24 +12,43 @@ from test.python_host import python_host
 SUITE = Path(__file__).resolve().parents[2] / "perf" / "suite"
 SCENARIOS = (
     "account_ledger",
+    "binary_trees",
+    "bytes_codec",
     "closure_pipeline",
+    "dataclass_ast",
     "exception_validation",
     "expression_tree",
+    "float_nbody",
+    "float_nbody_typed",
+    "generator_pipeline",
     "graph_paths",
     "http_routing",
     "integer_accumulation",
+    "integer_accumulation_typed",
     "interval_merging",
     "json_tokenizer",
     "kv_record_parse",
     "log_aggregation",
     "lru_simulation",
     "matrix_multiply",
+    "matrix_multiply_typed",
+    "native_struct_ledger",
+    "set_operations",
     "word_frequency",
+)
+
+TYPED_PAIRS = (
+    ("float_nbody", "float_nbody_typed"),
+    ("integer_accumulation", "integer_accumulation_typed"),
+    ("matrix_multiply", "matrix_multiply_typed"),
+    ("account_ledger", "native_struct_ledger"),
 )
 
 
 @pytest.fixture
 def load_case(monkeypatch):
+    import mule  # noqa: F401
+
     monkeypatch.syspath_prepend(str(SUITE))
     return importlib.import_module
 
@@ -224,3 +243,69 @@ def test_sbcl_equivalent_matches_python(load_case, name, tmp_path):
     assert float(fields["PREPARE"]) >= 0
     assert float(fields["KERNEL"]) >= 0
     assert completed.stderr == ""
+
+
+@pytest.mark.parametrize(("baseline_name", "typed_name"), TYPED_PAIRS)
+def test_typed_variation_matches_unannotated_scenario(
+    load_case, baseline_name, typed_name, tmp_path
+):
+    baseline = load_case(baseline_name)
+    typed = load_case(typed_name)
+    for size, seed in ((7, 11), (31, 42), (64, 99)):
+        base_data = baseline.prepare(size, seed)
+        typed_data = typed.prepare(size, seed)
+        assert typed_data == base_data
+        assert typed.run(typed_data) == baseline.run(base_data)
+
+    completed = subprocess.run(
+        [
+            python_host(),
+            str(SUITE / f"{typed_name}.py"),
+            "--size",
+            "19",
+            "--seed",
+            "23",
+            "--loops",
+            "1",
+            "--warmups",
+            "0",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    fields = dict(line.split("\t", 1) for line in completed.stdout.splitlines())
+    assert fields["CASE"] == typed_name
+    assert fields["RESULT"] == repr(baseline.run(baseline.prepare(19, 23)))
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "binary_trees",
+        "bytes_codec",
+        "dataclass_ast",
+        "float_nbody",
+        "float_nbody_typed",
+        "generator_pipeline",
+        "integer_accumulation_typed",
+        "matrix_multiply_typed",
+        "native_struct_ledger",
+        "set_operations",
+    ),
+)
+def test_new_and_annotated_scenarios_compile_through_ir1(name):
+    from mule.compiler.main import compile_toplevel, ir1_phases
+    from mule.compiler.modules import ModuleCompiler
+
+    source_path = SUITE / f"{name}.py"
+    compiler = ModuleCompiler(str(source_path))
+    compilation = compile_toplevel(
+        source_path.read_text(encoding="utf-8"),
+        str(source_path),
+        imports=compiler,
+    )
+    ir1_phases(compilation)
+    assert compilation.annotations.contradictions == []
+    assert compilation.annotations.ignored == set()
