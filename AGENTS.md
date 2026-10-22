@@ -346,13 +346,33 @@ historical measurements when updating documentation or reports.
 Spot-check actual output for every behavior or performance change against its
 intended effect. Passing tests alone is not sufficient.
 
-For compiler changes, inspect representative generated output from the changed
-path. For optimizations, compare optimized IR or machine code before and after
-the change. Verify that the targeted calls, checks, allocations, or ownership
-operations disappear or become cheaper. Moving work into a new helper does not
-establish an improvement. Confirm claimed speedups with representative timings.
-If the expected improvement is absent, report the unmet goal instead of treating
-passing tests as completion.
+Compiler optimizations need distinct correctness, code-generation, and performance
+checks. None substitutes for the others:
+
+- **Correctness:** Compare observable results and relevant effects with the Python
+  oracle. Cover the affected ownership, mutation, and error boundaries.
+- **Code generation:** Add a realistic regression program that exercises the
+  operation through normal language constructs and the actual runtime algorithms.
+  Use runtime inputs so constant folding cannot remove the work under examination.
+  Inspect optimized IR or machine code with the optimization and LTO settings
+  being measured. Include separately compiled runtime units when they contain
+  the operation. Do not substitute an isolated synthetic helper for the real path.
+- **Efficiency assertions:** Check that the expected native operations occur in
+  the relevant loop or specialized path. Check that the targeted calls, dispatch,
+  checks, allocations, or ownership traffic disappear or become cheaper there.
+  Follow helper calls and data dependencies so moving work into another helper
+  cannot satisfy the test. Permit required cold fallbacks outside that path.
+  Do not reject unrelated reachable helpers or rely on exact instruction counts,
+  temporary identifiers, or complete IR snapshots.
+- **Failure evidence:** Run the regression before the fix when practical.
+  Confirm that it fails for the missing optimization, not setup, parsing, or
+  toolchain errors. An IR verifier proves validity, not efficient code generation.
+  Do not weaken the efficiency assertion or mark it expected-failing merely to
+  accept an implementation that misses its goal.
+- **Performance:** Confirm claimed speedups with representative before/after
+  timings on an otherwise idle machine. Do not use loaded-machine measurements
+  to accept or reject an optimization. If the expected improvement is absent,
+  report the unmet goal instead of treating passing correctness tests as completion.
 
 Check changed Python files with Ruff; format only intended files. Documentation
 changes do not require rerunning parser tests unless behavior also changes.
