@@ -432,7 +432,10 @@ class _Propagation(NodeVisitor, LeafVisitor):
     def resolve_call_target(self, node: Combination):
         callee_fact = self.fact_of(node.fun)
         if callee_fact.target is not None:
-            return callee_fact.target if callee_fact.proven else None
+            if callee_fact.proven:
+                return callee_fact.target
+            imported = self.walk.imported_target(node.fun)
+            return imported if imported is callee_fact.target else None
         imported = self.walk.imported_target(node.fun)
         if imported is not None:
             return imported
@@ -558,6 +561,9 @@ class _Propagation(NodeVisitor, LeafVisitor):
     def visit_GlobalVar(self, leaf):
         fact = self.state[(_GLOBAL, leaf.name)]
         ref = self._current_ref
+        target = fact.target or self.walk.global_targets.get(leaf.name)
+        if target is None and self.walk.imported_targets is not None:
+            target = self.walk.imported_targets.get(leaf.name)
         if (
             fact.type is UNKNOWN
             and ref is not None
@@ -566,14 +572,11 @@ class _Propagation(NodeVisitor, LeafVisitor):
             and self.walk.lambda_.policy.safety < 3
             and ref.lexenv.policy.safety < 3
         ):
-            target = fact.target or self.walk.global_targets.get(leaf.name)
             if target is not None:
                 return Fact(ref.derived_type, target, fact.proven)
             return _fact(ref.derived_type)
-        if fact.target is None:
-            target = self.walk.global_targets.get(leaf.name)
-            if target is not None:
-                fact = Fact(fact.type, target)
+        if fact.target is None and target is not None:
+            fact = Fact(fact.type, target)
         return fact
 
     def visit_LambdaVar(self, leaf):
