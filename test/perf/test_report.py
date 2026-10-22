@@ -206,3 +206,100 @@ def test_update_site_writes_assets_and_updates_captions(tmp_path):
     assert "`ae24f3227`" in (tmp_path / "docs/README.md").read_text()
     assert "October 19,\n2026 suite run." in (tmp_path / "AGENTS.md").read_text()
     assert "was `ae24f3227`" in (tmp_path / "AGENTS.md").read_text()
+
+
+def test_paired_typed_and_untyped_scenarios_render_together_in_charts_dashboard_and_history():
+    from perf.suite.perfutils import history
+
+    source = report((0.020, 0.040, 0.010))
+    for row in source["rows"]:
+        row["case"] = "float_nbody"
+        row["summary"]["kernel_seconds"]["stdev"] = 0.001
+        row["summary"]["process_seconds"] = {"median": 0.050, "stdev": 0.001}
+    typed_seconds = (0.020, 0.012, 0.004)
+    for runtime_row, sec in zip(list(source["rows"]), typed_seconds, strict=True):
+        source["rows"].append(
+            {
+                "case": "float_nbody_typed",
+                "runtime": runtime_row["runtime"],
+                "status": "ok",
+                "summary": {
+                    "kernel_seconds": {"median": sec, "stdev": 0.001},
+                    "process_seconds": {"median": 0.050, "stdev": 0.001},
+                },
+                "time_ratio": {"kernel_seconds": sec / 0.020, "process_seconds": 1.0},
+            }
+        )
+
+    root = ET.fromstring(chart(source, "kernel_seconds"))
+    panels = root.findall(".//svg:g[@data-case]", NS)
+    assert len(panels) == 1
+    assert panels[0].attrib["data-case"] == "float_nbody"
+    assert panels[0].attrib["data-typed-case"] == "float_nbody_typed"
+    plotted = bars(panels[0])
+    assert len(plotted) == 6
+    assert [
+        (b.attrib["data-runtime"], b.attrib["data-variant"], b.attrib["data-case"])
+        for b in plotted
+    ] == [
+        ("cpython", "untyped", "float_nbody"),
+        ("cpython", "typed", "float_nbody_typed"),
+        ("mule-o2", "untyped", "float_nbody"),
+        ("mule-o2", "typed", "float_nbody_typed"),
+        ("sbcl", "untyped", "float_nbody"),
+        ("sbcl", "typed", "float_nbody_typed"),
+    ]
+
+    page = dashboard(source)
+    assert (
+        'class="paired-untyped" data-paired-case="float_nbody" data-variant="untyped"'
+        in page
+    )
+    assert (
+        'class="paired-typed" data-paired-case="float_nbody" data-variant="typed"'
+        in page
+    )
+    assert "typed / untyped: 0.3" in page
+
+    runs = [
+        {
+            "created_utc": "20261022T120000.000000Z",
+            "baseline": "cpython",
+            "options": {"samples": 3},
+            "runtimes": [
+                {"name": "cpython", "commit": None},
+                {"name": "mule-o2", "commit": "0123456789abcdef"},
+            ],
+            "results": [
+                {
+                    "case": "float_nbody",
+                    "runtime": "mule-o2",
+                    "status": "ok",
+                    "kernel_ms": 40.0,
+                    "kernel_time_ratio": 2.0,
+                },
+                {
+                    "case": "word_frequency",
+                    "runtime": "mule-o2",
+                    "status": "ok",
+                    "kernel_ms": 15.0,
+                    "kernel_time_ratio": 1.5,
+                },
+                {
+                    "case": "float_nbody_typed",
+                    "runtime": "mule-o2",
+                    "status": "ok",
+                    "kernel_ms": 12.0,
+                    "kernel_time_ratio": 0.6,
+                },
+            ],
+        }
+    ]
+    lines = history.table(runs)
+    assert (
+        lines[1].index("float_nbody")
+        < lines[1].index("float_nbody_typed")
+        < lines[1].index("word_frequency")
+    )
+    filtered = history.table(runs, cases=["float_nbody"])
+    assert "float_nbody" in filtered[1] and "float_nbody_typed" in filtered[1]

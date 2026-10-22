@@ -9,6 +9,66 @@ from datetime import datetime
 from . import history
 
 COLORS = ("#c14c32", "#267a77", "#71558a", "#a47116")
+_TYPED_SUFFIX = "_typed"
+
+
+def _paired_panels(groups):
+    """Pair each ``<case>`` with ``<case>_typed`` when both are present."""
+    panels = []
+    for case, case_rows in groups.items():
+        if case.endswith(_TYPED_SUFFIX) and case[: -len(_TYPED_SUFFIX)] in groups:
+            continue
+        typed_case = f"{case}{_TYPED_SUFFIX}"
+        typed_rows = groups.get(typed_case)
+        panels.append(
+            (
+                case,
+                case_rows,
+                typed_case if typed_rows is not None else None,
+                typed_rows,
+            )
+        )
+    return panels
+
+
+def _ordered_dashboard_rows(report):
+    """Keep untyped and typed rows for each runtime adjacent in the table."""
+    groups = {}
+    case_order = []
+    runtime_order = [runtime["name"] for runtime in report.get("runtimes", ())]
+    for row in report["rows"]:
+        case = row["case"]
+        runtime = row["runtime"]
+        if case not in groups:
+            groups[case] = {}
+            case_order.append(case)
+        groups[case][runtime] = row
+        if runtime not in runtime_order:
+            runtime_order.append(runtime)
+    ordered = []
+    seen_cases = set()
+    for case in case_order:
+        if case in seen_cases:
+            continue
+        if case.endswith(_TYPED_SUFFIX) and case[: -len(_TYPED_SUFFIX)] in groups:
+            continue
+        seen_cases.add(case)
+        typed_case = f"{case}{_TYPED_SUFFIX}"
+        if typed_case in groups:
+            seen_cases.add(typed_case)
+            for runtime in runtime_order:
+                untyped_row = groups[case].get(runtime)
+                typed_row = groups[typed_case].get(runtime)
+                if untyped_row is not None:
+                    ordered.append((untyped_row, case, "untyped", None))
+                if typed_row is not None:
+                    ordered.append((typed_row, case, "typed", untyped_row))
+        else:
+            for runtime in runtime_order:
+                row = groups[case].get(runtime)
+                if row is not None:
+                    ordered.append((row, None, None, None))
+    return ordered
 
 
 def _ratio(row, metric):
@@ -60,15 +120,17 @@ def chart(report, metric):
         else COLORS[2 + index % 2]
         for index, name in enumerate(runtimes)
     }
+    panels = _paired_panels(groups)
+    has_paired = any(typed_rows is not None for _, _, _, typed_rows in panels)
     panel_width = max(
-        532,
-        len(runtimes) * 140 + 88,
+        640 if has_paired else 532,
+        len(runtimes) * (190 if has_paired else 140) + 88,
         max((len(case) for case in groups), default=20) * 10 + 48,
     )
     panel_height = 330
     gap, margin, top = 24, 28, 170
     width = 2 * panel_width + gap + 2 * margin
-    height = top + max(1, math.ceil(len(groups) / 2)) * (panel_height + gap) + 40
+    height = top + max(1, math.ceil(len(panels) / 2)) * (panel_height + gap) + 40
     title = (
         "Kernel elapsed time"
         if metric == "kernel_seconds"
@@ -87,24 +149,48 @@ def chart(report, metric):
         f'<text x="36" y="105" fill="#596564">{html.escape(stamp)} · {html.escape(str(samples))} samples per runtime and scenario</text>',
         '<text x="36" y="135" font-weight="600">Shorter bars are faster · Linear axes start at zero · Each panel has its own scale</text>',
     ]
-    for index, (case, case_rows) in enumerate(groups.items()):
+    for index, (case, case_rows, typed_case, typed_rows) in enumerate(panels):
         px = margin + (index % 2) * (panel_width + gap)
         py = top + (index // 2) * (panel_height + gap)
         left, right = px + 70, px + panel_width - 24
         zero, plot_height = py + 265, 164
-        values = [_milliseconds(row, metric) for row in case_rows.values()]
+        all_rows = (
+            (*case_rows.values(), *typed_rows.values())
+            if typed_rows is not None
+            else tuple(case_rows.values())
+        )
+        values = [_milliseconds(row, metric) for row in all_rows]
         maximum = max((value for value in values if value is not None), default=0)
         upper = maximum * 1.2 if maximum else 1.0
         if not math.isfinite(upper):
             upper = maximum
+        typed_attr = (
+            f' data-typed-case="{html.escape(typed_case)}"'
+            if typed_case is not None
+            else ""
+        )
+        subtitle = (
+            "UNTYPED VS TYPED · MILLISECONDS · INDEPENDENT SCALE"
+            if typed_rows is not None
+            else "MILLISECONDS · INDEPENDENT SCALE"
+        )
         svg.extend(
             [
-                f'<g data-case="{html.escape(case)}">',
+                f'<g data-case="{html.escape(case)}"{typed_attr}>',
                 f'<rect x="{px}" y="{py}" width="{panel_width}" height="{panel_height}" fill="#fffdf8" stroke="#dedfd8"/>',
                 f'<text x="{px + 22}" y="{py + 34}" font-size="18" font-weight="650">{html.escape(case.replace("_", " "))}</text>',
-                f'<text x="{px + 22}" y="{py + 58}" font-size="11" fill="#596564">MILLISECONDS · INDEPENDENT SCALE</text>',
+                f'<text x="{px + 22}" y="{py + 58}" font-size="11" fill="#596564">{subtitle}</text>',
             ]
         )
+        if typed_rows is not None:
+            svg.extend(
+                [
+                    f'<rect x="{right - 150}" y="{py + 22}" width="12" height="12" fill="#596564"/>',
+                    f'<text x="{right - 132}" y="{py + 32}" font-size="11" fill="#596564">untyped</text>',
+                    f'<rect x="{right - 74}" y="{py + 22}" width="12" height="12" fill="#596564" fill-opacity="0.45" stroke="#596564" stroke-width="1.5"/>',
+                    f'<text x="{right - 56}" y="{py + 32}" font-size="11" fill="#596564">typed</text>',
+                ]
+            )
         for tick in range(5):
             value = upper * (tick / 4)
             y = zero - plot_height * (tick / 4)
@@ -118,36 +204,81 @@ def chart(report, metric):
             f'<line data-zero-y="{zero}" x1="{left}" y1="{zero}" x2="{right}" y2="{zero}" stroke="#788582"/>'
         )
         lane = (right - left) / max(1, len(runtimes))
-        bar_width = min(70, lane * 0.55)
-        for runtime_index, runtime in enumerate(runtimes):
-            center = left + lane * (runtime_index + 0.5)
-            row = case_rows.get(runtime)
-            value = _milliseconds(row, metric)
-            if value is None:
-                status = (
-                    "missing"
-                    if row is None
-                    else row["status"]
-                    if row["status"] != "ok"
-                    else "not available"
-                )
+        if typed_rows is None:
+            bar_width = min(70, lane * 0.55)
+            for runtime_index, runtime in enumerate(runtimes):
+                center = left + lane * (runtime_index + 0.5)
+                row = case_rows.get(runtime)
+                value = _milliseconds(row, metric)
+                if value is None:
+                    status = (
+                        "missing"
+                        if row is None
+                        else row["status"]
+                        if row["status"] != "ok"
+                        else "not available"
+                    )
+                    svg.append(
+                        f'<text x="{center:.2f}" y="{zero - 20}" text-anchor="middle" font-size="11" fill="#8d4232">{html.escape(status)}</text>'
+                    )
+                else:
+                    bar_height = (value / upper) * plot_height
+                    y = zero - bar_height
+                    svg.append(
+                        f'<rect data-runtime="{html.escape(runtime)}" data-ms="{value:.17g}" x="{center - bar_width / 2:.2f}" y="{y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" fill="{colors[runtime]}"><title>{html.escape(runtime)}: {value:.6g} ms</title></rect>'
+                    )
+                    svg.append(
+                        f'<text x="{center:.2f}" y="{y - 10:.2f}" text-anchor="middle" font-size="13" font-weight="650">{value:.6g} ms</text>'
+                    )
                 svg.append(
-                    f'<text x="{center:.2f}" y="{zero - 20}" text-anchor="middle" font-size="11" fill="#8d4232">{html.escape(status)}</text>'
+                    f'<text data-runtime="{html.escape(runtime)}" x="{center:.2f}" y="{zero + 26}" text-anchor="middle" font-size="13" font-weight="600">{html.escape(_runtime_label(runtime))}</text>'
                 )
-            else:
-                bar_height = (value / upper) * plot_height
-                y = zero - bar_height
+        else:
+            sub_width = min(46, lane * 0.34)
+            sub_gap = max(6, min(12, lane * 0.06))
+            offset = (sub_width + sub_gap) / 2
+            for runtime_index, runtime in enumerate(runtimes):
+                center = left + lane * (runtime_index + 0.5)
+                variants = (
+                    ("untyped", case, case_rows.get(runtime), center - offset, ""),
+                    (
+                        "typed",
+                        typed_case,
+                        typed_rows.get(runtime),
+                        center + offset,
+                        f' fill-opacity="0.52" stroke="{colors[runtime]}" stroke-width="1.5"',
+                    ),
+                )
+                for variant, vcase, row, sub_center, style_extra in variants:
+                    value = _milliseconds(row, metric)
+                    if value is None:
+                        status = (
+                            "missing"
+                            if row is None
+                            else row["status"]
+                            if row["status"] != "ok"
+                            else "not available"
+                        )
+                        svg.append(
+                            f'<text x="{sub_center:.2f}" y="{zero - 20}" text-anchor="middle" font-size="10" fill="#8d4232">{html.escape(status)}</text>'
+                        )
+                    else:
+                        bar_height = (value / upper) * plot_height
+                        y = zero - bar_height
+                        svg.append(
+                            f'<rect data-runtime="{html.escape(runtime)}" data-variant="{variant}" data-case="{html.escape(vcase)}" data-ms="{value:.17g}" x="{sub_center - sub_width / 2:.2f}" y="{y:.2f}" width="{sub_width:.2f}" height="{bar_height:.2f}" fill="{colors[runtime]}"{style_extra}><title>{html.escape(runtime)} ({variant}): {value:.6g} ms</title></rect>'
+                        )
+                        svg.append(
+                            f'<text x="{sub_center:.2f}" y="{y - 8:.2f}" text-anchor="middle" font-size="11" font-weight="650">{value:.6g} ms</text>'
+                        )
+                    svg.append(
+                        f'<text x="{sub_center:.2f}" y="{zero + 15}" text-anchor="middle" font-size="10" fill="#596564">{variant}</text>'
+                    )
                 svg.append(
-                    f'<rect data-runtime="{html.escape(runtime)}" data-ms="{value:.17g}" x="{center - bar_width / 2:.2f}" y="{y:.2f}" width="{bar_width:.2f}" height="{bar_height:.2f}" fill="{colors[runtime]}"><title>{html.escape(runtime)}: {value:.6g} ms</title></rect>'
+                    f'<text data-runtime="{html.escape(runtime)}" x="{center:.2f}" y="{zero + 34}" text-anchor="middle" font-size="13" font-weight="600">{html.escape(_runtime_label(runtime))}</text>'
                 )
-                svg.append(
-                    f'<text x="{center:.2f}" y="{y - 10:.2f}" text-anchor="middle" font-size="13" font-weight="650">{value:.6g} ms</text>'
-                )
-            svg.append(
-                f'<text data-runtime="{html.escape(runtime)}" x="{center:.2f}" y="{zero + 26}" text-anchor="middle" font-size="13" font-weight="600">{html.escape(_runtime_label(runtime))}</text>'
-            )
         svg.append("</g>")
-    if not groups:
+    if not panels:
         svg.append(
             f'<text x="36" y="{top + 35}">No scenario measurements in this report.</text>'
         )
@@ -160,8 +291,20 @@ def chart(report, metric):
 
 def dashboard(report):
     rows = []
-    for row in report["rows"]:
-        cells = [html.escape(row[key]) for key in ("case", "runtime", "status")]
+    for row, paired_base, variant, untyped_row in _ordered_dashboard_rows(report):
+        case_cell = html.escape(row["case"])
+        if variant == "typed" and untyped_row is not None:
+            typed_ms = _milliseconds(row, "kernel_seconds")
+            untyped_ms = _milliseconds(untyped_row, "kernel_seconds")
+            if typed_ms is not None and untyped_ms is not None and untyped_ms > 0:
+                case_cell += (
+                    f"<small>typed / untyped: {typed_ms / untyped_ms:.3g}</small>"
+                )
+        cells = [
+            case_cell,
+            html.escape(row["runtime"]),
+            html.escape(row["status"]),
+        ]
         if row["status"] == "ok":
             for metric in ("kernel_seconds", "process_seconds"):
                 summary = row["summary"][metric]
@@ -173,8 +316,17 @@ def dashboard(report):
             cells.append(f"{time_ratio:.3g}" if time_ratio is not None else "—")
         else:
             cells.extend(["—", "—", "—"])
+        row_attrs = ""
+        if paired_base is not None:
+            row_attrs = (
+                f' class="paired-{variant}"'
+                f' data-paired-case="{html.escape(paired_base)}"'
+                f' data-variant="{variant}"'
+            )
         rows.append(
-            "<tr>" + "".join("<td>" + cell + "</td>" for cell in cells) + "</tr>"
+            f"<tr{row_attrs}>"
+            + "".join("<td>" + cell + "</td>" for cell in cells)
+            + "</tr>"
         )
         if row.get("error"):
             rows.append(
@@ -242,6 +394,7 @@ h1{{font-size:clamp(36px,6vw,60px);line-height:1.1;letter-spacing:-.04em;margin:
 a{{color:#a13c26;text-underline-offset:4px}}a:focus-visible,summary:focus-visible,[tabindex]:focus-visible{{outline:3px solid #267a77;outline-offset:4px}}section{{margin:40px 0}}
 figure{{margin:0}}.chart,.table{{overflow-x:auto;border:1px solid #dedfd8}}img{{width:100%;min-width:900px;display:block}}figcaption{{padding:12px 0;font-size:13px;color:#596564}}
 table{{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap;font-variant-numeric:tabular-nums}}th,td{{text-align:left;padding:12px 16px;border-bottom:1px solid #dedfd8}}
+tr.paired-untyped td{{border-bottom:1px dashed #dedfd8;background:#fffdf8}}tr.paired-typed td{{background:#f4f1ea;border-bottom:2px solid #c9cac2}}
 th{{background:#eeeee6}}small{{display:block;color:#596564}}pre{{font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}}article{{border-top:1px solid #dedfd8;padding:12px 0}}summary{{cursor:pointer}}footer{{border-top:1px solid #dedfd8;padding-top:20px;font-size:13px;color:#596564}}
 @media(max-width:600px){{main{{padding:24px 18px}}section{{margin:28px 0}}}}
 </style></head><body><main><header><div class="eyebrow">MULE / PERFORMANCE LABORATORY</div><h1>Measure the work.<br>Keep the evidence.</h1>

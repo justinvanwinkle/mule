@@ -12,6 +12,7 @@ from test.python_host import python_host
 SUITE = Path(__file__).resolve().parents[2] / "perf" / "suite"
 SCENARIOS = (
     "account_ledger",
+    "account_ledger_typed",
     "binary_trees",
     "bytes_codec",
     "closure_pipeline",
@@ -32,16 +33,15 @@ SCENARIOS = (
     "lru_simulation",
     "matrix_multiply",
     "matrix_multiply_typed",
-    "native_struct_ledger",
     "set_operations",
     "word_frequency",
 )
 
 TYPED_PAIRS = (
+    ("account_ledger", "account_ledger_typed"),
     ("float_nbody", "float_nbody_typed"),
     ("integer_accumulation", "integer_accumulation_typed"),
     ("matrix_multiply", "matrix_multiply_typed"),
-    ("account_ledger", "native_struct_ledger"),
 )
 
 
@@ -283,6 +283,7 @@ def test_typed_variation_matches_unannotated_scenario(
 @pytest.mark.parametrize(
     "name",
     (
+        "account_ledger_typed",
         "binary_trees",
         "bytes_codec",
         "dataclass_ast",
@@ -291,7 +292,6 @@ def test_typed_variation_matches_unannotated_scenario(
         "generator_pipeline",
         "integer_accumulation_typed",
         "matrix_multiply_typed",
-        "native_struct_ledger",
         "set_operations",
     ),
 )
@@ -309,3 +309,209 @@ def test_new_and_annotated_scenarios_compile_through_ir1(name):
     ir1_phases(compilation)
     assert compilation.annotations.contradictions == []
     assert compilation.annotations.ignored == set()
+
+
+def _strip_python_types_and_policy(source: str):
+    """Erase type annotations, mule imports, and policy directives from an AST."""
+    import ast as host_ast
+
+    tree = host_ast.parse(source)
+
+    class StripTypesAndPolicy(host_ast.NodeTransformer):
+        def visit_Module(self, node):
+            self.generic_visit(node)
+            if (
+                node.body
+                and isinstance(node.body[0], host_ast.Expr)
+                and isinstance(node.body[0].value, host_ast.Constant)
+                and isinstance(node.body[0].value.value, str)
+            ):
+                node.body = node.body[1:]
+            return node
+
+        def visit_ImportFrom(self, node):
+            if node.module == "mule":
+                return None
+            return node
+
+        def visit_Assign(self, node):
+            self.generic_visit(node)
+            if len(node.targets) == 1 and isinstance(node.targets[0], host_ast.Name):
+                ident = node.targets[0].id
+                if ident in ("__speed__", "__safety__", "__debug_level__"):
+                    return None
+                if ident in ("NAME", "DESCRIPTION"):
+                    node.value = host_ast.Constant(value=ident)
+            return node
+
+        def visit_AnnAssign(self, node):
+            self.generic_visit(node)
+            if node.value is None:
+                return None
+            return host_ast.Assign(targets=[node.target], value=node.value)
+
+        def visit_FunctionDef(self, node):
+            self.generic_visit(node)
+            node.returns = None
+            node.decorator_list = [
+                dec
+                for dec in node.decorator_list
+                if not (
+                    isinstance(dec, host_ast.Call)
+                    and isinstance(dec.func, host_ast.Name)
+                    and dec.func.id == "optimize"
+                )
+            ]
+            return node
+
+        def visit_ClassDef(self, node):
+            self.generic_visit(node)
+            node.decorator_list = [
+                dec
+                for dec in node.decorator_list
+                if not (
+                    isinstance(dec, host_ast.Call)
+                    and isinstance(dec.func, host_ast.Name)
+                    and dec.func.id == "optimize"
+                )
+            ]
+            return node
+
+        def visit_arg(self, node):
+            node.annotation = None
+            return node
+
+    stripped = StripTypesAndPolicy().visit(tree)
+    return host_ast.dump(stripped, include_attributes=False)
+
+
+def _parse_sexprs(source: str):
+    """Parse Common Lisp forms into nested lists/atoms, ignoring ;; comments."""
+    lines = []
+    for line in source.splitlines():
+        in_str = False
+        escaped = False
+        out = []
+        for ch in line:
+            if escaped:
+                out.append(ch)
+                escaped = False
+                continue
+            if ch == "\\":
+                out.append(ch)
+                escaped = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                out.append(ch)
+                continue
+            if ch == ";" and not in_str:
+                break
+            out.append(ch)
+        lines.append("".join(out))
+    text = "\n".join(lines)
+    tokens = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch.isspace():
+            i += 1
+        elif ch in ("(", ")", "'"):
+            tokens.append(ch)
+            i += 1
+        elif ch == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                elif text[j] == '"':
+                    j += 1
+                    break
+                else:
+                    j += 1
+            tokens.append(text[i:j])
+            i = j
+        else:
+            j = i
+            while j < n and not text[j].isspace() and text[j] not in ("(", ")"):
+                j += 1
+            tokens.append(text[i:j])
+            i = j
+
+    pos = 0
+
+    def read_form():
+        nonlocal pos
+        tok = tokens[pos]
+        pos += 1
+        if tok == "'":
+            return ["quote", read_form()]
+        if tok == "(":
+            items = []
+            while tokens[pos] != ")":
+                items.append(read_form())
+            pos += 1
+            return items
+        return tok
+
+    forms = []
+    while pos < len(tokens):
+        forms.append(read_form())
+    return forms
+
+
+def _strip_lisp_types_and_policy(source: str):
+    """Erase Common Lisp declaim/declare/the/:type/of-type from S-expressions."""
+
+    def clean(form):
+        if not isinstance(form, list):
+            return form
+        if not form:
+            return form
+        head = form[0]
+        if head in ("declaim", "declare"):
+            return None
+        if head == "the" and len(form) == 3:
+            return clean(form[2])
+        if (
+            head == "defparameter"
+            and len(form) >= 3
+            and form[1] in ("*name*", "*case*", "*description*")
+        ):
+            return ["defparameter", form[1], form[1]]
+        out = []
+        i = 0
+        while i < len(form):
+            item = form[i]
+            if item in (":type", "of-type") and i + 1 < len(form):
+                i += 2
+                continue
+            cleaned = clean(item)
+            if cleaned is not None:
+                out.append(cleaned)
+            i += 1
+        return out
+
+    forms = []
+    for form in _parse_sexprs(source):
+        cleaned = clean(form)
+        if cleaned is not None:
+            forms.append(cleaned)
+    return forms
+
+
+@pytest.mark.parametrize(("baseline_name", "typed_name"), TYPED_PAIRS)
+def test_typed_variation_code_is_identical_apart_from_types_and_policy_hints(
+    baseline_name, typed_name
+):
+    base_py = (SUITE / f"{baseline_name}.py").read_text(encoding="utf-8")
+    typed_py = (SUITE / f"{typed_name}.py").read_text(encoding="utf-8")
+    assert _strip_python_types_and_policy(typed_py) == _strip_python_types_and_policy(
+        base_py
+    )
+    base_lisp = (SUITE / f"{baseline_name}.lisp").read_text(encoding="utf-8")
+    typed_lisp = (SUITE / f"{typed_name}.lisp").read_text(encoding="utf-8")
+    assert _strip_lisp_types_and_policy(typed_lisp) == _strip_lisp_types_and_policy(
+        base_lisp
+    )
