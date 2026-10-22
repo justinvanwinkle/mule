@@ -39,6 +39,7 @@ from .ir1util import (
     _flush_operand,
     aver,
     flush_combination,
+    flushable_lambda_var_ref_p,
     reoptimize_lvar,
     replace_combination_with_lvar,
     retarget_known_combination,
@@ -105,7 +106,14 @@ class _DeriveNodeType(NodeVisitor, LeafVisitor):
 
     def visit_Ref(self, node: Ref):
         derived = node.leaf.accept(self)
-        if derived is UNKNOWN and node.derived_type is not None:
+        if node.derived_type is not None and (
+            derived is UNKNOWN
+            or (
+                node.derived_type.as_bound().fits(derived.as_bound())
+                if derived.may_be_unbound
+                else node.derived_type.fits(derived)
+            )
+        ):
             return node.derived_type
         return derived
 
@@ -435,23 +443,96 @@ def constant_literal(lvar):
     return lvar.uses[0].accept(_CONSTANT_VALUE)
 
 
-class _BoundConstantValue(_ConstantValue):
-    """The literal a bound single-assignment local or constant ``Ref`` delivers."""
+class _ImmutableLiteralKey(ast.Visitor):
+    """Canonical key for an immutable AST literal, or None."""
 
-    def visit_Ref(self, node):
-        if node.final:
+    def visit_Node(self, node):
+        return None
+
+    def visit_Tuple(self, node: ast.Tuple):
+        keys = [element.accept(self) for element in node.elements]
+        if any(key is None for key in keys):
             return None
-        return node.leaf.accept(self)
+        return ("tuple", tuple(keys))
+
+    def visit_NoneLiteral(self, node: ast.NoneLiteral):
+        return ("none",)
+
+    def visit_BooleanLiteral(self, node: ast.BooleanLiteral):
+        return ("bool", node.value)
+
+    def visit_IntegerLiteral(self, node: ast.IntegerLiteral):
+        return ("int", node.value)
+
+    def visit_TextLiteral(self, node: ast.TextLiteral):
+        return ("str", node.value)
+
+    def visit_BytesLiteral(self, node: ast.BytesLiteral):
+        return ("bytes", node.value)
+
+
+_IMMUTABLE_LITERAL_KEY = _ImmutableLiteralKey()
+
+
+class _BoundConstantValue(_ConstantValue):
+    """The literal a proven-bound local or constant ``Ref`` delivers (``lvar-constant``)."""
+
+    def __init__(self):
+        self._seen: set[LambdaVar] = set()
+        self._ref: Ref | None = None
+
+    def resolve_lvar(self, lvar: Lvar):
+        if len(lvar.uses) != 1 or lvar_type(lvar).may_be_unbound:
+            return None
+        return lvar.uses[0].accept(self)
+
+    def visit_Cast(self, node: Cast):
+        if node.value is None:
+            return None
+        return self.resolve_lvar(node.value)
+
+    def visit_Ref(self, node: Ref):
+        if node.final or node.allow_unbound:
+            return None
+        prev_ref = self._ref
+        self._ref = node
+        try:
+            return node.leaf.accept(self)
+        finally:
+            self._ref = prev_ref
 
     def visit_LambdaVar(self, leaf: LambdaVar):
+        ref = self._ref
         if (
-            leaf.indirect
+            ref is None
+            or leaf in self._seen
+            or not flushable_lambda_var_ref_p(leaf, ref)
             or (leaf.home is not None and leaf in leaf.home.vars)
-            or len(leaf.sets) != 1
-            or leaf.sets[0].value is None
+            or not leaf.sets
         ):
             return None
-        return constant_literal(leaf.sets[0].value)
+        self._seen.add(leaf)
+        try:
+            first_store = leaf.sets[0]
+            if first_store.value is None:
+                return None
+            first_literal = self.resolve_lvar(first_store.value)
+            if first_literal is None:
+                return None
+            if len(leaf.sets) == 1:
+                return first_literal
+            first_key = first_literal.accept(_IMMUTABLE_LITERAL_KEY)
+            if first_key is None:
+                return None
+            for store in leaf.sets[1:]:
+                if store.value is None:
+                    return None
+                other = self.resolve_lvar(store.value)
+                if other is None or other.accept(_IMMUTABLE_LITERAL_KEY) != first_key:
+                    return None
+            return first_literal
+        finally:
+            self._seen.discard(leaf)
 
 
 _BOUND_CONSTANT_VALUE = _BoundConstantValue()
@@ -459,10 +540,8 @@ _BOUND_CONSTANT_VALUE = _BoundConstantValue()
 
 def bound_constant_literal(lvar):
     """The literal a proven-bound ``lvar`` delivers through a ``Constant`` or
-    single-assignment local ``LambdaVar``, or None."""
-    if len(lvar.uses) != 1:
-        return None
-    return lvar.uses[0].accept(_BOUND_CONSTANT_VALUE)
+    constant-assigned local ``LambdaVar``, or None (``lvar-constant``)."""
+    return _BOUND_CONSTANT_VALUE.resolve_lvar(lvar)
 
 
 class _SingletonLiteral(ValueTypeVisitor):
@@ -476,33 +555,24 @@ class _SingletonLiteral(ValueTypeVisitor):
         return ast.IntegerLiteral(exact) if exact is not None else None
 
     def visit_BooleanType(self, fact: BooleanType):
-        if fact.may_be_unbound:
-            return None
-        if fact.minimum == 1 and fact.maximum == 1:
-            return ast.BooleanLiteral(True)
-        if fact.minimum == 0 and fact.maximum == 0:
-            return ast.BooleanLiteral(False)
-        return None
+        exact = fact.exact_boolean()
+        return ast.BooleanLiteral(exact) if exact is not None else None
 
     def visit_NoneType(self, fact: NoneType):
         return None if fact.may_be_unbound else ast.NoneLiteral()
 
     def visit_TextType(self, fact: TextType):
-        text = fact.interned_text()
-        if text is not None:
-            return ast.TextLiteral(text)
-        if not fact.may_be_unbound and fact.literal is not None:
-            return ast.TextLiteral(fact.literal)
-        return None
+        text = fact.exact_text()
+        return ast.TextLiteral(text) if text is not None else None
 
 
 _SINGLETON_LITERAL = _SingletonLiteral()
 
 
 def constant_lvar_value(lvar: Lvar):
-    """The constant literal ``lvar`` delivers, either from a single ``Constant``
-    reference or from a singleton derived type."""
-    literal = constant_literal(lvar)
+    """The constant literal ``lvar`` delivers, either from ``bound_constant_literal``
+    or from a singleton derived type (``lvar-value``)."""
+    literal = bound_constant_literal(lvar)
     if literal is not None:
         return literal
     return lvar_type(lvar).accept(_SINGLETON_LITERAL)
@@ -758,9 +828,10 @@ def replace_combination_with_constant(node: Combination, literal) -> None:
 
 
 def _flush_dead_operands(block) -> None:
-    """Delete references whose value is unused and whose evaluation has no
-    effect: constants, known-function references, and lambda references."""
-    for node in list(block.nodes()):
+    """Delete nodes whose value is unused and whose evaluation has no
+    effect, walking backwards so producers exposed by flushing a call
+    are deleted in the same pass (``flush-dead-code``)."""
+    for node in reversed(list(block.nodes())):
         if node.prev is None:
             continue
         node.accept(_FLUSH_DEAD_REFERENCE)

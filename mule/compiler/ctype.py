@@ -425,6 +425,9 @@ class ValueType:
     def exact_integer(self):
         return None
 
+    def exact_boolean(self) -> bool | None:
+        return None
+
     def exact_length(self) -> int | None:
         return None
 
@@ -1175,6 +1178,15 @@ class BooleanType(IntegerType):
     def exact_integer(self):
         return None
 
+    def exact_boolean(self) -> bool | None:
+        if self.may_be_unbound:
+            return None
+        if self.minimum == 1 and self.maximum == 1:
+            return True
+        if self.minimum == 0 and self.maximum == 0:
+            return False
+        return None
+
     def fixnum_domain(self):
         return None
 
@@ -1530,7 +1542,7 @@ class TextType(PrimitiveType):
         return TextType(literal, may_be_unbound=unbound)
 
     def widen(self, new):
-        if new.fits_text(TEXT_TYPE) and self.literal != new.interned_text():
+        if new.fits_text(TEXT_TYPE) and self.literal != new.exact_text():
             return (
                 TEXT_TYPE if not new.may_be_unbound else TextType(may_be_unbound=True)
             )

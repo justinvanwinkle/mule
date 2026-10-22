@@ -15,8 +15,6 @@ from mule import ast
 from . import fndb
 from .constraint import constant_type
 from .ctype import (
-    INTEGER,
-    UNKNOWN,
     BooleanType,
     BytesType,
     IntegerType,
@@ -27,29 +25,23 @@ from .ctype import (
     ValueTypeVisitor,
 )
 from .ir1opt import (
-    _flush_operand,
-    bound_constant_literal,
     constant_literal,
+    constant_lvar_value,
     lvar_type,
     replace_combination_with_constant,
     retarget_known_combination,
 )
-from .ir1util import delete_ref, flush_combination, reoptimize_lvar, unlink_node
+from .ir1util import is_pure_bound_ref, reoptimize_lvar
 from .knownfun import FunInfo, deftransform
 from .node import (
     CallKind,
     Combination,
     Constant,
-    KnownFunction,
-    Lambda,
-    LambdaVar,
     LeafVisitor,
     Lvar,
     Node,
     NodeVisitor,
     Ref,
-    Set,
-    linked,
 )
 
 _MAX_CONSTANT_CONTAINER_ELEMENTS = 32
@@ -149,96 +141,6 @@ def _extract_build_constant_elements(
     return tuple(elements)
 
 
-class _SetToVar(NodeVisitor):
-    """Whether a node is a binding store to ``var``."""
-
-    def __init__(self, var: LambdaVar):
-        self.var = var
-
-    def visit_Node(self, node) -> bool:
-        return False
-
-    def visit_Set(self, node: Set) -> bool:
-        return node.var is self.var and node.value is not None
-
-
-def _lambda_var_bound_at(leaf: LambdaVar, ref: Ref) -> bool:
-    if any(store.value is None for store in leaf.sets):
-        return False
-    if leaf.home is not None and leaf in leaf.home.vars:
-        return True
-    checker = _SetToVar(leaf)
-    for node in ref.block.nodes():
-        if node is ref:
-            return False
-        if node.accept(checker):
-            return True
-    return False
-
-
-class _SafeDroppedOperand(NodeVisitor, LeafVisitor):
-    """Whether an operand is a single-use, non-raising ``Ref``."""
-
-    def __init__(self, lvar: Lvar):
-        self.lvar = lvar
-        self._ref: Ref | None = None
-
-    def visit_Node(self, node) -> bool:
-        return False
-
-    def visit_Ref(self, node: Ref) -> bool:
-        if node.final or lvar_type(self.lvar).may_be_unbound:
-            return False
-        self._ref = node
-        return node.leaf.accept(self)
-
-    def visit_Leaf(self, leaf) -> bool:
-        return False
-
-    def visit_Constant(self, leaf: Constant) -> bool:
-        return True
-
-    def visit_KnownFunction(self, leaf: KnownFunction) -> bool:
-        return True
-
-    def visit_Lambda(self, leaf: Lambda) -> bool:
-        return True
-
-    def visit_LambdaVar(self, leaf: LambdaVar) -> bool:
-        if leaf.type is not None:
-            return not leaf.type.may_be_unbound
-        ref = linked(self._ref, leaf, "reference")
-        if ref.derived_type is not None and ref.derived_type is not UNKNOWN:
-            return not ref.derived_type.may_be_unbound
-        return _lambda_var_bound_at(leaf, ref)
-
-
-def _is_safe_dropped_operand(lvar: Lvar) -> bool:
-    if len(lvar.uses) != 1:
-        return False
-    return lvar.uses[0].accept(_SafeDroppedOperand(lvar))
-
-
-class _DeletePureRef(NodeVisitor):
-    def visit_Ref(self, node: Ref) -> None:
-        delete_ref(node)
-        unlink_node(node)
-
-
-_DELETE_PURE_REF = _DeletePureRef()
-
-
-def _delete_pure_ref(lvar: Lvar) -> None:
-    uses = list(lvar.uses)
-    lvar.dest = None
-    for use in uses:
-        use.lvar = None
-    lvar.uses = []
-    for use in uses:
-        if use.prev is not None:
-            use.accept(_DELETE_PURE_REF)
-
-
 class _ReflexiveEqualityType(ValueTypeVisitor):
     """Whether a value type is a bound primitive with reflexive equality."""
 
@@ -269,51 +171,6 @@ _REFLEXIVE_EQUALITY_TYPE = _ReflexiveEqualityType()
 
 def _has_reflexive_equality(fact: ValueType) -> bool:
     return bool(fact.accept(_REFLEXIVE_EQUALITY_TYPE))
-
-
-class _LeftTypeLiteral(ValueTypeVisitor):
-    """Extract a known primitive AST literal from ``left_lvar``'s value type."""
-
-    def visit_ValueType(self, fact: ValueType) -> ast.Node | None:
-        return None
-
-    def visit_TextType(self, fact: TextType) -> ast.Node | None:
-        if not fact.may_be_unbound and fact.literal is not None:
-            return ast.TextLiteral(fact.literal)
-        return None
-
-    def visit_IntegerType(self, fact: IntegerType) -> ast.Node | None:
-        exact = fact.exact_integer()
-        if exact is not None and fact.fits(INTEGER):
-            return ast.IntegerLiteral(exact)
-        return None
-
-    def visit_BooleanType(self, fact: BooleanType) -> ast.Node | None:
-        if (
-            not fact.may_be_unbound
-            and fact.minimum is not None
-            and fact.minimum == fact.maximum
-        ):
-            if fact.minimum == 1:
-                return ast.BooleanLiteral(True)
-            if fact.minimum == 0:
-                return ast.BooleanLiteral(False)
-        return None
-
-    def visit_NoneType(self, fact: NoneType) -> ast.Node | None:
-        if not fact.may_be_unbound:
-            return ast.NoneLiteral(None)
-        return None
-
-
-_LEFT_TYPE_LITERAL = _LeftTypeLiteral()
-
-
-def _extract_left_constant_literal(left_lvar: Lvar) -> ast.Node | None:
-    literal = bound_constant_literal(left_lvar)
-    if literal is not None:
-        return literal
-    return lvar_type(left_lvar).accept(_LEFT_TYPE_LITERAL)
 
 
 class _PrimitiveElementComparator(ast.Visitor):
@@ -499,10 +356,10 @@ def _decide_constant_containment(
     compile time and ``left_lvar`` can be safely dropped, or ``None`` otherwise."""
     if not (
         1 <= len(elements) <= _MAX_CONSTANT_CONTAINER_ELEMENTS
-        and _is_safe_dropped_operand(left_lvar)
+        and is_pure_bound_ref(left_lvar)
     ):
         return None
-    left_const = _extract_left_constant_literal(left_lvar)
+    left_const = constant_lvar_value(left_lvar)
     if left_const is not None:
         comparator = left_const.accept(_MAKE_PRIMITIVE_COMPARATOR)
         if comparator is not None:
@@ -517,8 +374,7 @@ def _decide_constant_containment(
     return None
 
 
-def _fold_containment_to_bool(node: Combination, left_lvar: Lvar, result: bool) -> None:
-    _delete_pure_ref(left_lvar)
+def _fold_containment_to_bool(node: Combination, result: bool) -> None:
     folded = ast.BooleanLiteral(result)
     folded.span = node.source.span if node.source is not None else None
     replace_combination_with_constant(node, folded)
@@ -550,15 +406,13 @@ def _transform_small_containment(
         ):
             return False
         if len(elements) == 0:
-            if not _is_safe_dropped_operand(left_lvar):
+            if not is_pure_bound_ref(left_lvar):
                 return False
-            _fold_containment_to_bool(node, left_lvar, empty_result)
+            _fold_containment_to_bool(node, empty_result)
             return True
         found = _decide_constant_containment(left_lvar, elements)
         if found is not None:
-            _fold_containment_to_bool(
-                node, left_lvar, not found if empty_result else found
-            )
+            _fold_containment_to_bool(node, not found if empty_result else found)
             return True
         if len(elements) != 1:
             return False
@@ -590,19 +444,15 @@ def _transform_small_containment(
     ):
         return False
     if len(build_node.args) == 0:
-        if not _is_safe_dropped_operand(left_lvar):
+        if not is_pure_bound_ref(left_lvar):
             return False
-        _fold_containment_to_bool(node, left_lvar, empty_result)
-        flush_combination(build_node)
+        _fold_containment_to_bool(node, empty_result)
         return True
     elements = _extract_build_constant_elements(build_node)
     if elements is not None:
         found = _decide_constant_containment(left_lvar, elements)
         if found is not None:
-            _fold_containment_to_bool(
-                node, left_lvar, not found if empty_result else found
-            )
-            flush_combination(build_node)
+            _fold_containment_to_bool(node, not found if empty_result else found)
             return True
     if len(build_node.args) != 1:
         return False
@@ -614,8 +464,6 @@ def _transform_small_containment(
         return False
     build_node.args = []
     retarget_known_combination(node, single_info, [left_lvar, elem_lvar])
-    _flush_operand(build_node.fun)
-    unlink_node(build_node)
     return True
 
 

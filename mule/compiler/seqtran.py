@@ -37,6 +37,7 @@ from .ir1util import (
     delete_set,
     insert_node_after,
     insert_node_before,
+    is_pure_bound_ref,
     reoptimize_lvar,
     replace_combination_with_lvar,
     retarget_known_combination,
@@ -238,19 +239,6 @@ class _EmptyContainerProducer(NodeVisitor):
 _EMPTY_CONTAINER_PRODUCER = _EmptyContainerProducer()
 
 
-class _SetToVar(NodeVisitor):
-    """Whether a node is a binding store to ``var``."""
-
-    def __init__(self, var: LambdaVar):
-        self.var = var
-
-    def visit_Node(self, node) -> bool:
-        return False
-
-    def visit_Set(self, node: Set) -> bool:
-        return node.var is self.var and node.value is not None
-
-
 class _ExpressionTempStore(NodeVisitor, LeafVisitor):
     """Extract ``(Set, temporary)`` when ``node`` stores into a single-set
     expression temporary ``LambdaVar``."""
@@ -351,81 +339,8 @@ def _following_node_in_block(node: Node) -> Node | None:
     return ctran.next
 
 
-def _lambda_var_bound_at(leaf: LambdaVar, ref: Ref) -> bool:
-    if any(store.value is None for store in leaf.sets):
-        return False
-    if leaf.home is not None and leaf in leaf.home.vars:
-        return True
-    checker = _SetToVar(leaf)
-    for node in ref.block.nodes():
-        if node is ref:
-            return False
-        if node.accept(checker):
-            return True
-    return False
-
-
-class _SafeDroppedElement(NodeVisitor, LeafVisitor):
-    """Whether an unselected tuple element is a single-use, non-raising ``Ref``."""
-
-    def __init__(self, lvar: Lvar):
-        self.lvar = lvar
-        self._ref: Ref | None = None
-
-    def visit_Node(self, node) -> bool:
-        return False
-
-    def visit_Ref(self, node: Ref) -> bool:
-        if node.final or lvar_type(self.lvar).may_be_unbound:
-            return False
-        self._ref = node
-        return node.leaf.accept(self)
-
-    def visit_Leaf(self, leaf) -> bool:
-        return False
-
-    def visit_Constant(self, leaf: Constant) -> bool:
-        return True
-
-    def visit_KnownFunction(self, leaf: KnownFunction) -> bool:
-        return True
-
-    def visit_Lambda(self, leaf: Lambda) -> bool:
-        return True
-
-    def visit_LambdaVar(self, leaf: LambdaVar) -> bool:
-        if leaf.type is not None:
-            return not leaf.type.may_be_unbound
-        ref = linked(self._ref, leaf, "reference")
-        if ref.derived_type is not None and ref.derived_type is not UNKNOWN:
-            return not ref.derived_type.may_be_unbound
-        return _lambda_var_bound_at(leaf, ref)
-
-
-def _is_safe_dropped_element(lvar: Lvar) -> bool:
-    if len(lvar.uses) != 1:
-        return False
-    return lvar.uses[0].accept(_SafeDroppedElement(lvar))
-
-
-class _DeletePureRef(NodeVisitor):
-    def visit_Ref(self, node: Ref) -> None:
-        delete_ref(node)
-        unlink_node(node)
-
-
-_DELETE_PURE_REF = _DeletePureRef()
-
-
-def _delete_pure_ref(lvar: Lvar) -> None:
-    uses = list(lvar.uses)
-    lvar.dest = None
-    for use in uses:
-        use.lvar = None
-    lvar.uses = []
-    for use in uses:
-        if use.prev is not None:
-            use.accept(_DELETE_PURE_REF)
+_is_safe_dropped_element = is_pure_bound_ref
+_delete_pure_ref = _flush_operand
 
 
 @deftransform("%unpack")
@@ -550,13 +465,10 @@ def _transform_unpack(node: Combination) -> bool:
         assert const_elements is not None
         for i in range(n):
             ref_call_i = ref_calls[i]
-            load_i = loads[i]
             elem_lit = const_elements[i]
             if ref_call_i.source is not None:
                 elem_lit = replace(elem_lit, span=ref_call_i.source.span)
             replace_combination_with_constant(ref_call_i, elem_lit)
-            delete_ref(load_i)
-            unlink_node(load_i)
         _delete_pure_ref(seq_lvar)
 
     delete_ref(discard_ref)
@@ -692,8 +604,6 @@ def _transform_empty_container_not(node: Combination) -> bool:
     folded = ast.BooleanLiteral(True)
     folded.span = node.source.span if node.source is not None else None
     replace_combination_with_constant(node, folded)
-    _flush_operand(build_node.fun)
-    unlink_node(build_node)
     return True
 
 

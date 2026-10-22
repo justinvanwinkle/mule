@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, overload
 
+from .ctype import UNKNOWN
 from .node import (
     BasicVar,
     Bind,
@@ -30,6 +31,7 @@ from .node import (
     If,
     KnownFunction,
     Lambda,
+    LambdaVar,
     Leaf,
     LeafVisitor,
     Lexenv,
@@ -629,25 +631,128 @@ class _DeleteNode:
         pass
 
 
-class _FlushDeadReference(NodeVisitor, LeafVisitor):
-    """Deletes an unused reference whose evaluation has no effect."""
+class _SetToVar(NodeVisitor):
+    """Whether a node is a binding store to ``var``."""
 
-    def visit_Ref(self, node):
-        if node.lvar is None and not node.final and node.leaf.accept(self):
+    def __init__(self, var: LambdaVar):
+        self.var = var
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Set(self, node: Set) -> bool:
+        return node.var is self.var and node.value is not None
+
+
+def lambda_var_bound_at(leaf: LambdaVar, ref: Ref) -> bool:
+    """Whether ``leaf`` is structurally guaranteed to be bound at ``ref``
+    even before flow analysis."""
+    if leaf.expression_temporary:
+        return True
+    if leaf.indirect or any(store.value is None for store in leaf.sets):
+        return False
+    if leaf.home is not None and leaf in leaf.home.vars:
+        return True
+    if ref.prev is None:
+        return False
+    block = ref.block
+    checker = _SetToVar(leaf)
+    for node in block.nodes():
+        if node is ref:
+            break
+        if node.accept(checker):
+            return True
+    if (
+        leaf.home is not None
+        and ref.home_lambda is leaf.home
+        and leaf.home.bind is not None
+    ):
+        bind_block = leaf.home.bind.block
+        if bind_block is not block and any(
+            store.prev is not None
+            and store.block is bind_block
+            and store.value is not None
+            for store in leaf.sets
+        ):
+            return True
+    return False
+
+
+def flushable_lambda_var_ref_p(leaf: LambdaVar, ref: Ref) -> bool:
+    """Whether ``ref`` to ``leaf`` is proven bound and side-effect-free."""
+    if leaf.indirect or any(store.value is None for store in leaf.sets):
+        return False
+    if leaf.type is not None:
+        return not leaf.type.may_be_unbound
+    if ref.derived_type is not None and ref.derived_type is not UNKNOWN:
+        return not ref.derived_type.may_be_unbound
+    return lambda_var_bound_at(leaf, ref)
+
+
+class _IsFlushableRef(NodeVisitor, LeafVisitor):
+    """Whether a node is a ``Ref`` whose evaluation has no side effects and
+    cannot raise ``UnboundLocalError`` or ``NameError`` (``flushable-reference-p``)."""
+
+    def __init__(self):
+        self._ref: Ref | None = None
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Ref(self, node: Ref) -> bool:
+        if node.final or node.allow_unbound:
+            return False
+        self._ref = node
+        ok = node.leaf.accept(self)
+        self._ref = None
+        return ok
+
+    def visit_Leaf(self, leaf) -> bool:
+        return False
+
+    def visit_Constant(self, leaf) -> bool:
+        return True
+
+    def visit_KnownFunction(self, leaf) -> bool:
+        return True
+
+    def visit_Lambda(self, leaf) -> bool:
+        return True
+
+    def visit_LambdaVar(self, leaf: LambdaVar) -> bool:
+        ref = self._ref
+        return ref is not None and flushable_lambda_var_ref_p(leaf, ref)
+
+
+_IS_FLUSHABLE_REF = _IsFlushableRef()
+
+
+def is_flushable_ref(node: Node) -> bool:
+    """Whether ``node`` is a side-effect-free, proven-bound ``Ref``."""
+    return node.accept(_IS_FLUSHABLE_REF)
+
+
+def is_pure_bound_ref(lvar: Lvar) -> bool:
+    """Whether ``lvar`` is produced by a single flushable ``Ref``."""
+    return len(lvar.uses) == 1 and is_flushable_ref(lvar.uses[0])
+
+
+class _FlushDeadReference(NodeVisitor):
+    """Deletes an unused reference or flushable call whose evaluation has no effect."""
+
+    def visit_Ref(self, node: Ref):
+        if node.lvar is None and is_flushable_ref(node):
             delete_ref(node)
             unlink_node(node)
 
-    def visit_Leaf(self, leaf):
-        return False
-
-    def visit_Constant(self, leaf):
-        return True
-
-    def visit_KnownFunction(self, leaf):
-        return True
-
-    def visit_Lambda(self, leaf):
-        return True
+    def visit_Combination(self, node: Combination):
+        if (
+            node.lvar is None
+            and node.kind is CallKind.KNOWN
+            and node.fun_info is not None
+            and node.fun_info.flushable
+        ):
+            flush_combination(node)
 
 
 _FLUSH_DEAD_REFERENCE = _FlushDeadReference()

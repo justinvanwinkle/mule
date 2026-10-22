@@ -38,14 +38,13 @@ from .ctype import (
     ValueTypeVisitor,
 )
 from .ir1opt import (
-    bound_constant_literal,
-    flush_combination,
+    constant_lvar_value,
     lvar_type,
     replace_combination_with_constant,
 )
 from .ir1util import (
     _flush_operand,
-    delete_ref,
+    is_flushable_ref,
     replace_combination_with_lvar,
     retarget_known_combination,
     unlink_node,
@@ -54,13 +53,8 @@ from .knownfun import deftransform, fun_info
 from .node import (
     CallKind,
     Combination,
-    Constant,
-    Lambda,
-    LambdaVar,
-    LeafVisitor,
     Lvar,
     NodeVisitor,
-    Ref,
 )
 
 _INVERTED_COMPARISONS = {
@@ -134,31 +128,28 @@ def _transform_unary_not(node: Combination) -> bool:
     if inverted_name is not None and len(producer.args) == 2:
         left, right = producer.args
         producer.args = []
-        retarget_known_combination(node, fun_info(inverted_name), [left, right])
         _flush_operand(producer.fun)
         unlink_node(producer)
+        retarget_known_combination(node, fun_info(inverted_name), [left, right])
         return True
     inverted_order = _INVERTED_ORDER_COMPARISONS.get(name)
     if inverted_order is not None and len(producer.args) == 2:
         left, right = producer.args
         if _has_invertible_total_order(lvar_type(left), lvar_type(right)):
             producer.args = []
-            retarget_known_combination(node, inverted_order, [left, right])
             _flush_operand(producer.fun)
             unlink_node(producer)
+            retarget_known_combination(node, inverted_order, [left, right])
             return True
     return False
 
 
-class _SideEffectFreeRef(NodeVisitor, LeafVisitor):
+class _SideEffectFreeRef(NodeVisitor):
     """Whether a node is a reference or pure display whose evaluation cannot
     raise or have side effects."""
 
     def visit_Node(self, node):
-        return False
-
-    def visit_Ref(self, node: Ref):
-        return node.leaf.accept(self)
+        return is_flushable_ref(node)
 
     def visit_Combination(self, node: Combination):
         return (
@@ -167,18 +158,6 @@ class _SideEffectFreeRef(NodeVisitor, LeafVisitor):
             and node.fun_info.name in {"%build_tuple", "%build_list"}
             and all(_is_side_effect_free_ref(arg) for arg in node.args)
         )
-
-    def visit_Leaf(self, leaf):
-        return False
-
-    def visit_Constant(self, leaf: Constant):
-        return True
-
-    def visit_Lambda(self, leaf: Lambda):
-        return True
-
-    def visit_LambdaVar(self, leaf: LambdaVar):
-        return not leaf.indirect
 
 
 _SIDE_EFFECT_FREE_REF = _SideEffectFreeRef()
@@ -193,36 +172,10 @@ def _is_side_effect_free_ref(lvar: Lvar) -> bool:
 _side_effect_free_operand = _is_side_effect_free_ref
 
 
-class _FlushFlushedRef(NodeVisitor):
-    def visit_Ref(self, node: Ref):
-        if node.prev is not None and node.lvar is None and not node.final:
-            delete_ref(node)
-            unlink_node(node)
-
-    def visit_Combination(self, node: Combination):
-        if (
-            node.prev is not None
-            and node.lvar is None
-            and node.kind is CallKind.KNOWN
-            and node.fun_info is not None
-            and node.fun_info.flushable
-        ):
-            operand_uses = [use for arg in node.args for use in arg.uses]
-            flush_combination(node)
-            for use in operand_uses:
-                use.accept(self)
-
-
-_FLUSH_FLUSHED_REF = _FlushFlushedRef()
-
-
 def _replace_comparison_with_bool(node: Combination, value: bool) -> None:
-    operand_uses = [use for arg in node.args for use in arg.uses]
     folded = ast.BooleanLiteral(value)
     folded.span = node.source.span if node.source is not None else None
     replace_combination_with_constant(node, folded)
-    for use in operand_uses:
-        use.accept(_FLUSH_FLUSHED_REF)
 
 
 class _IsNoneType(ValueTypeVisitor):
@@ -231,20 +184,6 @@ class _IsNoneType(ValueTypeVisitor):
 
     def visit_NoneType(self, fact: NoneType) -> bool:
         return not fact.may_be_unbound
-
-
-class _BooleanSingletonValue(ValueTypeVisitor):
-    def visit_ValueType(self, fact: ValueType) -> bool | None:
-        return None
-
-    def visit_BooleanType(self, fact: BooleanType) -> bool | None:
-        if (
-            not fact.may_be_unbound
-            and fact.minimum is not None
-            and fact.minimum == fact.maximum
-        ):
-            return bool(fact.minimum)
-        return None
 
 
 class _DisjointFromNone(ValueTypeVisitor):
@@ -313,7 +252,6 @@ class _EqualityFamily(ValueTypeVisitor):
 
 
 _IS_NONE_TYPE = _IsNoneType()
-_BOOLEAN_SINGLETON_VALUE = _BooleanSingletonValue()
 _DISJOINT_FROM_NONE = _DisjointFromNone()
 _EQUALITY_FAMILY = _EqualityFamily()
 
@@ -331,9 +269,9 @@ def _identity_comparison(left_type: ValueType, right_type: ValueType) -> bool | 
         if left_type.accept(_DISJOINT_FROM_NONE):
             return False
         return None
-    left_bool = left_type.accept(_BOOLEAN_SINGLETON_VALUE)
+    left_bool = left_type.exact_boolean()
     if left_bool is not None:
-        right_bool = right_type.accept(_BOOLEAN_SINGLETON_VALUE)
+        right_bool = right_type.exact_boolean()
         if right_bool is not None:
             return left_bool == right_bool
     return None
@@ -420,7 +358,7 @@ _TEXT_LITERAL_VALUE = _TextLiteralValue()
 def _lvar_text_type(lvar: Lvar) -> ValueType:
     value_type = lvar_type(lvar)
     if value_type.fits(TEXT_TYPE) and value_type.exact_text() is None:
-        constant = bound_constant_literal(lvar)
+        constant = constant_lvar_value(lvar)
         if constant is not None:
             literal = constant.accept(_TEXT_LITERAL_VALUE)
             if literal is not None:

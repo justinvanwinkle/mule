@@ -408,3 +408,37 @@ def test_getitem_slice_optimizer_registered_via_defoptimizer():
     assert list(known_calls(fn, "%make_slice")) == []
     assert len(list(known_calls(fn, "%getslice"))) == 1
     check_ir1_consistency(compilation.components)
+
+
+def test_constant_lvar_value_unifies_multi_set_and_flushes_bound_refs():
+    compilation = compile_source(
+        "def f(cond, x):\n"
+        " y = x\n"
+        " if cond:\n"
+        "  state = 'ready'\n"
+        " else:\n"
+        "  state = 'ready'\n"
+        " return (y, state)[1] == 'ready'\n"
+    )
+    fn = compilation.lambdas[1]
+    assert list(known_calls(fn, "%build_tuple")) == []
+    assert list(known_calls(fn, "%getitem")) == []
+    assert list(known_calls(fn, "%compare_equal")) == []
+    assert fn.component is not None
+    sets = [
+        node
+        for block in fn.component.blocks()
+        for node in block.nodes()
+        if isinstance(node, Set)
+    ]
+    assert {s.var.name for s in sets} == {"y", "state"}
+    for s in sets:
+        assert s.var.refs == []
+    ret = fn.return_
+    assert isinstance(ret, Return)
+    use = ret.result.use()
+    assert isinstance(use, Ref)
+    assert isinstance(use.leaf, Constant)
+    assert isinstance(use.leaf.value, ast.BooleanLiteral)
+    assert use.leaf.value.value is True
+    check_ir1_consistency(compilation.components)

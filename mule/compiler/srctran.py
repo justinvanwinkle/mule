@@ -51,14 +51,15 @@ from .ctype import (
     ValueType,
 )
 from .ir1opt import (
-    constant_literal,
+    constant_lvar_value,
     lvar_type,
     replace_combination_with_constant,
 )
 from .ir1util import (
     _flush_operand,
-    delete_ref,
     flush_combination,
+    is_flushable_ref,
+    is_pure_bound_ref,
     replace_combination_with_lvar,
     retarget_known_combination,
     unlink_node,
@@ -68,8 +69,6 @@ from .node import (
     CallKind,
     Combination,
     Constant,
-    KnownFunction,
-    Lambda,
     LambdaVar,
     LeafVisitor,
     Lvar,
@@ -118,47 +117,30 @@ _EXACT_BYTES_LITERAL = _ExactBytesLiteral()
 
 
 def _exact_int_literal(lvar: Lvar) -> int | None:
-    literal = constant_literal(lvar)
-    if literal is not None:
-        return literal.accept(_EXACT_INT_LITERAL)
-    if not _is_pure_bound_ref(lvar):
+    if not is_pure_bound_ref(lvar):
         return None
-    vtype = lvar_type(lvar)
-    if not vtype.fits(INTEGER):
-        return None
-    return vtype.exact_integer()
+    literal = constant_lvar_value(lvar)
+    return literal.accept(_EXACT_INT_LITERAL) if literal is not None else None
 
 
 def _exact_bool_literal(lvar: Lvar) -> bool | None:
-    literal = constant_literal(lvar)
-    if literal is not None:
-        return literal.accept(_EXACT_BOOL_LITERAL)
-    if not _is_pure_bound_ref(lvar):
+    if not is_pure_bound_ref(lvar):
         return None
-    vtype = lvar_type(lvar)
-    if not vtype.fits(BOOLEAN):
-        return None
-    if vtype.minimum == 1 and vtype.maximum == 1:
-        return True
-    if vtype.minimum == 0 and vtype.maximum == 0:
-        return False
-    return None
+    literal = constant_lvar_value(lvar)
+    return literal.accept(_EXACT_BOOL_LITERAL) if literal is not None else None
 
 
 def _exact_text_literal(lvar: Lvar) -> str | None:
-    literal = constant_literal(lvar)
-    if literal is not None:
-        return literal.accept(_EXACT_TEXT_LITERAL)
-    if not _is_pure_bound_ref(lvar):
+    if not is_pure_bound_ref(lvar):
         return None
-    vtype = lvar_type(lvar)
-    if not vtype.fits(TEXT_TYPE):
-        return None
-    return vtype.interned_text()
+    literal = constant_lvar_value(lvar)
+    return literal.accept(_EXACT_TEXT_LITERAL) if literal is not None else None
 
 
 def _exact_bytes_literal(lvar: Lvar) -> bytes | None:
-    literal = constant_literal(lvar)
+    if not is_pure_bound_ref(lvar):
+        return None
+    literal = constant_lvar_value(lvar)
     return literal.accept(_EXACT_BYTES_LITERAL) if literal is not None else None
 
 
@@ -195,50 +177,25 @@ def _same_block_bound_refs(
     var: LambdaVar,
     left_use: Node,
     right_use: Node,
-    left_type: ValueType,
 ) -> bool:
-    if any(s.value is None for s in var.sets):
+    if not (is_flushable_ref(left_use) and is_flushable_ref(right_use)):
         return False
     if left_use.prev is None or right_use.prev is None:
         return False
     block = left_use.block
     if right_use.block is not block:
         return False
-    seen_set_before_left = False
     seen_left = False
-    seen_right = False
     for node in block.nodes():
         if node is left_use:
             if seen_left or left_use is right_use:
                 return False
             seen_left = True
         elif node is right_use:
-            if not seen_left:
-                return False
-            seen_right = True
-            break
+            return seen_left
         elif seen_left and node in var.sets:
             return False
-        elif not seen_left and node in var.sets and node.value is not None:
-            seen_set_before_left = True
-    if not seen_right:
-        return False
-    if (
-        var.type is None
-        and left_type is UNKNOWN
-        and var.home is not None
-        and var not in var.home.vars
-    ):
-        if seen_set_before_left:
-            return True
-        if var.home.bind is not None:
-            bind_block = var.home.bind.block
-            if bind_block is not block and any(
-                s.block is bind_block and s.value is not None for s in var.sets
-            ):
-                return True
-        return False
-    return True
+    return False
 
 
 def _same_bound_local(left: Lvar, right: Lvar) -> LambdaVar | None:
@@ -252,82 +209,20 @@ def _same_bound_local(left: Lvar, right: Lvar) -> LambdaVar | None:
     right_var = right_use.accept(_LOCAL_VAR_REF)
     if left_var is not right_var:
         return None
-    left_type = lvar_type(left)
-    right_type = lvar_type(right)
-    if left_type.may_be_unbound or right_type.may_be_unbound:
+    if lvar_type(left).may_be_unbound or lvar_type(right).may_be_unbound:
         return None
-    if not _same_block_bound_refs(left_var, left_use, right_use, left_type):
+    if not _same_block_bound_refs(left_var, left_use, right_use):
         return None
     return left_var
 
 
-class _IsPureBoundRef(NodeVisitor, LeafVisitor):
-    def __init__(self, lvar: Lvar):
-        self.lvar = lvar
-
-    def visit_Node(self, node):
-        return False
-
-    def visit_Ref(self, node: Ref) -> bool:
-        if node.final:
-            return False
-        return node.leaf.accept(self)
-
-    def visit_Leaf(self, leaf):
-        return False
-
-    def visit_Constant(self, leaf: Constant) -> bool:
-        return True
-
-    def visit_KnownFunction(self, leaf: KnownFunction) -> bool:
-        return True
-
-    def visit_Lambda(self, leaf: Lambda) -> bool:
-        return True
-
-    def visit_LambdaVar(self, leaf: LambdaVar) -> bool:
-        if any(s.value is None for s in leaf.sets):
-            return False
-        return not lvar_type(self.lvar).may_be_unbound
-
-
-def _is_pure_bound_ref(lvar: Lvar) -> bool:
-    if len(lvar.uses) != 1:
-        return False
-    return lvar.uses[0].accept(_IsPureBoundRef(lvar))
-
-
-class _DeleteUnusedLocalRef(NodeVisitor, LeafVisitor):
-    def __init__(self):
-        self._ref: Ref | None = None
-
-    def visit_Ref(self, node: Ref):
-        if node.prev is not None and node.lvar is None and not node.final:
-            self._ref = node
-            node.leaf.accept(self)
-            self._ref = None
-
-    def visit_LambdaVar(self, leaf: LambdaVar):
-        ref = self._ref
-        if ref is not None:
-            delete_ref(ref)
-            unlink_node(ref)
-
-
-_DELETE_UNUSED_LOCAL_REF = _DeleteUnusedLocalRef()
-
-
-def _delete_unused_local_ref(lvar: Lvar) -> None:
-    uses = list(lvar.uses)
-    _flush_operand(lvar)
-    for use in uses:
-        use.accept(_DELETE_UNUSED_LOCAL_REF)
+_is_pure_bound_ref = is_pure_bound_ref
+_delete_unused_local_ref = _flush_operand
 
 
 def _replace_with_zero_and_cleanup(node: Combination, dropped_lvar: Lvar) -> bool:
-    if node.lvar is None:
+    if node.lvar is None or not is_pure_bound_ref(dropped_lvar):
         return False
-    _delete_unused_local_ref(dropped_lvar)
     zero = ast.IntegerLiteral(
         0, span=node.source.span if node.source is not None else None
     )
@@ -340,21 +235,13 @@ def _replace_with_constant_and_clean_locals(
 ) -> bool:
     if node.lvar is None:
         return False
-    left, right = node.args
-    _delete_unused_local_ref(left)
-    _delete_unused_local_ref(right)
     literal.span = node.source.span if node.source is not None else None
     replace_combination_with_constant(node, literal)
     return True
 
 
 def _replace_with_lvar_and_clean(node: Combination, value: Lvar) -> bool:
-    for arg in node.args:
-        if arg is not value:
-            _delete_unused_local_ref(arg)
     replace_combination_with_lvar(node, value)
-    if node.lvar is None and value.dest is None:
-        _delete_unused_local_ref(value)
     return True
 
 

@@ -26,6 +26,7 @@ from .ir1opt import (
     _flush_operand,
     constant_literal,
     lvar_type,
+    replace_combination_with_lvar,
 )
 from .ir1util import (
     retarget_known_combination,
@@ -39,9 +40,7 @@ from .node import (
     NodeVisitor,
 )
 from .srctran import (
-    _delete_unused_local_ref,
     _exact_int_literal,
-    _replace_with_lvar_and_clean,
     _rewrite_int_constant_lvar,
 )
 
@@ -112,10 +111,10 @@ def _replace_assoc_binary(
     if not _rewrite_int_constant_lvar(right_lvar, combined):
         return False
     inner_node.args = []
-    retarget_known_combination(node, target_info, [x_lvar, right_lvar])
     _flush_operand(inner_node.fun)
-    _delete_unused_local_ref(c1_lvar)
+    _flush_operand(c1_lvar)
     unlink_node(inner_node)
+    retarget_known_combination(node, target_info, [x_lvar, right_lvar])
     return True
 
 
@@ -132,9 +131,10 @@ def _collapse_assoc_to_lvar(
     node.args = [x_lvar, right_lvar]
     _flush_operand(left_lvar)
     _flush_operand(inner_node.fun)
-    _delete_unused_local_ref(c1_lvar)
+    _flush_operand(c1_lvar)
     unlink_node(inner_node)
-    return _replace_with_lvar_and_clean(node, x_lvar)
+    replace_combination_with_lvar(node, x_lvar)
+    return True
 
 
 def _is_redundant_bitmask(val_lvar: Lvar, mask_lvar: Lvar) -> bool:
@@ -166,9 +166,11 @@ _LSHIFT_NAMES = frozenset({"%left_shift"})
 def _transform_bit_and_modarith(node: Combination) -> bool:
     left, right = node.args
     if _is_redundant_bitmask(left, right):
-        return _replace_with_lvar_and_clean(node, left)
+        replace_combination_with_lvar(node, left)
+        return True
     if _is_redundant_bitmask(right, left):
-        return _replace_with_lvar_and_clean(node, right)
+        replace_combination_with_lvar(node, right)
+        return True
     matched = _match_assoc_int_binary(node, _BIT_AND_NAMES)
     if matched is None:
         return False
