@@ -2505,6 +2505,18 @@ class _ReoptimizeNarrowedKnownCalls(NodeVisitor):
         self.old_lvar_types = old_lvar_types
         self.reoptimized = False
 
+    def visit_If(self, node):
+        new_type = _recompute_lvar_type(node.test)
+        if new_type != self.old_lvar_types.get(node.test) and (
+            new_type.truth_value() is not None
+            or ir1opt.constant_lvar_value(node.test) is not None
+        ):
+            node.reoptimize = True
+            node.block.reoptimize = True
+            if self.lambda_.component is not None:
+                self.lambda_.component.reoptimize = True
+            self.reoptimized = True
+
     def visit_Combination(self, node):
         if node.kind is CallKind.KNOWN and node.fun_info is not None:
             info = node.fun_info

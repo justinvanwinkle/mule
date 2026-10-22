@@ -40,6 +40,7 @@ from .ir1util import (
     aver,
     flush_combination,
     flushable_lambda_var_ref_p,
+    is_pure_bound_ref,
     reoptimize_lvar,
     replace_combination_with_lvar,
     retarget_known_combination,
@@ -63,6 +64,7 @@ from .node import (
     Node,
     NodeVisitor,
     Ref,
+    ValuedNode,
     linked,
 )
 
@@ -139,17 +141,25 @@ class _DeriveNodeType(NodeVisitor, LeafVisitor):
         return node.contract.refine(lvar_type(node.value))
 
     def visit_Combination(self, node: Combination):
+        derived = UNKNOWN
         if (
             node.kind is CallKind.KNOWN
             and node.fun_info is not None
             and node.fun_info.derive_type is not None
         ):
-            derived = node.fun_info.derive_type(node)
-            if derived is not None:
-                return derived
-        if node.kind is not CallKind.KNOWN and node.derived_type is not None:
+            result = node.fun_info.derive_type(node)
+            if result is not None:
+                derived = result
+        if node.derived_type is not None and (
+            derived is UNKNOWN
+            or (
+                node.derived_type.as_bound().fits(derived.as_bound())
+                if derived.may_be_unbound
+                else node.derived_type.fits(derived)
+            )
+        ):
             return node.derived_type
-        return UNKNOWN
+        return derived
 
     def visit_Exit(self, node: Exit):
         return lvar_type(node.value) if node.value is not None else UNKNOWN
@@ -381,6 +391,30 @@ class _PrepareNodeOptimize(NodeVisitor):
 _PREPARE_NODE_OPTIMIZE = _PrepareNodeOptimize()
 
 
+def derive_node_type(
+    node: ValuedNode, ctype: ValueType, *, from_scratch: bool = False
+) -> None:
+    """Record ``ctype`` on ``node.derived_type`` (monotonically unless
+    ``from_scratch``) and trigger ``reoptimize_lvar(node.lvar)`` when changed
+    (``derive-node-type``, ``ir1opt.lisp``)."""
+    old_type = node.derived_type
+    if not from_scratch and old_type is not None and old_type is not UNKNOWN:
+        if ctype is UNKNOWN or (
+            old_type.as_bound().fits(ctype.as_bound())
+            if ctype.may_be_unbound
+            else old_type.fits(ctype)
+        ):
+            new_type = old_type
+        else:
+            new_type = ctype
+    else:
+        new_type = ctype
+    if new_type != old_type:
+        node.derived_type = new_type
+        if node.lvar is not None:
+            reoptimize_lvar(node.lvar)
+
+
 class _UpdateDerivedType(NodeVisitor):
     def __init__(self, old_type: ValueType | None, force: bool):
         self.old_type = old_type
@@ -396,7 +430,6 @@ class _UpdateDerivedType(NodeVisitor):
             new_type = node.accept(_DERIVE_NODE_TYPE)
             node.derived_type = new_type
         if new_type != self.old_type and node.lvar is not None:
-            node.lvar.derived_type = None
             reoptimize_lvar(node.lvar)
 
 
@@ -870,13 +903,23 @@ def _literal_truth(literal):
 
 
 def _optimize_if(node: If) -> bool:
-    """Replace a branch on a literal test by a jump to the live arm."""
+    """Replace a branch on a known-truth test or identical arms by a jump to
+    the live arm (``ir1-optimize-if``, ``ir1opt.lisp``)."""
     literal = constant_literal(node.test)
+    pure_test = literal is not None or is_pure_bound_ref(node.test)
+    if not pure_test:
+        return False
     if literal is None:
-        return False
-    truth = _literal_truth(literal)
+        literal = constant_lvar_value(node.test)
+    if literal is not None:
+        truth = _literal_truth(literal)
+    else:
+        truth = lvar_type(node.test).truth_value()
     if truth is None:
-        return False
+        if node.consequent is node.alternative:
+            truth = True
+        else:
+            return False
     block = node.block
     live = node.consequent if truth else node.alternative
     dead = node.alternative if truth else node.consequent

@@ -2040,9 +2040,26 @@ class TupleType(ValueType):
         return actual.fits_possible_tuple(self)
 
     def fits_tuple(self, expected):
-        return not self.may_be_unbound and (
-            expected.arity is None or self.arity == expected.arity
-        )
+        if self.may_be_unbound:
+            return False
+        if expected.arity is not None and self.arity != expected.arity:
+            return False
+        if expected.elements is not None:
+            if self.arity == 0 and (
+                len(expected.elements) == 0
+                or (expected.arity is None and len(expected.elements) == 1)
+            ):
+                return True
+            if self.elements is None:
+                return all(el is UNKNOWN for el in expected.elements)
+            if expected.arity is None and len(expected.elements) == 1:
+                return all(el.fits(expected.elements[0]) for el in self.elements)
+            if self.arity is None or len(self.elements) != len(expected.elements):
+                return False
+            return all(
+                s_el.fits(e_el) for s_el, e_el in zip(self.elements, expected.elements)
+            )
+        return True
 
     def fits_possible_tuple(self, expected):
         return (

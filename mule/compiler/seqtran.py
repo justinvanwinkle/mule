@@ -27,6 +27,7 @@ from .ctype import (
 from .ir1opt import (
     _flush_operand,
     constant_literal,
+    constant_lvar_value,
     lvar_type,
     replace_combination_with_constant,
 )
@@ -495,15 +496,21 @@ def _transform_tuple_getitem(node: Combination) -> bool:
     if node.lvar is None or len(node.args) != 2:
         return False
     seq_lvar, index_lvar = node.args
-    index_literal = constant_literal(index_lvar)
-    if index_literal is None or index_lvar.uses[0].block is not node.block:
+    if not is_pure_bound_ref(index_lvar) or index_lvar.uses[0].block is not node.block:
+        return False
+    index_literal = constant_lvar_value(index_lvar)
+    if index_literal is None:
         return False
     raw_index = index_literal.accept(_CONSTANT_INDEX)
     if raw_index is None:
         return False
 
-    seq_literal = constant_literal(seq_lvar)
-    if seq_literal is not None and seq_lvar.uses[0].block is node.block:
+    seq_literal = (
+        constant_lvar_value(seq_lvar)
+        if is_pure_bound_ref(seq_lvar) and seq_lvar.uses[0].block is node.block
+        else None
+    )
+    if seq_literal is not None:
         span = node.source.span if node.source is not None else None
         folded = seq_literal.accept(_ConstantIndexable(raw_index, span))
         if folded is None:
@@ -547,13 +554,13 @@ def _transform_constant_getslice(node: Combination) -> bool:
     if node.lvar is None or len(node.args) != 4:
         return False
     for arg in node.args:
-        if len(arg.uses) != 1 or arg.uses[0].block is not node.block:
+        if not is_pure_bound_ref(arg) or arg.uses[0].block is not node.block:
             return False
     seq_lvar, lower_lvar, upper_lvar, step_lvar = node.args
-    seq_literal = constant_literal(seq_lvar)
-    lower_literal = constant_literal(lower_lvar)
-    upper_literal = constant_literal(upper_lvar)
-    step_literal = constant_literal(step_lvar)
+    seq_literal = constant_lvar_value(seq_lvar)
+    lower_literal = constant_lvar_value(lower_lvar)
+    upper_literal = constant_lvar_value(upper_lvar)
+    step_literal = constant_lvar_value(step_lvar)
     if (
         seq_literal is None
         or lower_literal is None
@@ -579,7 +586,7 @@ def _transform_empty_container_not(node: Combination) -> bool:
     if node.lvar is None or len(node.args) != 1 or len(node.fun.uses) != 1:
         return False
     arg = node.args[0]
-    arg_literal = constant_literal(arg)
+    arg_literal = constant_lvar_value(arg) if is_pure_bound_ref(arg) else None
     if arg_literal is not None:
         elements = arg_literal.accept(_CONSTANT_TUPLE_ELEMENTS)
         if elements is not None and len(elements) == 0:
@@ -1110,7 +1117,9 @@ _ATTRIBUTE_NAME = _AttributeName()
 
 
 def _constant_attribute_name(lvar: Lvar) -> str | None:
-    literal = constant_literal(lvar)
+    if not is_pure_bound_ref(lvar):
+        return None
+    literal = constant_lvar_value(lvar)
     return None if literal is None else literal.accept(_ATTRIBUTE_NAME)
 
 

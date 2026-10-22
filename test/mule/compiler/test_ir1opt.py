@@ -442,3 +442,34 @@ def test_constant_lvar_value_unifies_multi_set_and_flushes_bound_refs():
     assert isinstance(use.leaf.value, ast.BooleanLiteral)
     assert use.leaf.value.value is True
     check_ir1_consistency(compilation.components)
+
+
+def test_narrowed_if_branch_folds_in_second_ir1_pass_and_preserves_derived_types():
+    from mule.compiler.ir1opt import derive_node_type
+    from mule.compiler.node import If
+
+    compilation = compile_source(
+        "def f(x) -> int:\n"
+        " flag = bool(x)\n"
+        " if flag:\n"
+        "  if flag:\n"
+        "   return 42\n"
+        "  return 0\n"
+        " return -1\n"
+    )
+    fn = compilation.lambdas[1]
+    assert fn.component is not None
+    ifs = [
+        node
+        for block in fn.component.blocks()
+        for node in block.nodes()
+        if isinstance(node, If)
+    ]
+    assert len(ifs) == 1
+    ret = fn.return_
+    assert isinstance(ret, Return)
+    derive_node_type(ret.result.uses[0], IntegerType(42, 42))
+    assert ret.result.uses[0].derived_type == IntegerType(42, 42)
+    derive_node_type(ret.result.uses[0], INTEGER)
+    assert ret.result.uses[0].derived_type == IntegerType(42, 42)
+    check_ir1_consistency(compilation.components)

@@ -182,3 +182,38 @@ def test_associative_guards_preserve_semantics():
         "import mule\ndef f(x: mule.int64):\n return (x >> 2) >> -1\n"
     )
     assert len(list(known_calls(fn_neg_shift, "%right_shift"))) == 2
+
+
+@pytest.mark.parametrize(
+    ("expr", "op_name", "expected_const"),
+    [
+        ("(3 + x) + 5", "%add", 8),
+        ("(10 + x) - 3", "%add", 7),
+        ("5 + (x + 3)", "%add", 8),
+        ("3 + (x - 10)", "%subtract", 7),
+        ("(0xFF & x) & 0x0F", "%bit_and", 0x0F),
+        ("0x0F & (x & 0xFF)", "%bit_and", 0x0F),
+        ("(0x10 | x) | 0x01", "%bit_or", 0x11),
+        ("0x01 | (x | 0x10)", "%bit_or", 0x11),
+        ("(0xFF ^ x) ^ 0x0F", "%bit_xor", 0xF0),
+        ("0x0F ^ (x ^ 0xFF)", "%bit_xor", 0xF0),
+    ],
+)
+def test_commutative_associative_constant_combination(expr, op_name, expected_const):
+    _, fn = _compile_fn(
+        f"import mule\ndef f(x: mule.int64) -> mule.int64:\n return {expr}\n"
+    )
+    calls = list(known_calls(fn, op_name))
+    assert len(calls) == 1
+    right = constant_literal(calls[0].args[1])
+    assert isinstance(right, ast.IntegerLiteral)
+    assert right.value == expected_const
+
+
+@pytest.mark.parametrize("expr", ["(5 + x) - 5", "5 + (x - 5)"])
+def test_commutative_associative_zero_offset_collapses_to_x(expr):
+    _, fn = _compile_fn(
+        f"import mule\ndef f(x: mule.int64) -> mule.int64:\n return {expr}\n"
+    )
+    assert list(known_calls(fn, "%add")) == []
+    assert list(known_calls(fn, "%subtract")) == []

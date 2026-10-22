@@ -430,3 +430,23 @@ def test_range_prepare_unbounded_or_shadowed_keeps_generic_fallback():
         assert len(list(known_calls(fn, "%sequence_available"))) == 1
         assert len(list(known_calls(fn, "%next_item"))) == 1
         check_ir1_consistency(compilation.components)
+
+
+def test_seqtran_folds_bound_local_constants_in_getitem_getslice_not_and_getattr():
+    compilation = compile_source(
+        "def f(obj):\n"
+        " t = (10, 20, 30)\n"
+        " i = 1\n"
+        " s = 'abcdef'\n"
+        " lo = 1\n"
+        " hi = 4\n"
+        " empty = ()\n"
+        " attr = 'value'\n"
+        " return (t[i], s[lo:hi], not empty, getattr(obj, attr))\n"
+    )
+    fn = compilation.lambdas[1]
+    assert list(known_calls(fn, "%getitem")) == []
+    assert list(known_calls(fn, "%getslice")) == []
+    assert list(known_calls(fn, "%unary_not")) == []
+    assert len(list(known_calls(fn, "%getattr"))) == 1
+    check_ir1_consistency(compilation.components)

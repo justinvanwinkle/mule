@@ -256,3 +256,17 @@ def test_stdlib_type_summary_derives_methods_and_builtins():
     assert builtins["callable"] is BOOLEAN
     assert builtins["all"] is BOOLEAN
     assert builtins["any"] is BOOLEAN
+
+
+def test_tuple_fits_checks_elements():
+    exact = TupleType(2, (IntegerType(1, 1), TextType("a")))
+    general = TupleType(2, (INTEGER, TEXT_TYPE))
+    untyped = TupleType(2, None)
+    variadic_int = TupleType(None, (INTEGER,))
+
+    assert exact.fits(general)
+    assert exact.fits(untyped)
+    assert not untyped.fits(general)
+    assert TupleType(2, (INTEGER, INTEGER)).fits(variadic_int)
+    assert TupleType(0, ()).fits(variadic_int)
+    assert not exact.fits(variadic_int)
