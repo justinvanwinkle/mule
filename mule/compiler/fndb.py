@@ -452,6 +452,7 @@ PROTOCOLS = {
         "cell_new",
         "cell_get",
         "cell_get_optional",
+        "cell_unbound",
         "cell_set",
         "cell_clear",
         "snapshot_locals",

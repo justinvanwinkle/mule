@@ -324,9 +324,16 @@ def move_argument(gen, vop):
 @define_vop("load-closure", results=(None,))
 def load_closure(gen, vop):
     result = vop.results[0]
-    value = gen.operation(f"call ptr @mule_arg(ptr %closure, i32 {vop.codegen_info})")
+    # Bind enumerates the compiler-created immutable environment once. Its
+    # physical buffer stays live through the callable's owned closure tuple.
+    if vop.codegen_info == 0:
+        gen.line("%closure.slots = call ptr @mule_closure_slots(ptr %closure)")
+    slot = gen.operation(
+        f"getelementptr ptr, ptr %closure.slots, i64 {vop.codegen_info}"
+    )
+    value = gen.operation(f"load ptr, ptr {slot}")
+    value = gen.retain(value)
     gen.publish(result, value, release=False)
-    gen.check_pointer(value)
     gen.refine(result.tn, value)
 
 
@@ -1212,7 +1219,15 @@ for _operator, _opcode in COMPARE_OPCODES.items():
 @define_vop("getattr", translate=fndb.GETATTR, args=(OBJECT,), results=(OBJECT,))
 def getattr_(gen, vop):
     receiver = gen.take(vop.args[0])
-    info = vop.codegen_info
+    value = _read_attribute(gen, receiver, vop.codegen_info.name)
+    gen.publish(vop.results[0], value)
+    gen.release(receiver)
+    gen.check_pointer(value)
+    gen.refine(vop.results[0].tn, value)
+
+
+def _read_attribute(gen, receiver, name):
+    """An owned field value, with guarded physical access and dynamic lookup."""
     cache = gen.module.attribute_cache()
     labels = _AttributeSite(gen, receiver, cache, ATTR_FIELD)
     slot = gen.operation(
@@ -1227,16 +1242,12 @@ def getattr_(gen, vop):
     gen.line(f"br label %{labels.join}")
     gen.lines.append(f"{labels.slow}:")
     slow = gen.operation(
-        f"call ptr @mule_get_attr_cached(ptr {receiver}, ptr {gen.module.text(info.name)}, "
+        f"call ptr @mule_get_attr_cached(ptr {receiver}, ptr {gen.module.text(name)}, "
         f"ptr {cache})"
     )
     gen.line(f"br label %{labels.join}")
     gen.lines.append(f"{labels.join}:")
-    gen.pointer_result(
-        vop.results[0],
-        f"phi ptr [{field}, %{loaded}], [{slow}, %{labels.slow}]",
-        (receiver,),
-    )
+    return gen.operation(f"phi ptr [{field}, %{loaded}], [{slow}, %{labels.slow}]")
 
 
 class _AttributeSite:
@@ -1292,7 +1303,14 @@ def hasattr_(gen, vop):
 @define_vop("setattr", translate=fndb.SETATTR, args=(OBJECT, OBJECT))
 def setattr_(gen, vop):
     receiver, value = gen.take(vop.args[0]), gen.take(vop.args[1])
-    info = vop.codegen_info
+    status = _write_attribute(gen, receiver, vop.codegen_info.name, value)
+    gen.release(receiver)
+    gen.release(value)
+    gen.check_status(status)
+
+
+def _write_attribute(gen, receiver, name, value):
+    """Assign a borrowed value, completing old-value destruction before return."""
     cache = gen.module.attribute_cache()
     site = _AttributeSite(gen, receiver, cache, ATTR_FIELD)
     slot = gen.operation(
@@ -1306,14 +1324,62 @@ def setattr_(gen, vop):
     gen.line(f"br label %{site.join}")
     gen.lines.append(f"{site.slow}:")
     slow = gen.operation(
-        f"call i32 @mule_set_attr_cached(ptr {receiver}, ptr {gen.module.text(info.name)}, "
+        f"call i32 @mule_set_attr_cached(ptr {receiver}, ptr {gen.module.text(name)}, "
         f"ptr {value}, ptr {cache})"
     )
     gen.line(f"br label %{site.join}")
     gen.lines.append(f"{site.join}:")
-    status = gen.operation(f"phi i32 [0, %{stored}], [{slow}, %{site.slow}]")
-    gen.release(receiver)
+    return gen.operation(f"phi i32 [0, %{stored}], [{slow}, %{site.slow}]")
+
+
+@define_vop("value-cell-ref", args=(OBJECT,), results=(OBJECT,), arg_escapes=(False,))
+def value_cell_ref(gen, vop):
+    """SBCL's value-cell-ref, guarded for Python's mutable class attributes."""
+    cell = gen.load(vop.args[0])
+    bound = _read_attribute(gen, cell, "bound")
+    gen.check_pointer(bound)
+    truth = gen.operation(f"call i32 @mule.fast.truth(ptr {bound})")
+    gen.release(bound)
+    gen.check_status(truth)
+    present = gen.operation(f"icmp ne i32 {truth}, 0")
+    loaded = gen.fresh("cell.bound")[1:]
+    missing = gen.fresh("cell.unbound")[1:]
+    join = gen.fresh("cell.join")[1:]
+    gen.line(f"br i1 {present}, label %{loaded}, label %{missing}")
+    gen.lines.append(loaded + ":")
+    value = _read_attribute(gen, cell, "value")
+    value_block = gen.current_block()
+    gen.line(f"br label %{join}")
+    gen.lines.append(missing + ":")
+    optional = "@mule.true" if vop.codegen_info else "@mule.false"
+    absent = gen.sequence_call("cell_unbound", [optional])
+    absent_block = gen.current_block()
+    gen.line(f"br label %{join}")
+    gen.lines.append(join + ":")
+    gen.pointer_result(
+        vop.results[0],
+        f"phi ptr [{value}, %{value_block}], [{absent}, %{absent_block}]",
+    )
+
+
+@define_vop("value-cell-set", args=(OBJECT, OBJECT), arg_escapes=(False, True))
+def value_cell_set(gen, vop):
+    cell = gen.load(vop.args[0])
+    value = gen.take(vop.args[1])
+    status = _write_attribute(gen, cell, "value", value)
     gen.release(value)
+    gen.check_status(status)
+    # Recheck the attribute epoch after old-value destruction: it can run Python.
+    status = _write_attribute(gen, cell, "bound", "@mule.true")
+    gen.check_status(status)
+
+
+@define_vop("value-cell-clear", args=(OBJECT,), arg_escapes=(False,))
+def value_cell_clear(gen, vop):
+    cell = gen.load(vop.args[0])
+    status = _write_attribute(gen, cell, "value", "@mule.none")
+    gen.check_status(status)
+    status = _write_attribute(gen, cell, "bound", "@mule.false")
     gen.check_status(status)
 
 
@@ -3334,6 +3400,9 @@ MOVE = move
 COERCE = coerce
 MOVE_ARGUMENT = move_argument
 LOAD_CLOSURE = load_closure
+VALUE_CELL_REF = value_cell_ref
+VALUE_CELL_SET = value_cell_set
+VALUE_CELL_CLEAR = value_cell_clear
 UNBIND_LOCAL = unbind_local
 STORE_GLOBAL = store_global
 UNBIND_GLOBAL = unbind_global
@@ -3381,6 +3450,9 @@ __all__ = [
     "UNARY_OPCODES",
     "UNBIND_GLOBAL",
     "UNBIND_LOCAL",
+    "VALUE_CELL_CLEAR",
+    "VALUE_CELL_REF",
+    "VALUE_CELL_SET",
     "LiteralEmitter",
     "allocate",
     "compiled_call",

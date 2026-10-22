@@ -3682,6 +3682,18 @@ pub unsafe extern "C" fn mule_function_closure(
         value
     }
 }
+/// Borrow immutable entry storage from a compiler-created closure tuple.
+/// The executing function keeps the tuple alive for every slot load.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_closure_slots(closure: Value) -> *const Value {
+    unsafe {
+        let Data::Args(entries, ..) = &(*closure).data else {
+            std::hint::unreachable_unchecked();
+        };
+        entries.as_ptr()
+    }
+}
+
 /// Borrow the closure the argument view carries for the running function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_closure(args: Value) -> Value {

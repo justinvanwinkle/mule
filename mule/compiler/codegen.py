@@ -111,6 +111,7 @@ declare i32 @mule_store_global(ptr, ptr, ptr)
 declare i32 @mule_link_globals(ptr, i64, ptr, ptr, i32)
 declare void @mule_traceback_here(ptr, i32, ptr, ptr, i32, ptr)
 declare ptr @mule_frame_head_slot()
+declare ptr @mule_closure_slots(ptr)
 @mule_safepoint_requested = external global i8
 declare i32 @mule_safepoint()
 declare ptr @mule_namespace()

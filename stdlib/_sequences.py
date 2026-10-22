@@ -3852,6 +3852,12 @@ def cell_get(cell):
     return cell.value
 
 
+def cell_unbound(optional):
+    if optional:
+        return _HEX_MISSING
+    raise NameError("free variable referenced before assignment in enclosing scope")
+
+
 def cell_get_optional(cell):
     if not cell.bound:
         return _HEX_MISSING

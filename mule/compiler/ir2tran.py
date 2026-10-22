@@ -1787,13 +1787,12 @@ class _LoadLeaf(LeafVisitor):
         result, discard = converter.result_tn(node)
         environment = converter.environment
         if leaf in environment.cells:
-            cell = converter.cell(node, leaf)
-            protocol = "cell_get_optional" if node.allow_unbound else "cell_get"
             converter.emit(
-                templates_for(fndb.PROTOCOLS[protocol])[0],
+                vops.VALUE_CELL_REF,
                 node,
-                args=(cell,),
+                args=(environment.cells[leaf],),
                 results=(result,),
+                info=node.allow_unbound,
             )
         else:
             source = environment.copies.get(leaf) or converter.var_tn(leaf)
@@ -1838,23 +1837,19 @@ class _StoreVar(LeafVisitor):
         converter = self.converter
         node = linked(self.node, self, "assignment node")
         if leaf in converter.environment.cells:
-            cell = converter.cell(node, leaf)
-            result = converter.temporary()
+            cell = converter.environment.cells[leaf]
             if node.value is None:
                 converter.emit(
-                    templates_for(fndb.PROTOCOLS["cell_clear"])[0],
+                    vops.VALUE_CELL_CLEAR,
                     node,
                     args=(cell,),
-                    results=(result,),
                 )
             else:
                 converter.emit(
-                    templates_for(fndb.PROTOCOLS["cell_set"])[0],
+                    vops.VALUE_CELL_SET,
                     node,
                     args=(cell, converter.lvar_tn(node.value)),
-                    results=(result,),
                 )
-            converter.emit_discard(node, result)
             return
         target = converter.var_tn(leaf)
         release = converter.context.type_of(node).needs_release
@@ -2398,14 +2393,11 @@ class _Converter(NodeVisitor):
                     results=(value,),
                     info=LocalAccess(var.name, True, True),
                 )
-                result = self.temporary()
                 self.emit(
-                    templates_for(fndb.PROTOCOLS["cell_set"])[0],
+                    vops.VALUE_CELL_SET,
                     node,
-                    args=(self.cell(node, var), value),
-                    results=(result,),
+                    args=(environment.cells[var], value),
                 )
-                self.emit_discard(node, result)
 
         self.emit(vops.INSERT_SAFEPOINT, node)
 

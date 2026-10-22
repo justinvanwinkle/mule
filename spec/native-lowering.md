@@ -113,6 +113,32 @@ only by these arithmetic templates therefore becomes an exact LLVM double
 constant, as SBCL's float VOPs load `fp-immediate` constants. Literal uses that
 cross object boundaries still load the pooled object and preserve its identity.
 
+## Closure and value-cell slot lowering
+
+SBCL's `src/compiler/envanal.lisp`, `compute-closure` and
+`determine-lambda-var-and-nlx-extent`, distinguish copied captures and shared
+value cells. `src/compiler/ir2tran.lisp:90-117` selects cell-slot operations;
+`src/compiler/x86-64/cell.lisp:459-494` emits physical closure loads and cell
+stores. Mule retains its environment analysis and lowers these operations as
+explicit IR2 closure-reference and value-cell VOPs.
+
+Python exposes shared cells through `__closure__` and `cell_contents`. The
+authoritative cell remains the existing compiled Python object, with `bound`
+and `value` fields. Unlike SBCL's fixed cell layout, these Python class fields
+permit descriptor and class mutation. Value-cell VOPs therefore use the
+existing layout/attribute-epoch guards before direct field loads and stores.
+Cache misses execute ordinary attribute access. No scalar mirror or separate
+cell storage is introduced. Reads preserve truth conversion of `bound`, and
+unbound errors remain compiled Python code. Stores replace `value`, finish
+old-value destruction, and only then access `bound`, preserving reentrant
+mutation. The hot field operations require no cell-protocol call or associated
+recursion-depth and traceback bookkeeping.
+
+Closure entries reside in an immutable tuple. A low-level primitive exposes
+its borrowed entry-storage address once at function entry; constant-index LLVM
+loads acquire the captured references. This avoids both a dependency on Rust
+`Vec` field order and the general argument-binding accessor.
+
 ## Fixed-length sequence unpacking
 
 SBCL `src/compiler/seqtran.lisp` transforms `elt` and `%setelt` into storage-specific

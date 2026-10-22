@@ -26,6 +26,12 @@ def test_closure_metadata_uses_native_boolean_storage():
     assert all(set(values) == {"0", "1"} for values in flags)
 
 
+def test_closure_environment_loads_constant_slots():
+    llvm = emit_llvm(MIXED_CAPTURE)
+    slots = re.findall(r"getelementptr ptr, ptr %closure\.slots, i64 (\d+)", llvm)
+    assert {"0", "1"} <= set(slots)
+
+
 def test_mixed_capture_metadata_preserves_cells_and_borrowed_values(tmp_path):
     result = execute(
         tmp_path,
