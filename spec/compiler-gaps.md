@@ -1,16 +1,131 @@
 # Remaining SBCL compiler and IR1 transform gaps
 
 Status: **implemented** for general-context flow-type feedback into IR1
-transforms (Section 1A) and entry-context IR1 specialization / closed-call
+transforms, unified constant-lvar/dead-operand helpers, and monotonic
+`derive_node_type` (Section 1A), entry-context IR1 specialization / closed-call
 parameter promotion (Section 1B), identity-aware float storage and coercions,
 numeric internal calling conventions, and LLVM-visible private leaf boxes
-(parts of Section 5); **proposed** for
-Sections 1C–4 and the rest of Section 5.
+(parts of Section 5); **proposed** for Section 0 (the four high-impact
+architectural gaps identified by the 14-workload suite audit), Sections 1C–4,
+and the rest of Section 5.
 
 This document records the remaining architectural and transform gaps between
 SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`),
 together with the SBCL source references, Python semantic adaptations, and
 staged implementation plan for each area.
+
+## 0. High-impact architectural parity gaps from the 14-workload suite audit (proposed)
+
+An audit of the compiled IR1, `locall` summaries, and `stdlib/_dict.py` across
+the 14 benchmark workloads ([performance.md](performance.md#suite-wide-benchmark-audit-and-root-cause-diagnosis-2026-10-22))
+showed that Mule's largest slowdowns relative to CPython and SBCL (`Mule / CPython`
+up to `2.97` and `Mule / SBCL` up to `7.95`) come from four fundamental
+departures from SBCL's compiler and runtime architecture:
+
+### 0A. Declared parameter contracts and nested container/class annotations (`ir1tran.py`, `annotation_types.py`, `locall.py`, `checkgen.py`) (proposed)
+
+- **SBCL reference**: `src/compiler/ir1tran-lambda.lisp` (`ir1-convert-lambda`,
+  `ir1-convert-aux-bindings`) and `src/compiler/checkgen.lisp`
+  (`generate-type-checks`), where `(declare (type ...))` on function parameters
+  emits an entry type check (under `safety >= 1`) and asserts the declared
+  `CTYPE` across the entire function body, regardless of whether callers are
+  known at compile time.
+- **Current Mule defect**:
+  - `_DECLARATION_BINDINGS` (`mule/compiler/ir1tran.py`) only recognizes `int`,
+    `float`, `str`, `bytes`, and single-level `list[T]`. It discards `bool`,
+    `tuple[...]`, `dict[K, V]`, nested container annotations (`list[tuple[str, int]]`,
+    `tuple[list[list[int]], list[list[int]]]`), and in-module class annotations
+    (`node: _Node`, `left: Expr`, `acct: Account`).
+  - `Contract.general_parameter_type()` (`mule/compiler/annotation_types.py`)
+    returns `UNKNOWN` for everything except `ListContract` with a non-`None`
+    scalar element, and `_ParameterUse.analyze` (`mule/compiler/locall.py`) only
+    synthesizes a `"fixnum"` variant if a parameter is directly consumed by a
+    primitive numeric, text, or list operation.
+  - When a function is passed as a callback (such as `run(data: ...)` passed to
+    `perfutils.run_case`), `locall.analyze` observes no intra-unit call sites
+    and creates no `"observed"` context. As a result, `matrix_multiply.run`,
+    `word_frequency.run`, `lru_simulation.run`, `LRUCache._unlink`,
+    `LRUCache._push_front`, and `LRUCache.get` compile their hot loops with
+    `UNKNOWN` parameters.
+- **Required implementation**:
+  1. Add `BooleanContract`, `TupleContract`, `DictContract`, recursive nested
+     container subscript bindings, and in-module `ClassContract` to
+     `mule/compiler/annotation_types.py` and `_DeclaredAnnotationReference` in
+     `mule/compiler/ir1tran.py`.
+  2. Propagate declared parameter contracts into `locall.py` (guarded or entry-checked
+     under the active `safety` policy) so functions and methods with declared
+     parameter types specialize their bodies even when called externally or via
+     first-class callbacks.
+
+### 0B. Typed `dict` / `set` storage layout and fixnum hash invariants (`stdlib/_dict.py`, `locall.py`, `vops.py`) (proposed)
+
+- **SBCL reference**: `src/code/target-hash-table.lisp` (`define-ht-getter`,
+  `define-gethash/flat`, `puthash`) and `src/code/target-sxhash.lisp` (`sxhash`),
+  where hash-table slots (`index-vector`, `hash-vector`, `table`, `next-vector`)
+  are typed `defstruct` slots accessed at fixed offsets and hashes are unboxed
+  fixnums.
+- **Current Mule defect**:
+  - In `stdlib/_dict.py`, `_table_lookup` and `_table_insert` are standalone
+    functions taking untyped `(self, key)` shared by `dict`, `set`, and
+    `frozenset`. They compile with `self: UnknownType` and `variants=()`.
+  - Every lookup or insertion executes 5+ dynamic attribute lookups
+    (`mule_attribute_lookup_once`) for `self._indices`, `self._hashes`,
+    `self._keys`, `self._values`, and `self._used`.
+  - Because `self._indices` and `self._hashes` have `UnknownType`,
+    `_storage_read(indices, slot)` returns `UnknownType`. Consequently,
+    `_table_lookup` has inferred return type `UnknownType` (forcing `entry >= 0`
+    in `dict_get` and `dict_getitem` to call generic `mule_compare_greater_equal`),
+    and `_storage_read(hashes, entry) == code` calls generic `mule_compare_equal`.
+  - `hash(key)` returns a 64-bit signed integer (`[-2^63, 2^63 - 1]`) that
+    exceeds Mule's 63-bit fixnum range (`[-2^62, 2^62 - 1]`), forcing heap/GMP
+    integer allocation and comparison when bit 62 is set.
+- **Required implementation**:
+  1. Access dictionary/set table storage (`_indices`, `_hashes`, `_keys`,
+     `_values`, `_used`) through fixed native slot offsets or dedicated
+     storage primitives so `_table_lookup`, `_table_insert`, `_table_get_value`,
+     and `_table_resize` never perform dynamic attribute lookup.
+  2. Prove `IntegerType` (fixnum) for index-table and hash-table reads so
+     `_table_lookup` returns `IntegerType(-1, FIXNUM_MAX)`, `entry >= 0` and
+     `entry is _EMPTY` compile to unboxed integer comparisons, and probe-loop
+     hash comparisons execute in registers without boxed calls.
+
+### 0C. Preserving `InstanceType(cls)` method specialization in `locall._SpecializesBody` (`mule/compiler/locall.py`) (proposed)
+
+- **SBCL reference**: `src/code/defstruct.lisp` (`slot-access-transform`) and
+  `src/compiler/locall.lisp`, where structure/instance accessors always
+  specialize on the receiver's class layout and propagate slot types.
+- **Current Mule defect**:
+  - `_SpecializesBody` (`mule/compiler/locall.py`) discards a method's `"fixnum"`
+    entry context `(InstanceType(cls), ...)` unless narrowing `self` changes a
+    node's derived type to `INTEGER`, `BOOLEAN`, or `FLOAT`, or specializes a
+    `list`/`str`/`dict` container op.
+  - Methods that read or write instance attributes (`GETATTR` / `SETATTR`, such
+    as `self.value`, `self.left`, `self.right`, `self._head`, `node.prev`) or
+    return `PYTHON_INTEGER` fail `_SpecializesBody` and lose their
+    `InstanceType(cls)` variant (`variants=()`), falling back to generic
+    attribute lookup on `self`.
+- **Required implementation**:
+  - Teach `_SpecializesBody` in `mule/compiler/locall.py` to recognize when
+    `candidate` narrows a `GETATTR` or `SETATTR` receiver to `InstanceType`
+    (enabling direct slot access or narrowing the loaded field's `ValueType`) or
+    narrows a node from `UNKNOWN` to `PYTHON_INTEGER` / `InstanceType` /
+    container types.
+
+### 0D. Borrowed / unboxed container element reads and loop reference-count elimination (`represent.py`, `vops.py`) (proposed)
+
+- **SBCL reference**: `src/compiler/array-tran.lisp` (`data-vector-ref`) and
+  `src/compiler/represent.lisp`, where vector reads load unboxed or register
+  values without reference-count traffic.
+- **Current Mule defect**:
+  - Even when `list` or `dict` storage is proven, `_storage_read` in an inner
+    loop retains (`mule_retain`) and releases (`mule_release`) every loaded
+    element and boxes scalars in container buffers.
+- **Required implementation**:
+  - Elide `retain`/`release` on non-escaping borrowed reads from proven
+    containers across non-mutating, non-calling basic-block regions, and
+    unbox scalar loads when feeding fixnum/float consumers.
+
+---
 
 ## 1. IR1 transform and source-to-source specialization gaps
 
@@ -24,18 +139,24 @@ staged implementation plan for each area.
 - **Mule implementation**:
   - `locall._publish_derived_types` (`mule/compiler/locall.py`) publishes
     `general`-context flow-derived `ValueType`s onto every `ValuedNode` and
-    `Lvar` in the component and marks narrowed known calls and predictable
+    `Lvar` in the component and marks narrowed known calls, `If` nodes whose
+    test gained a known truth value or constant literal, and predictable
     builtin global calls (`len`, `str`, and any future `KNOWN` entry) for
     reoptimization via `_ReoptimizeNarrowedKnownCalls`.
   - `_DeriveNodeType` and `_PrepareNodeOptimize` (`mule/compiler/ir1opt.py`)
     preserve flow-derived types on `Ref(LambdaVar)` and non-`KNOWN`
-    `Combination`s across IR1 reoptimization rounds when local syntactic
-    derivation yields `UNKNOWN`.
+    `Combination`s across IR1 reoptimization rounds, and intersect/narrow with
+    existing `node.derived_type` (`derive-node-type` monotonicity) when local
+    syntactic derivation is coarser than flow propagation.
+  - `ir1opt.constant_lvar_value`, `ir1opt.bound_constant_literal`,
+    `ir1opt.is_pure_bound_ref`, and backward `_flush_dead_operands`
+    (`flush-dead-code`) unify constant extraction and dead-operand flushing
+    across `ir1opt.py`, `srctran.py`, `modarith.py`, and `seqtran.py`.
   - `srctran.py` and `modarith.py` consult flow-proven singleton types on pure
-    bound local references (`_is_pure_bound_ref`), enabling identity
+    bound local references (`is_pure_bound_ref`), enabling identity
     reductions, absorbing-zero folds, power-of-two strength reductions,
-    redundant bitmask elimination, and associative constant folding on local
-    variables proven constant by flow analysis, while unlinking dead
+    redundant bitmask elimination, and commutative/associative constant folding
+    on local variables proven constant by flow analysis, while unlinking dead
     `Ref(LambdaVar)` nodes.
 
 ### 1B. Entry-context IR1 specialization and closed-call parameter promotion (implemented)

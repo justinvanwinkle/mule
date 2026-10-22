@@ -71,6 +71,114 @@ Mule implementation against CPython's hashing implementation. These broader
 cases supplement the small diagnostic kernels; results from a numeric loop
 alone do not establish application performance.
 
+## Suite-wide benchmark audit and root-cause diagnosis, 2026-10-22
+
+The recorded 14-workload suite snapshot in `docs/assets/results.json` (checkout
+`45c936432`, five samples per runtime and workload, one warmup, seed 42, default
+scenario sizes, four concurrent scenario jobs) compares CPython 3.15.0, Mule
+`-O2` without LTO, and SBCL (running corresponding Common Lisp implementations).
+Ratios are fractions (`Mule / CPython` and `Mule / SBCL`) where lower values
+mean faster Mule execution:
+
+| Workload | CPython median (s) | Mule `-O2` median (s) | SBCL median (s) | Mule / CPython | Mule / SBCL |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `word_frequency` | 4.0467 | 12.0207 | 3.2783 | 2.97 | 3.67 |
+| `log_aggregation` | 0.0529 | 0.1530 | 0.0192 | 2.89 | 7.95 |
+| `expression_tree` | 3.9955 | 9.6383 | 1.2752 | 2.41 | 7.56 |
+| `lru_simulation` | 3.9788 | 7.4738 | 1.7312 | 1.88 | 4.32 |
+| `http_routing` | 0.0423 | 0.0685 | 0.0485 | 1.62 | 1.41 |
+| `graph_paths` | 0.0288 | 0.0411 | 0.0121 | 1.42 | 3.40 |
+| `exception_validation` | 3.9169 | 2.6073 | 0.6139 | 0.67 | 4.25 |
+| `account_ledger` | 4.2361 | 2.0007 | 0.6797 | 0.47 | 2.94 |
+| `closure_pipeline` | 4.0818 | 1.6042 | 0.2663 | 0.39 | 6.02 |
+| `matrix_multiply` | 4.5688 | 0.5461 | 0.0802 | 0.12 | 6.80 |
+| `json_tokenizer` | 3.9440 | 0.9361 | 0.4435 | 0.24 | 2.11 |
+| `interval_merging` | 4.0738 | 0.8330 | 0.4406 | 0.20 | 1.89 |
+| `integer_accumulation` | 0.0297 | 0.0060 | 0.0034 | 0.20 | 1.75 |
+| `kv_record_parse` | 4.0059 | 1.6923 | 2.4106 | 0.42 | 0.70 |
+
+Inspection of the compiled IR1, `locall` summaries, and `stdlib/_dict.py` across
+these 14 workloads identified **four fundamental architectural gaps** where Mule
+departs from SBCL and falls back to untyped, boxed, generic runtime operations
+inside inner loops:
+
+1. **Declared parameter types are discarded at function boundaries instead of
+   checked/guarded and asserted in the body (unlike SBCL `ir1-convert-lambda` +
+   `checkgen.lisp`)**:
+   - In SBCL, `(declare (type ...))` on function parameters emits an entry type
+     check (governed by `safety`) and asserts the declared `CTYPE` across the
+     entire function body.
+   - In Mule, `_DECLARATION_BINDINGS` (`mule/compiler/ir1tran.py`),
+     `Contract.general_parameter_type` (`mule/compiler/annotation_types.py`), and
+     `_ParameterUse` (`mule/compiler/locall.py`) discard `tuple[...]`,
+     `dict[...]`, nested container types, and user-defined class annotations
+     (`node: _Node`, `left: Expr`, `acct: Account`), and return `UNKNOWN` from
+     `general_parameter_type()` for all contracts except single-level
+     `ListContract` with a scalar element.
+   - Because each benchmark passes `prepare` and `run` as callbacks to
+     `perfutils.run_case`, `locall.analyze` sees no direct intra-unit call site
+     for `run` and creates no `observed` entry context.
+   - Direct consequences in the suite:
+     - `matrix_multiply.run(data: tuple[list[list[int]], list[list[int]]])`
+       compiles with `parameters=(UnknownType,)` and `variants=()`. Inside the
+       $490^3 = 117.6\text{M}$ inner loop, `row_a[k] * col_b[k]` executes
+       generic `UnknownType` subscripting, boxed `mule_multiply`, and boxed
+       `mule_add` 117 million times.
+     - `word_frequency.run(data: list[tuple[str, int]])` strips `tuple[str, int]`
+       to `ListType(element=UnknownType)`. Unpacking `for token, weight in data:`
+       yields `token: UnknownType, weight: UnknownType`, degrading every
+       arithmetic operation in the loop to generic `UnknownType` dispatch.
+     - `lru_simulation`: `LRUCache._unlink(self, node: _Node)` and
+       `LRUCache._push_front(self, node: _Node)` discard `node: _Node`;
+       `LRUCache.get(self, key: int)` leaves `key` as `UnknownType` because
+       `self._map.get(key)` is a method call rather than a primitive numeric op;
+       and `run(data: list[tuple[int, int, int]])` unpacks `is_put, key, value`
+       as `UnknownType`.
+2. **`stdlib/_dict.py` compiles as untyped dynamic code doing 5+ generic
+   attribute lookups and boxed comparisons per hash probe (unlike SBCL
+   `src/code/target-hash-table.lisp`)**:
+   - `_table_lookup` and `_table_insert` in `stdlib/_dict.py` are standalone
+     functions taking untyped `(self, key)` shared by `dict`, `set`, and
+     `frozenset`. They compile with `self: UnknownType` and `variants=()`.
+   - Every dictionary lookup or insertion performs dynamic runtime attribute
+     lookups (`mule_attribute_lookup_once`) for `self._indices`, `self._hashes`,
+     `self._keys`, `self._values`, and `self._used`.
+   - Because `self._indices` and `self._hashes` have `UnknownType`,
+     `_storage_read(indices, slot)` returns `UnknownType`. Consequently,
+     `_table_lookup`'s inferred return type is `UnknownType` (forcing
+     `entry >= 0` in `dict_get` and `dict_getitem` to call generic
+     `mule_compare_greater_equal`), and `_storage_read(hashes, entry) == code`
+     calls generic `mule_compare_equal`. Furthermore, `hash(key)` returns a
+     64-bit integer (`[-2^63, 2^63 - 1]`) exceeding Mule's 63-bit fixnum range
+     (`[-2^62, 2^62 - 1]`), forcing heap/GMP integer paths when bit 62 is set.
+   - This directly accounts for the `Mule / CPython` ratios of `1.62`–`2.97` and
+     `Mule / SBCL` ratios of `1.41`–`7.95` across `word_frequency`,
+     `log_aggregation`, `expression_tree` (`VarExpr` / `LetExpr` env dict
+     lookups), `lru_simulation`, and `http_routing`.
+3. **Class methods drop `self: InstanceType(cls)` entry variants in
+   `locall._SpecializesBody` unless a primitive numeric operation changes type**:
+   - `_SpecializesBody` (`mule/compiler/locall.py`) discards a method's `fixnum`
+     entry context `(InstanceType(cls), ...)` unless narrowing `self` changes a
+     node's derived type to `INTEGER`, `BOOLEAN`, or `FLOAT`, or specializes a
+     `list`/`str`/`dict` container op.
+   - Methods whose bodies read or write instance attributes (`self.value`,
+     `self.name`, `self.left`, `self.right`, `self._head`, `node.prev`) or
+     return `PYTHON_INTEGER` fail `_SpecializesBody` and discard their
+     `InstanceType(cls)` variant.
+   - In `expression_tree.py`, `LitExpr.eval_node`, `VarExpr.eval_node`,
+     `AddExpr.eval_node`, `MulExpr.eval_node`, and `LetExpr.eval_node` all
+     compile with `variants=()` and `self: UnknownType`, executing generic
+     attribute lookups on every AST node evaluation.
+4. **Boxed container element storage and per-iteration reference-count traffic
+   (`mule_retain` / `mule_release`) in hot loops**:
+   - Even when `list` or `dict` storage is proven, elements are stored as boxed
+     `Value` pointers and every `_storage_read` in an inner loop retains and
+     releases the loaded element rather than borrowing or reading unboxed
+     scalars when no mutation or escape can occur across the read.
+
+See [remaining compiler gaps](compiler-gaps.md#0-high-impact-architectural-parity-gaps-from-the-14-workload-suite-audit-proposed)
+for the SBCL references and staged remediation plan for these four defects.
+
 ## Closure slot lowering, 2026-10-22
 
 The unchanged `perf/suite/closure_pipeline.py` workload now uses constant-index
