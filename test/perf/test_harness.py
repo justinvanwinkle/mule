@@ -77,15 +77,19 @@ def test_cpu_guard_does_not_retry_benchmark_failures():
     assert [attempt["status"] for attempt in attempts] == ["benchmark_failed"]
 
 
-def test_cpu_guard_accepts_threshold_boundary():
+@pytest.mark.parametrize(
+    ("external_cpu", "status"),
+    [(1.25, "accepted"), (2.0, "accepted"), (2.01, "cpu_noise")],
+)
+def test_cpu_guard_two_core_limit_rejects_only_values_above_two(external_cpu, status):
     rows, attempts = measure_with_cpu_guard(
         lambda: _report(0.020)["rows"],
-        max_external_cpu=0.5,
+        max_external_cpu=2.0,
         cpu_attempts=1,
-        monitor_factory=lambda: RecordedCpuMonitor(0.5),
+        monitor_factory=lambda: RecordedCpuMonitor(external_cpu),
     )
-    assert rows[1]["status"] == "ok"
-    assert attempts[0]["status"] == "accepted"
+    assert rows[1]["status"] == ("ok" if status == "accepted" else "cpu_noise")
+    assert attempts[0]["status"] == status
 
 
 class FailedCpuMonitor(RecordedCpuMonitor):

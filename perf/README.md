@@ -139,8 +139,8 @@ finish synchronously and wait for their own child workers before returning.
 System busy time includes user, nice, system, interrupt, soft-interrupt, and
 steal time. Idle and I/O-wait time are excluded. Guest time is not counted twice.
 
-`--max-external-cpu 0.5` sets the default maximum average external utilization
-to half of one CPU core, independent of the machine's core count or affinity.
+`--max-external-cpu 2.0` sets the default maximum average external utilization
+to two CPU cores, independent of the machine's core count or affinity.
 The measurement covers the whole host, so activity outside the benchmark's CPU
 affinity can also cause rejection. This detects sustained unrelated CPU activity,
 not every short burst. Periodic system CPU snapshots retain evidence of spikes.

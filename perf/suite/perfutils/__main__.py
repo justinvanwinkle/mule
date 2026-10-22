@@ -424,8 +424,8 @@ def main():
     parser.add_argument(
         "--max-external-cpu",
         type=float,
-        default=0.5,
-        help="maximum average CPU cores used outside this benchmark run (default: 0.5)",
+        default=2.0,
+        help="maximum average CPU cores used outside this benchmark run (default: 2.0)",
     )
     parser.add_argument(
         "--cpu-attempts",
