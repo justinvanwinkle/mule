@@ -302,7 +302,7 @@ def main():
     parser.add_argument(
         "--last", type=int, help="history: show only the most recent N runs"
     )
-    parser.add_argument("--samples", type=int, default=5)
+    parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--size", type=int, help="override each case's workload size")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--loops", type=int, default=1)

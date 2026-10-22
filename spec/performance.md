@@ -45,12 +45,14 @@ version, CPU affinity, and compiler revision/diff identity.
 ```sh
 XDG_CACHE_HOME=/tmp/mule-progress-cache uv run python -m tools.bench_native \
   integer_loop float_loop function_calls list_index attributes \
-  --directory /tmp/mule-performance/baseline --samples 7
+  --directory /tmp/mule-performance/baseline --samples 3
 ```
 
 Use separate directories for successive builds. `--reuse` times an existing
-executable; the current compiler revision does not establish the provenance of
-that executable. `--report` chooses a separate JSON path when remeasuring it.
+executable. Use three measured runs per runtime and workload, with warmups
+separate. Historical results below retain their actual sample counts.
+The current compiler revision does not establish the provenance of that
+executable. `--report` chooses a separate JSON path when remeasuring it.
 `--baseline-directory` adds an earlier native executable to the same alternating
 sample sequence, validates its output, and records its hash and relative speed.
 Increase `--count` until process startup is a small fraction of the measured
@@ -62,6 +64,47 @@ input 1000 must also match `1000_out` byte for byte. `sha3` measures the compile
 Mule implementation against CPython's hashing implementation. These broader
 cases supplement the small diagnostic kernels; results from a numeric loop
 alone do not establish application performance.
+
+## Closure slot lowering, 2026-10-22
+
+The unchanged `perf/suite/closure_pipeline.py` workload now uses constant-index
+closure entry loads and explicit IR2 value-cell operations. The compiler borrows
+the rooted shared cell instead of retaining it for each protocol call. Guarded
+field operations preserve mutable Python attributes and avoid the cell-access
+helpers on the bound path. The SBCL correspondence and Python adaptation are in
+[native lowering](native-lowering.md#closure-and-value-cell-slot-lowering).
+
+The baseline is the published suite executable from clean revision `a9f8dbc`.
+The changed executable uses `7ba321f` plus this implementation. Both use LLVM
+`-O2`, Rust level 3, and no LTO. Builds, compiler tests, and instruction profiling
+finished before timing. Five samples per executable alternate execution order,
+with one warmup per process, size 100,000, seed 42, and one kernel loop. CPU
+affinity was not restricted. Every sample returns `(192382896, 8062672)`, matching
+the recorded CPython result for the same input.
+
+| Build | Kernel samples, seconds | Median seconds |
+| --- | --- | ---: |
+| Before slot lowering | 3.236301, 3.258334, 3.241263, 3.230092, 3.216703 | 3.236301 |
+| After slot lowering | 1.570104, 1.559280, 1.566053, 1.567621, 1.561517 | 1.566053 |
+
+The changed executable is **2.07 times as fast** on this workload. This is a
+focused kernel result, not a claim of a twofold improvement across the suite.
+At size 10,000, three kernel loops, and no warmup, whole-process Callgrind
+instruction counts fall from 1,639,283,736 to 951,782,353, a 42% reduction.
+Profiling is separate from timing. The changed machine code uses closure-slot
+loads and guarded cell-field accesses; its unbound branch retains a compiled
+Python error helper. Generic closure-call dispatch remains.
+
+The source SHA-256 is
+`9f159cb8dbba2f44970c2c8628d63ba6902159518536c35e5aaf8d2757168518`.
+The baseline executable SHA-256 is
+`7e6bd82565d3f376777ee20f9c8d90e4f9740e4bcdfc5304864ca39787ac56ae`.
+The changed executable SHA-256 is
+`c6892c0ec5caf22e745a9a851bd3ec589e6abf998246101476fdbb0abe8d809c`.
+The final rebuild is byte-identical to the measured changed executable. Local
+executables and emitted LLVM are under `/tmp/mule-closure-slot-*`; instruction
+profiles are `/tmp/mule-closure-large.callgrind` and
+`/tmp/mule-closure-slot-lowered.callgrind`. These are temporary local evidence.
 
 ## Mixed-boundary float coercions, 2026-10-21
 

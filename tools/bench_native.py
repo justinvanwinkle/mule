@@ -118,7 +118,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cases", nargs="*", choices=tuple(CASES))
     parser.add_argument("--directory", type=Path, default=Path("/tmp/mule-performance"))
-    parser.add_argument("--samples", type=int, default=5)
+    parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=30)
     parser.add_argument("--count", type=int)
     parser.add_argument("--reuse", action="store_true")

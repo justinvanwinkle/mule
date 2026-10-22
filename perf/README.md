@@ -8,11 +8,11 @@ workload (`<case>.py`) alongside its SBCL Common Lisp equivalent
 ```sh
 # From the repository root: list cases or run against the current CPython.
 uv run python -m perf.suite.perfutils list
-uv run python -m perf.suite.perfutils run --samples 7
+uv run python -m perf.suite.perfutils run --samples 3
 
 # Compare CPython, an optimized native Mule build, and SBCL on every case.
 uv run python -m perf.suite.perfutils run \
-  --config perf/runtimes.example.toml --samples 7
+  --config perf/runtimes.example.toml --samples 3
 
 # Run one scenario directly, from any working directory.
 uv run python perf/suite/log_aggregation.py \
@@ -74,6 +74,9 @@ using more seeds/sizes and optimized code inspection; replace a workload for
 all runtimes if a shortcut defeats the operation it was intended to measure.
 
 ## Runtime configuration and reports
+
+Use three measured samples per runtime and scenario, the harness default.
+Warmups are separate. Recorded historical runs retain their actual sample counts.
 
 Copy `runtimes.example.toml` and add named runtimes. `command` is an argument
 array, optionally accompanied by a `build` command and `version_command`.

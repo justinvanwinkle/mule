@@ -71,11 +71,11 @@ revision identity are in the [published results](docs/assets/results.json).
 The [report HTML source](docs/assets/index.html) also includes whole-process timings.
 Use the [local site preview](docs/README.md#preview-locally) to view the rendered report.
 
-Reproduce the comparison or inspect the recorded history:
+Run a new comparison or inspect the recorded history:
 
 ```sh
 uv run python -m perf.suite.perfutils run \
-  --config perf/runtimes.example.toml --samples 5
+  --config perf/runtimes.example.toml --samples 3
 uv run python -m perf.suite.perfutils history --last 10
 ```
 
@@ -338,6 +338,10 @@ already runs tests in parallel), and mark anything heavier `integration`. Do
 not override `XDG_CACHE_HOME` when running tests or benchmarks; Mule's cache
 hashes every compiler and runtime input, so overriding `XDG_CACHE_HOME` adds
 no isolation or benefit.
+
+Use three measured runs per runtime and workload for performance comparisons.
+Keep warmups separate from measured runs. Preserve the actual sample counts in
+historical measurements when updating documentation or reports.
 
 Check changed Python files with Ruff; format only intended files. Documentation
 changes do not require rerunning parser tests unless behavior also changes.
