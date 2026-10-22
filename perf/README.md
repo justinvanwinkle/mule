@@ -114,13 +114,41 @@ link time substantially. The example configuration also compiles each scenario's
 
 All native builds complete before validation or timing begins. Each case is
 built once. The harness validates every runtime
-against the baseline's result, then runs processes serially
-with rotated runtime order. Each sample repeats validation. Build failures,
+against the baseline's result, then runs processes serially within each scenario
+with rotated runtime order. The standard run uses four concurrent scenario jobs
+(`--jobs 4`). Each sample repeats validation. Build failures,
 timeouts, and incorrect results appear in the report and produce a nonzero
 exit status; other comparisons continue.
 
 Generated files live in an ignored `perf/results/<timestamp>/`, or a fresh
 directory selected with `--output`.
+
+### CPU noise and automatic retries
+
+The suite monitors Linux system CPU utilization throughout its measurement phase.
+It subtracts CPU time consumed by the harness and its waited child processes
+from system busy CPU time. Builds finish before this interval. Commands must
+finish synchronously and wait for their own child workers before returning.
+System busy time includes user, nice, system, interrupt, soft-interrupt, and
+steal time. Idle and I/O-wait time are excluded. Guest time is not counted twice.
+
+`--max-external-cpu 0.5` sets the default maximum average external utilization
+to half of one CPU core, independent of the machine's core count or affinity.
+The measurement covers the whole host, so activity outside the benchmark's CPU
+affinity can also cause rejection. This detects sustained unrelated CPU activity,
+not every short burst. Periodic system CPU snapshots retain evidence of spikes.
+It does not establish freedom from memory pressure, I/O contention, or throttling.
+
+If an attempt exceeds the limit, the suite reruns the entire timing phase with
+the same jobs, runtime rotation, inputs, warmups, and samples. It does not rebuild
+or select the fastest result. `--cpu-attempts 3` bounds the total attempts.
+Benchmark errors stop retries instead of being treated as CPU noise.
+Rejected raw rows and CPU evidence remain in `results.json` under
+`measurement_attempts` and in per-attempt JSON files. Only the first accepted
+attempt supplies top-level medians, ratios, charts, history, and published assets.
+Exhausted attempts produce `cpu_noise` failures and a nonzero exit status.
+Unavailable or invalid monitoring fails the run rather than accepting it.
+This guard does not cover the separate native and pyperformance harnesses.
 
 ## History
 
@@ -129,7 +157,9 @@ one line to the committed `perf/history.jsonl`: the UTC stamp, platform, run
 options, each runtime's checkout commit and tracked-diff digest, and each
 row's status, kernel/process/preparation medians, and elapsed-time ratios. Runs
 of a subset of scenarios, baseline-only runs, and runs with `--no-history` are not
-recorded, so every line is comparable with every other. Commit the file with
+recorded. Rejected or failed measurement runs do not update history or site assets.
+New history entries retain concurrency and CPU-noise settings alongside the input
+and sampling settings. Compare entries with matching settings. Commit the file with
 the compiler change it measures.
 
 ```sh
@@ -156,8 +186,9 @@ it is not a pure startup measurement. Compilation is separate. Kernel timing
 includes call and clock overhead, so increase workload sizes until kernels run
 long enough for meaningful measurements. Default sizes are starting points,
 not a calibration guarantee. Use multiple seeds and sizes explicitly. These
-first reports do not measure peak memory, confidence intervals, or machine
-idleness. Do not interpret noisy or tiny runs as performance conclusions.
+reports do not measure peak memory or confidence intervals. The CPU guard detects
+average external activity, not every source of timing noise. Do not interpret
+noisy or tiny runs as performance conclusions.
 
 Focused correctness checks:
 

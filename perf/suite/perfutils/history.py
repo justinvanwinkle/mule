@@ -8,7 +8,7 @@ the trend survives the ignored per-run result directories.
 
 import json
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _milliseconds(row, field):
@@ -24,7 +24,16 @@ def entry(report):
         "baseline": report["baseline"],
         "options": {
             key: report["options"][key]
-            for key in ("samples", "size", "seed", "loops", "warmups")
+            for key in (
+                "samples",
+                "size",
+                "seed",
+                "loops",
+                "warmups",
+                "jobs",
+                "max_external_cpu",
+                "cpu_attempts",
+            )
         },
         "runtimes": [
             {

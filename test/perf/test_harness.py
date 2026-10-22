@@ -10,11 +10,133 @@ from perf.suite.perfutils.__main__ import (
     RunFailure,
     load_runtimes,
     measure_group,
+    measure_with_cpu_guard,
     read_sample,
+    record_accepted_report,
 )
+from perf.suite.perfutils.cpu import CpuMeasurementError
 from test.python_host import python_host
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+class RecordedCpuMonitor:
+    def __init__(self, external_cpu):
+        self.external_cpu = external_cpu
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *error):
+        return False
+
+    def result(self):
+        return {"external_cpu_cores": self.external_cpu}
+
+
+def test_cpu_guard_keeps_rejected_samples_and_accepts_first_clean_attempt():
+    loads = iter([1.5, 0.2, 0.1])
+    measurements = iter([_report(0.050)["rows"], _report(0.020)["rows"]])
+    rows, attempts = measure_with_cpu_guard(
+        lambda: next(measurements),
+        max_external_cpu=0.5,
+        cpu_attempts=3,
+        monitor_factory=lambda: RecordedCpuMonitor(next(loads)),
+    )
+    assert rows[1]["summary"]["kernel_seconds"]["median"] == 0.020
+    assert [attempt["status"] for attempt in attempts] == ["cpu_noise", "accepted"]
+    assert attempts[0]["rows"][1]["summary"]["kernel_seconds"]["median"] == 0.050
+    # A later clean attempt is not sampled to select a faster result.
+    assert next(loads) == 0.1
+
+
+def test_cpu_guard_exhaustion_reports_failure_without_accepted_timings():
+    rows, attempts = measure_with_cpu_guard(
+        lambda: _report(0.020)["rows"],
+        max_external_cpu=0.5,
+        cpu_attempts=2,
+        monitor_factory=lambda: RecordedCpuMonitor(1.0),
+    )
+    assert [attempt["status"] for attempt in attempts] == ["cpu_noise", "cpu_noise"]
+    assert all(row["status"] == "cpu_noise" for row in rows)
+    assert all("summary" not in row and "time_ratio" not in row for row in rows)
+    assert attempts[-1]["rows"][1]["summary"]["kernel_seconds"]["median"] == 0.020
+
+
+def test_cpu_guard_does_not_retry_benchmark_failures():
+    rows, attempts = measure_with_cpu_guard(
+        lambda: _report(0.020, status="incorrect_result")["rows"],
+        max_external_cpu=0.5,
+        cpu_attempts=3,
+        monitor_factory=lambda: RecordedCpuMonitor(1.0),
+    )
+    assert rows[1]["status"] == "incorrect_result"
+    assert rows[0]["status"] == "measurement_failed"
+    assert "summary" not in rows[0] and "time_ratio" not in rows[0]
+    assert attempts[0]["rows"][0]["summary"]["kernel_seconds"]["median"] == 0.010
+    assert [attempt["status"] for attempt in attempts] == ["benchmark_failed"]
+
+
+def test_cpu_guard_accepts_threshold_boundary():
+    rows, attempts = measure_with_cpu_guard(
+        lambda: _report(0.020)["rows"],
+        max_external_cpu=0.5,
+        cpu_attempts=1,
+        monitor_factory=lambda: RecordedCpuMonitor(0.5),
+    )
+    assert rows[1]["status"] == "ok"
+    assert attempts[0]["status"] == "accepted"
+
+
+class FailedCpuMonitor(RecordedCpuMonitor):
+    def result(self):
+        raise CpuMeasurementError("counter unavailable")
+
+
+def test_cpu_guard_preserves_raw_rows_when_monitoring_fails(tmp_path):
+    path = tmp_path / "attempt.json"
+    rows, attempts = measure_with_cpu_guard(
+        lambda: _report(0.020)["rows"],
+        max_external_cpu=0.5,
+        cpu_attempts=3,
+        monitor_factory=lambda: FailedCpuMonitor(0),
+        record_attempt=lambda attempt: path.write_text(json.dumps(attempt)),
+    )
+    assert attempts[0]["status"] == "cpu_monitor_failed"
+    assert all(row["status"] == "cpu_monitor_failed" for row in rows)
+    saved = json.loads(path.read_text())
+    assert saved["rows"][1]["summary"]["kernel_seconds"]["median"] == 0.020
+    assert saved["error"] == "counter unavailable"
+
+
+@pytest.mark.parametrize(
+    "status", ["cpu_noise", "cpu_monitor_failed", "benchmark_failed"]
+)
+def test_rejected_measurements_preserve_history_and_published_assets(tmp_path, status):
+    path = tmp_path / "perf/history.jsonl"
+    path.parent.mkdir()
+    path.write_text("existing history\n")
+    assets = tmp_path / "docs/assets"
+    assets.mkdir(parents=True)
+    results = assets / "results.json"
+    results.write_text("existing measurements\n")
+    source = _report(0.020)
+    source["measurement_attempts"] = [{"status": status}]
+    record_accepted_report(source, path, tmp_path)
+    assert path.read_text() == "existing history\n"
+    assert results.read_text() == "existing measurements\n"
+
+
+def test_accepted_measurements_append_history(tmp_path):
+    path = tmp_path / "perf/history.jsonl"
+    assets = tmp_path / "docs/assets"
+    assets.mkdir(parents=True)
+    source = _report(0.020)
+    source["measurement_attempts"] = [{"status": "accepted"}]
+    record_accepted_report(source, path, tmp_path)
+    assert history.load(path)[0]["results"][1]["kernel_ms"] == 20.0
+    published = json.loads((assets / "results.json").read_text())
+    assert published["rows"][1]["time_ratio"]["kernel_seconds"] == 2.0
 
 
 def protocol(**overrides):
@@ -104,7 +226,9 @@ def test_harness_records_bad_results_and_continues(tmp_path):
     assert process.returncode == 1, process.stderr
     report = json.loads((output / "results.json").read_text())
     assert len(report["rows"]) == 3
-    for row in report["rows"]:
+    assert report["rows"][1]["status"] == "incorrect_result"
+    assert all("time_ratio" not in row for row in report["rows"])
+    for row in report["measurement_attempts"][0]["rows"]:
         if row["runtime"] == "corrupt":
             assert row["status"] == "incorrect_result"
             assert row["samples"] == []
@@ -188,7 +312,16 @@ def _report(
         "created_utc": "20261015T120000.000000Z",
         "platform": "test",
         "baseline": "cpython",
-        "options": {"samples": 3, "size": None, "seed": 42, "loops": 1, "warmups": 1},
+        "options": {
+            "samples": 3,
+            "size": None,
+            "seed": 42,
+            "loops": 1,
+            "warmups": 1,
+            "jobs": 4,
+            "max_external_cpu": 0.5,
+            "cpu_attempts": 3,
+        },
         "runtimes": [
             {"name": "cpython", "revision": None, "version": "Python 3.14.7\n"},
             {
@@ -212,6 +345,9 @@ def test_history_records_runs_and_tabulates_the_candidate_trend(tmp_path):
     assert [run["results"][1]["kernel_time_ratio"] for run in runs] == [5.0, 2.0]
     assert [run["results"][1]["process_time_ratio"] for run in runs] == [5.0, 2.0]
     assert runs[0]["runtimes"][1]["commit"] == "0123456789abcdef"
+    assert runs[0]["options"]["jobs"] == 4
+    assert runs[0]["options"]["max_external_cpu"] == 0.5
+    assert runs[0]["options"]["cpu_attempts"] == 3
     lines = history.table(runs)
     assert "mule" in lines[2] and "mule" in lines[3]
     assert "integer_accumulation" in lines[1]
