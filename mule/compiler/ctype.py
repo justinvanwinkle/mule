@@ -1756,6 +1756,9 @@ class BytesType(PrimitiveType):
             return BYTES_TYPE
         return UNKNOWN
 
+    def dispatch_domain(self):
+        return None if self.may_be_unbound else BYTES_TYPE
+
     def dispatch_rank(self) -> int:
         return 2**64 if self.may_be_unbound else 0
 

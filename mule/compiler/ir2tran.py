@@ -39,6 +39,7 @@ from .ctype import (
     BOTTOM,
     NONE_TYPE,
     PYTHON_INTEGER,
+    REAL,
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
@@ -167,6 +168,8 @@ _PURE_FIXNUM_VOPS = frozenset(
         "binary-add",
         "binary-subtract",
         "binary-multiply",
+        "binary-floor_divide",
+        "binary-modulo",
         "binary-bit_and",
         "binary-bit_or",
         "binary-bit_xor",
@@ -175,6 +178,8 @@ _PURE_FIXNUM_VOPS = frozenset(
         "inplace-add",
         "inplace-subtract",
         "inplace-multiply",
+        "inplace-floor_divide",
+        "inplace-modulo",
         "inplace-bit_and",
         "inplace-bit_or",
         "inplace-bit_xor",
@@ -233,6 +238,8 @@ def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
     ):
         lhs_type = ref.tn.type or UNKNOWN
         return lhs_type.is_fixnum or lhs_type.fits_text(TEXT_TYPE)
+    if name in ("binary-modulo", "inplace-modulo") and len(vop.args) == 2:
+        return (vop.args[0].tn.type or UNKNOWN).fits(REAL)
     if name in _RIGHT_BORROWING_VOPS and len(vop.args) == 2 and ref is vop.args[1]:
         info = vop.codegen_info
         return (
@@ -1532,8 +1539,8 @@ _PURE_BINARY_ARITH_VOPS = frozenset(
         "binary-bit_and",
         "binary-bit_or",
         "binary-bit_xor",
-        "binary-lshift",
-        "binary-rshift",
+        "binary-left_shift",
+        "binary-right_shift",
     }
 )
 
