@@ -26,7 +26,7 @@ from _generators import coroutine as _coroutine
 from _dict import build_dict as _build_dict
 from _dict import build_set as _build_set
 from _dict import _MISSING as _DICT_MISSING
-from _dict import _table_insert, _table_lookup, _table_remove, _tuple_hash, dict, frozenset, hash, set
+from _dict import _set_lookup, _table_insert, _table_lookup, _table_remove, _tuple_hash, dict, frozenset, hash, set
 from _mule_native import bytes_from_values
 from _mule_native import byte_length
 from _mule_native import read_byte
@@ -1566,21 +1566,26 @@ class ListStorage(_OrderedSequence):
 
     def sort(self, *, key=None, reverse=False):
         items = self.copy()
-        if reverse:
-            _reverse_in_place(items)
-        keys = items
-        if key is not None:
-            keys = []
-            index = 0
-            length = _storage_length(items)
-            while index < length:
-                _storage_append(keys, key(_storage_read(items, index)))
-                index += 1
-        items = _merge_sort(items, keys)
-        if reverse:
-            _reverse_in_place(items)
         _storage_delete(self, 0, _storage_length(self))
-        self.extend(items)
+        try:
+            if reverse:
+                _reverse_in_place(items)
+            keys = items
+            if key is not None:
+                keys = []
+                index = 0
+                length = _storage_length(items)
+                while index < length:
+                    _storage_append(keys, key(_storage_read(items, index)))
+                    index += 1
+            items = _merge_sort(items, keys)
+            if reverse:
+                _reverse_in_place(items)
+            if _storage_length(self) != 0:
+                raise ValueError("list modified during sort")
+        finally:
+            _storage_delete(self, 0, _storage_length(self))
+            self.extend(items)
 
 
 class TupleStorage(_OrderedSequence):
@@ -2417,8 +2422,10 @@ def _iteration_error(value, membership):
 
 def contains(container, item):
     owner = _type_of(container)
-    if owner is dict or owner is set or owner is frozenset:
+    if owner is dict:
         return _table_lookup(container, item) >= 0
+    if owner is set or owner is frozenset:
+        return _set_lookup(container, item) >= 0
     if owner is str:
         return TextStorage.__contains__(container, item)
     if owner is list or owner is tuple:

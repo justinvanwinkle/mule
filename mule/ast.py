@@ -87,6 +87,9 @@ class Expression(Node):
     def require_collection(self, parser, message, start=None):
         pass
 
+    def require_dict_key(self, parser):
+        pass
+
     def subscript_item(self, parser, start):
         return self
 
@@ -589,6 +592,12 @@ class NamedExpression(Expression):
 
     def assigned_targets(self):
         return (self.target,)
+
+    def require_dict_key(self, parser):
+        parser.error(
+            "Invalid assignment expression target or context",
+            self.source_start(),
+        )
 
 
 @dataclass(slots=True)

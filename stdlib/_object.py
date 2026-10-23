@@ -1109,13 +1109,27 @@ class complex(object):
         return result if result is NotImplemented else not result
 
     def __hash__(self):
-        return hash((self._real, self._imag))
+        real_hash = hash(self._real)
+        imag_hash = hash(self._imag)
+        combined = (
+            (real_hash & 0xFFFFFFFFFFFFFFFF)
+            + 1000003 * (imag_hash & 0xFFFFFFFFFFFFFFFF)
+        ) & 0xFFFFFFFFFFFFFFFF
+        if combined >= 1 << 63:
+            combined -= 1 << 64
+        return -2 if combined == -1 else combined
 
     def __repr__(self):
-        if self._real == 0:
-            return repr(self._imag) + "j"
-        sign = "+" if self._imag >= 0 else "-"
-        return "(" + repr(self._real) + sign + repr(abs(self._imag)) + "j)"
+        real_text = repr(self._real)
+        if real_text.endswith(".0"):
+            real_text = real_text[:-2]
+        imag_text = repr(self._imag)
+        if imag_text.endswith(".0"):
+            imag_text = imag_text[:-2]
+        if self._real == 0.0 and real_text == "0":
+            return imag_text + "j"
+        sign = "" if imag_text.startswith("-") else "+"
+        return "(" + real_text + sign + imag_text + "j)"
 
 
 def _make_complex(cls, real, imag):

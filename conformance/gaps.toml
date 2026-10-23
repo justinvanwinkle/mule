@@ -73,7 +73,7 @@ exit_code = 1
 ["builtins/hash_and_identity"]
 phase = "run"
 reason = "native output differs from CPython"
-stdout = "int float bool True True\ncomplex False False\nsmall int value 5 -2 -2 0\nfloat integral True True\ninf 314159 -314159\nnan self True\nstr eq True True\nbytes eq True\ntuple eq True\nfrozenset order True\nrange False\nNone hashable True\nunhashable list TypeError\nunhashable dict TypeError\nunhashable set TypeError\nunhashable bytearray TypeError\ncustom eq hash True 2\neq without hash TypeError\neq only hash attr None\nbig hash reduced int True\nminus one becomes -1\nnon int hash TypeError\ndefault hash stable True True True\nis True False True True\nNone singleton True True False\nbool singletons True True\nobject identity True True\nmethod objects equal not identical False\nclass identity True True\nfresh lists True\n"
+stdout = "int float bool True True\ncomplex True True\nsmall int value 5 -2 -2 0\nfloat integral True True\ninf 314159 -314159\nnan self True\nstr eq True True\nbytes eq True\ntuple eq True\nfrozenset order True\nrange False\nNone hashable True\nunhashable list TypeError\nunhashable dict TypeError\nunhashable set TypeError\nunhashable bytearray TypeError\ncustom eq hash True 2\neq without hash TypeError\neq only hash attr None\nbig hash reduced int True\nminus one becomes -1\nnon int hash TypeError\ndefault hash stable True True True\nis True False True True\nNone singleton True True False\nbool singletons True True\nobject identity True True\nmethod objects equal not identical False\nclass identity True True\nfresh lists True\n"
 stderr = ""
 exit_code = 0
 
@@ -112,24 +112,31 @@ stdout = "repr range(2, 20, 3) range(0, 5) range(0, 5) range(5, 0, -1)\nlist [2,
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/builtins/range_objects.py\", line 17, in <module>\n    print(\"count index\", r.count(8), r.count(9), r.index(11))\nAttributeError: 'range' object has no attribute 'count'\n"
 exit_code = 1
 
+["builtins/range_slice_basics"]
+phase = "run"
+reason = "native output differs from CPython"
+stdout = "range_attrs: (0, 5, 1) (2, 10, 3) (10, 2, -2)\nrange_repr: range(0, 5) range(2, 10, 3) range(10, 2, -2) range(5, 2)\nrange_len: 5 3 4 0\nrange_index: 2 5 8 10 4\nrange_slice: 5 11 3 [5, 8]\nrange_contains: True False True False\nslice_attrs: (None, 4, None) (1, 5, None) (1, 7, 2)\nslice_repr: slice(None, 4, None) slice(1, 5, None) slice(1, 7, 2)\nslice_apply: [10, 20, 30, 40] [20, 30, 40, 50] [20, 40, 60] bdf\nzero_step: ValueError\nrange_index_error: IndexError\nslice_unhashable: TypeError\n"
+stderr = ""
+exit_code = 0
+
 ["builtins/repr_str_ascii"]
 phase = "run"
 reason = "native output differs from CPython"
-stdout = "repr 'plain' ascii 'plain'\nrepr \"it's\" ascii \"it's\"\nrepr 'say \"hi\"' ascii 'say \"hi\"'\nrepr 'both \\' and \"' ascii 'both \\' and \"'\nrepr 'tab\\tnew\\nline' ascii 'tab\\tnew\\nline'\nrepr 'back\\\\slash' ascii 'back\\\\slash'\nrepr '\\x00\\x7f' ascii '\\x00\\x7f'\nrepr 'é' ascii '\\xe9'\nrepr '日本' ascii '\\u65e5\\u672c'\nrepr '😀' ascii '\\U0001f600'\nrepr '\\u200b' ascii '\\u200b'\nrepr '\\ud800' ascii '\\ud800'\nstr of str x \nbytes b\"a'b\" b'a\"b' b'\\x00\\xff\\n' b'\\xe9' b'x'\nbytearray bytearray(b'hi')\nnumbers 1.0 1e+16 0.30000000000000004 -0.0 1e-07 2.0j (-1.0+0.0j)\nspecial inf nan -inf\nbig int 1000000000000000000000000000000 -1180591620717411303424\nsingletons None True Ellipsis NotImplemented\nnested repr {'key': ['é', (\"t'\", b'b')], 1: {2: None}, (1, 2): {3.5}}\nnested str {'key': ['é', (\"t'\", b'b')], 1: {2: None}, (1, 2): {3.5}}\nnested ascii {'key': ['\\xe9', (\"t'\", b'b')], 1: {2: None}, (1, 2): {3.5}}\ncontainers use repr of items ['a', 1] ('a',) {'a'}\nboth Both<repr> Both<str> Both<repr> [Both<repr>] Both<str> Both<repr> Both<str> Both<repr>\nrepr only ReprOnly()é ReprOnly()\\xe9 [ReprOnly()é]\nstr only StrOnly-str StrOnly-str\nstr only repr is default True\nstr in list uses repr True\nrepr non str TypeError\nstr subclass result sub StrSub\nstr of type <class 'int'> <class 'str'> True\nrepr of function name <native function len>\nstr with encoding café ÿ �\ndecode error UnicodeDecodeError\nrepr of range slice range(0, 3) slice(None, None, None)\nrepr empty [] () {} set() '' b''\n"
+stdout = "repr 'plain' ascii 'plain'\nrepr \"it's\" ascii \"it's\"\nrepr 'say \"hi\"' ascii 'say \"hi\"'\nrepr 'both \\' and \"' ascii 'both \\' and \"'\nrepr 'tab\\tnew\\nline' ascii 'tab\\tnew\\nline'\nrepr 'back\\\\slash' ascii 'back\\\\slash'\nrepr '\\x00\\x7f' ascii '\\x00\\x7f'\nrepr 'é' ascii '\\xe9'\nrepr '日本' ascii '\\u65e5\\u672c'\nrepr '😀' ascii '\\U0001f600'\nrepr '\\u200b' ascii '\\u200b'\nrepr '\\ud800' ascii '\\ud800'\nstr of str x \nbytes b\"a'b\" b'a\"b' b'\\x00\\xff\\n' b'\\xe9' b'x'\nbytearray bytearray(b'hi')\nnumbers 1.0 1e+16 0.30000000000000004 -0.0 1e-07 2j (-1+0j)\nspecial inf nan -inf\nbig int 1000000000000000000000000000000 -1180591620717411303424\nsingletons None True Ellipsis NotImplemented\nnested repr {'key': ['é', (\"t'\", b'b')], 1: {2: None}, (1, 2): {3.5}}\nnested str {'key': ['é', (\"t'\", b'b')], 1: {2: None}, (1, 2): {3.5}}\nnested ascii {'key': ['\\xe9', (\"t'\", b'b')], 1: {2: None}, (1, 2): {3.5}}\ncontainers use repr of items ['a', 1] ('a',) {'a'}\nboth Both<repr> Both<str> Both<repr> [Both<repr>] Both<str> Both<repr> Both<str> Both<repr>\nrepr only ReprOnly()é ReprOnly()\\xe9 [ReprOnly()é]\nstr only StrOnly-str StrOnly-str\nstr only repr is default True\nstr in list uses repr True\nrepr non str TypeError\nstr subclass result sub StrSub\nstr of type <class 'int'> <class 'str'> True\nrepr of function name <native function len>\nstr with encoding café ÿ �\ndecode error UnicodeDecodeError\nrepr of range slice range(0, 3) slice(None, None, None)\nrepr empty [] () {} set() '' b''\n"
 stderr = ""
 exit_code = 0
 
 ["builtins/slice_ellipsis_notimplemented"]
 phase = "run"
 reason = "TypeError: '<' not supported between instances of 'slice' and 'slice'"
-stdout = "one arg slice(None, 5, None) None 5 None\ntwo args slice(1, 4, None) three slice(1, 9, 2)\nany objects slice('a', [1], None)\napply [2, 5] [9, 5, 1] ello\nindices (0, 3, 1) (3, 5, 1) (0, 20, 7)\nindices negative step (-1, -1, -1) (5, -1, -3)\nindices negative length ValueError\neq False False\n"
+stdout = "one arg slice(None, 5, None) None 5 None\ntwo args slice(1, 4, None) three slice(1, 9, 2)\nany objects slice('a', [1], None)\napply [2, 5] [9, 5, 1] ello\nindices (0, 3, 1) (3, 5, 1) (0, 20, 7)\nindices negative step (-1, -1, -1) (5, -1, -3)\nindices negative length ValueError\neq True True\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/builtins/slice_ellipsis_notimplemented.py\", line 16, in <module>\n    print(\"ordering\", slice(1, 2) < slice(1, 3))\nTypeError: '<' not supported between instances of 'slice' and 'slice'\n"
 exit_code = 1
 
 ["builtins/sum_any_all"]
 phase = "run"
 reason = "native output differs from CPython"
-stdout = "sum 6 0 5050\nsum start 13 103\nsum floats 0.9999999999999999 0.6000000000000001\nsum mixed 4.5 int\nsum lists [1, 2, 3]\nsum tuples (1, 2)\nsum complex (5.5+1.0j)\nsum bools 2\nsum big 1\nsum precision 0.0 0.0\nsum inf inf nan\nsum negative zero 0.0 -0.0\nsum strings TypeError\nsum mixed bad TypeError\nsum custom radd Money(12)\nsum custom start Money(101)\nany False False True\nall True True False\nreturns bool True True\nany short True [0, 3]\nall short False [1, 0]\nany leaves rest True [6, 7]\nall exhausts when true True [1, 2]\nbool error propagates boom\nshort circuit avoids boom True False\nany of comparisons True False\nnested True False\n"
+stdout = "sum 6 0 5050\nsum start 13 103\nsum floats 0.9999999999999999 0.6000000000000001\nsum mixed 4.5 int\nsum lists [1, 2, 3]\nsum tuples (1, 2)\nsum complex (5.5+1j)\nsum bools 2\nsum big 1\nsum precision 0.0 0.0\nsum inf inf nan\nsum negative zero 0.0 -0.0\nsum strings TypeError\nsum mixed bad TypeError\nsum custom radd Money(12)\nsum custom start Money(101)\nany False False True\nall True True False\nreturns bool True True\nany short True [0, 3]\nall short False [1, 0]\nany leaves rest True [6, 7]\nall exhausts when true True [1, 2]\nbool error propagates boom\nshort circuit avoids boom True False\nany of comparisons True False\nnested True False\n"
 stderr = ""
 exit_code = 0
 
@@ -252,78 +259,10 @@ stdout = "chain C.m>B.m>A.m\nclassmethod chain C.make>B.make>A.make(C) C.make>B.
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 106, in <module>\n    print(\"super outside class\", outside())\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 101, in outside\n    super()\nTypeError: missing required argument 'type'\n"
 exit_code = 1
 
-["containers/comprehension_scoping"]
-phase = "compile"
-reason = "Invalid assignment expression target or context"
-line = 14
-
-["containers/dict_order_and_keys"]
-phase = "run"
-reason = "KeyError: 'a'"
-stdout = "insertion order ['z', 'a', 'm']\noverwrite keeps position [('z', 100), ('a', 2), ('m', 3)]\nreinsert moves to end [('a', 2), ('m', 3), ('z', 5)]\n1/True/1.0 same key {1: 'float'} 1\nfirst key object kept int\ndisplay same {True: 'c'}\nzero keys {0: 'h'}\ncomplex key {(1.0+0.0j): 'c', 1: 'i'}\nlookup cross type two t\ntuple key equality {(1, 2): 'b'}\nsame nan identity 1\ndistinct nans 2\nadd during iter RuntimeError\ndelete during iter RuntimeError\nvalue change ok {'a': 10, 'b': 20}\niterate over copy {'b': 2}\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/containers/dict_order_and_keys.py\", line 62, in <module>\n    it5.pop(\"a\")\nKeyError: 'a'\n"
-exit_code = 1
-
-["containers/dict_set_receiver_errors"]
-phase = "run"
-reason = "AttributeError: 'list' object has no attribute '_used'"
-stdout = ""
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/containers/dict_set_receiver_errors.py\", line 13, in <module>\n    bad_call()\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/containers/dict_set_receiver_errors.py\", line 4, in <lambda>\n    lambda: dict.__len__([]),\nAttributeError: 'list' object has no attribute '_used'\n"
-exit_code = 1
-
-["containers/dict_views"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "views ['a', 'b', 'c'] [1, 2, 3] [('a', 1), ('b', 2), ('c', 3)]\nlive after add ['a', 'b', 'c', 'd'] 4 4\nlive after delete ['b', 'c', 'd']\nkeys and set ['b']\nkeys or ['b', 'c', 'd', 'z']\nkeys minus ['c', 'd']\nkeys xor ['c', 'd', 'q']\nkeys rand ['c']\nkeys vs list ['c', 'd']\nkeys disjoint True False\nkeys eq set True False\nkeys lt True True\nother dict keys ['b', 'c']\nitems set ops [('b', 2)]\nitems minus [('c', 3), ('d', 4)]\nitems contains True False False\nitems eq True\nvalues contains True False\nvalues not equal to itself False\nvalues set op TypeError\nreversed keys ['d', 'c', 'b']\nreversed values [4, 3, 2]\nreversed items [('d', 4), ('c', 3), ('b', 2)]\nnext item ('b', 2)\ntype names dict_keys dict_values dict_items\nview repr dict_keys(['b', 'c', 'd']) dict_values([2, 3, 4]) dict_items([('b', 2), ('c', 3), ('d', 4)])\nbool view False True\nlen view 3\nmapping proxy {'b': 2, 'c': 3, 'd': 4}\nloop b 2\nloop c 3\nloop d 4\n"
-stderr = ""
-exit_code = 0
-
-["containers/list_slicing"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "basic [2, 3, 4] [0, 1, 2] [7, 8, 9] [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]\nnegative [7, 8, 9] [0, 1, 2] [5, 6, 7]\nstep [0, 2, 4, 6, 8] [1, 4, 7] [9, 8, 7, 6, 5, 4, 3, 2, 1, 0] [9, 6, 3, 0]\nneg step bounds [7, 5, 3] [] [9, 8, 7]\nout of range [5, 6, 7, 8, 9] [] [0, 1] []\nhuge bounds [0, 3, 6, 9]\nslice copy is new False True\nzero step ValueError\nfloat bound TypeError\n__index__ bounds [3, 4, 5, 6, 7, 8, 9] [0, 1, 2]\nnone bounds True [0, 1, 2]\nbool bounds [] [0]\nassign grow [0, 'x', 'y', 'z', 'w', 3, 4, 5]\nassign shrink [0, 3, 4, 5]\nassign insert [0, 3, 7, 8, 4, 5]\nassign prepend string ['a', 'b', 0, 3, 7, 8, 4, 5]\nassign append tuple ['a', 'b', 0, 3, 7, 8, 4, 5, 99]\nassign past end ['a', 'b', 0, 3, 7, 8, 4, 5, 99, 1000]\nassign range ['a', 'b', 0, 3, 7, 8, 4, 5, 0, 1, 2]\nassign reversed bounds inserts ['a', 'b', 0, 3, 7, 'mid', 8, 4, 5, 0, 1, 2]\nassign non iterable TypeError\nassign self [1, 1, 2, 3]\nextended assign ['e0', 1, 'e1', 3, 'e2', 5, 'e3', 7]\nextended reverse assign ['e0', None, 'e1', 3, None, 5, 'e3', None]\nextended length mismatch ValueError\nstep 1 not extended ['e0', 'step one any length', 'ok', 'e1', 3, None, 5, 'e3', None]\nextended same 9\nempty extended assign [1, 2]\ndel slice [0, 1, 4, 5, 6, 7, 8, 9]\ndel step [1, 5, 7, 9]\ndel neg step [1, 7]\ndel out of range [1, 7]\ndel all []\nslice object slice(1, 8, 2) 1 8 2\nuse slice obj ['b', 'd', 'f', 'h']\nindices (1, 5, 2) (3, -1, -1) (7, 10, 1)\nindices big (0, 7, 3)\nrange from indices [6, 4, 2, 0]\nslice eq False False False\nslice of string tuple bdf (1, 3, 5, 7)\nindices zero step ValueError\nspy simple slice(1, 2, None)\nspy ext slice(None, None, 3) (slice(1, 2, None), 3) (Ellipsis, slice(1, None, None))\nspy empty parts slice(None, None, None)\n"
-stderr = ""
-exit_code = 0
-
-["containers/list_sort"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "sort returns None [1, 2, 5, 5, 6, 9]\nsort reverse [9, 6, 5, 5, 2, 1]\ndefault ['Apple', 'Banana', 'apple', 'banana', 'cherry', 'fig']\nkey lower ['Apple', 'apple', 'banana', 'Banana', 'cherry', 'fig']\nkey len ['fig', 'Apple', 'apple', 'banana', 'cherry', 'Banana']\nkey len reverse ['banana', 'cherry', 'Banana', 'Apple', 'apple', 'fig']\nstable by second [('c', 1), ('d', 1), ('b', 2), ('a', 2), ('f', 2), ('e', 3)]\nstable reverse keeps order [('e', 3), ('b', 2), ('a', 2), ('f', 2), ('c', 1), ('d', 1)]\nmulti pass [('w', 1, 1), ('y', 1, 2), ('z', 3, 0), ('x', 3, 1)]\ntuple key [('y', 1, 2), ('w', 1, 1), ('x', 3, 1), ('z', 3, 0)]\nkey once each [3, 2, 1] [1, 2, 3]\nmixed numeric [-2.25, 0, True, 1.5, 2, 3]\nbools [False, False, True, True]\ntuples lexicographic [(), (0, 9, 9), (1,), (1, 1, 1), (1, 2)]\nlists [[], [1], [1, 5], [2]]\nstrings by code point ['1', 'B', 'Z', '_', 'a', 'b', 'é']\nmixed types TypeError\npositional key TypeError\ncustom lt [Box(1), Box(2), Box(3)]\ncustom reverse [Box(3), Box(2), Box(1)]\nsorted dict ['a', 'b']\nsorted string ['e', 'h', 'l', 'l', 'o']\nsorted none key [1, 2]\nempty [] []\n"
-stderr = ""
-exit_code = 0
-
-["containers/recursive_repr"]
-phase = "run"
-reason = "RecursionError: maximum native recursion depth exceeded"
-stdout = "self list [1, 2, [...]]\nstr self list [1, 2, [...]]\nlen 3 True True\nself dict "
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/containers/recursive_repr.py\", line 11, in <module>\n    print(\"self dict\", d)\nRecursionError: maximum native recursion depth exceeded\n"
-exit_code = 1
-
-["containers/sets"]
-phase = "run"
-reason = "TypeError: unhashable type: 'set'"
-stdout = "union [1, 2, 3, 4, 5] [1, 2, 3, 4, 5, 9]\nintersection [3, 4] [3]\ndifference [1, 2] [2]\nsymmetric [1, 2, 5] [1, 2, 3, 5, 6]\nsubset True True False True\nsuperset True False True\nissubset iterable True\ndisjoint True False\neq True True True\noperator needs set TypeError\nadd dup {1} 1\nupdate [1, 2, 3, 'a']\ndiscard [1, 2, 3]\nremove missing KeyError\npop single 42\npop empty KeyError\niand [1, 2, 3]\nior [1, 2, 3, 7]\nisub [2, 3, 7]\nixor [3, 7, 8]\nintersection_update [3, 8]\ndifference_update [8]\nsym_update [10]\nclear aliased set()\nfrozenset ops type frozenset set\nfrozenset sorted [1, 2]\nfrozen add AttributeError\nfrozenset key lookup fs empty\nset eq frozenset key fs\nhash eq True\nset unhashable TypeError\nset in set via frozenset True\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/containers/sets.py\", line 77, in <module>\n    print(\"set lookup of set\", {1} in {frozenset({1})})\nTypeError: unhashable type: 'set'\n"
-exit_code = 1
-
 ["control_flow/break_continue_finally"]
 phase = "run"
 reason = "native output differs from CPython"
 stdout = "loop try/finally ['body 0', 'finally 0', 'finally 1', 'finally 2']\nloop with ['enter c0', 'exit c0 None', 'enter c1', 'after continue check', 'exit c1 None']\nreturned value\nreturn through nested ['enter outer', 'enter inner', 'outer finally', 'exit outer None', 'inner finally', 'exit inner None', 'outer finally', 'exit outer None']\nfinally overrides finally\nbreak in finally swallowed\ncontinue in finally [0, 2]\nreturned object mutated by finally [1, 2]\nmutation log ['finally mutated']\nrebinding in finally does not change return 1\nwhile try/except/else/finally ['except 1', 'finally 1', 'else 2', 'finally 2', 'finally 3']\nsuppressing with ['enter s0', 'body 0', 'exit s0 None', 'after with 0', 'enter s1', 'exit s1 RuntimeError', 'after with 1', 'enter s2', 'body 2', 'exit s2 None', 'after with 2']\nbreak out of generator loop then close ['loop exited, generator still suspended', 'gen finally']\nexplicit close ['gen finally']\nnested finally ['a0b0', 'inner fin a0b0', 'inner fin a0b1', 'outer fin a0', 'a1b0', 'inner fin a1b0', 'inner fin a1b1', 'outer fin a1']\n"
-stderr = ""
-exit_code = 0
-
-["control_flow/if_elif_chains"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "classify -5 ('negative', ['neg'])\nclassify 0 ('zero', ['neg', 'zero'])\nclassify 3 ('small', ['neg', 'zero', 'small'])\nclassify 42 ('medium', ['neg', 'zero', 'small', 'medium'])\nclassify 1000 ('large', ['neg', 'zero', 'small', 'medium'])\nsecond branch, counter 2\ncounter after chain 2\nx 0 zero even\nx 1 odd not three\nx 2 other even\nx 4 four\nx 5 odd not three\nfalsy []\ntruthy [0]\nfalsy ''\ntruthy 'a'\nfalsy 0.0\nfalsy -0.0\ntruthy 1.0j\nfalsy None\nfalsy ()\ntruthy ((),)\nsorted in condition [1, 2, 3]\ngrades ['A+', 'A', 'A-', 'B', 'C', 'F']\nsingle line 1 2\nsingle line else 2\nfirst taken, boom never evaluated\nraised in elif boom\n"
-stderr = ""
-exit_code = 0
-
-["control_flow/match_literals"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "describe None -> None\ndescribe True -> True\ndescribe False -> False\ndescribe 0 -> zero\ndescribe 0.0 -> zero\ndescribe -0.0 -> zero\ndescribe -1 -> minus one\ndescribe -1.0 -> minus one\ndescribe 1.5 -> one and a half\ndescribe -2.5 -> minus two and a half\ndescribe 3.0j -> imag 3j\ndescribe (1.0+2.0j) -> complex 1+2j\ndescribe (-1.0-1.0j) -> complex -1-1j\ndescribe 'hello' -> str hello\ndescribe 'concat' -> implicitly concatenated\ndescribe b'bytes' -> bytes literal\ndescribe '' -> empty string\ndescribe 1 -> other int\ndescribe 2 -> other int\ndescribe 'x' -> other str\ndescribe bytearray(b'bytes') -> bytes literal\ndescribe [] -> other list\ndescribe 1.0 -> other float\n1 vs True equals 1 is True equals 1\neq everything vs None not None\neq everything vs 42 42 matched via ==\nMyInt(0) zero MyInt(1) equals 1\nnan other float\nstrings ['raw backslash d', 'tab', 'e-acute', '?']\nor literals ['small', 'small', 'small', 'small negative', 'big', 'small']\n"
 stderr = ""
 exit_code = 0
 
@@ -354,11 +293,6 @@ reason = "native output differs from CPython"
 stdout = "bool None False not True\nbool True True not False\nbool False False not True\nbool int 0 False not True\nbool int -1 True not False\nbool big int True not False\nbool float 0.0 False not True\nbool float -0.0 False not True\nbool float nan True not False\nbool float inf True not False\nbool complex 0j False not True\nbool complex 0+1j True not False\nbool str empty False not True\nbool str space True not False\nbool str zero True not False\nbool bytes empty False not True\nbool bytes nul True not False\nbool bytearray empty False not True\nbool list empty False not True\nbool list of empty True not False\nbool tuple empty False not True\nbool tuple of None True not False\nbool dict empty False not True\nbool dict True not False\nbool set empty False not True\nbool frozenset True not False\nbool range empty False not True\nbool range 5 5 False not True\nbool range 1 True not False\nbool memoryview empty False not True\nbool Ellipsis True not False\nbool NotImplemented-free object True not False\nbool type True not False\nbool function True not False\nbool decimal 0 False not True\nbool decimal -0 False not True\nbool fraction 0 False not True\nbool deque empty False not True\nbool Counter True not False\nbool dict keys empty False not True\nbool dict items True not False\nAlwaysFalse False\nSized 0 False Sized 3 True\n  Both.__bool__ called\nBoth: True\nNoProtocol True\nBadBool raised TypeError\nNegativeLen raised ValueError\nBoolNone raised TypeError\nif Sized(2) taken\nwhile Sized iterations 3\nand/or return operands fallback\nternary no\nall/any True False\nfilter None ['Sized', 'int']\nFalseInt(7) True 8\nLongList() False 0\nbool raised nope\ninstance __bool__ ignored True\n"
 stderr = ""
 exit_code = 0
-
-["control_flow/walrus"]
-phase = "compile"
-reason = "Invalid assignment expression target or context"
-line = 33
 
 ["exceptions/args_and_str"]
 phase = "run"
@@ -494,14 +428,14 @@ exit_code = 1
 ["numbers/complex_descriptors"]
 phase = "run"
 reason = "AttributeError: 'float' object has no attribute '_real'"
-stdout = "complex_construct: 0.0 0.0 (3.5-4.25j) (2.5+5.5j)\ncomplex_ops: (6.0+1.25j) (1.0-9.75j) True True 5.0\ncomplex_props: 3.5 -4.25 (3.5+4.25j) (3.5+4.25j)\ncomplex_subclass: True 1.5 2.5 (1.5-2.5j) (1.5-2.5j) 8.5\nvalue_error: ValueError\n"
+stdout = "complex_construct: 0.0 0.0 (3.5-4.25j) (2.5+5.5j)\ncomplex_ops: (6+1.25j) (1-9.75j) True True 5.0\ncomplex_props: 3.5 -4.25 (3.5+4.25j) (3.5+4.25j)\ncomplex_subclass: True 1.5 2.5 (1.5-2.5j) (1.5-2.5j) 8.5\nvalue_error: ValueError\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/complex_descriptors.py\", line 46, in <module>\n    complex.conjugate(1.0)\nAttributeError: 'float' object has no attribute '_real'\n"
 exit_code = 1
 
 ["numbers/complex_numbers"]
 phase = "run"
 reason = "TypeError: unsupported operand type(s) for **: 'complex' and 'int'"
-stdout = "repr (3.0+4.0j) (1.0-2.0j) 1.0j -1.0j 0.0j 0.0j 0.0j (1.0+0.0j) 2.5j\nattrs 3.0 4.0 float (3.0-4.0j) 5.0\nint attrs 5 0 5 0.0 2.5 0\nadd/sub (4.0+2.0j) (2.0+6.0j) (4.0+4.0j) (-2.0-4.0j) (3.5+4.0j)\nmul/div (11.0-2.0j) (-1.0+2.0j) (6.0+8.0j) (0.24-0.32j) (1.5+2.0j)\n"
+stdout = "repr (3+4j) (1-2j) 1j (-0-1j) 0j 0j (-0+0j) (1+0j) 2.5j\nattrs 3.0 4.0 float (3-4j) 5.0\nint attrs 5 0 5 0.0 2.5 0\nadd/sub (4+2j) (2+6j) (4+4j) (-2-4j) (3.5+4j)\nmul/div (11-2j) (-1+2j) (6+8j) (0.24-0.32j) (1.5+2j)\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/complex_numbers.py\", line 10, in <module>\n    print(\"pow\", a ** 2, 1j ** 2, (1j) ** 0, a ** 0.5, pow(1j, 3))\nTypeError: unsupported operand type(s) for **: 'complex' and 'int'\n"
 exit_code = 1
 
@@ -540,13 +474,6 @@ stdout = "group ['int', 'float', 'bool', 'complex', 'Fraction', 'Decimal']\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/hash_equality.py\", line 16, in <module>\n    print(\"  all equal\", all(a == b for a in g for b in g))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/hash_equality.py\", line 16, in <genexpr>\n    print(\"  all equal\", all(a == b for a in g for b in g))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_pydecimal.py\", line 835, in __eq__\n    self, other = _convert_for_comparison(self, other, equality_op=True)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_pydecimal.py\", line 6048, in _convert_for_comparison\n    return self, Decimal.from_float(other)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_pydecimal.py\", line 654, in from_float\n    if _math.copysign(1.0, f) == 1.0:\nAttributeError: 'module' object has no attribute 'copysign'\n"
 exit_code = 1
 
-["numbers/int_literals"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "decimal 0 7 1234567890\nhex 31 255 3735928559 0\noctal 15 511 10\nbinary 10 240 1\nunderscores 1000000 1234 0\nzeros 0 0 0 0\nnegative literals -16 -8 -2 -10\nbig decimal 123456789012345678901234567890\nbig hex 79228162514264337593543950335\nbig binary True\nbig octal 19342813113834066795298815\ntype of big int\n2**63 9223372036854775808 9223372036854775808\n2**64-1 True\n-2**63 -9223372036854775808 -9223372036854775808\nattr access 3 8 16\nfloat literals 10.5 10000000000.0 0.5 5.0 0.0 1000.0001\nfloat exp 1000.0 0.001 250.0\nimag literals 3.0j 10.0j 150.0j 0.0j\nall equal True [31, 31, 31, 31]\nbin/oct/hex builtins 0b1010 0o12 0xff -0b1010 -0o10 -0xff\nbin big 0b10000000000000000000000000000000000000000000000000000000000000000000000\nhex 0 0x0 0b0 0o0\n"
-stderr = ""
-exit_code = 0
-
 ["numbers/int_methods"]
 phase = "run"
 reason = "AttributeError: 'int' object has no attribute 'bit_count'"
@@ -568,11 +495,6 @@ stdout = "int pow 1024 -8 16 1 1 -1\nneg exponent 0.5 0.125 0.25 0.1\ntype of ne
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/pow_ops.py\", line 12, in <module>\n    print(\"pow modular inverse\", pow(3, -1, 7), pow(38, -1, 97), pow(2, -2, 9))\nValueError: base is not invertible for the given modulus\n"
 exit_code = 1
 
-["numbers/precedence"]
-phase = "compile"
-reason = "Invalid assignment expression target or context"
-line = 20
-
 ["numbers/rounding"]
 phase = "run"
 reason = "OverflowError: numerical result out of range"
@@ -589,10 +511,10 @@ exit_code = 0
 
 ["protocols/container_getitem"]
 phase = "run"
-reason = "native output differs from CPython"
-stdout = "int key 3 -1\nslice slice(1, 5, None) slice(None, None, 2) slice(None, None, None) slice(1, 2, 3) slice(None, None, None)\next slice tuple (slice(1, 2, None), 3) (Ellipsis, 0) (slice(None, None, None), slice(None, None, None)) () (1,)\nslice attrs 1 10 2\narbitrary keys k None (1, 2)\nlog tail [('set', 0, 'a'), ('set', slice(1, 3, None), [9, 9]), ('del', 2), ('del', slice(None, None, 2))]\nindex 10 50 30\nslice Seq[20, 30] Seq[50, 40, 30, 20, 10] Seq[10, 30, 50] Seq[40, 50]\nout of range Seq index out of range\nbad type bad index type str\nafter set Seq[11, 21, 22, 23, 40, 50] 6\nafter del Seq[21, 22, 23]\nslice.indices (6, -1, -2) (2, 5, 1) (1, 10, 3)\nslice eq/hash False False\nslice repr slice(1, None, -1)\nmapping 1 2 2\nmissing key KeyError ('missing',)\nno __delitem__ TypeError\n__missing__ A bbbb get-default False [('missing', 'bb')]\nmissing+augassign [('a', 5), ('b', 2), ('c', 1), ('d', 1), ('r', 2)]\nmissing ignored outside dict KeyError\nbool index 20 10 10\nhuge index IndexError\nfloat index TypeError\nslice beyond bounds [] [10, 20] [30]\nextended slice length ValueError\nextended slice assign [1, 20, 3]\n"
-stderr = ""
-exit_code = 0
+reason = "TypeError: unhashable type: 'slice'"
+stdout = "int key 3 -1\nslice slice(1, 5, None) slice(None, None, 2) slice(None, None, None) slice(1, 2, 3) slice(None, None, None)\next slice tuple (slice(1, 2, None), 3) (Ellipsis, 0) (slice(None, None, None), slice(None, None, None)) () (1,)\nslice attrs 1 10 2\narbitrary keys k None (1, 2)\nlog tail [('set', 0, 'a'), ('set', slice(1, 3, None), [9, 9]), ('del', 2), ('del', slice(None, None, 2))]\nindex 10 50 30\nslice Seq[20, 30] Seq[50, 40, 30, 20, 10] Seq[10, 30, 50] Seq[40, 50]\nout of range Seq index out of range\nbad type bad index type str\nafter set Seq[11, 21, 22, 23, 40, 50] 6\nafter del Seq[21, 22, 23]\nslice.indices (6, -1, -2) (2, 5, 1) (1, 10, 3)\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/container_getitem.py\", line 83, in <module>\n    print(\"slice eq/hash\", slice(1, 2) == slice(1, 2), hash(slice(1, 2)) == hash(slice(1, 2)))\nTypeError: unhashable type: 'slice'\n"
+exit_code = 1
 
 ["protocols/contains_iteration"]
 phase = "run"
@@ -607,13 +529,6 @@ reason = "AttributeError: 'OnlyEnter' object has no attribute '__exit__'"
 stdout = "basic ['enter a', 'body sees CM(a)', 'exit a None None tb=False']\nenter value ['enter b', 'as value 42', 'exit b None None tb=False']\nno target ['enter c', 'no as target', 'exit c None None tb=False']\npropagates ['enter d', \"exit d ValueError ('boom', 1) tb=True\", \"caught ('boom', 1)\"]\nsuppressed ['enter e', \"exit e KeyError ('hidden',) tb=True\", 'after suppressed with']\ntruthy string suppresses\nmultiple ['enter x', 'enter y', 'enter z', 'body CM(x) CM(y) Z', 'exit z None None tb=False', 'exit y None None tb=False', 'exit x None None tb=False']\nparenthesized ['enter p1', 'enter p2', 'enter p3', 'paren body CM(p1) 1 2', 'exit p3 None None tb=False', 'exit p2 None None tb=False', 'exit p1 None None tb=False']\ninner suppress ['enter outer', 'enter inner', \"exit inner RuntimeError ('inner-only',) tb=True\", 'exit outer None None tb=False']\nenter failure ['enter first', 'bad enter', \"exit first OSError ('enter failed',) tb=True\", 'caught OSError']\nreturn in with returned ['enter ret', 'exit ret None None tb=False']\nbreak/continue ['enter loop0', 'exit loop0 None None tb=False', 'enter loop1', 'exit loop1 None None tb=False']\ncomplex targets {'k': 'dict-target'} attr\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/context_managers.py\", line 149, in <module>\n    with OnlyEnter():\nAttributeError: 'OnlyEnter' object has no attribute '__exit__'\n"
 exit_code = 1
-
-["protocols/hash_eq"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "hash attr is None True\nunhashable hash() TypeError\nunhashable set add TypeError\nunhashable dict key TypeError\nunhashable frozenset TypeError\nlist membership True 0\ndefault hashable True True False 1\ndict key kept [(Key(Alpha), 'second')] 1\nlookup case-insensitive second\nset dedup ['x', 'y']\nhash called True eq called True\ncollisions [0, 1, 2, 3, 4] True False\ncollide dict [(0, 0), (1, 1), (3, 9), (4, 16)]\nidentity before eq True True True False True\nsubclass eq resets hash True 7\nnumeric hash True False\ndict unify numeric keys {1: 'bool'} int\nset unify 1\nhash(-1) -2 -2\nbad hash type TypeError\nbig hash reduced True\nbool hash ok 1\nmutated key lookup False False False 1\ntuple hash True\ntuple with list TypeError\nfrozenset hash order-indep True\n"
-stderr = ""
-exit_code = 0
 
 ["protocols/index_protocol"]
 phase = "run"
@@ -652,9 +567,9 @@ exit_code = 1
 
 ["protocols/repr_str_format"]
 phase = "run"
-reason = "RecursionError: maximum native recursion depth exceeded"
-stdout = "print uses str Both(str) ReprOnly() StrOnly-str\nstr() Both(str) ReprOnly() StrOnly-str\nrepr() Both(repr) ReprOnly() StrOnly-repr\ncontainers use repr [Both(repr), ReprOnly(), StrOnly-repr] (Both(repr),) {'k': Both(repr)}\nf-string conversions Both(str) Both(repr) Both(str) ReprOnly() Both(repr)\npercent Both(str) Both(repr)\nstr.format Both(str) Both(repr) Both(str)\nascii ReprOnly() 'caf\\xe9'\nformat default $123.45 $123.45 $123.45\nformat specs 12345c *****$123.45 123.5        123\nstr vs format Money-str Money-str Money(12345)\nnested spec *****$123.45 12345c\nformat method spec 12345c **$123.45 12345c\nobject format empty plain-str plain-str\nobject format nonempty TypeError\nbad __format__ TypeError\nbad __str__ TypeError\nstr subclass result subclass-str S\nrecursive repr [1, [...]] "
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/repr_str_format.py\", line 125, in <module>\n    print(\"recursive repr\", lst, d)\nRecursionError: maximum native recursion depth exceeded\n"
+reason = "ValueError: unknown format code '_' for object of type 'float'"
+stdout = "print uses str Both(str) ReprOnly() StrOnly-str\nstr() Both(str) ReprOnly() StrOnly-str\nrepr() Both(repr) ReprOnly() StrOnly-repr\ncontainers use repr [Both(repr), ReprOnly(), StrOnly-repr] (Both(repr),) {'k': Both(repr)}\nf-string conversions Both(str) Both(repr) Both(str) ReprOnly() Both(repr)\npercent Both(str) Both(repr)\nstr.format Both(str) Both(repr) Both(str)\nascii ReprOnly() 'caf\\xe9'\nformat default $123.45 $123.45 $123.45\nformat specs 12345c *****$123.45 123.5        123\nstr vs format Money-str Money-str Money(12345)\nnested spec *****$123.45 12345c\nformat method spec 12345c **$123.45 12345c\nobject format empty plain-str plain-str\nobject format nonempty TypeError\nbad __format__ TypeError\nbad __str__ TypeError\nstr subclass result subclass-str S\nrecursive repr [1, [...]] {'self': {...}}\nnested repr Node('a', [Node(1), Node('b', [Node(None)])])\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/repr_str_format.py\", line 141, in <module>\n    print(\"builtin specs\", f\"{n:,.2f}\", f\"{n:_.0f}\", f\"{42:08b}\", f\"{255:#x}\", f\"{-3:+d}\", f\"{0.25:.1%}\", f\"{'ab':^6}|\", f\"{'x':-<4}|\")\nValueError: unknown format code '_' for object of type 'float'\n"
 exit_code = 1
 
 ["protocols/rich_comparisons"]
@@ -679,16 +594,18 @@ stderr = ""
 exit_code = 0
 
 ["scoping/comprehension_scope"]
-phase = "compile"
-reason = "Invalid assignment expression target or context"
-line = 51
+phase = "run"
+reason = "native output differs from CPython"
+stdout = "list comp var does not leak [0, 1, 4, 9] global x\nall comprehension kinds isolate ['a', 'b'] [1, 2, 3] {0: 0, 1: 2} global x\nfunction local not clobbered ([0, 1, 2], 'local y')\nenclosing read [0, 3, 6]\niterable uses outer n [10, 20]\nnested [[0, 1, 2], [3, 4, 5]]\nflatten with condition [1, 3, 5]\ndependent clauses [(1, 0), (2, 0), (2, 1)]\nwalrus outward [1, 3, 6] 6\nwalrus in function (['x', 'y', 'z'], 'z')\nwalrus nested (1, 1)\ncompiled [i := 0 for i in range(2)]\ncompiled [[(j := 1) for i in range(2)] for j in range(2)]\ncompiled [x for x in (y := [1])]\nwalrus with nonlocal 2\nwalrus with global 20\ngenerator late binding [100, 101, 102]\nfirst iterable eager NameError\nbody lazy NameError\nz leaked? False\nlocals in comprehension [['_', 'outer_name']]\nlambda in comprehension [2, 2, 2]\ngenexp in listcomp [0, 0, 1, 3, 6]\ndict comp order [('v', 0), ('k', 0), ('v', 1), ('k', 1)] {0: 0, 1: 1}\n"
+stderr = ""
+exit_code = 0
 
 ["scoping/del_statement"]
 phase = "run"
-reason = "native output differs from CPython"
-stdout = "deleted global NameError\ntuple del False False\ndouble del NameError\nlocal del UnboundLocalError\ndel then rebind 2\ndel attribute Obj([('q', 2)]) False\ndel missing attribute AttributeError\ndel class attribute through instance AttributeError\ndel class attribute False\ncustom delattr/delitem [('delattr', 'anything'), ('delitem', 1), ('delitem', slice(1, 3, None)), ('delitem', slice(None, None, 2)), ('delitem', (1, 2)), ('delitem', Ellipsis)]\ndel index [1, 2, 3, 4, 5, 6, 7, 8, 9]\ndel negative index [1, 2, 3, 4, 5, 6, 7, 8]\ndel slice [1, 2, 5, 6, 7, 8]\ndel extended slice [2, 6, 8]\ndel all []\ndel out of range IndexError\ndel dict key {'b': 2, 'c': 3}\ndel missing key KeyError\ndel nested targets [False, False, False]\nmixed del left to right [2, 3] {}\nloop var deleted False\ndel tuple item TypeError\ndel str item TypeError\nnonlocal del NameError\nglobal del False\nbytearray del b'hlo'\ndel unsupported TypeError\n"
-stderr = ""
-exit_code = 0
+reason = "SystemError: native module returned NULL without an error"
+stdout = "deleted global NameError\ntuple del False False\ndouble del NameError\nlocal del UnboundLocalError\ndel then rebind 2\ndel attribute Obj([('q', 2)]) False\ndel missing attribute AttributeError\ndel class attribute through instance AttributeError\ndel class attribute False\ncustom delattr/delitem [('delattr', 'anything'), ('delitem', 1), ('delitem', slice(1, 3, None)), ('delitem', slice(None, None, 2)), ('delitem', (1, 2)), ('delitem', Ellipsis)]\ndel index [1, 2, 3, 4, 5, 6, 7, 8, 9]\ndel negative index [1, 2, 3, 4, 5, 6, 7, 8]\ndel slice [1, 2, 5, 6, 7, 8]\ndel extended slice [2, 6, 8]\ndel all []\ndel out of range IndexError\ndel dict key {'b': 2, 'c': 3}\ndel missing key KeyError\ndel nested targets [False, False, False]\nmixed del left to right [2, 3] {}\nloop var deleted False\ndel tuple item TypeError\ndel str item TypeError\n"
+stderr = "SystemError: native module returned NULL without an error\n"
+exit_code = 1
 
 ["scoping/eval_exec"]
 phase = "run"
@@ -738,13 +655,6 @@ reason = "TypeError: a real number is required"
 stdout = "normalized 1/2 1 2\narith 5/6 -1/6 1/6 2/3 -1/3 1/3\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/stdlib/fractions_decimal.py\", line 20, in <module>\n    print(\"pow\", a ** 2, a ** -2, Fraction(4, 9) ** Fraction(1, 2))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/fractions.py\", line 913, in __pow__\n    return float(a) ** float(b)\nTypeError: a real number is required\n"
 exit_code = 1
-
-["stdlib/functools_cache_dispatch"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "lru calls [1, 2, 3, 2]\nlru info 2 4 2 2\nlru info tuple (2, 4, 2, 2)\nlru after clear CacheInfo(hits=0, misses=0, maxsize=2, currsize=0)\nfib 80 23416728348467685\nfib info CacheInfo(hits=78, misses=81, maxsize=None, currsize=81)\nlru bare decorator int float 2\nlru typed int float 2\ncache kw calls [(1, 2), (1, 2)]\ncache unhashable TypeError\ncached_property first 12 1\ncached_property second 12 1\ncached_property in dict True\ncached_property recompute 12 2\ncached_property set 99 2\ndispatch int int 5\ndispatch bool (int subclass) int True\ndispatch str str 'hi'\ndispatch list list of int 1, str 'a', inexact 2.5\ndispatch union inexact 1.0j\ndispatch fallback object (1, 2)\ndispatch lookup True\ndispatch registry has True False\ndispatchmethod int scale 3 tuple scale (1, 2) unsupported\n"
-stderr = ""
-exit_code = 0
 
 ["stdlib/io_module"]
 phase = "run"
@@ -882,7 +792,7 @@ exit_code = 1
 ["weird/bool_is_int"]
 phase = "run"
 reason = "KeyError: ''"
-stdout = "index with True/False one zero two\nslice with bools ['zero'] ['one', 'two']\ndict key collapse {True: 'float'}\nfirst key kept, last value wins {1: 'bool'}\nzero keys {0: 'c', 0.0j: 'd'}\nset collapse {True} {False}\nlen set mixed 4\nsum of comparisons 3\nTrue + True 2 3 0.5 0 1\nTrue ** False 1 1\nbitwise on bools stays bool False True False bool\nbitwise mixed becomes int 1 3 int\nneg -1 1 0 1\ntype of arithmetic int int\nisinstance True True False\nequality with int True True True\nhash equal True True\ncount 3 2\nindex 1 0\nin True True True\n"
+stdout = "index with True/False one zero two\nslice with bools ['zero'] ['one', 'two']\ndict key collapse {True: 'float'}\nfirst key kept, last value wins {1: 'bool'}\nzero keys {0: 'd'}\nset collapse {True} {False}\nlen set mixed 4\nsum of comparisons 3\nTrue + True 2 3 0.5 0 1\nTrue ** False 1 1\nbitwise on bools stays bool False True False bool\nbitwise mixed becomes int 1 3 int\nneg -1 1 0 1\ntype of arithmetic int int\nisinstance True True False\nequality with int True True True\nhash equal True True\ncount 3 2\nindex 1 0\nin True True True\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/weird/bool_is_int.py\", line 27, in <module>\n    print(\"str/repr\", str(True), repr(False), f\"{True}\", f\"{True:d}\", f\"{True:>5}\", \"%d\" % True, \"%s\" % True)\nKeyError: ''\n"
 exit_code = 1
 
@@ -914,13 +824,6 @@ stdout = "  index(3)\nlist index 3\n  index(-1)\nnegative index 9\n  index(2)\n 
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/weird/index_protocol_everywhere.py\", line 30, in <module>\n    print(\"bytes repeat\", b\"z\" * Ix(3))\nTypeError: unsupported operand type(s) for *: 'bytes' and 'Ix'\n"
 exit_code = 1
 
-["weird/mutation_during_iteration"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "append during iteration [1, 2, 3, 10, 20, 30, 100, 200]\nforward remove skips [1, 2, 3, 4, 5]\nbackward delete [1, 2, 4, 5, 7, 8, 10, 11]\ncopy iteration [2, 4]\nshrink while iterating [0, 2, 4] [3, 4, 5]\nslice replace mid iteration [0, 'b', 'c', 'd']\ndict size change RuntimeError\ndict after ['a', 'aa', 'b']\nvalue update ok {'a': 10, 'b': 20, 'c': 30}\ndelete via list copy {0: 0, 2: 4, 4: 16}\nset size change RuntimeError\ndeque mutated RuntimeError\nlive views ['x', 'y'] [('x', 1), ('y', 2)]\niterator sees extension [1, 2, 3, 4]\ndrain [1]\nafter append []\ninsert at front [(0, 'a'), (1, 'a'), (2, 'b'), (3, 'c')]\ngenexpr over mutated list 2 [40, 6, 8]\ncomprehension over growing list [1, 2, 3] [1, 2, 3, 1, 2, 3]\n"
-stderr = ""
-exit_code = 0
-
 ["weird/name_mangling"]
 phase = "run"
 reason = "AttributeError: 'Child' object has no attribute '_Base__secret'"
@@ -930,10 +833,10 @@ exit_code = 1
 
 ["weird/self_referential_containers"]
 phase = "run"
-reason = "RecursionError: maximum native recursion depth exceeded"
-stdout = "simple [[...]] True\nrebinding before subscript [7, [...]] True [None, None]\nnested list [[...], [[...], 1]]\ndict self "
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/weird/self_referential_containers.py\", line 19, in <module>\n    print(\"dict self\", d)\nRecursionError: maximum native recursion depth exceeded\n"
-exit_code = 1
+reason = "native output differs from CPython"
+stdout = "simple [[...]] True\nrebinding before subscript [7, [...]] True [None, None]\nnested list [[...], [[...], 1]]\ndict self {'self': {...}, 'list': [{...}, {'inner': {...}}]}\ntuple via list ([(...)],)\nmixed [1, 2, {'k': [...], 't': ([...],)}]\ncustom repr cut by inner list Node(root, [Node(root, [...])])\nrecursive_repr Safe([<loop>, [<loop>]])\nself eq identity True\n"
+stderr = ""
+exit_code = -11
 
 ["weird/special_method_lookup"]
 phase = "run"
@@ -950,6 +853,8 @@ stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mu
 exit_code = 1
 
 ["weird/walrus_nesting"]
-phase = "compile"
-reason = "Invalid assignment expression target or context"
-line = 5
+phase = "run"
+reason = "NameError: name 'k' is not defined"
+stdout = "running totals [0, 1, 3, 6, 10] total 10\nnested comp walrus [(2, 0), (2, 1)] last (2, 1)\nfunction local from comprehension ([0, 9, 36, 81], 81)\nlambda default ([5, 10], 7) seed leaked to module 7\nlambda comprehension ([3, 1, 4], 4)\nmodule m untouched False\nwhile walrus [3, 1] 0\nelif walrus [('long', 11), ('a-word', 'a'), ('other', 3)]\ngenexpr binding (False, 2)\nnonlocal through comprehension 3\nmethod comprehension walrus B\nin call 6 3\nin subscript 4 4\nin slice [2, 3, 4] 2 5\nfstring 11 then 10\nfirst odd witness 7\nfirst failing 7\nchained conditions [(2, 3), (3, 8)] 9\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/weird/walrus_nesting.py\", line 105, in <module>\n    dc = {(k := c): (k * 2) for c in \"xy\"}\nNameError: name 'k' is not defined\n"
+exit_code = 1

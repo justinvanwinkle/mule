@@ -36,6 +36,19 @@ class slice:
     def __repr__(self):
         return f"slice({self.start!r}, {self.stop!r}, {self.step!r})"
 
+    def __eq__(self, other):
+        if not is_slice(other):
+            return NotImplemented
+        return (self.start, self.stop, self.step) == (
+            other.start,
+            other.stop,
+            other.step,
+        )
+
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        return NotImplemented if result is NotImplemented else not result
+
 
 def _bound(value):
     method = _index_method(value)

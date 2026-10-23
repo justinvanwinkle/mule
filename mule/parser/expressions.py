@@ -193,14 +193,14 @@ class ExpressionParserMixin:
         if self.match("["):
             if self.match("]"):
                 return self.finish(ast.List(), start)
-            first = self.star_expression()
+            first = self.star_expression(allow_named=True)
             if self.current.text in ("for", "async"):
                 result = self.comprehension(ast.ComprehensionKind.LIST, first)
                 self.expect("]")
                 return self.finish(result, start)
             elements = [first]
             while self.match(",") and self.current.text != "]":
-                elements.append(self.star_expression())
+                elements.append(self.star_expression(allow_named=True))
             self.expect("]")
             return self.finish(ast.List(elements), start)
         if self.match("{"):
@@ -330,10 +330,12 @@ class ExpressionParserMixin:
             ]
             dictionary = True
         else:
-            first = self.star_expression()
+            first = self.star_expression(allow_named=True)
             dictionary = bool(self.match(":"))
             if dictionary:
                 first.require_collection(self, "Dictionary keys cannot be unpacked")
+                if not self.is_parenthesized(first):
+                    first.require_dict_key(self)
                 value = self.expression()
                 if self.current.text in ("for", "async"):
                     result = self.comprehension(
@@ -361,7 +363,7 @@ class ExpressionParserMixin:
                 value = self.expression()
                 entries.append(self.finish(ast.DictEntry(key, value), begin))
             else:
-                elements.append(self.star_expression())
+                elements.append(self.star_expression(allow_named=True))
         self.expect("}")
         return self.finish(
             ast.Dict(entries) if dictionary else ast.Set(elements), start
