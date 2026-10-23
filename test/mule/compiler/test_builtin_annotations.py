@@ -526,8 +526,10 @@ print(callbacks[0](([[value, 2], [3, 4]], [[5, 6], [7, value]])))
         "\n}"
     )[0]
     assert "@mule_list_getitem_borrow(" in specialized
+    assert "list.read" in specialized
     assert "@mule_fast_getitem(" not in specialized
     assert "@mule_assert_" not in specialized
+    assert "@mule_integer_in_bounds(" not in specialized
     assert "getelementptr i8, ptr" not in specialized
 
     case = build_case(tmp_path, source, optimize=2)
@@ -535,5 +537,6 @@ print(callbacks[0](([[value, 2], [3, 4]], [[5, 6], [7, value]])))
     assert "@mule_list_getitem_borrow(" in optimized
     assert "@mule_fast_getitem(" not in optimized
     assert "@mule_assert_" not in optimized
+    assert "@mule_integer_in_bounds(" not in optimized
     for value in ("3\n", "-7\n"):
         case.compare(value)

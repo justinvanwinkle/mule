@@ -2026,8 +2026,8 @@ def range_advance(gen, vop):
         current, _, step = _range_words(gen, state)
         following = gen.operation(f"add nsw i64 {current}, {step}")
     gen.line(f"store i64 {following}, ptr {state}")
-    encoded = gen.operation(f"shl i64 {current}, 1")
-    tagged = gen.operation(f"or i64 {encoded}, 1")
+    encoded = gen.operation(f"shl nsw i64 {current}, 1")
+    tagged = gen.operation(f"or disjoint i64 {encoded}, 1")
     result = gen.operation(f"inttoptr i64 {tagged} to ptr")
     gen.publish(vop.results[0], result)
     gen.refine(vop.results[0].tn, result)
@@ -2147,15 +2147,57 @@ def protocol_getitem(gen, vop):
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])
     info = vop.codegen_info
-    if info is True:
-        helper = "@mule_text_codepoint_getitem"
-    elif info == "list_borrow":
-        helper = "@mule_list_getitem_borrow"
-    elif info == "list_owned":
-        helper = "@mule_list_getitem"
+    if info in ("list_borrow", "list_owned"):
+        helper = (
+            "@mule_list_getitem_borrow"
+            if info == "list_borrow"
+            else "@mule_list_getitem"
+        )
+        idx_type = vop.args[1].tn.type or UNKNOWN
+        non_negative = idx_type.minimum is not None and idx_type.minimum >= 0
+        bits = gen.operation(f"ptrtoint ptr {index} to i64")
+        raw = gen.operation(f"ashr i64 {bits}, 1")
+        len_addr = gen.operation(
+            f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
+        )
+        length = gen.operation(f"load i64, ptr {len_addr}")
+        if non_negative:
+            pos = raw
+        else:
+            neg = gen.operation(f"icmp slt i64 {raw}, 0")
+            wrapped = gen.operation(f"add i64 {raw}, {length}")
+            pos = gen.operation(f"select i1 {neg}, i64 {wrapped}, i64 {raw}")
+        inside = gen.operation(f"icmp ult i64 {pos}, {length}")
+        read_lbl = gen.fresh("list.read")[1:]
+        slow_lbl = gen.fresh("list.slow")[1:]
+        done_lbl = gen.fresh("list.done")[1:]
+        gen.line(
+            f"br i1 {inside}, label %{read_lbl}, label %{slow_lbl}, "
+            f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+        )
+        gen.lines.append(read_lbl + ":")
+        data_addr = gen.operation(
+            f"getelementptr ptr, ptr {sequence}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
+        )
+        data = gen.operation(f"load ptr, ptr {data_addr}")
+        slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {pos}")
+        fast_val = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
+        if info == "list_owned":
+            fast_val = gen.retain(fast_val)
+        gen.line(f"br label %{done_lbl}")
+        gen.lines.append(slow_lbl + ":")
+        slow_val = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {index})")
+        gen.line(f"br label %{done_lbl}")
+        gen.lines.append(done_lbl + ":")
+        result = gen.operation(
+            f"phi ptr [{fast_val}, %{read_lbl}], [{slow_val}, %{slow_lbl}]"
+        )
     else:
-        helper = gen.module.getitem_helper()
-    result = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {index})")
+        if info is True:
+            helper = "@mule_text_codepoint_getitem"
+        else:
+            helper = gen.module.getitem_helper()
+        result = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {index})")
     gen.release(sequence)
     gen.release(index)
     gen.publish(vop.results[0], result)
