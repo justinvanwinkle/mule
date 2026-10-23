@@ -17,6 +17,7 @@ from _mule_native import class_own_lookup_default
 from _mule_native import class_of
 from _mule_native import instance_field
 from _mule_native import is_class
+from _mule_native import is_instance
 from _mule_native import is_subclass
 from _mule_native import type_of
 
@@ -31,6 +32,19 @@ def _missing():
 def _enable_metadata():
     global _metadata_ready
     _metadata_ready = True
+    staticmethod.__isabstractmethod__ = property(
+        lambda self: bool(getattr(self.__func__, "__isabstractmethod__", False))
+    )
+    classmethod.__isabstractmethod__ = property(
+        lambda self: bool(getattr(self.__func__, "__isabstractmethod__", False))
+    )
+    property.__isabstractmethod__ = property(
+        lambda self: bool(
+            getattr(self.fget, "__isabstractmethod__", False)
+            or getattr(self.fset, "__isabstractmethod__", False)
+            or getattr(self.fdel, "__isabstractmethod__", False)
+        )
+    )
 
 
 class staticmethod:
@@ -76,7 +90,7 @@ class property:
         self.fset = fset
         self.fdel = fdel
         self._doc_from_getter = doc is None and fget is not None
-        if self._doc_from_getter:
+        if _metadata_ready and self._doc_from_getter:
             try:
                 doc = fget.__doc__
             except AttributeError:
@@ -120,9 +134,20 @@ class super:
     The search follows the MRO of ``__self__``'s class, or of ``__self__``
     itself when it is a subclass of ``__thisclass__``."""
 
-    def __init__(self, type, obj):
+    def __init__(self, type=_missing, obj=_missing):
+        if type is _missing:
+            raise RuntimeError("super(): no arguments")
+        if not is_class(type):
+            raise TypeError("super() argument 1 must be a type")
+        if obj is not _missing and obj is not None:
+            if is_class(obj) and is_subclass(obj, type):
+                pass
+            elif not is_instance(obj, type):
+                raise TypeError(
+                    "super(type, obj): obj must be an instance or subtype of type"
+                )
         self.__thisclass__ = type
-        self.__self__ = obj
+        self.__self__ = None if obj is _missing else obj
 
     def __getattribute__(self, name):
         thisclass = instance_field(self, "__thisclass__")

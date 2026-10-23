@@ -77,73 +77,10 @@ stdout = "zip [(1, 'a'), (2, 'b')]\nzip one [('a',), ('b',)]\nzip none []\nzip t
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/builtins/zip_map_filter.py\", line 48, in <module>\n    print(\"map strict ok\", list(map(max, [1, 2], [3, 0], strict=True)))\nTypeError: got an unexpected keyword argument 'strict'\n"
 exit_code = 1
 
-["classes/abc_isinstance_hooks"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "abstract methods []\nconcrete square with area 9 []\nsuper to abstract impl+base-run\nabstract classmethod ConcreteFactory []\nABCMeta direct ABCMeta True\nregistered isinstance True True\nregistered not in mro False\nregister decorator Goose True\nsubclasshook True False True\ncollections.abc structural True True True\nnot Sequence False True True\nHashable False True False\ninstancecheck True False False\nsubclasscheck True False\ntuple of classes False True\nexact type shortcut True True\nunion isinstance True False True\nissubclass non-class TypeError\nbefore update True\n"
-stderr = ""
-exit_code = 0
-
-["classes/builtin_subclasses"]
-phase = "run"
-reason = "AttributeError: 'str' object has no attribute 'format_map'"
-stdout = "loud list [10, 2, 3, 4] 2 4 19\nloud list log ['append 3', 'setitem 0', 'getitem 1', 'len']\nslice type list [2, 3] ['getitem slice(1, 3, None)']\nconcat type list list\nisinstance list True True\nmissing via [] 1 <b>\nget bypasses missing None False\nafter [('a', 1), ('b', '<b>')]\ndict keys ['MixedInit', 'SetDef', 'Updated', 'upper']\ngetitem lowered 2 2\nbypassed key not found KeyError\ndict copy type dict dict\nstr() HEY! format hey repr 'hey'\nlen override 1000 concat heyx str\njoin hey-hey upper type str\nprint direct HEY!\nint subclass ops $8 $8 $15 10 int\nformat int sub 0005 $5 $5\nbool / hash False True True\nbool override True True yes\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/builtin_subclasses.py\", line 131, in <module>\n    fmt = \"{x}-{y}\".format_map(cd)\nAttributeError: 'str' object has no attribute 'format_map'\n"
-exit_code = 1
-
-["classes/dataclasses_basic"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "repr Item(name='apple', price=1.5, tags=[])\neq True False False\ndefault_factory distinct ['fruit'] []\ncompare=False field False\nfields [('name', 'str'), ('price', 'float'), ('tags', 'list'), ('hidden', 'int')]\nhash disabled by eq None\nmutable default ValueError\nnon-default after default TypeError\nsorted [Version(major=0, minor=9), Version(major=1, minor=0), Version(major=1, minor=0), Version(major=1, minor=2)]\ncompare True True True\norder vs tuple TypeError\nfrozen set FrozenInstanceError True\nfrozen del FrozenInstanceError\nfrozen hashable True v Coord(x=4, y=2)\npost_init Rect(w=4, h=6, area=24) 24\nInitVar not field ['w', 'h', 'area'] True\nInitVar default class attr 1.0\ninit=False not accepted TypeError\npost_init validation negative: -1\neq=False False True True\nunsafe_hash True\nrepr=False keeps custom <custom 4>\nClassVar excluded ['v'] WithClassVar(v=5)\nmatch_args ('name', 'price', 'tags', 'hidden')\nmatch dataclass pear 3.0\n"
-stderr = ""
-exit_code = 0
-
-["classes/descriptors"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "set_name log ['set_name Person.name', 'set_name Person.age']\nget Ann 30\nclass access <Typed name on Person>\ntype check age must be int\nafter delete False delete age\nbefore shadow non-data value data value\nafter shadow instance nd data value\nafter assign assigned nd data value assigned d\nset-only get 4 {'so': 4}\ndelete-only delonly\nfunction __get__ bound to F bound to F bound to F\nfunction get None True\ncounted 1 2 1 3\nclass returns descriptor Counted\nlate set_name False\nmanual set_name late\nobjtype ('none', 'K') ('none', 'K2') ('obj', 'K2')\nset_name error ValueError\n"
-stderr = ""
-exit_code = 0
-
-["classes/enums_basic"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "repr/str <Color.RED: 1> Color.RED Color.BLUE\nname/value GREEN 2\niteration skips aliases ['RED', 'GREEN', 'BLUE']\nmembers incl aliases ['RED', 'GREEN', 'BLUE', 'CRIMSON']\nalias identity True RED\nlookup by value Color.GREEN Color.RED\nlookup by name Color.BLUE Color.RED\nbad value ValueError\nbad name KeyError\nmethods red=1 True False Color.GREEN\nlen 3 contains True True\neq with value False True\nEnum ordering TypeError\nhashable r\ntype Color True\nset value AttributeError\nauto values [('A', 1), ('B', 2), ('C', 10), ('D', 11)]\ncustom auto ['x', 'y']\nunique ValueError\nIntEnum ops True 6 True [<Priority.LOW: 1>, 3, <Priority.HIGH: 10>]\nIntEnum str/format 5 5 <Priority.MID: 5> 005\nIntEnum index 20 10 True\nStrEnum read read True W WRITE\nStrEnum join read+w\ntuple-valued (5.976e+24, 6378140.0) 5.976e+24 22.746\nfunctional [('CAT', 1), ('DOG', 2), ('BIRD', 3)] Animal.DOG\nfunctional pairs Shape.TRI 4\nsubclass empty enum A!\nextend enum with members TypeError\nsingleton False\n_missing_ Status.OK Status.ERR\n_missing_ None ValueError\nreversed ['BLUE', 'GREEN', 'RED']\n"
-stderr = ""
-exit_code = 0
-
-["classes/init_subclass_class_getitem"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "registry [('alpha', 'Alpha', 0), ('b', 'Beta', 5), ('gamma', 'Gamma', 9)]\ninherited key not reused gamma\nplugin base in registry False\nchained [('MixA', 'Combined', 1), ('MixB', 'Combined', 2)]\nvalidator BadV missing ['stop']\ngood validator ok GoodV\nclass_getitem Box[<class 'int'>] Box['x'] Box[(1, 2)] SubBox[None]\ninstance not subscriptable TypeError\ngeneric alias True True\nalias call creates instance Seq\nboth ('class', 1) ('instance', 1)\npep695 params ['T', 'U']\npep695 alias True ['int', 'str']\npep695 instance Pair 1 x\n"
-stderr = ""
-exit_code = 0
-
-["classes/metaclass_prepare_conflict"]
-phase = "run"
-reason = "AttributeError: 'function' object has no attribute '__prepare__'"
-stdout = "inside body sees injected: prepared for Form\norder ('injected', 'zeta', 'alpha', 'middle', 'zeta', 'beta')\nns type LoggingDict injected prepared for Form\nfinal zeta 3\nauto namespace HELLO X!\nprepare kwargs [('a', 1), ('b', 'two')]\nmetaclass conflict TypeError\nresolved MetaAB\nauto most-derived SubMetaA\nupgraded SubMetaA\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/metaclass_prepare_conflict.py\", line 158, in <module>\n    class ViaFunc(metaclass=func_meta):\nAttributeError: 'function' object has no attribute '__prepare__'\n"
-exit_code = 1
-
-["classes/slots"]
-phase = "run"
-reason = "KeyError: 'x'"
-stdout = "slots values Pt(1, 2) 1 2\nslot reassigned 10\nunknown attr AttributeError\nhas __dict__ False\nhas __weakref__ False\nslots attr ('x', 'y')\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/slots.py\", line 28, in <module>\n    print(\"slot descriptor type\", type(Pt.__dict__[\"x\"]).__name__)\nKeyError: 'x'\n"
-exit_code = 1
-
-["classes/super_forms"]
-phase = "run"
-reason = "TypeError: missing required argument 'type'"
-stdout = "chain C.m>B.m>A.m\nclassmethod chain C.make>B.make>A.make(C) C.make>B.make>A.make(C)\ntwo-arg A.m\ntwo-arg from C B.m>A.m A.m\nnested __class__ A.m\nlambda __class__ B\ngenerator super ['A.m', 'B']\nstaticmethod via super A.st\nclassmethod via two-arg super A.make(C)\nsuper object method hello from Base for Derived\nsuper type attr hello from Base for Derived\n__class__ vs type(self) (True, False)\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 106, in <module>\n    print(\"super outside class\", outside())\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 101, in outside\n    super()\nTypeError: missing required argument 'type'\n"
-exit_code = 1
-
 ["stdlib/collections_abc_checks"]
 phase = "run"
 reason = "native output differs from CPython"
-stdout = "isinstance list        101101100000110\nisinstance tuple       101111000000110\nisinstance str         101111000000110\nisinstance bytes       101111000000110\nisinstance dict        101100011000110\nisinstance set         101100000110100\nisinstance frozenset   101110000100100\nisinstance range       101111000000110\nisinstance deque       101101100000110\nisinstance generator   110010000001000\nisinstance int         000010000000000\nisinstance dict_keys   101100000100110\nisinstance dict_items  101100000100110\nisinstance dict_values 101110000000110\nisinstance memoryview  101101000000110\ncallable False False\nodict mutable mapping True\nlist hashable False\nseq iter [0, 1, 4, 9, 16, 25]\nseq contains True False\nseq reversed [25, 16, 9, 4, 1, 0]\nseq index/count 3 1\nseq slice [1, 9]\nseq isinstance True False\nseq index missing ValueError\nmap get 1 dflt\nmap contains True False\nmap views ['a', 'b'] [1, 2] [('a', 1), ('b', 2)]\nmap eq True False\nmap dict() {'a': 1, 'b': 2}\nmap ** unpack {'a': 1, 'b': 2, 'c': 3}\nmap not mutable False False\nmap keys view is Set True {'a'}\nmutmap [('bar', 2), ('baz', 3), ('foo', 1)]\nmutmap setdefault 1 5\nmutmap pop 3 none\nmutmap popitem ('foo', 1)\nmutmap clear 0\nset ops Bits([2, 3]) Bits([1, 2, 3, 4]) Bits([1]) Bits([1, 4])\nset compare True False True True\nstructural True True False\nregistered True True\n"
+stdout = "isinstance list        101101100000110\nisinstance tuple       101111000000110\nisinstance str         101111000000110\nisinstance bytes       101111000000110\nisinstance dict        101100011000110\nisinstance set         101100000110100\nisinstance frozenset   101110000100100\nisinstance range       101111000000110\nisinstance deque       101101100000110\nisinstance generator   110010000001000\nisinstance int         000010000000000\nisinstance dict_keys   101100000100110\nisinstance dict_items  101100000100110\nisinstance dict_values 101110000000110\nisinstance memoryview  101101000000110\ncallable False False\nodict mutable mapping True\nlist hashable False\nseq iter [0, 1, 4, 9, 16, 25]\nseq contains True False\nseq reversed [25, 16, 9, 4, 1, 0]\nseq index/count 3 1\nseq slice [1, 9]\nseq isinstance True False\nseq index missing ValueError\nmap get 1 dflt\nmap contains True False\nmap views ['a', 'b'] [1, 2] [('a', 1), ('b', 2)]\nmap eq True False\nmap dict() {'a': 1, 'b': 2}\nmap ** unpack {'a': 1, 'b': 2, 'c': 3}\nmap not mutable False False\nmap keys view is Set True {'a'}\nmutmap [('bar', 2), ('baz', 3), ('foo', 1)]\nmutmap setdefault 1 5\nmutmap pop 3 none\nmutmap popitem ('foo', 1)\nmutmap clear 0\nset ops Bits([2, 3]) Bits([1, 2, 3, 4]) Bits([1]) Bits([1, 4])\nset compare True False True True\nstructural True True False\nabstract instantiation TypeError\nregistered True True\n"
 stderr = ""
 exit_code = 0
 

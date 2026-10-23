@@ -394,7 +394,7 @@ class object:
     def __ge__(self, other):
         return NotImplemented
 
-    def __init_subclass__(cls, **keywords):
+    def __init_subclass__(cls):
         pass
 
     def __subclasshook__(cls, subclass, /):
@@ -413,16 +413,20 @@ _slot_descriptors_ready = False
 
 
 def _declared_slots(name, namespace):
-    slots = namespace.get('__slots__', ())
-    if isinstance(slots, str):
-        slots = (slots,)
+    raw_slots = namespace.get('__slots__', ())
+    if isinstance(raw_slots, str):
+        slots = (raw_slots,)
+    else:
+        slots = raw_slots
     result = []
+    all_slots = []
     for slot in slots:
         if not isinstance(slot, str):
             raise TypeError("__slots__ items must be strings, not '" + type(slot).__name__ + "'")
         if not slot.isidentifier():
             raise TypeError('__slots__ must be identifiers')
         if slot in ('__dict__', '__weakref__'):
+            all_slots.append(slot)
             continue
         if slot in namespace:
             raise ValueError("'" + slot + "' in __slots__ conflicts with class variable")
@@ -431,7 +435,8 @@ def _declared_slots(name, namespace):
             if prefix:
                 slot = '_' + prefix + slot
         result.append(slot)
-    return result
+        all_slots.append(slot)
+    return result, tuple(all_slots)
 
 
 class type(object):
@@ -477,12 +482,18 @@ class type(object):
                     raise TypeError(
                         f"type '{class_name(base)}' is not an acceptable base type"
                     )
-        slots = _declared_slots(name, namespace) if '__slots__' in namespace else []
+        if '__slots__' in namespace:
+            slots, raw_slot_tuple = _declared_slots(name, namespace)
+        else:
+            slots, raw_slot_tuple = [], None
         fields = list(namespace.get('__mule_fields__', ()))
         for slot in slots:
             if slot not in fields:
                 fields.append(slot)
         names, values = [], []
+        if raw_slot_tuple is not None:
+            names.append("__mule_slots__")
+            values.append(raw_slot_tuple)
         for key in namespace:
             value = namespace[key]
             if key == "__mule_fields__":
@@ -518,6 +529,12 @@ class type(object):
                     "metaclass conflict: the metaclass of a derived class "
                     "must be a (non-strict) subclass of the metaclasses "
                     "of all its bases"
+                )
+        if winner is not metaclass:
+            winner_new = class_lookup(winner, "__new__")
+            if winner_new is not class_lookup(type, "__new__"):
+                return winner.__new__(
+                    winner, name, original_bases, namespace, **keywords
                 )
         cls = new_class(
             winner,
@@ -609,9 +626,27 @@ def _class_type_params(cls):
     return ()
 
 
-type.__annotations__ = property(_class_annotations)
-type.__annotate__ = property(_class_annotate)
-type.__type_params__ = property(_class_type_params)
+def _set_class_annotations(cls, value):
+    generic_set_attribute(cls, "__annotations__", value)
+
+
+def _del_class_annotations(cls):
+    generic_delete_attribute(cls, "__annotations__")
+
+
+def _set_class_annotate(cls, value):
+    generic_set_attribute(cls, "__annotate__", value)
+
+
+def _set_class_type_params(cls, value):
+    generic_set_attribute(cls, "__type_params__", value)
+
+
+type.__annotations__ = property(
+    _class_annotations, _set_class_annotations, _del_class_annotations
+)
+type.__annotate__ = property(_class_annotate, _set_class_annotate)
+type.__type_params__ = property(_class_type_params, _set_class_type_params)
 
 
 def _bases(cls):

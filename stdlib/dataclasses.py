@@ -1171,10 +1171,10 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen,
     field_list = [f for f in fields.values() if f._field_type is _FIELD]
 
     if repr:
-        flds = [f for f in field_list if f.repr]
+        repr_flds = [f for f in field_list if f.repr]
 
         def __repr__(self):
-            parts = ', '.join(f'{f.name}={getattr(self, f.name)!r}' for f in flds)
+            parts = ', '.join(f'{f.name}={getattr(self, f.name)!r}' for f in repr_flds)
             return f'{self.__class__.__qualname__}({parts})'
 
         __repr__ = recursive_repr()( __repr__)
@@ -1199,13 +1199,13 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen,
 
     if order:
         # Create and set the ordering methods.
-        flds = [f for f in field_list if f.compare]
+        order_flds = [f for f in field_list if f.compare]
 
         def _comparison(op):
             def compare(self, other):
                 if other.__class__ is self.__class__:
-                    left = tuple(getattr(self, f.name) for f in flds)
-                    right = tuple(getattr(other, f.name) for f in flds)
+                    left = tuple(getattr(self, f.name) for f in order_flds)
+                    right = tuple(getattr(other, f.name) for f in order_flds)
                     return op(left, right)
                 return NotImplemented
 

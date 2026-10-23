@@ -939,10 +939,7 @@ def _field_value(name, fields):
     else:
         position, end = _digits(first, 0, _text_length(first))
         if end != _text_length(first):
-            if first in fields.keyws:
-                value = fields.keyws[first]
-            else:
-                raise KeyError(first)
+            value = fields.keyws[first]
         else:
             if fields.automatic:
                 raise ValueError(
@@ -1276,6 +1273,10 @@ class TextStorage:
 
     def __format__(self, format_spec):
         _require_text(format_spec, "format() argument 2 must be str")
+        if _text_length(format_spec) == 0:
+            if _type_of(self) is str and _type_of(format_spec) is str:
+                return self
+            return _string_protocol(self)
         return format_text(self, format_spec)
 
     def __hash__(self):
@@ -1937,6 +1938,9 @@ class TextStorage:
 
     def format(self, *args, **keyws):
         return _expand(self, _Fields(args, keyws), 1)
+
+    def format_map(self, mapping, /):
+        return _expand(self, _Fields((), mapping), 1)
 
 
 class TextIterator:

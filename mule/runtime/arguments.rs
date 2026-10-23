@@ -461,6 +461,9 @@ pub unsafe extern "C" fn mule_allocate_instance(class: Value) -> Value {
             object::error("SystemError", "invalid instance layout");
             return std::ptr::null_mut();
         };
+        if !crate::classes::check_not_abstract(layout) {
+            return std::ptr::null_mut();
+        }
         if layout.native.is_some() {
             return crate::native_storage::mule_native_new(class);
         }

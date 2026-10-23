@@ -1259,6 +1259,8 @@ def async_generator_yield(value):
 def _metaclass(bases, explicit):
     """The most derived metaclass among ``explicit`` and the bases' classes."""
     winner = type if explicit is None else explicit
+    if not is_class(winner):
+        return winner
     for base in bases:
         candidate = type(base)
         if issubclass(candidate, winner):
@@ -1316,7 +1318,10 @@ def prepare_class(name, bases, keywords):
     for key in keywords:
         if key != "metaclass":
             others[key] = keywords[key]
-    return metaclass.__prepare__(name, bases, **others)
+    prepare = getattr(metaclass, "__prepare__", None)
+    if prepare is None:
+        return {}
+    return prepare(name, bases, **others)
 
 
 def build_class(name, bases, namespace, keywords, fields):
@@ -1337,7 +1342,8 @@ def build_class(name, bases, namespace, keywords, fields):
             namespace[key] = value
     if changed:
         namespace["__orig_bases__"] = original
-    namespace["__mule_fields__"] = fields
+    if is_class(metaclass):
+        namespace["__mule_fields__"] = fields
     return metaclass(name, bases, namespace, **others)
 
 
