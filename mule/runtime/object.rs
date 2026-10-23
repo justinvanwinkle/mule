@@ -415,7 +415,7 @@ impl Data {
         match self {
             Self::Args(values, ty, attributes) | Self::List(values, ty, attributes) => {
                 visit(*ty); visit(*attributes);
-                for value in values { visit(*value); }
+                for value in values.iter().rev() { visit(*value); }
             }
             Self::BigInt(_, ty, attributes) | Self::Float(_, ty, attributes)
             | Self::Text(_, ty, attributes) | Self::Bytes(_, ty, attributes) => { visit(*ty); visit(*attributes); }
@@ -945,7 +945,8 @@ unsafe fn destroy(value: Value) {
                 if ty.is_null() && attrs.is_null() =>
             {
                 (*value).references.store(0, std::sync::atomic::Ordering::Relaxed);
-                for &child in values {
+                // Child weak-reference callbacks observe Python's reverse teardown order.
+                for &child in values.iter().rev() {
                     release(child);
                 }
                 drop_and_dealloc_object(value);

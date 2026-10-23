@@ -181,6 +181,7 @@ class TN:
 
     __slots__ = (
         "borrowed_from",
+        "cleanup_owner",
         "kind",
         "leaf",
         "name",
@@ -202,6 +203,8 @@ class TN:
         # A non-owning acquisition protected by this root's live ownership.
         # Self denotes an externally protected parameter or pooled constant.
         self.borrowed_from: TN | None = None
+        # Scalarized children retain their aggregate's position in error cleanup.
+        self.cleanup_owner: TN | None = None
         self.leaf = leaf
         self.name = name
         self.kind = kind or TNKind.NORMAL

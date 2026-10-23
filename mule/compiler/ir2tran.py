@@ -71,6 +71,7 @@ from .vop import (
     BOOLEAN_T,
     FIXNUM,
     RANGE_T,
+    REFERENCE_T,
     VOP,
     IR2Block,
     IR2Component,
@@ -241,7 +242,7 @@ def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
         )
     if name in ("compare-in", "compare-not_in") and len(vop.args) == 2:
         return (vop.args[1].tn.type or UNKNOWN).fits_dict()
-    if name == "full-call" and vop.args:
+    if name in ("full-call", "local-extent-call") and vop.args:
         return ref is vop.args[0] or any(
             ref is vop.args[index + 1]
             for index in linked(vop.codegen_info, vop, "call site").borrowable_arguments
@@ -317,6 +318,7 @@ class CallSite:
     target: Lambda | None
     proven: bool
     borrowable_arguments: frozenset[int] = frozenset()
+    local_environment: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1845,7 +1847,18 @@ class _LoadLeaf(LeafVisitor):
             return
         result, discard = converter.result_tn(node)
         environment = converter.environment
-        if leaf in environment.cells:
+        local = converter.context.local_environments
+        if local is not None and local.function_for_binding(leaf) is not None:
+            result.primitive_type = REFERENCE_T
+        if leaf in converter.stack_cells:
+            converter.emit(
+                vops.LOCAL_CELL_REF,
+                node,
+                args=(converter.stack_cells[leaf],),
+                results=(result,),
+                info=node.allow_unbound,
+            )
+        elif leaf in environment.cells:
             converter.emit(
                 vops.VALUE_CELL_REF,
                 node,
@@ -1898,6 +1911,24 @@ class _StoreVar(LeafVisitor):
     def visit_LambdaVar(self, leaf: LambdaVar):
         converter = self.converter
         node = linked(self.node, self, "assignment node")
+        if leaf in converter.stack_cells:
+            local = converter.context.local_environments
+            owned = local.function_for_binding(leaf) is None
+            if node.value is None:
+                converter.emit(
+                    vops.LOCAL_CELL_CLEAR,
+                    node,
+                    args=(converter.stack_cells[leaf],),
+                    info=owned,
+                )
+            else:
+                converter.emit(
+                    vops.LOCAL_CELL_SET,
+                    node,
+                    args=(converter.stack_cells[leaf], converter.lvar_tn(node.value)),
+                    info=owned,
+                )
+            return
         if leaf in converter.environment.cells:
             cell = converter.environment.cells[leaf]
             if node.value is None:
@@ -2238,6 +2269,7 @@ class _Converter(NodeVisitor):
         self._scan_int_parse: _ScanIntParse | None = _ScanIntParse(self)
         self._skipped_nodes: set = set()
         self._fused_int_calls: dict[Combination, Combination | None] = {}
+        self.stack_cells = {}
 
     def close(self) -> None:
         self._load_leaf = None
@@ -2253,7 +2285,15 @@ class _Converter(NodeVisitor):
         if tn is None:
             plan = self.context.plan
             ptype = plan.var_type(var) if plan is not None else None
-            tn = self.component.tn(ptype or T, leaf=var, name=var.name)
+            local = self.context.local_environments
+            reference = (
+                local is not None and local.function_for_binding(var) is not None
+            )
+            tn = self.component.tn(
+                REFERENCE_T if reference else (ptype or T),
+                leaf=None if reference else var,
+                name=f"$function:{var.name}" if reference else var.name,
+            )
             self.environment.vars[var] = tn
         return tn
 
@@ -2270,17 +2310,28 @@ class _Converter(NodeVisitor):
         closure = lambda_.environment.closure if lambda_.environment else ()
         environment.captured = list(closure)
         for var in closure:
-            if var.indirect:
+            local = self.context.local_environments
+            if local is not None and var in local.stack_cells:
+                self.stack_cells[var] = self.component.tn(
+                    REFERENCE_T, name=f"$slot:{var.name}"
+                )
+            elif var.indirect:
                 environment.cells[var] = self.component.tn(T, name=f"$cell:{var.name}")
             else:
                 vtype = var.optimistic_type or UNKNOWN
+                reference = (
+                    local is not None and local.function_for_binding(var) is not None
+                )
                 tn = self.component.tn(
-                    primitive_type_of(vtype), leaf=var, name=f"$copy:{var.name}"
+                    REFERENCE_T if reference else primitive_type_of(vtype),
+                    leaf=None if reference else var,
+                    name=f"$copy:{var.name}",
                 )
                 tn.type = vtype
                 environment.copies[var] = tn
         for var in lambda_.locals:
-            if var.indirect:
+            local = self.context.local_environments
+            if var.indirect and not (local is not None and var in local.stack_cells):
                 environment.cells[var] = self.component.tn(T, name=f"$cell:{var.name}")
                 environment.home_cells.append(var)
 
@@ -2448,8 +2499,25 @@ class _Converter(NodeVisitor):
         for index, var in enumerate(self.lambda_.vars):
             self.emit(vops.MOVE_ARGUMENT, node, results=(self.var_tn(var),), info=index)
         for index, var in enumerate(environment.captured):
-            target = environment.cells.get(var) or environment.copies[var]
-            self.emit(vops.LOAD_CLOSURE, node, results=(target,), info=index)
+            target = (
+                self.stack_cells.get(var)
+                or environment.cells.get(var)
+                or environment.copies[var]
+            )
+            local = self.context.local_environments
+            template = (
+                vops.LOCAL_LOAD_CLOSURE
+                if local is not None and local.is_local(self.lambda_)
+                else vops.LOAD_CLOSURE
+            )
+            self.emit(
+                template,
+                node,
+                results=(target,),
+                info=(index, var in self.stack_cells)
+                if template is vops.LOCAL_LOAD_CLOSURE
+                else index,
+            )
         for var in environment.home_cells:
             cell = self.temporary()
             self.emit(
@@ -2498,7 +2566,9 @@ class _Converter(NodeVisitor):
         if var in environment.cells:
             return self.cell(node, var)
         source = environment.copies.get(var) or self.var_tn(var)
-        loaded = self.temporary()
+        local = self.context.local_environments
+        reference = local is not None and local.function_for_binding(var) is not None
+        loaded = self.temporary(REFERENCE_T if reference else T)
         self.emit(
             vops.LOAD_LOCAL,
             node,
@@ -2577,6 +2647,14 @@ class _Converter(NodeVisitor):
             self.convert_full_call(node)
             return
         name = linked(node.fun_info, node, "known function").name
+        if name == "%setattr" and node.info.name == "__annotate__":
+            local = self.context.local_environments
+            receiver = node.args[0].use()
+            target = local.function_for_value(receiver) if local is not None else None
+            if target is not None:
+                for arg in node.args:
+                    self.emit_discard(node, self.lvar_tn(arg))
+                return
         if name == "%make_function":
             self.convert_make_function(node)
         elif name in ("%resolve_method", "%resolve_super_method"):
@@ -2631,6 +2709,30 @@ class _Converter(NodeVisitor):
             )
 
     def convert_full_call(self, node: Combination):
+        local = self.context.local_environments
+        target = local.call_target(node) if local is not None else None
+        if target is not None:
+            result, discard = self.result_tn(node)
+            self.emit(
+                vops.LOCAL_EXTENT_CALL,
+                node,
+                args=(
+                    self.lvar_tn(node.fun),
+                    *(self.lvar_tn(arg) for arg in node.args),
+                ),
+                results=(result,),
+                info=CallSite(
+                    (),
+                    node.info.location if node.info is not None else None,
+                    target,
+                    True,
+                    self.context.borrowed_callees.get(target, frozenset()),
+                    local_environment=True,
+                ),
+            )
+            if discard:
+                self.emit_discard(node, result)
+            return
         if node in self._fused_int_calls:
             slice_node = self._fused_int_calls[node]
             result, discard = self.result_tn(node)
@@ -2716,6 +2818,51 @@ class _Converter(NodeVisitor):
 
     def convert_make_function(self, node: Combination):
         lambda_ = made_lambda(node)
+        local = self.context.local_environments
+        if local is not None and local.discards_function(lambda_):
+            # Defaults were evaluated before construction; discarding metadata
+            # must not discard their effects or execute lazy annotations.
+            for argument in node.args[1:]:
+                self.emit_discard(node, self.lvar_tn(argument))
+            result, discard = self.result_tn(node)
+            self.emit(
+                vops.CONSTANT, node, results=(result,), info=ast.NoneLiteral(None)
+            )
+            if discard:
+                self.emit_discard(node, result)
+            return
+        if local is not None and local.is_local(lambda_):
+            captured = []
+            closure = lambda_.environment.closure if lambda_.environment else ()
+            for var in closure:
+                if var in self.stack_cells:
+                    captured.append(self.stack_cells[var])
+                    continue
+                if var in local.stack_cells:
+                    source = self.var_tn(var)
+                else:
+                    value = self.captured_value(node, var)
+                    reference = local.function_for_binding(var) is not None
+                    source = self.component.tn(
+                        REFERENCE_T if reference else T,
+                        name=f"$capture:{lambda_.name}:{var.name}",
+                    )
+                    self.emit(vops.MOVE, node, args=(value,), results=(source,))
+                address = self.temporary(REFERENCE_T)
+                self.emit(vops.LOCAL_ADDRESS, node, args=(source,), results=(address,))
+                captured.append(address)
+            result, discard = self.result_tn(node)
+            result.primitive_type = REFERENCE_T
+            self.emit(
+                vops.LOCAL_FUNCTION,
+                node,
+                args=captured,
+                results=(result,),
+                info=lambda_,
+            )
+            if discard:
+                self.emit_discard(node, result)
+            return
         closure = lambda_.environment.closure if lambda_.environment else ()
         captured = [self.captured_value(node, var) for var in closure]
         defaults = [self.lvar_tn(arg) for arg in node.args[1:]]

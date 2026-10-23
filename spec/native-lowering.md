@@ -134,10 +134,103 @@ old-value destruction, and only then access `bound`, preserving reentrant
 mutation. The hot field operations require no cell-protocol call or associated
 recursion-depth and traceback bookkeeping.
 
-Closure entries reside in an immutable tuple. A low-level primitive exposes
+Object closure entries reside in an immutable tuple. A low-level primitive exposes
 its borrowed entry-storage address once at function entry; constant-index LLVM
 loads acquire the captured references. This avoids both a dependency on Rust
 `Vec` field order and the general argument-binding accessor.
+
+## Local allocation extent
+
+The existing `escape.py` analysis also describes allocation results, aliases,
+and implicit closure captures. An unknown use remains escaping. The analysis
+distinguishes semantic indirection from the need for a heap cell.
+
+SBCL `src/compiler/envanal.lisp`, `determine-lambda-var-and-nlx-extent` and
+`analyze-escaping-closure-environments`, propagate environment lifetimes.
+`src/compiler/ir2tran.lisp`, `closure-initial-value` and `ir2-convert-enclose`,
+consume those decisions. Local indirect captures can reference the defining
+activation's frame instead of an explicit heap cell. Mule retains this
+producer/consumer distinction using an internal LLVM environment ABI.
+
+An eligible local function has only direct uses and a binding whose possible
+values share one proven code identity and capture locations. Stable aliases
+retain raw-pointer unbound checks, so conditional
+alias assignment and sibling calls before initialization still raise correctly.
+Its environment belongs to that particular defining activation.
+Copied captures occupy owned slots. Shared mutable captures reference their home
+slots only if every retaining environment has local extent. An escaping sibling
+or transitive closure requires the existing authoritative heap cell instead.
+These raw slot addresses must never enter Python object protocols.
+
+Function identity, metadata, defaults, decorators, suspension, and indirect calls
+can require an ordinary function object. Such uses retain the existing path.
+Generator and coroutine owning activations also retain their existing storage.
+Local entries preserve frame publication, recursion accounting, traceback
+metadata, contract checks, and local-versus-free-variable unbound errors.
+Supported frame records expose parent, code, and globals, not local bindings.
+Tracebacks do not retain local values. This change preserves existing function-error
+cleanup rather than adding CPython's traceback-local lifetimes.
+
+Fixed tuple/list allocations instead become scalar locals when every use,
+alias, and lifetime is representable. The consumer supports constant-index
+reads, fixed-index list replacement, length, and local aliases. Each accepted
+normal lifetime closes within one IR2 block. Element evaluation order and
+fixed-index list replacement remain observable. Deleting or replacing the last
+aggregate alias releases its children at the original destruction point. Structural
+mutation, unknown calls, and observable aggregate identity retain allocation
+unless a separate proof supports them. Repeated allocation sites must not reuse
+storage while an earlier logical object remains live.
+
+For potentially observable children, a raising operation requires only unhidden
+named owners and no local exception handler. Every such operation must share
+the same last live owner in the backend's cleanup order. Scalar child slots
+occupy that owner's cleanup position, in reverse element order. Normal last-owner
+destruction clears the slots earlier. Temporary owners, changing cleanup owners,
+cross-block lifetimes, and projections with pending element-contract checks
+retain the ordinary allocation path. Child releases for materialized sequences
+also follow reverse order, which weak-reference callbacks can observe.
+
+SBCL `find-lvar-dynamic-extents` starts from dynamic-extent declarations and
+trusted downward-function-argument information, then proves compatible uses and
+allocator eligibility. Mule's automatic Python escape proofs replace those
+roots, extending its existing automatic borrowed-argument analysis. This is an
+explicit adaptation, not a claim that SBCL automatically stack-allocates every
+nonescaping aggregate. Scalar replacement avoids introducing a second runtime
+container layout. Existing tuple projection and unpacked-return optimizations
+remain authoritative where they already apply.
+
+### Repeated source-function lowering
+
+SBCL `src/compiler/ir1tran.lisp`, `ir1-convert-local-combination`, retains the
+existing functional identity except when its explicit inline-conversion rules
+require another body. Mule's range lowering can visit the same Python function
+AST twice, once for each iteration path. Those visits share one Lambda code
+identity instead of preventing local-extent proofs with duplicate code bodies.
+
+The frontend reuses code only for the exact same AST node in the same lexical
+conversion context. The context includes its parent converter, class ownership,
+defining class, policy, qualified name, body kind, and annotation-scope mode.
+Active compiler bindings also form part of the conversion context. Reuse is
+disabled when an ancestor has an active inline-comprehension scope, whose
+captured binding identities can change between visits.
+The memo retains identity-keyed context objects until all late cleanup conversion
+finishes, then releases them with the other frontend conversion state.
+Different source definitions and different effective lexical contexts remain
+distinct. This is a Python source-lowering adaptation, not arbitrary function
+deduplication or source-text equivalence.
+
+Decorator evaluation, defaults, function creation, and closure capture remain at
+each runtime definition site. Observable function instances remain distinct even
+when their code identity is shared. Escape analysis can accept repeated binding
+writes only when every possible value has that same proven code identity or a
+stable alias to it. Raw local environments must continue to reference the same
+home slots or immutable captures at every such site.
+Each function-creation node contributes its own capture-containment edges to
+escape analysis. Dynamic raw-binding checks establish initialization even when
+alternative creation sites do not dominate each other's calls. Lambda-expression
+lowering forwards the original expression's identity rather than the identity of
+its synthesized function definition. Generic helper definitions without such an
+origin remain distinct.
 
 ## Physical sequence storage operations
 

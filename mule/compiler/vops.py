@@ -243,7 +243,21 @@ def load_local(gen, vop):
     source, result = vop.args[0], vop.results[0]
     access = vop.codegen_info
     if source.tn.sc not in OBJECT:
-        gen.store(result, gen.load(source))
+        value = gen.load(source)
+        if source.tn.sc is REFERENCE and not access.bound:
+            missing = gen.operation(f"icmp eq ptr {value}, null")
+            absent, present = (
+                gen.fresh(name)[1:] for name in ("local.absent", "local.present")
+            )
+            gen.line(f"br i1 {missing}, label %{absent}, label %{present}")
+            gen.lines.append(absent + ":")
+            name = gen.module.text(access.name)
+            gen.pointer_result(
+                result, f"call ptr @mule.fast.local.move(ptr null, ptr {name})"
+            )
+            gen.line(f"br label %{present}")
+            gen.lines.append(present + ":")
+        gen.store(result, value)
         return
     value = gen.load(source)
     if access.move:
@@ -341,6 +355,99 @@ def load_closure(gen, vop):
     value = gen.retain(value)
     gen.publish(result, value, release=False)
     gen.refine(result.tn, value)
+
+
+@define_vop("local-address", args=(None,), results=(None,))
+def local_address(gen, vop):
+    gen.store(vop.results[0], vop.args[0].tn.slot)
+
+
+@define_vop("local-load-closure", results=(None,))
+def local_load_closure(gen, vop):
+    index, indirect = vop.codegen_info
+    slot = gen.operation(f"getelementptr ptr, ptr %closure, i64 {index}")
+    address = gen.operation(f"load ptr, ptr {slot}")
+    if indirect:
+        gen.store(vop.results[0], address)
+    else:
+        value = gen.operation(f"load ptr, ptr {address}")
+        if vop.results[0].tn.sc.owned:
+            value = gen.retain(value)
+        gen.publish(vop.results[0], value, release=False)
+
+
+@define_vop("local-cell-ref", args=(None,), results=(None,))
+def local_cell_ref(gen, vop):
+    address = gen.load(vop.args[0])
+    value = gen.operation(f"load ptr, ptr {address}")
+    missing = gen.operation(f"icmp eq ptr {value}, null")
+    absent, present, join = (
+        gen.fresh(name)[1:]
+        for name in ("capture.absent", "capture.present", "capture.join")
+    )
+    gen.line(f"br i1 {missing}, label %{absent}, label %{present}")
+    gen.lines.append(absent + ":")
+    optional = "@mule.true" if vop.codegen_info else "@mule.false"
+    fallback = gen.sequence_call("cell_unbound", [optional])
+    absent_block = gen.current_block()
+    gen.line(f"br label %{join}")
+    gen.lines.append(present + ":")
+    if vop.results[0].tn.sc.owned:
+        value = gen.retain(value)
+    present_block = gen.current_block()
+    gen.line(f"br label %{join}")
+    gen.lines.append(join + ":")
+    gen.pointer_result(
+        vop.results[0],
+        f"phi ptr [{fallback}, %{absent_block}], [{value}, %{present_block}]",
+    )
+
+
+@define_vop("local-cell-set", args=(None, None))
+def local_cell_set(gen, vop):
+    address = gen.load(vop.args[0])
+    value = gen.take(vop.args[1])
+    old = gen.operation(f"load ptr, ptr {address}")
+    gen.line(f"store ptr {value}, ptr {address}")
+    if vop.codegen_info:
+        gen.release(old)
+
+
+@define_vop("local-cell-clear", args=(None,))
+def local_cell_clear(gen, vop):
+    address = gen.load(vop.args[0])
+    old = gen.operation(f"load ptr, ptr {address}")
+    gen.line(f"store ptr null, ptr {address}")
+    if vop.codegen_info:
+        gen.release(old)
+
+
+@define_vop("local-function", results=(None,))
+def local_function(gen, vop):
+    environment = gen.fresh("local.environment")
+    gen.lines.insert(
+        gen.entry_end, f"  {environment} = alloca [{max(1, len(vop.args))} x ptr]"
+    )
+    for index, ref in enumerate(vop.args):
+        slot = gen.operation(f"getelementptr ptr, ptr {environment}, i64 {index}")
+        gen.line(f"store ptr {gen.take(ref)}, ptr {slot}")
+    gen.store(vop.results[0], environment)
+
+
+@define_vop("local-extent-call", results=(None,))
+def local_extent_call(gen, vop):
+    environment = gen.take(vop.args[0])
+    arguments = [gen.take(ref) for ref in vop.args[1:]]
+    value = gen.call(
+        vop.codegen_info,
+        environment,
+        vop.args[1:],
+        arguments,
+        unpack_arity=gen.unpacked_call_arity(vop),
+        result_contract=gen.unpacked_call_contract(vop),
+    )
+    gen.publish(vop.results[0], value)
+    gen.check_pointer(value)
 
 
 @define_vop("unbind-local", results=(None,))
@@ -3580,6 +3687,13 @@ MOVE = move
 COERCE = coerce
 MOVE_ARGUMENT = move_argument
 LOAD_CLOSURE = load_closure
+LOCAL_ADDRESS = local_address
+LOCAL_LOAD_CLOSURE = local_load_closure
+LOCAL_CELL_REF = local_cell_ref
+LOCAL_CELL_SET = local_cell_set
+LOCAL_CELL_CLEAR = local_cell_clear
+LOCAL_FUNCTION = local_function
+LOCAL_EXTENT_CALL = local_extent_call
 VALUE_CELL_REF = value_cell_ref
 VALUE_CELL_SET = value_cell_set
 VALUE_CELL_CLEAR = value_cell_clear

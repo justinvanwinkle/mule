@@ -1,0 +1,356 @@
+"""Scalar storage for fixed aggregates whose escape proof is already settled.
+
+SBCL's envanal lifetime annotations select allocation consumers in IR2. The
+Python adaptation replaces local list/tuple storage rather than inventing a
+second runtime object layout. This pass only validates the consumer and owner
+operations of the existing escape proof. It does not infer escaping values.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+
+from mule import ast
+
+from . import vops
+from .ctype import UNKNOWN
+from .ir1util import block_exception_target
+from .ir2tran import LocalAccess
+from .vmdef import define_vop
+from .vop import VOP, T, TNRef
+
+
+@define_vop("scalar-element-store", args=(None,), results=(None,))
+def _store_element(gen, vop):
+    source = vop.args[0]
+    value = gen.take(source)
+    if source.tn.borrowed_from is not None:
+        value = gen.retain(value)
+    # Normal publication stores the new child before destroying the old one.
+    gen.store(vop.results[0], value)
+
+
+_STORE_ELEMENT = _store_element
+_BUILDERS = frozenset({"build-list", "build-tuple"})
+_COPIES = frozenset({"move", "load-local"})
+_READS = frozenset({"protocol-getitem", "unpack-ref"})
+
+
+class _IntegerLiteral(ast.Visitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_IntegerLiteral(self, node):
+        return node.value
+
+
+_INTEGER = _IntegerLiteral()
+
+
+def _index(tn, writes):
+    definitions = writes.get(tn, ())
+    if len(definitions) != 1:
+        return None
+    writer, _ = definitions[0]
+    if writer.info is not vops.CONSTANT:
+        return None
+    return writer.codegen_info.accept(_INTEGER)
+
+
+def _operation(info, node, args=(), results=(), data=None):
+    result = VOP(
+        info,
+        node,
+        [TNRef(tn, False) for tn in args],
+        [TNRef(tn, True) for tn in results],
+    )
+    result.codegen_info = data
+    return result
+
+
+def _constant(vop, literal):
+    return _operation(
+        vops.CONSTANT, vop.node, results=(vop.results[0].tn,), data=literal
+    )
+
+
+def _named_owner(tn):
+    return (
+        tn.leaf is not None and not tn.leaf.expression_temporary and not tn.leaf.hidden
+    )
+
+
+def _infallible(vop):
+    if vop.info.name in ("constant", "move", "discard"):
+        return True
+    return vop.info is vops.LOAD_LOCAL and vop.codegen_info.bound
+
+
+class _Family:
+    """Copy-connected aggregate locations; each block owns a closed lifetime.
+
+    Different lowered range paths can reuse the same source locals. Each path
+    must define its own aggregate before reading them and consume every owner
+    before its outgoing edges. No object can survive a loop backedge.
+    """
+
+    def __init__(self, component, members):
+        self.component = component
+        self.members = members
+        self.origins = {
+            writer
+            for tn in members
+            for writer, _ in component.writes.get(tn, ())
+            if writer.info.name in _BUILDERS
+        }
+
+    def eligible(self):
+        facts = self.component.context.escape_facts
+        if not self.origins or any(
+            facts.allocation_escapes(vop.node) for vop in self.origins
+        ):
+            return False
+        shape = {(vop.info.name, len(vop.args)) for vop in self.origins}
+        if len(shape) != 1:
+            return False
+        self.mutable = next(iter(shape))[0] == "build-list"
+        self.width = next(iter(shape))[1]
+        for tn in self.members:
+            for writer, _ in self.component.writes.get(tn, ()):
+                if writer.info.name not in _BUILDERS | _COPIES | {"unbind-local"}:
+                    return False
+            for reader, ref in self.component.reads.get(tn, ()):
+                if reader.node in self.component.context.element_contracts:
+                    # Projection checks must retain their ordinary publication
+                    # and failure-cleanup behavior.
+                    return False
+                name = reader.info.name
+                if (
+                    name in _COPIES | _READS | {"discard", "fast-len"}
+                    or name == "protocol-setitem"
+                    and self.mutable
+                ):
+                    if reader.args[0] is not ref:
+                        return False
+                else:
+                    return False
+        return True
+
+    def plan(self, block):
+        relevant = [
+            vop
+            for vop in block.vops
+            if any(ref.tn in self.members for ref in (*vop.args, *vop.results))
+        ]
+        if not relevant:
+            return {}
+        if not any(vop in self.origins for vop in relevant):
+            return None
+        # Scalar storage follows one dynamic allocation and never overlaps an
+        # older allocation from the same source site.
+        owners, valid, initialized = set(), set(), set()
+        replacements = {}
+        slots = []
+        children_inert = False
+        order = {tn: index for index, tn in enumerate(self.component.tns)}
+        for vop in block.vops:
+            related = vop in relevant
+            if not related:
+                if (
+                    owners
+                    and not any(_named_owner(tn) for tn in owners)
+                    and not _infallible(vop)
+                ):
+                    return None
+                if owners and not children_inert and not _infallible(vop):
+                    # A handler can resume with the old aggregate still alive.
+                    # This pass only closes lifetimes within the normal block.
+                    if block_exception_target(block.block) is not None:
+                        return None
+                    if not all(_named_owner(tn) for tn in owners):
+                        return None
+                    anchor = max(owners, key=order.__getitem__)
+                    if any(
+                        slot.cleanup_owner is not None
+                        and slot.cleanup_owner is not anchor
+                        for slot in slots
+                    ):
+                        return None
+                    for slot in slots:
+                        slot.cleanup_owner = anchor
+                continue
+            name = vop.info.name
+            rewritten = []
+            if vop in self.origins:
+                if owners:
+                    return None
+                slots = [
+                    self.component.tn(T, name=f"$scalar.{vop.number}.{index}")
+                    for index in range(self.width)
+                ]
+                for slot in slots:
+                    slot.type = UNKNOWN
+                children_inert = all(
+                    not (ref.tn.type or UNKNOWN).may_run_user_code for ref in vop.args
+                )
+                rewritten = [
+                    _operation(_STORE_ELEMENT, vop.node, (ref.tn,), (slot,))
+                    for ref, slot in zip(vop.args, slots, strict=True)
+                ]
+                owners.add(vop.results[0].tn)
+                valid.add(vop.results[0].tn)
+                initialized = {vop.results[0].tn}
+            elif name == "unbind-local":
+                target = vop.results[0].tn
+                # A last-read move can clear the binding before the explicit
+                # deletion VOP. It must still have been initialized here.
+                if target not in initialized:
+                    return None
+                owners.discard(target)
+                valid.discard(target)
+            else:
+                source = vop.args[0].tn
+                if source not in valid or not owners:
+                    return None
+                if name in _COPIES:
+                    target = vop.results[0].tn
+                    if name == "load-local":
+                        access = vop.codegen_info
+                        if not access.bound or access.allow_unbound:
+                            return None
+                        if access.move:
+                            owners.discard(source)
+                            valid.discard(source)
+                        if not access.borrow and target.borrowed_from is None:
+                            owners.add(target)
+                    else:
+                        owners.discard(target)
+                        if source.borrowed_from is None:
+                            owners.discard(source)
+                            valid.discard(source)
+                        owners.add(target)
+                    valid.add(target)
+                    initialized.add(target)
+                elif name in _READS | {"protocol-setitem"}:
+                    position = _index(vop.args[1].tn, self.component.writes)
+                    if position is None:
+                        return None
+                    position = position + self.width if position < 0 else position
+                    if not 0 <= position < self.width:
+                        return None
+                    slot = slots[position]
+                    if name == "protocol-setitem":
+                        value = vop.args[2].tn
+                        children_inert = (
+                            children_inert
+                            and not (value.type or UNKNOWN).may_run_user_code
+                        )
+                        rewritten.append(
+                            _operation(_STORE_ELEMENT, vop.node, (value,), (slot,))
+                        )
+                        rewritten.append(_constant(vop, ast.NoneLiteral(None)))
+                    else:
+                        target = vop.results[0].tn
+                        rewritten.append(
+                            _operation(
+                                vops.LOAD_LOCAL,
+                                vop.node,
+                                (slot,),
+                                (target,),
+                                LocalAccess(slot.name, False, bound=True),
+                            )
+                        )
+                    borrow_parent = (
+                        name == "unpack-ref" and vop.codegen_info.borrow_parent
+                    )
+                    if not borrow_parent and source.borrowed_from is None:
+                        owners.discard(source)
+                        valid.discard(source)
+                elif name == "fast-len":
+                    rewritten.append(_constant(vop, ast.IntegerLiteral(self.width)))
+                    if source.borrowed_from is None:
+                        owners.discard(source)
+                        valid.discard(source)
+                elif name == "discard":
+                    if source.borrowed_from is None:
+                        owners.discard(source)
+                        valid.discard(source)
+                else:
+                    return None
+            if not owners:
+                # Match tuple/list child teardown on both last reads and
+                # explicit deletion of the last alias.
+                rewritten.extend(
+                    _operation(vops.UNBIND_LOCAL, vop.node, results=(slot,))
+                    for slot in reversed(slots)
+                )
+                valid.clear()
+            replacements[vop] = rewritten
+        return replacements if not owners else None
+
+
+def _copy_groups(component):
+    edges = defaultdict(set)
+    for block in component.blocks:
+        for vop in block.vops:
+            if vop.info.name in _COPIES and len(vop.args) == len(vop.results) == 1:
+                source, target = vop.args[0].tn, vop.results[0].tn
+                edges[source].add(target)
+                edges[target].add(source)
+    visited = set()
+    for block in component.blocks:
+        for vop in block.vops:
+            if vop.info.name not in _BUILDERS:
+                continue
+            root = vop.results[0].tn
+            if root in visited:
+                continue
+            members, pending = set(), [root]
+            while pending:
+                tn = pending.pop()
+                if tn in members:
+                    continue
+                members.add(tn)
+                pending.extend(edges[tn])
+            visited.update(members)
+            yield members
+
+
+def replace_local_aggregates(component):
+    """Consume allocation escape facts before representation/ownership analysis."""
+    if component.context.plan is not None:
+        return
+    rewritten = {}
+    for members in _copy_groups(component):
+        family = _Family(component, members)
+        if not family.eligible():
+            continue
+        planned = []
+        original_tns = len(component.tns)
+        for block in component.blocks:
+            replacement = family.plan(block)
+            if replacement is None:
+                del component.tns[original_tns:]
+                break
+            planned.append(replacement)
+        else:
+            for replacement in planned:
+                rewritten.update(replacement)
+    if not rewritten:
+        return
+    for block in component.blocks:
+        block.vops = [item for vop in block.vops for item in rewritten.get(vop, (vop,))]
+    # A projection is now an independent owned scalar read, not a borrow from
+    # the removed container. Its original type facts remain authoritative.
+    for replacement in rewritten.values():
+        for vop in replacement:
+            for ref in vop.results:
+                ref.tn.borrowed_from = None
+    component.reads.clear()
+    component.writes.clear()
+    for block in component.blocks:
+        for vop in block.vops:
+            for ref in vop.args:
+                component.reads[ref.tn].append((vop, ref))
+            for ref in vop.results:
+                component.writes[ref.tn].append((vop, ref))

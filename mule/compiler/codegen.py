@@ -49,7 +49,7 @@ from .ctype import (
     ValueType,
     ValueTypeVisitor,
 )
-from .escape import analyze_escapes
+from .escape import analyze_escapes, find_local_environments
 from .ir1util import block_exception_target, made_function
 from .ir2tran import ir2_convert
 from .locall import specialized_ir1_context
@@ -72,6 +72,7 @@ from .represent import (
     select_native_plans,
     select_representations,
 )
+from .scalar import replace_local_aggregates
 from .traceback_sites import SourceHighlights
 from .vop import (
     BOOLEAN,
@@ -671,6 +672,7 @@ def compile_component(lambda_: Lambda, context, *, select_calls=None):
     """Run the IR2 phases for one body (``compile-component`` for a backend
     whose register allocation LLVM performs)."""
     with specialized_ir1_context(lambda_, context):
+        context.escape_facts = analyze_escapes([lambda_])
         with phase("LTN %s context %s", lambda_.name, context.id, level=logging.DEBUG):
             ltn_analyze(lambda_, context)
         with phase(
@@ -680,6 +682,7 @@ def compile_component(lambda_: Lambda, context, *, select_calls=None):
             level=logging.DEBUG,
         ):
             component = ir2_convert(lambda_, context)
+            replace_local_aggregates(component)
         with phase(
             "representation selection %s context %s",
             lambda_.name,
@@ -872,13 +875,17 @@ class ModuleGenerator:
                         self.return_tuple_uses[lambda_],
                     ) = info
         escapes = analyze_escapes(lambdas)
+        self.local_environments = find_local_environments(lambdas)
         self.borrowed_callees = {}
         for function in lambdas:
             if (
                 function is program.entry
                 or function in self.native_plans
                 or function in self.return_tuple_arities
-                or function.takes_closure
+                or (
+                    function.takes_closure
+                    and not self.local_environments.is_local(function)
+                )
                 or function.signature.variadic
                 or function.signature.default_parameters
                 or function.method_class is not None
@@ -2064,6 +2071,7 @@ class ModuleGenerator:
         same_namespace: bool = False,
         receiver_call: bool = False,
         borrowed_arguments: frozenset[int] = frozenset(),
+        local_environment: bool = False,
     ) -> str:
         step_key = tuple(
             (None if ctx is None else ctx.id, needed) for ctx, needed in steps
@@ -2078,6 +2086,7 @@ class ModuleGenerator:
             same_namespace,
             receiver_call,
             borrowed_arguments,
+            local_environment,
         )
         existing = self.protocol_helpers.get(key)
         if existing is not None:
@@ -2168,10 +2177,13 @@ class ModuleGenerator:
                     owned.append(f"%own.{tag}.{pos}")
             closure_ops = []
             if self.closure_of(function):
-                builder.line(
-                    f"  %closure.{tag} = call ptr @mule_function_closure_of(ptr %callee)"
-                )
-                closure_ops.append(f"ptr %closure.{tag}")
+                if local_environment:
+                    closure_ops.append("ptr %callee")
+                else:
+                    builder.line(
+                        f"  %closure.{tag} = call ptr @mule_function_closure_of(ptr %callee)"
+                    )
+                    closure_ops.append(f"ptr %closure.{tag}")
             body = (
                 self.specialized[function, context.id]
                 if context is not None
@@ -2259,6 +2271,7 @@ class ModuleGenerator:
         *,
         proven: bool = False,
         result_contract=None,
+        local_environment: bool = False,
     ) -> str:
         step_key = tuple(
             (None if ctx is None else ctx.id, needed) for ctx, needed in steps
@@ -2272,6 +2285,7 @@ class ModuleGenerator:
             step_key,
             proven,
             result_contract,
+            local_environment,
         )
         existing = self.protocol_helpers.get(key)
         if existing is not None:
@@ -2289,8 +2303,13 @@ class ModuleGenerator:
             "ptr %tuple.out",
         ]
         builder = _HelperBuilder(self)
-        body_globals = "%callee.globals"
-        if proven:
+        body_globals = "%globals" if local_environment else "%callee.globals"
+        if local_environment:
+            builder.lines = [
+                f"define internal ptr {symbol}({', '.join(params)}) {{",
+                "entry:",
+            ]
+        elif proven:
             builder.lines = [
                 f"define internal ptr {symbol}({', '.join(params)}) {{",
                 "entry:",
@@ -2340,10 +2359,13 @@ class ModuleGenerator:
                     owned.append(f"%own.{tag}.{pos}")
             closure_ops = []
             if self.closure_of(function):
-                builder.line(
-                    f"  %closure.{tag} = call ptr @mule_function_closure_of(ptr %callee)"
-                )
-                closure_ops.append(f"ptr %closure.{tag}")
+                if local_environment:
+                    closure_ops.append("ptr %callee")
+                else:
+                    builder.line(
+                        f"  %closure.{tag} = call ptr @mule_function_closure_of(ptr %callee)"
+                    )
+                    closure_ops.append(f"ptr %closure.{tag}")
             body = self.unpacked[function, None if context is None else context.id]
             body_args = ", ".join(
                 [
@@ -2482,6 +2504,7 @@ class ModuleGenerator:
             borrowed_parameters=borrowed_params,
             borrowed_callees=self.borrowed_callees,
             element_contracts=facts.element_contracts,
+            local_environments=self.local_environments,
         )
         variants = [
             EntryContext(
@@ -2493,6 +2516,7 @@ class ModuleGenerator:
                 borrowed_parameters=borrowed_params,
                 borrowed_callees=self.borrowed_callees,
                 element_contracts=context.element_contracts,
+                local_environments=self.local_environments,
             )
             for context in facts.variants
         ]
@@ -2571,7 +2595,7 @@ class ModuleGenerator:
             vop
             for block in component.blocks
             for vop in block.vops
-            if vop.info is vops.FULL_CALL
+            if vop.info in (vops.FULL_CALL, vops.LOCAL_EXTENT_CALL)
         ]
         while pending:
             remaining = []
@@ -2639,7 +2663,10 @@ class ModuleGenerator:
                 )
                 vop.info = replace(
                     vops.LOCAL_CALL,
-                    args=(OBJECT, *restrictions),
+                    args=(
+                        (REFERENCE,) if site.local_environment else OBJECT,
+                        *restrictions,
+                    ),
                     arg_escapes=(
                         False,
                         *(sc is DESCRIPTOR for sc in convention.parameters),
@@ -2659,7 +2686,7 @@ class ModuleGenerator:
 
     def fresh_box_result(self, component, vop):
         """Transfer fresh object ownership only across proven factory calls."""
-        if vop.info is not vops.FULL_CALL:
+        if vop.info not in (vops.FULL_CALL, vops.LOCAL_EXTENT_CALL):
             return None
         site = vop.codegen_info
         target = site.target
@@ -3952,6 +3979,16 @@ class FunctionGenerator:
         ]
         packable_set = set(packable_locals)
         fixed_locals = [tn for tn in self.local_tns if tn not in packable_set]
+        scalar_children = {}
+        for tn in fixed_locals:
+            if tn.cleanup_owner is not None:
+                scalar_children.setdefault(tn.cleanup_owner, []).append(tn)
+        fixed_locals = [
+            member
+            for tn in fixed_locals
+            if tn.cleanup_owner is None
+            for member in (tn, *reversed(scalar_children.get(tn, ())))
+        ]
         self.local_slot_groups = _pack_slot_tns(
             component, packable_locals, fixed_locals, "%local"
         )
@@ -4058,6 +4095,19 @@ class FunctionGenerator:
                         and target.call_order(site.keywords, len(candidate.args) - 1)
                         is not None
                         and unpack_vop.args[0].tn is delivered
+                    ):
+                        call_vop = candidate
+                elif (
+                    call_index >= 0
+                    and vops_list[call_index].info is vops.LOCAL_EXTENT_CALL
+                    and assertion_vop is None
+                ):
+                    candidate = vops_list[call_index]
+                    target = candidate.codegen_info.target
+                    if (
+                        arities.get(target) == arity
+                        and target.signature.return_annotation is None
+                        and unpack_vop.args[0].tn is candidate.results[0].tn
                     ):
                         call_vop = candidate
                 elif (
@@ -4791,15 +4841,20 @@ class FunctionGenerator:
             else:
                 converted.append(self.load(ref))
         callee = self.load(callable_ref)
-        self.operation(
-            f"call ptr @mule_method_entry(ptr {callee}, ptr %callee.globals.slot)"
-        )
-        callee_globals = self.operation("load ptr, ptr %callee.globals.slot")
-        closure = (
-            self.operation(f"call ptr @mule_function_closure_of(ptr {callee})")
-            if self.module.closure_of(entry.function)
-            else None
-        )
+        local_environment = self.module.local_environments.is_local(entry.function)
+        if local_environment:
+            callee_globals = "%globals"
+            closure = callee if self.module.closure_of(entry.function) else None
+        else:
+            self.operation(
+                f"call ptr @mule_method_entry(ptr {callee}, ptr %callee.globals.slot)"
+            )
+            callee_globals = self.operation("load ptr, ptr %callee.globals.slot")
+            closure = (
+                self.operation(f"call ptr @mule_function_closure_of(ptr {callee})")
+                if self.module.closure_of(entry.function)
+                else None
+            )
         status = self.operation("call i32 @mule_enter_frame()")
         self.check_status(status)
         self.uses_numeric_error = True
@@ -4823,7 +4878,8 @@ class FunctionGenerator:
         self.line("call void @mule_leave_frame()")
         for owned in raw_owned:
             self.release(owned)
-        self.release(callee)
+        if not local_environment:
+            self.release(callee)
         failed = self.operation("load i1, ptr %numeric.error")
         self.guard(failed)
         result = vop.results[0]
@@ -5246,6 +5302,7 @@ class FunctionGenerator:
                 tuple(steps),
                 proven=site.proven and not keywords,
                 result_contract=result_contract,
+                local_environment=site.local_environment,
             )
             operands = ", ".join(
                 [
@@ -5275,6 +5332,7 @@ class FunctionGenerator:
                 and ref.tn.sc.owned
                 and index in site.borrowable_arguments
             ),
+            local_environment=site.local_environment,
         )
         operands = ", ".join(
             [
@@ -5293,6 +5351,7 @@ class FunctionGenerator:
         wrapper = (
             self.wrapper()
             if self.context.id is None
+            and not self.module.local_environments.is_local(self.lambda_)
             and not self.unpacked
             and self.convention is None
             and self.context.rejected_fixnum_guard is None

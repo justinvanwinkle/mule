@@ -149,6 +149,8 @@ class EntryContext:
     borrowed_parameters: frozenset[int] = frozenset()
     borrowed_callees: dict = field(default_factory=dict)
     element_contracts: dict = field(default_factory=dict)
+    escape_facts: object = None
+    local_environments: object = None
 
     def type_of(self, node) -> ValueType:
         return self.types.get(node, UNKNOWN)

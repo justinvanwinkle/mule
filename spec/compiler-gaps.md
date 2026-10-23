@@ -5,8 +5,9 @@ element propagation (Section 0A), general-context flow-type feedback into IR1
 transforms, unified constant-lvar/dead-operand helpers, and monotonic
 `derive_node_type` (Section 1A), entry-context IR1 specialization / closed-call
 parameter promotion (Section 1B), identity-aware float storage and coercions,
-numeric internal calling conventions, and LLVM-visible private leaf boxes
-(parts of Section 5); **proposed** for Sections 0B–0D, Sections 1C–4,
+numeric internal calling conventions, LLVM-visible private leaf boxes
+(parts of Section 5), and local closure extent / fixed aggregate scalar
+replacement (Section 3); **proposed** for Sections 0B–0D, Sections 1C–2 and 4,
 and the rest of Section 5.
 
 This document records the remaining architectural and transform gaps between
@@ -390,20 +391,35 @@ suite failure or performance measurement.
 
 ---
 
-## 3. Escape analysis and stack allocation (`envanal.lisp` / `ltn.lisp`) (proposed)
+## 3. Escape analysis and allocation elimination (`envanal.lisp` / `ltn.lisp`)
 
 - **SBCL reference**: `src/compiler/envanal.lisp` and `dynamic-extent` handling
   in `src/compiler/ltn.lisp` and `src/compiler/ir2tran.lisp`.
-- **Remaining gaps and plan**:
-  1. **Non-escaping closure environment elision**: When a nested `Lambda` is
-     only called locally (never stored in a data structure, returned, or passed
-     to an unknown callee), pass its captured `LambdaVar`s as direct parameters
-     or stack-allocated cell pointers rather than heap-allocating closure cells.
-  2. **Non-escaping tuple and container elision**: Extend the existing unpacked
-     tuple-return fast path (`%tuple.out`) and `ir1opt.py` / `seqtran.py` tuple
-     forwarding so temporary tuples (`a, b = b, a` when non-trivial, `for k, v
-     in items`, or returning a tuple to a known local caller) never allocate on
-     the heap.
+- **Implemented**:
+  - `escape.py` extends the existing variable/parameter escape solver with
+    allocation-result and alias facts and implicit environment containment.
+  - Stable direct-only local functions use a compiler-owned environment ABI.
+    Mutable captures reference home-frame slots when every retaining closure
+    has local extent. Escaping siblings keep the authoritative heap cell.
+    Function objects, closure tuples, and unobservable annotation companions
+    disappear on eligible paths. Recursive calls, zero-argument functions,
+    aliases, native scalar entries, and existing unpacked returns retain their
+    respective semantics.
+  - `scalar.py` consumes allocation escape proofs for fixed lists and tuples.
+    Constant-index reads, fixed-index list writes, length, and aliases become
+    scalar operations when ownership closes within a block. Normal and error
+    cleanup preserve child ownership and reverse destruction order.
+- **Conservative allocation boundaries**: Observable functions and cells,
+  defaults/decorators, suspended owning activations, unknown uses, resizing,
+  overlapping aggregate lifetimes, pending element checks, and unrepresentable
+  cleanup order retain ordinary allocations. This is not arbitrary heap-object
+  scalar replacement or stack allocation of materialized Python containers.
+- **Remaining extensions**: Broader inter-block aggregate lifetime proofs,
+  escape summaries across additional call boundaries, and more container
+  consumers can extend the existing analysis and lowering. Existing tuple
+  projection and unpacked-return mechanisms remain in use. The precise
+  [local allocation extent contract](native-lowering.md#local-allocation-extent)
+  documents the SBCL adaptation and lifetime restrictions.
 
 ---
 

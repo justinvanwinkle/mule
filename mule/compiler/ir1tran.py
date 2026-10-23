@@ -415,9 +415,34 @@ class Converter:
         qualname=None,
         body_kind=None,
         annotation_scope=False,
+        source_identity=None,
     ) -> Lambda:
         # ir1tran_lambda imports FunctionConverter from this module.
         from .ir1tran_lambda import convert_function
+
+        cache = parent._function_definitions if parent is not None else None
+        scopes = []
+        ancestor = parent
+        while ancestor is not None:
+            if ancestor.comprehension_scopes:
+                cache = None
+                break
+            scopes.extend(ancestor.class_scopes)
+            ancestor = ancestor.parent
+        bindings = tuple(sorted(self.active_compiler_bindings.items()))
+        key = (
+            id(definition if source_identity is None else source_identity),
+            id(policy),
+            owner_class,
+            id(defining_class),
+            qualname,
+            body_kind,
+            annotation_scope,
+            tuple(id(scope) for scope in scopes),
+            tuple((name, id(binding)) for name, binding in bindings),
+        )
+        if cache is not None and key in cache:
+            return cache[key][-1]
 
         if self.split and not self.converting_late:
             # Functions nested inside share the fresh component.
@@ -440,18 +465,30 @@ class Converter:
                 late, self.component = self.component, saved
                 self.converting_late = False
             self.late.append((late, self.functions[created:]))
-            return lambda_
-        return convert_function(
-            self,
-            definition,
-            policy,
-            owner_class=owner_class,
-            parent=parent,
-            defining_class=defining_class,
-            qualname=qualname,
-            body_kind=body_kind,
-            annotation_scope=annotation_scope,
-        )
+        else:
+            lambda_ = convert_function(
+                self,
+                definition,
+                policy,
+                owner_class=owner_class,
+                parent=parent,
+                defining_class=defining_class,
+                qualname=qualname,
+                body_kind=body_kind,
+                annotation_scope=annotation_scope,
+            )
+        if cache is not None:
+            # Retain identity-keyed context objects for this conversion's lifetime.
+            cache[key] = (
+                definition,
+                source_identity,
+                policy,
+                defining_class,
+                tuple(scopes),
+                bindings,
+                lambda_,
+            )
+        return lambda_
 
 
 class _IsGlobalVar(LeafVisitor):
@@ -526,6 +563,7 @@ class FunctionConverter:
         self.globals: set[str] = set()
         self.locals: dict[str, LambdaVar] = {}
         self._cleanup_edges: dict[Block, Block] = {}
+        self._function_definitions = {}
         for var in lambda_.vars:
             self.locals[var.name] = var
         self._bindings(statements)
@@ -550,6 +588,10 @@ class FunctionConverter:
         self.statements_visitor: _Statements | None = None
         self.frames: list[tuple] = []
         converter.function_converters[lambda_] = self
+
+    def finish_conversion(self):
+        """Release source identities after late cleanup conversion finishes."""
+        self._function_definitions.clear()
 
     @property
     def component(self):
@@ -2114,7 +2156,7 @@ class _Expressions(ast.Visitor):
             span=node.span,
         )
         lambda_ = function.converter.function(
-            definition, function.lambda_.policy, parent=function
+            definition, function.lambda_.policy, parent=function, source_identity=node
         )
         function.define_function(
             start, next_, result, lambda_, definition, definition.name

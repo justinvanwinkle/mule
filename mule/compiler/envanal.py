@@ -73,6 +73,8 @@ def environment_analyze(compilation) -> None:
     for lambda_ in compilation.lambdas:
         environment = linked(lambda_.environment, lambda_, "environment")
         environment.closure.sort(key=lambda var: var.name)
+    for function in converter.function_converters.values():
+        function.finish_conversion()
     converter.function_converters.clear()
 
 
