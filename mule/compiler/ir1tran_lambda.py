@@ -106,6 +106,7 @@ def convert_function(
         policy=policy,
         namespace=converter.namespace,
     )
+    lambda_.coroutine_body = body_kind is not None
     lambda_.code = CodeInfo(
         definition.name,
         qualified,
@@ -113,7 +114,9 @@ def convert_function(
         definition.source_start().line,
         3
         | (16 if parent is not None and not parent.is_module else 0)
-        | {"generator": 32, "coroutine": 128, "async_generator": 512}.get(kind, 0),
+        | {"generator": 32, "coroutine": 128, "async_generator": 512}.get(
+            kind or body_kind, 0
+        ),
     )
     lambda_.signature = Signature(
         kinds=tuple(parameter.kind for parameter in definition.parameters),

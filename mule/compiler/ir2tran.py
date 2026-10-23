@@ -1650,6 +1650,16 @@ def _specialize_list_getitems(component: IR2Component) -> None:
             res_tn.borrowed_from = seq_local
 
 
+_SUSPENSION_VOPS = frozenset(
+    {
+        "yield",
+        "protocol-yield_from",
+        "protocol-await_value",
+        "protocol-async_generator_yield",
+    }
+)
+
+
 def _mark_last_local_reads(component: IR2Component) -> None:
     """Mark ``LOAD_LOCAL`` VOPs that are the final read of their local on all
     normal and exception paths before the local is overwritten or the body exits."""
@@ -1662,6 +1672,19 @@ def _mark_last_local_reads(component: IR2Component) -> None:
         and (tn := environment.vars.get(var)) is not None
         and tn.borrowed_from is not tn
     }
+    visible_candidates = (
+        {
+            tn
+            for var in component.lambda_.locals
+            if not var.indirect
+            and not var.hidden
+            and not var.name.startswith("$")
+            and (tn := environment.vars.get(var)) is not None
+            and tn.borrowed_from is not tn
+        }
+        if component.lambda_.coroutine_body
+        else set()
+    )
     for block in component.blocks:
         for vop in block.vops:
             if vop.info is vops.LOAD_LOCAL and (
@@ -1679,6 +1702,8 @@ def _mark_last_local_reads(component: IR2Component) -> None:
     ):
         live = set()
         for vop in reversed(blocks[0].vops):
+            if visible_candidates and vop.info.name in _SUSPENSION_VOPS:
+                live.update(visible_candidates)
             if vop.info is vops.LOAD_LOCAL:
                 tn = vop.args[0].tn
                 access: LocalAccess = linked(vop.codegen_info, vop, "local access")
@@ -1704,6 +1729,8 @@ def _mark_last_local_reads(component: IR2Component) -> None:
         gen = set()
         kill = set()
         for vop in reversed(block.vops):
+            if visible_candidates and vop.info.name in _SUSPENSION_VOPS:
+                gen.update(visible_candidates)
             for ref in vop.results:
                 tn = ref.tn
                 if tn in candidates:
@@ -1741,6 +1768,8 @@ def _mark_last_local_reads(component: IR2Component) -> None:
         for vop in reversed(block.vops):
             if handler_live:
                 live.update(handler_live)
+            if visible_candidates and vop.info.name in _SUSPENSION_VOPS:
+                live.update(visible_candidates)
             if vop.info is vops.LOAD_LOCAL:
                 tn = vop.args[0].tn
                 access: LocalAccess = linked(vop.codegen_info, vop, "local access")

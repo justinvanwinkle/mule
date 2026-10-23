@@ -30,16 +30,9 @@ exit_code = 1
 
 ["async_/coroutine_basics"]
 phase = "run"
-reason = "AttributeError: 'coroutine' object has no attribute 'cr_suspended'"
-stdout = "constant (42, 0)\nchain (15, 0)\nouter ((42, 43, 55), 0)\ntype coroutine\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/async_/coroutine_basics.py\", line 44, in <module>\n    print(\"created state\", inspect.getcoroutinestate(c))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/inspect.py\", line 1840, in getcoroutinestate\n    if coroutine.cr_suspended:\nAttributeError: 'coroutine' object has no attribute 'cr_suspended'\n"
-exit_code = 1
-
-["async_/coroutine_errors"]
-phase = "run"
-reason = "AttributeError: 'coroutine' object has no attribute 'cr_suspended'"
-stdout = ""
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/async_/coroutine_errors.py\", line 24, in <module>\n    print(\"suspend\", c.send(None), inspect.getcoroutinestate(c))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/inspect.py\", line 1840, in getcoroutinestate\n    if coroutine.cr_suspended:\nAttributeError: 'coroutine' object has no attribute 'cr_suspended'\n"
+reason = "StopIteration"
+stdout = "constant (42, 0)\nchain (15, 0)\nouter ((42, 43, 55), 0)\ntype coroutine\ncreated state CORO_CREATED\niscoroutine True True\nresult (42, 0)\nclosed state CORO_CLOSED\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/async_/coroutine_basics.py\", line 50, in <module>\n    c.send(None)\nStopIteration\n"
 exit_code = 1
 
 ["async_/custom_awaitables"]
@@ -396,20 +389,6 @@ reason = "AttributeError: type object 'Holder' has no attribute 'Member'"
 stdout = "alias type TypeAliasType True\nalias name Simple Lazy\nalias module __main__\nnot evaluated yet []\nvalue list[int]\nevaluated once ['Lazy evaluated']\ncached ['Lazy evaluated']\nsimple value int\nforward reference value NotYetDefined\ngeneric alias params ['T']\nspecialized origin True (<class 'int'>,)\nconstrained alias ['int', 'float']\nvariadic alias param TypeVarTuple\nparamspec alias param ParamSpec callable with P\nrecursive alias name Json\nrecursive alias args count 5\nerror deferred to access ZeroDivisionError\ndefining it did not fail Never_Evaluated\nlocal alias sees latest binding list[bytes]\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/functions/type_alias_statement.py\", line 80, in <module>\n    print(\"class-scoped alias\", Holder.Member.__name__, Holder().get().__name__)\nAttributeError: type object 'Holder' has no attribute 'Member'\n"
 exit_code = 1
-
-["generators/generator_state"]
-phase = "run"
-reason = "AttributeError: 'generator' object has no attribute 'gi_frame'"
-stdout = ""
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/generators/generator_state.py\", line 12, in <module>\n    print(\"created\", inspect.getgeneratorstate(me))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/inspect.py\", line 1800, in getgeneratorstate\n    if generator.gi_frame is None:\nAttributeError: 'generator' object has no attribute 'gi_frame'\n"
-exit_code = 1
-
-["generators/throw_and_close"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "start ready\nthrow handled recovered\nafter recovery ready\nthrow unhandled propagates KeyError\ngenerator dead after unhandled dead\nlog ['handled bad']\nthrow before start RuntimeError []\nthrow-before-start kills it dead\nclose runs finally ['finally ran']\nsecond close is no-op ['finally ran']\nclosed generator closed\nclose before start skips finally []\nGeneratorExit observed ['saw GeneratorExit']\nyield after GeneratorExit RuntimeError\nsecond close succeeds closed\nclose returns value (3.13+) None\nthrow causing return returned after throw\nthrow class vs instance ['ValueError:', 'TypeError:instance']\nthrow runs finally then propagates ['cleanup']\nthrow converted outer ['inner caught', 'outer caught converted']\nthrown exception context no context\nGeneratorExit not an Exception ['finally'] False\n"
-stderr = ""
-exit_code = 0
 
 ["protocols/bool_len"]
 phase = "run"

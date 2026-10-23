@@ -187,6 +187,7 @@ declare ptr @mule_class_load(ptr, ptr, ptr)
 declare ptr @mule_class_load_or(ptr, ptr, ptr)
 declare i32 @mule_import_star(ptr, ptr)
 declare ptr @mule_coroutine_yield(ptr)
+declare void @mule_coroutine_set_locals(ptr, i64)
 declare i32 @mule_class_delete(ptr, ptr, i32)
 declare i32 @mule_native_class_matches(ptr, ptr, ptr)
 declare i32 @mule_native_instance_matches(ptr, ptr, ptr)
@@ -4001,6 +4002,21 @@ class FunctionGenerator:
             if tn.leaf is not None:
                 self.local_slots[tn.leaf.name] = tn.slot
                 self.local_tns_by_name[tn.leaf.name] = tn
+        if self.lambda_.coroutine_body and not self.raw:
+            closed = self.module.closed_variables.get(self.lambda_, set())
+            parameters = self.lambda_.parameters
+            var_names = list(parameters) + [
+                var.name
+                for var in self.lambda_.locals
+                if var.name not in parameters
+                and not var.name.startswith("$")
+                and var not in closed
+            ]
+            self.coroutine_local_tns = [
+                self.local_tns_by_name.get(name) for name in var_names
+            ]
+        else:
+            self.coroutine_local_tns = []
         self.landings: dict[tuple[str, tuple[str, ...], bool, bool], str] = {}
         # Each landing's predecessor blocks and the source line failing there.
         self.landing_sites: dict[str, dict[str, tuple[int, str]]] = {}
@@ -4347,6 +4363,19 @@ class FunctionGenerator:
 
     def is_unpacked_discard_load(self, vop) -> bool:
         return vop in self.unpacked_discard_loads
+
+    def sync_coroutine_locals(self) -> None:
+        if not self.coroutine_local_tns:
+            return
+        n_locals = len(self.coroutine_local_tns)
+        for index, tn in enumerate(self.coroutine_local_tns):
+            if tn is None or tn.slot is None or tn.sc not in OBJECT:
+                continue
+            val = self.operation(f"load ptr, ptr {tn.slot}")
+            slot = self.operation(
+                f"getelementptr [{n_locals} x ptr], ptr %coroutine.locals, i64 0, i64 {index}"
+            )
+            self.line(f"store ptr {val}, ptr {slot}")
 
     # Text helpers
 
@@ -5422,6 +5451,13 @@ class FunctionGenerator:
             self.line(f"store [3 x i64] zeroinitializer, ptr {tn.slot}")
         if self.range_tns:
             self.line("%range.buffer = alloca [3 x i64]")
+        if self.coroutine_local_tns:
+            n_locals = len(self.coroutine_local_tns)
+            self.line(f"%coroutine.locals = alloca [{n_locals} x ptr]")
+            self.line(f"store [{n_locals} x ptr] zeroinitializer, ptr %coroutine.locals")
+            self.line(
+                f"call void @mule_coroutine_set_locals(ptr %coroutine.locals, i64 {n_locals})"
+            )
         self.entry_end = len(self.lines)
         # Publish only a fully initialized stack record, before any operation
         # that can enter cleanup. Globals remain borrowed from the callable.

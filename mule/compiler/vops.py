@@ -1836,6 +1836,7 @@ def import_(gen, vop):
 @define_vop("yield", translate=fndb.YIELD, args=(OBJECT,), results=(OBJECT,))
 def yield_(gen, vop):
     value = gen.take(vop.args[0])
+    gen.sync_coroutine_locals()
     gen.pointer_result(
         vop.results[0], f"call ptr @mule_coroutine_yield(ptr {value})", (value,)
     )
@@ -2081,10 +2082,19 @@ def protocol_iterate(gen, vop):
     gen.refine(vop.results[0].tn, result)
 
 
+_SUSPENSION_PROTOCOLS = frozenset(
+    {"yield_from", "await_value", "async_generator_yield"}
+)
+
+
 def _define_protocol(name, info):
+    suspends = name in _SUSPENSION_PROTOCOLS
+
     @define_vop(f"protocol-{name}", translate=info, results=(OBJECT,))
     def protocol(gen, vop):
         arguments = [gen.take(value) for value in vop.args]
+        if suspends:
+            gen.sync_coroutine_locals()
         result = gen.sequence_call(name, arguments)
         gen.publish(vop.results[0], result)
         gen.check_pointer(result)

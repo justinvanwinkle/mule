@@ -111,6 +111,9 @@ pub struct Coroutine {
     frames: crate::traceback::DetachedFrames,
     handlers: Vec<Value>,
     parent: *mut Coroutine,
+    yield_from: Value,
+    locals_ptr: *const Value,
+    locals_len: usize,
 }
 
 unsafe extern "C" fn coroutine_main(coroutine: *mut Coroutine) -> ! {
@@ -122,6 +125,9 @@ unsafe extern "C" fn coroutine_main(coroutine: *mut Coroutine) -> ! {
         let result = object::call((*coroutine).function, &arguments);
         (*coroutine).transfer = result;
         (*coroutine).state = FINISHED;
+        (*coroutine).locals_ptr = null_mut();
+        (*coroutine).locals_len = 0;
+        object::release(std::mem::replace(&mut (*coroutine).yield_from, null_mut()));
         mule_context_switch(&mut (*coroutine).context, (*coroutine).resumer);
         unreachable!("a finished coroutine is never resumed");
     }
@@ -156,6 +162,9 @@ impl Coroutine {
                 frames: crate::traceback::DetachedFrames::default(),
                 handlers: Vec::new(),
                 parent: null_mut(),
+                yield_from: null_mut(),
+                locals_ptr: null_mut(),
+                locals_len: 0,
             });
             // The initial frame mule_context_switch restores: control words,
             // r15..r12 (r12 carries the coroutine), rbx, rbp and the start address.
@@ -240,12 +249,16 @@ impl Drop for Coroutine {
                     // Its frames can never unwind; keep the stack mapped.
                     object::release(self.function);
                     object::release(self.arguments);
+                    object::release(self.yield_from);
                     return;
                 }
             }
             object::release(self.transfer);
             object::release(self.function);
             object::release(self.arguments);
+            object::release(self.yield_from);
+            self.locals_ptr = null_mut();
+            self.locals_len = 0;
             self.frames.clear();
             for exception in self.handlers.drain(..) {
                 object::release(exception);
@@ -376,6 +389,18 @@ unsafe extern "C" fn coroutine_state(_: Value, args: Value) -> Value {
     }
 }
 
+/// Register the current coroutine's stack-allocated local variable snapshot buffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_coroutine_set_locals(ptr: *const Value, len: i64) {
+    let current = CURRENT.with(Cell::get);
+    if !current.is_null() {
+        unsafe {
+            (*current).locals_ptr = ptr;
+            (*current).locals_len = len.max(0) as usize;
+        }
+    }
+}
+
 /// Mark a created or suspended coroutine finished without running it, for
 /// a generator closed before it started.
 unsafe extern "C" fn coroutine_abandon(_: Value, args: Value) -> Value {
@@ -393,6 +418,63 @@ unsafe extern "C" fn coroutine_abandon(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn coroutine_set_yieldfrom(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands(args) else {
+            return null_mut();
+        };
+        let current = CURRENT.with(Cell::get);
+        if !current.is_null() {
+            let new_val = if value == object::none_value() {
+                null_mut()
+            } else {
+                object::retain(value)
+            };
+            object::release(std::mem::replace(&mut (*current).yield_from, new_val));
+        }
+        object::none_value()
+    }
+}
+
+unsafe extern "C" fn coroutine_yieldfrom(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([handle]) = operands(args) else {
+            return null_mut();
+        };
+        let Some(coroutine) = coroutine(handle) else {
+            return null_mut();
+        };
+        if coroutine.state == FINISHED || coroutine.yield_from.is_null() {
+            object::none_value()
+        } else {
+            object::retain(coroutine.yield_from)
+        }
+    }
+}
+
+unsafe extern "C" fn coroutine_locals(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([handle]) = operands(args) else {
+            return null_mut();
+        };
+        let Some(coroutine) = coroutine(handle) else {
+            return null_mut();
+        };
+        if (coroutine.state != SUSPENDED && coroutine.state != RUNNING)
+            || coroutine.locals_ptr.is_null()
+        {
+            return object::none_value();
+        }
+        let missing = crate::arguments::mule_binding_missing();
+        let mut values = Vec::with_capacity(coroutine.locals_len);
+        for index in 0..coroutine.locals_len {
+            let val = *coroutine.locals_ptr.add(index);
+            values.push(if val.is_null() { missing } else { val });
+        }
+        object::mule_sequence_tuple(values.len() as isize, values.as_ptr())
+    }
+}
+
 /// Bind the generator stack operations into the compiler-owned native namespace.
 pub unsafe fn populate(globals: Value) -> bool {
     unsafe {
@@ -405,12 +487,15 @@ pub unsafe fn populate(globals: Value) -> bool {
         if !bound {
             return false;
         }
-        let exports: [(&str, object::Native); 5] = [
+        let exports: [(&str, object::Native); 8] = [
             ("coroutine_new", coroutine_new),
             ("coroutine_resume", coroutine_resume),
             ("coroutine_throw", coroutine_throw),
             ("coroutine_state", coroutine_state),
             ("coroutine_abandon", coroutine_abandon),
+            ("coroutine_set_yieldfrom", coroutine_set_yieldfrom),
+            ("coroutine_yieldfrom", coroutine_yieldfrom),
+            ("coroutine_locals", coroutine_locals),
         ];
         for (name, entry) in exports {
             let function = object::function(null_mut(), entry, name);

@@ -13,17 +13,54 @@ coroutine rather than a single function.
 from _attributes import getattr
 from _descriptors import property
 from _mule_native import coroutine_abandon
+from _mule_native import coroutine_locals
 from _mule_native import coroutine_new
 from _mule_native import coroutine_resume
+from _mule_native import coroutine_set_yieldfrom
 from _mule_native import coroutine_state
 from _mule_native import coroutine_throw
 from _mule_native import coroutine_yield
+from _mule_native import coroutine_yieldfrom
 from _mule_native import is_class
 from _mule_native import is_instance
+from _object import frame
+from _object import framelocalsproxy
 
 _CREATED = 0
 _RUNNING = 2
 _FINISHED = 3
+_MISSING = _binding_missing()
+
+
+class _GeneratorFrame(frame):
+    """A generator, coroutine, or async generator's frame."""
+
+    def __init__(self, gen):
+        self._gen = gen
+
+    @property
+    def f_code(self):
+        return self._gen._function.__code__
+
+    @property
+    def f_lineno(self):
+        return self._gen._function.__code__.co_firstlineno
+
+    @property
+    def f_globals(self):
+        return self._gen._function.__globals__
+
+    @property
+    def f_back(self):
+        return None
+
+    @property
+    def f_locals(self):
+        return framelocalsproxy(self._gen._locals())
+
+    def clear(self):
+        if self._gen.gi_running:
+            raise RuntimeError("cannot clear an executing frame")
 
 
 def _exception(kind, value):
@@ -42,6 +79,8 @@ class generator:
 
     def __init__(self, function, arguments, name, qualname):
         self._handle = coroutine_new(function, arguments)
+        self._function = function
+        self._arguments = arguments
         self.__name__ = name
         self.__qualname__ = qualname
 
@@ -90,9 +129,42 @@ class generator:
             return None
         try:
             self._resume(None, GeneratorExit())
-        except GeneratorExit, StopIteration:
+        except GeneratorExit:
             return None
+        except StopIteration as stop:
+            return stop.value
         raise RuntimeError("generator ignored GeneratorExit")
+
+    def _locals(self):
+        state = coroutine_state(self._handle)
+        if state == _FINISHED:
+            return {}
+        names = self._function.__code__.co_varnames
+        if state == _CREATED:
+            values = self._arguments
+        else:
+            values = coroutine_locals(self._handle)
+            if values is None:
+                return {}
+        result = {}
+        for name, value in zip(names, values):
+            if value is not _MISSING and not name.startswith("$"):
+                result[name] = value
+        return result
+
+    @property
+    def gi_code(self):
+        return self._function.__code__
+
+    @property
+    def gi_frame(self):
+        if coroutine_state(self._handle) == _FINISHED:
+            return None
+        return _GeneratorFrame(self)
+
+    @property
+    def gi_yieldfrom(self):
+        return coroutine_yieldfrom(self._handle)
 
     @property
     def gi_running(self):
@@ -113,30 +185,34 @@ def yield_from(iterable):
         value = next(iterator)
     except StopIteration as stop:
         return stop.value
-    while True:
-        try:
-            sent = coroutine_yield(value)
-        except GeneratorExit:
-            close = getattr(iterator, "close", None)
-            if close is not None:
-                close()
-            raise
-        except BaseException as error:
-            throw = getattr(iterator, "throw", None)
-            if throw is None:
-                raise
+    coroutine_set_yieldfrom(iterator)
+    try:
+        while True:
             try:
-                value = throw(error)
+                sent = coroutine_yield(value)
+            except GeneratorExit:
+                close = getattr(iterator, "close", None)
+                if close is not None:
+                    close()
+                raise
+            except BaseException as error:
+                throw = getattr(iterator, "throw", None)
+                if throw is None:
+                    raise
+                try:
+                    value = throw(error)
+                except StopIteration as stop:
+                    return stop.value
+                continue
+            try:
+                if sent is None:
+                    value = next(iterator)
+                else:
+                    value = iterator.send(sent)
             except StopIteration as stop:
                 return stop.value
-            continue
-        try:
-            if sent is None:
-                value = next(iterator)
-            else:
-                value = iterator.send(sent)
-        except StopIteration as stop:
-            return stop.value
+    finally:
+        coroutine_set_yieldfrom(None)
 
 
 class coroutine(generator):
@@ -158,6 +234,22 @@ class coroutine(generator):
     @property
     def cr_running(self):
         return self.gi_running
+
+    @property
+    def cr_suspended(self):
+        return self.gi_suspended
+
+    @property
+    def cr_frame(self):
+        return self.gi_frame
+
+    @property
+    def cr_code(self):
+        return self.gi_code
+
+    @property
+    def cr_await(self):
+        return self.gi_yieldfrom
 
     def __repr__(self):
         return f"<coroutine object {self.__qualname__}>"
@@ -232,6 +324,26 @@ class async_generator:
 
     def aclose(self):
         return _AsyncGeneratorStep(self._body, None, GeneratorExit())
+
+    @property
+    def ag_running(self):
+        return self._body.gi_running
+
+    @property
+    def ag_suspended(self):
+        return self._body.gi_suspended
+
+    @property
+    def ag_frame(self):
+        return self._body.gi_frame
+
+    @property
+    def ag_code(self):
+        return self._body.gi_code
+
+    @property
+    def ag_await(self):
+        return self._body.gi_yieldfrom
 
     def __repr__(self):
         return f"<async_generator object {self.__qualname__}>"

@@ -859,6 +859,7 @@ class Lambda(Functional):
         "calls",
         "code",
         "component",
+        "coroutine_body",
         "declared_free",
         "default_types",
         "entries",
@@ -906,6 +907,7 @@ class Lambda(Functional):
         self.policy = policy
         self.namespace = namespace
         self.code: CodeInfo | None = None
+        self.coroutine_body: bool = False
         self.owner_class: str | None = None
         # The identity of the class whose body defines this function, for
         # receiver typing; ``owner_class`` names native layouts only.
