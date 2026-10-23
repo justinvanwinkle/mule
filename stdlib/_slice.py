@@ -9,22 +9,34 @@ selected positions. Sequence types use ``positions`` to read their elements.
 # Compiler-provided physical primitives are not host Python globals.
 # ruff: noqa: F821
 
-from _mule_native import type_of
+from _dict import _tuple_hash
+from _mule_native import set_instance_field, type_of
 from _object import _index_integer, int
 
 
 class slice:
     """Bounds selecting positions of a sequence: ``start:stop:step``."""
 
+    __slots__ = ("start", "stop", "step")
+
     def __init__(self, *args):
         if len(args) == 1:
-            self.start, self.stop, self.step = None, args[0], None
+            start, stop, step = None, args[0], None
         elif len(args) == 2:
-            self.start, self.stop, self.step = args[0], args[1], None
+            start, stop, step = args[0], args[1], None
         elif len(args) == 3:
-            self.start, self.stop, self.step = args[0], args[1], args[2]
+            start, stop, step = args[0], args[1], args[2]
         else:
             raise TypeError(f"slice expected 1 to 3 arguments, got {len(args)}")
+        set_instance_field(self, "start", start)
+        set_instance_field(self, "stop", stop)
+        set_instance_field(self, "step", step)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("readonly attribute")
+
+    def __delattr__(self, name):
+        raise AttributeError("readonly attribute")
 
     def indices(self, length):
         length = _bound(length)
@@ -35,6 +47,9 @@ class slice:
 
     def __repr__(self):
         return f"slice({self.start!r}, {self.stop!r}, {self.step!r})"
+
+    def __hash__(self):
+        return _tuple_hash((self.start, self.stop, self.step))
 
     def __eq__(self, other):
         if not is_slice(other):
@@ -48,6 +63,42 @@ class slice:
     def __ne__(self, other):
         result = self.__eq__(other)
         return NotImplemented if result is NotImplemented else not result
+
+    def __lt__(self, other):
+        if not is_slice(other):
+            return NotImplemented
+        return (self.start, self.stop, self.step) < (
+            other.start,
+            other.stop,
+            other.step,
+        )
+
+    def __le__(self, other):
+        if not is_slice(other):
+            return NotImplemented
+        return (self.start, self.stop, self.step) <= (
+            other.start,
+            other.stop,
+            other.step,
+        )
+
+    def __gt__(self, other):
+        if not is_slice(other):
+            return NotImplemented
+        return (self.start, self.stop, self.step) > (
+            other.start,
+            other.stop,
+            other.step,
+        )
+
+    def __ge__(self, other):
+        if not is_slice(other):
+            return NotImplemented
+        return (self.start, self.stop, self.step) >= (
+            other.start,
+            other.stop,
+            other.step,
+        )
 
 
 def _bound(value):

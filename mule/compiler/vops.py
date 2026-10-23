@@ -930,7 +930,7 @@ def _binary_generic(gen, vop, opcode, *, inplace):
     left, right = vop.args
     lhs, rhs = gen.take(left), gen.take(right)
     left_type = left.tn.type or UNKNOWN
-    if opcode == 5 and not left_type.fits(REAL):
+    if opcode == 5 and not inplace and not left_type.fits(REAL):
         value = gen.compiled_call_named("mule_format_modulo", (lhs, rhs))
         gen.publish(result, value)
         gen.check_pointer(value)

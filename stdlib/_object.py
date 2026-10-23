@@ -1487,7 +1487,7 @@ class int(object):
                 owner = type_of(x)
                 missing = _MISSING
                 converted = False
-                for hook in ("__int__", "__index__", "__trunc__"):
+                for hook in ("__int__", "__index__"):
                     method = class_lookup_default(owner, hook, missing)
                     if method is not missing:
                         res = bind_instance_attribute(method, x, owner)()
@@ -2266,10 +2266,112 @@ class float(object):
         value = self.__int__()
         return value + 1 if value < _convert_float(self) else value
 
+    def __add__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__add__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) + _convert_float(other)
+
+    def __radd__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__radd__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) + _convert_float(self)
+
+    def __sub__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__sub__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) - _convert_float(other)
+
+    def __rsub__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__rsub__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) - _convert_float(self)
+
+    def __mul__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__mul__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) * _convert_float(other)
+
+    def __rmul__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__rmul__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) * _convert_float(self)
+
+    def __truediv__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__truediv__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) / _convert_float(other)
+
+    def __rtruediv__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__rtruediv__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) / _convert_float(self)
+
+    def __floordiv__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__floordiv__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) // _convert_float(other)
+
+    def __rfloordiv__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__rfloordiv__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) // _convert_float(self)
+
+    def __mod__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__mod__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) % _convert_float(other)
+
+    def __rmod__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__rmod__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) % _convert_float(self)
+
+    def __pow__(self, other, mod=None):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__pow__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if mod is not None:
+            raise TypeError("pow() 3rd argument not allowed unless all arguments are integers")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) ** _convert_float(other)
+
+    def __rpow__(self, other, mod=None):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__rpow__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if mod is not None:
+            return NotImplemented
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) ** _convert_float(self)
+
     def __divmod__(self, other):
         if not is_instance(self, float):
             raise TypeError(f"descriptor '__divmod__' requires a 'float' object but received a '{type_of(self).__name__}'")
-        if not isinstance(other, (int, float)):
+        if not is_instance(other, int) and not is_instance(other, float):
             return NotImplemented
         left, right = _convert_float(self), _convert_float(other)
         if right == 0.0:
@@ -2279,7 +2381,7 @@ class float(object):
     def __rdivmod__(self, other):
         if not is_instance(self, float):
             raise TypeError(f"descriptor '__rdivmod__' requires a 'float' object but received a '{type_of(self).__name__}'")
-        if not isinstance(other, (int, float)):
+        if not is_instance(other, int) and not is_instance(other, float):
             return NotImplemented
         left, right = _convert_float(other), _convert_float(self)
         if right == 0.0:

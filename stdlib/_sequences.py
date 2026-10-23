@@ -65,6 +65,7 @@ from _mule_native import overriding_new
 from _mule_native import class_lookup_default
 from _mule_native import bind_instance_attribute
 from _mule_native import math_fabs
+from _mule_native import set_instance_field
 from _mule_native import type_of
 from _slice import is_slice, positions, slice
 
@@ -744,6 +745,8 @@ def delitem(value, index):
         return
     method = _delitem_method(value)
     if method is None:
+        if _setitem_method(value) is not None:
+            raise AttributeError("__delitem__")
         raise TypeError("object does not support item deletion")
     method(index)
 
@@ -934,10 +937,28 @@ def pow(base, exp, mod=None):
     if mod is None:
         return base**exp
     base_cls = type(base)
+    exp_cls = type(exp)
+    if (
+        base_cls is not exp_cls
+        and issubclass(exp_cls, base_cls)
+        and class_lookup_default(exp_cls, "__rpow__", None)
+        is not class_lookup_default(base_cls, "__rpow__", None)
+    ):
+        rmethod = getattr(exp_cls, "__rpow__", None)
+        if rmethod is not None and rmethod is not getattr(int, "__rpow__", None):
+            result = rmethod(exp, base, mod)
+            if result is not NotImplemented:
+                return result
     if base_cls is not int and base_cls is not bool:
         method = getattr(base_cls, "__pow__", None)
         if method is not None and method is not getattr(int, "__pow__", None):
             result = method(base, exp, mod)
+            if result is not NotImplemented:
+                return result
+    if exp_cls is not base_cls and exp_cls is not int and exp_cls is not bool:
+        rmethod = getattr(exp_cls, "__rpow__", None)
+        if rmethod is not None and rmethod is not getattr(int, "__rpow__", None):
+            result = rmethod(exp, base, mod)
             if result is not NotImplemented:
                 return result
     if not (_integer_kind(base) and _integer_kind(exp) and _integer_kind(mod)):
@@ -1330,9 +1351,9 @@ def make_interpolation(value, expression, conversion, format_spec):
 
 def make_slice(start, stop, step):
     value = _allocate_instance(slice)
-    value.start = start
-    value.stop = stop
-    value.step = step
+    set_instance_field(value, "start", start)
+    set_instance_field(value, "stop", stop)
+    set_instance_field(value, "step", step)
     return value
 
 
@@ -1383,6 +1404,8 @@ def setitem(value, index, item):
         return
     method = _setitem_method(value)
     if method is None:
+        if _delitem_method(value) is not None:
+            raise AttributeError("__setitem__")
         raise TypeError("object does not support item assignment")
     method(index, item)
 
@@ -4083,6 +4106,9 @@ class NotImplementedType:
 
     def __repr__(self):
         return "NotImplemented"
+
+    def __bool__(self):
+        raise TypeError("NotImplemented should not be used in a boolean context")
 
 
 NotImplemented = NotImplementedType()

@@ -860,7 +860,9 @@ def _digits(text, index, size):
 def align(text, width, fill, alignment):
     padding = width - _text_length(text)
     if padding <= 0:
-        return text
+        if _type_of(text) is str:
+            return text
+        return _text_slice(text, 0, _text_length(text))
     if alignment == ">":
         return _pad(text, padding, 0, fill)
     if alignment == "^":
@@ -872,7 +874,9 @@ def align(text, width, fill, alignment):
 def format_text(text, specification):
     """Render ``format(text, specification)`` for a ``str`` value."""
     if _text_length(specification) == 0:
-        return text
+        if _type_of(text) is str:
+            return text
+        return _text_slice(text, 0, _text_length(text))
     fill, alignment, sign, coerce_zero, alternate, zero, width, grouping, precision, kind = (
         parse_specification(specification)
     )
@@ -1263,7 +1267,9 @@ class TextStorage:
         return _compare(self, _ordered_operand(self, other, ">=")) >= 0
 
     def __str__(self):
-        return self
+        if _type_of(self) is str:
+            return self
+        return _text_slice(self, 0, _text_length(self))
 
     def __repr__(self):
         return representation(self)

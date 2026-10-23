@@ -7,10 +7,27 @@ compiler. Method selection and Python fallback rules execute as compiled Python.
 # Compiler-provided physical primitives are not host Python globals.
 # ruff: noqa: F821
 
+from _mule_native import bind_instance_attribute
 from _mule_native import class_lookup_default
 from _mule_native import type_of
 
 _MAPPING_MISSING = object()
+
+
+def _index_integer(value):
+    method = _index_method(value)
+    if method is not None:
+        return _integer_storage(method())
+    return _integer_storage(value)
+
+
+def _int_or_index(value):
+    owner = type_of(value)
+    for hook in ("__int__", "__index__"):
+        method = class_lookup_default(owner, hook, _MAPPING_MISSING)
+        if method is not _MAPPING_MISSING:
+            return _integer_storage(bind_instance_attribute(method, value, owner)())
+    return _integer_storage(value)
 
 
 def string(value):
@@ -115,7 +132,7 @@ def percent_decimal(pattern, values):
             index += 1
             if mapping is not None or consumed == count:
                 raise TypeError("not enough arguments for format string")
-            width = _integer_storage(_storage_read(values, consumed))
+            width = _index_integer(_storage_read(values, consumed))
             consumed += 1
             if width < 0:
                 left = True
@@ -132,7 +149,7 @@ def percent_decimal(pattern, values):
                 index += 1
                 if mapping is not None or consumed == count:
                     raise TypeError("not enough arguments for format string")
-                precision = _integer_storage(_storage_read(values, consumed))
+                precision = _index_integer(_storage_read(values, consumed))
                 consumed += 1
                 if precision < 0:
                     precision = -1
@@ -180,11 +197,11 @@ def percent_decimal(pattern, values):
                     raise TypeError("%c requires int or char")
                 body = value
             else:
-                body = chr(_integer_storage(value))
+                body = chr(_index_integer(value))
             zero_pad = False
         elif conversion in "diu":
             numeric = True
-            number = _integer_storage(value)
+            number = _int_or_index(value)
             if number < 0:
                 sign = "-"
                 number = -number
@@ -201,7 +218,7 @@ def percent_decimal(pattern, values):
                 zero_pad = False
         elif conversion in "xXo":
             numeric = True
-            number = _integer_storage(value)
+            number = _index_integer(value)
             if number < 0:
                 sign = "-"
                 number = -number

@@ -1,6 +1,6 @@
 //! Mule values and the native-code ABI. Heap ownership is explicit at this boundary;
 //! generated code retains each live value and releases it on normal and error exits.
-use crate::{builtins, gmp::BigInt, numeric, text::Text};
+use crate::{builtins, classes, gmp::BigInt, numeric, text::Text};
 use crate::value_buffer::ValueBuffer;
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_void};
@@ -1852,6 +1852,37 @@ pub unsafe fn length_result(result: Value) -> Option<usize> {
                 return Some(length);
             }
         }
+        let result = if !numeric::is_integer(result) {
+            let indexed = special(result, "__index__", &[]);
+            release(result);
+            if indexed.is_null() {
+                if !has_error() {
+                    error("TypeError", "__len__ should return an integer");
+                }
+                return None;
+            }
+            if !numeric::is_integer(indexed) {
+                release(indexed);
+                error("TypeError", "__index__ returned non-int");
+                return None;
+            }
+            if is_fixnum(indexed) {
+                let length = fixnum(indexed);
+                if length < 0 {
+                    error("ValueError", "__len__ must return a nonnegative integer");
+                    return None;
+                }
+                return Some(length as usize);
+            }
+            if let Data::Bool(value) = &(*indexed).data {
+                let length = usize::from(*value);
+                release(indexed);
+                return Some(length);
+            }
+            indexed
+        } else {
+            result
+        };
         let integer = numeric::integer_export(result);
         release(result);
         let integer = integer?;
@@ -1890,8 +1921,17 @@ const BINARY_METHODS: [(&str, &str, &str, &str); 13] = [
 ];
 unsafe fn numeric_operand(value: Value) -> bool {
     unsafe {
-        numeric::is_integer(value)
-            || (!value.is_null() && !is_fixnum(value) && matches!(&(*value).data, Data::Float(..)))
+        if is_fixnum(value) {
+            return true;
+        }
+        if value.is_null() {
+            return false;
+        }
+        match &(*value).data {
+            Data::Bool(_) => true,
+            Data::BigInt(_, ty, ..) | Data::Float(_, ty, ..) => ty.is_null(),
+            _ => false,
+        }
     }
 }
 pub unsafe fn binary(op: i32, left: Value, right: Value, inplace: bool) -> Value {
@@ -1922,12 +1962,16 @@ pub unsafe fn binary(op: i32, left: Value, right: Value, inplace: bool) -> Value
                         }
                     };
                 }
-                (Data::Bytes(a, ..), Data::Bytes(b, ..)) if op == 0 => {
+                (Data::Bytes(a, ty_a, ..), Data::Bytes(b, ty_b, ..))
+                    if op == 0 && ty_a.is_null() && ty_b.is_null() =>
+                {
                     let mut result = a.clone();
                     result.extend_from_slice(b);
                     return new_value(Data::Bytes(result, std::ptr::null_mut(), std::ptr::null_mut()));
                 }
-                (Data::List(a, ..), Data::List(b, ..)) if op == 0 => {
+                (Data::List(a, ty_a, ..), Data::List(b, ty_b, ..))
+                    if op == 0 && ty_a.is_null() && ty_b.is_null() =>
+                {
                     // Snapshot borrowed values before mutating either aliased list.
                     let left_values = a.clone();
                     let right_values = b.clone();
@@ -1946,16 +1990,25 @@ pub unsafe fn binary(op: i32, left: Value, right: Value, inplace: bool) -> Value
             }
         }
         if op == 2 {
+            let exact_integer = |v: Value| {
+                is_fixnum(v)
+                    || (!v.is_null()
+                        && match &(*v).data {
+                            Data::Bool(_) => true,
+                            Data::BigInt(_, ty, ..) => ty.is_null(),
+                            _ => false,
+                        })
+            };
             let repeated = if !left.is_null()
                 && !is_fixnum(left)
-                && matches!(&(*left).data, Data::Bytes(..))
-                && numeric::is_integer(right)
+                && matches!(&(*left).data, Data::Bytes(_, ty, ..) if ty.is_null())
+                && exact_integer(right)
             {
                 Some((left, right))
             } else if !right.is_null()
                 && !is_fixnum(right)
-                && matches!(&(*right).data, Data::Bytes(..))
-                && numeric::is_integer(left)
+                && matches!(&(*right).data, Data::Bytes(_, ty, ..) if ty.is_null())
+                && exact_integer(left)
             {
                 Some((right, left))
             } else {
@@ -2003,6 +2056,45 @@ unsafe fn repeat_bytes(bytes: Value, count: Value) -> Value {
         new_value(Data::Bytes(result, std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
+unsafe fn is_builtin_sequence_op(op: i32, left: Value, right: Value) -> bool {
+    unsafe {
+        if left.is_null() || is_fixnum(left) {
+            return false;
+        }
+        if op == 0 {
+            match &(*left).data {
+                Data::Text(_, ty, ..) if ty.is_null() => {
+                    !right.is_null() && !is_fixnum(right) && !matches!(&(*right).data, Data::Text(..))
+                }
+                Data::List(_, ty, ..) if ty.is_null() => {
+                    !right.is_null() && !is_fixnum(right) && !matches!(&(*right).data, Data::List(..))
+                }
+                Data::Args(_, ty, ..) if ty.is_null() => {
+                    !right.is_null() && !is_fixnum(right) && !matches!(&(*right).data, Data::Args(..))
+                }
+                Data::Bytes(_, ty, ..) if ty.is_null() => {
+                    !right.is_null() && !is_fixnum(right) && !matches!(&(*right).data, Data::Bytes(..))
+                }
+                _ => false,
+            }
+        } else if op == 2 {
+            match &(*left).data {
+                Data::Text(_, ty, ..)
+                | Data::List(_, ty, ..)
+                | Data::Args(_, ty, ..)
+                | Data::Bytes(_, ty, ..)
+                    if ty.is_null() =>
+                {
+                    !numeric::is_integer(right)
+                        && classes::special_binding(right, "__index__").is_null()
+                }
+                _ => false,
+            }
+        } else {
+            false
+        }
+    }
+}
 /// Try the in-place, forward, then reflected special method, as Python's
 /// binary-operator protocol does for operands without a native operation.
 unsafe fn dispatch_binary(op: i32, left: Value, right: Value, inplace: bool) -> Value {
@@ -2019,13 +2111,32 @@ unsafe fn dispatch_binary(op: i32, left: Value, right: Value, inplace: bool) -> 
                 return result;
             }
         }
+        let left_class = classes::class_of_value(left);
+        let right_class = classes::class_of_value(right);
+        let same_type = !left_class.is_null() && left_class == right_class;
+        let right_reflected = classes::special_binding(right, reflected);
+        let left_reflected = classes::special_binding(left, reflected);
+        let reflected_first = !same_type
+            && ((!right_class.is_null()
+                && classes::is_subclass(right_class, left_class)
+                && !right_reflected.is_null()
+                && right_reflected != left_reflected)
+                || is_builtin_sequence_op(op, left, right));
+        if reflected_first {
+            let result = implemented(right, reflected, &[left]);
+            if !result.is_null() || has_error() {
+                return result;
+            }
+        }
         let result = implemented(left, method, &[right]);
         if !result.is_null() || has_error() {
             return result;
         }
-        let result = implemented(right, reflected, &[left]);
-        if !result.is_null() || has_error() {
-            return result;
+        if !same_type && !reflected_first {
+            let result = implemented(right, reflected, &[left]);
+            if !result.is_null() || has_error() {
+                return result;
+            }
         }
         let (Some(left), Some(right)) = (type_name(left), type_name(right)) else {
             return std::ptr::null_mut();
@@ -2352,15 +2463,29 @@ unsafe fn compare_slow_inner(op: i32, left: Value, right: Value) -> Value {
             error("SystemError", "unknown comparison operation");
             return std::ptr::null_mut();
         };
+        // The reflected comparison: == and != swap, < and > exchange.
+        let reflected = ["__eq__", "__ne__", "__gt__", "__ge__", "__lt__", "__le__"][op as usize];
+        let left_class = classes::class_of_value(left);
+        let right_class = classes::class_of_value(right);
+        let reflected_first = !left_class.is_null()
+            && !right_class.is_null()
+            && left_class != right_class
+            && classes::is_subclass(right_class, left_class);
+        if reflected_first {
+            let result = implemented(right, reflected, &[left]);
+            if !result.is_null() || has_error() {
+                return result;
+            }
+        }
         let result = implemented(left, method, &[right]);
         if !result.is_null() || has_error() {
             return result;
         }
-        // The reflected comparison: == and != swap, < and > exchange.
-        let reflected = ["__eq__", "__ne__", "__gt__", "__ge__", "__lt__", "__le__"][op as usize];
-        let result = implemented(right, reflected, &[left]);
-        if !result.is_null() || has_error() {
-            return result;
+        if !reflected_first {
+            let result = implemented(right, reflected, &[left]);
+            if !result.is_null() || has_error() {
+                return result;
+            }
         }
         let numeric_value = |value: Value| {
             numeric::is_integer(value)

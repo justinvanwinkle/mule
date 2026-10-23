@@ -28,13 +28,6 @@ stdout = "int float bool True True\ncomplex True True\nsmall int value 5 -2 -2 0
 stderr = ""
 exit_code = 0
 
-["builtins/int_conversions"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "plain 42 -7 3 10\nbase 2 11 11 -3\nbase 8 15 15 15\nbase 16 255 255 255 255\nbase 36 35 1295 1066082\nbase 0 decimal 123 0 0 1000\nunderscores 1000000 255 2\nbase kw 3 7\nfrom float 3 -3 100000000000000000000 0\nfrom bool 1 0\nfrom bytes 42 -5 255\nno args 0\nunicode digits 123 10\nbig 9999999999999999999999999999999999999999\nbad '' 10 ValueError\nbad '12a' 10 ValueError\nbad '1__0' 10 ValueError\nbad '_1' 10 ValueError\nbad '1_' 10 ValueError\nbad '0b2' 0 ValueError\nbad '08' 0 ValueError\nbad '0x' 16 ValueError\nbad '2' 2 ValueError\nbad 'z' 35 ValueError\nbad '1.5' 10 ValueError\nbad ' ' 10 ValueError\nbad '- 1' 10 ValueError\nbad '1 1' 10 ValueError\nbad base 1 ValueError\nbad base 37 ValueError\nbad base -1 ValueError\nbase with non string TypeError\nspecial float OverflowError\nspecial float ValueError\nint None TypeError\nint list TypeError\ndunder int 7 8\ndunder trunc 9\nsubclass converted 5 int\nbase with index 9\nroundtrip 12345 -9 64\n"
-stderr = ""
-exit_code = 0
-
 ["builtins/isinstance_issubclass"]
 phase = "run"
 reason = "native output differs from CPython"
@@ -63,13 +56,6 @@ stdout = "repr range(2, 20, 3) range(0, 5) range(0, 5) range(5, 0, -1)\nlist [2,
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/builtins/range_objects.py\", line 17, in <module>\n    print(\"count index\", r.count(8), r.count(9), r.index(11))\nAttributeError: 'range' object has no attribute 'count'\n"
 exit_code = 1
 
-["builtins/range_slice_basics"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "range_attrs: (0, 5, 1) (2, 10, 3) (10, 2, -2)\nrange_repr: range(0, 5) range(2, 10, 3) range(10, 2, -2) range(5, 2)\nrange_len: 5 3 4 0\nrange_index: 2 5 8 10 4\nrange_slice: 5 11 3 [5, 8]\nrange_contains: True False True False\nslice_attrs: (None, 4, None) (1, 5, None) (1, 7, 2)\nslice_repr: slice(None, 4, None) slice(1, 5, None) slice(1, 7, 2)\nslice_apply: [10, 20, 30, 40] [20, 30, 40, 50] [20, 40, 60] bdf\nzero_step: ValueError\nrange_index_error: IndexError\nslice_unhashable: TypeError\n"
-stderr = ""
-exit_code = 0
-
 ["builtins/repr_str_ascii"]
 phase = "run"
 reason = "native output differs from CPython"
@@ -77,17 +63,10 @@ stdout = "repr 'plain' ascii 'plain'\nrepr \"it's\" ascii \"it's\"\nrepr 'say \"
 stderr = ""
 exit_code = 0
 
-["builtins/slice_ellipsis_notimplemented"]
-phase = "run"
-reason = "TypeError: '<' not supported between instances of 'slice' and 'slice'"
-stdout = "one arg slice(None, 5, None) None 5 None\ntwo args slice(1, 4, None) three slice(1, 9, 2)\nany objects slice('a', [1], None)\napply [2, 5] [9, 5, 1] ello\nindices (0, 3, 1) (3, 5, 1) (0, 20, 7)\nindices negative step (-1, -1, -1) (5, -1, -3)\nindices negative length ValueError\neq True True\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/builtins/slice_ellipsis_notimplemented.py\", line 16, in <module>\n    print(\"ordering\", slice(1, 2) < slice(1, 3))\nTypeError: '<' not supported between instances of 'slice' and 'slice'\n"
-exit_code = 1
-
 ["builtins/type_and_len"]
 phase = "run"
 reason = "native output differs from CPython"
-stdout = "type int\ntype bool\ntype float\ntype complex\ntype str\ntype bytes\ntype bytearray\ntype list\ntype tuple\ntype dict\ntype set\ntype frozenset\ntype NoneType\ntype range\ntype slice\ntype ellipsis\ntype NotImplementedType\ntype type\ntype object\ntype builtin_function_or_method\ntype function\ntype list_iterator\ntype list_iterator\ntype generator\ntype dict_keys\ntype dict_values\ntype dict_items\ntype memoryview\ntype is True True False True\nuser Child True False type\ntype of function function function\ngenerator function function generator function\nmodule type builtins builtins\nqualname Child int\ncall type to construct 12 ['a', 'b'] 3.5\ncustom len 0 1000000\nlen overflow OverflowError\nlen via __index__ TypeError\nlen returns bool 0\ninstance __len__ ignored TypeError\nexplicit call instance attr 3\nlen builtin name len\n"
+stdout = "type int\ntype bool\ntype float\ntype complex\ntype str\ntype bytes\ntype bytearray\ntype list\ntype tuple\ntype dict\ntype set\ntype frozenset\ntype NoneType\ntype range\ntype slice\ntype ellipsis\ntype NotImplementedType\ntype type\ntype object\ntype builtin_function_or_method\ntype function\ntype list_iterator\ntype list_iterator\ntype generator\ntype dict_keys\ntype dict_values\ntype dict_items\ntype memoryview\ntype is True True False True\nuser Child True False type\ntype of function function function\ngenerator function function generator function\nmodule type builtins builtins\nqualname Child int\ncall type to construct 12 ['a', 'b'] 3.5\ncustom len 0 1000000\nlen overflow OverflowError\nlen via __index__ 4\nlen returns bool 0\ninstance __len__ ignored TypeError\nexplicit call instance attr 3\nlen builtin name len\n"
 stderr = ""
 exit_code = 0
 
@@ -108,7 +87,7 @@ exit_code = 0
 ["classes/builtin_subclasses"]
 phase = "run"
 reason = "AttributeError: 'str' object has no attribute 'format_map'"
-stdout = "loud list [10, 2, 3, 4] 2 4 19\nloud list log ['append 3', 'setitem 0', 'getitem 1', 'len']\nslice type list [2, 3] ['getitem slice(1, 3, None)']\nconcat type list list\nisinstance list True True\nmissing via [] 1 <b>\nget bypasses missing None False\nafter [('a', 1), ('b', '<b>')]\ndict keys ['MixedInit', 'SetDef', 'Updated', 'upper']\ngetitem lowered 2 2\nbypassed key not found KeyError\ndict copy type dict dict\nstr() HEY! format HEY! repr 'hey'\nlen override 1000 concat heyx str\njoin hey-hey upper type str\nprint direct HEY!\nint subclass ops 8 8 15 10 int\nformat int sub 0005 $5 $5\nbool / hash False True True\nbool override True True yes\n"
+stdout = "loud list [10, 2, 3, 4] 2 4 19\nloud list log ['append 3', 'setitem 0', 'getitem 1', 'len']\nslice type list [2, 3] ['getitem slice(1, 3, None)']\nconcat type list list\nisinstance list True True\nmissing via [] 1 <b>\nget bypasses missing None False\nafter [('a', 1), ('b', '<b>')]\ndict keys ['MixedInit', 'SetDef', 'Updated', 'upper']\ngetitem lowered 2 2\nbypassed key not found KeyError\ndict copy type dict dict\nstr() HEY! format hey repr 'hey'\nlen override 1000 concat heyx str\njoin hey-hey upper type str\nprint direct HEY!\nint subclass ops $8 $8 $15 10 int\nformat int sub 0005 $5 $5\nbool / hash False True True\nbool override True True yes\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/builtin_subclasses.py\", line 131, in <module>\n    fmt = \"{x}-{y}\".format_map(cd)\nAttributeError: 'str' object has no attribute 'format_map'\n"
 exit_code = 1
 
@@ -123,13 +102,6 @@ exit_code = 0
 phase = "run"
 reason = "native output differs from CPython"
 stdout = "set_name log ['set_name Person.name', 'set_name Person.age']\nget Ann 30\nclass access <Typed name on Person>\ntype check age must be int\nafter delete False delete age\nbefore shadow non-data value data value\nafter shadow instance nd data value\nafter assign assigned nd data value assigned d\nset-only get 4 {'so': 4}\ndelete-only delonly\nfunction __get__ bound to F bound to F bound to F\nfunction get None True\ncounted 1 2 1 3\nclass returns descriptor Counted\nlate set_name False\nmanual set_name late\nobjtype ('none', 'K') ('none', 'K2') ('obj', 'K2')\nset_name error ValueError\n"
-stderr = ""
-exit_code = 0
-
-["classes/enum_flags_match"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "values [('R', 1), ('W', 2), ('X', 4)]\ncombine Perm.RW True 3\nunnamed combination Perm.R|W|X 7 R|W|X\ncontains True False True\niterate members of combo ['R', 'W', 'X']\nlen combo 3 1\nand/xor/invert Perm.W Perm.W|X Perm.W|X Perm(0)\nempty Perm(0) False True None\nlookup by int Perm.RW Perm.R|X\nout of range Flag ValueError\nIntFlag 3 True 4 int 12 int\nIntFlag repr 5\nIntFlag with int 7 9 2\nIntFlag bool False 0\nmatch enum ['warm', 'cool', 'cool'] unknown\nmatch flag read-write read exec(R|X) other\nmatch capture got RED other b\nclass pattern green via class pattern name BLUE\nmapping pattern red key 1 no red\nSTRICT ValueError\nCONFORM Conform.A|B 3\nKEEP 7\niter flag ['ONE', 'TWO'] ['NONE', 'ONE', 'TWO', 'BOTH']\n"
 stderr = ""
 exit_code = 0
 
@@ -168,73 +140,10 @@ stdout = "chain C.m>B.m>A.m\nclassmethod chain C.make>B.make>A.make(C) C.make>B.
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 106, in <module>\n    print(\"super outside class\", outside())\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 101, in outside\n    super()\nTypeError: missing required argument 'type'\n"
 exit_code = 1
 
-["containers/dict_views"]
-phase = "run"
-reason = "TypeError: 'dict_keys' object is not reversible"
-stdout = "views ['a', 'b', 'c'] [1, 2, 3] [('a', 1), ('b', 2), ('c', 3)]\nlive after add ['a', 'b', 'c', 'd'] 4 4\nlive after delete ['b', 'c', 'd']\nkeys and set ['b']\nkeys or ['b', 'c', 'd', 'z']\nkeys minus ['c', 'd']\nkeys xor ['c', 'd', 'q']\nkeys rand ['c']\nkeys vs list ['c', 'd']\nkeys disjoint True False\nkeys eq set True False\nkeys lt True True\nother dict keys ['b', 'c']\nitems set ops [('b', 2)]\nitems minus [('c', 3), ('d', 4)]\nitems contains True False False\nitems eq True\nvalues contains True False\nvalues not equal to itself False\nvalues set op TypeError\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/containers/dict_views.py\", line 36, in <module>\n    print(\"reversed keys\", list(reversed(d.keys())))\nTypeError: 'dict_keys' object is not reversible\n"
-exit_code = 1
-
-["protocols/bool_len"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "bool beats len False ['bool']\nlen fallback False True ['len 0', 'len 3']\nneither is truthy True\nlen() still works with __bool__ 5\ncontexts fallback LenOnly True 1 yes\ncontext log ['len 0', 'len 0', 'len 0', 'len 0', 'len 0', 'len 2', 'len 0', 'len 1']\nor returns operand True ['len 0']\nand returns operand True ['len 4']\nbool returns int TypeError\nif with bad bool TypeError\nNegLen len ValueError\nNegLen bool ValueError\nFloatLen len TypeError\nFloatLen bool TypeError\nHugeLen len OverflowError\nHugeLen bool OverflowError\nbool as len 1 True\nlen via __index__ TypeError\nbool None TypeError\ninherited bool wins True\nbuiltin truthiness False False False False False False False False False False False\nbuiltin truthy True True True True True True\nany True ['len 0', 'len 1']\nall False ['len 1', 'len 0']\nfilter None [7, 1]\n"
-stderr = ""
-exit_code = 0
-
-["protocols/container_getitem"]
-phase = "run"
-reason = "TypeError: unhashable type: 'slice'"
-stdout = "int key 3 -1\nslice slice(1, 5, None) slice(None, None, 2) slice(None, None, None) slice(1, 2, 3) slice(None, None, None)\next slice tuple (slice(1, 2, None), 3) (Ellipsis, 0) (slice(None, None, None), slice(None, None, None)) () (1,)\nslice attrs 1 10 2\narbitrary keys k None (1, 2)\nlog tail [('set', 0, 'a'), ('set', slice(1, 3, None), [9, 9]), ('del', 2), ('del', slice(None, None, 2))]\nindex 10 50 30\nslice Seq[20, 30] Seq[50, 40, 30, 20, 10] Seq[10, 30, 50] Seq[40, 50]\nout of range Seq index out of range\nbad type bad index type str\nafter set Seq[11, 21, 22, 23, 40, 50] 6\nafter del Seq[21, 22, 23]\nslice.indices (6, -1, -2) (2, 5, 1) (1, 10, 3)\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/container_getitem.py\", line 83, in <module>\n    print(\"slice eq/hash\", slice(1, 2) == slice(1, 2), hash(slice(1, 2)) == hash(slice(1, 2)))\nTypeError: unhashable type: 'slice'\n"
-exit_code = 1
-
-["protocols/index_protocol"]
-phase = "run"
-reason = "TypeError: 'Idx' object cannot be interpreted as an integer"
-stdout = "index 3 9 c 1\nslice bounds [2, 3, 4] [0, 3, 6, 9] ello\nrange [0, 1, 2, 3] [1, 5, 9] 2 range(2, 5)\nbin/hex/oct 0b101 0xff 0o10\noperator.index 42\nint() via __index__ 7\nrepetition ababab [0, 0] xx b'zz'\nbytes(n) b'\\x00\\x00\\x00' bytearray(b'\\x00\\x00')\nchr A\nround ndigits 3.14\nlist insert/pop ['x', 2, 3]\nhex on int subclass 0x1\nslice.indices (1, 6, 2)\nbad __index__ subscript TypeError\nbad __index__ operator.index TypeError\nbad __index__ bin TypeError\n__int__ not index TypeError\nint() uses __int__ 2\nbin needs __index__ TypeError\nrange needs __index__ TypeError\nfloat rejected list[float] TypeError\nfloat rejected range(float) TypeError\nfloat rejected hex(float) TypeError\ncustom container gets raw key Idx slice\nhuge index IndexError\nhuge slice clamps [] [0, 1, 2]\nrange huge len ok True\nhuge range len OverflowError\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/index_protocol.py\", line 103, in <module>\n    print(\"percent formatting\", \"%x %o\" % (Idx(255), Idx(8)))\nTypeError: 'Idx' object cannot be interpreted as an integer\n"
-exit_code = 1
-
-["protocols/inplace_operators"]
-phase = "run"
-reason = "TypeError: unsupported operand type(s) for %: 'Acc' and 'int'"
-stdout = "iadd/isub Acc(13) True ['iadd', 'isub']\nimul Acc(39)\nifloordiv Acc(9)\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/inplace_operators.py\", line 75, in <module>\n    a %= 5; print(\"imod\", a)\nTypeError: unsupported operand type(s) for %: 'Acc' and 'int'\n"
-exit_code = 1
-
-["protocols/notimplemented_fallback"]
-phase = "run"
-reason = "AttributeError: 'float' object has no attribute '__radd__'"
-stdout = "left handles A wins ['A.__add__']\nright reflects B rwins ['A.__add__', 'B.__radd__']\nneither TypeError ['A.__add__', 'B.__radd__']\nright wins ignored left radd B rwins ['A.__add__', 'B.__radd__']\neq both NotImplemented False ['A.__eq__', 'B.__eq__']\neq identity fallback True ['A.__eq__', 'A.__eq__']\nne both NotImplemented True ['A.__eq__', 'B.__eq__']\nlt reflects to gt B.__gt__ result ['A.__lt__', 'B.__gt__']\nlt neither TypeError ['A.__lt__', 'B.__gt__']\ndirect call True\nNotImplemented repr NotImplemented NotImplementedType\nint.__add__ str True 3\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/notimplemented_fallback.py\", line 92, in <module>\n    print(\"float.__radd__ int\", (1.5).__radd__(1))\nAttributeError: 'float' object has no attribute '__radd__'\n"
-exit_code = 1
-
-["protocols/numeric_conversions"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "int() 998\nfloat() -2.2\ncomplex() (-2.7+1j)\nround round(-2.7) round(-2.7, 2) round(-2.7)\nmath.trunc/floor/ceil trunc(-2.7) floor(-2.7) ceil(-2.7)\nabs Num(2.7)\nbare int TypeError\nbare float TypeError\nbare complex TypeError\nbare round TypeError\nbare trunc TypeError\nbare floor TypeError\nbare ceil TypeError\nbare abs TypeError\nint via __index__ 7 float via __index__ 7.0 complex via __index__ (7+0j)\ncomplex via __float__ (2.5+0j)\nint ignores __float__ TypeError\nint via __trunc__ 9\nmath.floor via __float__ 2 3\nbad return int TypeError\nbad return float TypeError\nbad return complex TypeError\nround builtins 0 2 2 0 2.67 1200 1200 1400\nround types int float int\nmath funcs on floats -2 -3 -2 3 0\nint() truncation -2 2 -12 255 5 1\nfloat parse 1000.0 -inf True 1e+20\ncomplex parse (1+2j) (1-0j) (3+0j) (2+0j)\nint too big for float OverflowError\nint(inf) OverflowError\nint(nan) ValueError\nFrac 3 3.143 3.142857142857143 3 3 3.1429\nsubclass conversions float int int\nsubclass math int int int\nint.__round__ ndigits 1230 20 20\ndivmod mixed (3, 1) (-4, 1) (3.0, 1.5) (-4.0, 0.5)\npow types 0.5 float 2.0 4 True\nmath.fsum / isclose 1.0 True\n"
-stderr = ""
-exit_code = 0
-
-["protocols/reflected_operators"]
-phase = "run"
-reason = "TypeError: can only concatenate str (not \"OnlyR\") to str"
-stdout = "radd via int Num(13) ['Num(3).__radd__(10)']\nradd via sum Num(3) 2\nrsub rmul Num(7) Num(30)\nrtruediv rfloordiv rmod Num(3.0) Num(3) Num(1)\nrpow Num(8)\nrshifts Num(8) Num(8)\nrbitwise Num(2) Num(7) Num(6)\nrmatmul rmatmul [1, 2] @ 3\nrdivmod ('rdivmod', (5, 2))\nsubclass reflected first Num(3) ['Num(1).__add__(Sub(2))']\nsubclass no override Num(3) ['Num(1).__add__(SubNoOverride(2))']\nunrelated R handled ['L.__add__', 'R.__radd__']\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/reflected_operators.py\", line 142, in <module>\n    print(\"builtin left falls to radd\", \"s\" + OnlyR(), [1] + OnlyR(), (1,) + OnlyR())\nTypeError: can only concatenate str (not \"OnlyR\") to str\n"
-exit_code = 1
-
-["protocols/rich_comparisons"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "all six True True False False False True\nsorted [v1.0.1, v1.5, v2]\nsort uses only lt ['lt']\nmax/min v1.10 v1.2\nlt reflects to gt True ['OnlyGt(5).__gt__']\nint < custom reflects True ['OnlyGt(5).__gt__']\ngt does not reflect to gt TypeError\nne derived from eq False True ['EqOnly(1).__eq__', 'EqOnly(1).__eq__']\neq with int both sides False False ['EqOnly(1).__eq__', 'EqOnly(1).__eq__']\nsubclass reflected first Base.__lt__ Base.__lt__\nchain True ['a', 'b', 'c']\nchain short-circuit False ['a', 'b']\nmixed chain True True\nnon-bool results ['not', 'a', 'bool'] 0 False\nin chain uses truthiness ['not', 'a', 'bool']\ntotal_ordering [2, 9, T, K, A] True False True\ntuple lexi True True True\nidentity shortcut in containers False True\n"
-stderr = ""
-exit_code = 0
-
 ["stdlib/collections_abc_checks"]
 phase = "run"
 reason = "native output differs from CPython"
-stdout = "isinstance list        101101100000110\nisinstance tuple       101111000000110\nisinstance str         101111000000110\nisinstance bytes       101111000000110\nisinstance dict        101100011000110\nisinstance set         101100000110100\nisinstance frozenset   101110000100100\nisinstance range       101111000000110\nisinstance deque       101101100000110\nisinstance generator   110010000001000\nisinstance int         000010000000000\nisinstance dict_keys   101100000100100\nisinstance dict_items  101100000100100\nisinstance dict_values 101110000000100\nisinstance memoryview  101101000000110\ncallable False False\nodict mutable mapping True\nlist hashable False\nseq iter [0, 1, 4, 9, 16, 25]\nseq contains True False\nseq reversed [25, 16, 9, 4, 1, 0]\nseq index/count 3 1\nseq slice [1, 9]\nseq isinstance True False\nseq index missing ValueError\nmap get 1 dflt\nmap contains True False\nmap views ['a', 'b'] [1, 2] [('a', 1), ('b', 2)]\nmap eq True False\nmap dict() {'a': 1, 'b': 2}\nmap ** unpack {'a': 1, 'b': 2, 'c': 3}\nmap not mutable False False\nmap keys view is Set True {'a'}\nmutmap [('bar', 2), ('baz', 3), ('foo', 1)]\nmutmap setdefault 1 5\nmutmap pop 3 none\nmutmap popitem ('foo', 1)\nmutmap clear 0\nset ops Bits([2, 3]) Bits([1, 2, 3, 4]) Bits([1]) Bits([1, 4])\nset compare True False True True\nstructural True True False\nregistered True True\n"
+stdout = "isinstance list        101101100000110\nisinstance tuple       101111000000110\nisinstance str         101111000000110\nisinstance bytes       101111000000110\nisinstance dict        101100011000110\nisinstance set         101100000110100\nisinstance frozenset   101110000100100\nisinstance range       101111000000110\nisinstance deque       101101100000110\nisinstance generator   110010000001000\nisinstance int         000010000000000\nisinstance dict_keys   101100000100110\nisinstance dict_items  101100000100110\nisinstance dict_values 101110000000110\nisinstance memoryview  101101000000110\ncallable False False\nodict mutable mapping True\nlist hashable False\nseq iter [0, 1, 4, 9, 16, 25]\nseq contains True False\nseq reversed [25, 16, 9, 4, 1, 0]\nseq index/count 3 1\nseq slice [1, 9]\nseq isinstance True False\nseq index missing ValueError\nmap get 1 dflt\nmap contains True False\nmap views ['a', 'b'] [1, 2] [('a', 1), ('b', 2)]\nmap eq True False\nmap dict() {'a': 1, 'b': 2}\nmap ** unpack {'a': 1, 'b': 2, 'c': 3}\nmap not mutable False False\nmap keys view is Set True {'a'}\nmutmap [('bar', 2), ('baz', 3), ('foo', 1)]\nmutmap setdefault 1 5\nmutmap pop 3 none\nmutmap popitem ('foo', 1)\nmutmap clear 0\nset ops Bits([2, 3]) Bits([1, 2, 3, 4]) Bits([1]) Bits([1, 4])\nset compare True False True True\nstructural True True False\nregistered True True\n"
 stderr = ""
 exit_code = 0
 
@@ -331,9 +240,9 @@ exit_code = 1
 
 ["strings/bytes_bytearray_memoryview"]
 phase = "run"
-reason = "TypeError: object has no len"
+reason = "TypeError: unsupported operand type(s) for +: 'bytes' and 'bytes'"
 stdout = "bytes_construct: b'' b'\\x00\\x00\\x00' b'ABCD' b'hi' b'Hello'\nbytes_index_slice: 4 65 68 b'BC' b'DCBA'\nbytes_ops: b'abcd' b'xyxy' True True False\nbytes_methods: Hello 0aff b'abc' [b'a', b'b', b'c'] b'p-q' b'baNAna' 4 5 True True\nbytearray_mutation: b'ABcdEF' 71 6 65 ABcdEF\nbytearray_slice_del: b'XYdEF'\nmemoryview_ro: 4 97 100 b'bc' b'abcd' [97, 98, 99, 100] 61626364\nmemoryview_rw: b'WxYZ' [87, 120, 89, 90]\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/bytes_bytearray_memoryview.py\", line 81, in <module>\n    len(mb),\nTypeError: object has no len\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/bytes_bytearray_memoryview.py\", line 80, in <module>\n    mb.tag(),\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/bytes_bytearray_memoryview.py\", line 66, in tag\n    return b\"tag:\" + self\nTypeError: unsupported operand type(s) for +: 'bytes' and 'bytes'\n"
 exit_code = 1
 
 ["strings/encode_decode"]
@@ -366,9 +275,9 @@ exit_code = 0
 
 ["strings/percent_format"]
 phase = "run"
-reason = "TypeError: 'float' object cannot be interpreted as an integer"
-stdout = "s r a é'|\"é'\"|\"\\xe9'\"\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/percent_format.py\", line 4, in <module>\n    print(\"d i u\", \"%d %i %u\" % (42, -7, 3), \"%d\" % 3.99, \"%d\" % True)\nTypeError: 'float' object cannot be interpreted as an integer\n"
+reason = "ValueError: unknown format code 'F' for object of type 'float'"
+stdout = "s r a é'|\"é'\"|\"\\xe9'\"\nd i u 42 -7 3 3 1\no x X 10 ff FF 0o10 0xff 0XFF -ff\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/percent_format.py\", line 6, in <module>\n    print(\"e E f F\", \"%e %E\" % (12345.678, 0.000123), \"%f %F\" % (1.5, float(\"inf\")))\nValueError: unknown format code 'F' for object of type 'float'\n"
 exit_code = 1
 
 ["strings/str_format_method"]
