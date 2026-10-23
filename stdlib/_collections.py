@@ -6,6 +6,9 @@ as a ring buffer, so appends and pops at both ends take constant time.
 """
 
 
+_repr_active_deques = []
+
+
 class deque:
     """A double-ended queue with an optional maximum length."""
 
@@ -205,10 +208,17 @@ class deque:
         return type(list[int])(cls, item)
 
     def __repr__(self):
-        items = ", ".join(repr(item) for item in self)
-        if self._maxlen is None:
-            return f"deque([{items}])"
-        return f"deque([{items}], maxlen={self._maxlen})"
+        for active in _repr_active_deques:
+            if active is self:
+                return "[...]"
+        _repr_active_deques.append(self)
+        try:
+            items = ", ".join(repr(item) for item in self)
+            if self._maxlen is None:
+                return f"deque([{items}])"
+            return f"deque([{items}], maxlen={self._maxlen})"
+        finally:
+            _repr_active_deques.pop()
 
 
 class defaultdict(dict):

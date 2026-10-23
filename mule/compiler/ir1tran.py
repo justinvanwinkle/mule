@@ -1899,11 +1899,16 @@ class _Expressions(ast.Visitor):
         result_name = ast.Name("$result", span=span)
         if node.kind == ast.ComprehensionKind.DICT:
             initial = ast.Dict([], span=span)
-            add = ast.Assignment(
-                [ast.Subscript(result_name, node.key, span=span)],
-                node.element,
-                span=span,
-            )
+            variables["$key"] = function.temporary()
+            key_name = ast.Name("$key", span=span)
+            body: list[ast.Statement] = [
+                ast.Assignment([key_name], node.key, span=span),
+                ast.Assignment(
+                    [ast.Subscript(result_name, key_name, span=span)],
+                    node.element,
+                    span=span,
+                ),
+            ]
         else:
             if node.kind == ast.ComprehensionKind.LIST:
                 initial, method = ast.List([], span=span), "append"
@@ -1917,7 +1922,7 @@ class _Expressions(ast.Visitor):
                 ),
                 span=span,
             )
-        body: list[ast.Statement] = [add]
+            body = [add]
         for index in range(len(node.clauses) - 1, -1, -1):
             clause = node.clauses[index]
             for condition in reversed(clause.conditions):
@@ -2933,39 +2938,28 @@ class _Statements(ast.Visitor):
         ctran, loaded = Ctran(), Lvar()
         function.ref(current, ctran, loaded, manager, item)
         following, bound_exit = Ctran(), Lvar()
-        function.known(
+        function.protocol(
             ctran,
             following,
             bound_exit,
-            fndb.GETATTR,
+            "context_exit_method",
             (loaded,),
             item,
-            AttributeInfo("__exit__", function.converter.location(item)),
         )
         current = Ctran()
         function.set_var(following, current, exit_method, bound_exit, item)
         ctran, loaded = Ctran(), Lvar()
         function.ref(current, ctran, loaded, manager, item)
-        following, resolved = Ctran(), Lvar()
-        function.known(
+        following, entered = Ctran(), Lvar()
+        function.protocol(
             ctran,
             following,
-            resolved,
-            fndb.RESOLVE_METHOD,
+            entered,
+            "context_enter",
             (loaded,),
             item,
-            AttributeInfo("__enter__", function.converter.location(item)),
         )
-        ctran, entered = Ctran(), Lvar()
-        function.known(
-            following,
-            ctran,
-            entered,
-            fndb.CALL_RESOLVED,
-            (resolved,),
-            item,
-            CallInfo((), None),
-        )
+        ctran = following
         if item.target is not None:
             current = Ctran()
             item.target.accept(_AssignmentTarget(function, entered, ctran, current))

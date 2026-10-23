@@ -10,7 +10,7 @@ selected positions. Sequence types use ``positions`` to read their elements.
 # ruff: noqa: F821
 
 from _mule_native import type_of
-from _object import int
+from _object import _index_integer, int
 
 
 class slice:
@@ -51,10 +51,7 @@ class slice:
 
 
 def _bound(value):
-    method = _index_method(value)
-    if method is not None:
-        value = method()
-    return _integer_storage(value)
+    return _index_integer(value)
 
 
 def is_slice(value):

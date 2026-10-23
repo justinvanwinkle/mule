@@ -94,7 +94,17 @@ def floordiv(a, b):
 
 def index(a):
     "Same as a.__index__()."
-    return a.__index__()
+    if isinstance(a, int):
+        return int.__index__(a)
+    cls = type(a)
+    try:
+        method = cls.__index__
+    except AttributeError:
+        raise TypeError(f"'{cls.__name__}' object cannot be interpreted as an integer") from None
+    res = method(a)
+    if not isinstance(res, int):
+        raise TypeError(f"__index__ returned non-int (type {type(res).__name__})")
+    return int.__index__(res)
 
 def inv(a):
     "Same as ~a."

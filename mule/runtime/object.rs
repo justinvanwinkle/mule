@@ -1979,11 +1979,15 @@ unsafe fn compare_sequence_storage_slow(
         if has_error() {
             return std::ptr::null_mut();
         }
+        if crate::mule_enter_frame() < 0 {
+            return std::ptr::null_mut();
+        }
         retain(left);
         retain(right);
         let result = compare_sequence_storage_slow_inner(op, left, right, index);
         release(left);
         release(right);
+        crate::mule_leave_frame();
         result
     }
 }

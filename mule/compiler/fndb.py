@@ -449,6 +449,8 @@ PROTOCOLS = {
         "unpack_starred",
         "exception_matches",
         "iteration_exhausted",
+        "context_exit_method",
+        "context_enter",
         "context_exit",
         "cell_new",
         "cell_get",

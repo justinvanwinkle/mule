@@ -672,12 +672,7 @@ def abs(value, /):
 
 
 def integer_index(value):
-    if _type_of(value) is int:
-        return value
-    method = _index_method(value)
-    if method is not None:
-        value = method()
-    return _integer_storage(value)
+    return _index_integer(value)
 
 
 def chr(value, /):
@@ -888,18 +883,51 @@ class filter:
                 return item
 
 
+class ReverseIterator:
+    def __init__(self, sequence, length):
+        self.sequence = sequence
+        self.index = length - 1
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        index = self.index
+        if index >= 0:
+            self.index = index - 1
+            try:
+                return getitem(self.sequence, index)
+            except IndexError, StopIteration:
+                self.index = -1
+        raise StopIteration
+
+
+ReverseIterator.__name__ = "reversed"
+ReverseIterator.__qualname__ = "reversed"
+
+
 def reversed(sequence, /):
     cls = _type_of(sequence)
-    if cls is list or cls is tuple:
+    if cls is tuple:
         items = list(sequence)
         _reverse_in_place(items)
         return iter(items)
-    method = _reversed_method(sequence)
-    if method is not None:
+    missing = _binding_missing()
+    method = _optional_special(sequence, "__reversed__")
+    if method is not missing:
+        if method is None:
+            raise TypeError(f"'{cls.__name__}' object is not reversible")
         return method()
-    items = list(sequence)
-    _reverse_in_place(items)
-    return SequenceIterator(items)
+    len_method = _optional_special(sequence, "__len__")
+    getitem_method = _optional_special(sequence, "__getitem__")
+    if (
+        len_method is missing
+        or len_method is None
+        or getitem_method is missing
+        or getitem_method is None
+    ):
+        raise TypeError(f"'{cls.__name__}' object is not reversible")
+    return ReverseIterator(sequence, len(sequence))
 
 
 def pow(base, exp, mod=None):
@@ -1066,6 +1094,35 @@ def append_argument(positional, value):
     _storage_append(positional, value)
 
 
+def _length_hint(iterable):
+    missing = _binding_missing()
+    method = _optional_special(iterable, "__len__")
+    if method is not missing and method is not None:
+        try:
+            size = _index_integer(method())
+        except TypeError:
+            pass
+        else:
+            if size < 0:
+                raise ValueError("__len__() should return >= 0")
+            return
+    method = _optional_special(iterable, "__length_hint__")
+    if method is not missing and method is not None:
+        try:
+            hint = method()
+        except TypeError:
+            return
+        if hint is NotImplemented:
+            return
+        if not is_instance(hint, int):
+            raise TypeError(
+                f"__length_hint__ must be an integer, not {type_of(hint).__name__}"
+            )
+        hint = _index_integer(hint)
+        if hint < 0:
+            raise ValueError("__length_hint__() should return >= 0")
+
+
 def extend_arguments(positional, iterable):
     owner = type_of(iterable)
     if owner is tuple or owner is list:
@@ -1077,7 +1134,13 @@ def extend_arguments(positional, iterable):
             _storage_append(positional, _storage_read(iterable, index))
             index += 1
         return
-    for value in iterable:
+    iterator = iterate(iterable)
+    _length_hint(iterable)
+    while True:
+        try:
+            value = next_item(iterator)
+        except StopIteration:
+            return
         _storage_append(positional, value)
 
 
@@ -1416,6 +1479,8 @@ def _require_list(value, operation):
 
 def _repeat(sequence, count):
     count = integer_index(count)
+    if count >= (1 << 63) or count < -(1 << 63):
+        raise OverflowError("cannot fit 'int' into an index-sized integer")
     result = []
     while count > 0:
         index = 0
@@ -2485,6 +2550,12 @@ class BytesStorage:
     def maketrans(frm, to):
         return _make_bytes_translation_table(frm, to)
 
+    def __mul__(self, count):
+        return bytes_from_values(_repeat(self, count))
+
+    def __rmul__(self, count):
+        return bytes_from_values(_repeat(self, count))
+
 
 def sequence_equal(left, right):
     if not _storage_compatible(left, right):
@@ -2803,15 +2874,10 @@ class Enumerate:
         return (index, value)
 
 
-def enumerate(*args):
-    count = _storage_length(args)
-    if count != 1 and count != 2:
-        raise TypeError("enumerate expects one or two arguments")
-    start = 0
-    if count == 2:
-        start = integer_index(_storage_read(args, 1))
+def enumerate(iterable, start=0):
+    start = integer_index(start)
     iterator = _allocate_instance(Enumerate)
-    iterator.iterator = iterate(_storage_read(args, 0))
+    iterator.iterator = iterate(iterable)
     iterator.index = start
     return iterator
 
@@ -3055,10 +3121,12 @@ class bytes(BytesStorage):
                 _storage_read(result, index) for index in range(_storage_length(result))
             ]
             return typed_value(bytes_from_values(values), cls)
-        if _integer_storage_kind(source):
+        if _integer_storage_kind(source) or _index_method(source) is not None:
             source = _index_integer(source)
             if source < 0:
                 raise ValueError("negative count")
+            if source >= (1 << 63):
+                raise OverflowError("cannot fit 'int' into an index-sized integer")
             values = []
             index = 0
             while index < source:
@@ -3117,10 +3185,12 @@ def _byte_values(source, encoding, errors):
             _storage_append(values, _storage_read(source_values, index))
             index += 1
         return values
-    if _integer_storage_kind(source):
-        count = _integer_storage(source)
+    if _integer_storage_kind(source) or _index_method(source) is not None:
+        count = _index_integer(source)
         if count < 0:
             raise ValueError("negative count")
+        if count >= (1 << 63):
+            raise OverflowError("cannot fit 'int' into an index-sized integer")
         values = []
         index = 0
         while index < count:
@@ -3257,6 +3327,18 @@ class bytearray:
 
     def __add__(self, other):
         return bytearray(self.values + _byte_values(other, None, "strict"))
+
+    def __mul__(self, count):
+        return bytearray(_repeat(self.values, count))
+
+    def __rmul__(self, count):
+        return bytearray(_repeat(self.values, count))
+
+    def __imul__(self, count):
+        repeated = _repeat(self.values, count)
+        self._check_resize(len(repeated))
+        self.values = repeated
+        return self
 
     def __repr__(self):
         return "bytearray(" + repr(bytes_from_values(self.values)) + ")"
@@ -4018,6 +4100,26 @@ def ellipsis_value():
 
 
 _install_builtin("Ellipsis", Ellipsis)
+
+
+def context_exit_method(manager):
+    missing = _binding_missing()
+    method = _optional_special(manager, "__exit__")
+    if method is missing or method is None:
+        raise TypeError(
+            f"'{_type_of(manager).__name__}' object does not support the context manager protocol (missed __exit__ method)"
+        )
+    return method
+
+
+def context_enter(manager):
+    missing = _binding_missing()
+    method = _optional_special(manager, "__enter__")
+    if method is missing or method is None:
+        raise TypeError(
+            f"'{_type_of(manager).__name__}' object does not support the context manager protocol"
+        )
+    return method()
 
 
 def context_exit(exit_method, value):

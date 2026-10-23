@@ -9,10 +9,10 @@ exit_code = 0
 
 ["builtins/enumerate_reversed"]
 phase = "run"
-reason = "TypeError: got an unexpected keyword argument 'start'"
-stdout = "enumerate [(0, 'a'), (1, 'b'), (2, 'c')]\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/builtins/enumerate_reversed.py\", line 4, in <module>\n    print(\"enumerate start\", list(enumerate(\"abc\", start=1)))\nTypeError: got an unexpected keyword argument 'start'\n"
-exit_code = 1
+reason = "native output differs from CPython"
+stdout = "enumerate [(0, 'a'), (1, 'b'), (2, 'c')]\nenumerate start [(1, 'a'), (2, 'b'), (3, 'c')]\nenumerate negative start [(-5, 'a'), (-4, 'b')]\nenumerate big start [(18446744073709551616, 'a'), (18446744073709551617, 'b')]\nenumerate bool start [(1, 'a')]\nenumerate next (0, 10) (1, 20) end\nenumerate items 1 x 1\nenumerate items 2 y 2\nenumerate float start TypeError\nreversed list [3, 2, 1]\nreversed tuple (2, 1)\nreversed str olleh\nreversed range [9, 6, 3, 0] [1, 3, 5]\nreversed empty range []\nreversed dict ['b', 'a']\nreversed type range reversed\nreversed type list iterator\nreversed sees length at creation [3, 2, 1]\nreversed after shrink [3, 2, 1]\nreversed set TypeError\nreversed gen TypeError\ncustom reversed ['custom', 'reversed']\nsequence protocol ['c', 'b', 'a']\nreversed None TypeError\nenumerate reversed [(0, 'b'), (1, 'a')]\nreversed enumerate list [(1, 'b'), (0, 'a')]\nreversed enumerate TypeError\n"
+stderr = ""
+exit_code = 0
 
 ["builtins/format_builtin"]
 phase = "run"
@@ -182,6 +182,13 @@ stdout = "chain C.m>B.m>A.m\nclassmethod chain C.make>B.make>A.make(C) C.make>B.
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 106, in <module>\n    print(\"super outside class\", outside())\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 101, in outside\n    super()\nTypeError: missing required argument 'type'\n"
 exit_code = 1
 
+["containers/dict_views"]
+phase = "run"
+reason = "TypeError: 'dict_keys' object is not reversible"
+stdout = "views ['a', 'b', 'c'] [1, 2, 3] [('a', 1), ('b', 2), ('c', 3)]\nlive after add ['a', 'b', 'c', 'd'] 4 4\nlive after delete ['b', 'c', 'd']\nkeys and set ['b']\nkeys or ['b', 'c', 'd', 'z']\nkeys minus ['c', 'd']\nkeys xor ['c', 'd', 'q']\nkeys rand ['c']\nkeys vs list ['c', 'd']\nkeys disjoint True False\nkeys eq set True False\nkeys lt True True\nother dict keys ['b', 'c']\nitems set ops [('b', 2)]\nitems minus [('c', 3), ('d', 4)]\nitems contains True False False\nitems eq True\nvalues contains True False\nvalues not equal to itself False\nvalues set op TypeError\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/containers/dict_views.py\", line 36, in <module>\n    print(\"reversed keys\", list(reversed(d.keys())))\nTypeError: 'dict_keys' object is not reversible\n"
+exit_code = 1
+
 ["functions/annotations_deferred"]
 phase = "run"
 reason = "AttributeError: 'function' object has no attribute '__builtins__'"
@@ -250,25 +257,11 @@ stdout = "int key 3 -1\nslice slice(1, 5, None) slice(None, None, 2) slice(None,
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/container_getitem.py\", line 83, in <module>\n    print(\"slice eq/hash\", slice(1, 2) == slice(1, 2), hash(slice(1, 2)) == hash(slice(1, 2)))\nTypeError: unhashable type: 'slice'\n"
 exit_code = 1
 
-["protocols/contains_iteration"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "__contains__ used True False True ['contains yes', 'contains no', 'contains no']\ncontains coerces True bool\ncontains via __iter__ True ['iter start', 'yield 0', 'yield 1', 'yield 2']\ncontains exhaust False 6\ncontains via __getitem__ True ['getitem 0', 'getitem 1', 'getitem 2']\nlegacy iteration [0, 10, 20, 30] getitem 4\nlegacy for loop [0, 10, 20, 30]\nlegacy iter() object iterator\nno protocol contains TypeError\nno protocol iter TypeError\nreiterable [3, 2, 1] [3, 2, 1] [(3, 3), (2, 2), (1, 1)]\niterator self-iter True 3 [2, 1] []\nnext default empty\nsingle pass [1, 2] []\niter returns non-iterator TypeError\niter sentinel [1, 2, 3]\n__reversed__ ['c', 'b', 'a'] seq fallback [2, 1, 0]\nlength_hint 10 3 7\nlength_hint not len [1, 2]\nnegative hint ValueError\nhint NotImplemented uses default 4\nbuiltin in True False True True True False\n"
-stderr = ""
-exit_code = 0
-
-["protocols/context_managers"]
-phase = "run"
-reason = "AttributeError: 'OnlyEnter' object has no attribute '__exit__'"
-stdout = "basic ['enter a', 'body sees CM(a)', 'exit a None None tb=False']\nenter value ['enter b', 'as value 42', 'exit b None None tb=False']\nno target ['enter c', 'no as target', 'exit c None None tb=False']\npropagates ['enter d', \"exit d ValueError ('boom', 1) tb=True\", \"caught ('boom', 1)\"]\nsuppressed ['enter e', \"exit e KeyError ('hidden',) tb=True\", 'after suppressed with']\ntruthy string suppresses\nmultiple ['enter x', 'enter y', 'enter z', 'body CM(x) CM(y) Z', 'exit z None None tb=False', 'exit y None None tb=False', 'exit x None None tb=False']\nparenthesized ['enter p1', 'enter p2', 'enter p3', 'paren body CM(p1) 1 2', 'exit p3 None None tb=False', 'exit p2 None None tb=False', 'exit p1 None None tb=False']\ninner suppress ['enter outer', 'enter inner', \"exit inner RuntimeError ('inner-only',) tb=True\", 'exit outer None None tb=False']\nenter failure ['enter first', 'bad enter', \"exit first OSError ('enter failed',) tb=True\", 'caught OSError']\nreturn in with returned ['enter ret', 'exit ret None None tb=False']\nbreak/continue ['enter loop0', 'exit loop0 None None tb=False', 'enter loop1', 'exit loop1 None None tb=False']\ncomplex targets {'k': 'dict-target'} attr\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/context_managers.py\", line 149, in <module>\n    with OnlyEnter():\nAttributeError: 'OnlyEnter' object has no attribute '__exit__'\n"
-exit_code = 1
-
 ["protocols/index_protocol"]
 phase = "run"
-reason = "TypeError: unsupported operand type(s) for *: 'bytes' and 'Idx'"
-stdout = "index 3 9 c 1\nslice bounds [2, 3, 4] [0, 3, 6, 9] ello\nrange [0, 1, 2, 3] [1, 5, 9] 2 range(2, 5)\nbin/hex/oct 0b101 0xff 0o10\noperator.index 42\nint() via __index__ 7\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/index_protocol.py\", line 24, in <module>\n    print(\"repetition\", \"ab\" * Idx(3), [0] * Idx(2), Idx(2) * \"x\", b\"z\" * Idx(2))\nTypeError: unsupported operand type(s) for *: 'bytes' and 'Idx'\n"
+reason = "TypeError: 'Idx' object cannot be interpreted as an integer"
+stdout = "index 3 9 c 1\nslice bounds [2, 3, 4] [0, 3, 6, 9] ello\nrange [0, 1, 2, 3] [1, 5, 9] 2 range(2, 5)\nbin/hex/oct 0b101 0xff 0o10\noperator.index 42\nint() via __index__ 7\nrepetition ababab [0, 0] xx b'zz'\nbytes(n) b'\\x00\\x00\\x00' bytearray(b'\\x00\\x00')\nchr A\nround ndigits 3.14\nlist insert/pop ['x', 2, 3]\nhex on int subclass 0x1\nslice.indices (1, 6, 2)\nbad __index__ subscript TypeError\nbad __index__ operator.index TypeError\nbad __index__ bin TypeError\n__int__ not index TypeError\nint() uses __int__ 2\nbin needs __index__ TypeError\nrange needs __index__ TypeError\nfloat rejected list[float] TypeError\nfloat rejected range(float) TypeError\nfloat rejected hex(float) TypeError\ncustom container gets raw key Idx slice\nhuge index IndexError\nhuge slice clamps [] [0, 1, 2]\nrange huge len ok True\nhuge range len OverflowError\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/index_protocol.py\", line 103, in <module>\n    print(\"percent formatting\", \"%x %o\" % (Idx(255), Idx(8)))\nTypeError: 'Idx' object cannot be interpreted as an integer\n"
 exit_code = 1
 
 ["protocols/inplace_operators"]
@@ -323,7 +316,7 @@ exit_code = 0
 ["scoping/comprehension_scope"]
 phase = "run"
 reason = "native output differs from CPython"
-stdout = "list comp var does not leak [0, 1, 4, 9] global x\nall comprehension kinds isolate ['a', 'b'] [1, 2, 3] {0: 0, 1: 2} global x\nfunction local not clobbered ([0, 1, 2], 'local y')\nenclosing read [0, 3, 6]\niterable uses outer n [10, 20]\nnested [[0, 1, 2], [3, 4, 5]]\nflatten with condition [1, 3, 5]\ndependent clauses [(1, 0), (2, 0), (2, 1)]\nwalrus outward [1, 3, 6] 6\nwalrus in function (['x', 'y', 'z'], 'z')\nwalrus nested (1, 1)\ncompiled [i := 0 for i in range(2)]\ncompiled [[(j := 1) for i in range(2)] for j in range(2)]\ncompiled [x for x in (y := [1])]\nwalrus with nonlocal 2\nwalrus with global 20\ngenerator late binding [100, 101, 102]\nfirst iterable eager NameError\nbody lazy NameError\nz leaked? False\nlocals in comprehension [['_', 'outer_name']]\nlambda in comprehension [2, 2, 2]\ngenexp in listcomp [0, 0, 1, 3, 6]\ndict comp order [('v', 0), ('k', 0), ('v', 1), ('k', 1)] {0: 0, 1: 1}\n"
+stdout = "list comp var does not leak [0, 1, 4, 9] global x\nall comprehension kinds isolate ['a', 'b'] [1, 2, 3] {0: 0, 1: 2} global x\nfunction local not clobbered ([0, 1, 2], 'local y')\nenclosing read [0, 3, 6]\niterable uses outer n [10, 20]\nnested [[0, 1, 2], [3, 4, 5]]\nflatten with condition [1, 3, 5]\ndependent clauses [(1, 0), (2, 0), (2, 1)]\nwalrus outward [1, 3, 6] 6\nwalrus in function (['x', 'y', 'z'], 'z')\nwalrus nested (1, 1)\ncompiled [i := 0 for i in range(2)]\ncompiled [[(j := 1) for i in range(2)] for j in range(2)]\ncompiled [x for x in (y := [1])]\nwalrus with nonlocal 2\nwalrus with global 20\ngenerator late binding [100, 101, 102]\nfirst iterable eager NameError\nbody lazy NameError\nz leaked? False\nlocals in comprehension [['_', 'outer_name']]\nlambda in comprehension [2, 2, 2]\ngenexp in listcomp [0, 0, 1, 3, 6]\ndict comp order [('k', 0), ('v', 0), ('k', 1), ('v', 1)] {0: 0, 1: 1}\n"
 stderr = ""
 exit_code = 0
 
@@ -406,10 +399,10 @@ exit_code = 1
 
 ["stdlib/operator_module"]
 phase = "run"
-reason = "AttributeError: 'float' object has no attribute '__index__'"
-stdout = "itemgetter single b\nitemgetter multi ('a', 'c')\nitemgetter dict (2, 1)\nitemgetter slice [2, 3]\nsort by itemgetter [('ann', 25, 'sf'), ('bo', 30, 'nyc'), ('cy', 30, 'la')]\nmax by itemgetter ('bo', 30, 'nyc')\nitemgetter missing IndexError\nattrgetter ann\nattrgetter dotted la\nattrgetter multi ('cy', '10001')\nsort dotted ['cy', 'bo', 'ann']\nattrgetter missing AttributeError\nmethodcaller hi, ann!\nmethodcaller kw yo, bo?\nmethodcaller str ['A', 'B']\nmethodcaller split ['a', 'b,c']\nreduce add 15\nreduce mul 120\nreduce sub -13\nreduce or 15\nreduce and {3}\nreduce concat [1, 2, 3]\nmap pow [8, 9]\nmap truediv/floordiv/mod 3.5 -4 1\nneg/pos/abs/inv -3 -3 3 -6\nshifts xor 16 32 6\ncomparisons True True True False False True\nlogic True True True True\ncontains/countOf/indexOf True 2 2\ngetitem/setitem/delitem 1\nafter set/del [9, 3]\nindex 7 1\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/stdlib/operator_module.py\", line 69, in <module>\n    op.index(1.5)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/operator.py\", line 97, in index\n    return a.__index__()\nAttributeError: 'float' object has no attribute '__index__'\n"
-exit_code = 1
+reason = "native output differs from CPython"
+stdout = "itemgetter single b\nitemgetter multi ('a', 'c')\nitemgetter dict (2, 1)\nitemgetter slice [2, 3]\nsort by itemgetter [('ann', 25, 'sf'), ('bo', 30, 'nyc'), ('cy', 30, 'la')]\nmax by itemgetter ('bo', 30, 'nyc')\nitemgetter missing IndexError\nattrgetter ann\nattrgetter dotted la\nattrgetter multi ('cy', '10001')\nsort dotted ['cy', 'bo', 'ann']\nattrgetter missing AttributeError\nmethodcaller hi, ann!\nmethodcaller kw yo, bo?\nmethodcaller str ['A', 'B']\nmethodcaller split ['a', 'b,c']\nreduce add 15\nreduce mul 120\nreduce sub -13\nreduce or 15\nreduce and {3}\nreduce concat [1, 2, 3]\nmap pow [8, 9]\nmap truediv/floordiv/mod 3.5 -4 1\nneg/pos/abs/inv -3 -3 3 -6\nshifts xor 16 32 6\ncomparisons True True True False False True\nlogic True True True True\ncontains/countOf/indexOf True 2 2\ngetitem/setitem/delitem 1\nafter set/del [9, 3]\nindex 7 1\nindex float TypeError\nlength_hint 2 0 0 42\niadd mutates list [1, 2] True\niadd tuple new (1,) (1, 2)\nimul str xxx x\nmatmul matmul\ncall 9\ndot product 32\nis_none True True\n"
+stderr = ""
+exit_code = 0
 
 ["stdlib/re_module"]
 phase = "run"
@@ -441,9 +434,9 @@ exit_code = 1
 
 ["strings/bytearray_mutation"]
 phase = "run"
-reason = "TypeError: unsupported operand type(s) for *: 'bytearray' and 'int'"
-stdout = "ctor bytearray(b'hello') bytearray(b'\\x00\\x00\\x00') bytearray(b'\\x01\\x02') bytearray(b'\\xc3\\xa9') bytearray(b'')\nitem assign bytearray(b'Hello') 72\nnegative assign bytearray(b'HellO')\nbad byte 256 ValueError\nbad byte -1 ValueError\nassign bytes to index TypeError\nslice grow bytearray(b'HEYYlO')\nslice shrink bytearray(b'HlO')\nextended slice assign bytearray(b'_l_')\nextended slice size ValueError\ndel index bytearray(b'l_')\ndel extended bytearray(b'124578')\nappend via slice bytearray(b'124578!!')\nappend/extend/insert bytearray(b'@abcdef#g')\npop 103 64 bytearray(b'abcdef#')\nremove bytearray(b'abdef#')\nremove missing ValueError\nreverse bytearray(b'#fedba')\ncopy and clear bytearray(b'#fedba') bytearray(b'') 0\naliasing += bytearray(b'xyz') False\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/bytearray_mutation.py\", line 61, in <module>\n    alias *= 2\nTypeError: unsupported operand type(s) for *: 'bytearray' and 'int'\n"
+reason = "AttributeError: 'bytearray' object has no attribute 'upper'"
+stdout = "ctor bytearray(b'hello') bytearray(b'\\x00\\x00\\x00') bytearray(b'\\x01\\x02') bytearray(b'\\xc3\\xa9') bytearray(b'')\nitem assign bytearray(b'Hello') 72\nnegative assign bytearray(b'HellO')\nbad byte 256 ValueError\nbad byte -1 ValueError\nassign bytes to index TypeError\nslice grow bytearray(b'HEYYlO')\nslice shrink bytearray(b'HlO')\nextended slice assign bytearray(b'_l_')\nextended slice size ValueError\ndel index bytearray(b'l_')\ndel extended bytearray(b'124578')\nappend via slice bytearray(b'124578!!')\nappend/extend/insert bytearray(b'@abcdef#g')\npop 103 64 bytearray(b'abcdef#')\nremove bytearray(b'abdef#')\nremove missing ValueError\nreverse bytearray(b'#fedba')\ncopy and clear bytearray(b'#fedba') bytearray(b'') 0\naliasing += bytearray(b'xyz') False\naliasing *= bytearray(b'xyz')\n+ creates new bytearray(b'xyz!xyz!?') bytearray(b'xyz!xyz!')\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/bytearray_mutation.py\", line 67, in <module>\n    print(\"methods return bytearray\", ba.upper(), type(ba.upper()).__name__, ba.split(), ba.replace(b\"o\", b\"0\"))\nAttributeError: 'bytearray' object has no attribute 'upper'\n"
 exit_code = 1
 
 ["strings/bytes_basics"]
@@ -521,53 +514,4 @@ phase = "run"
 reason = "AttributeError: 'module' object has no attribute 'name'"
 stdout = "named escapes α ☃ é '\\u2014'\nu escapes Aé中 '\\u2603'\nU escapes 😀 '\\U0001f600' A\nx escapes Azé '\\x00\\x1f\\x7f'\noctal escapes Ab0 '\\x00' '\\x07' '\\xff' True\nsimple escapes '\\x07\\x08\\x0c\\n\\r\\t\\x0b\\\\\\'\"'\nline continuation abcdef\nnon-BMP len 3 1 3\nnon-BMP ord 128512 0x1f600 True\nnon-BMP iteration ['0x78', '0x1f44d', '0x1f3fd', '0x79']\ncombining 2 1 False 'e\\u0301' '\\xe9'\nnormalize True 2\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/unicode_escapes.py\", line 23, in <module>\n    print(\"unicodedata\", unicodedata.name(\"é\"), unicodedata.category(\"A\"), unicodedata.category(\"\\u0301\"), unicodedata.lookup(\"SNOWMAN\"))\nAttributeError: 'module' object has no attribute 'name'\n"
-exit_code = 1
-
-["weird/bool_is_int"]
-phase = "run"
-reason = "TypeError: got an unexpected keyword argument 'start'"
-stdout = "index with True/False one zero two\nslice with bools ['zero'] ['one', 'two']\ndict key collapse {True: 'float'}\nfirst key kept, last value wins {1: 'bool'}\nzero keys {0: 'd'}\nset collapse {True} {False}\nlen set mixed 4\nsum of comparisons 3\nTrue + True 2 3 0.5 0 1\nTrue ** False 1 1\nbitwise on bools stays bool False True False bool\nbitwise mixed becomes int 1 3 int\nneg -1 1 0 1\ntype of arithmetic int int\nisinstance True True False\nequality with int True True True\nhash equal True True\ncount 3 2\nindex 1 0\nin True True True\nstr/repr True False True 1     1 1 True\nformat numeric 1 1.00 0\nint() 1 0.0 (1+0j)\nmax/min True 1 False 0\nsorted mixed [0, False, True, 1, 2]\ndivmod (0, 1) (7, 0)\ndivide by False ZeroDivisionError\nrange with bools [1, 2, 3]\nstring mult ab |\nlist mult [0] []\nshift 16 8\nround 1 1 int\nbit_length 1 0 1 0 1\nint methods b'\\x01' 1\nbool of strings True False True\nbool() of numbers False False False True\ncomparisons True True True\ncounter of bools {True: 2, False: 2, 2: 1}\ndict get with int on bool key x y\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/weird/bool_is_int.py\", line 49, in <module>\n    print(\"enumerate start bool\", list(enumerate(\"ab\", start=True)))\nTypeError: got an unexpected keyword argument 'start'\n"
-exit_code = 1
-
-["weird/exceptions_during_protocols"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "hash raised for 2 hash 2\ndict after {BH1: 1, BH3: 3}\nset literal hash raised hash 2\nmembership hash raised hash 2\n  eq called 1\n  eq called 2\n  eq called 3\nin stopped at eq bomb\n  eq called 1\n  eq called 2\nidentity short-circuits eq True\n  eq called 1\n  eq called 2\n  eq called 3\nindex raised eq bomb\n  eq called 1\n  eq called 2\n  eq called 3\ncount raised eq bomb\nsort key raised key 5\nlist unchanged after failed key sort [3, 1, 5, 2, 4]\nsame elements preserved [0, 1, 3, 5, 9] 5\nunpack raised iter at 2 ('unset', 'unset', 'unset')\ntoo many values ValueError ('unset', 'unset')\nstar unpack raised iter at 4\ncomprehension filter raised cond 3 seen [1]\ndict comprehension raised ZeroDivisionError\nyield from propagation [1, 'caught inner fail', 'after']\nfirst a\n  inner2 finally\nthrow through yield from thrown in\nlist() with raising __len__: [1, 2]\nnegative len ValueError\n"
-stderr = ""
-exit_code = 0
-
-["weird/index_protocol_everywhere"]
-phase = "run"
-reason = "TypeError: unsupported operand type(s) for *: 'bytes' and 'Ix'"
-stdout = "  index(3)\nlist index 3\n  index(-1)\nnegative index 9\n  index(2)\n  index(2)\n  index(8)\nslice [2, 4, 6]\n  index(3)\n  index(1)\n  index(20)\nslice obj indices (1, 10, 3)\n  index(1)\n  index(10)\n  index(4)\nrange [1, 5, 9]\n  index(42)\nrange index 42\n  index(3)\nlist repeat [0, 0, 0]\n  index(2)\nstr repeat abab\n  index(left)\nreflected repeat [7, 7]\n  index(2)\ntuple repeat (1, 2, 1, 2)\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/weird/index_protocol_everywhere.py\", line 30, in <module>\n    print(\"bytes repeat\", b\"z\" * Ix(3))\nTypeError: unsupported operand type(s) for *: 'bytes' and 'Ix'\n"
-exit_code = 1
-
-["weird/self_referential_containers"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "simple [[...]] True\nrebinding before subscript [7, [...]] True [None, None]\nnested list [[...], [[...], 1]]\ndict self {'self': {...}, 'list': [{...}, {'inner': {...}}]}\ntuple via list ([(...)],)\nmixed [1, 2, {'k': [...], 't': ([...],)}]\ncustom repr cut by inner list Node(root, [Node(root, [...])])\nrecursive_repr Safe([<loop>, [<loop>]])\nself eq identity True\n"
-stderr = ""
-exit_code = -11
-
-["weird/special_method_lookup"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "explicit attribute synth anything(1, 2)\nexplicit dunder via __getattr__ synth __len__()\nlen raised TypeError\niter raised TypeError\nadd raised TypeError\nstr falls back to object.__str__ not __getattr__ True\nbool falls back to default truth True\nlen raised TypeError\niter raised TypeError\nadd raised TypeError\ncall raised TypeError\ngetitem raised TypeError\nstr ignores instance Plain()\neq ignores instance False True\nexplicit calls use instance 99 instance str instance add instance call\nclass-level len 7\nclass-level str class str\nclass-level with instance enter\ndeleted class len TypeError\nlen bypasses getattribute 3\n  getattribute size\nexplicit goes through it 4\nlen(class) uses metaclass 42 len(instance) uses class 1\nclass getitem via metaclass WithMeta[<class 'int'>] ['a', 'b']\n__class_getitem__ cgi <class 'str'> cgi (1, 2)\nstaticmethod len 5\nnon-function callable as __len__ gets no self binding 6\nunhashable despite instance __hash__ TypeError\n"
-stderr = ""
-exit_code = 0
-
-["weird/unpacking_targets"]
-phase = "run"
-reason = "RecursionError: maximum native recursion depth exceeded"
-stdout = "mixed targets NS(a=0) {'k': 1} [0, 2, 3, 4, 2, 3] 5\nstarred slice target V ['a', 'W', 'X', 'Y', 'e'] Z\nleft-to-right targets 2 [10, 20, 'changed']\nswap attrs 2 1\nswap items [3, 2, 1]\nindex uses new j 1 [1, 9]\nnested a ['b', 'c'] 1 2 [3, 4]\nstar empty [] 42\nstar between 1 [] 2\nfor targets NS(val=2) {'k': 'y'}\nfor into subscript [2, 0, 0]\nwith targets entered {'a': 1, 'rest': [2, 3]}\ncomprehension targets [(1, 2, [3, 4]), (5, 6, [])]\nmisc sources 0 1 4 z y one 1\nunpack error ValueError orig orig\nunpack error ValueError orig orig\nunpack error TypeError orig orig\nstarred too few ValueError\nconsume then assign [('yield', 0), ('yield', 1), ('yield', 2), ('set', 'a', 0), ('set', 'b', 1), ('set', 'c', 2)]\nstar from tuple is list [1, 2] list\nlist-pattern target only\nempty targets ok\nchained unpack x y xy x y\nsource mutated after evaluation "
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/weird/unpacking_targets.py\", line 133, in <module>\n    print(\"source mutated after evaluation\", list(src[\"b\"]), src[\"c\"])\nRecursionError: maximum native recursion depth exceeded\n"
-exit_code = 1
-
-["weird/walrus_nesting"]
-phase = "run"
-reason = "NameError: name 'k' is not defined"
-stdout = "running totals [0, 1, 3, 6, 10] total 10\nnested comp walrus [(2, 0), (2, 1)] last (2, 1)\nfunction local from comprehension ([0, 9, 36, 81], 81)\nlambda default ([5, 10], 7) seed leaked to module 7\nlambda comprehension ([3, 1, 4], 4)\nmodule m untouched False\nwhile walrus [3, 1] 0\nelif walrus [('long', 11), ('a-word', 'a'), ('other', 3)]\ngenexpr binding (False, 2)\nnonlocal through comprehension 3\nmethod comprehension walrus B\nin call 6 3\nin subscript 4 4\nin slice [2, 3, 4] 2 5\nfstring 11 then 10\nfirst odd witness 7\nfirst failing 7\nchained conditions [(2, 3), (3, 8)] 9\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/weird/walrus_nesting.py\", line 105, in <module>\n    dc = {(k := c): (k * 2) for c in \"xy\"}\nNameError: name 'k' is not defined\n"
 exit_code = 1

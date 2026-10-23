@@ -12,6 +12,7 @@ from _mule_native import byte_length
 from _mule_native import byte_copy
 from _mule_native import read_byte
 from _descriptors import staticmethod
+from _object import _index_integer
 from _slice import is_slice, positions
 from _unicode_data import (
     fold_full,
@@ -41,10 +42,7 @@ _HEX_DIGITS = "0123456789abcdef"
 
 
 def _index(value):
-    method = _index_method(value)
-    if method is not None:
-        value = method()
-    return _integer_storage(value)
+    return _index_integer(value)
 
 
 def _require_text(value, message):
@@ -282,6 +280,8 @@ def _fill_character(fillchar):
 def _repeat(text, count):
     """Concatenate ``count`` copies by doubling, so the work is linear in
     the result length."""
+    if count >= (1 << 63) or count < -(1 << 63):
+        raise OverflowError("cannot fit 'int' into an index-sized integer")
     if count <= 0 or _text_length(text) == 0:
         return ""
     pieces = []

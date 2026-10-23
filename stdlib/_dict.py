@@ -637,6 +637,19 @@ class _DictView:
             result.append(repr(item))
         return result
 
+    def _repr_view(self, prefix, suffix):
+        index = 0
+        while index < _storage_length(_repr_active_dicts):
+            if _storage_read(_repr_active_dicts, index) is self:
+                return "..."
+            index += 1
+        _storage_append(_repr_active_dicts, self)
+        try:
+            return _representation(prefix, self._entries(), suffix)
+        finally:
+            end = _storage_length(_repr_active_dicts)
+            _storage_delete(_repr_active_dicts, end - 1, end)
+
 
 class _SetView(_DictView):
     """Set behavior of key and item views; values views remain sequences."""
@@ -718,7 +731,7 @@ class dict_keys(_SetView):
         return key in self.mapping
 
     def __repr__(self):
-        return _representation("dict_keys([", self._entries(), "])")
+        return self._repr_view("dict_keys([", "])")
 
 
 class dict_values(_DictView):
@@ -726,7 +739,7 @@ class dict_values(_DictView):
         return _TableIterator(self.mapping, 2)
 
     def __repr__(self):
-        return _representation("dict_values([", self._entries(), "])")
+        return self._repr_view("dict_values([", "])")
 
 
 class dict_items(_SetView):
@@ -744,7 +757,7 @@ class dict_items(_SetView):
         return stored is value or stored == value
 
     def __repr__(self):
-        return _representation("dict_items([", self._entries(), "])")
+        return self._repr_view("dict_items([", "])")
 
 
 def _set_fill(self, iterable):
