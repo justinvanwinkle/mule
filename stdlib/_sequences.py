@@ -79,12 +79,26 @@ Enumerate = _binding_missing()
 class BaseException:
     # Set when a handler catches the exception; see mule/runtime/traceback.rs.
     __traceback__ = None
+    _args = ()
     _cause = None
     _context = None
     _suppress_context = False
 
+    def __new__(cls, *args, **kwargs):
+        instance = object.__new__(cls)
+        instance._args = args
+        return instance
+
     def __init__(self, *args):
-        self.args = args
+        self._args = args
+
+    @property
+    def args(self):
+        return self._args
+
+    @args.setter
+    def args(self, value):
+        self._args = tuple(value)
 
     @property
     def __cause__(self):
@@ -560,14 +574,11 @@ def exception_matches(value, expected):
     while index < count:
         item = _storage_read(expected, index)
         target = _class_identity(item)
-        if target is not None:
-            if not _class_is_subclass(target, BaseException):
-                raise TypeError(
-                    "catching classes that do not inherit from BaseException"
-                )
-            if raised is not None and _class_is_subclass(raised, target):
-                return True
-        elif exception_matches(value, item):
+        if target is None or not _class_is_subclass(target, BaseException):
+            raise TypeError(
+                "catching classes that do not inherit from BaseException is not allowed"
+            )
+        if raised is not None and _class_is_subclass(raised, target):
             return True
         index += 1
     return False
@@ -591,8 +602,24 @@ def raise_value(value):
         if active is instance:
             instance._explicit_raise = True
         elif instance.__context__ is None:
+            current = active
+            while current is not None:
+                nxt = current.__context__
+                if nxt is instance:
+                    current.__context__ = None
+                    break
+                current = nxt
             instance.__context__ = active
     return instance
+
+
+def _assertion_failure(*args):
+    instance = (
+        AssertionError()
+        if _storage_length(args) == 0
+        else AssertionError(_storage_read(args, 0))
+    )
+    return raise_value(instance)
 
 
 def exception_instance(value):

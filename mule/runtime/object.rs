@@ -2733,7 +2733,22 @@ pub unsafe extern "C" fn mule_namespace_bound(namespace: Value, name: *const c_c
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_assertion_failure(message: Value) -> i32 {
     unsafe {
-        if let Some(message) = formatted_value(message, false, false) {
+        let helper = lookup(crate::sequences::mule_protocol_globals(), "_assertion_failure");
+        if !helper.is_null() {
+            let instance = if message.is_null() {
+                call(helper, &[])
+            } else {
+                call(helper, &[message])
+            };
+            if !instance.is_null() {
+                crate::sequences::mule_raise_pending(instance);
+                release(instance);
+            }
+            return -1;
+        }
+        if message.is_null() {
+            error("AssertionError", "");
+        } else if let Some(message) = formatted_value(message, false, false) {
             error("AssertionError", &String::from_utf8_lossy(&message));
         }
         -1

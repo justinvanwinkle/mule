@@ -182,62 +182,6 @@ stdout = "chain C.m>B.m>A.m\nclassmethod chain C.make>B.make>A.make(C) C.make>B.
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 106, in <module>\n    print(\"super outside class\", outside())\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 101, in outside\n    super()\nTypeError: missing required argument 'type'\n"
 exit_code = 1
 
-["exceptions/args_and_str"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "args () | str '' | repr ValueError()\nargs ('one',) | str 'one' | repr ValueError('one')\nargs ('a', 'b') | str \"('a', 'b')\" | repr ValueError('a', 'b')\nargs (1, 2, 3) | str '(1, 2, 3)' | repr ValueError(1, 2, 3)\nargs (42,) | str '42' | repr ValueError(42)\nargs (None,) | str 'None' | repr ValueError(None)\nargs (('t', 1),) | str \"('t', 1)\" | repr ValueError(('t', 1))\nargs ('',) | str '' | repr ValueError('')\nargs ([1, 'x'],) | str \"[1, 'x']\" | repr ValueError([1, 'x'])\nargs ('nested', ('x',)) | str \"('nested', ('x',))\" | repr Exception('nested', ('x',))\nKeyError \"'k'\" KeyError('k')\nKeyError '5' KeyError(5)\nKeyError \"('a', 1)\" KeyError(('a', 1))\nKeyError \"''\" KeyError('')\nKeyError 'None' KeyError(None)\nKeyError no args ''\nKeyError two args \"('a', 'b')\"\nreassigned args ('changed', 2) ('changed', 2)\nlist coerced to tuple ['listy'] list listy\nemptied ''\nOSError errno 2 strerror No such file args (2, 'No such file')\nOSError str [Errno 2] No such file\nOSError one arg None ('just message',) just message\nOSError filename name.txt [Errno 2] No such file: 'name.txt' FileNotFoundError\nStopIteration value v ('v', 'w')\nStopIteration empty value None\nSystemExit codes None 3 m (1, 2)\nf-string fmt / ValueError('fmt') /    fmt|\nfmt and ValueError('fmt')\nequal instances False True\nunicode utf-8 b'ab\\xff' 2 3 invalid start byte\nunicode str 'utf-8' codec can't decode byte 0xff in position 2: invalid start byte\n"
-stderr = ""
-exit_code = 0
-
-["exceptions/assert_and_keyerror"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "message not evaluated when assert passes: []\nassert message: ('evaluated once',) calls ['evaluated once']\nno message args: ('',) ''\ntuple message is single arg: (\"('tuple', 'message')\",)\nnon-str message: ('42',) 42\nexception as message: str an exception object as message\nchecked 6\nchecked failed: n must be positive, got -1\nmessage raised: ZeroDivisionError\ncondition calls: 1 message saw 1\ncaught as Exception: AssertionError\nKeyError tuple key: ((1, 3),) str (1, 3) args[0] is key True\nKeyError tuple key: (('b',),) str ('b',) args[0] is key True\nKeyError tuple key: ((),) str () args[0] is key True\nKeyError tuple key: (('x', (1, 2)),) str ('x', (1, 2)) args[0] is key True\nKeyError str: 'plain'\nKeyError str: 'quote\"s'\nKeyError str: \"it's\"\nKeyError str: 3.5\nKeyError str: None\nKeyError str: b'by'\npop tuple key: ('p', 1)\ndel tuple key: (9, 9)\n__missing__ raised: ('custom', 'z') (('custom', 'z'),)\nset remove tuple: (1, 2)\n"
-stderr = ""
-exit_code = 0
-
-["exceptions/chaining"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "implicit | TypeError(b) cause=None context=ValueError suppress=False\nexplicit | TypeError(b) cause=ValueError('a') context=ValueError suppress=True\nfrom_none | TypeError(b) cause=None context=ValueError suppress=True\nfrom_unrelated | TypeError(b) cause=KeyError('k') context=None suppress=True\nfrom_class | TypeError(b) cause=KeyError() context=None suppress=True\nfrom None keeps context: ValueError('a')\nfresh None None False\nmanual cause suppress True KeyError('k')\nnon-exception cause -> TypeError\nchain: LookupError:level4[cause] <- RuntimeError:level3[context] <- ValueError:level2[cause] <- KeyError:level1[end]\ncallee context: ZeroDivisionError\nfinally after handled context: None\ncycle broken: TypeError A\ngenerator chain: RuntimeError:gen outer[cause] <- ValueError:gen inner[end]\n"
-stderr = ""
-exit_code = 0
-
-["exceptions/custom_hierarchies"]
-phase = "run"
-reason = "AttributeError: 'NoSuperInit' object has no attribute 'args'"
-stdout = "ConfigError port not an int config 'port': not an int ('port', 'not an int')\nKeyError branch MissingConfig config 'host': missing ('host', 'missing') host\nHttpError 500 http failure http failure HttpError(status=500)\nNotFound 404 /x not found: /x HttpError(status=404)\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/exceptions/custom_hierarchies.py\", line 62, in <module>\n    print(\"NoSuperInit\", e.total, e.args, repr(str(e)))\nAttributeError: 'NoSuperInit' object has no attribute 'args'\n"
-exit_code = 1
-
-["exceptions/except_clauses"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "ZeroDivisionError -> ZeroDivisionError clause\nKeyError -> tuple clause KeyError\nIndexError -> tuple clause IndexError\nTypeError -> pep758 clause\nAttributeError -> pep758 clause\nOverflowError -> ArithmeticError clause OverflowError\nValueError -> Exception clause\npep758 ValueError three-name list\npep758 KeyError three-name list\npep758 UnboundLocalError three-name list\npep758 RuntimeError fallback\nruntime tuple caught IndexError\nwrong: nested tuple caught ZeroDivisionError\nempty tuple matches nothing\nevaluated handler expressions ['first', 'second']\nmatched before bad clause\nbad except clause raises TypeError\nshadowed OSError first\n"
-stderr = ""
-exit_code = 0
-
-["exceptions/finally_overrides"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "swallow by return: finally return wins\noverride return: finally\noverride except return: finally\n  finally sees x = 99\nreturn value captured early: 1\nmutation in finally visible: [1, 2]\nbreak swallows: [0, 'after loop']\ncontinue swallows: [0, 1, 2]\nbreak overrides return: after break\ncontinue overrides return: loop finished 3\n  outer finally runs\nnested: inner finally\nfinally raise replaces return: from finally\nreplacement replacement context None\nSystemExit swallowed\ngen first 1\n  generator finally on close\ngen closed\nfinally runs: ['inner0', 'outer0', 'inner1', 'caught1', 'outer1', 'inner2', 'outer2']\n"
-stderr = ""
-exit_code = 0
-
-["exceptions/handler_scope_and_exc_info"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "inside handler: bound\nafter handler, name deleted: NameError\nfunction local: before\nsaved reference survives: KeyError('kept')\nrebind then implicit delete leaves v: False\nexc_info outside: (None, None, None)\nexception outside: None\nexc_info inside: TypeError t True\nsys.exception inside: TypeError('t')\nnested exc_info: KeyError\nrestored exc_info: TypeError\ncleared after: (None, None, None)\ncallee sees: IndexError('visible to callee')\nfinally without exception sees: None\nfinally during propagation sees: None\nno notes yet: False\nnotes: ['first note', 'second note']\nnon-str note -> TypeError\nnotes survive reraise: ['added in handler']\nafter replacing list: ['replaced', 'appended']\nhas traceback: True\nwith_traceback returns self: True tb now: None\nunraised traceback: None\nraised after with_traceback(None): True True\n"
-stderr = ""
-exit_code = 0
-
-["exceptions/try_else_finally_order"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "try=0 else=0 finally=0 handle=0: ['try', 'try end', 'else', 'else end', 'finally', 'finally end', 'after']\ntry=0 else=0 finally=0 handle=1: ['try', 'try end', 'else', 'else end', 'finally', 'finally end', 'after']\ntry=0 else=0 finally=1 handle=0: ['try', 'try end', 'else', 'else end', 'finally', 'outer RuntimeError']\ntry=0 else=0 finally=1 handle=1: ['try', 'try end', 'else', 'else end', 'finally', 'outer RuntimeError']\ntry=0 else=1 finally=0 handle=0: ['try', 'try end', 'else', 'finally', 'finally end', 'outer KeyError']\ntry=0 else=1 finally=0 handle=1: ['try', 'try end', 'else', 'finally', 'finally end', 'outer KeyError']\ntry=0 else=1 finally=1 handle=0: ['try', 'try end', 'else', 'finally', 'outer RuntimeError']\ntry=0 else=1 finally=1 handle=1: ['try', 'try end', 'else', 'finally', 'outer RuntimeError']\ntry=1 else=0 finally=0 handle=0: ['try', 'except from try', 'finally', 'finally end', 'outer ValueError']\ntry=1 else=0 finally=0 handle=1: ['try', 'except from try', 'finally', 'finally end', 'after']\ntry=1 else=0 finally=1 handle=0: ['try', 'except from try', 'finally', 'outer RuntimeError']\ntry=1 else=0 finally=1 handle=1: ['try', 'except from try', 'finally', 'outer RuntimeError']\ntry=1 else=1 finally=0 handle=0: ['try', 'except from try', 'finally', 'finally end', 'outer ValueError']\ntry=1 else=1 finally=0 handle=1: ['try', 'except from try', 'finally', 'finally end', 'after']\ntry=1 else=1 finally=1 handle=0: ['try', 'except from try', 'finally', 'outer RuntimeError']\ntry=1 else=1 finally=1 handle=1: ['try', 'except from try', 'finally', 'outer RuntimeError']\ntry/finally ok ['body', 'cleanup']\ntry/finally fail ['body', 'cleanup', 'propagated']\nelse coverage inner handler in else\nelse raise escapes to outer 'else-key'\nhandler raise ['handler', 'finally', 'outer got second ctx first']\nloop finally [0, 'f0', 'f1', 2, 'f2', 'f3']\n"
-stderr = ""
-exit_code = 0
-
 ["functions/annotations_deferred"]
 phase = "run"
 reason = "AttributeError: 'function' object has no attribute '__builtins__'"
@@ -590,13 +534,6 @@ exit_code = 1
 phase = "run"
 reason = "native output differs from CPython"
 stdout = "hash raised for 2 hash 2\ndict after {BH1: 1, BH3: 3}\nset literal hash raised hash 2\nmembership hash raised hash 2\n  eq called 1\n  eq called 2\n  eq called 3\nin stopped at eq bomb\n  eq called 1\n  eq called 2\nidentity short-circuits eq True\n  eq called 1\n  eq called 2\n  eq called 3\nindex raised eq bomb\n  eq called 1\n  eq called 2\n  eq called 3\ncount raised eq bomb\nsort key raised key 5\nlist unchanged after failed key sort [3, 1, 5, 2, 4]\nsame elements preserved [0, 1, 3, 5, 9] 5\nunpack raised iter at 2 ('unset', 'unset', 'unset')\ntoo many values ValueError ('unset', 'unset')\nstar unpack raised iter at 4\ncomprehension filter raised cond 3 seen [1]\ndict comprehension raised ZeroDivisionError\nyield from propagation [1, 'caught inner fail', 'after']\nfirst a\n  inner2 finally\nthrow through yield from thrown in\nlist() with raising __len__: [1, 2]\nnegative len ValueError\n"
-stderr = ""
-exit_code = 0
-
-["weird/finally_overrides"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "return swallows exception finally wins\nfinally return beats try return finally\nreturn value captured before finally before\nmutable return value mutated ['added in finally']\nbreak in finally swallows exception [0]\ncontinue in finally swallows [('ok', 0), ('ok', 2)]\ncontinue/break cancel return fell out of loop\nfinally raising replaces with context ['inner finally', ('caught', 'replacement', 'NoneType'), 'outer finally']\ngenerator finally return swallows [0, 1, 2, ('stop', 'early')]\nfirst body\nyield in finally during close RuntimeError\ngen next 0 1\nthrow swallowed by finally break after loop\nfinally order on return ['try0', 'inner0', 'outer0', 'try1', 'inner1', 'outer1']\nfinally beats except raise\nfinally bumps loop variable past condition ('else ran', 11)\npending exception visible in finally NoneType\n"
 stderr = ""
 exit_code = 0
 

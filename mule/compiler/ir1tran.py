@@ -2449,9 +2449,19 @@ class _Statements(ast.Visitor):
             ctran, message = function.value(failed.start, node.message)
         else:
             ctran, message = Ctran(), Lvar()
-            function.constant(failed.start, ctran, message, ast.TextLiteral(""))
+            function.constant(
+                failed.start, ctran, message, ast.NoneLiteral(None, span=node.span)
+            )
         following = Ctran()
-        function.known(ctran, following, None, fndb.ASSERTION_FAILURE, (message,), node)
+        function.known(
+            ctran,
+            following,
+            None,
+            fndb.ASSERTION_FAILURE,
+            (message,),
+            node,
+            data=node.message is not None,
+        )
         # The failure operation always branches to owned-reference cleanup.
         function.jump(following, passed)
 
@@ -2589,11 +2599,31 @@ class _Statements(ast.Visitor):
         exception = function.temporary()
         current = Ctran()
         function.set_var(ctran, current, exception, caught, node)
-        frontier = function.convert_body(current, node.finally_body)
-        if frontier is not None:
-            ctran, value = Ctran(), Lvar()
-            function.ref(frontier, ctran, value, exception, node, final=True)
-            self.terminal(ctran, fndb.RESUME_EXCEPTION, (value,), node)
+        ctran, raised = Ctran(), Lvar()
+        function.ref(current, ctran, raised, exception, node)
+        entered = Ctran()
+        function.known(ctran, entered, None, fndb.ENTER_HANDLER, (raised,), node)
+        unwind, reraise = function.block(), function.block()
+        active = Cleanup(
+            CleanupKind.HANDLER_BODY,
+            target=unwind,
+            parent=outer,
+            loops=function.lexenv.loops,
+        )
+        with function.with_cleanup(active):
+            finally_block = function.block()
+            function.jump(entered, finally_block)
+            current = linked(finally_block.start, finally_block, "start")
+            active.mess_up = current.next
+            frontier = function.convert_body(current, node.finally_body)
+            if frontier is not None:
+                function.jump(frontier, reraise)
+        ctran, value = Ctran(), Lvar()
+        function.ref(reraise.start, ctran, value, exception, node, final=True)
+        self.terminal(ctran, fndb.RESUME_EXCEPTION, (value,), node)
+        ctran = Ctran()
+        function.known(unwind.start, ctran, None, fndb.LEAVE_HANDLER, (), node)
+        self.terminal(ctran, fndb.UNWIND, (), node)
         function.flow(linked(done.start, done, "start"), next_)
 
     def try_except_star(self, start, next_, node):
@@ -2784,19 +2814,42 @@ class _Statements(ast.Visitor):
             if handler.exception is None:
                 function.jump(current, body)
             else:
-                ctran, expected = function.value(current, handler.exception)
-                following, raised = Ctran(), Lvar()
-                function.ref(ctran, following, raised, exception, handler)
-                ctran, matches = Ctran(), Lvar()
-                function.protocol(
-                    following,
-                    ctran,
-                    matches,
-                    "exception_matches",
-                    (raised, expected),
-                    handler,
+                ctran, raised = Ctran(), Lvar()
+                function.ref(current, ctran, raised, exception, handler)
+                entered = Ctran()
+                function.known(
+                    ctran, entered, None, fndb.ENTER_HANDLER, (raised,), handler
                 )
-                function.if_node(ctran, matches, body, unmatched, handler)
+                match_unwind = function.block()
+                match_active = Cleanup(
+                    CleanupKind.HANDLER_BODY,
+                    target=match_unwind,
+                    parent=outer,
+                    loops=function.lexenv.loops,
+                )
+                with function.with_cleanup(match_active):
+                    check_block = function.block()
+                    function.jump(entered, check_block)
+                    check_start = linked(check_block.start, check_block, "start")
+                    match_active.mess_up = check_start.next
+                    ctran, expected = function.value(check_start, handler.exception)
+                    following, raised = Ctran(), Lvar()
+                    function.ref(ctran, following, raised, exception, handler)
+                    ctran, matches = Ctran(), Lvar()
+                    function.protocol(
+                        following,
+                        ctran,
+                        matches,
+                        "exception_matches",
+                        (raised, expected),
+                        handler,
+                    )
+                    function.if_node(ctran, matches, body, unmatched, handler)
+                ctran = Ctran()
+                function.known(
+                    match_unwind.start, ctran, None, fndb.LEAVE_HANDLER, (), handler
+                )
+                self.terminal(ctran, fndb.UNWIND, (), handler)
             ctran, raised = Ctran(), Lvar()
             function.ref(body.start, ctran, raised, exception, handler)
             entered = Ctran()

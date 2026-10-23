@@ -2351,6 +2351,12 @@ def leave_handler(gen, vop):
 
 @define_vop("assertion-failure", translate=fndb.ASSERTION_FAILURE, args=(OBJECT,))
 def assertion_failure(gen, vop):
+    if vop.codegen_info is False:
+        unused = gen.take(vop.args[0])
+        gen.release(unused)
+        status = gen.operation("call i32 @mule_assertion_failure(ptr null)")
+        gen.check_status(status)
+        return
     message = gen.take(vop.args[0])
     status = gen.operation(f"call i32 @mule_assertion_failure(ptr {message})")
     gen.release(message)
