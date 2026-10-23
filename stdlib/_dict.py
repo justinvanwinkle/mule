@@ -329,18 +329,24 @@ class _TableIterator:
         self.kind = kind
         self.index = 0
         self.used = table._used
+        self.keys = table._keys
+        self.entries = _storage_length(table._keys)
 
     def __iter__(self):
         return self
 
     def __next__(self):
         table = self.table
-        if table._used != self.used:
+        keys = table._keys
+        if (
+            table._used != self.used
+            or keys is not self.keys
+            or _storage_length(keys) != self.entries
+        ):
             self.used = -1
             raise RuntimeError(
                 ("dictionary" if self.kind else "set") + " changed size during iteration"
             )
-        keys = table._keys
         while self.index < _storage_length(keys):
             index = self.index
             self.index = index + 1
@@ -382,6 +388,9 @@ def _dict_update_other(self, other):
         _table_insert(self, key, value)
 
 
+_repr_active_dicts = []
+
+
 class dict(_Table):
     def __new__(cls, /, *args, **kwargs):
         if not is_class(cls) or not is_subclass(cls, dict):
@@ -393,7 +402,12 @@ class dict(_Table):
 
     """Mapping with insertion-ordered keys."""
 
+    def __len__(self):
+        _require_dict(self)
+        return self._used
+
     def __init__(self, /, *args, **kwargs):
+        _require_dict(self)
         count = _storage_length(args)
         if count > 1:
             raise TypeError(f"dict expected at most 1 argument, got {count}")
@@ -428,6 +442,7 @@ class dict(_Table):
         return result
 
     def __getitem__(self, key):
+        _require_dict(self)
         entry = _table_lookup(self, key)
         if entry >= 0:
             return _storage_read(self._values, entry)
@@ -441,19 +456,24 @@ class dict(_Table):
         raise KeyError(key)
 
     def __setitem__(self, key, value):
+        _require_dict(self)
         _table_insert(self, key, value)
 
     def __delitem__(self, key):
+        _require_dict(self)
         if _table_remove(self, key) is _MISSING:
             raise KeyError(key)
 
     def __contains__(self, key):
+        _require_dict(self)
         return _table_lookup(self, key) >= 0
 
     def __iter__(self):
+        _require_dict(self)
         return _TableIterator(self, 1)
 
     def __reversed__(self):
+        _require_dict(self)
         keys = []
         positions = _table_live(self)
         index = _storage_length(positions)
@@ -463,6 +483,7 @@ class dict(_Table):
         return iter(keys)
 
     def __eq__(self, other):
+        _require_dict(self)
         if not _is_dict(other):
             return False
         if self._used != other._used:
@@ -477,20 +498,33 @@ class dict(_Table):
         return True
 
     def __ne__(self, other):
+        _require_dict(self)
         return not self.__eq__(other)
 
     def __repr__(self):
-        items = []
-        for index in _table_live(self):
-            _storage_append(
-                items,
-                repr(_storage_read(self._keys, index))
-                + ": "
-                + repr(_storage_read(self._values, index)),
-            )
-        return _representation("{", items, "}")
+        _require_dict(self)
+        index = 0
+        while index < _storage_length(_repr_active_dicts):
+            if _storage_read(_repr_active_dicts, index) is self:
+                return "{...}"
+            index += 1
+        _storage_append(_repr_active_dicts, self)
+        try:
+            items = []
+            for index in _table_live(self):
+                _storage_append(
+                    items,
+                    repr(_storage_read(self._keys, index))
+                    + ": "
+                    + repr(_storage_read(self._values, index)),
+                )
+            return _representation("{", items, "}")
+        finally:
+            end = _storage_length(_repr_active_dicts)
+            _storage_delete(_repr_active_dicts, end - 1, end)
 
     def __or__(self, other):
+        _require_dict(self)
         if not _is_dict(other):
             raise TypeError("unsupported operand type(s) for |")
         result = self.copy()
@@ -498,14 +532,17 @@ class dict(_Table):
         return result
 
     def __ior__(self, other):
+        _require_dict(self)
         _dict_update_other(self, other)
         return self
 
     def get(self, key, default=None):
+        _require_dict(self)
         entry = _table_lookup(self, key)
         return _storage_read(self._values, entry) if entry >= 0 else default
 
     def setdefault(self, key, default=None):
+        _require_dict(self)
         entry = _table_lookup(self, key)
         if entry >= 0:
             return _storage_read(self._values, entry)
@@ -513,6 +550,7 @@ class dict(_Table):
         return default
 
     def pop(self, key, default=_MISSING):
+        _require_dict(self)
         value = _table_remove(self, key)
         if value is _MISSING:
             if default is _MISSING:
@@ -521,6 +559,7 @@ class dict(_Table):
         return value
 
     def popitem(self):
+        _require_dict(self)
         positions = _table_live(self)
         if not positions:
             raise KeyError("popitem(): dictionary is empty")
@@ -530,12 +569,15 @@ class dict(_Table):
         return (key, value)
 
     def keys(self):
+        _require_dict(self)
         return dict_keys(self)
 
     def values(self):
+        _require_dict(self)
         return dict_values(self)
 
     def items(self):
+        _require_dict(self)
         return dict_items(self)
 
     def _update_table(self, other):
@@ -545,6 +587,7 @@ class dict(_Table):
         _dict_update_other(self, other)
 
     def update(self, /, *args, **kwargs):
+        _require_dict(self)
         if len(args) > 1:
             raise TypeError(f"update expected at most 1 argument, got {len(args)}")
         if args:
@@ -553,9 +596,11 @@ class dict(_Table):
             _dict_update_table(self, kwargs)
 
     def clear(self):
+        _require_dict(self)
         _table_clear(self)
 
     def copy(self):
+        _require_dict(self)
         result = _empty_dict()
         _dict_update_table(result, self)
         return result
@@ -568,6 +613,15 @@ def _is_dict(value):
             return True
         owner = _class_parent(owner)
     return False
+
+
+def _require_dict(value):
+    if not _is_dict(value):
+        raise TypeError(
+            "descriptor requires a 'dict' object but received a '"
+            + _type_name(value)
+            + "'"
+        )
 
 
 class _DictView:
@@ -595,6 +649,11 @@ class _SetView(_DictView):
 
     def __and__(self, other):
         result = set()
+        if self._comparable(other) and len(self) <= len(other):
+            for item in self:
+                if item in other:
+                    result.add(item)
+            return result
         for item in other:
             if item in self:
                 result.add(item)
@@ -694,6 +753,24 @@ def _set_fill(self, iterable):
         _table_insert(self, item, None)
 
 
+def _set_lookup(self, key):
+    try:
+        return _table_lookup(self, key)
+    except TypeError:
+        if _is_mutable_set(key):
+            return _table_lookup(self, frozenset(key))
+        raise
+
+
+def _set_remove(self, key):
+    try:
+        return _table_remove(self, key)
+    except TypeError:
+        if _is_mutable_set(key):
+            return _table_remove(self, frozenset(key))
+        raise
+
+
 class _SetBase(_Table):
     """Operations shared by set and frozenset."""
 
@@ -704,12 +781,15 @@ class _SetBase(_Table):
         return class_of(self)()
 
     def __contains__(self, item):
-        return _table_lookup(self, item) >= 0
+        _require_any_set(self)
+        return _set_lookup(self, item) >= 0
 
     def __iter__(self):
+        _require_any_set(self)
         return _TableIterator(self, 0)
 
     def __repr__(self):
+        _require_any_set(self)
         name = _type_name(self)
         if not self._used:
             return name + "()"
@@ -721,75 +801,89 @@ class _SetBase(_Table):
         return _representation(name + "({", items, "})")
 
     def __eq__(self, other):
+        _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
         return self._used == other._used and self.issubset(other)
 
     def __ne__(self, other):
+        _require_any_set(self)
         result = self.__eq__(other)
         return NotImplemented if result is NotImplemented else not result
 
     def __le__(self, other):
+        _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
         return self.issubset(other)
 
     def __lt__(self, other):
+        _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
         return self._used < other._used and self.issubset(other)
 
     def __ge__(self, other):
+        _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
         return self.issuperset(other)
 
     def __gt__(self, other):
+        _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
         return self._used > other._used and self.issuperset(other)
 
     def __or__(self, other):
+        _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
         return self.union(other)
 
     def __and__(self, other):
+        _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
         return self.intersection(other)
 
     def __sub__(self, other):
+        _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
         return self.difference(other)
 
     def __xor__(self, other):
+        _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
         return self.symmetric_difference(other)
 
     def issubset(self, other):
+        _require_any_set(self)
         if not _is_set(other):
             other = set(other)
         for index in _table_live(self):
-            if _table_lookup(other, self._keys[index]) < 0:
+            if _set_lookup(other, self._keys[index]) < 0:
                 return False
         return True
 
     def issuperset(self, other):
+        _require_any_set(self)
         for item in other:
-            if _table_lookup(self, item) < 0:
+            if _set_lookup(self, item) < 0:
                 return False
         return True
 
     def isdisjoint(self, other):
+        _require_any_set(self)
         for item in other:
-            if _table_lookup(self, item) >= 0:
+            if _set_lookup(self, item) >= 0:
                 return False
         return True
 
     def union(self, *others):
+        _require_any_set(self)
         result = self._same_kind()
         for index in _table_live(self):
             _table_insert(result, self._keys[index], None)
@@ -799,6 +893,7 @@ class _SetBase(_Table):
         return result
 
     def intersection(self, *others):
+        _require_any_set(self)
         result = self._same_kind()
         for index in _table_live(self):
             key = self._keys[index]
@@ -812,6 +907,7 @@ class _SetBase(_Table):
         return result
 
     def difference(self, *others):
+        _require_any_set(self)
         result = self._same_kind()
         for index in _table_live(self):
             key = self._keys[index]
@@ -825,21 +921,59 @@ class _SetBase(_Table):
         return result
 
     def symmetric_difference(self, other):
+        _require_any_set(self)
         if not _is_set(other):
             other = set(other)
         result = self._same_kind()
         for index in _table_live(self):
             key = self._keys[index]
-            if _table_lookup(other, key) < 0:
+            if _set_lookup(other, key) < 0:
                 _table_insert(result, key, None)
         for index in _table_live(other):
             key = other._keys[index]
-            if _table_lookup(self, key) < 0:
+            if _set_lookup(self, key) < 0:
                 _table_insert(result, key, None)
         return result
 
     def copy(self):
+        _require_any_set(self)
         return self.union()
+
+
+def _is_mutable_set(value):
+    owner = _type_of(value)
+    while owner is not None:
+        if owner is set:
+            return True
+        owner = _class_parent(owner)
+    return False
+
+
+def _require_mutable_set(value):
+    if not _is_mutable_set(value):
+        raise TypeError(
+            "descriptor requires a 'set' object but received a '"
+            + _type_name(value)
+            + "'"
+        )
+
+
+def _is_frozenset(value):
+    owner = _type_of(value)
+    while owner is not None:
+        if owner is frozenset:
+            return True
+        owner = _class_parent(owner)
+    return False
+
+
+def _require_frozenset(value):
+    if not _is_frozenset(value):
+        raise TypeError(
+            "descriptor requires a 'frozenset' object but received a '"
+            + _type_name(value)
+            + "'"
+        )
 
 
 def _is_set(value):
@@ -851,6 +985,15 @@ def _is_set(value):
     return False
 
 
+def _require_any_set(value):
+    if not _is_set(value):
+        raise TypeError(
+            "descriptor requires a 'set' or 'frozenset' object but received a '"
+            + _type_name(value)
+            + "'"
+        )
+
+
 def _require_set(value):
     if not _is_set(value):
         raise TypeError("unsupported operand type for set operation")
@@ -859,42 +1002,55 @@ def _require_set(value):
 class set(_SetBase):
     """Mutable collection of distinct hashable items."""
 
+    def __len__(self):
+        _require_mutable_set(self)
+        return self._used
+
     def __init__(self, *args):
+        _require_mutable_set(self)
         if len(args) > 1:
             raise TypeError(f"set expected at most 1 argument, got {len(args)}")
         _set_fill(self, args[0] if args else ())
 
     def __ior__(self, other):
+        _require_mutable_set(self)
         _require_set(other)
         self.update(other)
         return self
 
     def __iand__(self, other):
+        _require_mutable_set(self)
         _require_set(other)
         self.intersection_update(other)
         return self
 
     def __isub__(self, other):
+        _require_mutable_set(self)
         _require_set(other)
         self.difference_update(other)
         return self
 
     def __ixor__(self, other):
+        _require_mutable_set(self)
         _require_set(other)
         self.symmetric_difference_update(other)
         return self
 
     def add(self, item):
+        _require_mutable_set(self)
         _table_insert(self, item, None)
 
     def discard(self, item):
-        _table_remove(self, item)
+        _require_mutable_set(self)
+        _set_remove(self, item)
 
     def remove(self, item):
-        if _table_remove(self, item) is _MISSING:
+        _require_mutable_set(self)
+        if _set_remove(self, item) is _MISSING:
             raise KeyError(item)
 
     def pop(self):
+        _require_mutable_set(self)
         positions = _table_live(self)
         if not positions:
             raise KeyError("pop from an empty set")
@@ -903,25 +1059,30 @@ class set(_SetBase):
         return key
 
     def clear(self):
+        _require_mutable_set(self)
         _table_clear(self)
 
     def update(self, *others):
+        _require_mutable_set(self)
         for other in others:
             for item in other:
                 _table_insert(self, item, None)
 
     def intersection_update(self, *others):
+        _require_mutable_set(self)
         kept = self
         for other in others:
             kept = kept.intersection(other)
         _set_fill(self, kept)
 
     def difference_update(self, *others):
+        _require_mutable_set(self)
         for other in others:
             for item in other:
-                _table_remove(self, item)
+                _set_remove(self, item)
 
     def symmetric_difference_update(self, other):
+        _require_mutable_set(self)
         kept = self.symmetric_difference(other)
         _set_fill(self, kept)
 
@@ -929,12 +1090,24 @@ class set(_SetBase):
 class frozenset(_SetBase):
     """Immutable, hashable collection of distinct hashable items."""
 
+    def __len__(self):
+        _require_frozenset(self)
+        return self._used
+
     def __init__(self, *args):
+        _require_frozenset(self)
         if len(args) > 1:
             raise TypeError(f"frozenset expected at most 1 argument, got {len(args)}")
         _set_fill(self, args[0] if args else ())
 
+    def copy(self):
+        _require_frozenset(self)
+        if class_of(self) is frozenset:
+            return self
+        return self.union()
+
     def __hash__(self):
+        _require_frozenset(self)
         # CPython's frozenset hash: an order-independent mix of element hashes.
         accumulator = 0
         for index in _table_live(self):

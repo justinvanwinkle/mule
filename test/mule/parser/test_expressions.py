@@ -1302,6 +1302,25 @@ def test_named_expression_separates_target_from_complete_rhs(parse):
     assert expect(expression.value, Boolean).operator is BooleanOperator.OR
 
 
+def test_named_expression_in_list_and_set_displays_and_comprehensions(parse):
+    list_display = one(parse("[a := 1, b := 2]", mode="eval"), q.List)
+    assert [expect(el, NamedExpression).target.identifier for el in list_display.elements] == [
+        "a",
+        "b",
+    ]
+    list_comp = one(parse("[total := total + n for n in items]", mode="eval"), q.Comprehension)
+    assert expect(list_comp.element, NamedExpression).target.identifier == "total"
+    set_display = one(parse("{a := 1, b := 2}", mode="eval"), q.Set)
+    assert [expect(el, NamedExpression).target.identifier for el in set_display.elements] == [
+        "a",
+        "b",
+    ]
+    set_comp = one(parse("{total := total + n for n in items}", mode="eval"), q.Comprehension)
+    assert expect(set_comp.element, NamedExpression).target.identifier == "total"
+    dict_comp = one(parse("{(k := n): n for n in items}", mode="eval"), q.Comprehension)
+    assert expect(dict_comp.key, NamedExpression).target.identifier == "k"
+
+
 def test_call_preserves_source_order_across_argument_kinds(parse):
     call = one(parse("f(key=b, *items, **options)", mode="eval"), q.Call)
     assert [argument.kind for argument in call.arguments] == [

@@ -38,6 +38,7 @@ from _dict import build_dict as _build_dict
 from _dict import build_set as _build_set
 from _dict import _MISSING as _DICT_MISSING
 from _dict import (
+    _set_lookup,
     _table_insert,
     _table_lookup,
     _table_remove,
@@ -755,18 +756,38 @@ def all(iterable, /):
 
 
 def sum(iterable, /, start=0):
-    if _text_storage(start):
+    if is_instance(start, str):
         raise TypeError("sum() can't sum strings [use ''.join(seq) instead]")
+    if is_instance(start, bytes):
+        raise TypeError("sum() can't sum bytes [use b''.join(seq) instead]")
+    if is_instance(start, bytearray):
+        raise TypeError("sum() can't sum bytearray [use b''.join(seq) instead]")
     total = start
-    if _type_of(iterable) is list or _type_of(iterable) is tuple:
-        index = 0
-        length = _storage_length(iterable)
-        while index < length:
-            total = total + _storage_read(iterable, index)
-            index += 1
-        return total
+    comp = 0.0
+    in_float = _type_of(total) is float
     for item in iterable:
-        total = total + item
+        if not in_float and (_type_of(total) is int or _type_of(total) is bool) and _type_of(item) is float:
+            total = total + item
+            in_float = True
+        elif in_float and (_type_of(item) is float or _type_of(item) is int or _type_of(item) is bool):
+            val = float(item)
+            t = total + val
+            if t - t == 0.0:
+                a_total = -total if total < 0.0 else total
+                a_val = -val if val < 0.0 else val
+                if a_total >= a_val:
+                    comp += (total - t) + val
+                else:
+                    comp += (val - t) + total
+            total = t
+        else:
+            if in_float and comp != 0.0:
+                total = total + comp
+                comp = 0.0
+            total = total + item
+            in_float = _type_of(total) is float
+    if in_float and comp != 0.0:
+        return total + comp
     return total
 
 
@@ -856,11 +877,13 @@ def reversed(sequence, /):
 def pow(base, exp, mod=None):
     if mod is None:
         return base**exp
-    method = getattr(type(base), "__pow__", None)
-    if method is not None:
-        result = method(base, exp, mod)
-        if result is not NotImplemented:
-            return result
+    base_cls = type(base)
+    if base_cls is not int and base_cls is not bool:
+        method = getattr(base_cls, "__pow__", None)
+        if method is not None and method is not getattr(int, "__pow__", None):
+            result = method(base, exp, mod)
+            if result is not NotImplemented:
+                return result
     if not (_integer_kind(base) and _integer_kind(exp) and _integer_kind(mod)):
         raise TypeError(
             "pow() 3rd argument not allowed unless all arguments are integers"
@@ -868,7 +891,19 @@ def pow(base, exp, mod=None):
     if mod == 0:
         raise ValueError("pow() 3rd argument cannot be 0")
     if exp < 0:
-        raise ValueError("base is not invertible for the given modulus")
+        m = -mod if mod < 0 else mod
+        if m == 1:
+            return 0
+        x0, x1 = 1, 0
+        a, b = base % m, m
+        while b:
+            q = a // b
+            a, b = b, a - q * b
+            x0, x1 = x1, x0 - q * x1
+        if a != 1:
+            raise ValueError("base is not invertible for the given modulus")
+        base = x0 % mod
+        exp = -exp
     result = 1 % mod
     base %= mod
     while exp:
@@ -1627,21 +1662,26 @@ class ListStorage(_OrderedSequence):
 
     def sort(self, *, key=None, reverse=False):
         items = self.copy()
-        if reverse:
-            _reverse_in_place(items)
-        keys = items
-        if key is not None:
-            keys = []
-            index = 0
-            length = _storage_length(items)
-            while index < length:
-                _storage_append(keys, key(_storage_read(items, index)))
-                index += 1
-        items = _merge_sort(items, keys)
-        if reverse:
-            _reverse_in_place(items)
         _storage_delete(self, 0, _storage_length(self))
-        self.extend(items)
+        try:
+            if reverse:
+                _reverse_in_place(items)
+            keys = items
+            if key is not None:
+                keys = []
+                index = 0
+                length = _storage_length(items)
+                while index < length:
+                    _storage_append(keys, key(_storage_read(items, index)))
+                    index += 1
+            items = _merge_sort(items, keys)
+            if reverse:
+                _reverse_in_place(items)
+            if _storage_length(self) != 0:
+                raise ValueError("list modified during sort")
+        finally:
+            _storage_delete(self, 0, _storage_length(self))
+            self.extend(items)
 
 
 class TupleStorage(_OrderedSequence):
@@ -2500,8 +2540,10 @@ def _iteration_error(value, membership):
 
 def contains(container, item):
     owner = _type_of(container)
-    if owner is dict or owner is set or owner is frozenset:
+    if owner is dict:
         return _table_lookup(container, item) >= 0
+    if owner is set or owner is frozenset:
+        return _set_lookup(container, item) >= 0
     if owner is str:
         return TextStorage.__contains__(container, item)
     if owner is list or owner is tuple:

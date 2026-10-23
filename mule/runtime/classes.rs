@@ -1666,6 +1666,16 @@ unsafe fn create_class_with(
             let Data::Class(layout) = &(**candidate).data else {
                 unreachable!();
             };
+            if !candidate.is_null()
+                && (*candidate == builtin_type(Builtin::Bool)
+                    || *candidate == builtin_type(Builtin::NoneType))
+            {
+                object::error(
+                    "TypeError",
+                    &format!("type '{}' is not an acceptable base type", layout.name),
+                );
+                return std::ptr::null_mut();
+            }
             if layout.native.is_some() {
                 // This bootstrap allocator only builds reference-slot layouts;
                 // it cannot inherit a compiler-defined raw-payload allocation.

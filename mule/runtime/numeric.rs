@@ -324,7 +324,18 @@ unsafe fn float_binary(op: i32, lhs: Value, rhs: Value) -> Value {
                 );
             }
             if left < 0.0 && left.is_finite() && right.is_finite() && right != right.floor() {
-                return fail("ValueError", "complex power results are not supported");
+                let vabs = (-left).powf(right);
+                if vabs.is_infinite() {
+                    return fail("OverflowError", "numerical result out of range");
+                }
+                let phase = std::f64::consts::PI * right;
+                let complex_cls = unsafe { crate::builtins::lookup_builtin("complex") };
+                if complex_cls.is_null() {
+                    return fail("ValueError", "complex power results are not supported");
+                }
+                let real = unsafe { mule_literal_float(vabs * phase.cos()) };
+                let imag = unsafe { mule_literal_float(vabs * phase.sin()) };
+                return unsafe { object::call_owned(complex_cls, &[real, imag]) };
             }
             let result = left.powf(right);
             if result.is_infinite() && left.is_finite() && right.is_finite() {

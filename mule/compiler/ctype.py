@@ -4108,6 +4108,10 @@ def _join_python_integer(left, right):
 def _float_binary(operator, left, right):
     if left.may_be_unbound or right.may_be_unbound:
         return UNKNOWN
+    if operator == ast.BinaryOperator.POWER:
+        if left.maximum is not None and left.maximum < 0 and right.exact_integer() is None:
+            return UNKNOWN
+        return FLOAT
     if operator in {
         ast.BinaryOperator.ADD,
         ast.BinaryOperator.SUBTRACT,
@@ -4115,7 +4119,6 @@ def _float_binary(operator, left, right):
         ast.BinaryOperator.DIVIDE,
         ast.BinaryOperator.FLOOR_DIVIDE,
         ast.BinaryOperator.MODULO,
-        ast.BinaryOperator.POWER,
     }:
         return FLOAT
     return UNKNOWN
