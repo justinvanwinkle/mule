@@ -1646,13 +1646,21 @@ pub unsafe fn truth(value: Value) -> Option<bool> {
         Some(match &(*value).data {
             Data::None => false,
             Data::Bool(value) => *value,
-            Data::BigInt(integer, ..) => integer.sign() != 0,
-            Data::Float(value, ..) => *value != 0.0,
-            Data::Text(value, ..) => !value.is_empty(),
-            Data::Bytes(value, ..) => !value.is_empty(),
-            Data::Args(value, ..) | Data::List(value, ..) => !value.is_empty(),
+            Data::BigInt(integer, ty, ..) if ty.is_null() => integer.sign() != 0,
+            Data::Float(value, ty, ..) if ty.is_null() => *value != 0.0,
+            Data::Text(value, ty, ..) if ty.is_null() => !value.is_empty(),
+            Data::Bytes(value, ty, ..) if ty.is_null() => !value.is_empty(),
+            Data::Args(value, ty, ..) | Data::List(value, ty, ..) if ty.is_null() => !value.is_empty(),
             Data::Namespace(bindings) => !bindings.is_empty(),
-            Data::Instance { .. } | Data::NativeInstance { .. } => {
+            Data::Instance { .. }
+            | Data::NativeInstance { .. }
+            | Data::Class(_)
+            | Data::BigInt(..)
+            | Data::Float(..)
+            | Data::Text(..)
+            | Data::Bytes(..)
+            | Data::Args(..)
+            | Data::List(..) => {
                 let result = special(value, "__bool__", &[]);
                 if result.is_null() {
                     if has_error() {

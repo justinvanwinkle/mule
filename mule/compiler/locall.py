@@ -506,9 +506,9 @@ def global_bindings(
         return targets
     return {
         namespace: {
-            name: next(iter(origins))
+            name: origin
             for name, origins in bindings.items()
-            if len(origins) == 1
+            if len(origins) == 1 and (origin := next(iter(origins))) is not None
         }
         for namespace, bindings in definitions.items()
     }
@@ -551,6 +551,8 @@ class _GlobalFunctionStore(LeafVisitor):
         if self.counts is not None:
             self.counts[leaf.name] = self.counts.get(leaf.name, 0) + 1
         if self.store.value is None:
+            if self.definitions is not None:
+                self.definitions.setdefault(leaf.name, set()).add(None)
             return
         lambda_ = made_function(self.store.value.use())
         if lambda_ is not None:

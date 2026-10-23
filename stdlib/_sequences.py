@@ -1346,6 +1346,12 @@ class StorageIterator(SequenceIterator):
         return item
 
 
+SequenceIterator.__name__ = "iterator"
+SequenceIterator.__qualname__ = "iterator"
+StorageIterator.__name__ = "list_iterator"
+StorageIterator.__qualname__ = "list_iterator"
+
+
 def _selected(sequence, bounds):
     """The elements a slice selects, in order, as a new list."""
     start, stop, step, count = positions(bounds, _storage_length(sequence))
@@ -1689,7 +1695,7 @@ class TupleStorage(_OrderedSequence):
     __slots__ = ()
 
     def __len__(self):
-        if not _tuple_storage(self):
+        if not is_instance(self, tuple):
             raise TypeError(
                 "descriptor '__len__' requires a 'tuple' object but received a '"
                 + _type_name(self)
@@ -2679,6 +2685,10 @@ class RangeIterator:
             raise StopIteration
         self.current = current + self.step
         return current
+
+
+RangeIterator.__name__ = "range_iterator"
+RangeIterator.__qualname__ = "range_iterator"
 
 
 class range:

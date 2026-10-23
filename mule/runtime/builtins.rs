@@ -115,11 +115,17 @@ pub unsafe extern "C" fn mule_fast_len(value: Value) -> Value {
             return fail("TypeError", "object has no len");
         }
         let length = match &(*value).data {
-            Data::Bytes(value, ..) => value.len(),
-            Data::Text(value, ..) => value.len(),
-            Data::Args(value, ..) | Data::List(value, ..) => value.len(),
+            Data::Bytes(value, ty, ..) if ty.is_null() => value.len(),
+            Data::Text(value, ty, ..) if ty.is_null() => value.len(),
+            Data::Args(value, ty, ..) | Data::List(value, ty, ..) if ty.is_null() => value.len(),
             Data::Namespace(value) => value.len(),
-            Data::Instance { .. } | Data::NativeInstance { .. } => {
+            Data::Instance { .. }
+            | Data::NativeInstance { .. }
+            | Data::Class(_)
+            | Data::Bytes(..)
+            | Data::Text(..)
+            | Data::Args(..)
+            | Data::List(..) => {
                 let result = object::special(value, "__len__", &[]);
                 if result.is_null() {
                     if !object::has_error() {
