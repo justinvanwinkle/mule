@@ -413,6 +413,31 @@ def test_trend_scale_uses_recent_quarter_capped_at_ten_runs(run_count, window):
         assert "100000 ms" in " ".join(panel.itertext())
 
 
+@pytest.mark.parametrize("run_count", [30, 100])
+def test_trend_long_above_scale_history_keeps_panel_compact_and_timings_available(
+    run_count,
+):
+    from perf.suite.perfutils import history
+
+    runs = []
+    for index in range(run_count):
+        source = report((0.010, 0.080 if index < run_count - 10 else 0.020, 0.010))
+        source["created_utc"] = f"run-{index}"
+        runs.append(source)
+    root = ET.fromstring(trend_chart(runs[-1], [history.entry(r) for r in runs]))
+    panel = root.find(".//svg:g[@data-case='scenario_one']", NS)
+    assert float(panel.find("svg:rect", NS).attrib["height"]) <= 400
+    points = panel.findall(".//*[@data-runtime='mule-o2'][@data-ms]")
+    assert [float(point.attrib["data-ms"]) for point in points] == [
+        80 if index < run_count - 10 else 20 for index in range(run_count)
+    ]
+    for point in points:
+        assert point.find("svg:title", NS) is not None
+    summary = panel.find("svg:text[@data-above-scale-runtime='mule-o2']", NS)
+    assert float(summary.attrib["data-min-ms"]) == 80
+    assert float(summary.attrib["data-max-ms"]) == 80
+
+
 def test_trend_clips_lines_at_actual_scale_crossing_and_preserves_failure_gaps():
     from perf.suite.perfutils import history
 

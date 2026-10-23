@@ -192,8 +192,10 @@ Each vertical axis starts at zero and uses the maximum valid timing from the
 latest 10 panel runs or 25% of panel runs, rounded up, whichever is fewer.
 The scale includes all displayed runtimes and typed variants, with 20% headroom.
 If that window has no valid timing or only zero timings, the upper limit is 1 ms.
-Older values above the scale appear as upward triangles, with their actual
-values listed below the panel by runtime and numbered run. Lines intersect the
+Older values above the scale appear as upward triangles, with a compact timing
+range below the panel for each affected runtime and variant. Panel height does
+not grow with the number of above-scale runs. Open `trend.svg` directly to inspect
+each marker's title for its run stamp and timing. Lines intersect the
 top boundary at their actual crossing rather than joining clipped markers.
 Failed or unavailable results have no marker and break connecting lines.
 
