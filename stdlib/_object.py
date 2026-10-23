@@ -2390,6 +2390,11 @@ class function(object):
     # to name the descriptor types.
     @property
     def __globals__(self):
+        attrs = function_attributes(self)
+        if attrs is not None:
+            for key, value in namespace_items(attrs):
+                if key == "__globals__":
+                    return value
         return _globals_dict(function_globals(self))
 
     @property

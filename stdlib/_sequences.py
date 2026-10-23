@@ -3928,10 +3928,16 @@ def compile(
     )
 
 
-def eval(expression, globals=None, locals=None, /):
+def eval(expression, globals=None, locals=None):
     import ast as _ast
 
     return _ast._eval(expression, globals, locals)
+
+
+def exec(source, globals=None, locals=None, *, closure=None):
+    import ast as _ast
+
+    return _ast._exec(source, globals, locals, closure=closure)
 
 
 _install_storage(list, tuple, str, bytes, dict)
@@ -3939,6 +3945,7 @@ _install_storage(list, tuple, str, bytes, dict)
 _install_builtin("open", open)
 _install_builtin("compile", compile)
 _install_builtin("eval", eval)
+_install_builtin("exec", exec)
 _install_builtin("__import__", __import__)
 _install_builtin("range", range)
 _install_builtin("enumerate", enumerate)
@@ -4212,6 +4219,12 @@ def call_with_locals(callee, snapshot):
     if callee is dir:
         return sorted(snapshot)
     return callee()
+
+
+def call_with_eval_context(callee, source, globals_ns, locals_ns):
+    if callee is eval or callee is exec:
+        return callee(source, globals_ns, locals_ns)
+    return callee(source)
 
 
 def globals_dict(namespace):

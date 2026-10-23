@@ -580,6 +580,9 @@ pub unsafe fn run_protocols(native: *mut c_void, protocols: *mut c_void) -> i32 
         let name = object::new_value(Data::Text(Text::from_rust_str("__main__"), std::ptr::null_mut(), std::ptr::null_mut()));
         object::bind(globals, "__name__", name);
         object::release(name);
+        object::bind(globals, "__package__", object::none_value());
+        object::bind(globals, "__loader__", object::none_value());
+        object::bind(globals, "__spec__", object::none_value());
         object::bind(globals, "__builtins__", namespace());
         let mut args = Object {
             references: std::sync::atomic::AtomicUsize::new(usize::MAX),

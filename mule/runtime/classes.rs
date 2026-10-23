@@ -3127,6 +3127,40 @@ unsafe fn delete_attribute_with(receiver: Value, attribute: &str, hooks: bool) -
                     }
                 }
             }
+            if !receiver.is_null() && !object::is_fixnum(receiver) {
+                match &mut (*receiver).data {
+                    Data::Namespace(bindings) => {
+                        let removed = bindings.take(attribute);
+                        if !removed.is_null() {
+                            object::release(removed);
+                            return object::none_value();
+                        }
+                    }
+                    Data::Function { attributes, .. } if !attributes.is_null() => {
+                        let Data::Namespace(bindings) = &mut (**attributes).data else {
+                            unreachable!()
+                        };
+                        let removed = bindings.take(attribute);
+                        if !removed.is_null() {
+                            object::release(removed);
+                            return object::none_value();
+                        }
+                    }
+                    _ => {
+                        let typed = object::typed_attributes(receiver, false);
+                        if !typed.is_null() {
+                            let Data::Namespace(bindings) = &mut (*typed).data else {
+                                unreachable!()
+                            };
+                            let removed = bindings.take(attribute);
+                            if !removed.is_null() {
+                                object::release(removed);
+                                return object::none_value();
+                            }
+                        }
+                    }
+                }
+            }
             return missing(None, false, &attribute);
         };
         if !instance {

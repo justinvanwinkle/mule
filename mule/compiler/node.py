@@ -231,12 +231,21 @@ class If(Node):
 class Set(ValuedNode):
     """Assign ``value`` to ``var``; ``value=None`` unbinds the variable."""
 
-    __slots__ = ("value", "var")
+    __slots__ = ("missing_ok", "value", "var")
 
-    def __init__(self, lexenv, source, var: BasicVar, value: Lvar | None):
+    def __init__(
+        self,
+        lexenv,
+        source,
+        var: BasicVar,
+        value: Lvar | None,
+        *,
+        missing_ok: bool = False,
+    ):
         super().__init__(lexenv, source)
         self.var = var
         self.value = value
+        self.missing_ok = missing_ok
 
     def accept(self, visitor):
         return visitor.visit_Set(self)

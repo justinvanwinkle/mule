@@ -643,6 +643,90 @@ class FunctionConverter:
                     entries[name] = var
         return list(entries.items())
 
+    def snapshot_current_locals(self, ctran: Ctran, node) -> tuple[Ctran, Lvar]:
+        if self.class_scopes and (
+            not self.comprehension_scopes
+            or self.comprehension_scopes[-1].class_depth < len(self.class_scopes)
+        ):
+            after_ns, namespace = Ctran(), Lvar()
+            self.ref(
+                ctran,
+                after_ns,
+                namespace,
+                self.class_scopes[-1].namespace,
+                node,
+            )
+            after_snapshot, snapshot = Ctran(), Lvar()
+            self.protocol(
+                after_ns,
+                after_snapshot,
+                snapshot,
+                "globals_dict",
+                (namespace,),
+                node,
+            )
+            return after_snapshot, snapshot
+        if self.is_module and not self.comprehension_scopes:
+            after_globals, namespace = Ctran(), Lvar()
+            self.known(ctran, after_globals, namespace, fndb.CURRENT_GLOBALS, (), node)
+            after_snapshot, snapshot = Ctran(), Lvar()
+            self.protocol(
+                after_globals,
+                after_snapshot,
+                snapshot,
+                "globals_dict",
+                (namespace,),
+                node,
+            )
+            return after_snapshot, snapshot
+        entries = self.local_snapshot_entries()
+        name_lvars = []
+        value_lvars = []
+        for name, var in entries:
+            after_name, name_lvar = Ctran(), Lvar()
+            self.constant(ctran, after_name, name_lvar, ast.TextLiteral(name))
+            ctran = after_name
+            name_lvars.append(name_lvar)
+            after_val, val_lvar = Ctran(), Lvar()
+            self.ref(
+                ctran,
+                after_val,
+                val_lvar,
+                var,
+                node,
+                allow_unbound=True,
+            )
+            ctran = after_val
+            value_lvars.append(val_lvar)
+        after_names, names_tuple = Ctran(), Lvar()
+        self.known(
+            ctran,
+            after_names,
+            names_tuple,
+            fndb.BUILD_TUPLE,
+            tuple(name_lvars),
+            node,
+        )
+        after_values, values_tuple = Ctran(), Lvar()
+        self.known(
+            after_names,
+            after_values,
+            values_tuple,
+            fndb.BUILD_TUPLE,
+            tuple(value_lvars),
+            node,
+        )
+        after_snapshot, snapshot = Ctran(), Lvar()
+        self.protocol(
+            after_values,
+            after_snapshot,
+            snapshot,
+            "snapshot_locals",
+            (names_tuple, values_tuple),
+            node,
+        )
+        return after_snapshot, snapshot
+
     def local(self, name: str) -> bool:
         return name in self.locals
 
@@ -839,8 +923,10 @@ class FunctionConverter:
             ),
         )
 
-    def set_var(self, start, next_, var, value: Lvar | None, source) -> Set:
-        node = Set(self.lexenv, source, var, value)
+    def set_var(
+        self, start, next_, var, value: Lvar | None, source, *, missing_ok: bool = False
+    ) -> Set:
+        node = Set(self.lexenv, source, var, value, missing_ok=missing_ok)
         if value is not None:
             value.dest = node
         var.sets.append(node)
@@ -1127,7 +1213,9 @@ class FunctionConverter:
                 missing_ok=missing_ok,
             )
             return
-        self.set_var(start, next_, self.variable(name), None, source)
+        self.set_var(
+            start, next_, self.variable(name), None, source, missing_ok=missing_ok
+        )
 
     def discard(self, start, next_, name, source):
         """Reference a temporary for the last time without using its value."""
@@ -4621,6 +4709,9 @@ class _DeleteTarget(ast.Visitor):
             function.unbind(self.start, self.next, node.identifier, node)
             return
         var = function.variable(node.identifier)
+        if var.accept(_IS_GLOBAL_VAR):
+            function.set_var(self.start, self.next, var, None, node)
+            return
         ctran = Ctran()
         function.ref(self.start, ctran, None, var, node)
         function.set_var(ctran, self.next, var, None, node)
@@ -5092,6 +5183,29 @@ class _ModulePrologue(ast.Visitor):
         return True
 
 
+class _BuiltinsReceiver(ast.Visitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_Name(self, node):
+        return node.identifier in ("builtins", "__builtins__")
+
+
+class _BuiltinsTarget(ast.Visitor):
+    def visit_Node(self, node):
+        return any(child.accept(self) for child in node.children())
+
+    def visit_Attribute(self, node):
+        return node.value.accept(_BuiltinsReceiver())
+
+
+class _MutatesBuiltins(ast.Visitor):
+    def visit_Node(self, node):
+        if any(target.accept(_BuiltinsTarget()) for target in node.assigned_targets()):
+            return True
+        return any(child.accept(self) for child in node.children())
+
+
 def module_policy(converter, statements):
     """The policy of the module's top-level code and the default for its
     definitions: the default policy with the levels the module assigns to
@@ -5117,6 +5231,10 @@ def module_policy(converter, statements):
         docstring = index == 0 and statement.accept(_Docstring())
         if not docstring and not statement.accept(_ModulePrologue()):
             prologue = False
+    if "safety" not in changes and any(
+        statement.accept(_MutatesBuiltins()) for statement in statements
+    ):
+        changes["safety"] = 3
     return replace(OptimizationPolicy(), **changes)
 
 
@@ -5371,97 +5489,48 @@ class _CallTarget(ast.Visitor):
             and function.enclosing_local(node.identifier) is None
         ):
             ctran, callee = function.value(self.start, node)
-            if function.class_scopes and (
-                not function.comprehension_scopes
-                or function.comprehension_scopes[-1].class_depth
-                < len(function.class_scopes)
-            ):
-                after_ns, namespace = Ctran(), Lvar()
-                function.ref(
-                    ctran,
-                    after_ns,
-                    namespace,
-                    function.class_scopes[-1].namespace,
-                    node,
-                )
-                after_snapshot, snapshot = Ctran(), Lvar()
-                function.protocol(
-                    after_ns,
-                    after_snapshot,
-                    snapshot,
-                    "globals_dict",
-                    (namespace,),
-                    node,
-                )
-            elif function.is_module and not function.comprehension_scopes:
-                after_globals, namespace = Ctran(), Lvar()
-                function.known(
-                    ctran, after_globals, namespace, fndb.CURRENT_GLOBALS, (), node
-                )
-                after_snapshot, snapshot = Ctran(), Lvar()
-                function.protocol(
-                    after_globals,
-                    after_snapshot,
-                    snapshot,
-                    "globals_dict",
-                    (namespace,),
-                    node,
-                )
-            else:
-                entries = function.local_snapshot_entries()
-                name_lvars = []
-                value_lvars = []
-                for name, var in entries:
-                    after_name, name_lvar = Ctran(), Lvar()
-                    function.constant(
-                        ctran, after_name, name_lvar, ast.TextLiteral(name)
-                    )
-                    ctran = after_name
-                    name_lvars.append(name_lvar)
-                    after_val, val_lvar = Ctran(), Lvar()
-                    function.ref(
-                        ctran,
-                        after_val,
-                        val_lvar,
-                        var,
-                        node,
-                        allow_unbound=True,
-                    )
-                    ctran = after_val
-                    value_lvars.append(val_lvar)
-                after_names, names_tuple = Ctran(), Lvar()
-                function.known(
-                    ctran,
-                    after_names,
-                    names_tuple,
-                    fndb.BUILD_TUPLE,
-                    tuple(name_lvars),
-                    node,
-                )
-                after_values, values_tuple = Ctran(), Lvar()
-                function.known(
-                    after_names,
-                    after_values,
-                    values_tuple,
-                    fndb.BUILD_TUPLE,
-                    tuple(value_lvars),
-                    node,
-                )
-                after_snapshot, snapshot = Ctran(), Lvar()
-                function.protocol(
-                    after_values,
-                    after_snapshot,
-                    snapshot,
-                    "snapshot_locals",
-                    (names_tuple, values_tuple),
-                    node,
-                )
+            after_snapshot, snapshot = function.snapshot_current_locals(ctran, node)
             function.protocol(
                 after_snapshot,
                 self.next,
                 self.result,
                 "call_with_locals",
                 (callee, snapshot),
+                self.call,
+            )
+            return
+        if (
+            node.identifier in ("eval", "exec")
+            and len(self.call.arguments) == 1
+            and self.call.arguments[0].kind == ast.ArgumentKind.POSITIONAL
+            and not function.local(node.identifier)
+            and function.comprehension_variable(node.identifier) is None
+            and function.enclosing_local(node.identifier) is None
+        ):
+            ctran, callee = function.value(self.start, node)
+            ctran, source_arg = function.value(ctran, self.call.arguments[0].value)
+            after_globals, namespace = Ctran(), Lvar()
+            function.known(
+                ctran, after_globals, namespace, fndb.CURRENT_GLOBALS, (), node
+            )
+            after_gdict, globals_dict = Ctran(), Lvar()
+            function.protocol(
+                after_globals,
+                after_gdict,
+                globals_dict,
+                "globals_dict",
+                (namespace,),
+                node,
+            )
+            after_ldict, locals_dict = function.snapshot_current_locals(
+                after_gdict, node
+            )
+            function.protocol(
+                after_ldict,
+                self.next,
+                self.result,
+                "call_with_eval_context",
+                (callee, source_arg, globals_dict, locals_dict),
                 self.call,
             )
             return

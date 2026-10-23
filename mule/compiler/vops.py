@@ -472,7 +472,12 @@ def store_global(gen, vop):
 
 @define_vop("unbind-global")
 def unbind_global(gen, vop):
-    gen.line(gen.module.delete_global(vop.codegen_info))
+    var, missing_ok = vop.codegen_info
+    if missing_ok:
+        gen.line(gen.module.delete_global(var, missing_ok=True))
+    else:
+        status = gen.operation(gen.module.delete_global(var))
+        gen.check_status(status)
 
 
 @define_vop("discard", args=(None,), arg_escapes=(False,))

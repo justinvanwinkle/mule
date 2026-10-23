@@ -52,6 +52,12 @@ def _eval(expression, globals=None, locals=None):
     return eval_owned(expression, globals, locals)
 
 
+def _exec(source, globals=None, locals=None, *, closure=None):
+    from _ast_parse import execute as exec_owned
+
+    return exec_owned(source, globals, locals, closure=closure)
+
+
 def parse(source, filename='<unknown>', mode='exec', *,
           type_comments=False, feature_version=None, optimize=-1):
     """

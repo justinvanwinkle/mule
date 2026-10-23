@@ -238,6 +238,7 @@ declare ptr @mule_catch_exception()
 declare i32 @mule_enter_handler(ptr)
 declare void @mule_leave_handler()
 declare i32 @mule_delete_global(ptr, ptr)
+declare void @mule_unbind_global(ptr)
 declare i32 @mule_reraise()
 declare i32 @mule_check_rest_args(ptr, i32)
 declare ptr @mule_rest_args(ptr, i32)
@@ -1037,9 +1038,11 @@ class ModuleGenerator:
         cell = self.cell(namespace, name)
         return f"call i32 @mule_store_global(ptr {cell}, ptr {self.text(name)}, ptr {value})"
 
-    def delete_global(self, var) -> str:
+    def delete_global(self, var, *, missing_ok: bool = False) -> str:
         self.bound_namespaces.add(runtime_namespace(var.namespace))
         cell = self.cell(var.namespace, var.name)
+        if missing_ok:
+            return f"call void @mule_unbind_global(ptr {cell})"
         return f"call i32 @mule_delete_global(ptr {cell}, ptr {self.text(var.name)})"
 
     def link(self, namespace: str, value: str, failed: str, index: int) -> list[str]:

@@ -460,6 +460,7 @@ PROTOCOLS = {
         "cell_clear",
         "snapshot_locals",
         "call_with_locals",
+        "call_with_eval_context",
         "globals_dict",
         "except_star_start",
         "except_star_match",

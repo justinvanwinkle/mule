@@ -1998,7 +1998,7 @@ class _StoreVar(LeafVisitor):
         converter = self.converter
         node = linked(self.node, self, "assignment node")
         if node.value is None:
-            converter.emit(vops.UNBIND_GLOBAL, node, info=leaf)
+            converter.emit(vops.UNBIND_GLOBAL, node, info=(leaf, node.missing_ok))
         else:
             converter.emit(
                 vops.STORE_GLOBAL,

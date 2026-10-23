@@ -3625,9 +3625,24 @@ pub unsafe extern "C" fn mule_store_global(cell: *mut GlobalCell, name: *const c
         if bind(cell.namespace, name, value) { 0 } else { -1 }
     }
 }
-/// Unbind global `name` (`del`), ignoring a name that is not bound.
+/// Unbind global `name` (`del`).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mule_delete_global(cell: *mut GlobalCell, _name: *const c_char) -> i32 {
+pub unsafe extern "C" fn mule_delete_global(cell: *mut GlobalCell, name: *const c_char) -> i32 {
+    unsafe {
+        let cell = &mut *cell;
+        if cell.bound() {
+            cell.own = 0;
+            let inherited = cell.inherited();
+            release(std::mem::replace(&mut cell.value, inherited));
+            return 0;
+        }
+        let name = name_from_c(name).unwrap_or("<invalid name>");
+        error("NameError", &format!("name '{name}' is not defined"));
+        -1
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_unbind_global(cell: *mut GlobalCell) {
     unsafe {
         let cell = &mut *cell;
         if cell.bound() {
@@ -3635,7 +3650,6 @@ pub unsafe extern "C" fn mule_delete_global(cell: *mut GlobalCell, _name: *const
             let inherited = cell.inherited();
             release(std::mem::replace(&mut cell.value, inherited));
         }
-        0
     }
 }
 #[unsafe(no_mangle)]
