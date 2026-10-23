@@ -290,6 +290,14 @@ operation; there is no fallback to a dynamic object layout.
 | 2 | Also check declared return/local contracts and initialization where static construction analysis cannot prove them. |
 | 3 | Fully enforce declared contracts, including calls within trusted compiled code; retain complete error paths for unknown values. |
 
+Safety zero retains declared container-element types during propagation without
+scheduling optional element checks. This applies to indexing, iteration,
+unpacking, and method results that carry an element contract. Independently
+proven contradictions still cause the compiler to ignore the conflicting
+annotation. SBCL likewise keeps the asserted type in `make-cast`
+(`src/compiler/ir1util.lisp`) while `maybe-weaken-check`
+(`src/compiler/checkgen.lisp`) removes the runtime checking type at safety zero.
+
 A check proven redundant can disappear at every level, including three. The
 compiler must use actual proof rather than the annotation alone to eliminate
 a safety-three check. Loops over proven native integers must not execute a type
