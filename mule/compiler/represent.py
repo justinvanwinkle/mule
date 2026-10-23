@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from mule import ast
 
 from . import vops
-from .annotation_types import EXPORTS
+from .annotation_types import EXPORTS, ContractVisitor
 from .ctype import UNKNOWN
 from .ir1util import block_exception_target
 from .ltn import primitive_type_of
@@ -730,7 +730,7 @@ class BoundMethod(ObjectReference):
 INT64, FLOAT, BOOL, NONE = Int64(), Float64(), Boolean(), Nothing()
 
 
-class _Contract:
+class _Contract(ContractVisitor):
     def visit_Contract(self, contract):
         raise NotNative
 

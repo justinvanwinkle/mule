@@ -22,6 +22,7 @@ from enum import IntEnum
 from mule import ast
 
 from . import fndb
+from .annotation_types import ContractVisitor
 from .ctype import REAL, UNKNOWN, ValueTypeVisitor
 from .vmdef import define_vop
 from .vop import (
@@ -395,7 +396,7 @@ def type_check(gen, vop):
     gen.refine(result.tn, value)
 
 
-class _ContractAssertion:
+class _ContractAssertion(ContractVisitor):
     def __init__(self, gen, value):
         self.gen = gen
         self.value = value

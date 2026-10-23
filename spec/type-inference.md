@@ -82,6 +82,10 @@ container values, so nested callable facts cannot survive an unsupported cell
 assumption. Inference for immutable retained function objects still preserves
 their native entry identity. It does not equate distinct closure instances.
 
+When closed capture facts narrow, local-call analysis invalidates affected return
+summaries and their caller dependencies before propagating again. Definition-derived
+return queries also discard cached bodies that used the previous capture assumptions.
+
 The specialized callback path can therefore resolve calls and derive arithmetic
 results while a general fallback remains less precise. For example, a native
 `range` branch supplies integer elements even when a general iterator fallback

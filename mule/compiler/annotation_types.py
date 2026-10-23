@@ -30,6 +30,55 @@ from .ctype import (
 )
 
 
+class ContractVisitor:
+    """Dispatch recognized contracts to a phase's general contract policy."""
+
+    def visit_Contract(self, contract):
+        raise NotImplementedError(f"No visitor policy for {contract.display_name}")
+
+    def visit_IntegerContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_FloatContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_PythonIntegerContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_PythonFloatContract(self, contract):
+        return self.visit_FloatContract(contract)
+
+    def visit_BooleanContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_NoneContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_TextContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_BytesContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_ListContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_TupleContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_DictContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_ClassContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_UnionContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_InferredReturnContract(self, contract):
+        return self.visit_Contract(contract)
+
+
 class AnnotationLedger:
     """The annotation declarations one module's compilation proved wrong.
 

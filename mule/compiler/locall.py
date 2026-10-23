@@ -2010,6 +2010,7 @@ def analyze(
 
     while True:
         changed = False
+        narrowed_targets: set[Lambda] = set()
         previous_parameters = dict(parameters)
 
         def resolve(
@@ -2190,14 +2191,26 @@ def analyze(
                 if var_changes[var] > 3:
                     joined = widen_fact(Fact(var.optimistic_type), Fact(joined)).type
                 if joined != var.optimistic_type:
+                    previous_type = var.optimistic_type
                     var.optimistic_type = joined
+                    deriver_cache.clear()
+                    if (
+                        previous_type is None
+                        or previous_type is BOTTOM
+                        or not previous_type.fits(joined)
+                    ):
+                        narrowed_targets.update(
+                            lambda_
+                            for lambda_ in lambdas
+                            if lambda_.environment is not None
+                            and var in lambda_.environment.closure
+                        )
                     changed = True
 
         # The broad guard context is not evidence that callers actually supplied
         # that broad interval. Propagate observations through general/observed
         # entries, including recursive calls, independently of that context.
         seeds: dict[Lambda, tuple] = {}
-        narrowed_targets: set[Lambda] = set()
         for target, call_refs in closed_lambdas.items():
             external_calls = []
             all_calls = []
@@ -2381,8 +2394,8 @@ def analyze(
                 changed = True
         if narrowed_targets:
             # Propagate invalidation transitively along the recorded call graph
-            # so only functions that transitively depend on a newly created or
-            # narrowed observed context reset their provisional return summary.
+            # so only functions that depend on narrowed arguments or captures
+            # reset their provisional return summary.
             affected = set(narrowed_targets)
             while True:
                 added = {
@@ -2402,6 +2415,7 @@ def analyze(
                     if (
                         recorded is None
                         or recorded[0] != expected
+                        or recorded[2] != closure_inputs(key[0])
                         or affected.intersection(recorded[3])
                     ):
                         summaries[key] = BOTTOM
