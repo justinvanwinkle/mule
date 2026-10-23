@@ -83,6 +83,7 @@ from .fndb import (
     MAKE_CLASS,
     MAKE_FUNCTION,
     PROTOCOLS,
+    RANGE_PREPARE,
     RESOLVE_METHOD,
     RESOLVE_SUPER_METHOD,
     SETATTR,
@@ -276,7 +277,14 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
             self.disqualified = True
             self.list_disqualified = True
             return
-        if node.args and node.args[0] is lvar and info.non_integer_first_arg:
+        if (
+            node.args
+            and node.args[0] is lvar
+            and info.non_integer_first_arg
+            and not (
+                info is RANGE_PREPARE and node.info is not None and node.info.direct
+            )
+        ):
             self.disqualified = True
             if info in _GET_ITEM_OR_SLICE:
                 self.has_getitem = True
@@ -2621,10 +2629,15 @@ class _ReoptimizeNarrowedKnownCalls(NodeVisitor):
             info.transforms or (info.optimizer is not None and info is not GETITEM)
         ):
             return
+        checked_args = (
+            (*node.args, *node.info.arguments)
+            if info is RANGE_PREPARE and node.info is not None and not node.info.direct
+            else node.args
+        )
         if any(
             (new_type := _recompute_lvar_type(arg)) != self.old_lvar_types.get(arg)
             and new_type is not UNKNOWN
-            for arg in node.args
+            for arg in checked_args
         ):
             node.reoptimize = True
             node.block.reoptimize = True
@@ -2690,7 +2703,12 @@ class _NodeHasContextTransform(NodeVisitor):
             info.transforms or (info.optimizer is not None and info is not GETITEM)
         ):
             return False
-        for arg in node.args:
+        checked_args = (
+            (*node.args, *node.info.arguments)
+            if info is RANGE_PREPARE and node.info is not None and not node.info.direct
+            else node.args
+        )
+        for arg in checked_args:
             if not arg.uses:
                 continue
             cand_arg = self.context.types.get(arg.uses[0], UNKNOWN)

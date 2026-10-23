@@ -1019,6 +1019,7 @@ class _CloneIR1Node(NodeVisitor):
         self.return_map: dict[Return, Return] = {}
         self.entry_map: dict[Entry, Entry] = {}
         self.exit_map: dict[Exit, Exit] = {}
+        self.range_map: dict[object, object] = {}
 
     def map_ctran(self, ctran: Ctran | None) -> Ctran | None:
         if ctran is None:
@@ -1150,7 +1151,19 @@ class _CloneIR1Node(NodeVisitor):
         cloned.args = [self.map_lvar(arg) for arg in node.args]
         cloned.kind = node.kind
         cloned.fun_info = node.fun_info
-        cloned.info = node.info
+        if (
+            node.info is not None
+            and node.fun_info is not None
+            and node.fun_info.name
+            in ("%range_prepare", "%range_available", "%range_advance")
+        ):
+            mapped_info = self.range_map.get(node.info)
+            if mapped_info is None:
+                mapped_info = node.info.clone(self.map_lvar)
+                self.range_map[node.info] = mapped_info
+            cloned.info = mapped_info
+        else:
+            cloned.info = node.info
         cloned.template = node.template
         cloned.predicted = node.predicted
         cloned.proven = node.proven

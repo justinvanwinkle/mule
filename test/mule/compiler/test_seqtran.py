@@ -411,7 +411,8 @@ def test_range_prepare_fixnum_literal_and_bounded_eliminate_generic_loop():
         body_start = ir.index('define internal ptr @"mule_fn_f.body"(')
         body_end = ir.index("\n}", body_start)
         body = ir[body_start:body_end]
-        assert "@mule_range_storage(" in body
+        assert "@mule_range_storage(" not in body
+        assert "@mule.fast.iterate" not in body
         assert "@mule_catch_exception(" not in body
 
 

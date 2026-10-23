@@ -23,7 +23,7 @@ from mule import ast
 
 from . import fndb
 from .annotation_types import ContractVisitor
-from .ctype import REAL, UNKNOWN, ValueTypeVisitor
+from .ctype import INTEGER, REAL, UNKNOWN, ValueTypeVisitor
 from .vmdef import define_vop
 from .vop import (
     BOOLEAN,
@@ -505,7 +505,10 @@ def type_check(gen, vop):
         # separate so successful refinement cannot change their release facts.
         value = gen.operation(f"getelementptr i8, ptr {value}, i64 0")
     gen.publish(result, value)
-    gen.refine(result.tn, value)
+    if checked or not actual.fits(result.tn.type or UNKNOWN):
+        gen.refine(result.tn, value)
+    else:
+        gen.record_facts(result.tn, value)
 
 
 class _ContractAssertion(ContractVisitor):
@@ -1918,8 +1921,49 @@ def format_(gen, vop):
     gen.refine(result.tn, formatted)
 
 
-@define_vop("range-prepare", translate=fndb.RANGE_PREPARE, results=(OBJECT,))
+def _decode_fixnum_operand(gen, operand) -> str:
+    value = gen.take(operand)
+    bits = gen.operation(f"ptrtoint ptr {value} to i64")
+    decoded = gen.operation(f"ashr i64 {bits}, 1")
+    if operand.tn.type is not None and operand.tn.type.fits(INTEGER):
+        return decoded
+    is_fixnum = gen.operation(f"and i64 {bits}, 1")
+    fixnum_ok = gen.operation(f"icmp ne i64 {is_fixnum}, 0")
+    is_true = gen.operation(f"icmp eq ptr {value}, @mule.true")
+    bool_val = gen.operation(f"zext i1 {is_true} to i64")
+    return gen.operation(f"select i1 {fixnum_ok}, i64 {decoded}, i64 {bool_val}")
+
+
+@define_vop(
+    "range-prepare",
+    translate=fndb.RANGE_PREPARE,
+    results=(OBJECT,),
+    arg_escapes=(False, False, False, False),
+)
 def range_prepare(gen, vop):
+    info = vop.codegen_info
+    if info is not None and info.direct:
+        state = vop.args[-1].tn.slot
+        arity = len(vop.args) - 1
+        if arity == 1:
+            start = "0"
+            stop = _decode_fixnum_operand(gen, vop.args[0])
+            step = "1"
+        elif arity == 2:
+            start = _decode_fixnum_operand(gen, vop.args[0])
+            stop = _decode_fixnum_operand(gen, vop.args[1])
+            step = "1"
+        else:
+            start = _decode_fixnum_operand(gen, vop.args[0])
+            stop = _decode_fixnum_operand(gen, vop.args[1])
+            step = _decode_fixnum_operand(gen, vop.args[2])
+        for index, word in enumerate((start, stop, step)):
+            address = gen.operation(f"getelementptr i64, ptr {state}, i64 {index}")
+            gen.line(f"store i64 {word}, ptr {address}")
+        if vop.results:
+            gen.publish(vop.results[0], "@mule.true")
+            gen.refine(vop.results[0].tn, "@mule.true")
+        return
     callee, iterator = gen.take(vop.args[0]), gen.take(vop.args[1])
     state = vop.args[2].tn.slot
     # No callable-identity guard: `range` is a class, and the storage check
@@ -1947,11 +1991,24 @@ def _range_words(gen, state):
 
 @define_vop("range-available", translate=fndb.RANGE_AVAILABLE, results=(OBJECT,))
 def range_available(gen, vop):
-    current, stop, step = _range_words(gen, vop.args[0].tn.slot)
-    forward = gen.operation(f"icmp sgt i64 {step}, 0")
-    below = gen.operation(f"icmp slt i64 {current}, {stop}")
-    above = gen.operation(f"icmp sgt i64 {current}, {stop}")
-    available = gen.operation(f"select i1 {forward}, i1 {below}, i1 {above}")
+    info = vop.codegen_info
+    state = vop.args[0].tn.slot
+    if info is not None and info.step_sign > 0:
+        current = gen.operation(f"load i64, ptr {state}")
+        stop_addr = gen.operation(f"getelementptr i64, ptr {state}, i64 1")
+        stop = gen.operation(f"load i64, ptr {stop_addr}")
+        available = gen.operation(f"icmp slt i64 {current}, {stop}")
+    elif info is not None and info.step_sign < 0:
+        current = gen.operation(f"load i64, ptr {state}")
+        stop_addr = gen.operation(f"getelementptr i64, ptr {state}, i64 1")
+        stop = gen.operation(f"load i64, ptr {stop_addr}")
+        available = gen.operation(f"icmp sgt i64 {current}, {stop}")
+    else:
+        current, stop, step = _range_words(gen, state)
+        forward = gen.operation(f"icmp sgt i64 {step}, 0")
+        below = gen.operation(f"icmp slt i64 {current}, {stop}")
+        above = gen.operation(f"icmp sgt i64 {current}, {stop}")
+        available = gen.operation(f"select i1 {forward}, i1 {below}, i1 {above}")
     result = gen.operation(f"select i1 {available}, ptr @mule.true, ptr @mule.false")
     gen.publish(vop.results[0], result)
     gen.refine(vop.results[0].tn, result)
@@ -1959,9 +2016,14 @@ def range_available(gen, vop):
 
 @define_vop("range-advance", translate=fndb.RANGE_ADVANCE, results=(OBJECT,))
 def range_advance(gen, vop):
+    info = vop.codegen_info
     state = vop.args[0].tn.slot
-    current, _, step = _range_words(gen, state)
-    following = gen.operation(f"add nsw i64 {current}, {step}")
+    if info is not None and info.direct and len(info.arguments) <= 2:
+        current = gen.operation(f"load i64, ptr {state}")
+        following = gen.operation(f"add nsw i64 {current}, 1")
+    else:
+        current, _, step = _range_words(gen, state)
+        following = gen.operation(f"add nsw i64 {current}, {step}")
     gen.line(f"store i64 {following}, ptr {state}")
     encoded = gen.operation(f"shl i64 {current}, 1")
     tagged = gen.operation(f"or i64 {encoded}, 1")
