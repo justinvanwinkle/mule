@@ -110,15 +110,15 @@ declare ptr @mule_bool(i32)
 declare ptr @mule_load_global(ptr, ptr)
 declare i32 @mule_store_global(ptr, ptr, ptr)
 declare i32 @mule_link_globals(ptr, i64, ptr, ptr, i32)
-declare void @mule_traceback_here(ptr, i32, ptr, ptr, i32, ptr)
+declare void @mule_traceback_here(ptr, i32, ptr, ptr, i32, ptr) cold
 declare ptr @mule_frame_head_slot()
 declare ptr @mule_closure_slots(ptr)
 @mule_safepoint_requested = external global i8
-declare i32 @mule_safepoint()
+declare i32 @mule_safepoint() cold
 declare ptr @mule_namespace()
 declare i32 @mule_namespace_bind(ptr, ptr, ptr)
 declare i32 @mule_namespace_bound(ptr, ptr)
-declare i32 @mule_assertion_failure(ptr)
+declare i32 @mule_assertion_failure(ptr) cold
 declare ptr @mule_sequence_list(i64, ptr)
 declare ptr @mule_sequence_tuple(i64, ptr)
 declare ptr @mule_sequence_tuple_owned(i64, ptr)
@@ -204,10 +204,10 @@ declare noalias nonnull align 8 ptr @mule_allocate_integer_limbs(i64) allocsize(
 declare void @mule_deallocate_integer_limbs(ptr allocptr, i64) allockind("free") "alloc-family"="mule_allocate_integer_limbs"
 declare void @mule_clear_integer_storage(ptr)
 declare ptr @mule_box_f64_move(double, ptr, ptr)
-declare i32 @mule_native_zero_division()
-declare i32 @mule_native_type_error()
-declare i32 @mule_native_initializer_error()
-declare i32 @mule_native_overflow()
+declare i32 @mule_native_zero_division() cold
+declare i32 @mule_native_type_error() cold
+declare i32 @mule_native_initializer_error() cold
+declare i32 @mule_native_overflow() cold
 declare ptr @mule_get_attr_cached(ptr, ptr, ptr)
 declare i32 @mule_set_attr_cached(ptr, ptr, ptr, ptr)
 declare ptr @mule_resolve_method(ptr, ptr, ptr, ptr)
@@ -221,7 +221,7 @@ declare i32 @mule_assert_real(ptr, ptr)
 declare i32 @mule_value_kind(ptr) nounwind willreturn memory(read)
 declare i32 @mule_integer_in_bounds(ptr, ptr, ptr)
 declare ptr @mule_tuple_borrow_item(ptr, i64) nounwind willreturn memory(read)
-declare i32 @mule_inferred_return_error(ptr)
+declare i32 @mule_inferred_return_error(ptr) cold
 declare ptr @mule_arg(ptr, i32)
 declare ptr @mule_retain(ptr returned)
 declare void @mule_release(ptr)

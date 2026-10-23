@@ -456,6 +456,9 @@ class ValueType:
     def getitem_type(self, index):
         return UNKNOWN
 
+    def flow_getitem_type(self, index):
+        return self.getitem_type(index)
+
     def getslice_type(self):
         return UNKNOWN
 
@@ -2418,6 +2421,13 @@ class ListType(ValueType):
             return self.element
         return UNKNOWN
 
+    def flow_getitem_type(self, index):
+        if self.may_be_unbound or index.may_be_unbound:
+            return UNKNOWN
+        if index.fits(PYTHON_INTEGER):
+            return self.element
+        return UNKNOWN
+
     def getslice_type(self):
         return UNKNOWN if self.may_be_unbound else self
 
@@ -2799,6 +2809,11 @@ class DictType(ValueType):
 
     def getitem_type(self, index):
         if self.may_be_unbound or index.may_be_unbound or self.value is BOTTOM:
+            return UNKNOWN
+        return self.value
+
+    def flow_getitem_type(self, index):
+        if self.may_be_unbound or index.may_be_unbound or not self.proven:
             return UNKNOWN
         return self.value
 
@@ -3502,6 +3517,13 @@ class UnionType(ValueType):
             UNKNOWN
             if self.may_be_unbound
             else self.map(lambda m: m.getitem_type(index))
+        )
+
+    def flow_getitem_type(self, index):
+        return (
+            UNKNOWN
+            if self.may_be_unbound
+            else self.map(lambda m: m.flow_getitem_type(index))
         )
 
     def getslice_type(self):

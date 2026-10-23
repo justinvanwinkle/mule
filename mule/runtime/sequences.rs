@@ -7,6 +7,7 @@ use std::ptr::null_mut;
 thread_local! {
     static GLOBALS: Cell<Value> = const { Cell::new(null_mut()) };
     static STORAGE_ITERATOR: Cell<Value> = const { Cell::new(null_mut()) };
+    static RANGE_ITERATOR: Cell<Value> = const { Cell::new(null_mut()) };
     static PENDING: Cell<Value> = const { Cell::new(null_mut()) };
     static ACTIVE: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
 }
@@ -118,6 +119,7 @@ pub unsafe fn finish() {
         });
         crate::classes::mule_set_attribute_lookup(null_mut());
         STORAGE_ITERATOR.with(|value| value.set(null_mut()));
+        RANGE_ITERATOR.with(|value| value.set(null_mut()));
         GLOBALS.with(|value| object::release(value.replace(null_mut())));
     }
 }
@@ -1755,6 +1757,25 @@ pub unsafe extern "C" fn mule_run_protocols(
     unsafe { crate::builtins::run_protocols(native, protocols) }
 }
 
+#[cold]
+#[inline(never)]
+unsafe fn resolve_range_iterator() -> Value {
+    unsafe {
+        let resolved = object::lookup(mule_protocol_globals(), "RangeIterator");
+        RANGE_ITERATOR.with(|slot| slot.set(resolved));
+        resolved
+    }
+}
+
+#[inline(always)]
+unsafe fn cached_range_iterator() -> Value {
+    let cached = RANGE_ITERATOR.with(Cell::get);
+    if !cached.is_null() {
+        return cached;
+    }
+    unsafe { resolve_range_iterator() }
+}
+
 /// Borrow the raw scalar fields of a freshly constructed private range iterator.
 /// The generated loop supplies the callable-identity guard and owns the count.
 #[unsafe(no_mangle)]
@@ -1766,27 +1787,22 @@ pub unsafe extern "C" fn mule_range_storage(iterator: Value, state: *mut i64) ->
         let Data::Instance { ty, fields, .. } = &(*iterator).data else {
             return 0;
         };
-        if *ty != object::lookup(mule_protocol_globals(), "RangeIterator") {
+        if *ty != cached_range_iterator() || fields.len() < 3 {
             return 0;
         }
-        let Data::Class(layout) = &(**ty).data else {
-            return 0;
-        };
-        let mut words = [0; 3];
-        for (slot, name) in words.iter_mut().zip(["current", "stop", "step"]) {
-            let Some(index) = layout.fields.iter().position(|field| field == name) else {
-                return 0;
-            };
-            let value = fields[index];
-            if !object::is_fixnum(value) {
-                return 0;
-            }
-            *slot = object::fixnum(value);
-        }
-        if words[2] == 0 {
+        let c = *fields.get_unchecked(0);
+        let stop = *fields.get_unchecked(1);
+        let step = *fields.get_unchecked(2);
+        if !object::is_fixnum(c) || !object::is_fixnum(stop) || !object::is_fixnum(step) {
             return 0;
         }
-        std::ptr::copy_nonoverlapping(words.as_ptr(), state, 3);
+        let step_val = object::fixnum(step);
+        if step_val == 0 {
+            return 0;
+        }
+        *state = object::fixnum(c);
+        *state.add(1) = object::fixnum(stop);
+        *state.add(2) = step_val;
         1
     }
 }

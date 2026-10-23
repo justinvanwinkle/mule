@@ -378,6 +378,7 @@ RANGE_PREPARE = defknown(
     derive_type=lambda node: None if _DERIVATION_MODE.active else BOOLEAN,
     numeric=True,
     non_integer_first_arg=True,
+    borrowed_args=frozenset({0, 1, 2}),
 )
 RANGE_AVAILABLE = defknown(
     "%range_available", "flushable", derive_type=lambda node: BOOLEAN

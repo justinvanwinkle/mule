@@ -231,6 +231,17 @@ class RangeState:
     minimum: int
     maximum: int
     arguments: tuple = ()
+    direct: bool = False
+    step_sign: int = 0
+
+    def clone(self, map_lvar):
+        return RangeState(
+            self.minimum,
+            self.maximum,
+            tuple(map_lvar(arg) for arg in self.arguments),
+            self.direct,
+            self.step_sign,
+        )
 
 
 class Namespace:
@@ -5014,7 +5025,10 @@ class _AugmentedTarget(ast.Visitor):
         reuse = (
             node.identifier
             if function.local(node.identifier)
-            and function.annotation_for(node.identifier) is None
+            and (
+                function.annotation_for(node.identifier) is None
+                or function.lexenv.policy.safety == 0
+            )
             else None
         )
         ctran, result = self.binary(ctran, left, reuse)

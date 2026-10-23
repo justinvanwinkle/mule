@@ -1263,6 +1263,85 @@ class _PredictableRangeCalleeRef(NodeVisitor, LeafVisitor):
 _PREDICTABLE_RANGE_CALLEE_REF = _PredictableRangeCalleeRef()
 
 
+class _RangeCallCheck(NodeVisitor):
+    def __init__(self, block, arguments):
+        self.block = block
+        self.arguments = arguments
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.prev is not None
+            and node.block is self.block
+            and tuple(node.args) == self.arguments
+            and len(node.fun.uses) == 1
+        ):
+            return node
+        return None
+
+
+class _IterateCallCheck(NodeVisitor):
+    def __init__(self, block, arguments):
+        self.block = block
+        self.arguments = arguments
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.prev is not None
+            and node.block is self.block
+            and node.fun_info is fndb.PROTOCOLS["iterate"]
+            and len(node.args) == 1
+            and len(node.args[0].uses) == 1
+        ):
+            range_call = (
+                node.args[0].uses[0].accept(_RangeCallCheck(self.block, self.arguments))
+            )
+            if range_call is not None:
+                return node, range_call
+        return None
+
+
+class _RangeIteratorRef(NodeVisitor, LeafVisitor):
+    def __init__(self, block, arguments):
+        self.block = block
+        self.arguments = arguments
+        self._ref: Ref | None = None
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        self._ref = node
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if len(leaf.sets) != 1:
+            return None
+        store = leaf.sets[0]
+        if (
+            store.prev is None
+            or store.block is not self.block
+            or store.value is None
+            or len(store.value.uses) != 1
+        ):
+            return None
+        matched = store.value.uses[0].accept(
+            _IterateCallCheck(self.block, self.arguments)
+        )
+        if matched is None:
+            return None
+        iterate_call, range_call = matched
+        return self._ref, store, iterate_call, range_call
+
+
 @deftransform("%range_prepare")
 def _transform_range_prepare(node: Combination) -> bool:
     if (
@@ -1299,6 +1378,79 @@ def _transform_range_prepare(node: Combination) -> bool:
             and not arg_type.may_be_unbound
         ):
             return False
+
+    if len(state.arguments) <= 2:
+        step_sign = 1
+    else:
+        step_type = lvar_type(state.arguments[2])
+        if step_type.minimum is not None and step_type.minimum > 0:
+            step_sign = 1
+        elif step_type.maximum is not None and step_type.maximum < 0:
+            step_sign = -1
+        else:
+            step_sign = 0
+
+    if step_sign != 0 and len(node.args[1].uses) == 1:
+        setup = (
+            node.args[1].uses[0].accept(_RangeIteratorRef(node.block, state.arguments))
+        )
+        if setup is not None:
+            iterator_ref, iterator_set, iterate_call, range_call = setup
+            callee_ref = callee_lvar.uses[0]
+            callee_var = callee_ref.leaf
+            callee_ref_1 = range_call.fun.uses[0]
+
+            callee_lvar.dest = None
+            delete_ref(callee_ref)
+            unlink_node(callee_ref)
+
+            iterator_var = iterator_ref.leaf
+            iterator_lvar = node.args[1]
+            iterator_lvar.dest = None
+            delete_ref(iterator_ref)
+            unlink_node(iterator_ref)
+            for ref in list(iterator_var.refs):
+                if ref.lvar is None and ref.prev is not None:
+                    delete_ref(ref)
+                    unlink_node(ref)
+
+            range_call.args = []
+            for arg_lvar in state.arguments:
+                arg_lvar.dest = node
+            node.args = list(state.arguments)
+            state.direct = True
+            state.step_sign = step_sign
+
+            iterated_lvar = iterator_set.value
+            if iterated_lvar is not None:
+                iterated_lvar.dest = None
+            delete_set(iterator_set)
+            unlink_node(iterator_set)
+
+            _flush_operand(iterate_call.fun)
+            range_val_lvar = iterate_call.args[0]
+            range_val_lvar.dest = None
+            iterate_call.args = []
+            unlink_node(iterate_call)
+
+            range_call.fun.dest = None
+            delete_ref(callee_ref_1)
+            unlink_node(callee_ref_1)
+            unlink_node(range_call)
+
+            if not callee_var.refs and len(callee_var.sets) == 1:
+                callee_set = callee_var.sets[0]
+                if (
+                    callee_set.prev is not None
+                    and callee_set.value is not None
+                    and len(callee_set.value.uses) == 1
+                ):
+                    range_global_ref = callee_set.value.uses[0]
+                    callee_set.value.dest = None
+                    delete_ref(range_global_ref)
+                    unlink_node(range_global_ref)
+                    delete_set(callee_set)
+                    unlink_node(callee_set)
 
     span = node.source.span if node.source is not None else None
     leaf = Constant(ast.BooleanLiteral(True, span=span))

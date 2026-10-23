@@ -820,6 +820,9 @@ class _Propagation(NodeVisitor, LeafVisitor):
         return None
 
     def is_proven_fixnum_range(self, node: Combination) -> bool:
+        state = linked(node.info, node, "info")
+        if state.direct:
+            return True
         if (
             self.walk.lambda_.policy.safety >= 3
             or node.lexenv.policy.safety >= 3
@@ -830,7 +833,6 @@ class _Propagation(NodeVisitor, LeafVisitor):
             or not node.args[0].uses[0].accept(_UNMUTATED_RANGE_REF)
         ):
             return False
-        state = linked(node.info, node, "info")
         if not (1 <= len(state.arguments) <= 3):
             return False
         arg_types = [self.type_of(arg) for arg in state.arguments]
@@ -1291,6 +1293,9 @@ def _propagate_unpack_ref(visitor: _Propagation, node: Combination):
     if seq_type is BOTTOM:
         return NO_FACT
     index_type = visitor.type_of(args[1])
+    static_item = seq_type.flow_getitem_type(index_type)
+    if static_item is BOTTOM:
+        return NO_FACT
     seq_contract = visitor.walk.lvar_contracts.get(args[0])
     index = index_type.exact_integer()
     tup = seq_type.accept(_AS_TUPLE_TYPE)
@@ -1300,9 +1305,7 @@ def _propagate_unpack_ref(visitor: _Propagation, node: Combination):
         if seq_contract is not None and arity is not None and index is not None
         else None
     )
-    item_type = visitor.apply_element_contract(
-        node, seq_type.getitem_type(index_type), elem_contract
-    )
+    item_type = visitor.apply_element_contract(node, static_item, elem_contract)
     return _fact(item_type)
 
 
@@ -1557,15 +1560,16 @@ def _propagate_getitem(visitor: _Propagation, node: Combination):
         return NO_FACT
     if receiver_type.may_run_user_code or index_type.may_run_user_code:
         visitor.invalidate()
+    static_item = receiver_type.flow_getitem_type(index_type)
+    if static_item is BOTTOM:
+        return NO_FACT
     recv_contract = visitor.walk.lvar_contracts.get(args[0])
     elem_contract = (
         recv_contract.getitem_contract(index_type)
         if recv_contract is not None
         else None
     )
-    item_type = visitor.apply_element_contract(
-        node, receiver_type.getitem_type(index_type), elem_contract
-    )
+    item_type = visitor.apply_element_contract(node, static_item, elem_contract)
     return _fact(item_type)
 
 

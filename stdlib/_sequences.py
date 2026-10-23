@@ -4,7 +4,18 @@ Underscored storage operations are bound by the compiler. These definitions
 execute as native Python functions and classes, in a private module namespace.
 """
 
-from _object import bool, complex, float, globals, int, isinstance, issubclass, object, type, vars
+from _object import (
+    bool,
+    complex,
+    float,
+    globals,
+    int,
+    isinstance,
+    issubclass,
+    object,
+    type,
+    vars,
+)
 from _object import _globals_dict
 from _object import locals as _builtin_locals
 from _object import _make_complex
@@ -26,7 +37,16 @@ from _generators import coroutine as _coroutine
 from _dict import build_dict as _build_dict
 from _dict import build_set as _build_set
 from _dict import _MISSING as _DICT_MISSING
-from _dict import _table_insert, _table_lookup, _table_remove, _tuple_hash, dict, frozenset, hash, set
+from _dict import (
+    _table_insert,
+    _table_lookup,
+    _table_remove,
+    _tuple_hash,
+    dict,
+    frozenset,
+    hash,
+    set,
+)
 from _mule_native import bytes_from_values
 from _mule_native import byte_length
 from _mule_native import read_byte
@@ -82,7 +102,9 @@ class BaseException:
     @__context__.setter
     def __context__(self, value):
         if value is not None and not isinstance(value, BaseException):
-            raise TypeError("exception context must be None or derive from BaseException")
+            raise TypeError(
+                "exception context must be None or derive from BaseException"
+            )
         self._context = value
 
     @property
@@ -107,7 +129,9 @@ class BaseException:
         return str(self.args)
 
     def __repr__(self):
-        return type(self).__name__ + "(" + ", ".join(repr(arg) for arg in self.args) + ")"
+        return (
+            type(self).__name__ + "(" + ", ".join(repr(arg) for arg in self.args) + ")"
+        )
 
     def add_note(self, note):
         if not isinstance(note, str):
@@ -205,12 +229,24 @@ class OSError(Exception):
     def __new__(cls, *args):
         if cls is OSError and 2 <= len(args) <= 5 and isinstance(args[0], int):
             cls = {
-                1: PermissionError, 2: FileNotFoundError, 3: ProcessLookupError,
-                4: InterruptedError, 10: ChildProcessError, 11: BlockingIOError,
-                13: PermissionError, 17: FileExistsError, 20: NotADirectoryError,
-                21: IsADirectoryError, 32: BrokenPipeError, 103: ConnectionAbortedError,
-                104: ConnectionResetError, 108: BrokenPipeError, 110: TimeoutError,
-                111: ConnectionRefusedError, 114: BlockingIOError, 115: BlockingIOError,
+                1: PermissionError,
+                2: FileNotFoundError,
+                3: ProcessLookupError,
+                4: InterruptedError,
+                10: ChildProcessError,
+                11: BlockingIOError,
+                13: PermissionError,
+                17: FileExistsError,
+                20: NotADirectoryError,
+                21: IsADirectoryError,
+                32: BrokenPipeError,
+                103: ConnectionAbortedError,
+                104: ConnectionResetError,
+                108: BrokenPipeError,
+                110: TimeoutError,
+                111: ConnectionRefusedError,
+                114: BlockingIOError,
+                115: BlockingIOError,
             }.get(_integer_storage(args[0]), cls)
         return _allocate_instance(cls)
 
@@ -233,11 +269,11 @@ class OSError(Exception):
     def __str__(self):
         if not self._os_error:
             return BaseException.__str__(self)
-        result = '[Errno ' + str(self.errno) + '] ' + str(self.strerror)
+        result = "[Errno " + str(self.errno) + "] " + str(self.strerror)
         if self.filename is not None:
-            result += ': ' + repr(self.filename)
+            result += ": " + repr(self.filename)
             if self.filename2 is not None:
-                result += ' -> ' + repr(self.filename2)
+                result += " -> " + repr(self.filename2)
         return result
 
 
@@ -256,30 +292,36 @@ class UnicodeError(ValueError):
 class UnicodeEncodeError(UnicodeError):
     def __init__(self, encoding, object, start, end, reason, /):
         if not isinstance(encoding, str):
-            raise TypeError('argument 1 must be str, not ' + type(encoding).__name__)
+            raise TypeError("argument 1 must be str, not " + type(encoding).__name__)
         if not isinstance(object, str):
-            raise TypeError('argument 2 must be str, not ' + type(object).__name__)
+            raise TypeError("argument 2 must be str, not " + type(object).__name__)
         _unicode_error_init(self, encoding, object, start, end, reason)
 
     def __str__(self):
-        if self.end == self.start + 1 and 0 <= self.start < TextStorage.__len__(self.object):
+        if self.end == self.start + 1 and 0 <= self.start < TextStorage.__len__(
+            self.object
+        ):
             code = ord(TextStorage.__getitem__(self.object, self.start))
             if code <= 0xFF:
-                character = '\\x' + format(code, '02x')
+                character = "\\x" + format(code, "02x")
             elif code <= 0xFFFF:
-                character = '\\u' + format(code, '04x')
+                character = "\\u" + format(code, "04x")
             else:
-                character = '\\U' + format(code, '08x')
+                character = "\\U" + format(code, "08x")
             where = "character '" + character + "' in position " + str(self.start)
         else:
-            where = 'characters in position ' + str(self.start) + '-' + str(self.end - 1)
-        return "'" + self.encoding + "' codec can't encode " + where + ': ' + self.reason
+            where = (
+                "characters in position " + str(self.start) + "-" + str(self.end - 1)
+            )
+        return (
+            "'" + self.encoding + "' codec can't encode " + where + ": " + self.reason
+        )
 
 
 class UnicodeDecodeError(UnicodeError):
     def __init__(self, encoding, object, start, end, reason, /):
         if not isinstance(encoding, str):
-            raise TypeError('argument 1 must be str, not ' + type(encoding).__name__)
+            raise TypeError("argument 1 must be str, not " + type(encoding).__name__)
         original = object
         if not isinstance(object, bytes):
             object = memoryview(object).tobytes()
@@ -288,16 +330,18 @@ class UnicodeDecodeError(UnicodeError):
 
     def __str__(self):
         if self.end == self.start + 1 and 0 <= self.start < byte_length(self.object):
-            where = 'byte 0x' + format(read_byte(self.object, self.start), '02x')
-            where += ' in position ' + str(self.start)
+            where = "byte 0x" + format(read_byte(self.object, self.start), "02x")
+            where += " in position " + str(self.start)
         else:
-            where = 'bytes in position ' + str(self.start) + '-' + str(self.end - 1)
-        return "'" + self.encoding + "' codec can't decode " + where + ': ' + self.reason
+            where = "bytes in position " + str(self.start) + "-" + str(self.end - 1)
+        return (
+            "'" + self.encoding + "' codec can't decode " + where + ": " + self.reason
+        )
 
 
 def _unicode_error_init(error, encoding, object, start, end, reason):
     if not isinstance(encoding, str):
-        raise TypeError('argument 1 must be str, not ' + type(encoding).__name__)
+        raise TypeError("argument 1 must be str, not " + type(encoding).__name__)
     error.args = encoding, object, start, end, reason
     error.encoding = encoding
     error.object = object
@@ -305,9 +349,9 @@ def _unicode_error_init(error, encoding, object, start, end, reason):
     error.end = integer_index(end)
     for value in (error.start, error.end):
         if value < -(1 << 63) or value >= 1 << 63:
-            raise OverflowError('Python int too large to convert to C ssize_t')
+            raise OverflowError("Python int too large to convert to C ssize_t")
     if not isinstance(reason, str):
-        raise TypeError('argument 5 must be str, not ' + type(reason).__name__)
+        raise TypeError("argument 5 must be str, not " + type(reason).__name__)
     error.reason = reason
 
 
@@ -516,7 +560,9 @@ def exception_matches(value, expected):
         target = _class_identity(item)
         if target is not None:
             if not _class_is_subclass(target, BaseException):
-                raise TypeError("catching classes that do not inherit from BaseException")
+                raise TypeError(
+                    "catching classes that do not inherit from BaseException"
+                )
             if raised is not None and _class_is_subclass(raised, target):
                 return True
         elif exception_matches(value, item):
@@ -789,7 +835,7 @@ class filter:
     def __next__(self):
         while True:
             item = next_item(self.iterator)
-            if (item if self.function is None else self.function(item)):
+            if item if self.function is None else self.function(item):
                 return item
 
 
@@ -809,14 +855,16 @@ def reversed(sequence, /):
 
 def pow(base, exp, mod=None):
     if mod is None:
-        return base ** exp
+        return base**exp
     method = getattr(type(base), "__pow__", None)
     if method is not None:
         result = method(base, exp, mod)
         if result is not NotImplemented:
             return result
     if not (_integer_kind(base) and _integer_kind(exp) and _integer_kind(mod)):
-        raise TypeError("pow() 3rd argument not allowed unless all arguments are integers")
+        raise TypeError(
+            "pow() 3rd argument not allowed unless all arguments are integers"
+        )
     if mod == 0:
         raise ValueError("pow() 3rd argument cannot be 0")
     if exp < 0:
@@ -851,11 +899,15 @@ def divmod(left, right, /):
             raise ZeroDivisionError("division by zero")
         return (left // right, left % right)
     left_owner, right_owner = type_of(left), type_of(right)
-    forward = class_lookup_default(left_owner, '__divmod__', _DIVMOD_MISSING)
-    reflected = class_lookup_default(right_owner, '__rdivmod__', _DIVMOD_MISSING)
-    right_first = (left_owner is not right_owner and reflected is not _DIVMOD_MISSING
-                   and is_subclass(right_owner, left_owner)
-                   and reflected is not class_lookup_default(left_owner, '__rdivmod__', _DIVMOD_MISSING))
+    forward = class_lookup_default(left_owner, "__divmod__", _DIVMOD_MISSING)
+    reflected = class_lookup_default(right_owner, "__rdivmod__", _DIVMOD_MISSING)
+    right_first = (
+        left_owner is not right_owner
+        and reflected is not _DIVMOD_MISSING
+        and is_subclass(right_owner, left_owner)
+        and reflected
+        is not class_lookup_default(left_owner, "__rdivmod__", _DIVMOD_MISSING)
+    )
     if right_first:
         result = bind_instance_attribute(reflected, right, right_owner)(left)
         if result is not NotImplemented:
@@ -864,12 +916,21 @@ def divmod(left, right, /):
         result = bind_instance_attribute(forward, left, left_owner)(right)
         if result is not NotImplemented:
             return result
-    if not right_first and left_owner is not right_owner and reflected is not _DIVMOD_MISSING:
+    if (
+        not right_first
+        and left_owner is not right_owner
+        and reflected is not _DIVMOD_MISSING
+    ):
         result = bind_instance_attribute(reflected, right, right_owner)(left)
         if result is not NotImplemented:
             return result
-    raise TypeError("unsupported operand type(s) for divmod(): '" + left_owner.__name__
-                    + "' and '" + right_owner.__name__ + "'")
+    raise TypeError(
+        "unsupported operand type(s) for divmod(): '"
+        + left_owner.__name__
+        + "' and '"
+        + right_owner.__name__
+        + "'"
+    )
 
 
 def round(number, ndigits=None):
@@ -916,7 +977,7 @@ def callable(obj, /):
     if kind in ("function", "builtin_function_or_method", "method"):
         return True
     missing = _binding_missing()
-    return class_lookup_default(type_of(obj), '__call__', missing) is not missing
+    return class_lookup_default(type_of(obj), "__call__", missing) is not missing
 
 
 def id(obj, /):
@@ -1588,7 +1649,11 @@ class TupleStorage(_OrderedSequence):
 
     def __len__(self):
         if not _tuple_storage(self):
-            raise TypeError("descriptor '__len__' requires a 'tuple' object but received a '" + _type_name(self) + "'")
+            raise TypeError(
+                "descriptor '__len__' requires a 'tuple' object but received a '"
+                + _type_name(self)
+                + "'"
+            )
         return _storage_length(self)
 
     def __hash__(self):
@@ -1655,9 +1720,7 @@ def _bytes_like_values(value):
         if not value.c_contiguous:
             raise BufferError("memoryview: underlying buffer is not C-contiguous")
         return _bytes_like_values(value.tobytes())
-    raise TypeError(
-        "a bytes-like object is required, not '" + _type_name(value) + "'"
-    )
+    raise TypeError("a bytes-like object is required, not '" + _type_name(value) + "'")
 
 
 def _byte_in_values(values, byte):
@@ -1705,7 +1768,9 @@ def _make_bytes_translation_table(frm, to):
         value += 1
     index = 0
     while index < _storage_length(from_values):
-        _storage_write(result, _storage_read(from_values, index), _storage_read(to_values, index))
+        _storage_write(
+            result, _storage_read(from_values, index), _storage_read(to_values, index)
+        )
         index += 1
     return bytes_from_values(result)
 
@@ -1876,13 +1941,17 @@ def _bytes_split_spans(values, sep, maxsplit, from_right):
         if not from_right:
             index = 0
             while maxsplit != 0:
-                while index < length and _is_ascii_whitespace(_storage_read(values, index)):
+                while index < length and _is_ascii_whitespace(
+                    _storage_read(values, index)
+                ):
                     index += 1
                 if index == length:
                     return spans
                 start = index
                 index += 1
-                while index < length and not _is_ascii_whitespace(_storage_read(values, index)):
+                while index < length and not _is_ascii_whitespace(
+                    _storage_read(values, index)
+                ):
                     index += 1
                 _storage_append(spans, (start, index))
                 maxsplit -= 1
@@ -2054,41 +2123,45 @@ _HEX_MISSING = _binding_missing()
 def _hex_bytes(values, sep, bytes_per_sep):
     group = integer_index(bytes_per_sep)
     if group < -(1 << 31) or group >= (1 << 31):
-        raise OverflowError('Python int too large to convert to C int')
-    separator = ''
+        raise OverflowError("Python int too large to convert to C int")
+    separator = ""
     if sep is not _HEX_MISSING:
         try:
             size = len(sep)
         except TypeError:
             missing = _binding_missing()
-            if class_lookup_default(type_of(sep), '__len__', missing) is missing:
-                raise TypeError("object of type '" + type_of(sep).__name__ + "' has no len()") from None
+            if class_lookup_default(type_of(sep), "__len__", missing) is missing:
+                raise TypeError(
+                    "object of type '" + type_of(sep).__name__ + "' has no len()"
+                ) from None
             raise
         if size != 1:
-            raise ValueError('sep must be length 1.')
+            raise ValueError("sep must be length 1.")
         if isinstance(sep, str):
             character = ord(sep)
         elif isinstance(sep, bytes):
             character = _storage_read(sep, 0)
         else:
-            raise TypeError('sep must be str or bytes.')
+            raise TypeError("sep must be str or bytes.")
         if character > 127:
-            raise ValueError('sep must be ASCII.')
+            raise ValueError("sep must be ASCII.")
         separator = chr(character)
-    digits = '0123456789abcdef'
+    digits = "0123456789abcdef"
     parts = []
     length = _storage_length(values)
     index = 0
     while index < length:
         if separator and index and group:
-            boundary = (length - index) % group == 0 if group > 0 else index % -group == 0
+            boundary = (
+                (length - index) % group == 0 if group > 0 else index % -group == 0
+            )
             if boundary:
                 _storage_append(parts, separator)
         value = _storage_read(values, index)
         _storage_append(parts, digits[value >> 4])
         _storage_append(parts, digits[value & 15])
         index += 1
-    return ''.join(parts)
+    return "".join(parts)
 
 
 def _hex_nibble(code):
@@ -2103,7 +2176,9 @@ def _hex_nibble(code):
 
 def _fromhex_values(string):
     if not _text_storage(string):
-        raise TypeError(f"fromhex() argument must be str, not {type_of(string).__name__}")
+        raise TypeError(
+            f"fromhex() argument must be str, not {type_of(string).__name__}"
+        )
     length = _text_length(string)
     values = []
     index = 0
@@ -2142,7 +2217,9 @@ def _byte_padding(values, width, fillchar, alignment, method):
         fill_values = fillchar.values
     else:
         kind = "None" if fillchar is None else _type_name(fillchar)
-        raise TypeError(f"{method}() argument 2 must be a byte string of length 1, not {kind}")
+        raise TypeError(
+            f"{method}() argument 2 must be a byte string of length 1, not {kind}"
+        )
     fill_length = _storage_length(fill_values)
     if fill_length != 1:
         raise TypeError(
@@ -2182,13 +2259,19 @@ def _bytes_slice_result(source, start, end):
 
 class BytesStorage:
     def ljust(self, width, fillchar=b" ", /):
-        return _bytes_padding_result(self, _byte_padding(self, width, fillchar, 0, "ljust"))
+        return _bytes_padding_result(
+            self, _byte_padding(self, width, fillchar, 0, "ljust")
+        )
 
     def rjust(self, width, fillchar=b" ", /):
-        return _bytes_padding_result(self, _byte_padding(self, width, fillchar, 1, "rjust"))
+        return _bytes_padding_result(
+            self, _byte_padding(self, width, fillchar, 1, "rjust")
+        )
 
     def center(self, width, fillchar=b" ", /):
-        return _bytes_padding_result(self, _byte_padding(self, width, fillchar, 2, "center"))
+        return _bytes_padding_result(
+            self, _byte_padding(self, width, fillchar, 2, "center")
+        )
 
     def hex(self, sep=_HEX_MISSING, bytes_per_sep=1):
         return _hex_bytes(self, sep, bytes_per_sep)
@@ -2556,22 +2639,26 @@ class RangeIterator:
 
 
 class range:
-    def __init__(self, *args):
-        count = _storage_length(args)
-        if count == 1:
+    def __init__(self, start_or_stop, stop=_HEX_MISSING, step=1, /):
+        if stop is _HEX_MISSING:
             start = 0
-            stop = integer_index(_storage_read(args, 0))
+            stop = (
+                start_or_stop
+                if type(start_or_stop) is int
+                else integer_index(start_or_stop)
+            )
             step = 1
-        elif count == 2 or count == 3:
-            start = integer_index(_storage_read(args, 0))
-            stop = integer_index(_storage_read(args, 1))
-            step = 1
-            if count == 3:
-                step = integer_index(_storage_read(args, 2))
         else:
-            raise TypeError("range expects one to three arguments")
-        if step == 0:
-            raise ValueError("range step must not be zero")
+            start = (
+                start_or_stop
+                if type(start_or_stop) is int
+                else integer_index(start_or_stop)
+            )
+            stop = stop if type(stop) is int else integer_index(stop)
+            if type(step) is not int:
+                step = integer_index(step)
+            if step == 0:
+                raise ValueError("range step must not be zero")
         self.start = start
         self.stop = stop
         self.step = step
@@ -2830,7 +2917,7 @@ class list(ListStorage):
 
     def __new__(cls, *args, **kwargs):
         if not is_class(cls) or not is_subclass(cls, list):
-            raise TypeError('list.__new__: class must be a subtype of list')
+            raise TypeError("list.__new__: class must be a subtype of list")
         value = []
         if cls is not list:
             return typed_value(value, cls)
@@ -2839,7 +2926,7 @@ class list(ListStorage):
     def __init__(self, *args):
         count = _storage_length(args)
         if count > 1:
-            raise TypeError(f'list expected at most 1 argument, got {count}')
+            raise TypeError(f"list expected at most 1 argument, got {count}")
         _storage_delete(self, 0, _storage_length(self))
         if count:
             extend_arguments(self, _storage_read(args, 0))
@@ -2884,7 +2971,9 @@ class bytes(BytesStorage):
         if converted:
             if cls is bytes:
                 return result
-            values = [_storage_read(result, index) for index in range(_storage_length(result))]
+            values = [
+                _storage_read(result, index) for index in range(_storage_length(result))
+            ]
             return typed_value(bytes_from_values(values), cls)
         if _integer_storage_kind(source):
             source = _index_integer(source)
@@ -2900,13 +2989,17 @@ class bytes(BytesStorage):
         if is_instance(source, bytes):
             if cls is bytes and type(source) is bytes:
                 return source
-            values = [_storage_read(source, index) for index in range(_storage_length(source))]
+            values = [
+                _storage_read(source, index) for index in range(_storage_length(source))
+            ]
             value = bytes_from_values(values)
             return typed_value(value, cls) if cls is not bytes else value
         if is_instance(source, bytearray):
             value = bytes_from_values(source.values)
             return typed_value(value, cls) if cls is not bytes else value
-        values = [_byte_value(item, "bytes must be in range(0, 256)") for item in source]
+        values = [
+            _byte_value(item, "bytes must be in range(0, 256)") for item in source
+        ]
         value = bytes_from_values(values)
         return typed_value(value, cls) if cls is not bytes else value
 
@@ -2978,7 +3071,7 @@ class bytearray:
 
     def __init__(self, source=b"", encoding=None, errors="strict"):
         if buffer_exports(self):
-            raise BufferError('Existing exports of data: object cannot be re-sized')
+            raise BufferError("Existing exports of data: object cannot be re-sized")
         self.values = _byte_values(source, encoding, errors)
 
     def hex(self, sep=_HEX_MISSING, bytes_per_sep=1):
@@ -3003,14 +3096,14 @@ class bytearray:
 
     def _check_resize(self, size):
         if size != len(self.values) and buffer_exports(self):
-            raise BufferError('Existing exports of data: object cannot be re-sized')
+            raise BufferError("Existing exports of data: object cannot be re-sized")
 
     def resize(self, size, /):
         size = integer_index(size)
         if size < -(1 << 63) or size >= (1 << 63):
-            raise OverflowError('Python int too large to convert to C ssize_t')
+            raise OverflowError("Python int too large to convert to C ssize_t")
         if size < 0:
-            raise ValueError(f'Can only resize to positive sizes, got {size}')
+            raise ValueError(f"Can only resize to positive sizes, got {size}")
         self._check_resize(size)
         while len(self.values) > size:
             self.values.pop()
@@ -3046,13 +3139,17 @@ class bytearray:
                     _storage_append(self.values, item)
                 return
             if len(replacement) != count:
-                raise ValueError("attempt to assign sequence of wrong size to extended slice")
+                raise ValueError(
+                    "attempt to assign sequence of wrong size to extended slice"
+                )
             at = 0
             while at < count:
                 _storage_write(self.values, start + at * step, replacement[at])
                 at += 1
             return
-        _storage_write(self.values, storage_index(self.values, index), _byte_value(value))
+        _storage_write(
+            self.values, storage_index(self.values, index), _byte_value(value)
+        )
 
     def __delitem__(self, index):
         count = positions(index, len(self.values))[3] if is_slice(index) else 1
@@ -3264,7 +3361,7 @@ def _float_from_bits(bits, mantissa_bits, exponent_bits):
     elif exponent == 0:
         value = _scale_binary(float(fraction), 1 - bias - mantissa_bits)
     else:
-        value = _scale_binary(1.0 + fraction / (2.0 ** mantissa_bits), exponent - bias)
+        value = _scale_binary(1.0 + fraction / (2.0**mantissa_bits), exponent - bias)
     return -value if negative else value
 
 
@@ -3299,7 +3396,7 @@ def _float_to_bits(value, mantissa_bits, exponent_bits):
         if fraction >= (1 << mantissa_bits):
             return sign | (1 << mantissa_bits)
         return sign | fraction
-    scaled = (magnitude - 1.0) * (2.0 ** mantissa_bits)
+    scaled = (magnitude - 1.0) * (2.0**mantissa_bits)
     fraction = int(scaled)
     if scaled - fraction > 0.5 or (scaled - fraction == 0.5 and fraction % 2):
         fraction += 1
@@ -3424,7 +3521,9 @@ class memoryview:
     def cast(self, format, shape=None):
         self._check()
         if _memoryview_format_size(format) == 0:
-            raise TypeError("memoryview: destination format must be a native single character format")
+            raise TypeError(
+                "memoryview: destination format must be a native single character format"
+            )
         if self.step != self._itemsize():
             raise TypeError("memoryview: casts are restricted to C-contiguous views")
         total = self.length * self._itemsize()
@@ -3437,7 +3536,9 @@ class memoryview:
         result.step = size
         if shape is not None:
             if len(shape) != 1:
-                raise NotImplementedError("memoryview: multi-dimensional casts are not supported")
+                raise NotImplementedError(
+                    "memoryview: multi-dimensional casts are not supported"
+                )
             if shape[0] != result.length:
                 raise TypeError("memoryview: product(shape) * itemsize != buffer size")
         return result
@@ -3510,7 +3611,9 @@ class memoryview:
                     raise TypeError("cannot modify read-only memory")
                 start, stop, step, count = positions(index, self.length)
                 if _storage_length(value) != count:
-                    raise ValueError("memoryview assignment: lvalue and rvalue have different structures")
+                    raise ValueError(
+                        "memoryview assignment: lvalue and rvalue have different structures"
+                    )
                 target_values = self.source.values
                 base_start = self.start
                 base_step = self.step
@@ -3526,10 +3629,16 @@ class memoryview:
             if self._itemsize() != 1:
                 values = _make_list(value)
             else:
-                values = _byte_values(value, None, "strict") if _type_name(value) != "memoryview" else value.tolist()
+                values = (
+                    _byte_values(value, None, "strict")
+                    if _type_name(value) != "memoryview"
+                    else value.tolist()
+                )
             start, stop, step, count = positions(index, self.length)
             if len(values) != count:
-                raise ValueError("memoryview assignment: lvalue and rvalue have different structures")
+                raise ValueError(
+                    "memoryview assignment: lvalue and rvalue have different structures"
+                )
             at = 0
             while at < count:
                 if self._itemsize() != 1:
@@ -3612,10 +3721,20 @@ def _view_index(view, index):
 
 def __import__(name, globals=None, locals=None, fromlist=(), level=0):
     from importlib._bootstrap import __import__ as _import
+
     return _import(name, globals, locals, fromlist, integer_index(level))
 
 
-def open(file, mode='r', buffering=-1, encoding=None, errors=None, newline=None, closefd=True, opener=None):
+def open(
+    file,
+    mode="r",
+    buffering=-1,
+    encoding=None,
+    errors=None,
+    newline=None,
+    closefd=True,
+    opener=None,
+):
     import io as _io
 
     return _io.open(file, mode, buffering, encoding, errors, newline, closefd, opener)
