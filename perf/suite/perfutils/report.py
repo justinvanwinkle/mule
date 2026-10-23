@@ -5,6 +5,7 @@ import json
 import math
 import re
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 
 from . import history
@@ -334,6 +335,38 @@ def _short_run_label(run):
     return date_part
 
 
+def _clip_trend_segment(points, upper, zero, plot_height):
+    """Intersect line segments with the visible scale, without flattening peaks."""
+    segments = []
+    current = []
+    for (x1, v1), (x2, v2) in pairwise(points):
+        if v1 > upper and v2 > upper:
+            if current:
+                segments.append(current)
+                current = []
+            continue
+        if (v1 > upper) != (v2 > upper):
+            # Normalize first so even very large finite timings cannot overflow.
+            scale = max(v1, v2, upper)
+            fraction = (upper / scale - v1 / scale) / (v2 / scale - v1 / scale)
+            crossing = x1 + (x2 - x1) * fraction
+            if v1 > upper:
+                x1, v1 = crossing, upper
+            else:
+                x2, v2 = crossing, upper
+        start = f"{x1:.2f},{zero - (v1 / upper) * plot_height:.2f}"
+        end = f"{x2:.2f},{zero - (v2 / upper) * plot_height:.2f}"
+        if current and current[-1] != start:
+            segments.append(current)
+            current = []
+        if not current:
+            current.append(start)
+        current.append(end)
+    if current:
+        segments.append(current)
+    return segments
+
+
 def trend_chart(report, history_runs=None, metric="kernel_ms"):
     """Plot median elapsed milliseconds across recorded runs for each scenario."""
     runs = _trend_runs(report, history_runs)
@@ -370,7 +403,7 @@ def trend_chart(report, history_runs=None, metric="kernel_ms"):
         max((len(case) for case in groups), default=20) * 10 + 48,
     )
     panel_height = 340
-    gap, margin, top = 24, 28, 196
+    gap, margin, top = 24, 28, 220
     width = 2 * panel_width + gap + 2 * margin
     height = top + max(1, math.ceil(len(panels) / 2)) * (panel_height + gap) + 40
     title = (
@@ -384,13 +417,14 @@ def trend_chart(report, history_runs=None, metric="kernel_ms"):
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title description">',
         f'<title id="title">{title}: median milliseconds over recorded runs by scenario and runtime</title>',
-        '<desc id="description">Trend lines and points show median elapsed time in milliseconds across recorded runs from oldest (left) to newest (right). Lower means faster. Every panel uses an independent linear scale starting at zero. Failed or unavailable results have no point.</desc>',
+        '<desc id="description">Trend lines and points show median elapsed time in milliseconds across recorded runs from oldest (left) to newest (right). Lower means faster. Each zero-based linear scale uses the latest 10 runs or 25% of panel runs, rounded up, whichever is fewer, with 20% headroom. Upward triangles mark values above the scale; labeled values below each panel identify their run numbers. Failed or unavailable results have no point.</desc>',
         f'<rect width="{width}" height="{height}" fill="#faf8f3"/>',
         '<g font-family="system-ui,sans-serif" fill="#202b2b" font-size="14">',
         '<text x="36" y="35" font-size="11" font-weight="700" letter-spacing="2" fill="#c14c32">MULE / PERFORMANCE TREND</text>',
         f'<text x="36" y="76" font-size="30" font-weight="650">{title}</text>',
         f'<text x="36" y="105" fill="#596564">{html.escape(stamp)} · {len(runs)} recorded {run_count_word} · {html.escape(str(samples))} samples per runtime and scenario</text>',
         '<text x="36" y="135" font-weight="600">Lower points are faster · Linear axes start at zero · Oldest run on left, latest on right</text>',
+        '<text x="36" y="192" font-size="12" fill="#596564">Scale: latest min(10, 25% rounded up) panel runs + 20% headroom · Triangles: above scale, values listed below</text>',
     ]
     for r_idx, runtime in enumerate(runtimes):
         lx = 36 + r_idx * 170
@@ -402,9 +436,11 @@ def trend_chart(report, history_runs=None, metric="kernel_ms"):
                 f'<text x="{lx + 32}" y="164" font-size="13" font-weight="600">{html.escape(_runtime_label(runtime))}</text>',
             ]
         )
+    py = row_bottom = top
     for index, (case, _, typed_case, typed_rows) in enumerate(panels):
+        if index and index % 2 == 0:
+            py = row_bottom + gap
         px = margin + (index % 2) * (panel_width + gap)
-        py = top + (index // 2) * (panel_height + gap)
         left, right = px + 70, px + panel_width - 24
         zero, plot_height = py + 260, 160
         target_cases = {case} if typed_case is None else {case, typed_case}
@@ -418,9 +454,10 @@ def trend_chart(report, history_runs=None, metric="kernel_ms"):
         ]
         if not panel_runs and runs:
             panel_runs = [runs[-1]]
+        scale_runs = min(10, max(1, math.ceil(len(panel_runs) / 4)))
         values = [
             _history_milliseconds(res, metric)
-            for run in panel_runs
+            for run in panel_runs[-scale_runs:]
             for res in run.get("results", ())
             if res.get("case") in target_cases and res.get("runtime") in runtimes
         ]
@@ -442,12 +479,13 @@ def trend_chart(report, history_runs=None, metric="kernel_ms"):
         )
         svg.extend(
             [
-                f'<g data-case="{html.escape(case)}"{typed_attr}>',
+                f'<g data-case="{html.escape(case)}"{typed_attr} data-upper-ms="{upper:.17g}" data-scale-runs="{scale_runs}">',
                 f'<rect x="{px}" y="{py}" width="{panel_width}" height="{panel_height}" fill="#fffdf8" stroke="#dedfd8"/>',
                 f'<text x="{px + 22}" y="{py + 34}" font-size="18" font-weight="650">{html.escape(case.replace("_", " "))}</text>',
                 f'<text x="{px + 22}" y="{py + 58}" font-size="11" fill="#596564">{subtitle}</text>',
             ]
         )
+        frame_index = len(svg) - 3
         if typed_rows is not None:
             svg.extend(
                 [
@@ -498,6 +536,8 @@ def trend_chart(report, history_runs=None, metric="kernel_ms"):
             if typed_case is None
             else (("untyped", case, False), ("typed", typed_case, True))
         )
+        outliers = {runtime: [] for runtime in runtimes}
+        marked_runs = set()
         for runtime in runtimes:
             color = colors[runtime]
             for variant, vcase, is_typed in variants:
@@ -521,13 +561,16 @@ def trend_chart(report, history_runs=None, metric="kernel_ms"):
                     )
                     val = _history_milliseconds(res, metric)
                     if val is None:
-                        if len(current_segment) >= 2:
-                            segments.append(current_segment)
+                        segments.extend(
+                            _clip_trend_segment(
+                                current_segment, upper, zero, plot_height
+                            )
+                        )
                         current_segment = []
                     else:
                         x = xs[r_idx]
-                        y = zero - (val / upper) * plot_height
-                        current_segment.append(f"{x:.2f},{y:.2f}")
+                        y = zero - (min(val, upper) / upper) * plot_height
+                        current_segment.append((x, val))
                         run_stamp = str(run.get("created_utc", ""))
                         circle_style = (
                             f'fill="#fffdf8" stroke="{color}" stroke-width="1.8"'
@@ -535,11 +578,29 @@ def trend_chart(report, history_runs=None, metric="kernel_ms"):
                             else f'fill="{color}"'
                         )
                         v_title = f" ({variant})" if typed_case is not None else ""
-                        circles.append(
-                            f'<circle data-runtime="{html.escape(runtime)}"{v_attrs} data-run="{html.escape(run_stamp)}" data-ms="{val:.17g}" cx="{x:.2f}" cy="{y:.2f}" r="3.5" {circle_style}><title>{html.escape(runtime)}{v_title} @ {html.escape(run_stamp)}: {val:.6g} ms</title></circle>'
+                        point_attrs = f'data-runtime="{html.escape(runtime)}"{v_attrs} data-run="{html.escape(run_stamp)}" data-ms="{val:.17g}"'
+                        title_text = html.escape(
+                            f"{runtime}{v_title} @ {run_stamp}: {val:.6g} ms"
                         )
-                if len(current_segment) >= 2:
-                    segments.append(current_segment)
+                        if val > upper:
+                            circles.append(
+                                f'<path {point_attrs} data-clipped="true" data-x="{x:.2f}" d="M {x:.2f},{y - 5:.2f} L {x - 4:.2f},{y + 3:.2f} L {x + 4:.2f},{y + 3:.2f} Z" {circle_style}><title>{title_text} (above scale)</title></path>'
+                            )
+                            outliers[runtime].append(
+                                f"#{r_idx + 1}{v_title}: {val:.6g} ms"
+                            )
+                            if r_idx not in marked_runs:
+                                circles.append(
+                                    f'<text x="{x:.2f}" y="{y - 10:.2f}" text-anchor="middle" font-size="9" fill="#596564">{r_idx + 1}</text>'
+                                )
+                                marked_runs.add(r_idx)
+                        else:
+                            circles.append(
+                                f'<circle {point_attrs} cx="{x:.2f}" cy="{y:.2f}" r="3.5" {circle_style}><title>{title_text}</title></circle>'
+                            )
+                segments.extend(
+                    _clip_trend_segment(current_segment, upper, zero, plot_height)
+                )
                 for seg in segments:
                     pts = " ".join(seg)
                     svg.append(
@@ -577,11 +638,36 @@ def trend_chart(report, history_runs=None, metric="kernel_ms"):
             svg.append(
                 f'<text data-runtime="{html.escape(runtime)}" x="{center:.2f}" y="{zero + 38}" text-anchor="middle" font-size="12" font-weight="600">{html.escape(summary_label)}</text>'
             )
+        outlier_rows = max((len(labels) for labels in outliers.values()), default=0)
+        actual_height = panel_height
+        if outlier_rows:
+            svg.append(
+                f'<text x="{left}" y="{zero + 65}" font-size="10" fill="#596564">ABOVE SCALE · NUMBERED RUNS FROM LEFT TO RIGHT</text>'
+            )
+            for runtime_index, runtime in enumerate(runtimes):
+                x = left + lane * runtime_index
+                svg.append(
+                    f'<text x="{x:.2f}" y="{zero + 83}" font-size="11" font-weight="600" fill="{colors[runtime]}">{html.escape(_runtime_label(runtime))}</text>'
+                )
+                for label_index, label in enumerate(outliers[runtime]):
+                    svg.append(
+                        f'<text x="{x:.2f}" y="{zero + 100 + label_index * 16}" font-size="10" fill="{colors[runtime]}">{html.escape(label)}</text>'
+                    )
+            actual_height = 376 + outlier_rows * 16
+        svg[frame_index] = (
+            f'<rect x="{px}" y="{py}" width="{panel_width}" height="{actual_height}" fill="#fffdf8" stroke="#dedfd8"/>'
+        )
+        row_bottom = max(row_bottom, py + actual_height)
         svg.append("</g>")
     if not panels:
         svg.append(
             f'<text x="36" y="{top + 35}">No scenario measurements in this report.</text>'
         )
+    height = max(top + panel_height, row_bottom) + 40
+    svg[0] = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title description">'
+    )
+    svg[3] = f'<rect width="{width}" height="{height}" fill="#faf8f3"/>'
     svg.append(
         f'<text x="36" y="{height - 18}" font-size="11" fill="#596564">Compare runtimes within a panel, not heights across panels. Failures are not timings.</text>'
     )
@@ -711,7 +797,7 @@ Short kernels can be dominated by measurement overhead; increase workload size b
 {cpu_evidence}
 <section aria-label="Kernel comparison"><figure><div class="chart" role="region" aria-label="Scrollable kernel chart" tabindex="0"><img src="kernel.svg" alt="Vertical bars compare median kernel milliseconds for each runtime within each scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Kernel elapsed medians. Preparation and compilation are excluded. Each scenario has its own scale.</figcaption></figure></section>
 <section aria-label="Whole-process comparison"><figure><div class="chart" role="region" aria-label="Scrollable whole-process chart" tabindex="0"><img src="process.svg" alt="Vertical bars compare median whole-process milliseconds by runtime and scenario. Shorter is faster. Independent zero-based linear scales."></div><figcaption>Whole-process elapsed medians. Includes startup and setup, not compilation. Each scenario has its own scale.</figcaption></figure></section>
-<section aria-label="Historical trend"><figure><div class="chart" role="region" aria-label="Scrollable trend chart" tabindex="0"><img src="trend.svg" alt="Trend lines and points compare median kernel milliseconds over recorded runs for each runtime within each scenario. Lower is faster. Independent zero-based linear scales."></div><figcaption>Historical kernel elapsed medians across recorded runs (oldest on left, latest on right). Each scenario has its own scale.</figcaption></figure></section>
+  <section aria-label="Historical trend"><figure><div class="chart" role="region" aria-label="Scrollable trend chart" tabindex="0"><img src="trend.svg" alt="Trend lines and points compare median kernel milliseconds over recorded runs. Zero-based scales use recent runs. Upward triangles mark above-scale values listed below each panel."></div><figcaption>Historical kernel elapsed medians (oldest on left, latest on right). Each scenario uses its latest 10 runs or 25% of runs, rounded up, whichever is fewer, to set a zero-based scale with 20% headroom. Above-scale values appear as upward triangles with numbered values below the panel.</figcaption></figure></section>
 <section aria-labelledby="measurements"><h2 id="measurements">Every measurement</h2><div class="table" role="region" aria-label="Scrollable results table" tabindex="0"><table><thead><tr><th scope="col">Scenario</th><th scope="col">Runtime</th><th scope="col">Status</th>
 <th scope="col">Kernel median</th><th scope="col">Process median</th><th scope="col">Kernel runtime / {baseline}</th></tr></thead><tbody>{content}</tbody></table></div></section>
 <section aria-labelledby="provenance"><h2 id="provenance">Reproduce, then compare</h2><details><summary>Platform, run options, runtime commands, and revisions</summary><pre>{html.escape(json.dumps(context, indent=2))}</pre>{provenance}</details><p>Raw results retain samples, hashes, commands, and build diagnostics. A commit plus a tracked-diff digest identifies the measured working tree, not necessarily a clean release.</p></section>

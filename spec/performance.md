@@ -39,6 +39,13 @@ HTML/SVG reports. The initial cases cover integer traversal, graph shortest
 paths, access-log aggregation, and in-process HTTP parsing/routing. Socket/server
 load tests and memory measurement are not implemented in this first set.
 
+Historical trend charts retain all scenario runs but scale each zero-based
+vertical axis from its latest `min(10, ceil(run_count / 4))` runs, across all
+displayed runtimes and typed variants, with 20% headroom. Values above the scale
+use upward triangles and numbered value labels below the panel. Missing or
+failed measurements break connecting lines. See the suite documentation for
+empty-window handling and the distinction between kernel and process timing.
+
 `tools/bench_native.py` builds programs at LLVM and Rust optimization level 3,
 with full LTO enabled separately by `--lto`, checks their stdout against CPython 3.14, then alternates direct
 native and Python executions. Compilation is measured separately and excluded
