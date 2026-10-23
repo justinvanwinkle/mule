@@ -1325,7 +1325,17 @@ class FunctionConverter:
             ctran, value = self.value(current, expression)
             current = Ctran()
             self.set_var(ctran, current, var, value, node)
-        for argument in node.arguments:
+        ordered_arguments = [
+            argument
+            for argument in node.arguments
+            if argument.kind in (ast.ArgumentKind.POSITIONAL, ast.ArgumentKind.STARRED)
+        ] + [
+            argument
+            for argument in node.arguments
+            if argument.kind
+            not in (ast.ArgumentKind.POSITIONAL, ast.ArgumentKind.STARRED)
+        ]
+        for argument in ordered_arguments:
             if argument.kind in (ast.ArgumentKind.POSITIONAL, ast.ArgumentKind.STARRED):
                 target, name = (
                     positional,
@@ -2172,7 +2182,14 @@ class _Expressions(ast.Visitor):
             span=node.span,
         )
         lambda_ = function.converter.function(
-            definition, function.lambda_.policy, parent=function, source_identity=node
+            definition,
+            function.lambda_.policy,
+            parent=function,
+            defining_class=function.defining_class
+            if function.annotation_scope
+            else None,
+            annotation_scope=function.annotation_scope,
+            source_identity=node,
         )
         function.define_function(
             start, next_, result, lambda_, definition, definition.name
@@ -3418,34 +3435,68 @@ class _Statements(ast.Visitor):
             for declaration in statement.accept(_NamedAnnotations())
         )
         if declarations and "__annotations__" not in bindings.bound:
-            # Class annotations are deferred metadata (PEP 649): record
-            # each annotation's source text in ``__annotations__`` so
-            # runtime consumers such as dataclasses and annotationlib
-            # can find the declared names without evaluating anything.
-            entries = [
-                ast.DictEntry(
-                    ast.TextLiteral(name, span=node.span),
-                    ast.TextLiteral(
-                        converter.source_text(annotation), span=annotation.span
-                    ),
-                    span=node.span,
+            if native is None and "__annotate__" not in bindings.bound:
+                from .annotation_runtime import AnnotationThunk
+
+                annotate = AnnotationThunk.from_declarations(
+                    converter,
+                    node.span,
+                    declarations,
+                    _RuntimeAnnotation(converter),
+                ).build()
+                if annotate is not None:
+                    thunk = converter.function(
+                        annotate,
+                        policy,
+                        parent=function,
+                        defining_class=scope,
+                        qualname=f"{scope.qualname}.__annotate__",
+                        annotation_scope=True,
+                    )
+                    ctran, callback = Ctran(), Lvar()
+                    function.define_function(
+                        frontier, ctran, callback, thunk, annotate, "__annotate__"
+                    )
+                    frontier = Ctran()
+                    function.class_namespace_operation(
+                        ctran,
+                        frontier,
+                        None,
+                        fndb.CLASS_STORE,
+                        scope,
+                        "__annotate__",
+                        (callback,),
+                        node,
+                    )
+            else:
+                # Class annotations are deferred metadata (PEP 649): record
+                # each annotation's source text in ``__annotations__`` so
+                # runtime consumers such as dataclasses and annotationlib
+                # can find the declared names without evaluating anything.
+                entries = [
+                    ast.DictEntry(
+                        ast.TextLiteral(name, span=node.span),
+                        ast.TextLiteral(
+                            converter.source_text(annotation), span=annotation.span
+                        ),
+                        span=node.span,
+                    )
+                    for name, annotation in declarations
+                ]
+                ctran, annotations = function.value(
+                    frontier, ast.Dict(entries, span=node.span)
                 )
-                for name, annotation in declarations
-            ]
-            ctran, annotations = function.value(
-                frontier, ast.Dict(entries, span=node.span)
-            )
-            frontier = Ctran()
-            function.class_namespace_operation(
-                ctran,
-                frontier,
-                None,
-                fndb.CLASS_STORE,
-                scope,
-                "__annotations__",
-                (annotations,),
-                node,
-            )
+                frontier = Ctran()
+                function.class_namespace_operation(
+                    ctran,
+                    frontier,
+                    None,
+                    fndb.CLASS_STORE,
+                    scope,
+                    "__annotations__",
+                    (annotations,),
+                    node,
+                )
         operands = []
         for var in (bases, namespace, class_keywords):
             ctran, value = Ctran(), Lvar()
@@ -4276,7 +4327,9 @@ def _annotation_scope_body(node, span):
     def lazy(expression):
         if expression is None:
             return ast.NoneLiteral(None, span=span)
-        return ast.Lambda([], expression, span=span)
+        from .annotation_runtime import _ANNOTATION_VALUE
+
+        return ast.Lambda([], expression.accept(_ANNOTATION_VALUE), span=span)
 
     for parameter in node.type_parameters:
         constraints = (
@@ -5778,6 +5831,9 @@ class _ClassBindings(_ImportNames):
         for child in (*node.decorators, *node.arguments):
             child.accept(self)
 
+    def visit_TypeAlias(self, node):
+        self.bound.add(node.name)
+
     def visit_ExceptionHandler(self, node):
         if node.binding is not None:
             self.bound.add(node.binding)
@@ -5828,6 +5884,12 @@ class BindsName(ast.Visitor):
         self.visit_Node(node)
 
     def visit_ClassDefinition(self, node):
+        if node.name == self.name:
+            self.found = True
+            return
+        self.visit_Node(node)
+
+    def visit_TypeAlias(self, node):
         if node.name == self.name:
             self.found = True
             return
@@ -6390,6 +6452,10 @@ class _ScopeVisitor(_ImportNames):
         self.seen.add(node.name)
         self.all_seen.add(node.name)
 
+    def visit_TypeAlias(self, node):
+        self.seen.add(node.name)
+        self.all_seen.add(node.name)
+
     def visit_Global(self, node):
         for name in node.identifiers:
             if name not in self.function.globals and name in self.seen:
@@ -6455,6 +6521,9 @@ class _LocalBindings(_ImportNames):
         ast.Name(node.name, span=node.span).accept(self.target_visitor)
 
     def visit_ClassDefinition(self, node):
+        ast.Name(node.name, span=node.span).accept(self.target_visitor)
+
+    def visit_TypeAlias(self, node):
         ast.Name(node.name, span=node.span).accept(self.target_visitor)
 
     def visit_ExceptionHandler(self, node):

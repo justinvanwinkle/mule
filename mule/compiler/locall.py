@@ -1496,6 +1496,23 @@ class _MakeFunctionDefaults(NodeVisitor):
         return ()
 
 
+class _MutatesFunctionDefaults(NodeVisitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        if node.kind is not CallKind.KNOWN or node.fun_info is None:
+            return False
+        if node.fun_info is SETATTR:
+            return node.info.name in ("__defaults__", "__kwdefaults__")
+        if node.fun_info is GETATTR:
+            return node.info.name == "__kwdefaults__"
+        return node.fun_info is DELATTR
+
+
+_MUTATES_FUNCTION_DEFAULTS = _MutatesFunctionDefaults()
+
+
 def analyze(
     lambdas,
     annotations: AnnotationLedger,
@@ -1666,31 +1683,42 @@ def analyze(
         if leaf.sets and leaf.sets[0].home_lambda is not None:
             ns = leaf.sets[0].home_lambda.namespace
             global_constants_by_ns.setdefault(ns, {})[leaf.name] = vtype
-    for lambda_ in lambdas:
-        if (
-            lambda_.signature.default_parameters
-            and len(lambda_.refs) == 1
-            and lambda_.refs[0].dest is not None
-        ):
-            default_lvars = lambda_.refs[0].dest.accept(
-                _MakeFunctionDefaults(lambda_, lambda_.refs[0])
-            )
-            if default_lvars:
-                ns_consts = global_constants_by_ns.get(lambda_.namespace, {})
-                def_types: list[ValueType] = []
-                for def_lvar in default_lvars:
-                    lit = def_lvar.accept(_MadeConstant())
-                    if lit is not None:
-                        def_types.append(constant_type(lit))
-                    elif (
-                        len(def_lvar.uses) == 1
-                        and (gname := def_lvar.uses[0].accept(_GLOBAL_CALLEE_REF_NAME))
-                        is not None
-                    ):
-                        def_types.append(ns_consts.get(gname, UNKNOWN))
-                    else:
-                        def_types.append(UNKNOWN)
-                lambda_.default_types = tuple(def_types)
+    defaults_mutated = any(
+        node.accept(_MUTATES_FUNCTION_DEFAULTS)
+        for graph in graphs.values()
+        for block in graph.blocks
+        for node in graph.block_nodes[block]
+    )
+    if not defaults_mutated:
+        for lambda_ in lambdas:
+            if (
+                lambda_.signature.default_parameters
+                and len(lambda_.refs) == 1
+                and lambda_.refs[0].dest is not None
+            ):
+                default_lvars = lambda_.refs[0].dest.accept(
+                    _MakeFunctionDefaults(lambda_, lambda_.refs[0])
+                )
+                if default_lvars:
+                    ns_consts = global_constants_by_ns.get(lambda_.namespace, {})
+                    def_types: list[ValueType] = []
+                    for def_lvar in default_lvars:
+                        lit = def_lvar.accept(_MadeConstant())
+                        if lit is not None:
+                            def_types.append(constant_type(lit))
+                        elif (
+                            len(def_lvar.uses) == 1
+                            and (
+                                gname := def_lvar.uses[0].accept(
+                                    _GLOBAL_CALLEE_REF_NAME
+                                )
+                            )
+                            is not None
+                        ):
+                            def_types.append(ns_consts.get(gname, UNKNOWN))
+                        else:
+                            def_types.append(UNKNOWN)
+                    lambda_.default_types = tuple(def_types)
     captured_vars: list = []
     seen_captured: set = set()
     for lambda_ in lambdas:

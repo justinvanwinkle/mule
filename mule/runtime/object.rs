@@ -1217,6 +1217,7 @@ pub unsafe fn function_attribute(function: Value, attribute: &str) -> Value {
             attributes,
             closure,
             closure_cells,
+            code_info,
             ..
         } = &(*function).data
         else {
@@ -1229,7 +1230,15 @@ pub unsafe fn function_attribute(function: Value, attribute: &str) -> Value {
             }
         }
         match attribute {
-            "__name__" | "__qualname__" => new_value(Data::Text(crate::text::Text::from_rust_str(name), std::ptr::null_mut(), std::ptr::null_mut())),
+            "__name__" => new_value(Data::Text(crate::text::Text::from_rust_str(name), std::ptr::null_mut(), std::ptr::null_mut())),
+            "__qualname__" => {
+                let qualname = if code_info.is_null() {
+                    name.as_str()
+                } else {
+                    (**code_info).qualname()
+                };
+                new_value(Data::Text(crate::text::Text::from_rust_str(qualname), std::ptr::null_mut(), std::ptr::null_mut()))
+            }
             "__module__" => {
                 if globals.is_null() {
                     return retain(none_value());
@@ -1320,6 +1329,132 @@ pub unsafe fn argument_count(args: Value) -> Option<usize> {
         None
     }
 }
+pub unsafe fn effective_function_defaults(callable: Value) -> Value {
+    unsafe {
+        if callable.is_null() || is_fixnum(callable) {
+            return std::ptr::null_mut();
+        }
+        let Data::Function {
+            defaults,
+            positional_defaults,
+            keyword_defaults,
+            ..
+        } = &(*callable).data
+        else {
+            return std::ptr::null_mut();
+        };
+        if positional_defaults.is_null() && keyword_defaults.is_null() {
+            return *defaults;
+        }
+        sync_function_defaults(callable)
+    }
+}
+
+#[cold]
+unsafe fn sync_function_defaults(callable: Value) -> Value {
+    unsafe {
+        let Data::Function {
+            defaults,
+            positional_defaults,
+            keyword_defaults,
+            ..
+        } = &(*callable).data
+        else {
+            return std::ptr::null_mut();
+        };
+        let old_defaults = *defaults;
+        let pos_defs = *positional_defaults;
+        let kw_defs = *keyword_defaults;
+        let metadata = crate::traceback::code_metadata(callable, false);
+        if metadata.is_null() || is_fixnum(metadata) || metadata == none_value() {
+            release(metadata);
+            return old_defaults;
+        }
+        let Data::Args(meta_vals, ..) = &(*metadata).data else {
+            release(metadata);
+            return old_defaults;
+        };
+        let pos_count = meta_vals
+            .get(11)
+            .filter(|&&v| is_fixnum(v))
+            .map_or(0usize, |&v| fixnum(v).max(0) as usize);
+        let kw_names_tuple = meta_vals.get(12).copied().unwrap_or(std::ptr::null_mut());
+        let old_slice: &[Value] = if !old_defaults.is_null() && !is_fixnum(old_defaults) {
+            if let Data::Args(vals, ..) = &(*old_defaults).data {
+                vals.as_slice()
+            } else {
+                &[]
+            }
+        } else {
+            &[]
+        };
+        let missing = crate::arguments::mule_binding_missing();
+        let mut new_values: Vec<Value> = Vec::new();
+        if !pos_defs.is_null() && !is_fixnum(pos_defs) {
+            if let Data::Args(vals, ..) = &(*pos_defs).data {
+                if vals.len() >= pos_count {
+                    for &v in &vals[vals.len() - pos_count..] {
+                        new_values.push(retain(v));
+                    }
+                } else {
+                    for _ in 0..(pos_count - vals.len()) {
+                        new_values.push(missing);
+                    }
+                    for &v in vals.as_slice() {
+                        new_values.push(retain(v));
+                    }
+                }
+            } else {
+                for _ in 0..pos_count {
+                    new_values.push(missing);
+                }
+            }
+        } else {
+            for idx in 0..pos_count {
+                new_values.push(retain(old_slice.get(idx).copied().unwrap_or(missing)));
+            }
+        }
+        if !kw_names_tuple.is_null() && !is_fixnum(kw_names_tuple) {
+            if let Data::Args(kw_names, ..) = &(*kw_names_tuple).data {
+                for (idx, &kw_name) in kw_names.iter().enumerate() {
+                    if !kw_defs.is_null() && !is_fixnum(kw_defs) && kw_defs != none_value() {
+                        let res = special(kw_defs, "__getitem__", &[kw_name]);
+                        let val = if res.is_null() {
+                            clear_error();
+                            missing
+                        } else {
+                            res
+                        };
+                        new_values.push(val);
+                    } else if kw_defs == none_value() {
+                        new_values.push(missing);
+                    } else {
+                        new_values.push(retain(
+                            old_slice.get(pos_count + idx).copied().unwrap_or(missing),
+                        ));
+                    }
+                }
+            }
+        }
+        release(metadata);
+        let updated = mule_sequence_tuple(new_values.len() as isize, new_values.as_ptr());
+        for v in new_values {
+            release(v);
+        }
+        if updated.is_null() {
+            clear_error();
+            return old_defaults;
+        }
+        let Data::Function { defaults, .. } = &mut (*callable).data else {
+            release(updated);
+            return std::ptr::null_mut();
+        };
+        let previous = std::mem::replace(defaults, updated);
+        release(previous);
+        *defaults
+    }
+}
+
 pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
     unsafe {
         if has_error() {
@@ -1351,14 +1486,14 @@ pub unsafe fn call(callable: Value, args: &[Value]) -> Value {
                 return std::ptr::null_mut();
             }
         }
-        let (entry, globals, defaults, closure) = match &(*callable).data {
+        let defaults = effective_function_defaults(callable);
+        let (entry, globals, closure) = match &(*callable).data {
             Data::Function {
                 entry,
                 globals,
-                defaults,
                 closure,
                 ..
-            } => (*entry, *globals, *defaults, *closure),
+            } => (*entry, *globals, *closure),
             _ => unreachable!(),
         };
         if mule_enter_frame() < 0 {
@@ -1399,14 +1534,17 @@ pub unsafe fn call_owned(callable: Value, args: &[Value]) -> Value {
             return std::ptr::null_mut();
         }
         if !callable.is_null() && !is_fixnum(callable) && args.len() < 64 {
-            if let Data::Function {
-                entry,
-                globals,
-                defaults,
-                closure,
-                ..
-            } = &(*callable).data
-            {
+            if matches!(&(*callable).data, Data::Function { .. }) {
+                let defaults = effective_function_defaults(callable);
+                let Data::Function {
+                    entry,
+                    globals,
+                    closure,
+                    ..
+                } = &(*callable).data
+                else {
+                    unreachable!()
+                };
                 if mule_enter_frame() < 0 {
                     for &arg in args {
                         release(arg);
@@ -1425,7 +1563,7 @@ pub unsafe fn call_owned(callable: Value, args: &[Value]) -> Value {
                     data: Data::ArgumentView {
                         values: args.as_ptr(),
                         count: args.len(),
-                        defaults: *defaults,
+                        defaults,
                         closure: *closure,
                         owned_mask: Cell::new(mask),
                     },
@@ -1467,14 +1605,17 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
             return std::ptr::null_mut();
         }
         if !method.is_null() && !is_fixnum(method) {
-            if let Data::Function {
-                entry,
-                globals,
-                defaults,
-                closure,
-                ..
-            } = &(*method).data
-            {
+            if matches!(&(*method).data, Data::Function { .. }) {
+                let defaults = effective_function_defaults(method);
+                let Data::Function {
+                    entry,
+                    globals,
+                    closure,
+                    ..
+                } = &(*method).data
+                else {
+                    unreachable!()
+                };
                 if mule_enter_frame() < 0 {
                     return std::ptr::null_mut();
                 }
@@ -1486,7 +1627,7 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
                         receiver,
                         values: args.as_ptr(),
                         count: args.len(),
-                        defaults: *defaults,
+                        defaults,
                         closure: *closure,
                         owned_mask: Cell::new(0),
                     },
@@ -1527,14 +1668,17 @@ pub unsafe fn call_with_receiver_owned(method: Value, receiver: Value, args: &[V
             return std::ptr::null_mut();
         }
         if !method.is_null() && !is_fixnum(method) && args.len() < 63 {
-            if let Data::Function {
-                entry,
-                globals,
-                defaults,
-                closure,
-                ..
-            } = &(*method).data
-            {
+            if matches!(&(*method).data, Data::Function { .. }) {
+                let defaults = effective_function_defaults(method);
+                let Data::Function {
+                    entry,
+                    globals,
+                    closure,
+                    ..
+                } = &(*method).data
+                else {
+                    unreachable!()
+                };
                 if mule_enter_frame() < 0 {
                     release(receiver);
                     for &arg in args {
@@ -1551,7 +1695,7 @@ pub unsafe fn call_with_receiver_owned(method: Value, receiver: Value, args: &[V
                         receiver,
                         values: args.as_ptr(),
                         count: args.len(),
-                        defaults: *defaults,
+                        defaults,
                         closure: *closure,
                         owned_mask: Cell::new(mask),
                     },

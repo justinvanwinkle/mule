@@ -810,13 +810,33 @@ def call_annotate_function(annotate, format, *, owner=None, _is_evaluate=False):
         closure, cell_dict = _build_closure(
             annotate, owner, is_class, globals, allow_evaluation=True
         )
-        func = types.FunctionType(
-            annotate.__code__,
-            globals,
-            closure=closure,
-            argdefs=annotate.__defaults__,
-            kwdefaults=annotate.__kwdefaults__,
-        )
+        try:
+            func = types.FunctionType(
+                annotate.__code__,
+                globals,
+                closure=closure,
+                argdefs=annotate.__defaults__,
+                kwdefaults=annotate.__kwdefaults__,
+            )
+        except TypeError:
+            strings = annotate(Format.STRING)
+            if _is_evaluate:
+                if isinstance(strings, str):
+                    ref = ForwardRef(strings, owner=owner, is_class=is_class)
+                    ref.__globals__ = annotate.__globals__
+                    ref.__cell__ = cell_dict
+                    return ref.evaluate(format=Format.FORWARDREF)
+                return strings
+            out = {}
+            for key, val in strings.items():
+                if isinstance(val, str):
+                    ref = ForwardRef(val, owner=owner, is_class=is_class)
+                    ref.__globals__ = annotate.__globals__
+                    ref.__cell__ = cell_dict
+                    out[key] = ref.evaluate(format=Format.FORWARDREF)
+                else:
+                    out[key] = val
+            return out
         try:
             result = func(Format.VALUE_WITH_FAKE_GLOBALS)
         except NotImplementedError:

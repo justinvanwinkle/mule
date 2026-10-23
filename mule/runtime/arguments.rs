@@ -311,9 +311,10 @@ unsafe fn call_buffers(
             _ => (),
         }
         let (captured, closure) = match &(*callable).data {
-            Data::Function {
-                defaults, closure, ..
-            } => (*defaults, *closure),
+            Data::Function { closure, .. } => {
+                let c = *closure;
+                (object::effective_function_defaults(callable), c)
+            }
             _ => (std::ptr::null_mut(), std::ptr::null_mut()),
         };
         let mut view = Object {
@@ -507,10 +508,8 @@ pub unsafe extern "C" fn mule_function_defaults(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_function_default(callable: Value, offset: i32) -> Value {
     unsafe {
-        let Data::Function { defaults, .. } = &(*callable).data else {
-            unreachable!()
-        };
-        object::argument(*defaults, offset as usize).unwrap_or(std::ptr::null_mut())
+        let defaults = object::effective_function_defaults(callable);
+        object::argument(defaults, offset as usize).unwrap_or(std::ptr::null_mut())
     }
 }
 

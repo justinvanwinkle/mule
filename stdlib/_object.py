@@ -502,9 +502,6 @@ class type(object):
         if "__doc__" not in namespace:
             names.append("__doc__")
             values.append(None)
-        if "__annotations__" not in namespace:
-            names.append("__annotations__")
-            values.append({})
         if changed and "__orig_bases__" not in namespace:
             names.append("__orig_bases__")
             values.append(original_bases)
@@ -586,11 +583,35 @@ def _class_annotations(cls):
     # type.__annotations__ provides in CPython. Classes keep their own
     # stored dict when they define annotations.
     if "__annotations__" in class_own_names(cls):
-        return _namespace(cls)["__annotations__"]
-    return {}
+        annotations = _namespace(cls)["__annotations__"]
+        if annotations is not None:
+            return annotations
+    if "__annotate__" in class_own_names(cls):
+        annotate = _namespace(cls)["__annotate__"]
+        if annotate is not None:
+            annotations = annotate(1).__mule_annotation_mapping__()
+            generic_set_attribute(cls, "__annotations__", annotations)
+            return annotations
+    annotations = {}
+    generic_set_attribute(cls, "__annotations__", annotations)
+    return annotations
+
+
+def _class_annotate(cls):
+    if "__annotate__" in class_own_names(cls):
+        return _namespace(cls)["__annotate__"]
+    return None
+
+
+def _class_type_params(cls):
+    if "__type_params__" in class_own_names(cls):
+        return _namespace(cls)["__type_params__"]
+    return ()
 
 
 type.__annotations__ = property(_class_annotations)
+type.__annotate__ = property(_class_annotate)
+type.__type_params__ = property(_class_type_params)
 
 
 def _bases(cls):
@@ -2372,6 +2393,27 @@ class function(object):
         return _globals_dict(function_globals(self))
 
     @property
+    def __builtins__(self):
+        globals_dict = self.__globals__
+        if "__builtins__" in globals_dict:
+            builtins_val = globals_dict["__builtins__"]
+            if is_instance(builtins_val, dict):
+                return builtins_val
+            return builtins_val.__dict__
+        import builtins
+        return builtins.__dict__
+
+    @property
+    def __type_params__(self):
+        return ()
+
+    @__type_params__.setter
+    def __type_params__(self, value):
+        if not is_instance(value, tuple):
+            raise TypeError(f"__type_params__ must be set to a tuple, not {type_of(value).__name__}")
+        namespace_bind(function_attributes(self), "__type_params__", value)
+
+    @property
     def __closure__(self):
         return generic_get_attribute(self, "__closure__")
 
@@ -2410,7 +2452,13 @@ class function(object):
 
     @__defaults__.setter
     def __defaults__(self, value):
-        namespace_bind(function_attributes(self), "__defaults__", value)
+        if value is not None and not is_instance(value, tuple):
+            raise TypeError(f"__defaults__ must be set to a tuple object")
+        set_function_positional_defaults(self, value)
+
+    @__defaults__.deleter
+    def __defaults__(self):
+        set_function_positional_defaults(self, None)
 
     @property
     def __kwdefaults__(self):
@@ -2429,7 +2477,13 @@ class function(object):
 
     @__kwdefaults__.setter
     def __kwdefaults__(self, value):
-        namespace_bind(function_attributes(self), "__kwdefaults__", value)
+        if value is not None and not is_instance(value, dict):
+            raise TypeError(f"__kwdefaults__ must be set to a dict object")
+        set_function_keyword_defaults(self, value)
+
+    @__kwdefaults__.deleter
+    def __kwdefaults__(self):
+        set_function_keyword_defaults(self, None)
 
     @property
     def __annotations__(self):
@@ -2592,6 +2646,10 @@ class method(object):
     @property
     def __func__(self):
         return bound_method_function(self)
+
+    @property
+    def __doc__(self):
+        return bound_method_function(self).__doc__
 
     def __getattribute__(self, name):
         try:

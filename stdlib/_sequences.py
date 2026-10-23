@@ -1164,7 +1164,10 @@ def add_keyword(keywords, name, value):
 
 
 def merge_keywords(keywords, mapping):
-    for name in mapping.keys():
+    keys = getattr(mapping, "keys", None)
+    if keys is None:
+        raise TypeError(f"argument after ** must be a mapping, not {_type_name(mapping)}")
+    for name in keys():
         if not _text_storage(name):
             raise TypeError("keywords must be strings")
         add_keyword(keywords, name, mapping[name])
