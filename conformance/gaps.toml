@@ -87,7 +87,7 @@ exit_code = 1
 ["builtins/type_and_len"]
 phase = "run"
 reason = "native output differs from CPython"
-stdout = "type int\ntype bool\ntype float\ntype complex\ntype str\ntype bytes\ntype bytearray\ntype list\ntype tuple\ntype dict\ntype set\ntype frozenset\ntype NoneType\ntype range\ntype slice\ntype ellipsis\ntype NotImplementedType\ntype type\ntype object\ntype builtin_function_or_method\ntype function\ntype StorageIterator\ntype StorageIterator\ntype generator\ntype dict_keys\ntype dict_values\ntype dict_items\ntype memoryview\ntype is True True False True\nuser Child True False type\ntype of function function function\ngenerator function function generator function\nmodule type builtins builtins\nqualname Child int\ncall type to construct 12 ['a', 'b'] 3.5\ncustom len 0 1000000\nlen overflow OverflowError\nlen via __index__ TypeError\nlen returns bool 0\ninstance __len__ ignored TypeError\nexplicit call instance attr 3\nlen builtin name len\n"
+stdout = "type int\ntype bool\ntype float\ntype complex\ntype str\ntype bytes\ntype bytearray\ntype list\ntype tuple\ntype dict\ntype set\ntype frozenset\ntype NoneType\ntype range\ntype slice\ntype ellipsis\ntype NotImplementedType\ntype type\ntype object\ntype builtin_function_or_method\ntype function\ntype list_iterator\ntype list_iterator\ntype generator\ntype dict_keys\ntype dict_values\ntype dict_items\ntype memoryview\ntype is True True False True\nuser Child True False type\ntype of function function function\ngenerator function function generator function\nmodule type builtins builtins\nqualname Child int\ncall type to construct 12 ['a', 'b'] 3.5\ncustom len 0 1000000\nlen overflow OverflowError\nlen via __index__ TypeError\nlen returns bool 0\ninstance __len__ ignored TypeError\nexplicit call instance attr 3\nlen builtin name len\n"
 stderr = ""
 exit_code = 0
 
@@ -105,26 +105,12 @@ stdout = "abstract methods []\nconcrete square with area 9 []\nsuper to abstract
 stderr = ""
 exit_code = 0
 
-["classes/builtin_subclass_len_override"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "list_len: 3 103 3\ntuple_len: 2 202 2\ndict_len: 301 301 1\nset_len: 404 404 4\nstr_len: 5 505 5\n"
-stderr = ""
-exit_code = 0
-
 ["classes/builtin_subclasses"]
 phase = "run"
 reason = "AttributeError: 'str' object has no attribute 'format_map'"
-stdout = "loud list [10, 2, 3, 4] 2 4 19\nloud list log ['append 3', 'setitem 0', 'getitem 1']\nslice type list [2, 3] ['getitem slice(1, 3, None)']\nconcat type list list\nisinstance list True True\nmissing via [] 1 <b>\nget bypasses missing None False\nafter [('a', 1), ('b', '<b>')]\ndict keys ['MixedInit', 'SetDef', 'Updated', 'upper']\ngetitem lowered 2 2\nbypassed key not found KeyError\ndict copy type dict dict\nstr() HEY! format HEY! repr 'hey'\nlen override 3 concat heyx str\njoin hey-hey upper type str\nprint direct HEY!\nint subclass ops 8 8 15 10 int\nformat int sub 0005 $5 $5\nbool / hash False True True\nbool override False True no\n"
+stdout = "loud list [10, 2, 3, 4] 2 4 19\nloud list log ['append 3', 'setitem 0', 'getitem 1', 'len']\nslice type list [2, 3] ['getitem slice(1, 3, None)']\nconcat type list list\nisinstance list True True\nmissing via [] 1 <b>\nget bypasses missing None False\nafter [('a', 1), ('b', '<b>')]\ndict keys ['MixedInit', 'SetDef', 'Updated', 'upper']\ngetitem lowered 2 2\nbypassed key not found KeyError\ndict copy type dict dict\nstr() HEY! format HEY! repr 'hey'\nlen override 1000 concat heyx str\njoin hey-hey upper type str\nprint direct HEY!\nint subclass ops 8 8 15 10 int\nformat int sub 0005 $5 $5\nbool / hash False True True\nbool override True True yes\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/builtin_subclasses.py\", line 131, in <module>\n    fmt = \"{x}-{y}\".format_map(cd)\nAttributeError: 'str' object has no attribute 'format_map'\n"
 exit_code = 1
-
-["classes/class_decorators"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "trace ['tag factory outer', 'tag factory inner', 'tag apply inner to Widget', 'add_greet Widget', 'tag apply outer to Widget']\ntags order ('inner', 'outer')\ngreet hello from Widget\nwrapped Wrapper 2 ['Wrapper', 'Item', 'object']\ndecorator returns instance settings-instance False\nauto repr Pt(x=1, y='a') True False False\nunhashable TypeError\nregistry ['A', 'B']\npep614 hello from Fancy ('lam',)\nnested decorated ('nested',) Outer.Inner\nmeta then decorator ['tag factory after-meta', 'meta WithMeta', 'tag apply after-meta to WithMeta']\n"
-stderr = ""
-exit_code = 0
 
 ["classes/dataclasses_advanced"]
 phase = "run"
@@ -156,10 +142,10 @@ exit_code = 0
 
 ["classes/enums_basic"]
 phase = "run"
-reason = "TypeError: object has no len"
-stdout = "repr/str <Color.RED: 1> Color.RED Color.BLUE\nname/value GREEN 2\niteration skips aliases ['RED', 'GREEN', 'BLUE']\nmembers incl aliases ['RED', 'GREEN', 'BLUE', 'CRIMSON']\nalias identity True RED\nlookup by value Color.GREEN Color.RED\nlookup by name Color.BLUE Color.RED\nbad value ValueError\nbad name KeyError\nmethods red=1 True False Color.GREEN\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/enums_basic.py\", line 40, in <module>\n    print(\"len\", len(Color), \"contains\", Color.RED in Color, 1 in Color)\nTypeError: object has no len\n"
-exit_code = 1
+reason = "native output differs from CPython"
+stdout = "repr/str <Color.RED: 1> Color.RED Color.BLUE\nname/value GREEN 2\niteration skips aliases ['RED', 'GREEN', 'BLUE']\nmembers incl aliases ['RED', 'GREEN', 'BLUE', 'CRIMSON']\nalias identity True RED\nlookup by value Color.GREEN Color.RED\nlookup by name Color.BLUE Color.RED\nbad value ValueError\nbad name KeyError\nmethods red=1 True False Color.GREEN\nlen 3 contains True True\neq with value False True\nEnum ordering TypeError\nhashable r\ntype Color True\nset value AttributeError\nauto values [('A', 1), ('B', 2), ('C', 10), ('D', 11)]\ncustom auto ['x', 'y']\nunique ValueError\nIntEnum ops True 6 True [<Priority.LOW: 1>, 3, <Priority.HIGH: 10>]\nIntEnum str/format 5 5 <Priority.MID: 5> 005\nIntEnum index 20 10 True\nStrEnum read read True W WRITE\nStrEnum join read+w\ntuple-valued (5.976e+24, 6378140.0) 5.976e+24 22.746\nfunctional [('CAT', 1), ('DOG', 2), ('BIRD', 3)] Animal.DOG\nfunctional pairs Shape.TRI 4\nsubclass empty enum A!\nextend enum with members TypeError\nsingleton False\n_missing_ Status.OK Status.ERR\n_missing_ None ValueError\nreversed ['BLUE', 'GREEN', 'RED']\n"
+stderr = ""
+exit_code = 0
 
 ["classes/init_subclass_class_getitem"]
 phase = "run"
@@ -173,13 +159,6 @@ phase = "run"
 reason = "AttributeError: 'function' object has no attribute '__prepare__'"
 stdout = "inside body sees injected: prepared for Form\norder ('injected', 'zeta', 'alpha', 'middle', 'zeta', 'beta')\nns type LoggingDict injected prepared for Form\nfinal zeta 3\nauto namespace HELLO X!\nprepare kwargs [('a', 1), ('b', 'two')]\nmetaclass conflict TypeError\nresolved MetaAB\nauto most-derived SubMetaA\nupgraded SubMetaA\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/metaclass_prepare_conflict.py\", line 158, in <module>\n    class ViaFunc(metaclass=func_meta):\nAttributeError: 'function' object has no attribute '__prepare__'\n"
-exit_code = 1
-
-["classes/metaclasses"]
-phase = "run"
-reason = "TypeError: object has no len"
-stdout = "event Meta.__new__ Thing kw=[('flavor', 'x')]\nevent Meta.__init__ Thing\nevent Meta.__new__ SubThing kw=[]\nevent Meta.__init__ SubThing\nevent Meta.__call__ Thing (1,)\nevent Thing.__init__ 1\nevent Meta.__call__ SubThing (2,)\nevent Thing.__init__ 2\nadded THING SUBTHING\nmeta attrs True 2\ntype of class Meta Meta\nmeta method class Thing via Meta meta_prop of SubThing\nmeta method not on instance False\ninterned True False 2\ncall override ('not an instance', 'Weird', (1, 2))\nsingleton True 5\nrenamed False hi\ndynamic with meta DYN 1 Meta\nisinstance class/meta True True False\ntype(type) type type\nclass repr <class-ish R> <class-ish R> [<class-ish R>]\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/metaclasses.py\", line 168, in <module>\n    print(\"class ops\", X | X, len(X), list(X))\nTypeError: object has no len\n"
 exit_code = 1
 
 ["classes/nested_local_dynamic_classes"]
@@ -202,34 +181,6 @@ reason = "TypeError: missing required argument 'type'"
 stdout = "chain C.m>B.m>A.m\nclassmethod chain C.make>B.make>A.make(C) C.make>B.make>A.make(C)\ntwo-arg A.m\ntwo-arg from C B.m>A.m A.m\nnested __class__ A.m\nlambda __class__ B\ngenerator super ['A.m', 'B']\nstaticmethod via super A.st\nclassmethod via two-arg super A.make(C)\nsuper object method hello from Base for Derived\nsuper type attr hello from Base for Derived\n__class__ vs type(self) (True, False)\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 106, in <module>\n    print(\"super outside class\", outside())\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 101, in outside\n    super()\nTypeError: missing required argument 'type'\n"
 exit_code = 1
-
-["control_flow/match_mapping"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "mapping {'type': 'point', 'x': 1, 'y': 2, 'extra': 'ignored'} -> point 1,2\nmapping {'type': 'circle', 'r': 5, 'color': 'red', 'fill': True} -> circle r=5 rest={'color': 'red', 'fill': True}\nmapping {'type': 'circle', 'r': 1} -> circle r=1 rest={}\nmapping {'name': 'bob', 1: 'uno', 2: 'dos'} -> dotted key name=bob one=uno\nmapping {'nested': {'inner': [1, 2, 3], 'other': 0}} -> nested a=1 b=[2, 3]\nmapping {'nested': {'inner': 'str'}} -> no match dict\nmapping {'opt': None} -> opt is None\nmapping {'opt': 0} -> no match dict\nmapping {} -> empty mapping\nmapping {'k': 'anything'} -> has k\nmapping [('type', 'point')] -> no match list\nmapping not a mapping -> no match str\nempty pattern matches non-empty dict\nrest [('b', 2), ('c', 3), ('z', 26)] src unchanged [('a', 1), ('b', 2), ('c', 3)]\npresent matched 1 keys ['present']\nmapping type OrderedDict 1\nmapping type Counter 2\nmapping type ChainMap 9\ncustom mapping 1 2 []\nint/float/True key equality true-overwrites-1 none\nconfig first server a:80\nconfig empty no servers\nconfig bad bad config\n"
-stderr = ""
-exit_code = 0
-
-["control_flow/match_nested_loops_soft_keywords"]
-phase = "run"
-reason = "TypeError: expected return value of mule_fn_type: TextType(literal=None, may_be_unbound=False)"
-stdout = "processed Event('key')\nignored event noise\nprocessed Event('key')\nmouse elsewhere 3 4\nprocessed Event('mouse')\nmouse at origin, continue\nquit seen, breaking\ntyped ['a', 'b']\ntokenize [('num', 12), ('op', '+'), ('num', 3), ('op', '*'), ('num', 45), ('unknown', '?')]\nevaluate -5\nbad expr bad expression ('/', 1, 2)\nmatch is a name ['case', 'is', 'a', 'name']\nmatched on variable named match\nmatched on variable named case 4\nshadowed type shadowed\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/control_flow/match_nested_loops_soft_keywords.py\", line 124, in <module>\n    print(\"restored type\", type(1).__name__)\nTypeError: expected return value of mule_fn_type: TextType(literal=None, may_be_unbound=False)\n"
-exit_code = 1
-
-["control_flow/match_sequence"]
-phase = "run"
-reason = "ModuleNotFoundError: No module named 'array'"
-stdout = ""
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/control_flow/match_sequence.py\", line 3, in <module>\n    import array\nModuleNotFoundError: No module named 'array'\n"
-exit_code = 1
-
-["control_flow/truthiness"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "bool None False not True\nbool True True not False\nbool False False not True\nbool int 0 False not True\nbool int -1 True not False\nbool big int True not False\nbool float 0.0 False not True\nbool float -0.0 False not True\nbool float nan True not False\nbool float inf True not False\nbool complex 0j False not True\nbool complex 0+1j True not False\nbool str empty False not True\nbool str space True not False\nbool str zero True not False\nbool bytes empty False not True\nbool bytes nul True not False\nbool bytearray empty False not True\nbool list empty False not True\nbool list of empty True not False\nbool tuple empty False not True\nbool tuple of None True not False\nbool dict empty False not True\nbool dict True not False\nbool set empty False not True\nbool frozenset True not False\nbool range empty False not True\nbool range 5 5 False not True\nbool range 1 True not False\nbool memoryview empty False not True\nbool Ellipsis True not False\nbool NotImplemented-free object True not False\nbool type True not False\nbool function True not False\nbool decimal 0 False not True\nbool decimal -0 False not True\nbool fraction 0 False not True\nbool deque empty False not True\nbool Counter True not False\nbool dict keys empty False not True\nbool dict items True not False\nAlwaysFalse False\nSized 0 False Sized 3 True\n  Both.__bool__ called\nBoth: True\nNoProtocol True\nBadBool raised TypeError\nNegativeLen raised ValueError\nBoolNone raised TypeError\nif Sized(2) taken\nwhile Sized iterations 3\nand/or return operands fallback\nternary no\nall/any True False\nfilter None ['Sized', 'int']\nFalseInt(7) True 8\nLongList() False 0\nbool raised nope\ninstance __bool__ ignored True\n"
-stderr = ""
-exit_code = 0
 
 ["exceptions/args_and_str"]
 phase = "run"
@@ -358,7 +309,7 @@ exit_code = 1
 ["protocols/contains_iteration"]
 phase = "run"
 reason = "native output differs from CPython"
-stdout = "__contains__ used True False True ['contains yes', 'contains no', 'contains no']\ncontains coerces True bool\ncontains via __iter__ True ['iter start', 'yield 0', 'yield 1', 'yield 2']\ncontains exhaust False 6\ncontains via __getitem__ True ['getitem 0', 'getitem 1', 'getitem 2']\nlegacy iteration [0, 10, 20, 30] getitem 4\nlegacy for loop [0, 10, 20, 30]\nlegacy iter() object SequenceIterator\nno protocol contains TypeError\nno protocol iter TypeError\nreiterable [3, 2, 1] [3, 2, 1] [(3, 3), (2, 2), (1, 1)]\niterator self-iter True 3 [2, 1] []\nnext default empty\nsingle pass [1, 2] []\niter returns non-iterator TypeError\niter sentinel [1, 2, 3]\n__reversed__ ['c', 'b', 'a'] seq fallback [2, 1, 0]\nlength_hint 10 3 7\nlength_hint not len [1, 2]\nnegative hint ValueError\nhint NotImplemented uses default 4\nbuiltin in True False True True True False\n"
+stdout = "__contains__ used True False True ['contains yes', 'contains no', 'contains no']\ncontains coerces True bool\ncontains via __iter__ True ['iter start', 'yield 0', 'yield 1', 'yield 2']\ncontains exhaust False 6\ncontains via __getitem__ True ['getitem 0', 'getitem 1', 'getitem 2']\nlegacy iteration [0, 10, 20, 30] getitem 4\nlegacy for loop [0, 10, 20, 30]\nlegacy iter() object iterator\nno protocol contains TypeError\nno protocol iter TypeError\nreiterable [3, 2, 1] [3, 2, 1] [(3, 3), (2, 2), (1, 1)]\niterator self-iter True 3 [2, 1] []\nnext default empty\nsingle pass [1, 2] []\niter returns non-iterator TypeError\niter sentinel [1, 2, 3]\n__reversed__ ['c', 'b', 'a'] seq fallback [2, 1, 0]\nlength_hint 10 3 7\nlength_hint not len [1, 2]\nnegative hint ValueError\nhint NotImplemented uses default 4\nbuiltin in True False True True True False\n"
 stderr = ""
 exit_code = 0
 
@@ -413,10 +364,10 @@ exit_code = 0
 
 ["scoping/builtin_shadowing"]
 phase = "run"
-reason = "TypeError: expected return value of mule_fn_len: TextType(literal=None, may_be_unbound=False)"
-stdout = "builtin len 2\nmodule shadow module len\nfunction sees module shadow module len\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/scoping/builtin_shadowing.py\", line 20, in <module>\n    print(\"restored after del\", len([1, 2]), uses_len())\nTypeError: expected return value of mule_fn_len: TextType(literal=None, may_be_unbound=False)\n"
-exit_code = 1
+reason = "native output differs from CPython"
+stdout = "builtin len 2\nmodule shadow module len\nfunction sees module shadow module len\nrestored after del 2 3\nlocal shadow (1, 2) [1, 2]\ndel local does not restore builtin ('local sum', 'UnboundLocalError')\nstr is not a type\nstr restored 5\nid shadowed by loop 1\nid restored is callable True\nclass shadows range ['custom', 'custom']\nrange restored [0, 1]\nparam shadow (1, 2) 3\nnested shadow ('inner abs', 1)\nenclosing shadow enclosing sorted\nabs still works 3\nEllipsis name shadowed ellipsis True\nEllipsis restored True\nglobals() shadow global max\nglobals() restored 2\ncomprehension var did not leak [1, 2] int\nexcept-as builtin name unbound, builtin visible again True\n"
+stderr = ""
+exit_code = 0
 
 ["scoping/class_body_scope"]
 phase = "run"
@@ -443,7 +394,7 @@ exit_code = 1
 phase = "run"
 reason = "NameError: name 'module_value' is not defined"
 stdout = "eval simple 7\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/scoping/eval_exec.py\", line 6, in <module>\n    print(\"eval default globals\", eval(\"module_value.upper()\"))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 52, in _eval\n    return eval_owned(expression, globals, locals)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 1070, in evaluate\n    return _ExpressionEvaluator(globals_ns, locals_ns).eval(expression._ast)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 820, in eval\n    return method(node)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 832, in visit_Expression\n    return self.eval(node.body)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 820, in eval\n    return method(node)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 1018, in visit_Call\n    func = self.eval(node.func)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 820, in eval\n    return method(node)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 968, in visit_Attribute\n    return getattr(self.eval(node.value), node.attr)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 820, in eval\n    return method(node)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 863, in visit_Name\n    raise NameError(f\"name {name!r} is not defined\")\nNameError: name 'module_value' is not defined\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/scoping/eval_exec.py\", line 6, in <module>\n    print(\"eval default globals\", eval(\"module_value.upper()\"))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 52, in _eval\n    return eval_owned(expression, globals, locals)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 1091, in evaluate\n    return _ExpressionEvaluator(globals_ns, locals_ns).eval(expression._ast)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 841, in eval\n    return method(node)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 853, in visit_Expression\n    return self.eval(node.body)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 841, in eval\n    return method(node)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 1039, in visit_Call\n    func = self.eval(node.func)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 841, in eval\n    return method(node)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 989, in visit_Attribute\n    return getattr(self.eval(node.value), node.attr)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 841, in eval\n    return method(node)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 884, in visit_Name\n    raise NameError(f\"name {name!r} is not defined\")\nNameError: name 'module_value' is not defined\n"
 exit_code = 1
 
 ["scoping/global_nonlocal"]
@@ -565,6 +516,13 @@ stdout = "bytes_construct: b'' b'\\x00\\x00\\x00' b'ABCD' b'hi' b'Hello'\nbytes_
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/bytes_bytearray_descriptors.py\", line 13, in <module>\n    bytes.__len__(b2),\nAttributeError: type object 'bytes' has no attribute '__len__'\n"
 exit_code = 1
 
+["strings/bytes_bytearray_memoryview"]
+phase = "run"
+reason = "TypeError: object has no len"
+stdout = "bytes_construct: b'' b'\\x00\\x00\\x00' b'ABCD' b'hi' b'Hello'\nbytes_index_slice: 4 65 68 b'BC' b'DCBA'\nbytes_ops: b'abcd' b'xyxy' True True False\nbytes_methods: Hello 0aff b'abc' [b'a', b'b', b'c'] b'p-q' b'baNAna' 4 5 True True\nbytearray_mutation: b'ABcdEF' 71 6 65 ABcdEF\nbytearray_slice_del: b'XYdEF'\nmemoryview_ro: 4 97 100 b'bc' b'abcd' [97, 98, 99, 100] 61626364\nmemoryview_rw: b'WxYZ' [87, 120, 89, 90]\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/bytes_bytearray_memoryview.py\", line 81, in <module>\n    len(mb),\nTypeError: object has no len\n"
+exit_code = 1
+
 ["strings/encode_decode"]
 phase = "run"
 reason = "LookupError: unknown encoding: utf-16-le"
@@ -628,13 +586,6 @@ stdout = "index with True/False one zero two\nslice with bools ['zero'] ['one', 
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/weird/bool_is_int.py\", line 49, in <module>\n    print(\"enumerate start bool\", list(enumerate(\"ab\", start=True)))\nTypeError: got an unexpected keyword argument 'start'\n"
 exit_code = 1
 
-["weird/decorator_shapeshifting"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "function became class Wrapped True\ninstances <double -> 6> <double -> 'abab'> 2\nclass became function function P(1,2) Point\nset_name Thing level\nproperty -4 -4\ncounts 1 2\ndescriptor default ('logged', 1)\ndescriptor set ('logged', 42) 42\ncomputing 3\ncomputing 4\nlru staticmethod 9 9 16\nheavy computed\ncached_property [-4, -4] True\nheavy computed\nrecomputed [-4, -4]\nwraps name size make\nfactory called ('outer',)\nfactory called ('inner',)\ndecorating tagged ('inner',)\ndecorating tagged ('outer',)\nstack order ('inner', 'outer')\narbitrary decorator expressions 13\nclass decorated with type type\ndecorator chain over builtins '5'\n"
-stderr = ""
-exit_code = 0
-
 ["weird/exceptions_during_protocols"]
 phase = "run"
 reason = "native output differs from CPython"
@@ -665,10 +616,10 @@ exit_code = -11
 
 ["weird/special_method_lookup"]
 phase = "run"
-reason = "TypeError: object has no len"
-stdout = "explicit attribute synth anything(1, 2)\nexplicit dunder via __getattr__ synth __len__()\nlen raised TypeError\niter raised TypeError\nadd raised TypeError\nstr falls back to object.__str__ not __getattr__ True\nbool falls back to default truth True\nlen raised TypeError\niter raised TypeError\nadd raised TypeError\ncall raised TypeError\ngetitem raised TypeError\nstr ignores instance Plain()\neq ignores instance False True\nexplicit calls use instance 99 instance str instance add instance call\nclass-level len 7\nclass-level str class str\nclass-level with instance enter\ndeleted class len TypeError\nlen bypasses getattribute 3\n  getattribute size\nexplicit goes through it 4\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/weird/special_method_lookup.py\", line 125, in <module>\n    print(\"len(class) uses metaclass\", len(WithMeta), \"len(instance) uses class\", len(WithMeta()))\nTypeError: object has no len\n"
-exit_code = 1
+reason = "native output differs from CPython"
+stdout = "explicit attribute synth anything(1, 2)\nexplicit dunder via __getattr__ synth __len__()\nlen raised TypeError\niter raised TypeError\nadd raised TypeError\nstr falls back to object.__str__ not __getattr__ True\nbool falls back to default truth True\nlen raised TypeError\niter raised TypeError\nadd raised TypeError\ncall raised TypeError\ngetitem raised TypeError\nstr ignores instance Plain()\neq ignores instance False True\nexplicit calls use instance 99 instance str instance add instance call\nclass-level len 7\nclass-level str class str\nclass-level with instance enter\ndeleted class len TypeError\nlen bypasses getattribute 3\n  getattribute size\nexplicit goes through it 4\nlen(class) uses metaclass 42 len(instance) uses class 1\nclass getitem via metaclass WithMeta[<class 'int'>] ['a', 'b']\n__class_getitem__ cgi <class 'str'> cgi (1, 2)\nstaticmethod len 5\nnon-function callable as __len__ gets no self binding 6\nunhashable despite instance __hash__ TypeError\n"
+stderr = ""
+exit_code = 0
 
 ["weird/unpacking_targets"]
 phase = "run"

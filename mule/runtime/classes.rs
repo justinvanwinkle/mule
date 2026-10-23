@@ -2667,6 +2667,14 @@ unsafe fn set_class_attribute(class: Value, attribute: &str, value: Value) -> i3
             );
             return -1;
         }
+        if attribute == "__name__" && matches!(&(*value).data, Data::Text(..)) {
+            let Some(new_name) = text_argument(value) else {
+                return -1;
+            };
+            layout.name = new_name;
+            ATTRIBUTE_EPOCH.fetch_add(1, Ordering::Relaxed);
+            return 0;
+        }
         if let Some(index) = layout.attribute_lookup.get(attribute) {
             let old = layout.attributes[*index].1;
             layout.attributes[*index].1 = object::retain(value);

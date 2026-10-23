@@ -1425,6 +1425,11 @@ class int(object):
     def __abs__(self):
         value = _convert_int(self)
         return numeric_negate(value) if value < 0 else value
+
+    def __bool__(self):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__bool__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        return _convert_int(self) != 0
     __slots__ = ()
 
     def __new__(cls, x=_MISSING, /, base=_MISSING):
@@ -2007,6 +2012,11 @@ class float(object):
 
     def __abs__(self):
         return math_fabs(_convert_float(self))
+
+    def __bool__(self):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__bool__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        return _convert_float(self) != 0.0
     __slots__ = ()
 
     def __new__(cls, x=_MISSING, /):

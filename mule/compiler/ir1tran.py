@@ -3702,6 +3702,17 @@ class _MatchLowering:
         ]
 
     def mapping(self, pattern, subject, flag):
+        seen_literals = []
+        key_visitor = _MappingLiteralKey()
+        for entry in pattern.entries:
+            is_literal, literal_value = entry.key.accept(key_visitor)
+            if is_literal:
+                if literal_value in seen_literals:
+                    self.function.error(
+                        f"mapping pattern checks duplicate key ({literal_value!r})",
+                        entry.key,
+                    )
+                seen_literals.append(literal_value)
         values = self.temporary()
         keys = ast.Tuple([entry.key for entry in pattern.entries], span=self.span)
         rest = []
@@ -3784,6 +3795,51 @@ class _MatchLowering:
                 else []
             ),
         ]
+
+
+class _MappingLiteralKey(ast.Visitor):
+    """Extracts a compile-time literal key from a mapping pattern entry."""
+
+    def visit_Node(self, node):
+        return (False, None)
+
+    def visit_NoneLiteral(self, node):
+        return (True, None)
+
+    def visit_BooleanLiteral(self, node):
+        return (True, node.value)
+
+    def visit_IntegerLiteral(self, node):
+        return (True, node.value)
+
+    def visit_FloatLiteral(self, node):
+        return (True, node.value)
+
+    def visit_ComplexLiteral(self, node):
+        return (True, node.value)
+
+    def visit_TextLiteral(self, node):
+        return (True, node.value)
+
+    def visit_BytesLiteral(self, node):
+        return (True, node.value)
+
+    def visit_Unary(self, node):
+        if node.operator is ast.UnaryOperator.NEGATIVE:
+            is_literal, value = node.operand.accept(self)
+            if is_literal:
+                return (True, -value)
+        return (False, None)
+
+    def visit_Binary(self, node):
+        left_literal, left_value = node.left.accept(self)
+        right_literal, right_value = node.right.accept(self)
+        if left_literal and right_literal:
+            if node.operator is ast.BinaryOperator.ADD:
+                return (True, left_value + right_value)
+            if node.operator is ast.BinaryOperator.SUB:
+                return (True, left_value - right_value)
+        return (False, None)
 
 
 class _PatternTest(ast.Visitor):
@@ -3974,7 +4030,9 @@ def _async_with(function, node):
         assign(name(manager), item.context),
         ast.Try(
             [
-                assign(name(exit_), ast.Attribute(name(manager), "__aexit__", span=span)),
+                assign(
+                    name(exit_), ast.Attribute(name(manager), "__aexit__", span=span)
+                ),
                 assign(
                     name(enter_), ast.Attribute(name(manager), "__aenter__", span=span)
                 ),

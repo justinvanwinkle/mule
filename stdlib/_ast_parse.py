@@ -742,6 +742,26 @@ def parse(
     return tree.accept(_Convert(_Locations(source, filename)))
 
 
+def _validate_compile_node(node):
+    if isinstance(node, api.MatchMapping):
+        seen = []
+        for key in node.keys:
+            if isinstance(key, api.Constant):
+                if key.value in seen:
+                    raise SyntaxError(
+                        f"mapping pattern checks duplicate key ({key.value!r})"
+                    )
+                seen.append(key.value)
+    for field in getattr(node, "_fields", ()):
+        value = getattr(node, field, None)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, api.AST):
+                    _validate_compile_node(item)
+        elif isinstance(value, api.AST):
+            _validate_compile_node(value)
+
+
 def compile(
     source,
     filename,
@@ -787,6 +807,7 @@ def compile(
     )
     if flags & api.PyCF_ONLY_AST:
         return tree
+    _validate_compile_node(tree)
     firstlineno = 0
     if mode == "eval":
         firstlineno = getattr(tree.body, "lineno", 1)

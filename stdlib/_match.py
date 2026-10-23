@@ -14,7 +14,7 @@ def _abc():
 
 def sequence(subject):
     """The subject's items for a sequence pattern, or None."""
-    if isinstance(subject, (str, bytes)):
+    if isinstance(subject, (str, bytes, bytearray)):
         return None
     if isinstance(subject, (list, tuple)):
         return list(subject)
@@ -52,7 +52,7 @@ def mapping_rest(subject, keys):
     return rest
 
 
-_SELF_MATCHING = (bool, bytes, dict, float, frozenset, int, list, set, str, tuple)
+_SELF_MATCHING = (bool, bytearray, bytes, dict, float, frozenset, int, list, set, str, tuple)
 
 
 def class_attributes(subject, cls, positional, keywords):
