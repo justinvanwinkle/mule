@@ -51,6 +51,7 @@ from .ctype import (
     BOOLEAN_TRUE,
     BOTTOM,
     BUILTIN_CLASS_TYPES,
+    BYTES_TYPE,
     DICT_TYPE,
     FIXNUM_MAX,
     FIXNUM_MIN,
@@ -373,6 +374,23 @@ class _SpecializesBody(NodeVisitor):
             and not gen_type.fits(cand_type)
         ):
             return True
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is not None
+            and node.fun_info.numeric
+            and node.args
+            and all(len(arg.uses) == 1 for arg in node.args)
+        ):
+            cand_args = [self.candidate.get(arg.uses[0], UNKNOWN) for arg in node.args]
+            gen_args = [self.general.get(arg.uses[0], UNKNOWN) for arg in node.args]
+            if (
+                all(arg.is_fixnum for arg in cand_args)
+                and not all(arg.is_fixnum for arg in gen_args)
+            ) or (
+                all(arg.fits_float(FLOAT) for arg in cand_args)
+                and not all(arg.fits_float(FLOAT) for arg in gen_args)
+            ):
+                return True
         if is_predictable_len_call(node) and len(node.args[0].uses) == 1:
             arg_use = node.args[0].uses[0]
             if known_length_primitive(
@@ -2368,7 +2386,8 @@ def analyze(
                         fix_param
                         if fix_params is not None
                         and (
-                            (fix_param := fix_params[idx]) in (LIST_TYPE, TEXT_TYPE)
+                            (fix_param := fix_params[idx])
+                            in (LIST_TYPE, TEXT_TYPE, BYTES_TYPE)
                             or fix_param.instance_class() is not None
                         )
                         else UNKNOWN

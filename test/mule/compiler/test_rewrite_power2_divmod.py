@@ -4,6 +4,8 @@ import re
 
 import pytest
 
+from mule.compiler.codegen import ModuleGenerator, Program
+from mule.compiler.ctype import BYTES_TYPE, IntegerType
 from mule.compiler.ir1opt import constant_lvar_value
 from mule.compiler.ir1util import known_calls
 from mule.compiler.main import compile_source
@@ -124,3 +126,83 @@ def test_bucket_divmod_evaluation_and_overridden_operators_match_python(tmp_path
         "print(bucket(-9.5))\n",
     )
     case.compare(stdin="-9\n")
+
+
+def test_inline_fixnum_divmod_unsigned_signed_and_bytes_dispatch():
+    compilation = compile_source(
+        "def unsigned_divmod(x: int) -> tuple[int, int]:\n"
+        " if x >= 0:\n"
+        "  if x <= 100000:\n"
+        "   return (x // 7, x % 65521)\n"
+        " return (0, 0)\n"
+        "def signed_divmod(x: int) -> tuple[int, int, int, int]:\n"
+        " return (x // 7, x % 7, x // -7, x % -7)\n"
+        "def byte_mod(buf, idx: int) -> int:\n"
+        " return buf[idx] % 25\n"
+        "byte_mod(b'hello', 0)\n"
+    )
+    assert compilation.facts is not None
+    module = ModuleGenerator(
+        Program(compilation.lambdas, compilation.entry, compilation.facts)
+    )
+    by_name = {
+        fn.source_name: fn for fn in compilation.lambdas if fn.source_name is not None
+    }
+
+    _, unsigned_variants = module.contexts(by_name["unsigned_divmod"])
+    assert unsigned_variants
+    unsigned_ir = "\n".join(
+        module.emit_body(by_name["unsigned_divmod"], ctx) for ctx in unsigned_variants
+    )
+    assert "udiv i64" in unsigned_ir
+    assert "urem i64" in unsigned_ir
+    assert "@mule.fixnum.binary.4" not in unsigned_ir
+    assert "@mule.fixnum.binary.5" not in unsigned_ir
+    assert "mule_format_modulo" not in unsigned_ir
+
+    _, signed_variants = module.contexts(by_name["signed_divmod"])
+    assert signed_variants
+    signed_ir = "\n".join(
+        module.emit_body(by_name["signed_divmod"], ctx) for ctx in signed_variants
+    )
+    assert "sdiv i64" in signed_ir
+    assert "srem i64" in signed_ir
+    assert "@mule.fixnum.binary.4" not in signed_ir
+    assert "@mule.fixnum.binary.5" not in signed_ir
+    assert "mule_format_modulo" not in signed_ir
+
+    _, byte_variants = module.contexts(by_name["byte_mod"])
+    assert byte_variants
+    assert any(
+        ctx.parameters[0] == BYTES_TYPE and ctx.return_type == IntegerType(0, 24)
+        for ctx in byte_variants
+    )
+    module.protocol_helpers["getitem"] = "@mule.protocol.getitem"
+    byte_ir = "\n".join(
+        module.emit_body(by_name["byte_mod"], ctx) for ctx in byte_variants
+    )
+    assert "urem i64" in byte_ir
+    assert "@mule.fixnum.binary.5" not in byte_ir
+    assert "mule_format_modulo" not in byte_ir
+
+
+@pytest.mark.integration
+def test_inline_fixnum_divmod_nonpower2_matches_python(tmp_path):
+    case = build_case(
+        tmp_path,
+        "def bounded_divmod(x: int) -> tuple[int, int, int, int, int, int]:\n"
+        " if x >= -1000:\n"
+        "  if x <= 1000:\n"
+        "   u = x + 1000\n"
+        "   return (u // 7, u % 7, x // 7, x % 7, x // -7, x % -7)\n"
+        " return (0, 0, 0, 0, 0, 0)\n"
+        "for sample in (-1000, -15, -14, -13, -7, -6, -1, 0, 1, 6, 7, 13, 14, 15, 1000):\n"
+        " print(bounded_divmod(sample))\n",
+    )
+    case.compare()
+    spec_ir = case.function_ir(r"mule_fn_bounded_divmod\.spec\.")
+    assert not re.search(r"mule\.(?:fast|fixnum)\.binary\.[45]\b", spec_ir), spec_ir
+    assert not re.search(r"@mule_binary(?:_reuse)?\(i32 [45]\b", spec_ir), spec_ir
+    spec_asm = case.function_assembly(r"mule_fn_bounded_divmod\.spec\.")
+    assert not re.search(r"\bi?div[qlwb]\b", spec_asm), spec_asm
+    assert not re.search(r"mule_binary", spec_asm), spec_asm

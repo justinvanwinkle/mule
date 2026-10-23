@@ -945,9 +945,41 @@ def _binary_generic(gen, vop, opcode, *, inplace):
             and right_type.maximum <= 62
         ):
             prim_op = "shl" if opcode == 8 else "ashr"
+        if (
+            prim_op is None
+            and opcode in (4, 5)
+            and left_type.minimum is not None
+            and left_type.minimum >= 0
+            and right_type.minimum is not None
+            and right_type.minimum > 0
+        ):
+            prim_op = "udiv" if opcode == 4 else "urem"
         if prim_op is not None:
             a, b = gen.decode(lhs), gen.decode(rhs)
             integer = gen.operation(f"{prim_op} i64 {a}, {b}")
+            gen.native_result(result, gen.encode(integer), (lhs, rhs))
+            return
+        if opcode in (4, 5) and (
+            (right_type.minimum is not None and right_type.minimum > 0)
+            or (right_type.maximum is not None and right_type.maximum < 0)
+        ):
+            a, b = gen.decode(lhs), gen.decode(rhs)
+            rem = gen.operation(f"srem i64 {a}, {b}")
+            pred = (
+                "slt"
+                if right_type.minimum is not None and right_type.minimum > 0
+                else "sgt"
+            )
+            adjust = gen.operation(f"icmp {pred} i64 {rem}, 0")
+            if opcode == 5:
+                adjusted = gen.operation(f"add nsw i64 {rem}, {b}")
+                integer = gen.operation(
+                    f"select i1 {adjust}, i64 {adjusted}, i64 {rem}"
+                )
+            else:
+                quot = gen.operation(f"sdiv i64 {a}, {b}")
+                corr = gen.operation(f"zext i1 {adjust} to i64")
+                integer = gen.operation(f"sub nsw i64 {quot}, {corr}")
             gen.native_result(result, gen.encode(integer), (lhs, rhs))
             return
     prefix = "fixnum" if fixnums else "fast"
@@ -3323,8 +3355,7 @@ def _binary_helper(op: int, *, fixnums: bool = False) -> str:
   %no.overflow = xor i1 %overflow, true
   %fits = and i1 %range, %no.overflow
   br i1 %fits, label %encode, label %slow"""
-    elif op in (4, 5):
-        result = "%floor" if op == 4 else "%modulo"
+    elif op == 4:
         operation = f"""  %nonzero = icmp ne i64 %b, 0
   br i1 %nonzero, label %divide, label %slow
 divide:
@@ -3335,12 +3366,21 @@ divide:
   %different.signs = icmp slt i64 %sign.bits, 0
   %adjust = and i1 %has.remainder, %different.signs
   %correction = zext i1 %adjust to i64
-  %floor = sub i64 %quotient, %correction
-  %adjusted.remainder = add i64 %remainder, %b
-  %modulo = select i1 %adjust, i64 %adjusted.remainder, i64 %remainder
-  %result = add i64 {result}, 0
+  %result = sub i64 %quotient, %correction
 {_RANGE}
   br i1 %range, label %encode, label %slow"""
+    elif op == 5:
+        operation = """  %nonzero = icmp ne i64 %b, 0
+  br i1 %nonzero, label %divide, label %slow
+divide:
+  %remainder = srem i64 %a, %b
+  %has.remainder = icmp ne i64 %remainder, 0
+  %sign.bits = xor i64 %a, %b
+  %different.signs = icmp slt i64 %sign.bits, 0
+  %adjust = and i1 %has.remainder, %different.signs
+  %adjusted.remainder = add i64 %remainder, %b
+  %result = select i1 %adjust, i64 %adjusted.remainder, i64 %remainder
+  br label %encode"""
     elif op == 8:
         operation = f"""  %nonnegative = icmp sge i64 %b, 0
   %bounded = icmp slt i64 %b, 63
@@ -3388,8 +3428,7 @@ slow.call:
         else f"""  %fallback = call ptr @mule_binary_reuse(i32 {op}, ptr %left, ptr %right, i32 %inplace, ptr null)
   ret ptr %fallback"""
     )
-    inline = " alwaysinline" if op in (2, 10, 11, 12) else ""
-    return f"""define internal ptr @mule.{prefix}.binary.{op}(ptr %left, ptr %right, i32 %inplace, ptr %reuse, ptr %reuse.slot){inline} {{
+    return f"""define internal ptr @mule.{prefix}.binary.{op}(ptr %left, ptr %right, i32 %inplace, ptr %reuse, ptr %reuse.slot) alwaysinline {{
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
