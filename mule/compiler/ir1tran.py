@@ -38,7 +38,17 @@ from typing import NoReturn
 from mule import ast
 
 from . import fndb
-from .annotation_types import BUILTINS, DECLARATIONS, EXPORTS, ListContract
+from .annotation_types import (
+    BUILTINS,
+    DECLARATIONS,
+    EXPORTS,
+    ClassContract,
+    DictContract,
+    ListContract,
+    NoneContract,
+    TupleContract,
+    union_contract,
+)
 from .ir1util import (
     aver,
     change_block_successor,
@@ -287,6 +297,8 @@ class Converter:
         self.module_name_literal: ast.TextLiteral | None = None
         self.module_file_literal: ast.TextLiteral | None = None
         self.class_definitions = 0
+        self.class_identities: dict[int, str] = {}
+        self.declared_class_bindings: dict[str, _CompilerBinding] = {}
         self.class_fields = {}
         self.module_annotation_shadows = set()
         self.interface_bindings = {}
@@ -296,6 +308,14 @@ class Converter:
         self.split = False
         self.converting_late = False
         self.late: list[tuple[Component, list[Lambda]]] = []
+
+    def class_identity(self, node: ast.ClassDefinition) -> str:
+        identity = self.class_identities.get(id(node))
+        if identity is None:
+            identity = f"{self.prefix}mule_cls_{self.class_definitions}"
+            self.class_definitions += 1
+            self.class_identities[id(node)] = identity
+        return identity
 
     def location(self, node):
         span = node.span
@@ -510,12 +530,20 @@ class FunctionConverter:
             self.locals[var.name] = var
         self._bindings(statements)
         if not is_module:
-            for var, expr in zip(
-                lambda_.vars, lambda_.signature.annotation_expressions
+            for var, kind, expr in zip(
+                lambda_.vars,
+                lambda_.signature.kinds,
+                lambda_.signature.annotation_expressions,
             ):
                 if expr is not None and var.name not in lambda_.local_annotations:
                     declared = converter.declared_contract(expr, parent)
                     if declared is not None:
+                        if kind == ast.ParameterKind.VAR_POSITIONAL:
+                            declared = TupleContract("tuple", None, (declared,))
+                        elif kind == ast.ParameterKind.VAR_KEYWORD:
+                            declared = DictContract(
+                                "dict", DECLARATIONS["str"], declared
+                            )
                         lambda_.local_annotations[var.name] = declared
         self.lexenv = Lexenv(vars=self.locals, lambda_=lambda_, policy=lambda_.policy)
         self.expressions: _Expressions | None = None
@@ -3175,8 +3203,7 @@ class _Statements(ast.Visitor):
             if argument.kind
             in (ast.ArgumentKind.KEYWORD, ast.ArgumentKind.DOUBLE_STARRED)
         ]
-        identity = f"{converter.prefix}mule_cls_{converter.class_definitions}"
-        converter.class_definitions += 1
+        identity = converter.class_identity(node)
         native = _native_class_body(function, node, policy)
         body = node.body
         docstring = None
@@ -4412,6 +4439,22 @@ class _CompilerBinding:
     def subscript_binding(self, element_binding):
         return _OPAQUE_BINDING
 
+    def subscript_items(self) -> tuple[_CompilerBinding, ...]:
+        return (self,)
+
+    def is_ellipsis_binding(self) -> bool:
+        return False
+
+    def is_empty_tuple_binding(self) -> bool:
+        return False
+
+    def or_binding(self, other: _CompilerBinding) -> _CompilerBinding:
+        left = self.declared_contract(None, None)
+        right = other.declared_contract(None, None)
+        if left is None or right is None:
+            return _OPAQUE_BINDING
+        return _DeclaredTypeBinding(union_contract(left, right))
+
     def policy(self, converter, decorator, policy):
         """The policy after ``decorator``, which calls this binding; only
         the ``mule.optimize`` directive changes it."""
@@ -4451,13 +4494,67 @@ class _DeclaredTypeBinding(_CompilerBinding):
         return self.contract
 
 
+class _EllipsisBinding(_CompilerBinding):
+    def is_ellipsis_binding(self) -> bool:
+        return True
+
+
+class _EmptyTupleBinding(_CompilerBinding):
+    def is_empty_tuple_binding(self) -> bool:
+        return True
+
+    def subscript_items(self) -> tuple[_CompilerBinding, ...]:
+        return ()
+
+
+class _SubscriptItemsBinding(_CompilerBinding):
+    def __init__(self, items: tuple[_CompilerBinding, ...]):
+        self.items = items
+
+    def subscript_items(self) -> tuple[_CompilerBinding, ...]:
+        return self.items
+
+
 class _ListTypeBinding(_CompilerBinding):
     def declared_contract(self, converter, node):
         return ListContract()
 
     def subscript_binding(self, element_binding):
-        element_contract = element_binding.declared_contract(None, None)
+        items = element_binding.subscript_items()
+        if len(items) != 1 or items[0].is_ellipsis_binding():
+            return _OPAQUE_BINDING
+        element_contract = items[0].declared_contract(None, None)
         return _DeclaredTypeBinding(ListContract("list", element_contract))
+
+
+class _TupleTypeBinding(_CompilerBinding):
+    def declared_contract(self, converter, node):
+        return TupleContract()
+
+    def subscript_binding(self, element_binding):
+        if element_binding.is_empty_tuple_binding():
+            return _DeclaredTypeBinding(TupleContract("tuple", 0, ()))
+        items = element_binding.subscript_items()
+        if len(items) == 2 and items[1].is_ellipsis_binding():
+            elem = items[0].declared_contract(None, None)
+            return _DeclaredTypeBinding(TupleContract("tuple", None, (elem,)))
+        if any(item.is_ellipsis_binding() for item in items):
+            return _OPAQUE_BINDING
+        elems = tuple(item.declared_contract(None, None) for item in items)
+        return _DeclaredTypeBinding(TupleContract("tuple", len(elems), elems))
+
+
+class _DictTypeBinding(_CompilerBinding):
+    def declared_contract(self, converter, node):
+        return DictContract()
+
+    def subscript_binding(self, element_binding):
+        items = element_binding.subscript_items()
+        if len(items) != 2 or any(item.is_ellipsis_binding() for item in items):
+            return _OPAQUE_BINDING
+        key_contract = items[0].declared_contract(None, None)
+        val_contract = items[1].declared_contract(None, None)
+        return _DeclaredTypeBinding(DictContract("dict", key_contract, val_contract))
 
 
 class _OptimizeBinding(_CompilerBinding):
@@ -4489,14 +4586,20 @@ _EXPORT_BINDINGS: dict[str, _CompilerBinding] = {
 _EXPORT_BINDINGS["optimize"] = _OptimizeBinding()
 _MODULE_BINDING = _ModuleBinding()
 _OPAQUE_BINDING = _CompilerBinding()
+_ELLIPSIS_BINDING = _EllipsisBinding()
+_EMPTY_TUPLE_BINDING = _EmptyTupleBinding()
+_NONE_BINDING = _DeclaredTypeBinding(NoneContract())
 _BUILTIN_BINDINGS = {
     name: _NumericBinding(contract) for name, contract in BUILTINS.items()
 }
 _DECLARATION_BINDINGS: dict[str, _CompilerBinding] = {
     **_BUILTIN_BINDINGS,
+    "bool": _DeclaredTypeBinding(DECLARATIONS["bool"]),
     "str": _DeclaredTypeBinding(DECLARATIONS["str"]),
     "bytes": _DeclaredTypeBinding(DECLARATIONS["bytes"]),
     "list": _ListTypeBinding(),
+    "tuple": _TupleTypeBinding(),
+    "dict": _DictTypeBinding(),
 }
 
 
@@ -4587,17 +4690,38 @@ class _DeclaredAnnotationReference(_AnnotationReference):
         binding = self.converter.active_compiler_bindings.get(name)
         if binding is not None:
             return binding
-        shadows = self.converter.module_annotation_shadows
-        if (
-            name in shadows
-            or "*" in shadows
-            or (self.scope is not None and self.scope.local(name))
+        if self.scope is not None and (
+            self.scope.local(name)
+            or self.scope.enclosing_local(name) is not None
+            or (self.scope.class_scopes and name in self.scope.class_scopes[-1].bound)
         ):
+            return _OPAQUE_BINDING
+        class_binding = self.converter.declared_class_bindings.get(name)
+        if class_binding is not None:
+            return class_binding
+        shadows = self.converter.module_annotation_shadows
+        if name in shadows or "*" in shadows:
             return _OPAQUE_BINDING
         return _DECLARATION_BINDINGS.get(name, _OPAQUE_BINDING)
 
+    def visit_NoneLiteral(self, node):
+        return _NONE_BINDING
+
+    def visit_EllipsisLiteral(self, node):
+        return _ELLIPSIS_BINDING
+
+    def visit_Tuple(self, node):
+        if not node.elements:
+            return _EMPTY_TUPLE_BINDING
+        return _SubscriptItemsBinding(tuple(el.accept(self) for el in node.elements))
+
     def visit_Subscript(self, node):
         return node.value.accept(self).subscript_binding(node.index.accept(self))
+
+    def visit_Binary(self, node):
+        if node.operator == ast.BinaryOperator.BIT_OR:
+            return node.left.accept(self).or_binding(node.right.accept(self))
+        return _OPAQUE_BINDING
 
 
 # The module-level assignments that set a module's policy, and the quality
@@ -5772,20 +5896,111 @@ class _ClassMethods(ast.Visitor):
         pass
 
 
+class _StaticAnnotationReference(_AnnotationReference):
+    def visit_Name(self, node):
+        name = node.identifier
+        binding = self.converter.compiler_bindings.get(name)
+        if binding is not None:
+            return binding
+        return super().visit_Name(node)
+
+
+class _StaticDecoratorBinding(ast.Visitor):
+    def __init__(self, converter):
+        self.converter = converter
+
+    def visit_Node(self, node):
+        return _OPAQUE_BINDING
+
+    def visit_Call(self, node):
+        return node.function.accept(_StaticAnnotationReference(self.converter))
+
+
+class _TopLevelDeclaredClasses(ast.Visitor):
+    def __init__(self, converter: Converter, shadows: _AnnotationShadows):
+        self.converter = converter
+        self.shadows = shadows
+
+    def visit_Node(self, node):
+        pass
+
+    def visit_ClassDefinition(self, node: ast.ClassDefinition):
+        if (
+            node.type_parameters
+            or "*" in self.shadows.names
+            or self.shadows.counts.get(node.name, 0) != 1
+            or any(
+                decorator.accept(
+                    _StaticDecoratorBinding(self.converter)
+                ).runtime_decorators(decorator)
+                for decorator in node.decorators
+            )
+            or any(
+                arg.kind in (ast.ArgumentKind.KEYWORD, ast.ArgumentKind.DOUBLE_STARRED)
+                for arg in node.arguments
+            )
+        ):
+            return
+        identity = self.converter.class_identity(node)
+        self.converter.declared_class_bindings[node.name] = _DeclaredTypeBinding(
+            ClassContract(node.name, identity)
+        )
+
+
+class _GlobalDeclarations(ast.Visitor):
+    def __init__(self, shadows: _AnnotationShadows):
+        self.shadows = shadows
+
+    def visit_Node(self, node):
+        for child in node.children():
+            child.accept(self)
+
+    def visit_Global(self, node):
+        for name in node.identifiers:
+            self.shadows.bind(name)
+
+
 class _AnnotationShadows(_ImportNames):
     """Runtime bindings prevent treating the same name as a builtin contract."""
 
     def __init__(self):
         self.names = set()
+        self.counts: dict[str, int] = {}
+
+    def bind(self, name: str) -> None:
+        self.names.add(name)
+        self.counts[name] = self.counts.get(name, 0) + 1
+
+    def register_declared_classes(
+        self, converter: Converter, statements: list[ast.Statement]
+    ) -> None:
+        registrar = _TopLevelDeclaredClasses(converter, self)
+        for statement in statements:
+            statement.accept(registrar)
 
     def imported_name(self, name, node):
-        self.names.add(name)
+        self.bind(name)
 
     def visit_Node(self, node):
         for target in node.assigned_targets():
-            target.accept(_AnnotationShadowTarget(self.names))
+            target.accept(_AnnotationShadowTarget(self))
         for child in node.children():
             child.accept(self)
+
+    def visit_Delete(self, node):
+        for target in node.targets:
+            target.accept(_AnnotationShadowTarget(self))
+        self.visit_Node(node)
+
+    def visit_ExceptionHandler(self, node):
+        if node.binding is not None:
+            self.bind(node.binding)
+        self.visit_Node(node)
+
+    def visit_MatchCase(self, node):
+        for name in _pattern_names(node.pattern):
+            self.bind(name)
+        self.visit_Node(node)
 
     def visit_Comprehension(self, node):
         # Only the first iterable is evaluated in this scope.
@@ -5798,23 +6013,39 @@ class _AnnotationShadows(_ImportNames):
                 parameter.default.accept(self)
 
     def visit_FunctionDefinition(self, node):
-        self.names.add(node.name)
+        self.bind(node.name)
+        globals_visitor = _GlobalDeclarations(self)
+        for statement in node.body:
+            statement.accept(globals_visitor)
 
     def visit_ClassDefinition(self, node):
-        self.names.add(node.name)
+        self.bind(node.name)
+        globals_visitor = _GlobalDeclarations(self)
+        for statement in node.body:
+            statement.accept(globals_visitor)
 
     def visit_AnnotatedAssignment(self, node):
-        node.target.accept(_AnnotationShadowTarget(self.names))
+        node.target.accept(_AnnotationShadowTarget(self))
         if node.value is not None:
             node.value.accept(self)
 
 
 class _AnnotationShadowTarget(ast.Visitor):
-    def __init__(self, names):
-        self.names = names
+    def __init__(self, shadows: _AnnotationShadows):
+        self.shadows = shadows
+
+    def visit_Node(self, node):
+        for child in node.children():
+            child.accept(self)
+
+    def visit_Subscript(self, node):
+        pass
+
+    def visit_Attribute(self, node):
+        pass
 
     def visit_Name(self, node):
-        self.names.add(node.identifier)
+        self.shadows.bind(node.identifier)
 
 
 class _ScopeVisitor(_ImportNames):

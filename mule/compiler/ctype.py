@@ -538,7 +538,13 @@ class ValueType:
         return expected
 
     def annotated_list(self, expected):
-        return expected
+        return LIST_TYPE
+
+    def annotated_dict(self, expected):
+        return DICT_TYPE
+
+    def annotated_tuple(self, expected):
+        return TupleType(expected.arity)
 
     def fits_unknown(self, expected):
         return not self.may_be_unbound
@@ -560,6 +566,9 @@ class ValueType:
 
     def fits_float(self, expected):
         return False
+
+    def fits_possible_float(self, expected):
+        return self.fits_float(expected)
 
     def fits_real(self, expected):
         return False
@@ -585,10 +594,16 @@ class ValueType:
     def fits_bytes(self, expected):
         return False
 
+    def fits_possible_bytes(self, expected):
+        return self.fits_bytes(expected)
+
     def fits_function(self, expected):
         return False
 
     def fits_tuple(self, expected):
+        return False
+
+    def fits_tuple_dispatch(self, expected):
         return False
 
     def fits_possible_tuple(self, expected):
@@ -602,6 +617,9 @@ class ValueType:
 
     def fits_dict(self, expected=None):
         return False
+
+    def fits_possible_dict(self, expected=None):
+        return self.fits_dict(expected)
 
     def fits_iterator(self, expected=None):
         return False
@@ -666,6 +684,9 @@ class UnknownType(ValueType):
     def fits_possible_boolean(self, expected):
         return not self.may_be_unbound
 
+    def fits_possible_float(self, expected):
+        return not self.may_be_unbound
+
     def fits_possible_none(self, expected):
         return not self.may_be_unbound
 
@@ -678,9 +699,17 @@ class UnknownType(ValueType):
     def fits_possible_text(self, expected):
         return not self.may_be_unbound and expected.literal is None
 
+    def fits_possible_bytes(self, expected):
+        return not self.may_be_unbound
+
     def fits_possible_list(self, expected=None):
         return not self.may_be_unbound and (
             expected is None or expected.element is UNKNOWN
+        )
+
+    def fits_possible_dict(self, expected=None):
+        return not self.may_be_unbound and (
+            expected is None or (expected.key is UNKNOWN and expected.value is UNKNOWN)
         )
 
     def fits_possible_instance(self, expected):
@@ -1190,6 +1219,9 @@ class BooleanType(IntegerType):
     def fixnum_domain(self):
         return None
 
+    def dispatch_rank(self) -> int:
+        return 2**64 if self.may_be_unbound else 0
+
     def accepts(self, actual):
         return actual.fits_boolean(self)
 
@@ -1234,9 +1266,15 @@ class FloatType(PrimitiveType):
     def join_real(self, left):
         return left.join_numeric(self)
 
+    def annotation_conflict(self, contract):
+        return False if self.may_be_unbound else contract.float_conflict(self)
+
     @property
     def is_heap_object(self):
         return not self.may_be_unbound
+
+    def dispatch_rank(self) -> int:
+        return 2**64 if self.may_be_unbound else 0
 
     def accept(self, visitor):
         return visitor.visit_FloatType(self)
@@ -1276,6 +1314,12 @@ class FloatType(PrimitiveType):
     def accepts(self, actual):
         return actual.fits_float(self)
 
+    def accepts_dispatch(self, actual):
+        return actual.fits_float(self)
+
+    def accepts_possible_dispatch(self, actual):
+        return actual.fits_possible_float(self)
+
     def fits_float(self, expected):
         return not self.may_be_unbound
 
@@ -1298,9 +1342,26 @@ class RealType(PrimitiveType):
     def fits_real(self, expected):
         return not self.may_be_unbound
 
+    def fits_possible_integer(self, expected):
+        return not self.may_be_unbound
+
+    def fits_possible_boolean(self, expected):
+        return not self.may_be_unbound
+
+    def fits_possible_float(self, expected):
+        return not self.may_be_unbound
+
     def annotation_conflict(self, contract):
         # Either integer or floating members may satisfy a numeric contract.
-        return False
+        return (
+            False
+            if self.may_be_unbound
+            else (
+                contract.integer_conflict(INTEGER)
+                and contract.boolean_conflict(BOOLEAN)
+                and contract.float_conflict(FLOAT)
+            )
+        )
 
     def join(self, other):
         return other.join_real(self)
@@ -1348,7 +1409,13 @@ class ImmortalType(ValueType):
     may_be_unbound: bool = False
 
     def annotation_conflict(self, contract):
-        return True
+        return (
+            False
+            if self.may_be_unbound
+            else (
+                contract.boolean_conflict(BOOLEAN) and contract.none_conflict(NONE_TYPE)
+            )
+        )
 
     @property
     def is_immortal(self):
@@ -1409,6 +1476,9 @@ class NoneType(PrimitiveType):
     def same_runtime_class(self, other) -> bool:
         return other.fits_none(NONE_TYPE)
 
+    def annotation_conflict(self, contract):
+        return False if self.may_be_unbound else contract.none_conflict(self)
+
     @property
     def is_immortal(self):
         return not self.may_be_unbound
@@ -1416,6 +1486,9 @@ class NoneType(PrimitiveType):
     @property
     def needs_release(self):
         return False
+
+    def dispatch_rank(self) -> int:
+        return 2**64 if self.may_be_unbound else 0
 
     def accept(self, visitor):
         return visitor.visit_NoneType(self)
@@ -1671,8 +1744,17 @@ class BytesType(PrimitiveType):
             return BYTES_TYPE
         return UNKNOWN
 
+    def dispatch_rank(self) -> int:
+        return 2**64 if self.may_be_unbound else 0
+
     def accepts(self, actual):
         return actual.fits_bytes(self)
+
+    def accepts_dispatch(self, actual):
+        return actual.fits_bytes(self)
+
+    def accepts_possible_dispatch(self, actual):
+        return actual.fits_possible_bytes(self)
 
     def fits_bytes(self, expected):
         return not self.may_be_unbound
@@ -1717,7 +1799,7 @@ class FunctionType(ValueType):
         return other.fits_function(FUNCTION_TYPE)
 
     def annotation_conflict(self, contract):
-        return True
+        return not self.may_be_unbound
 
     @property
     def is_heap_object(self):
@@ -1772,6 +1854,14 @@ class TupleType(ValueType):
 
     def annotation_conflict(self, contract):
         return False if self.may_be_unbound else contract.tuple_conflict(self)
+
+    def annotated_tuple(self, expected):
+        if self.arity is None and expected.arity is not None:
+            return TupleType(expected.arity, None, may_be_unbound=self.may_be_unbound)
+        return self
+
+    def dispatch_rank(self) -> int:
+        return 2**64 if self.may_be_unbound else 0
 
     @property
     def is_heap_object(self):
@@ -2034,7 +2124,7 @@ class TupleType(ValueType):
         return actual.fits_tuple(self)
 
     def accepts_dispatch(self, actual):
-        return actual.fits_tuple(self)
+        return actual.fits_tuple_dispatch(self)
 
     def accepts_possible_dispatch(self, actual):
         return actual.fits_possible_tuple(self)
@@ -2061,10 +2151,45 @@ class TupleType(ValueType):
             )
         return True
 
+    def fits_tuple_dispatch(self, expected):
+        if self.may_be_unbound:
+            return False
+        if expected.arity is not None and self.arity != expected.arity:
+            return False
+        if expected.elements is not None:
+            if self.arity == 0 and len(expected.elements) == 0:
+                return True
+            if self.elements is None:
+                return all(el is UNKNOWN for el in expected.elements)
+            if self.arity is None or len(self.elements) != len(expected.elements):
+                return False
+            return all(
+                s_el is not UNKNOWN and (e_el is UNKNOWN or s_el.dispatch_fits(e_el))
+                for s_el, e_el in zip(self.elements, expected.elements)
+            )
+        return True
+
     def fits_possible_tuple(self, expected):
-        return (
-            expected.arity is None or self.arity is None or self.arity == expected.arity
-        )
+        if self.may_be_unbound:
+            return False
+        if (
+            expected.arity is not None
+            and self.arity is not None
+            and self.arity != expected.arity
+        ):
+            return False
+        if (
+            expected.arity is not None
+            and self.arity == expected.arity
+            and expected.elements is not None
+            and self.elements is not None
+            and len(self.elements) == len(expected.elements)
+        ):
+            return all(
+                s_el.may_dispatch_fit(e_el)
+                for s_el, e_el in zip(self.elements, expected.elements)
+            )
+        return True
 
     def proves_tuple_index(self, index):
         return not self.may_be_unbound and self.arity is not None and index < self.arity
@@ -2100,8 +2225,6 @@ class ListType(ValueType):
         return False if self.may_be_unbound else contract.list_conflict(self)
 
     def annotated_list(self, expected):
-        if self.element is UNKNOWN:
-            return ListType(expected.element, may_be_unbound=self.may_be_unbound)
         return self
 
     @property
@@ -2414,7 +2537,21 @@ class DictType(ValueType):
         )
 
     def annotation_conflict(self, contract):
-        return True
+        return (
+            False
+            if (self.may_be_unbound or not self.proven)
+            else contract.dict_conflict(self)
+        )
+
+    def annotated_dict(self, expected):
+        if not self.proven:
+            return DictType(
+                self.key, self.value, may_be_unbound=self.may_be_unbound, proven=True
+            )
+        return self
+
+    def dispatch_rank(self) -> int:
+        return 2**64 if (self.may_be_unbound or not self.proven) else 0
 
     @property
     def is_heap_object(self):
@@ -2569,6 +2706,24 @@ class DictType(ValueType):
     def accepts(self, actual):
         return actual.fits_dict(self)
 
+    def accepts_dispatch(self, actual):
+        return (
+            not self.may_be_unbound
+            and self.proven
+            and self.key is UNKNOWN
+            and self.value is UNKNOWN
+            and actual.fits_dict(self)
+        )
+
+    def accepts_possible_dispatch(self, actual):
+        return (
+            not self.may_be_unbound
+            and self.proven
+            and self.key is UNKNOWN
+            and self.value is UNKNOWN
+            and actual.fits_possible_dict(self)
+        )
+
     def fits_dict(self, expected=None):
         if not self.proven:
             return False
@@ -2585,6 +2740,11 @@ class DictType(ValueType):
             or self.value.fits(expected.value)
         )
         return key_ok and val_ok
+
+    def fits_possible_dict(self, expected=None):
+        if expected is None:
+            return not self.may_be_unbound
+        return not (self.may_be_unbound and not expected.may_be_unbound)
 
     def with_entry(self, key, value):
         k = key.as_bound().limit_container_depth(2)
@@ -2739,7 +2899,7 @@ class IteratorType(ValueType):
         return other.fits_iterator(ITERATOR_TYPE)
 
     def annotation_conflict(self, contract):
-        return True
+        return not self.may_be_unbound
 
     @property
     def is_heap_object(self):
@@ -3050,6 +3210,18 @@ class UnionType(ValueType):
     def accepts_possible_dispatch(self, actual):
         return actual.may_fit_union(self)
 
+    def dispatch_rank(self) -> int:
+        return (
+            2**64
+            if self.may_be_unbound
+            else max((m.dispatch_rank() for m in self.members), default=2**64)
+        )
+
+    def annotation_conflict(self, contract):
+        return not self.may_be_unbound and all(
+            m.annotation_conflict(contract) for m in self.members
+        )
+
     def dispatch_fits(self, expected):
         return not self.may_be_unbound and all(
             m.dispatch_fits(expected) for m in self.members
@@ -3100,6 +3272,11 @@ class UnionType(ValueType):
     def fits_tuple(self, expected):
         return self._fits_family(expected, lambda member: member.fits_tuple(member))
 
+    def fits_tuple_dispatch(self, expected):
+        return not self.may_be_unbound and all(
+            member.fits_tuple_dispatch(expected) for member in self.members
+        )
+
     def fits_list(self, expected=None):
         return self._fits_family(expected, lambda member: member.fits_list(member))
 
@@ -3135,6 +3312,11 @@ class UnionType(ValueType):
             expected, lambda member: member.fits_possible_boolean(member)
         )
 
+    def fits_possible_float(self, expected):
+        return self._may_fit_family(
+            expected, lambda member: member.fits_possible_float(member)
+        )
+
     def fits_possible_none(self, expected):
         return self._may_fit_family(
             expected, lambda member: member.fits_possible_none(member)
@@ -3150,6 +3332,11 @@ class UnionType(ValueType):
             expected, lambda member: member.fits_possible_text(member)
         )
 
+    def fits_possible_bytes(self, expected):
+        return self._may_fit_family(
+            expected, lambda member: member.fits_possible_bytes(member)
+        )
+
     def fits_possible_tuple(self, expected):
         return self._may_fit_family(
             expected, lambda member: member.fits_possible_tuple(member)
@@ -3158,6 +3345,11 @@ class UnionType(ValueType):
     def fits_possible_list(self, expected=None):
         return self._may_fit_family(
             expected, lambda member: member.fits_possible_list(member)
+        )
+
+    def fits_possible_dict(self, expected=None):
+        return self._may_fit_family(
+            expected, lambda member: member.fits_possible_dict(member)
         )
 
     def fits_possible_instance(self, expected):
@@ -3420,6 +3612,9 @@ class InstanceType(ValueType):
     def same_runtime_class(self, other) -> bool:
         return other.fits_instance(self)
 
+    def annotation_conflict(self, contract):
+        return False if self.may_be_unbound else contract.instance_conflict(self)
+
     def join(self, other):
         return other.join_instance(self)
 
@@ -3494,6 +3689,9 @@ class ClassType(ValueType):
         return None if self.may_be_unbound else True
 
     def fits_class(self, expected=None):
+        return not self.may_be_unbound
+
+    def annotation_conflict(self, contract):
         return not self.may_be_unbound
 
     def runtime_class_type(self):
@@ -3682,6 +3880,9 @@ class UniqueObjectType(ValueType):
         return None if self.may_be_unbound else True
 
     def fits_unique_object(self, expected=None):
+        return not self.may_be_unbound
+
+    def annotation_conflict(self, contract):
         return not self.may_be_unbound
 
     def is_same_unique_object(self, identity: object) -> bool:

@@ -1,12 +1,12 @@
 # Remaining SBCL compiler and IR1 transform gaps
 
-Status: **implemented** for general-context flow-type feedback into IR1
+Status: **implemented** for declared parameter contracts and sound container
+element propagation (Section 0A), general-context flow-type feedback into IR1
 transforms, unified constant-lvar/dead-operand helpers, and monotonic
 `derive_node_type` (Section 1A), entry-context IR1 specialization / closed-call
 parameter promotion (Section 1B), identity-aware float storage and coercions,
 numeric internal calling conventions, and LLVM-visible private leaf boxes
-(parts of Section 5); **proposed** for Section 0 (the four high-impact
-architectural gaps identified by the 14-workload suite audit), Sections 1C–4,
+(parts of Section 5); **proposed** for Sections 0B–0D, Sections 1C–4,
 and the rest of Section 5.
 
 This document records the remaining architectural and transform gaps between
@@ -63,7 +63,7 @@ showed that Mule's largest slowdowns relative to CPython and SBCL (`Mule / CPyth
 up to `2.97` and `Mule / SBCL` up to `7.95`) come from four fundamental
 departures from SBCL's compiler and runtime architecture:
 
-### 0A. Declared parameter contracts and nested container/class annotations (`ir1tran.py`, `annotation_types.py`, `locall.py`, `checkgen.py`) (proposed)
+### 0A. Declared parameter contracts and nested container/class annotations (`ir1tran.py`, `annotation_types.py`, `locall.py`, `constraint.py`, `codegen.py`, `vops.py`) (implemented)
 
 - **SBCL reference**: `src/compiler/ir1tran-lambda.lisp` (`ir1-convert-lambda`,
   `ir1-convert-aux-bindings`) and `src/compiler/checkgen.lisp`
@@ -71,32 +71,24 @@ departures from SBCL's compiler and runtime architecture:
   emits an entry type check (under `safety >= 1`) and asserts the declared
   `CTYPE` across the entire function body, regardless of whether callers are
   known at compile time.
-- **Current Mule defect**:
-  - `_DECLARATION_BINDINGS` (`mule/compiler/ir1tran.py`) only recognizes `int`,
-    `float`, `str`, `bytes`, and single-level `list[T]`. It discards `bool`,
-    `tuple[...]`, `dict[K, V]`, nested container annotations (`list[tuple[str, int]]`,
-    `tuple[list[list[int]], list[list[int]]]`), and in-module class annotations
-    (`node: _Node`, `left: Expr`, `acct: Account`).
-  - `Contract.general_parameter_type()` (`mule/compiler/annotation_types.py`)
-    returns `UNKNOWN` for everything except `ListContract` with a non-`None`
-    scalar element, and `_ParameterUse.analyze` (`mule/compiler/locall.py`) only
-    synthesizes a `"fixnum"` variant if a parameter is directly consumed by a
-    primitive numeric, text, or list operation.
-  - When a function is passed as a callback (such as `run(data: ...)` passed to
-    `perfutils.run_case`), `locall.analyze` observes no intra-unit call sites
-    and creates no `"observed"` context. As a result, `matrix_multiply.run`,
-    `word_frequency.run`, `lru_simulation.run`, `LRUCache._unlink`,
-    `LRUCache._push_front`, and `LRUCache.get` compile their hot loops with
-    `UNKNOWN` parameters.
-- **Required implementation**:
-  1. Add `BooleanContract`, `TupleContract`, `DictContract`, recursive nested
-     container subscript bindings, and in-module `ClassContract` to
+- **Implemented design and soundness contract**:
+  1. `BooleanContract`, `NoneContract`, `TupleContract`, `DictContract`,
+     `ClassContract`, `UnionContract`, recursive nested container subscript
+     bindings, and `*args: T` / `**kwargs: T` contracts are recognized by
      `mule/compiler/annotation_types.py` and `_DeclaredAnnotationReference` in
      `mule/compiler/ir1tran.py`.
-  2. Propagate declared parameter contracts into `locall.py` (guarded or entry-checked
-     under the active `safety` policy) so functions and methods with declared
-     parameter types specialize their bodies even when called externally or via
-     first-class callbacks.
+  2. Under `safety == 3` (`safety == 0` when trusted), `partial_params`
+     establishes the entry-checked parameter `ValueType` in the general entry,
+     while under `1 <= safety < 3` `locall.py` synthesizes a guarded entry
+     (`.spec.0`) from `Contract.speculative_parameter_type()` alongside the
+     hint-tolerant general entry.
+  3. Because Python containers are mutable and may be aliased, a shallow entry
+     check on `list[T]` or `dict[K, V]` establishes only the outer container
+     shape (`LIST_TYPE`, `DICT_TYPE`, `TupleType(arity)`). `constraint.py`
+     propagates container element contracts across indexing, slicing, iteration,
+     sequence unpacking, `dict.get`/`pop`/`setdefault`, and `list`/`sorted`,
+     emitting per-element runtime guards via `_ContractAssertion` (`codegen.py`,
+     `vops.py`) whenever the element type is not already statically proven.
 
 ### 0B. Typed `dict` / `set` storage layout and fixnum hash invariants (`stdlib/_dict.py`, `locall.py`, `vops.py`) (proposed)
 

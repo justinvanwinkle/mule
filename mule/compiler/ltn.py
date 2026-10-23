@@ -148,6 +148,7 @@ class EntryContext:
     rejected_fixnum_guard: FixnumGuard | None = None
     borrowed_parameters: frozenset[int] = frozenset()
     borrowed_callees: dict = field(default_factory=dict)
+    element_contracts: dict = field(default_factory=dict)
 
     def type_of(self, node) -> ValueType:
         return self.types.get(node, UNKNOWN)
