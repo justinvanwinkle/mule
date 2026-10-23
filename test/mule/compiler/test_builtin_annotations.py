@@ -443,7 +443,7 @@ def test_parameter_facts_specialize_callbacks_across_tuple_dict_nested_and_class
     lookup_spec = llvm.split('define internal ptr @"mule_fn_lookup_add.spec.0"(')[
         1
     ].split("\n}")[0]
-    assert "mule_import__dict:mule_fn_dict.get.2" in lookup_spec
+    assert '@"mule.protocol.dict_get"(' in lookup_spec
     assert "@llvm.sadd.with.overflow.i64(" in lookup_spec
 
     point_spec = llvm.split('define internal ptr @"mule_fn_point_metric.spec.0"(')[
@@ -528,6 +528,7 @@ print(callbacks[0](([[value, 2], [3, 4]], [[5, 6], [7, value]])))
     assert "@mule_list_getitem_borrow(" in specialized
     assert "@mule_fast_getitem(" not in specialized
     assert "@mule_assert_" not in specialized
+    assert "getelementptr i8, ptr" not in specialized
 
     case = build_case(tmp_path, source, optimize=2)
     optimized = case.function_ir(r"^mule_fn_dot\.spec\.0$")
