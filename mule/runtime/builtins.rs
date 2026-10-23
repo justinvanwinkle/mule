@@ -308,6 +308,41 @@ unsafe fn slice_bound_int(value: Value, default: i64, len: i64) -> Option<usize>
         }
     }
 }
+const UNICODE_DECIMAL_ZEROS: [u32; 77] = [
+    0x30, 0x660, 0x6f0, 0x7c0, 0x966, 0x9e6, 0xa66, 0xae6, 0xb66, 0xbe6, 0xc66, 0xce6, 0xd66,
+    0xde6, 0xe50, 0xed0, 0xf20, 0x1040, 0x1090, 0x17e0, 0x1810, 0x1946, 0x19d0, 0x1a80, 0x1a90,
+    0x1b50, 0x1bb0, 0x1c40, 0x1c50, 0xa620, 0xa8d0, 0xa900, 0xa9d0, 0xa9f0, 0xaa50, 0xabf0,
+    0xff10, 0x104a0, 0x10d30, 0x10d40, 0x11066, 0x110f0, 0x11136, 0x111d0, 0x112f0, 0x11450,
+    0x114d0, 0x11650, 0x116c0, 0x116d0, 0x116da, 0x11730, 0x118e0, 0x11950, 0x11bf0, 0x11c50,
+    0x11d50, 0x11da0, 0x11de0, 0x11f50, 0x16130, 0x16a60, 0x16ac0, 0x16b50, 0x16d70, 0x1ccf0,
+    0x1d7ce, 0x1d7d8, 0x1d7e2, 0x1d7ec, 0x1d7f6, 0x1e140, 0x1e2f0, 0x1e4f0, 0x1e5f1, 0x1e950,
+    0x1fbf0,
+];
+
+fn normalize_non_latin1_numeric_bytes(text: &Text) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    for cp in text.codepoints() {
+        if cp < 128 {
+            out.push(cp as u8);
+            continue;
+        }
+        let idx = UNICODE_DECIMAL_ZEROS.partition_point(|&zero| zero <= cp);
+        if idx > 0 {
+            let zero = UNICODE_DECIMAL_ZEROS[idx - 1];
+            if cp - zero < 10 {
+                out.push(b'0' + (cp - zero) as u8);
+                continue;
+            }
+        }
+        if char::from_u32(cp).is_some_and(char::is_whitespace) {
+            out.push(b' ');
+        } else {
+            out.push(0xFF);
+        }
+    }
+    out
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_parse_int_text(value: Value) -> Value {
     unsafe {
@@ -316,7 +351,7 @@ pub unsafe extern "C" fn mule_parse_int_text(value: Value) -> Value {
                 if let Some(bytes) = text.as_latin1() {
                     return parse_int_bytes_base10(bytes);
                 }
-                let bytes = text.to_wtf8();
+                let bytes = normalize_non_latin1_numeric_bytes(text);
                 return parse_int_bytes_base10(&bytes);
             }
         }
@@ -348,7 +383,7 @@ pub unsafe extern "C" fn mule_parse_int_slice(
                 }
                 return match text.slice(s, e) {
                     Ok(sub) => {
-                        let bytes = sub.to_wtf8();
+                        let bytes = normalize_non_latin1_numeric_bytes(&sub);
                         parse_int_bytes_base10(&bytes)
                     }
                     Err(_) => fail("MemoryError", "text storage allocation failed"),
@@ -392,13 +427,13 @@ unsafe extern "C" fn int(_: Value, args: Value) -> Value {
                         if let Some(bytes) = text.as_latin1() {
                             return parse_int_bytes_base10(bytes);
                         }
-                        let bytes = text.to_wtf8();
+                        let bytes = normalize_non_latin1_numeric_bytes(text);
                         return parse_int_bytes_base10(&bytes);
                     }
                     let parsed = if let Some(bytes) = text.as_latin1() {
                         parse_integer_value(bytes, base)
                     } else {
-                        let bytes = text.to_wtf8();
+                        let bytes = normalize_non_latin1_numeric_bytes(text);
                         parse_integer_value(&bytes, base)
                     };
                     return parsed.unwrap_or_else(|| fail("ValueError", "invalid literal for int"));

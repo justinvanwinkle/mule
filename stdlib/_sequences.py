@@ -756,18 +756,38 @@ def all(iterable, /):
 
 
 def sum(iterable, /, start=0):
-    if _text_storage(start):
+    if is_instance(start, str):
         raise TypeError("sum() can't sum strings [use ''.join(seq) instead]")
+    if is_instance(start, bytes):
+        raise TypeError("sum() can't sum bytes [use b''.join(seq) instead]")
+    if is_instance(start, bytearray):
+        raise TypeError("sum() can't sum bytearray [use b''.join(seq) instead]")
     total = start
-    if _type_of(iterable) is list or _type_of(iterable) is tuple:
-        index = 0
-        length = _storage_length(iterable)
-        while index < length:
-            total = total + _storage_read(iterable, index)
-            index += 1
-        return total
+    comp = 0.0
+    in_float = _type_of(total) is float
     for item in iterable:
-        total = total + item
+        if not in_float and (_type_of(total) is int or _type_of(total) is bool) and _type_of(item) is float:
+            total = total + item
+            in_float = True
+        elif in_float and (_type_of(item) is float or _type_of(item) is int or _type_of(item) is bool):
+            val = float(item)
+            t = total + val
+            if t - t == 0.0:
+                a_total = -total if total < 0.0 else total
+                a_val = -val if val < 0.0 else val
+                if a_total >= a_val:
+                    comp += (total - t) + val
+                else:
+                    comp += (val - t) + total
+            total = t
+        else:
+            if in_float and comp != 0.0:
+                total = total + comp
+                comp = 0.0
+            total = total + item
+            in_float = _type_of(total) is float
+    if in_float and comp != 0.0:
+        return total + comp
     return total
 
 
@@ -857,11 +877,13 @@ def reversed(sequence, /):
 def pow(base, exp, mod=None):
     if mod is None:
         return base**exp
-    method = getattr(type(base), "__pow__", None)
-    if method is not None:
-        result = method(base, exp, mod)
-        if result is not NotImplemented:
-            return result
+    base_cls = type(base)
+    if base_cls is not int and base_cls is not bool:
+        method = getattr(base_cls, "__pow__", None)
+        if method is not None and method is not getattr(int, "__pow__", None):
+            result = method(base, exp, mod)
+            if result is not NotImplemented:
+                return result
     if not (_integer_kind(base) and _integer_kind(exp) and _integer_kind(mod)):
         raise TypeError(
             "pow() 3rd argument not allowed unless all arguments are integers"
@@ -869,7 +891,19 @@ def pow(base, exp, mod=None):
     if mod == 0:
         raise ValueError("pow() 3rd argument cannot be 0")
     if exp < 0:
-        raise ValueError("base is not invertible for the given modulus")
+        m = -mod if mod < 0 else mod
+        if m == 1:
+            return 0
+        x0, x1 = 1, 0
+        a, b = base % m, m
+        while b:
+            q = a // b
+            a, b = b, a - q * b
+            x0, x1 = x1, x0 - q * x1
+        if a != 1:
+            raise ValueError("base is not invertible for the given modulus")
+        base = x0 % mod
+        exp = -exp
     result = 1 % mod
     base %= mod
     while exp:

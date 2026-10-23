@@ -65,9 +65,9 @@ exit_code = 1
 
 ["builtins/format_builtin"]
 phase = "run"
-reason = "KeyError: ''"
-stdout = "default 42 3.5 s None [1, 2]\nwidth align [ab   ] [   ab] [  ab  ]\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/builtins/format_builtin.py\", line 5, in <module>\n    print(\"fill\", format(\"ab\", \"*^7\"), format(5, \"0>4\"), format(-5, \"05\"), format(5, \"+05\"))\nKeyError: ''\n"
+reason = "ValueError: unknown format code 'z' for object of type 'float'"
+stdout = "default 42 3.5 s None [1, 2]\nwidth align [ab   ] [   ab] [  ab  ]\nfill **ab*** 0005 -0005 +0005\nint types ff FF 0xff 377 0b11111111 A\ngrouping 1,234,567 1_234_567 ff_fff_fff 1,234,567.89\nsign +5  5 -5 5\nfloat 3.14 3.142e+00 1234.5 1.234e-05\npercent 25.6% 100.000000%\nfloat special inf -inf NAN\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/builtins/format_builtin.py\", line 12, in <module>\n    print(\"negative zero\", format(-0.0, \".1f\"), format(-0.0, \"z.1f\"), format(-0.001, \"z.1f\"))\nValueError: unknown format code 'z' for object of type 'float'\n"
 exit_code = 1
 
 ["builtins/hash_and_identity"]
@@ -79,10 +79,10 @@ exit_code = 0
 
 ["builtins/int_conversions"]
 phase = "run"
-reason = "TypeError: got an unexpected keyword argument 'base'"
-stdout = "plain 42 -7 3 10\nbase 2 11 11 -3\nbase 8 15 15 15\nbase 16 255 255 255 255\nbase 36 35 1295 1066082\nbase 0 decimal 123 0 0 1000\nunderscores 1000000 255 2\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/builtins/int_conversions.py\", line 10, in <module>\n    print(\"base kw\", int(\"10\", base=3), int(\"12\", base=5))\nTypeError: got an unexpected keyword argument 'base'\n"
-exit_code = 1
+reason = "native output differs from CPython"
+stdout = "plain 42 -7 3 10\nbase 2 11 11 -3\nbase 8 15 15 15\nbase 16 255 255 255 255\nbase 36 35 1295 1066082\nbase 0 decimal 123 0 0 1000\nunderscores 1000000 255 2\nbase kw 3 7\nfrom float 3 -3 100000000000000000000 0\nfrom bool 1 0\nfrom bytes 42 -5 255\nno args 0\nunicode digits 123 10\nbig 9999999999999999999999999999999999999999\nbad '' 10 ValueError\nbad '12a' 10 ValueError\nbad '1__0' 10 ValueError\nbad '_1' 10 ValueError\nbad '1_' 10 ValueError\nbad '0b2' 0 ValueError\nbad '08' 0 ValueError\nbad '0x' 16 ValueError\nbad '2' 2 ValueError\nbad 'z' 35 ValueError\nbad '1.5' 10 ValueError\nbad ' ' 10 ValueError\nbad '- 1' 10 ValueError\nbad '1 1' 10 ValueError\nbad base 1 ValueError\nbad base 37 ValueError\nbad base -1 ValueError\nbase with non string TypeError\nspecial float OverflowError\nspecial float ValueError\nint None TypeError\nint list TypeError\ndunder int 7 8\ndunder trunc 9\nsubclass converted 5 int\nbase with index 9\nroundtrip 12345 -9 64\n"
+stderr = ""
+exit_code = 0
 
 ["builtins/isinstance_issubclass"]
 phase = "run"
@@ -133,13 +133,6 @@ stdout = "one arg slice(None, 5, None) None 5 None\ntwo args slice(1, 4, None) t
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/builtins/slice_ellipsis_notimplemented.py\", line 16, in <module>\n    print(\"ordering\", slice(1, 2) < slice(1, 3))\nTypeError: '<' not supported between instances of 'slice' and 'slice'\n"
 exit_code = 1
 
-["builtins/sum_any_all"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "sum 6 0 5050\nsum start 13 103\nsum floats 0.9999999999999999 0.6000000000000001\nsum mixed 4.5 int\nsum lists [1, 2, 3]\nsum tuples (1, 2)\nsum complex (5.5+1j)\nsum bools 2\nsum big 1\nsum precision 0.0 0.0\nsum inf inf nan\nsum negative zero 0.0 -0.0\nsum strings TypeError\nsum mixed bad TypeError\nsum custom radd Money(12)\nsum custom start Money(101)\nany False False True\nall True True False\nreturns bool True True\nany short True [0, 3]\nall short False [1, 0]\nany leaves rest True [6, 7]\nall exhausts when true True [1, 2]\nbool error propagates boom\nshort circuit avoids boom True False\nany of comparisons True False\nnested True False\n"
-stderr = ""
-exit_code = 0
-
 ["builtins/type_and_len"]
 phase = "run"
 reason = "native output differs from CPython"
@@ -171,7 +164,7 @@ exit_code = 0
 ["classes/builtin_subclasses"]
 phase = "run"
 reason = "AttributeError: 'str' object has no attribute 'format_map'"
-stdout = "loud list [10, 2, 3, 4] 2 4 19\nloud list log ['append 3', 'setitem 0', 'getitem 1']\nslice type list [2, 3] ['getitem slice(1, 3, None)']\nconcat type list list\nisinstance list True True\nmissing via [] 1 <b>\nget bypasses missing None False\nafter [('a', 1), ('b', '<b>')]\ndict keys ['MixedInit', 'SetDef', 'Updated', 'upper']\ngetitem lowered 2 2\nbypassed key not found KeyError\ndict copy type dict dict\nstr() HEY! format HEY! repr 'hey'\nlen override 3 concat heyx str\njoin hey-hey upper type str\nprint direct HEY!\nint subclass ops 8 8 15 10 int\nformat int sub 00$5 $5 $5\nbool / hash False True True\nbool override False True no\n"
+stdout = "loud list [10, 2, 3, 4] 2 4 19\nloud list log ['append 3', 'setitem 0', 'getitem 1']\nslice type list [2, 3] ['getitem slice(1, 3, None)']\nconcat type list list\nisinstance list True True\nmissing via [] 1 <b>\nget bypasses missing None False\nafter [('a', 1), ('b', '<b>')]\ndict keys ['MixedInit', 'SetDef', 'Updated', 'upper']\ngetitem lowered 2 2\nbypassed key not found KeyError\ndict copy type dict dict\nstr() HEY! format HEY! repr 'hey'\nlen override 3 concat heyx str\njoin hey-hey upper type str\nprint direct HEY!\nint subclass ops 8 8 15 10 int\nformat int sub 0005 $5 $5\nbool / hash False True True\nbool override False True no\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/builtin_subclasses.py\", line 131, in <module>\n    fmt = \"{x}-{y}\".format_map(cd)\nAttributeError: 'str' object has no attribute 'format_map'\n"
 exit_code = 1
 
@@ -205,10 +198,10 @@ exit_code = 0
 
 ["classes/enum_flags_match"]
 phase = "run"
-reason = "AttributeError: 'int' object has no attribute 'bit_count'"
-stdout = "values [('R', 1), ('W', 2), ('X', 4)]\ncombine Perm.RW True 3\nunnamed combination Perm.R|W|X 7 R|W|X\ncontains True False True\niterate members of combo ['R', 'W', 'X']\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/enum_flags_match.py\", line 20, in <module>\n    print(\"len combo\", len(rwx), len(Perm.R))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/enum.py\", line 1557, in __len__\n    return self._value_.bit_count()\nAttributeError: 'int' object has no attribute 'bit_count'\n"
-exit_code = 1
+reason = "native output differs from CPython"
+stdout = "values [('R', 1), ('W', 2), ('X', 4)]\ncombine Perm.RW True 3\nunnamed combination Perm.R|W|X 7 R|W|X\ncontains True False True\niterate members of combo ['R', 'W', 'X']\nlen combo 3 1\nand/xor/invert Perm.W Perm.W|X Perm.W|X Perm(0)\nempty Perm(0) False True None\nlookup by int Perm.RW Perm.R|X\nout of range Flag ValueError\nIntFlag 3 True 4 int 12 int\nIntFlag repr 5\nIntFlag with int 7 9 2\nIntFlag bool False 0\nmatch enum ['warm', 'cool', 'cool'] unknown\nmatch flag read-write read exec(R|X) other\nmatch capture got RED other b\nclass pattern green via class pattern name BLUE\nmapping pattern red key 1 no red\nSTRICT ValueError\nCONFORM Conform.A|B 3\nKEEP 7\niter flag ['ONE', 'TWO'] ['NONE', 'ONE', 'TWO', 'BOTH']\n"
+stderr = ""
+exit_code = 0
 
 ["classes/enums_basic"]
 phase = "run"
@@ -346,7 +339,7 @@ exit_code = 0
 ["exceptions/try_else_finally_order"]
 phase = "run"
 reason = "native output differs from CPython"
-stdout = "try=False else=False finally=False handle=False: ['try', 'try end', 'else', 'else end', 'finally', 'finally end', 'after']\ntry=False else=False finally=False handle=True: ['try', 'try end', 'else', 'else end', 'finally', 'finally end', 'after']\ntry=False else=False finally=True handle=False: ['try', 'try end', 'else', 'else end', 'finally', 'outer RuntimeError']\ntry=False else=False finally=True handle=True: ['try', 'try end', 'else', 'else end', 'finally', 'outer RuntimeError']\ntry=False else=True finally=False handle=False: ['try', 'try end', 'else', 'finally', 'finally end', 'outer KeyError']\ntry=False else=True finally=False handle=True: ['try', 'try end', 'else', 'finally', 'finally end', 'outer KeyError']\ntry=False else=True finally=True handle=False: ['try', 'try end', 'else', 'finally', 'outer RuntimeError']\ntry=False else=True finally=True handle=True: ['try', 'try end', 'else', 'finally', 'outer RuntimeError']\ntry=True else=False finally=False handle=False: ['try', 'except from try', 'finally', 'finally end', 'outer ValueError']\ntry=True else=False finally=False handle=True: ['try', 'except from try', 'finally', 'finally end', 'after']\ntry=True else=False finally=True handle=False: ['try', 'except from try', 'finally', 'outer RuntimeError']\ntry=True else=False finally=True handle=True: ['try', 'except from try', 'finally', 'outer RuntimeError']\ntry=True else=True finally=False handle=False: ['try', 'except from try', 'finally', 'finally end', 'outer ValueError']\ntry=True else=True finally=False handle=True: ['try', 'except from try', 'finally', 'finally end', 'after']\ntry=True else=True finally=True handle=False: ['try', 'except from try', 'finally', 'outer RuntimeError']\ntry=True else=True finally=True handle=True: ['try', 'except from try', 'finally', 'outer RuntimeError']\ntry/finally ok ['body', 'cleanup']\ntry/finally fail ['body', 'cleanup', 'propagated']\nelse coverage inner handler in else\nelse raise escapes to outer 'else-key'\nhandler raise ['handler', 'finally', 'outer got second ctx first']\nloop finally [0, 'f0', 'f1', 2, 'f2', 'f3']\n"
+stdout = "try=0 else=0 finally=0 handle=0: ['try', 'try end', 'else', 'else end', 'finally', 'finally end', 'after']\ntry=0 else=0 finally=0 handle=1: ['try', 'try end', 'else', 'else end', 'finally', 'finally end', 'after']\ntry=0 else=0 finally=1 handle=0: ['try', 'try end', 'else', 'else end', 'finally', 'outer RuntimeError']\ntry=0 else=0 finally=1 handle=1: ['try', 'try end', 'else', 'else end', 'finally', 'outer RuntimeError']\ntry=0 else=1 finally=0 handle=0: ['try', 'try end', 'else', 'finally', 'finally end', 'outer KeyError']\ntry=0 else=1 finally=0 handle=1: ['try', 'try end', 'else', 'finally', 'finally end', 'outer KeyError']\ntry=0 else=1 finally=1 handle=0: ['try', 'try end', 'else', 'finally', 'outer RuntimeError']\ntry=0 else=1 finally=1 handle=1: ['try', 'try end', 'else', 'finally', 'outer RuntimeError']\ntry=1 else=0 finally=0 handle=0: ['try', 'except from try', 'finally', 'finally end', 'outer ValueError']\ntry=1 else=0 finally=0 handle=1: ['try', 'except from try', 'finally', 'finally end', 'after']\ntry=1 else=0 finally=1 handle=0: ['try', 'except from try', 'finally', 'outer RuntimeError']\ntry=1 else=0 finally=1 handle=1: ['try', 'except from try', 'finally', 'outer RuntimeError']\ntry=1 else=1 finally=0 handle=0: ['try', 'except from try', 'finally', 'finally end', 'outer ValueError']\ntry=1 else=1 finally=0 handle=1: ['try', 'except from try', 'finally', 'finally end', 'after']\ntry=1 else=1 finally=1 handle=0: ['try', 'except from try', 'finally', 'outer RuntimeError']\ntry=1 else=1 finally=1 handle=1: ['try', 'except from try', 'finally', 'outer RuntimeError']\ntry/finally ok ['body', 'cleanup']\ntry/finally fail ['body', 'cleanup', 'propagated']\nelse coverage inner handler in else\nelse raise escapes to outer 'else-key'\nhandler raise ['handler', 'finally', 'outer got second ctx first']\nloop finally [0, 'f0', 'f1', 2, 'f2', 'f3']\n"
 stderr = ""
 exit_code = 0
 
@@ -418,90 +411,6 @@ stdout = "start ready\nthrow handled recovered\nafter recovery ready\nthrow unha
 stderr = ""
 exit_code = 0
 
-["numbers/bool_as_int"]
-phase = "run"
-reason = "KeyError: ''"
-stdout = "arith 2 10 1 -1 1 0.5 1\ntypes int int bool bool\nisinstance True True True\nsum of bools 3 7\ncount trues 3 3\nindex with bool b a yz\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/bool_as_int.py\", line 9, in <module>\n    print(\"repr\", repr(True), str(False), f\"{True}\", f\"{True:d}\", f\"{True:>5}\", format(False, \"05\"))\nKeyError: ''\n"
-exit_code = 1
-
-["numbers/complex_descriptors"]
-phase = "run"
-reason = "AttributeError: 'float' object has no attribute '_real'"
-stdout = "complex_construct: 0.0 0.0 (3.5-4.25j) (2.5+5.5j)\ncomplex_ops: (6+1.25j) (1-9.75j) True True 5.0\ncomplex_props: 3.5 -4.25 (3.5+4.25j) (3.5+4.25j)\ncomplex_subclass: True 1.5 2.5 (1.5-2.5j) (1.5-2.5j) 8.5\nvalue_error: ValueError\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/complex_descriptors.py\", line 46, in <module>\n    complex.conjugate(1.0)\nAttributeError: 'float' object has no attribute '_real'\n"
-exit_code = 1
-
-["numbers/complex_numbers"]
-phase = "run"
-reason = "TypeError: unsupported operand type(s) for **: 'complex' and 'int'"
-stdout = "repr (3+4j) (1-2j) 1j (-0-1j) 0j 0j (-0+0j) (1+0j) 2.5j\nattrs 3.0 4.0 float (3-4j) 5.0\nint attrs 5 0 5 0.0 2.5 0\nadd/sub (4+2j) (2+6j) (4+4j) (-2-4j) (3.5+4j)\nmul/div (11-2j) (-1+2j) (6+8j) (0.24-0.32j) (1.5+2j)\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/complex_numbers.py\", line 10, in <module>\n    print(\"pow\", a ** 2, 1j ** 2, (1j) ** 0, a ** 0.5, pow(1j, 3))\nTypeError: unsupported operand type(s) for **: 'complex' and 'int'\n"
-exit_code = 1
-
-["numbers/conversions"]
-phase = "run"
-reason = "ValueError: invalid literal for int"
-stdout = "int from float 3 -3 0 0 100000000000000000000\nint from str 42 42 -17 5 1000\nint base 0 31 15 5 123 0\nint explicit base 255 255 255 35 5\nint base 36 1295 2833 511\nint underscores base 16 255\nint from bool 1 0\nint big str 9999999999999999999999999999999999999999\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/conversions.py\", line 11, in <module>\n    print(\"int unicode digits\", int(\"٣٤\"), int(\"１２\"))\nValueError: invalid literal for int\n"
-exit_code = 1
-
-["numbers/float_methods"]
-phase = "run"
-reason = "AttributeError: type object 'float' has no attribute 'fromhex'"
-stdout = "hex 1.0 0x1.0000000000000p+0\nhex 0.5 0x1.0000000000000p-1\nhex 0.1 0x1.999999999999ap-4\nhex -2.75 -0x1.6000000000000p+1\nhex 0.0 0x0.0p+0\nhex -0.0 -0x0.0p+0\nhex 1e+300 0x1.7e43c8800759cp+996\nhex 5e-324 0x0.0000000000001p-1022\nhex 3.0 0x1.8000000000000p+1\nhex 255.5 0x1.ff00000000000p+7\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/float_methods.py\", line 8, in <module>\n    print(\"fromhex\", float.fromhex(\"0x1.8p1\"), float.fromhex(\"-0x1p-2\"), float.fromhex(\"0xA\"), float.fromhex(\"  0x1.fffffffffffffp+1023  \"))\nAttributeError: type object 'float' has no attribute 'fromhex'\n"
-exit_code = 1
-
-["numbers/float_repr"]
-phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'fsum'"
-stdout = "repr 0.1 str 0.1 roundtrip True\nrepr 0.2 str 0.2 roundtrip True\nrepr 0.30000000000000004 str 0.30000000000000004 roundtrip True\nrepr 1.0 str 1.0 roundtrip True\nrepr 1.5 str 1.5 roundtrip True\nrepr -2.25 str -2.25 roundtrip True\nrepr 100.0 str 100.0 roundtrip True\nrepr 1000000000000000.0 str 1000000000000000.0 roundtrip True\nrepr 1e+16 str 1e+16 roundtrip True\nrepr 1e+17 str 1e+17 roundtrip True\nrepr 1.2345678901234568e+17 str 1.2345678901234568e+17 roundtrip True\nrepr 0.0001 str 0.0001 roundtrip True\nrepr 1e-05 str 1e-05 roundtrip True\nrepr 0.0001 str 0.0001 roundtrip True\nrepr 1e-05 str 1e-05 roundtrip True\nrepr 1e+22 str 1e+22 roundtrip True\nrepr 1e+23 str 1e+23 roundtrip True\nrepr 1e+23 str 1e+23 roundtrip True\nrepr 3.141592653589793 str 3.141592653589793 roundtrip True\nrepr 9007199254740992.0 str 9007199254740992.0 roundtrip True\nrepr 9007199254740992.0 str 9007199254740992.0 roundtrip True\nrepr 0.3333333333333333 str 0.3333333333333333 roundtrip True\nrepr 0.6666666666666666 str 0.6666666666666666 roundtrip True\nrepr 5e-324 str 5e-324 roundtrip True\nrepr 1.7976931348623157e+308 str 1.7976931348623157e+308 roundtrip True\nrepr 0.30000000000000004 str 0.30000000000000004 roundtrip True\nrepr 123.456 str 123.456 roundtrip True\nrepr -0.000123 str -0.000123 roundtrip True\nrepr 1e+100 str 1e+100 roundtrip True\nrepr 1.23e-100 str 1.23e-100 roundtrip True\nfloat from ints 1.0 -7.0 9007199254740992.0 9007199254740992.0 1e+20\nfloat big int 8.98846567431158e+307 -1.0715086071862673e+301\nfloat(2**1024) OverflowError\nint to float rounding 1.8446744073709552e+19 9007199254740992.0\nin containers [0.1, 1e+20, 1e-07] (2.5,) {'k': 1e+16}\nf-string default 0.30000000000000004 1e+16 1e-05\nformat empty spec 1e+16 0.1\nstr format concat x=1.0;-0.5\naccumulated 0.9999999999999999 False\nsum vs fsum 0.9999999999999999\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/float_repr.py\", line 31, in <module>\n    print(\"fsum\", math.fsum([0.1] * 10))\nAttributeError: 'module' object has no attribute 'fsum'\n"
-exit_code = 1
-
-["numbers/float_specials"]
-phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'copysign'"
-stdout = "reprs inf -inf nan nan inf -inf nan nan\ninf arithmetic inf nan nan -inf nan 0.0 -0.0\nnan arithmetic nan nan nan\ncomparisons True True True False\nnan comparisons False True False False False False\nisnan/isinf True True True False\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/float_specials.py\", line 17, in <module>\n    print(\"neg zero\", nz, 0.0 == -0.0, math.copysign(1, nz), math.copysign(1, 0.0))\nAttributeError: 'module' object has no attribute 'copysign'\n"
-exit_code = 1
-
-["numbers/hash_equality"]
-phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'copysign'"
-stdout = "group ['int', 'float', 'bool', 'complex', 'Fraction', 'Decimal']\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/hash_equality.py\", line 16, in <module>\n    print(\"  all equal\", all(a == b for a in g for b in g))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/hash_equality.py\", line 16, in <genexpr>\n    print(\"  all equal\", all(a == b for a in g for b in g))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_pydecimal.py\", line 835, in __eq__\n    self, other = _convert_for_comparison(self, other, equality_op=True)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_pydecimal.py\", line 6048, in _convert_for_comparison\n    return self, Decimal.from_float(other)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_pydecimal.py\", line 654, in from_float\n    if _math.copysign(1.0, f) == 1.0:\nAttributeError: 'module' object has no attribute 'copysign'\n"
-exit_code = 1
-
-["numbers/int_methods"]
-phase = "run"
-reason = "AttributeError: 'int' object has no attribute 'bit_count'"
-stdout = ""
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/int_methods.py\", line 4, in <module>\n    print(\"bits\", n, n.bit_length(), n.bit_count())\nAttributeError: 'int' object has no attribute 'bit_count'\n"
-exit_code = 1
-
-["numbers/numeric_comparisons"]
-phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'copysign'"
-stdout = "tower eq True True True\nchained True False True True True\nchain mixed types True\nbigint vs float exact False True True True\nbigint vs float order True True True\nbigint vs nan False False False\nint vs float near False True\nfloat vs int fraction True True True True\ncompare 0.1 False True True\nbool vs float True True True\nmax/min mixed 1 1.0 0 -0.0 True 1180591620717411303424\nshort-circuit chain:\n  eval a\n  eval b\nresult False\nmiddle evaluated once:\n  eval a\n  eval b\n  eval c\nresult True\nint < str TypeError\nint < None TypeError\nint == str False True False\nsort mixed numeric [-2, -0.5, 0.0, True, 1.5, 3, 18446744073709551616]\ntuple compare True True False\nlist compare True True True\nfraction compare True True True\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/numeric_comparisons.py\", line 47, in <module>\n    print(\"decimal compare\", decimal.Decimal(\"0.5\") == 0.5, decimal.Decimal(1) == 1, decimal.Decimal(\"0.1\") == 0.1)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_pydecimal.py\", line 835, in __eq__\n    self, other = _convert_for_comparison(self, other, equality_op=True)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_pydecimal.py\", line 6048, in _convert_for_comparison\n    return self, Decimal.from_float(other)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_pydecimal.py\", line 654, in from_float\n    if _math.copysign(1.0, f) == 1.0:\nAttributeError: 'module' object has no attribute 'copysign'\n"
-exit_code = 1
-
-["numbers/pow_ops"]
-phase = "run"
-reason = "ValueError: base is not invertible for the given modulus"
-stdout = "int pow 1024 -8 16 1 1 -1\nneg exponent 0.5 0.125 0.25 0.1\ntype of neg exp float int\nfloat pow 1024.0 2.0 1.4142135623730951 2.0\nbig pow 147808829414345923316083210206383297601 True\npow builtin 1024 0.25 6.25\npow 3-arg 1 376 61\npow 3-arg negative base 1 8\npow 3-arg negative mod -1 -1\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/pow_ops.py\", line 12, in <module>\n    print(\"pow modular inverse\", pow(3, -1, 7), pow(38, -1, 97), pow(2, -2, 9))\nValueError: base is not invertible for the given modulus\n"
-exit_code = 1
-
-["numbers/rounding"]
-phase = "run"
-reason = "OverflowError: numerical result out of range"
-stdout = "round 0.5 0 int\nround 1.5 2 int\nround 2.5 2 int\nround 3.5 4 int\nround -0.5 0 int\nround -1.5 -2 int\nround -2.5 -2 int\nround 0.4999999 0 int\nround 2.675 3 int\nround 1.005 1 int\nround ndigits 2.68 1.0 0.12 0.38 3.142\nround ndigits 0 2.0 float 0.0\nround negative ndigits float 1230.0 1200.0 1400.0 -20.0\nround int 7 -7 int\nround int negative ndigits 1200 1200 1400 -20 20\nround int big 1000000000000000000000000000000 0\nround bool True bool\nround None ndigits 2 int\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/numbers/rounding.py\", line 16, in <module>\n    print(\"round huge ndigits\", round(1.23456, 400), round(1.5, -400))\nOverflowError: numerical result out of range\n"
-exit_code = 1
-
 ["protocols/bool_len"]
 phase = "run"
 reason = "native output differs from CPython"
@@ -532,9 +441,9 @@ exit_code = 1
 
 ["protocols/index_protocol"]
 phase = "run"
-reason = "TypeError: int requires a number or string"
-stdout = "index 3 9 c 1\nslice bounds [2, 3, 4] [0, 3, 6, 9] ello\nrange [0, 1, 2, 3] [1, 5, 9] 2 range(2, 5)\nbin/hex/oct 0b101 0xff 0o10\noperator.index 42\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/index_protocol.py\", line 23, in <module>\n    print(\"int() via __index__\", int(Idx(7)))\nTypeError: int requires a number or string\n"
+reason = "TypeError: unsupported operand type(s) for *: 'bytes' and 'Idx'"
+stdout = "index 3 9 c 1\nslice bounds [2, 3, 4] [0, 3, 6, 9] ello\nrange [0, 1, 2, 3] [1, 5, 9] 2 range(2, 5)\nbin/hex/oct 0b101 0xff 0o10\noperator.index 42\nint() via __index__ 7\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/index_protocol.py\", line 24, in <module>\n    print(\"repetition\", \"ab\" * Idx(3), [0] * Idx(2), Idx(2) * \"x\", b\"z\" * Idx(2))\nTypeError: unsupported operand type(s) for *: 'bytes' and 'Idx'\n"
 exit_code = 1
 
 ["protocols/inplace_operators"]
@@ -546,30 +455,23 @@ exit_code = 1
 
 ["protocols/notimplemented_fallback"]
 phase = "run"
-reason = "AttributeError: 'int' object has no attribute '__add__'"
-stdout = "left handles A wins ['A.__add__']\nright reflects B rwins ['A.__add__', 'B.__radd__']\nneither TypeError ['A.__add__', 'B.__radd__']\nright wins ignored left radd B rwins ['A.__add__', 'B.__radd__']\neq both NotImplemented False ['A.__eq__', 'B.__eq__']\neq identity fallback True ['A.__eq__', 'A.__eq__']\nne both NotImplemented True ['A.__eq__', 'B.__eq__']\nlt reflects to gt B.__gt__ result ['A.__lt__', 'B.__gt__']\nlt neither TypeError ['A.__lt__', 'B.__gt__']\ndirect call True\nNotImplemented repr NotImplemented NotImplementedType\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/notimplemented_fallback.py\", line 91, in <module>\n    print(\"int.__add__ str\", (1).__add__(\"x\") is NotImplemented, (1).__add__(2))\nAttributeError: 'int' object has no attribute '__add__'\n"
+reason = "AttributeError: 'float' object has no attribute '__radd__'"
+stdout = "left handles A wins ['A.__add__']\nright reflects B rwins ['A.__add__', 'B.__radd__']\nneither TypeError ['A.__add__', 'B.__radd__']\nright wins ignored left radd B rwins ['A.__add__', 'B.__radd__']\neq both NotImplemented False ['A.__eq__', 'B.__eq__']\neq identity fallback True ['A.__eq__', 'A.__eq__']\nne both NotImplemented True ['A.__eq__', 'B.__eq__']\nlt reflects to gt B.__gt__ result ['A.__lt__', 'B.__gt__']\nlt neither TypeError ['A.__lt__', 'B.__gt__']\ndirect call True\nNotImplemented repr NotImplemented NotImplementedType\nint.__add__ str True 3\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/notimplemented_fallback.py\", line 92, in <module>\n    print(\"float.__radd__ int\", (1.5).__radd__(1))\nAttributeError: 'float' object has no attribute '__radd__'\n"
 exit_code = 1
 
 ["protocols/numeric_conversions"]
 phase = "run"
-reason = "TypeError: a real number is required"
-stdout = "int() 998\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/numeric_conversions.py\", line 42, in <module>\n    print(\"float()\", float(n))\nTypeError: a real number is required\n"
-exit_code = 1
+reason = "native output differs from CPython"
+stdout = "int() 998\nfloat() -2.2\ncomplex() (-2.7+1j)\nround round(-2.7) round(-2.7, 2) round(-2.7)\nmath.trunc/floor/ceil trunc(-2.7) floor(-2.7) ceil(-2.7)\nabs Num(2.7)\nbare int TypeError\nbare float TypeError\nbare complex TypeError\nbare round TypeError\nbare trunc TypeError\nbare floor TypeError\nbare ceil TypeError\nbare abs TypeError\nint via __index__ 7 float via __index__ 7.0 complex via __index__ (7+0j)\ncomplex via __float__ (2.5+0j)\nint ignores __float__ TypeError\nint via __trunc__ 9\nmath.floor via __float__ 2 3\nbad return int TypeError\nbad return float TypeError\nbad return complex TypeError\nround builtins 0 2 2 0 2.67 1200 1200 1400\nround types int float int\nmath funcs on floats -2 -3 -2 3 0\nint() truncation -2 2 -12 255 5 1\nfloat parse 1000.0 -inf True 1e+20\ncomplex parse (1+2j) (1-0j) (3+0j) (2+0j)\nint too big for float OverflowError\nint(inf) OverflowError\nint(nan) ValueError\nFrac 3 3.143 3.142857142857143 3 3 3.1429\nsubclass conversions float int int\nsubclass math int int int\nint.__round__ ndigits 1230 20 20\ndivmod mixed (3, 1) (-4, 1) (3.0, 1.5) (-4.0, 0.5)\npow types 0.5 float 2.0 4 True\nmath.fsum / isclose 1.0 True\n"
+stderr = ""
+exit_code = 0
 
 ["protocols/reflected_operators"]
 phase = "run"
 reason = "TypeError: can only concatenate str (not \"OnlyR\") to str"
 stdout = "radd via int Num(13) ['Num(3).__radd__(10)']\nradd via sum Num(3) 2\nrsub rmul Num(7) Num(30)\nrtruediv rfloordiv rmod Num(3.0) Num(3) Num(1)\nrpow Num(8)\nrshifts Num(8) Num(8)\nrbitwise Num(2) Num(7) Num(6)\nrmatmul rmatmul [1, 2] @ 3\nrdivmod ('rdivmod', (5, 2))\nsubclass reflected first Num(3) ['Num(1).__add__(Sub(2))']\nsubclass no override Num(3) ['Num(1).__add__(SubNoOverride(2))']\nunrelated R handled ['L.__add__', 'R.__radd__']\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/reflected_operators.py\", line 142, in <module>\n    print(\"builtin left falls to radd\", \"s\" + OnlyR(), [1] + OnlyR(), (1,) + OnlyR())\nTypeError: can only concatenate str (not \"OnlyR\") to str\n"
-exit_code = 1
-
-["protocols/repr_str_format"]
-phase = "run"
-reason = "ValueError: unknown format code '_' for object of type 'float'"
-stdout = "print uses str Both(str) ReprOnly() StrOnly-str\nstr() Both(str) ReprOnly() StrOnly-str\nrepr() Both(repr) ReprOnly() StrOnly-repr\ncontainers use repr [Both(repr), ReprOnly(), StrOnly-repr] (Both(repr),) {'k': Both(repr)}\nf-string conversions Both(str) Both(repr) Both(str) ReprOnly() Both(repr)\npercent Both(str) Both(repr)\nstr.format Both(str) Both(repr) Both(str)\nascii ReprOnly() 'caf\\xe9'\nformat default $123.45 $123.45 $123.45\nformat specs 12345c *****$123.45 123.5        123\nstr vs format Money-str Money-str Money(12345)\nnested spec *****$123.45 12345c\nformat method spec 12345c **$123.45 12345c\nobject format empty plain-str plain-str\nobject format nonempty TypeError\nbad __format__ TypeError\nbad __str__ TypeError\nstr subclass result subclass-str S\nrecursive repr [1, [...]] {'self': {...}}\nnested repr Node('a', [Node(1), Node('b', [Node(None)])])\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/repr_str_format.py\", line 141, in <module>\n    print(\"builtin specs\", f\"{n:,.2f}\", f\"{n:_.0f}\", f\"{42:08b}\", f\"{255:#x}\", f\"{-3:+d}\", f\"{0.25:.1%}\", f\"{'ab':^6}|\", f\"{'x':-<4}|\")\nValueError: unknown format code '_' for object of type 'float'\n"
 exit_code = 1
 
 ["protocols/rich_comparisons"]
@@ -651,9 +553,9 @@ exit_code = 1
 
 ["stdlib/fractions_decimal"]
 phase = "run"
-reason = "TypeError: a real number is required"
-stdout = "normalized 1/2 1 2\narith 5/6 -1/6 1/6 2/3 -1/3 1/3\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/stdlib/fractions_decimal.py\", line 20, in <module>\n    print(\"pow\", a ** 2, a ** -2, Fraction(4, 9) ** Fraction(1, 2))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/fractions.py\", line 913, in __pow__\n    return float(a) ** float(b)\nTypeError: a real number is required\n"
+reason = "TypeError: object has no len"
+stdout = "normalized 1/2 1 2\narith 5/6 -1/6 1/6 2/3 -1/3 1/3\npow 1/9 9 0.6666666666666666\nfloor div/mod 3 1/2 (10, Fraction(1, 6))\nmixed int 4/3 2/3 3\nmixed float float 0.8333333333333333\ncompare True True True False\nnegative denom -1/2 1/2\nfrom str 3/4 5/4 7 1/1000\nfrom float exact 3602879701896397/36028797018963968\nfrom_float 1/4 11/10\nlimit_denominator 1/10 311/99\nlimit pi 1000 355/113\nas_integer_ratio (3, 2) (3, 4)\nround 2 4 33/100\nint/float -3 0.125\nis_integer True False\nsum fractions 49/20\nrepr Fraction(1, 3) 5\nhash eq int True True\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/stdlib/fractions_decimal.py\", line 38, in <module>\n    print(\"format\", format(Fraction(1, 3), \".5f\"), f\"{Fraction(22, 7):.3g}\", f\"{Fraction(1, 8):.1%}\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/fractions.py\", line 609, in __format__\n    return self._format_float_style(match)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/fractions.py\", line 588, in _format_float_style\n    padding = fill * (minimumwidth - len(sign) - len(body))\nTypeError: object has no len\n"
 exit_code = 1
 
 ["stdlib/io_module"]
@@ -672,9 +574,9 @@ exit_code = 0
 
 ["stdlib/math_module"]
 phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'trunc'"
-stdout = ""
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/stdlib/math_module.py\", line 5, in <module>\n    print(\"floor/ceil/trunc\", x, math.floor(x), math.ceil(x), math.trunc(x), type(math.floor(x)).__name__)\nAttributeError: 'module' object has no attribute 'trunc'\n"
+reason = "AttributeError: 'module' object has no attribute 'prod'"
+stdout = "floor/ceil/trunc 2.5 2 3 2 int\nfloor/ceil/trunc -2.5 -3 -2 -2 int\nfloor/ceil/trunc 3.0 3 3 3 int\nfloor/ceil/trunc -0.5 -1 0 0 int\nfloor/ceil/trunc 7 7 7 7 int\nround half even 2 4 0\nbig floor 100000000000000000000 -100000000000000000000\nfloor inf OverflowError\nceil nan ValueError\ngcd 6 2 0 0 2\nlcm 12 60 1 0 12\nisqrt 0 3 4 100000000000000000000\nisqrt neg ValueError\ncomb 120 1 0 118264581564861424\nperm 20 120 0\nfactorial 1 3628800 15511210043330985984000000\nfactorial neg ValueError\nfactorial float TypeError\nsum vs fsum 1.0 1.0\nnaive loop 0.9999999999999999 False\nfsum cancellation 1.0 1.0\nisclose True False\nisclose tol True False\nisclose zero False True\nisclose inf/nan True False\ncopysign -3.0 2.5 -1.0\ninf inf -inf True nan\nnan False True True True True\nnan in list identity True False\ninf arithmetic nan 0.0 -0.0 True\nfloat inf parse -inf inf nan\nmax with nan nan 1\nsorted with inf [-inf, 0, 3, inf]\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/stdlib/math_module.py\", line 58, in <module>\n    print(\"prod\", math.prod([1, 2, 3, 4]), math.prod([]), math.prod([2, 3], start=10), math.prod([0.5, 4]))\nAttributeError: 'module' object has no attribute 'prod'\n"
 exit_code = 1
 
 ["stdlib/operator_module"]
@@ -700,10 +602,10 @@ exit_code = 1
 
 ["stdlib/string_textwrap"]
 phase = "run"
-reason = "KeyError: ''"
-stdout = "substitute tim likes kiwis; cost: $3\nsubstitute mapping+kw kw wins likes figs; cost: $5\nmissing key KeyError what\nsafe_substitute bo likes ${what}s; cost: $$amount\ninvalid placeholder ValueError\nsafe invalid bad $ sign 1\ntemplate attrs $who likes ${what}s; cost: $$$amount\nget_identifiers ['a', 'b']\nis_valid True False\ncustom delimiter ed is 7yo, 100%\nascii_letters abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\nlowercase/uppercase abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ\ndigits 0123456789 0123456789abcdefABCDEF 01234567\npunctuation !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~\nwhitespace ' \\t\\n\\r\\x0b\\x0c'\nprintable len 100\ncapwords Hello World Of Python\ncapwords sep A-B-C d\ncaesar Hhoor\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/stdlib/string_textwrap.py\", line 40, in <module>\n    print(\"Formatter\", fmt.format(\"{0}-{x:>4}\", \"a\", x=7))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/string/__init__.py\", line 212, in format\n    return self.vformat(format_string, args, kwargs)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/string/__init__.py\", line 216, in vformat\n    result, _ = self._vformat(format_string, args, kwargs, used_args, 2)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/string/__init__.py\", line 270, in _vformat\n    result.append(self.format_field(obj, format_spec))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/string/__init__.py\", line 287, in format_field\n    return format(value, format_spec)\nKeyError: ''\n"
-exit_code = 1
+reason = "native output differs from CPython"
+stdout = "substitute tim likes kiwis; cost: $3\nsubstitute mapping+kw kw wins likes figs; cost: $5\nmissing key KeyError what\nsafe_substitute bo likes ${what}s; cost: $$amount\ninvalid placeholder ValueError\nsafe invalid bad $ sign 1\ntemplate attrs $who likes ${what}s; cost: $$$amount\nget_identifiers ['a', 'b']\nis_valid True False\ncustom delimiter ed is 7yo, 100%\nascii_letters abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\nlowercase/uppercase abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ\ndigits 0123456789 0123456789abcdefABCDEF 01234567\npunctuation !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~\nwhitespace ' \\t\\n\\r\\x0b\\x0c'\nprintable len 100\ncapwords Hello World Of Python\ncapwords sep A-B-C d\ncaesar Hhoor\nFormatter a-   7\nFormatter parse [('a', 'b', '>3', 'r'), ('c', '', '', None)]\nwrap ['            ']\nfill\n            \nwrap long word [' ']\nwrap no break [' ']\nwrap indents ['*    ']\nwrap empty [] []\nwrap max_lines ['            ']\nwrap hyphen []\nwrap tabs []\ndedent '\\ndef f():\\n    return 1\\n  # odd indent\\n'\ndedent mixed '  a\\n\\tb\\n'\ndedent blank lines 'x\\n\\ny\\n'\nindent '> a\\n\\n> b\\n'\nindent predicate '+a\\n+\\n+b'\nshorten             \nshorten placeholder \nshorten fits  \nTextWrapper ['    ']\n"
+stderr = ""
+exit_code = 0
 
 ["stdlib/typing_module"]
 phase = "run"
@@ -756,10 +658,10 @@ exit_code = 1
 
 ["strings/fstring_debug_specs"]
 phase = "run"
-reason = "ValueError: unknown format code '_' for object of type 'int'"
-stdout = "x=3.14159\nx = 3.14159\nx =3.14159 x= 3.14159\nx=3.14\nx =      3.142\ns='hi' s=hi s='hi' s='hi' 'é'='é'\ns=   hi s=    'hi'\nn + 1=256 n*2 = 510 [n, s]=[255, 'hi']\nlen(s)=2 s.upper()='HI'\n     3.142|\n3.14159   | ****hi****\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/fstring_debug_specs.py\", line 20, in <module>\n    print(f\"{n:{'#x'}}\", f\"{n:{'b'}}\", f\"{n:#{w}_x}\")\nValueError: unknown format code '_' for object of type 'int'\n"
-exit_code = 1
+reason = "native output differs from CPython"
+stdout = "x=3.14159\nx = 3.14159\nx =3.14159 x= 3.14159\nx=3.14\nx =      3.142\ns='hi' s=hi s='hi' s='hi' 'é'='é'\ns=   hi s=    'hi'\nn + 1=256 n*2 = 510 [n, s]=[255, 'hi']\nlen(s)=2 s.upper()='HI'\n     3.142|\n3.14159   | ****hi****\n0xff 11111111       0xff\n3.1e+00 3.1E+00\n   3.14159|3.14159   | 3.14159  |\n       255 10_000_000\n[     a] [a------]\n[    bb] [bb-----]\n[   ccc] [ccc----]\nnested 3.142\n             3.14159   'hi'   \nd['key']=7 007\n= != 1 != 2=True (lambda: 'lam')()='lam'\nx=3.1\nv=None   None|\n3=3 3 == 3=True\n\n    x\n    =3.14159\n3.14159 314.159%    50.000%\n       255       255|\nn=       255 s='hi'      \n"
+stderr = ""
+exit_code = 0
 
 ["strings/percent_format"]
 phase = "run"
@@ -770,9 +672,9 @@ exit_code = 1
 
 ["strings/str_format_method"]
 phase = "run"
-reason = "KeyError: ''"
-stdout = "auto positional 1 + 2 = 3\nexplicit positional b a b\nnamed Ann is 30\nmixed x N y\nindex 20 v int0\nnegative index TypeError\nstr key not int 1\nattribute 3 é 3\nchained 3 2 str\nconversions <3,é> Point(3, 'é') Point(3, '\\xe9')\nconversions str       hi|    'hi'|'\\xf1'\ncustom __format__ polar!      <3,é> **<3,é>**\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/str_format_method.py\", line 37, in <module>\n    print(\"nested spec\", \"{0:{1}{2}}\".format(\"x\", \"^\", 7), \"{:{fill}>{width}}\".format(5, fill=\"0\", width=4))\nKeyError: ''\n"
+reason = "ValueError: unknown format code '.' for object of type 'int'"
+stdout = "auto positional 1 + 2 = 3\nexplicit positional b a b\nnamed Ann is 30\nmixed x N y\nindex 20 v int0\nnegative index TypeError\nstr key not int 1\nattribute 3 é 3\nchained 3 2 str\nconversions <3,é> Point(3, 'é') Point(3, '\\xe9')\nconversions str       hi|    'hi'|'\\xf1'\ncustom __format__ polar!      <3,é> **<3,é>**\nnested spec    x    0005\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/str_format_method.py\", line 38, in <module>\n    print(\"nested spec auto\", \"{:{}.{}f}\".format(3.14159, 10, 2))\nValueError: unknown format code '.' for object of type 'int'\n"
 exit_code = 1
 
 ["strings/tstrings"]
@@ -791,17 +693,17 @@ exit_code = 1
 
 ["weird/bool_is_int"]
 phase = "run"
-reason = "KeyError: ''"
-stdout = "index with True/False one zero two\nslice with bools ['zero'] ['one', 'two']\ndict key collapse {True: 'float'}\nfirst key kept, last value wins {1: 'bool'}\nzero keys {0: 'd'}\nset collapse {True} {False}\nlen set mixed 4\nsum of comparisons 3\nTrue + True 2 3 0.5 0 1\nTrue ** False 1 1\nbitwise on bools stays bool False True False bool\nbitwise mixed becomes int 1 3 int\nneg -1 1 0 1\ntype of arithmetic int int\nisinstance True True False\nequality with int True True True\nhash equal True True\ncount 3 2\nindex 1 0\nin True True True\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/weird/bool_is_int.py\", line 27, in <module>\n    print(\"str/repr\", str(True), repr(False), f\"{True}\", f\"{True:d}\", f\"{True:>5}\", \"%d\" % True, \"%s\" % True)\nKeyError: ''\n"
+reason = "TypeError: got an unexpected keyword argument 'start'"
+stdout = "index with True/False one zero two\nslice with bools ['zero'] ['one', 'two']\ndict key collapse {True: 'float'}\nfirst key kept, last value wins {1: 'bool'}\nzero keys {0: 'd'}\nset collapse {True} {False}\nlen set mixed 4\nsum of comparisons 3\nTrue + True 2 3 0.5 0 1\nTrue ** False 1 1\nbitwise on bools stays bool False True False bool\nbitwise mixed becomes int 1 3 int\nneg -1 1 0 1\ntype of arithmetic int int\nisinstance True True False\nequality with int True True True\nhash equal True True\ncount 3 2\nindex 1 0\nin True True True\nstr/repr True False True 1     1 1 True\nformat numeric 1 1.00 0\nint() 1 0.0 (1+0j)\nmax/min True 1 False 0\nsorted mixed [0, False, True, 1, 2]\ndivmod (0, 1) (7, 0)\ndivide by False ZeroDivisionError\nrange with bools [1, 2, 3]\nstring mult ab |\nlist mult [0] []\nshift 16 8\nround 1 1 int\nbit_length 1 0 1 0 1\nint methods b'\\x01' 1\nbool of strings True False True\nbool() of numbers False False False True\ncomparisons True True True\ncounter of bools {True: 2, False: 2, 2: 1}\ndict get with int on bool key x y\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/weird/bool_is_int.py\", line 49, in <module>\n    print(\"enumerate start bool\", list(enumerate(\"ab\", start=True)))\nTypeError: got an unexpected keyword argument 'start'\n"
 exit_code = 1
 
 ["weird/decorator_shapeshifting"]
 phase = "run"
-reason = "AttributeError: 'int' object has no attribute '__add__'"
-stdout = "function became class Wrapped True\ninstances <double -> 6> <double -> 'abab'> 2\nclass became function function P(1,2) Point\nset_name Thing level\nproperty -4 -4\ncounts 1 2\ndescriptor default ('logged', 1)\ndescriptor set ('logged', 42) 42\ncomputing 3\ncomputing 4\nlru staticmethod 9 9 16\nheavy computed\ncached_property [-4, -4] True\nheavy computed\nrecomputed [-4, -4]\nwraps name size make\nfactory called ('outer',)\nfactory called ('inner',)\ndecorating tagged ('inner',)\ndecorating tagged ('outer',)\nstack order ('inner', 'outer')\narbitrary decorator expressions 13\nclass decorated with type type\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/weird/decorator_shapeshifting.py\", line 169, in <module>\n    @(-10).__add__\nAttributeError: 'int' object has no attribute '__add__'\n"
-exit_code = 1
+reason = "native output differs from CPython"
+stdout = "function became class Wrapped True\ninstances <double -> 6> <double -> 'abab'> 2\nclass became function function P(1,2) Point\nset_name Thing level\nproperty -4 -4\ncounts 1 2\ndescriptor default ('logged', 1)\ndescriptor set ('logged', 42) 42\ncomputing 3\ncomputing 4\nlru staticmethod 9 9 16\nheavy computed\ncached_property [-4, -4] True\nheavy computed\nrecomputed [-4, -4]\nwraps name size make\nfactory called ('outer',)\nfactory called ('inner',)\ndecorating tagged ('inner',)\ndecorating tagged ('outer',)\nstack order ('inner', 'outer')\narbitrary decorator expressions 13\nclass decorated with type type\ndecorator chain over builtins '5'\n"
+stderr = ""
+exit_code = 0
 
 ["weird/exceptions_during_protocols"]
 phase = "run"

@@ -45,8 +45,13 @@ from _mule_native import namespace_items
 from _mule_native import namespace_binding
 from _mule_native import namespace_bind
 from _mule_native import namespace_unbind
+from _mule_native import math_cos
+from _mule_native import math_exp
 from _mule_native import math_float_bits
 from _mule_native import math_float_format
+from _mule_native import math_log
+from _mule_native import math_sin
+from _mule_native import math_sqrt
 from _mule_native import numeric_negate
 from _mule_native import numeric_invert
 from _mule_native import integer_decimal
@@ -134,7 +139,7 @@ def _format_number(value, kind, format_spec):
     alternate = False
     zero = False
     width = 0
-    group = False
+    group = ""
     precision = -1
     index = 0
     size = len(format_spec)
@@ -161,8 +166,8 @@ def _format_number(value, kind, format_spec):
     while index < size and "0" <= format_spec[index] <= "9":
         width = width * 10 + "0123456789".index(format_spec[index])
         index += 1
-    if index < size and format_spec[index] == ",":
-        group = True
+    if index < size and format_spec[index] in ",_":
+        group = format_spec[index]
         index += 1
     if index < size and format_spec[index] == ".":
         index += 1
@@ -179,7 +184,7 @@ def _format_number(value, kind, format_spec):
         if precision < 0:
             precision = 6
         body = math_float_format(value, codes[conversion], precision, alternate)
-    elif conversion in "eEfFgG%" and kind == "int":
+    elif conversion and conversion in "eEfFgG%" and kind == "int":
         codes = {"f": 0, "e": 1, "E": 2, "g": 3, "G": 4, "%": 5}
         if precision < 0:
             precision = 6
@@ -191,8 +196,8 @@ def _format_number(value, kind, format_spec):
         if negative:
             number = -number
         if conversion in ("d", ""):
-            body = str(number)
-        elif conversion in "xXo":
+            body = integer_decimal(_convert_int(number))
+        elif conversion and conversion in "xXo":
             digits = "0123456789abcdef" if conversion != "X" else "0123456789ABCDEF"
             base = 8 if conversion == "o" else 16
             body = ""
@@ -243,7 +248,7 @@ def _format_number(value, kind, format_spec):
             while at > 0:
                 start = at - 3 if at >= 3 else 0
                 piece = digits[start:at]
-                grouped = piece + ("," + grouped if grouped else "")
+                grouped = piece + (group + grouped if grouped else "")
                 at = start
                 count += 1
             body = signpart + grouped + tail
@@ -466,6 +471,12 @@ class type(object):
             for entry in entries:
                 resolved.append(entry)
         bases = tuple(resolved)
+        if _slot_descriptors_ready:
+            for base in bases:
+                if base is bool or base is NoneType:
+                    raise TypeError(
+                        f"type '{class_name(base)}' is not an acceptable base type"
+                    )
         slots = _declared_slots(name, namespace) if '__slots__' in namespace else []
         fields = list(namespace.get('__mule_fields__', ()))
         for slot in slots:
@@ -966,25 +977,148 @@ def _complex_parts(value):
     return None
 
 
+def _coerce_complex_arg(value, try_complex):
+    parts = _complex_parts(value)
+    if parts is not None:
+        return parts
+    owner = type_of(value)
+    missing = _MISSING
+    if try_complex:
+        method = class_lookup_default(owner, "__complex__", missing)
+        if method is not missing:
+            res = bind_instance_attribute(method, value, owner)()
+            if not is_instance(res, complex):
+                raise TypeError(f"__complex__ returned non-complex (type {type_of(res).__name__})")
+            return res.real, res.imag
+    for name, expected in (("__float__", float), ("__index__", int)):
+        method = class_lookup_default(owner, name, missing)
+        if method is not missing:
+            res = bind_instance_attribute(method, value, owner)()
+            if not is_instance(res, expected):
+                raise TypeError(f"{name} returned non-{expected.__name__} (type {type_of(res).__name__})")
+            return _convert_float(res), 0.0
+    return None
+
+
+def _atan_unit(t):
+    if t > 0.41421356237309503:
+        s = (t - 1.0) / (t + 1.0)
+        offset = 0.7853981633974483
+    else:
+        s = t
+        offset = 0.0
+    s2 = s * s
+    poly = -0.3333333333333333 + s2 * (
+        0.2
+        + s2
+        * (
+            -0.14285714285714285
+            + s2
+            * (
+                0.1111111111111111
+                + s2
+                * (
+                    -0.09090909090909091
+                    + s2
+                    * (
+                        0.07692307692307693
+                        + s2
+                        * (
+                            -0.06666666666666667
+                            + s2
+                            * (
+                                0.058823529411764705
+                                + s2 * (-0.05263157894736842 + s2 * 0.047619047619047616)
+                            )
+                        )
+                    )
+                )
+            )
+        )
+    )
+    return offset + s + s * s2 * poly
+
+
+def _atan2(y, x):
+    ay = math_fabs(y)
+    ax = math_fabs(x)
+    if ax == 0.0 and ay == 0.0:
+        angle = 0.0 if x >= 0.0 else 3.141592653589793
+    elif ax >= ay:
+        angle = _atan_unit(ay / ax)
+        if x < 0.0:
+            angle = 3.141592653589793 - angle
+    else:
+        angle = 1.5707963267948966 - _atan_unit(ax / ay)
+        if x < 0.0:
+            angle = 3.141592653589793 - angle
+    return -angle if (math_float_bits(y) >> 63) else angle
+
+
+def _complex_pow(ar, ai, br, bi):
+    if br == 0.0 and bi == 0.0:
+        return 1.0, 0.0
+    if ar == 0.0 and ai == 0.0:
+        if bi != 0.0 or br < 0.0:
+            raise ZeroDivisionError("0.0 cannot be raised to a negative or complex power")
+        return 0.0, 0.0
+    if bi == 0.0 and -100.0 <= br <= 100.0:
+        exp_int = _convert_int(br)
+        if _convert_float(exp_int) == br:
+            negative = exp_int < 0
+            n = -exp_int if negative else exp_int
+            rr, ri = 1.0, 0.0
+            cr, ci = ar, ai
+            while n > 0:
+                if n & 1:
+                    rr, ri = rr * cr - ri * ci, rr * ci + ri * cr
+                cr, ci = cr * cr - ci * ci, 2.0 * cr * ci
+                n >>= 1
+            if negative:
+                denom = rr * rr + ri * ri
+                if denom == 0.0:
+                    raise ZeroDivisionError("complex division by zero")
+                rr, ri = rr / denom, -ri / denom
+            return rr, ri
+    vabs = math_sqrt(ar * ar + ai * ai)
+    at = _atan2(ai, ar)
+    length = vabs ** br
+    phase = at * br
+    if bi != 0.0:
+        length = length * math_exp(-at * bi)
+        phase = phase + bi * math_log(vabs)
+    return length * math_cos(phase), length * math_sin(phase)
+
+
 class complex(object):
     """A complex number, stored as two float fields."""
 
-    def __new__(cls, real=0, imag=0):
+    def __new__(cls, real=_MISSING, imag=_MISSING):
+        has_imag = imag is not _MISSING
+        if real is _MISSING:
+            real = 0.0
+        if not has_imag:
+            imag = 0.0
         if isinstance(real, str):
-            if imag != 0:
+            if has_imag:
                 raise TypeError("complex() can't take second arg if first is a string")
             return cls._parse(real)
-        parts = _complex_parts(real)
+        if isinstance(imag, str):
+            raise TypeError("complex() second arg can't be a string")
+        parts = _coerce_complex_arg(real, True)
         if parts is None:
             raise TypeError("complex() first argument must be a string or a number")
         real_part, imag_part = parts
-        if isinstance(imag, str):
-            raise TypeError("complex() second arg can't be a string")
-        imag_parts = _complex_parts(imag)
-        if imag_parts is None:
-            raise TypeError("complex() second argument must be a number")
-        real_part = real_part - imag_parts[1]
-        imag_part = imag_part + imag_parts[0]
+        if has_imag:
+            imag_parts = _coerce_complex_arg(imag, True)
+            if imag_parts is None:
+                raise TypeError("complex() second argument must be a number")
+            if imag_parts[1] != 0.0 or (math_float_bits(imag_parts[1]) >> 63) != 0:
+                real_part = real_part - imag_parts[1]
+            if imag_part == 0.0 and (math_float_bits(imag_part) >> 63) == 0:
+                imag_part = imag_parts[0]
+            else:
+                imag_part = imag_part + imag_parts[0]
         instance = allocate_instance(cls)
         instance._real = _convert_float(real_part)
         instance._imag = _convert_float(imag_part)
@@ -992,7 +1126,14 @@ class complex(object):
 
     @classmethod
     def _parse(cls, text):
-        value = text.strip().replace(" ", "")
+        value = text.strip()
+        if value.startswith("(") and value.endswith(")"):
+            value = value[1:-1].strip()
+        for ch in value:
+            if ch in " \t\n\r\v\f":
+                raise ValueError("complex() arg is a malformed string")
+        if not value:
+            raise ValueError("complex() arg is a malformed string")
         if not value.endswith(("j", "J")):
             instance = allocate_instance(cls)
             instance._real = _convert_float(float(value))
@@ -1018,56 +1159,77 @@ class complex(object):
 
     @property
     def real(self):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor 'real' for 'complex' objects doesn't apply to a '{type_of(self).__name__}' object")
         return self._real
 
     @property
     def imag(self):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor 'imag' for 'complex' objects doesn't apply to a '{type_of(self).__name__}' object")
         return self._imag
 
     def conjugate(self):
-        instance = allocate_instance(type_of(self))
-        instance._real = self._real
-        instance._imag = -self._imag
-        return instance
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor 'conjugate' for 'complex' objects doesn't apply to a '{type_of(self).__name__}' object")
+        return _make_complex(complex, self._real, -self._imag)
 
     def __complex__(self):
-        return self
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__complex__' requires a 'complex' object but received a '{type_of(self).__name__}'")
+        if type_of(self) is complex:
+            return self
+        return _make_complex(complex, self._real, self._imag)
 
     def __add__(self, other):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__add__' requires a 'complex' object but received a '{type_of(self).__name__}'")
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
-        return _make_complex(type_of(self), self._real + parts[0], self._imag + parts[1])
+        return _make_complex(complex, self._real + parts[0], self._imag + parts[1])
 
     def __radd__(self, other):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__radd__' requires a 'complex' object but received a '{type_of(self).__name__}'")
         return self.__add__(other)
 
     def __sub__(self, other):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__sub__' requires a 'complex' object but received a '{type_of(self).__name__}'")
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
-        return _make_complex(type_of(self), self._real - parts[0], self._imag - parts[1])
+        return _make_complex(complex, self._real - parts[0], self._imag - parts[1])
 
     def __rsub__(self, other):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__rsub__' requires a 'complex' object but received a '{type_of(self).__name__}'")
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
-        return _make_complex(type_of(self), parts[0] - self._real, parts[1] - self._imag)
+        return _make_complex(complex, parts[0] - self._real, parts[1] - self._imag)
 
     def __mul__(self, other):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__mul__' requires a 'complex' object but received a '{type_of(self).__name__}'")
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
         return _make_complex(
-            type_of(self),
+            complex,
             self._real * parts[0] - self._imag * parts[1],
             self._real * parts[1] + self._imag * parts[0],
         )
 
     def __rmul__(self, other):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__rmul__' requires a 'complex' object but received a '{type_of(self).__name__}'")
         return self.__mul__(other)
 
     def __truediv__(self, other):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__truediv__' requires a 'complex' object but received a '{type_of(self).__name__}'")
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
@@ -1075,40 +1237,78 @@ class complex(object):
         if denominator == 0:
             raise ZeroDivisionError("complex division by zero")
         return _make_complex(
-            type_of(self),
+            complex,
             (self._real * parts[0] + self._imag * parts[1]) / denominator,
             (self._imag * parts[0] - self._real * parts[1]) / denominator,
         )
 
     def __rtruediv__(self, other):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__rtruediv__' requires a 'complex' object but received a '{type_of(self).__name__}'")
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
-        return _make_complex(type_of(self), parts[0], parts[1]).__truediv__(self)
+        return _make_complex(complex, parts[0], parts[1]).__truediv__(self)
+
+    def __pow__(self, other, mod=None):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__pow__' requires a 'complex' object but received a '{type_of(self).__name__}'")
+        if mod is not None:
+            raise ValueError("complex modulo")
+        parts = _complex_parts(other)
+        if parts is None:
+            return NotImplemented
+        rr, ri = _complex_pow(self._real, self._imag, parts[0], parts[1])
+        return _make_complex(complex, rr, ri)
+
+    def __rpow__(self, other, mod=None):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__rpow__' requires a 'complex' object but received a '{type_of(self).__name__}'")
+        if mod is not None:
+            raise ValueError("complex modulo")
+        parts = _complex_parts(other)
+        if parts is None:
+            return NotImplemented
+        rr, ri = _complex_pow(parts[0], parts[1], self._real, self._imag)
+        return _make_complex(complex, rr, ri)
 
     def __neg__(self):
-        return _make_complex(type_of(self), -self._real, -self._imag)
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__neg__' requires a 'complex' object but received a '{type_of(self).__name__}'")
+        return _make_complex(complex, -self._real, -self._imag)
 
     def __pos__(self):
-        return self
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__pos__' requires a 'complex' object but received a '{type_of(self).__name__}'")
+        return _make_complex(complex, self._real, self._imag)
 
     def __abs__(self):
-        return (self._real * self._real + self._imag * self._imag) ** 0.5
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__abs__' requires a 'complex' object but received a '{type_of(self).__name__}'")
+        return math_sqrt(self._real * self._real + self._imag * self._imag)
 
     def __bool__(self):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__bool__' requires a 'complex' object but received a '{type_of(self).__name__}'")
         return self._real != 0 or self._imag != 0
 
     def __eq__(self, other):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__eq__' requires a 'complex' object but received a '{type_of(self).__name__}'")
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
         return self._real == parts[0] and self._imag == parts[1]
 
     def __ne__(self, other):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__ne__' requires a 'complex' object but received a '{type_of(self).__name__}'")
         result = self.__eq__(other)
         return result if result is NotImplemented else not result
 
     def __hash__(self):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__hash__' requires a 'complex' object but received a '{type_of(self).__name__}'")
         real_hash = hash(self._real)
         imag_hash = hash(self._imag)
         combined = (
@@ -1119,7 +1319,75 @@ class complex(object):
             combined -= 1 << 64
         return -2 if combined == -1 else combined
 
+    def __format__(self, format_spec=""):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__format__' requires a 'complex' object but received a '{type_of(self).__name__}'")
+        if format_spec == "":
+            return str(self)
+        fill = " "
+        align = ">"
+        has_align = False
+        zero = False
+        width = 0
+        index = 0
+        size = len(format_spec)
+        if index + 1 < size and format_spec[index + 1] in "<>^=":
+            fill = format_spec[index]
+            align = format_spec[index + 1]
+            has_align = True
+            index += 2
+        elif index < size and format_spec[index] in "<>^=":
+            align = format_spec[index]
+            has_align = True
+            index += 1
+        if align == "=":
+            raise ValueError("'=' alignment flag is not allowed in complex format specifier")
+        sign_part = ""
+        if index < size and format_spec[index] in "+- ":
+            sign_part = format_spec[index]
+            index += 1
+        alt_part = ""
+        if index < size and format_spec[index] == "#":
+            alt_part = "#"
+            index += 1
+        if index < size and format_spec[index] == "0":
+            raise ValueError("Zero padding is not allowed in complex format specifier")
+        while index < size and "0" <= format_spec[index] <= "9":
+            width = width * 10 + "0123456789".index(format_spec[index])
+            index += 1
+        rest = format_spec[index:]
+        conversion = rest[-1:] if rest else ""
+        if conversion == "%":
+            raise ValueError("unknown format code '%' for object of type 'complex'")
+        if not conversion and not rest and not sign_part and not alt_part:
+            body = repr(self)
+        else:
+            real_spec = sign_part + alt_part + rest
+            imag_sign = "+"
+            imag_spec = imag_sign + alt_part + rest
+            real_text = _format_number(self._real, "float", real_spec)
+            imag_text = _format_number(self._imag, "float", imag_spec)
+            if not conversion and self._real == 0.0 and (math_float_bits(self._real) >> 63) == 0:
+                imag_only_spec = sign_part + alt_part + rest
+                body = _format_number(self._imag, "float", imag_only_spec) + "j"
+            elif not conversion:
+                body = "(" + real_text + imag_text + "j)"
+            else:
+                body = real_text + imag_text + "j"
+        if len(body) < width:
+            pad = width - len(body)
+            if align == "<":
+                body = body + fill * pad
+            elif align == "^":
+                before = pad // 2
+                body = fill * before + body + fill * (pad - before)
+            else:
+                body = fill * pad + body
+        return body
+
     def __repr__(self):
+        if not is_instance(self, complex):
+            raise TypeError(f"descriptor '__repr__' requires a 'complex' object but received a '{type_of(self).__name__}'")
         real_text = repr(self._real)
         if real_text.endswith(".0"):
             real_text = real_text[:-2]
@@ -1159,7 +1427,7 @@ class int(object):
         return numeric_negate(value) if value < 0 else value
     __slots__ = ()
 
-    def __new__(cls, x=_MISSING, base=_MISSING, /):
+    def __new__(cls, x=_MISSING, /, base=_MISSING):
         if base is _MISSING and cls is int and x is not _MISSING:
             if _text_storage(x):
                 return _convert_int(x)
@@ -1168,6 +1436,8 @@ class int(object):
             if _type_of(x) is bool:
                 return 1 if x else 0
         if x is _MISSING:
+            if base is not _MISSING:
+                raise TypeError("int() missing string argument")
             value = 0
         elif base is _MISSING:
             # Latin-1 preserves every byte so invalid input reaches the integer
@@ -1176,23 +1446,43 @@ class int(object):
                 x = bytes.decode(x, "latin-1")
             elif isinstance(x, bytearray):
                 x = bytearray.decode(x, "latin-1")
-            else:
+            elif is_instance(x, int):
                 owner = type_of(x)
                 missing = _MISSING
                 method = class_lookup_default(owner, "__int__", missing)
-                if method is not missing:
-                    x = bind_instance_attribute(method, x, owner)()
-                    if not is_instance(x, int):
-                        raise TypeError(f"__int__ returned non-int (type {type_of(x).__name__})")
+                if method is not missing and method is not class_lookup_default(int, "__int__", missing):
+                    res = bind_instance_attribute(method, x, owner)()
+                    if not is_instance(res, int):
+                        raise TypeError(f"__int__ returned non-int (type {type_of(res).__name__})")
+                    x = _convert_int(res)
+                else:
+                    x = _convert_int(x)
+            elif not is_instance(x, float) and not is_instance(x, str):
+                owner = type_of(x)
+                missing = _MISSING
+                converted = False
+                for hook in ("__int__", "__index__", "__trunc__"):
+                    method = class_lookup_default(owner, hook, missing)
+                    if method is not missing:
+                        res = bind_instance_attribute(method, x, owner)()
+                        if not is_instance(res, int):
+                            raise TypeError(f"{hook} returned non-int (type {type_of(res).__name__})")
+                        x = _convert_int(res)
+                        converted = True
+                        break
+                if not converted:
+                    raise TypeError(
+                        f"int() argument must be a string, a bytes-like object or a real number, not '{owner.__name__}'"
+                    )
             value = _convert_int(x)
         else:
             if isinstance(x, bytes):
                 x = bytes.decode(x, "latin-1")
             elif isinstance(x, bytearray):
                 x = bytearray.decode(x, "latin-1")
-            elif not _text_storage(x):
+            elif not is_instance(x, str):
                 raise TypeError("int() can't convert non-string with explicit base")
-            value = _convert_int(x, base)
+            value = _convert_int(x, _index_integer(base))
         if cls is not int and cls is not bool:
             return typed_value(value, cls)
         return value
@@ -1213,17 +1503,201 @@ class int(object):
         return _convert_int(self)
 
     def __float__(self):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__float__' requires a 'int' object but received a '{type_of(self).__name__}'")
         return _convert_float(self)
 
     def __round__(self, ndigits=None):
-        if ndigits is None or ndigits >= 0:
-            return self
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__round__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        value = _convert_int(self)
+        if ndigits is None:
+            return value
+        ndigits = _index_integer(ndigits)
+        if ndigits >= 0:
+            return value
         scale = 10 ** -ndigits
-        quotient, remainder = self // scale, self % scale
+        quotient, remainder = value // scale, value % scale
         doubled = remainder * 2
         if doubled > scale or (doubled == scale and quotient % 2):
             quotient += 1
         return quotient * scale
+
+    def __add__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__add__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(self) + _convert_int(other)
+
+    def __radd__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__radd__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(other) + _convert_int(self)
+
+    def __sub__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__sub__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(self) - _convert_int(other)
+
+    def __rsub__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__rsub__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(other) - _convert_int(self)
+
+    def __mul__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__mul__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(self) * _convert_int(other)
+
+    def __rmul__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__rmul__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(other) * _convert_int(self)
+
+    def __truediv__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__truediv__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(self) / _convert_int(other)
+
+    def __rtruediv__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__rtruediv__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(other) / _convert_int(self)
+
+    def __floordiv__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__floordiv__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(self) // _convert_int(other)
+
+    def __rfloordiv__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__rfloordiv__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(other) // _convert_int(self)
+
+    def __mod__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__mod__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(self) % _convert_int(other)
+
+    def __rmod__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__rmod__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(other) % _convert_int(self)
+
+    def __pow__(self, other, mod=None):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__pow__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        if mod is None:
+            return _convert_int(self) ** _convert_int(other)
+        if not is_instance(mod, int):
+            return NotImplemented
+        return pow(_convert_int(self), _convert_int(other), _convert_int(mod))
+
+    def __rpow__(self, other, mod=None):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__rpow__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        if mod is None:
+            return _convert_int(other) ** _convert_int(self)
+        if not is_instance(mod, int):
+            return NotImplemented
+        return pow(_convert_int(other), _convert_int(self), _convert_int(mod))
+
+    def __lshift__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__lshift__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(self) << _convert_int(other)
+
+    def __rlshift__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__rlshift__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(other) << _convert_int(self)
+
+    def __rshift__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__rshift__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(self) >> _convert_int(other)
+
+    def __rrshift__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__rrshift__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(other) >> _convert_int(self)
+
+    def __and__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__and__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(self) & _convert_int(other)
+
+    def __rand__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__rand__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(other) & _convert_int(self)
+
+    def __or__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__or__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(self) | _convert_int(other)
+
+    def __ror__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__ror__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(other) | _convert_int(self)
+
+    def __xor__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__xor__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(self) ^ _convert_int(other)
+
+    def __rxor__(self, other):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__rxor__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int):
+            return NotImplemented
+        return _convert_int(other) ^ _convert_int(self)
 
     def __divmod__(self, other):
         if not is_instance(self, int):
@@ -1300,7 +1774,7 @@ class int(object):
         return cls(value)
 
     def __trunc__(self):
-        return self
+        return _convert_int(self)
 
     def __floor__(self):
         return _convert_int(self)
@@ -1315,6 +1789,8 @@ class int(object):
         return (value & 255, None)
 
     def bit_length(self):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor 'bit_length' for 'int' objects doesn't apply to a '{type_of(self).__name__}' object")
         value = -self if self < 0 else self
         length = 0
         while value:
@@ -1322,23 +1798,53 @@ class int(object):
             length += 1
         return length
 
+    def bit_count(self):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor 'bit_count' for 'int' objects doesn't apply to a '{type_of(self).__name__}' object")
+        value = -_convert_int(self) if self < 0 else _convert_int(self)
+        count = 0
+        while value:
+            value &= value - 1
+            count += 1
+        return count
+
+    def as_integer_ratio(self):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor 'as_integer_ratio' for 'int' objects doesn't apply to a '{type_of(self).__name__}' object")
+        return (_convert_int(self), 1)
+
+    def is_integer(self):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor 'is_integer' for 'int' objects doesn't apply to a '{type_of(self).__name__}' object")
+        return True
+
     def conjugate(self):
-        return self
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor 'conjugate' for 'int' objects doesn't apply to a '{type_of(self).__name__}' object")
+        return _convert_int(self)
 
     @property
     def real(self):
-        return self
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor 'real' for 'int' objects doesn't apply to a '{type_of(self).__name__}' object")
+        return _convert_int(self)
 
     @property
     def imag(self):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor 'imag' for 'int' objects doesn't apply to a '{type_of(self).__name__}' object")
         return 0
 
     @property
     def numerator(self):
-        return self
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor 'numerator' for 'int' objects doesn't apply to a '{type_of(self).__name__}' object")
+        return _convert_int(self)
 
     @property
     def denominator(self):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor 'denominator' for 'int' objects doesn't apply to a '{type_of(self).__name__}' object")
         return 1
 
 
@@ -1358,8 +1864,123 @@ class bool(int):
             raise TypeError(f"descriptor '__repr__' requires a 'bool' object but received a '{type_of(self).__name__}'")
         return "True" if self else "False"
 
+    def __and__(self, other):
+        if not is_instance(self, bool):
+            raise TypeError(f"descriptor '__and__' requires a 'bool' object but received a '{type_of(self).__name__}'")
+        if is_instance(other, bool):
+            return bool(self and other)
+        return int.__and__(self, other)
+
+    def __rand__(self, other):
+        if not is_instance(self, bool):
+            raise TypeError(f"descriptor '__rand__' requires a 'bool' object but received a '{type_of(self).__name__}'")
+        if is_instance(other, bool):
+            return bool(other and self)
+        return int.__rand__(self, other)
+
+    def __or__(self, other):
+        if not is_instance(self, bool):
+            raise TypeError(f"descriptor '__or__' requires a 'bool' object but received a '{type_of(self).__name__}'")
+        if is_instance(other, bool):
+            return bool(self or other)
+        return int.__or__(self, other)
+
+    def __ror__(self, other):
+        if not is_instance(self, bool):
+            raise TypeError(f"descriptor '__ror__' requires a 'bool' object but received a '{type_of(self).__name__}'")
+        if is_instance(other, bool):
+            return bool(other or self)
+        return int.__ror__(self, other)
+
+    def __xor__(self, other):
+        if not is_instance(self, bool):
+            raise TypeError(f"descriptor '__xor__' requires a 'bool' object but received a '{type_of(self).__name__}'")
+        if is_instance(other, bool):
+            return bool(self) is not bool(other)
+        return int.__xor__(self, other)
+
+    def __rxor__(self, other):
+        if not is_instance(self, bool):
+            raise TypeError(f"descriptor '__rxor__' requires a 'bool' object but received a '{type_of(self).__name__}'")
+        if is_instance(other, bool):
+            return bool(other) is not bool(self)
+        return int.__rxor__(self, other)
+
 
 _FLOAT_INFINITY = _convert_float('inf')
+
+
+def _round_int_ldexp(mantissa, exp, negative):
+    if mantissa == 0:
+        return -0.0 if negative else 0.0
+    bl = mantissa.bit_length()
+    top_exp = exp + bl - 1
+    if top_exp > 1023:
+        raise OverflowError("hexadecimal value too large to represent as a float")
+    if top_exp < -1075:
+        return -0.0 if negative else 0.0
+    target_lsb = top_exp - 52 if top_exp >= -1022 else -1074
+    shift = exp - target_lsb
+    if shift >= 0:
+        scaled = mantissa << shift
+    else:
+        rshift = -shift
+        half = 1 << (rshift - 1)
+        rem = mantissa & ((1 << rshift) - 1)
+        scaled = mantissa >> rshift
+        if rem > half or (rem == half and (scaled & 1)):
+            scaled += 1
+        if top_exp >= -1022 and scaled >= (1 << 53):
+            scaled >>= 1
+            top_exp += 1
+            target_lsb += 1
+            if top_exp > 1023:
+                raise OverflowError("hexadecimal value too large to represent as a float")
+    result = _convert_float(scaled) * (2.0 ** target_lsb) if target_lsb >= -1022 else (_convert_float(scaled) * (2.0 ** -1022)) * (2.0 ** (target_lsb + 1022))
+    return -result if negative else result
+
+
+def _round_ratio_to_float(num, den, negative):
+    if num == 0:
+        return -0.0 if negative else 0.0
+    q, r = num // den, num % den
+    if q == 0 and r == 0:
+        return -0.0 if negative else 0.0
+    # Find floor(log2(num / den))
+    est = num.bit_length() - den.bit_length()
+    if est >= 0:
+        if num < (den << est):
+            est -= 1
+    else:
+        if (num << -est) < den:
+            est -= 1
+    if est > 1023:
+        raise OverflowError("rounded value too large to represent")
+    if est < -1075:
+        return -0.0 if negative else 0.0
+    target_lsb = est - 52 if est >= -1022 else -1074
+    if target_lsb >= 0:
+        scaled_num = num
+        scaled_den = den << target_lsb
+    else:
+        scaled_num = num << -target_lsb
+        scaled_den = den
+    sig, rem = scaled_num // scaled_den, scaled_num % scaled_den
+    doubled = rem * 2
+    if doubled > scaled_den or (doubled == scaled_den and (sig & 1)):
+        sig += 1
+    if est >= -1022 and sig >= (1 << 53):
+        sig >>= 1
+        est += 1
+        target_lsb += 1
+        if est > 1023:
+            raise OverflowError("rounded value too large to represent")
+    result = (
+        _convert_float(sig) * (2.0 ** target_lsb)
+        if target_lsb >= -1022
+        else (_convert_float(sig) * (2.0 ** -1022)) * (2.0 ** (target_lsb + 1022))
+    )
+    return -result if negative else result
 
 
 class float(object):
@@ -1388,10 +2009,45 @@ class float(object):
         return math_fabs(_convert_float(self))
     __slots__ = ()
 
-    def __new__(cls, *args):
-        if _storage_length(args) > 1:
-            raise TypeError(f"float expected at most 1 argument, got {_storage_length(args)}")
-        value = _convert_float(*args)
+    def __new__(cls, x=_MISSING, /):
+        if x is _MISSING:
+            value = 0.0
+        elif cls is float and _type_of(x) is float:
+            return x
+        elif isinstance(x, bytes):
+            value = _convert_float(bytes.decode(x, "latin-1"))
+        elif isinstance(x, bytearray):
+            value = _convert_float(bytearray.decode(x, "latin-1"))
+        elif is_instance(x, float):
+            owner = type_of(x)
+            missing = _MISSING
+            method = class_lookup_default(owner, "__float__", missing)
+            if method is not missing and method is not class_lookup_default(float, "__float__", missing):
+                res = bind_instance_attribute(method, x, owner)()
+                if not is_instance(res, float):
+                    raise TypeError(f"__float__ returned non-float (type {type_of(res).__name__})")
+                value = _convert_float(res)
+            else:
+                value = _convert_float(x)
+        elif is_instance(x, int) or is_instance(x, str):
+            value = _convert_float(x)
+        else:
+            owner = type_of(x)
+            missing = _MISSING
+            converted = False
+            for hook, expected in (("__float__", float), ("__index__", int)):
+                method = class_lookup_default(owner, hook, missing)
+                if method is not missing:
+                    res = bind_instance_attribute(method, x, owner)()
+                    if not is_instance(res, expected):
+                        raise TypeError(f"{hook} returned non-{expected.__name__} (type {type_of(res).__name__})")
+                    value = _convert_float(res)
+                    converted = True
+                    break
+            if not converted:
+                raise TypeError(
+                    f"float() argument must be a string or a real number, not '{owner.__name__}'"
+                )
         if cls is not float:
             return typed_value(value, cls)
         return value
@@ -1402,7 +2058,65 @@ class float(object):
         return _format_number(self, "float", format_spec)
 
     def __float__(self):
-        return self
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__float__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        return _convert_float(self)
+
+    @classmethod
+    def fromhex(cls, string, /):
+        if not is_instance(string, str):
+            raise TypeError(f"fromhex() argument must be a str, not {type_of(string).__name__}")
+        s = string.strip()
+        if not s:
+            raise ValueError("invalid hexadecimal floating-point string")
+        negative = False
+        if s[0] in "+-":
+            negative = s[0] == "-"
+            s = s[1:]
+        lower = s.lower()
+        if lower in ("inf", "infinity"):
+            value = -_FLOAT_INFINITY if negative else _FLOAT_INFINITY
+            return typed_value(value, cls) if cls is not float else value
+        if lower == "nan":
+            value = _convert_float("-nan" if negative else "nan")
+            return typed_value(value, cls) if cls is not float else value
+        if lower.startswith("0x"):
+            s = s[2:]
+        if "p" in s or "P" in s:
+            p_idx = s.find("p") if "p" in s else s.find("P")
+            mant_str = s[:p_idx]
+            exp_str = s[p_idx + 1 :]
+            if not exp_str or exp_str in ("+", "-"):
+                raise ValueError("invalid hexadecimal floating-point string")
+            for ch in exp_str[1:] if exp_str[0] in "+-" else exp_str:
+                if not ("0" <= ch <= "9"):
+                    raise ValueError("invalid hexadecimal floating-point string")
+            exp_val = _convert_int(exp_str)
+        else:
+            mant_str = s
+            exp_val = 0
+        if "." in mant_str:
+            dot = mant_str.find(".")
+            if "." in mant_str[dot + 1 :]:
+                raise ValueError("invalid hexadecimal floating-point string")
+            int_part = mant_str[:dot]
+            frac_part = mant_str[dot + 1 :]
+        else:
+            int_part = mant_str
+            frac_part = ""
+        if not int_part and not frac_part:
+            raise ValueError("invalid hexadecimal floating-point string")
+        hex_digits = int_part + frac_part
+        mantissa = 0
+        for ch in hex_digits:
+            pos = "0123456789abcdefABCDEF".find(ch)
+            if pos < 0:
+                raise ValueError("invalid hexadecimal floating-point string")
+            digit = pos if pos < 16 else pos - 6
+            mantissa = (mantissa << 4) | digit
+        total_exp = exp_val - 4 * len(frac_part)
+        value = _round_int_ldexp(mantissa, total_exp, negative)
+        return typed_value(value, cls) if cls is not float else value
 
     def hex(self, /):
         if not is_instance(self, float):
@@ -1467,30 +2181,59 @@ class float(object):
         return fraction & ((1 << (52 - power)) - 1) == 0
 
     def __round__(self, ndigits=None):
-        # Round half to even (CPython's float_round); with ndigits, the
-        # decimal scaling is binary, so it can differ from CPython's
-        # correctly rounded result in the last place.
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__round__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        value = _convert_float(self)
         if ndigits is None:
-            whole = _convert_int(self)
-            fraction = self - whole
+            if value != value:
+                raise ValueError("cannot convert float NaN to integer")
+            if value == _FLOAT_INFINITY or value == -_FLOAT_INFINITY:
+                raise OverflowError("cannot convert float infinity to integer")
+            whole = _convert_int(value)
+            fraction = value - whole
             if fraction > 0.5 or (fraction == 0.5 and whole % 2):
                 whole += 1
             elif fraction < -0.5 or (fraction == -0.5 and whole % 2):
                 whole -= 1
             return whole
-        scale = 10.0 ** ndigits
-        return float.__round__(self * scale) / scale
+        ndigits = _index_integer(ndigits)
+        if value != value or value == _FLOAT_INFINITY or value == -_FLOAT_INFINITY or value == 0.0:
+            return value
+        bits = math_float_bits(value)
+        negative = (bits >> 63) != 0
+        if ndigits > 325:
+            return value
+        if ndigits < -310:
+            return -0.0 if negative else 0.0
+        num, den = self.as_integer_ratio()
+        if num < 0:
+            num = -num
+        if ndigits >= 0:
+            scale = 10 ** ndigits
+            num *= scale
+        else:
+            scale = 10 ** -ndigits
+            den *= scale
+        quotient, remainder = num // den, num % den
+        doubled = remainder * 2
+        if doubled > den or (doubled == den and (quotient & 1)):
+            quotient += 1
+        if quotient == 0:
+            return -0.0 if negative else 0.0
+        if ndigits >= 0:
+            return _round_ratio_to_float(quotient, scale, negative)
+        return _round_ratio_to_float(quotient * scale, 1, negative)
 
     def __trunc__(self):
-        return _convert_int(self)
+        return self.__int__()
 
     def __floor__(self):
-        whole = _convert_int(self)
-        return whole - 1 if whole > self else whole
+        value = self.__int__()
+        return value - 1 if value > _convert_float(self) else value
 
     def __ceil__(self):
-        whole = _convert_int(self)
-        return whole + 1 if whole < self else whole
+        value = self.__int__()
+        return value + 1 if value < _convert_float(self) else value
 
     def __divmod__(self, other):
         if not is_instance(self, float):
@@ -1513,14 +2256,20 @@ class float(object):
         return (left // right, left % right)
 
     def conjugate(self):
-        return self
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor 'conjugate' for 'float' objects doesn't apply to a '{type_of(self).__name__}' object")
+        return _convert_float(self)
 
     @property
     def real(self):
-        return self
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor 'real' for 'float' objects doesn't apply to a '{type_of(self).__name__}' object")
+        return _convert_float(self)
 
     @property
     def imag(self):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor 'imag' for 'float' objects doesn't apply to a '{type_of(self).__name__}' object")
         return 0.0
 
 
