@@ -34,7 +34,10 @@ print(positive() is positive())
 """
     result = run_native(tmp_path, source)
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "".join(f"{value} True\n1 True\n" for value in values) + "True\n"
+    assert (
+        result.stdout
+        == "".join(f"{value} True\n1 True\n" for value in values) + "True\n"
+    )
 
 
 def test_native_readonly_mpz_constants_match_gmp_layout_and_clone_ownership(tmp_path):

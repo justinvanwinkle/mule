@@ -325,6 +325,7 @@ class MethodResolution:
     exact_text_split: bool = False
     exact_text_partition: bool = False
     exact_text_affix: bool = False
+    exact_dict_get: bool = False
 
     @property
     def is_exact(self) -> bool:
@@ -335,6 +336,7 @@ class MethodResolution:
             or self.exact_text_split
             or self.exact_text_partition
             or self.exact_text_affix
+            or self.exact_dict_get
         )
 
 
@@ -348,6 +350,7 @@ class MethodCall:
     exact_text_split: bool = False
     exact_text_partition: bool = False
     exact_text_affix: bool = False
+    exact_dict_get: bool = False
     # The method the receiver's class resolves the name to, when analysis
     # typed the receiver; code generation guards the resolved function's
     # identity and calls this method's body directly.
@@ -1493,6 +1496,36 @@ _BORROWED_LIST_GETITEM_READERS = _CODEPOINT_COMPARISON_VOPS | frozenset(
     }
 )
 
+_PURE_BINARY_ARITH_VOPS = frozenset(
+    {
+        "binary-add",
+        "binary-subtract",
+        "binary-multiply",
+        "binary-floor_divide",
+        "binary-modulo",
+        "binary-bit_and",
+        "binary-bit_or",
+        "binary-bit_xor",
+        "binary-lshift",
+        "binary-rshift",
+    }
+)
+
+
+def _can_borrow_list_getitem(reader: VOP) -> bool:
+    name = reader.info.name
+    if name in _BORROWED_LIST_GETITEM_READERS:
+        return True
+    if name in _PURE_BINARY_ARITH_VOPS and len(reader.args) == 2:
+        return all(
+            not (arg.tn.type or UNKNOWN).may_run_user_code for arg in reader.args
+        )
+    if name == "protocol-getitem" and len(reader.args) == 2:
+        return (reader.args[0].tn.type or UNKNOWN).is_exact_list and (
+            reader.args[1].tn.type or UNKNOWN
+        ).is_fixnum
+    return False
+
 
 def _safe_list_borrow_step(step: VOP, seq_local) -> bool:
     if any(ref.tn is seq_local for ref in step.results):
@@ -1580,7 +1613,7 @@ def _specialize_list_getitems(component: IR2Component) -> None:
                 or writer_index >= index
                 or reader_index is None
                 or reader_index <= index
-                or reader.info.name not in _BORROWED_LIST_GETITEM_READERS
+                or not _can_borrow_list_getitem(reader)
             ):
                 continue
             if any(
@@ -2129,6 +2162,22 @@ class _ScanIntParse(NodeVisitor):
         self.converter.note_int_parse(node)
 
 
+class _ExactDictGetCall(NodeVisitor):
+    """Whether the consumer of a resolved ``dict.get`` method is a 1- or
+    2-argument positional call."""
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        return (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is fndb.CALL_RESOLVED
+            and 2 <= len(node.args) <= 3
+            and not linked(node.info, node, "call info").keywords
+        )
+
+
 _PROTOCOL_PREFIXES = (
     "mule_sequences_",
     "mule_format_",
@@ -2141,6 +2190,7 @@ _INTEGER_INDEX = _IntegerIndex()
 _CONSTANT_INDEX = _ConstantIndex()
 _EXACT_LIST_APPEND_CALL = _ExactListAppendCall()
 _EXACT_LIST_POP_CALL = _ExactListPopCall()
+_EXACT_DICT_GET_CALL = _ExactDictGetCall()
 _UNMUTATED_INT_REF = _UnmutatedIntRef()
 _NONE_LITERAL_CHECK = _NoneLiteralCheck()
 _NONE_CONSTANT_REF = _NoneConstantRef()
@@ -2723,6 +2773,18 @@ class _Converter(NodeVisitor):
             and call.accept(_ExactTextAffixCall(self.context))
         )
 
+    def is_exact_dict_get(self, resolve: Combination, call) -> bool:
+        if resolve.fun_info is not fndb.RESOLVE_METHOD:
+            return False
+        receiver = self.context.type_of(resolve.args[0].use())
+        info = linked(resolve.info, resolve, "method info")
+        return (
+            receiver.fits_dict()
+            and info.name == "get"
+            and call is not None
+            and call.accept(_EXACT_DICT_GET_CALL)
+        )
+
     def convert_resolve_method(self, node: Combination):
         args = tuple(self.lvar_tn(arg) for arg in node.args)
         lvar = node.lvar
@@ -2734,6 +2796,7 @@ class _Converter(NodeVisitor):
         exact_text_split = self.is_exact_text_split(node, lvar.dest)
         exact_text_partition = self.is_exact_text_partition(node, lvar.dest)
         exact_text_affix = self.is_exact_text_affix(node, lvar.dest)
+        exact_dict_get = self.is_exact_dict_get(node, lvar.dest)
         method = self.lvar_tn(lvar)
         bound = self.component.tn(T, name="receiver")
         info = linked(node.info, node, "method info")
@@ -2745,6 +2808,7 @@ class _Converter(NodeVisitor):
             exact_text_split,
             exact_text_partition,
             exact_text_affix,
+            exact_dict_get,
         )
         if resolution.is_exact:
             method.type = NoneType()
@@ -2771,6 +2835,7 @@ class _Converter(NodeVisitor):
         exact_text_split = self.is_exact_text_split(resolve, node)
         exact_text_partition = self.is_exact_text_partition(resolve, node)
         exact_text_affix = self.is_exact_text_affix(resolve, node)
+        exact_dict_get = self.is_exact_dict_get(resolve, node)
         result, discard = self.result_tn(node)
         self.emit(
             node.template,
@@ -2786,6 +2851,7 @@ class _Converter(NodeVisitor):
                 exact_text_split,
                 exact_text_partition,
                 exact_text_affix,
+                exact_dict_get,
                 self.context.targets.get(node),
                 self.context.type_of(resolve.args[0].use())
                 if len(resolve.args[0].uses) == 1
