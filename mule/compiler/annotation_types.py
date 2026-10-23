@@ -8,7 +8,9 @@ through visitors.
 from dataclasses import dataclass
 
 from .ctype import (
+    BOOLEAN,
     BYTES_TYPE,
+    DICT_TYPE,
     FLOAT,
     LIST_TYPE,
     NONE_TYPE,
@@ -18,6 +20,7 @@ from .ctype import (
     UNKNOWN,
     ClassType,
     DictType,
+    InstanceType,
     IntegerType,
     ListType,
     TupleType,
@@ -59,6 +62,10 @@ class Contract:
         raise NotImplementedError
 
     @property
+    def checked_type(self) -> ValueType:
+        return self.fact
+
+    @property
     def display_name(self):
         return f"mule.{self.name}"
 
@@ -69,10 +76,34 @@ class Contract:
         return actual.annotation_conflict(self)
 
     def refine(self, actual):
-        return actual if actual.fits(self.fact) else self.fact
+        checked = self.checked_type
+        return actual if actual.fits(checked) else checked
 
     def general_parameter_type(self) -> ValueType:
         return UNKNOWN
+
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return UNKNOWN
+
+    def union_members(self) -> tuple[Contract, ...]:
+        return (self,)
+
+    def has_element_contracts(self) -> bool:
+        return False
+
+    def getitem_contract(self, index_type: ValueType) -> Contract | None:
+        return None
+
+    def iter_element_contract(self) -> Contract | None:
+        return None
+
+    def unpack_element_contract(self, arity: int, index: int) -> Contract | None:
+        return None
+
+    def method_result_contract(
+        self, name: str, arg_types: tuple[ValueType, ...]
+    ) -> Contract | None:
+        return None
 
     def requires_check(self, policy_checks: bool) -> bool:
         return policy_checks
@@ -87,6 +118,12 @@ class Contract:
     def boolean_conflict(self, actual):
         return True
 
+    def float_conflict(self, actual):
+        return True
+
+    def none_conflict(self, actual):
+        return True
+
     def text_conflict(self, actual):
         return True
 
@@ -97,6 +134,12 @@ class Contract:
         return True
 
     def tuple_conflict(self, actual):
+        return True
+
+    def dict_conflict(self, actual):
+        return True
+
+    def instance_conflict(self, actual):
         return True
 
 
@@ -112,6 +155,9 @@ class IntegerContract(Contract):
             -(1 << (self.bits - 1)) if self.signed else 0,
             (1 << (self.bits - int(self.signed))) - 1,
         )
+
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return self.fact.annotated_integer(fixnum_int)
 
     def accept(self, visitor):
         return visitor.visit_IntegerContract(self)
@@ -138,6 +184,12 @@ class FloatContract(Contract):
     def fact(self):
         return FLOAT
 
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return FLOAT
+
+    def float_conflict(self, actual):
+        return False
+
     def accept(self, visitor):
         return visitor.visit_FloatContract(self)
 
@@ -157,6 +209,9 @@ class PythonIntegerContract(Contract):
     def fact(self):
         return PYTHON_INTEGER
 
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return fixnum_int
+
     def accept(self, visitor):
         return visitor.visit_PythonIntegerContract(self)
 
@@ -175,6 +230,9 @@ class PythonFloatContract(FloatContract):
     def fact(self):
         return REAL
 
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return FLOAT
+
     def accept(self, visitor):
         return visitor.visit_PythonFloatContract(self)
 
@@ -184,9 +242,59 @@ class PythonFloatContract(FloatContract):
     def boolean_conflict(self, actual):
         return False
 
+    def float_conflict(self, actual):
+        return False
+
     @property
     def display_name(self):
         return self.name
+
+
+@dataclass(frozen=True, slots=True)
+class BooleanContract(Contract):
+    name: str = "bool"
+
+    @property
+    def display_name(self):
+        return self.name
+
+    @property
+    def fact(self):
+        return BOOLEAN
+
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return BOOLEAN
+
+    def accept(self, visitor):
+        return visitor.visit_BooleanContract(self)
+
+    def integer_conflict(self, actual):
+        return not actual.fits_possible_boolean(BOOLEAN)
+
+    def boolean_conflict(self, actual):
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class NoneContract(Contract):
+    name: str = "None"
+
+    @property
+    def display_name(self):
+        return self.name
+
+    @property
+    def fact(self):
+        return NONE_TYPE
+
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return NONE_TYPE
+
+    def accept(self, visitor):
+        return visitor.visit_NoneContract(self)
+
+    def none_conflict(self, actual):
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,8 +309,11 @@ class TextContract(Contract):
     def fact(self):
         return TEXT_TYPE
 
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return TEXT_TYPE
+
     def accept(self, visitor):
-        return visitor.visit_PythonIntegerContract(self)
+        return visitor.visit_TextContract(self)
 
     def text_conflict(self, actual):
         return False
@@ -220,8 +331,11 @@ class BytesContract(Contract):
     def fact(self):
         return BYTES_TYPE
 
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return BYTES_TYPE
+
     def accept(self, visitor):
-        return visitor.visit_PythonIntegerContract(self)
+        return visitor.visit_BytesContract(self)
 
     def bytes_conflict(self, actual):
         return False
@@ -244,13 +358,15 @@ class ListContract(Contract):
             return LIST_TYPE
         return ListType(self.element.fact)
 
-    def general_parameter_type(self) -> ValueType:
-        if self.element is None:
-            return UNKNOWN
-        return self.fact
+    @property
+    def checked_type(self) -> ValueType:
+        return LIST_TYPE
+
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return LIST_TYPE
 
     def accept(self, visitor):
-        return visitor.visit_PythonIntegerContract(self)
+        return visitor.visit_ListContract(self)
 
     def list_conflict(self, actual):
         return (
@@ -261,6 +377,322 @@ class ListContract(Contract):
 
     def refine(self, actual):
         return actual.annotated_list(self.fact)
+
+    def has_element_contracts(self) -> bool:
+        return self.element is not None
+
+    def getitem_contract(self, index_type: ValueType) -> Contract | None:
+        return self.element if index_type.fits(PYTHON_INTEGER) else None
+
+    def iter_element_contract(self) -> Contract | None:
+        return self.element
+
+    def unpack_element_contract(self, arity: int, index: int) -> Contract | None:
+        return self.element
+
+    def method_result_contract(
+        self, name: str, arg_types: tuple[ValueType, ...]
+    ) -> Contract | None:
+        if name == "pop" and len(arg_types) <= 1:
+            return self.element
+        if name == "copy" and not arg_types:
+            return self
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class TupleContract(Contract):
+    name: str = "tuple"
+    arity: int | None = None
+    elements: tuple[Contract | None, ...] | None = None
+
+    @property
+    def display_name(self):
+        if self.arity is None and self.elements is None:
+            return self.name
+        if self.arity == 0:
+            return f"{self.name}[()]"
+        if self.arity is None and self.elements is not None and len(self.elements) == 1:
+            elem_name = (
+                self.elements[0].display_name
+                if self.elements[0] is not None
+                else "object"
+            )
+            return f"{self.name}[{elem_name}, ...]"
+        if self.elements is not None:
+            inner = ", ".join(
+                el.display_name if el is not None else "object" for el in self.elements
+            )
+            return f"{self.name}[{inner}]"
+        return self.name
+
+    @property
+    def fact(self):
+        if self.elements is None:
+            return TupleType(self.arity)
+        elem_facts = tuple(
+            el.fact if el is not None else UNKNOWN for el in self.elements
+        )
+        if all(el is UNKNOWN for el in elem_facts):
+            return TupleType(self.arity)
+        return TupleType(self.arity, elem_facts)
+
+    @property
+    def checked_type(self) -> ValueType:
+        return TupleType(self.arity)
+
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        if self.arity is None or self.arity > 8:
+            return TupleType()
+        if self.elements is None:
+            return TupleType(self.arity)
+        spec_elems = tuple(
+            el.speculative_parameter_type(fixnum_int) if el is not None else UNKNOWN
+            for el in self.elements
+        )
+        if all(el is UNKNOWN for el in spec_elems):
+            return TupleType(self.arity)
+        return TupleType(self.arity, spec_elems)
+
+    def accept(self, visitor):
+        return visitor.visit_TupleContract(self)
+
+    def tuple_conflict(self, actual):
+        if (
+            self.arity is not None
+            and actual.arity is not None
+            and self.arity != actual.arity
+        ):
+            return True
+        if self.elements is not None and actual.elements is not None:
+            if self.arity is None and len(self.elements) == 1:
+                elem_contract = self.elements[0]
+                return elem_contract is not None and any(
+                    el is not UNKNOWN and elem_contract.contradicts(el)
+                    for el in actual.elements
+                )
+            if (
+                self.arity is not None
+                and actual.arity == self.arity
+                and len(self.elements) == len(actual.elements)
+            ):
+                return any(
+                    c_el is not None and a_el is not UNKNOWN and c_el.contradicts(a_el)
+                    for c_el, a_el in zip(self.elements, actual.elements)
+                )
+        return False
+
+    def refine(self, actual):
+        return actual.annotated_tuple(self.fact)
+
+    def has_element_contracts(self) -> bool:
+        return self.elements is not None and any(el is not None for el in self.elements)
+
+    def getitem_contract(self, index_type: ValueType) -> Contract | None:
+        if self.elements is None or not index_type.fits(PYTHON_INTEGER):
+            return None
+        if self.arity is None and len(self.elements) == 1:
+            return self.elements[0]
+        idx = index_type.exact_integer()
+        if idx is not None and self.arity is not None:
+            if idx < 0:
+                idx += self.arity
+            if 0 <= idx < len(self.elements):
+                return self.elements[idx]
+        if self.elements and all(el == self.elements[0] for el in self.elements):
+            return self.elements[0]
+        return None
+
+    def iter_element_contract(self) -> Contract | None:
+        if self.elements is None or not self.elements:
+            return None
+        if self.arity is None and len(self.elements) == 1:
+            return self.elements[0]
+        if all(el == self.elements[0] for el in self.elements):
+            return self.elements[0]
+        if all(el is not None for el in self.elements):
+            return union_contract(*self.elements)
+        return None
+
+    def unpack_element_contract(self, arity: int, index: int) -> Contract | None:
+        if self.elements is None:
+            return None
+        if self.arity is None and len(self.elements) == 1:
+            return self.elements[0]
+        if self.arity == arity and 0 <= index < len(self.elements):
+            return self.elements[index]
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class DictContract(Contract):
+    name: str = "dict"
+    key: Contract | None = None
+    value: Contract | None = None
+
+    @property
+    def display_name(self):
+        if self.key is None and self.value is None:
+            return self.name
+        k_name = self.key.display_name if self.key is not None else "object"
+        v_name = self.value.display_name if self.value is not None else "object"
+        return f"{self.name}[{k_name}, {v_name}]"
+
+    @property
+    def fact(self):
+        k_fact = self.key.fact if self.key is not None else UNKNOWN
+        v_fact = self.value.fact if self.value is not None else UNKNOWN
+        if k_fact is UNKNOWN and v_fact is UNKNOWN:
+            return DICT_TYPE
+        return DictType(k_fact, v_fact)
+
+    @property
+    def checked_type(self) -> ValueType:
+        return DICT_TYPE
+
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return DICT_TYPE
+
+    def accept(self, visitor):
+        return visitor.visit_DictContract(self)
+
+    def dict_conflict(self, actual):
+        key_bad = (
+            self.key is not None
+            and actual.key is not UNKNOWN
+            and self.key.contradicts(actual.key)
+        )
+        val_bad = (
+            self.value is not None
+            and actual.value is not UNKNOWN
+            and self.value.contradicts(actual.value)
+        )
+        return key_bad or val_bad
+
+    def refine(self, actual):
+        return actual.annotated_dict(self.fact)
+
+    def has_element_contracts(self) -> bool:
+        return self.key is not None or self.value is not None
+
+    def getitem_contract(self, index_type: ValueType) -> Contract | None:
+        return self.value
+
+    def iter_element_contract(self) -> Contract | None:
+        return self.key
+
+    def method_result_contract(
+        self, name: str, arg_types: tuple[ValueType, ...]
+    ) -> Contract | None:
+        if name == "copy" and not arg_types:
+            return self
+        if name == "pop" and len(arg_types) == 1:
+            return self.value
+        if name == "get" and self.value is not None:
+            if len(arg_types) == 1:
+                return union_contract(self.value, NoneContract())
+            if len(arg_types) == 2:
+                if arg_types[1].fits_none(NONE_TYPE):
+                    return union_contract(self.value, NoneContract())
+                if arg_types[1].fits(self.value.fact):
+                    return self.value
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class ClassContract(Contract):
+    name: str
+    identity: str
+
+    @property
+    def display_name(self):
+        return self.name
+
+    @property
+    def fact(self):
+        return InstanceType(self.identity)
+
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return self.fact
+
+    def accept(self, visitor):
+        return visitor.visit_ClassContract(self)
+
+    def instance_conflict(self, actual):
+        return actual.identity != self.identity
+
+
+@dataclass(frozen=True, slots=True)
+class UnionContract(Contract):
+    name: str
+    members: tuple[Contract, ...]
+
+    @property
+    def display_name(self):
+        return " | ".join(m.display_name for m in self.members)
+
+    @property
+    def fact(self):
+        return union_type(*(m.fact for m in self.members))
+
+    @property
+    def checked_type(self) -> ValueType:
+        return union_type(*(m.checked_type for m in self.members))
+
+    def union_members(self) -> tuple[Contract, ...]:
+        return self.members
+
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        spec_members = tuple(
+            m.speculative_parameter_type(fixnum_int) for m in self.members
+        )
+        if any(m is UNKNOWN for m in spec_members):
+            return UNKNOWN
+        return union_type(*spec_members)
+
+    def accept(self, visitor):
+        return visitor.visit_UnionContract(self)
+
+    def integer_conflict(self, actual):
+        return all(m.integer_conflict(actual) for m in self.members)
+
+    def boolean_conflict(self, actual):
+        return all(m.boolean_conflict(actual) for m in self.members)
+
+    def float_conflict(self, actual):
+        return all(m.float_conflict(actual) for m in self.members)
+
+    def none_conflict(self, actual):
+        return all(m.none_conflict(actual) for m in self.members)
+
+    def text_conflict(self, actual):
+        return all(m.text_conflict(actual) for m in self.members)
+
+    def bytes_conflict(self, actual):
+        return all(m.bytes_conflict(actual) for m in self.members)
+
+    def list_conflict(self, actual):
+        return all(m.list_conflict(actual) for m in self.members)
+
+    def tuple_conflict(self, actual):
+        return all(m.tuple_conflict(actual) for m in self.members)
+
+    def dict_conflict(self, actual):
+        return all(m.dict_conflict(actual) for m in self.members)
+
+    def instance_conflict(self, actual):
+        return all(m.instance_conflict(actual) for m in self.members)
+
+
+def union_contract(*contracts: Contract) -> Contract:
+    unique: list[Contract] = []
+    for contract in contracts:
+        for member in contract.union_members():
+            if member not in unique:
+                unique.append(member)
+    if len(unique) == 1:
+        return unique[0]
+    return UnionContract(" | ".join(m.display_name for m in unique), tuple(unique))
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,6 +739,10 @@ class DeclaredReturnContract(Contract):
     @property
     def fact(self):
         return self.annotation.fact
+
+    @property
+    def checked_type(self) -> ValueType:
+        return self.annotation.checked_type
 
     def accept(self, visitor):
         return self.annotation.accept(visitor)
@@ -419,6 +855,7 @@ BUILTINS = {"int": PythonIntegerContract(), "float": PythonFloatContract("float"
 
 DECLARATIONS = {
     **BUILTINS,
+    "bool": BooleanContract(),
     "str": TextContract(),
     "bytes": BytesContract(),
 }

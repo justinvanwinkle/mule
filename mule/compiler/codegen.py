@@ -2449,6 +2449,7 @@ class ModuleGenerator:
             facts.parameters or (UNKNOWN,) * len(lambda_.vars),
             facts.return_type,
             borrowed_callees=self.borrowed_callees,
+            element_contracts=facts.element_contracts,
         )
         variants = [
             EntryContext(
@@ -2458,6 +2459,7 @@ class ModuleGenerator:
                 context.parameters,
                 context.return_type,
                 borrowed_callees=self.borrowed_callees,
+                element_contracts=context.element_contracts,
             )
             for context in facts.variants
         ]
@@ -3617,11 +3619,96 @@ class _ArgumentGuard(ValueTypeVisitor):
         matched = self.gen.operation(f"call ptr @mule_text_storage(ptr {self.value})")
         return self.gen.operation(f"icmp eq ptr {matched}, @mule.true")
 
+    def visit_FloatType(self, fact: ValueType) -> str:
+        if fact.may_be_unbound:
+            return self.visit_ValueType(fact)
+        kind = self.gen.operation(f"call i32 @mule_value_kind(ptr {self.value})")
+        return self.gen.operation(
+            f"icmp eq i32 {kind}, {int(vops._ReturnValueKind.FLOAT)}"
+        )
+
+    def visit_BytesType(self, fact: ValueType) -> str:
+        if fact.may_be_unbound:
+            return self.visit_ValueType(fact)
+        kind = self.gen.operation(f"call i32 @mule_value_kind(ptr {self.value})")
+        return self.gen.operation(
+            f"icmp eq i32 {kind}, {int(vops._ReturnValueKind.BYTES)}"
+        )
+
     def visit_ListType(self, fact: ListType) -> str:
         if fact.element != UNKNOWN or fact.may_be_unbound:
             return self.visit_ValueType(fact)
         matched = self.gen.operation(f"call i32 @mule_exact_list(ptr {self.value})")
         return self.gen.operation(f"icmp ne i32 {matched}, 0")
+
+    def visit_DictType(self, fact) -> str:
+        if (
+            not fact.proven
+            or fact.key != UNKNOWN
+            or fact.value != UNKNOWN
+            or fact.may_be_unbound
+        ):
+            return self.visit_ValueType(fact)
+        kind = self.gen.operation(f"call i32 @mule_value_kind(ptr {self.value})")
+        return self.gen.operation(
+            f"icmp eq i32 {kind}, {int(vops._ReturnValueKind.DICT)}"
+        )
+
+    def visit_TupleType(self, fact) -> str:
+        if fact.may_be_unbound:
+            return self.visit_ValueType(fact)
+        arity = fact.arity
+        if arity is None and fact.elements is not None:
+            arity = len(fact.elements)
+        if arity is None:
+            kind = self.gen.operation(f"call i32 @mule_value_kind(ptr {self.value})")
+            valid = self.gen.operation(
+                f"icmp eq i32 {kind}, {int(vops._ReturnValueKind.TUPLE)}"
+            )
+        else:
+            matched = self.gen.operation(
+                f"call i32 @mule_tuple_shape_matches(ptr {self.value}, i64 {arity})"
+            )
+            valid = self.gen.operation(f"icmp ne i32 {matched}, 0")
+        if not fact.elements:
+            return valid
+        start = self.gen.fresh("guard.tuple.start")[1:]
+        fields = self.gen.fresh("guard.tuple.fields")[1:]
+        done = self.gen.fresh("guard.tuple.done")[1:]
+        self.gen.line(f"br label %{start}")
+        self.gen.lines.append(start + ":")
+        self.gen.line(f"br i1 {valid}, label %{fields}, label %{done}")
+        self.gen.lines.append(fields + ":")
+        checked = "true"
+        for index, element in enumerate(fact.elements):
+            if element is UNKNOWN:
+                continue
+            item = self.gen.operation(
+                f"call ptr @mule_tuple_borrow_item(ptr {self.value}, i64 {index})"
+            )
+            elem_valid = element.accept(_ArgumentGuard(self.gen, item))
+            checked = (
+                elem_valid
+                if checked == "true"
+                else self.gen.operation(f"and i1 {checked}, {elem_valid}")
+            )
+        last = self.gen.current_block()
+        self.gen.line(f"br label %{done}")
+        self.gen.lines.append(done + ":")
+        return self.gen.operation(f"phi i1 [false, %{start}], [{checked}, %{last}]")
+
+    def visit_UnionType(self, fact) -> str:
+        if fact.may_be_unbound:
+            return self.visit_ValueType(fact)
+        combined = "false"
+        for member in fact.members:
+            valid = member.accept(self)
+            combined = (
+                valid
+                if combined == "false"
+                else self.gen.operation(f"or i1 {combined}, {valid}")
+            )
+        return combined
 
     def visit_InstanceType(self, fact) -> str:
         if fact.may_be_unbound:
@@ -3848,6 +3935,8 @@ class FunctionGenerator:
         # Each landing's predecessor blocks and the source line failing there.
         self.landing_sites: dict[str, dict[str, tuple[int, str]]] = {}
         self.vop = None
+        self.checking_element_contract = False
+        self.unpacked_remaining_slots: tuple[int, ...] = ()
         self.entry_end = 0
         self.uses_out = False
         self.uses_reuse = False
@@ -4004,7 +4093,8 @@ class FunctionGenerator:
                         check = next_vop.codegen_info
                         actual = next_vop.args[0].tn.type or UNKNOWN
                         if next_vop.args[0].tn is not ref_res_tn or (
-                            check.safety and not actual.fits(check.contract.fact)
+                            check.safety
+                            and not actual.fits(check.contract.checked_type)
                         ):
                             matched = False
                             break
@@ -4087,12 +4177,16 @@ class FunctionGenerator:
                     continue
                 self.unpacked_moves.add(move_vop)
                 for slot_idx, ref_vop, store_vop, has_type_check in ref_vops:
-                    self.unpacked_refs[ref_vop] = slot_idx
+                    self.unpacked_refs[ref_vop] = (slot_idx, arity)
                     if sep_is_immortal and slot_idx == 1:
                         self.unpacked_immortal_refs.add(ref_vop)
                     target_tn = store_vop.results[0].tn
                     if (
                         not has_type_check
+                        and (
+                            ref_vop.node not in self.context.element_contracts
+                            or not self.lambda_.policy.safety
+                        )
                         and not reads.get(target_tn)
                         and len(writes.get(target_tn, ())) == 1
                         and target_tn.leaf is not None
@@ -4152,7 +4246,15 @@ class FunctionGenerator:
         return vop in self.unpacked_moves
 
     def unpacked_ref_slot(self, vop) -> int | None:
-        return self.unpacked_refs.get(vop)
+        info = self.unpacked_refs.get(vop)
+        return None if info is None else info[0]
+
+    def unpacked_ref_remaining(self, vop) -> tuple[int, ...]:
+        info = self.unpacked_refs.get(vop)
+        if info is None:
+            return ()
+        slot_idx, arity = info
+        return tuple(range(slot_idx + 1, arity))
 
     def is_unpacked_immortal_ref(self, vop) -> bool:
         return vop in self.unpacked_immortal_refs
@@ -4205,7 +4307,10 @@ class FunctionGenerator:
             and not self.module.program.bootstrap
             and self.lambda_.policy.records_traceback
         )
-        owned = tuple(value for value in self.live.values() if value != failed_value)
+        owned = (
+            *(value for value in self.live.values() if value != failed_value),
+            *(f"@unpack.slot.{i}" for i in self.unpacked_remaining_slots),
+        )
         if not record_traceback and not owned:
             return base
         key = (base, owned, record_traceback, explicit_raise)
@@ -4412,8 +4517,40 @@ class FunctionGenerator:
         self.uses_float_scratch = True
         return "%float.scratch"
 
+    def _has_unchecked_element_contract(self, tn) -> bool:
+        return (
+            not self.raw
+            and not self.checking_element_contract
+            and self.vop is not None
+            and bool(self.lambda_.policy.safety)
+            and self.vop.node in self.context.element_contracts
+            and tn.sc in OBJECT
+        )
+
     def publish(self, ref, value: str, *, release: bool = True) -> None:
         tn = ref.tn
+        if self._has_unchecked_element_contract(tn):
+            if (
+                tn not in self.registers
+                and tn.sc.owned
+                and tn.borrowed_from is None
+                and release
+            ):
+                old = self.operation(f"load ptr, ptr {tn.slot}")
+                self.line(f"store ptr null, ptr {tn.slot}")
+                self.record_facts(tn, old)
+                self.release(old)
+            if tn in self.registers:
+                if tn in self.live:
+                    raise ValueError(f"{tn!r} redefined while it still owns a value")
+                self.values[tn] = value
+            if (
+                tn.sc.owned
+                and tn.borrowed_from is None
+                and value not in self.immortal_values
+            ):
+                self.live[tn] = value
+            return
         if tn in self.registers:
             self.define(tn, value)
             return
@@ -4464,6 +4601,12 @@ class FunctionGenerator:
         return value
 
     def release(self, value: str) -> None:
+        if value.startswith("@unpack.slot."):
+            rem_idx = int(value.rsplit(".", 1)[1])
+            slot = self.operation(f"getelementptr ptr, ptr %unpack.out, i64 {rem_idx}")
+            unpacked_val = self.operation(f"load ptr, ptr {slot}")
+            self.line(f"call void @mule.fast.release(ptr {unpacked_val})")
+            return
         if not self.owns_reference(value):
             return
         layout = self.private_values.get(value)
@@ -4481,6 +4624,25 @@ class FunctionGenerator:
 
     def refine(self, tn, value: str) -> None:
         """Expose proven representation/range facts after the error check."""
+        if self._has_unchecked_element_contract(tn):
+            contract = self.context.element_contracts[self.vop.node]
+            self.checking_element_contract = True
+            self.unpacked_remaining_slots = self.unpacked_ref_remaining(self.vop)
+            try:
+                contract.accept(vops._ContractAssertion(self, value))
+            finally:
+                self.unpacked_remaining_slots = ()
+                self.checking_element_contract = False
+            self.live.pop(tn, None)
+            value = self.operation(f"getelementptr i8, ptr {value}, i64 0")
+            if tn in self.registers:
+                self.define(tn, value)
+            else:
+                self.line(f"store ptr {value}, ptr {tn.slot}")
+                self.record_facts(tn, value)
+            if self.component.reads.get(tn):
+                self.refine_type(tn.type or UNKNOWN, value)
+            return
         self.record_facts(tn, value)
         if self.component.reads.get(tn):
             self.refine_type(tn.type or UNKNOWN, value)

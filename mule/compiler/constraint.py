@@ -21,11 +21,12 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from mule import ast
 
 from . import fndb
+from .annotation_types import ListContract
 from .ctype import (
     ANY_CLASS_TYPE,
     BOOLEAN,
@@ -208,6 +209,7 @@ class Body:
     return_states: tuple[tuple[ValuedNode, dict, dict, dict], ...] = ()
     # ``%call_resolved`` nodes whose receiver's class resolved the method.
     method_targets: dict[object, Lambda] | None = None
+    element_contracts: dict[object, object] = field(default_factory=dict)
 
     def types(self) -> dict[object, ValueType]:
         return {
@@ -358,6 +360,30 @@ def _key(var):
     return var.accept(_STATE_KEY)
 
 
+class _SingleAssignedLambdaVar(LeafVisitor):
+    def visit_Leaf(self, leaf):
+        return False
+
+    def visit_LambdaVar(self, leaf):
+        return (
+            not leaf.indirect and sum(1 for s in leaf.sets if s.value is not None) == 1
+        )
+
+
+_SINGLE_ASSIGNED_LAMBDA_VAR = _SingleAssignedLambdaVar()
+
+
+class _IsUnpackNode(NodeVisitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        return node.fun_info is fndb.PROTOCOLS["unpack"]
+
+
+_IS_UNPACK_NODE = _IsUnpackNode()
+
+
 class _Propagation(NodeVisitor, LeafVisitor):
     """Processes one block's nodes against the current variable state."""
 
@@ -399,6 +425,25 @@ class _Propagation(NodeVisitor, LeafVisitor):
         if current.target is None:
             return _fact(narrowed_type)
         return Fact(narrowed_type, current.target, current.proven)
+
+    def apply_element_contract(
+        self, node, static_type: ValueType, elem_contract
+    ) -> ValueType:
+        if elem_contract is None or elem_contract.contradicts(static_type):
+            self.walk.element_contracts.pop(node, None)
+            return static_type
+        if node.lvar is not None and elem_contract.has_element_contracts():
+            self.walk.lvar_contracts[node.lvar] = elem_contract
+        checked = elem_contract.checked_type
+        if checked is UNKNOWN or (
+            static_type is not UNKNOWN and static_type.fits(checked)
+        ):
+            self.walk.element_contracts.pop(node, None)
+            return static_type
+        if self.walk.lambda_.policy.safety == 0 or self.walk.lambda_.is_protocol:
+            return static_type
+        self.walk.element_contracts[node] = elem_contract
+        return elem_contract.refine(static_type)
 
     def prove_argument_type(self, lvar, proven_type: ValueType) -> None:
         recv_var = self.origins.get(lvar)
@@ -607,6 +652,8 @@ class _Propagation(NodeVisitor, LeafVisitor):
             self.assign(leaf, UNBOUND_FACT)
         if ref.lvar is not None:
             self.origins[ref.lvar] = leaf
+            if leaf in self.walk.var_contracts:
+                self.walk.lvar_contracts[ref.lvar] = self.walk.var_contracts[leaf]
         return fact
 
     def visit_Lambda(self, leaf):
@@ -623,10 +670,22 @@ class _Propagation(NodeVisitor, LeafVisitor):
         else:
             fact = self.fact_of(node.value)
             contract = self.walk.local_contracts.get(key)
-            if contract is not None and not contract.contradicts(fact.type):
-                refined = contract.refine(fact.type)
-                if refined is not fact.type:
-                    fact = self.narrowed_fact(fact, refined)
+            if contract is not None:
+                if fact.type is not UNKNOWN and fact.type.fits(contract.checked_type):
+                    self.walk.var_contracts[key] = contract
+                else:
+                    self.walk.var_contracts.pop(key, None)
+            elif node.var.accept(_SINGLE_ASSIGNED_LAMBDA_VAR):
+                val_contract = self.walk.lvar_contracts.get(node.value)
+                if val_contract is not None:
+                    self.walk.var_contracts[key] = val_contract
+                else:
+                    self.walk.var_contracts.pop(key, None)
+                iter_contract = self.walk.iter_contracts.get(node.value)
+                if iter_contract is not None:
+                    self.walk.iter_contracts[key] = iter_contract
+                else:
+                    self.walk.iter_contracts.pop(key, None)
             src_var = self.origins.get(node.value)
             if src_var is not None and src_var in self.state:
                 self.record_alias(key, src_var)
@@ -651,6 +710,8 @@ class _Propagation(NodeVisitor, LeafVisitor):
             node.contract, value, node.location, node.declaration
         ):
             return _fact(value)
+        if node.lvar is not None and node.contract.has_element_contracts():
+            self.walk.lvar_contracts[node.lvar] = node.contract
         return _fact(node.contract.refine(value))
 
     def visit_Combination(self, node: Combination):
@@ -687,6 +748,19 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 if builtin_type is BOTTOM:
                     return NO_FACT
                 resolved = builtin_type
+            if (
+                len(node.args) == 1
+                and not info.keywords
+                and node.lvar is not None
+                and self.walk.is_element_preserving_builtin(node.fun)
+            ):
+                arg_contract = self.walk.lvar_contracts.get(node.args[0])
+                if arg_contract is not None:
+                    iter_elem = arg_contract.iter_element_contract()
+                    if iter_elem is not None:
+                        self.walk.lvar_contracts[node.lvar] = ListContract(
+                            "list", iter_elem
+                        )
             if target is not None:
                 mutated = None
                 if node.args:
@@ -1194,6 +1268,9 @@ def _propagate_range_advance(visitor: _Propagation, node: Combination):
 def _propagate_unpack(visitor: _Propagation, node: Combination):
     args = node.args
     visitor.invalidate()
+    seq_contract = visitor.walk.lvar_contracts.get(args[0])
+    if seq_contract is not None and node.lvar is not None:
+        visitor.walk.lvar_contracts[node.lvar] = seq_contract
     arity = visitor.type_of(args[1]).exact_integer()
     if arity is not None and arity >= 0:
         seq_type = visitor.type_of(args[0])
@@ -1210,7 +1287,20 @@ def _propagate_unpack_ref(visitor: _Propagation, node: Combination):
     seq_type = visitor.type_of(args[0])
     if seq_type is BOTTOM:
         return NO_FACT
-    return _fact(seq_type.getitem_type(visitor.type_of(args[1])))
+    index_type = visitor.type_of(args[1])
+    seq_contract = visitor.walk.lvar_contracts.get(args[0])
+    index = index_type.exact_integer()
+    tup = seq_type.accept(_AS_TUPLE_TYPE)
+    arity = tup.arity if tup is not None else None
+    elem_contract = (
+        seq_contract.unpack_element_contract(arity, index)
+        if seq_contract is not None and arity is not None and index is not None
+        else None
+    )
+    item_type = visitor.apply_element_contract(
+        node, seq_type.getitem_type(index_type), elem_contract
+    )
+    return _fact(item_type)
 
 
 @defpropagate("%getattr")
@@ -1315,6 +1405,13 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
             visitor.update_mutated_container(recv_var, updated_receiver)
         if may_call:
             visitor.invalidate()
+        recv_contract = visitor.walk.lvar_contracts.get(receiver_lvar)
+        res_contract = (
+            recv_contract.method_result_contract(method_name, arg_types)
+            if recv_contract is not None and not has_keywords
+            else None
+        )
+        result_type = visitor.apply_element_contract(node, result_type, res_contract)
         return _fact(result_type)
     visitor.invalidate()
     return UNKNOWN_FACT
@@ -1457,7 +1554,16 @@ def _propagate_getitem(visitor: _Propagation, node: Combination):
         return NO_FACT
     if receiver_type.may_run_user_code or index_type.may_run_user_code:
         visitor.invalidate()
-    return _fact(receiver_type.getitem_type(index_type))
+    recv_contract = visitor.walk.lvar_contracts.get(args[0])
+    elem_contract = (
+        recv_contract.getitem_contract(index_type)
+        if recv_contract is not None
+        else None
+    )
+    item_type = visitor.apply_element_contract(
+        node, receiver_type.getitem_type(index_type), elem_contract
+    )
+    return _fact(item_type)
 
 
 @defpropagate("%getslice")
@@ -1472,6 +1578,13 @@ def _propagate_getslice(visitor: _Propagation, node: Combination):
         visitor.type_of(arg).may_run_user_code for arg in args[1:]
     ):
         visitor.invalidate()
+    recv_contract = visitor.walk.lvar_contracts.get(args[0])
+    if (
+        recv_contract is not None
+        and node.lvar is not None
+        and recv_contract.has_element_contracts()
+    ):
+        visitor.walk.lvar_contracts[node.lvar] = recv_contract
     return _fact(receiver_type.getslice_type())
 
 
@@ -1510,6 +1623,11 @@ def _propagate_iterate(visitor: _Propagation, node: Combination):
         return NO_FACT
     if operand_type.may_run_user_code:
         visitor.invalidate()
+    recv_contract = visitor.walk.lvar_contracts.get(args[0])
+    if recv_contract is not None and node.lvar is not None:
+        iter_elem = recv_contract.iter_element_contract()
+        if iter_elem is not None:
+            visitor.walk.iter_contracts[node.lvar] = iter_elem
     return _fact(operand_type.flow_iterate_type())
 
 
@@ -1523,6 +1641,18 @@ def _propagate_next_item(visitor: _Propagation, node: Combination):
         item_type = iter_type.next_item_type()
         if iter_type.may_run_user_code:
             visitor.invalidate()
+        elem_contract = visitor.walk.iter_contracts.get(iterator_var)
+        if elem_contract is not None:
+            if (
+                node.lvar is not None
+                and node.lvar.dest is not None
+                and node.lvar.dest.accept(_IS_UNPACK_NODE)
+            ):
+                visitor.walk.lvar_contracts[node.lvar] = elem_contract
+            else:
+                item_type = visitor.apply_element_contract(
+                    node, item_type, elem_contract
+                )
         if item_type is not UNKNOWN:
             return _fact(item_type)
     visitor.invalidate()
@@ -1750,6 +1880,16 @@ class _Walk:
             var: _fact(parameter_facts[var]) if var in parameter_facts else UNBOUND_FACT
             for var in lambda_.locals
         }
+        self.element_contracts: dict[object, object] = {}
+        self.var_contracts: dict[object, object] = {
+            var: contract
+            for var, contract in self.local_contracts.items()
+            if var in parameter_facts
+            and parameter_facts[var] is not UNKNOWN
+            and parameter_facts[var].fits(contract.checked_type)
+        }
+        self.lvar_contracts: dict[object, object] = {}
+        self.iter_contracts: dict[object, object] = {}
         closure = lambda_.environment.closure if lambda_.environment is not None else ()
         for var in closure:
             vtype = var.optimistic_type
@@ -1869,6 +2009,17 @@ class _Walk:
             return self.builtin_return_types.get(name, UNKNOWN)
         return UNKNOWN
 
+    def is_element_preserving_builtin(self, fun_lvar) -> bool:
+        if (
+            self.lambda_.kind is FunctionalKind.TOPLEVEL
+            or self.lambda_.policy.safety >= 3
+        ):
+            return False
+        name = fun_lvar.use().accept(_IMPORTED_CALLEE_NAME)
+        if name not in ("list", "sorted"):
+            return False
+        return name not in self.rebound_globals and name not in self.global_targets
+
     def invalidate_globals(self, state):
         """Forget facts that user code may change."""
         if self.invalidated:
@@ -1972,7 +2123,13 @@ class _Walk:
             if self_var is not None and joined_self is not BOTTOM:
                 self_type = joined_self
         return Body(
-            facts, returned, calls, self_type, return_states, dict(self.method_targets)
+            facts,
+            returned,
+            calls,
+            self_type,
+            return_states,
+            dict(self.method_targets),
+            dict(self.element_contracts),
         )
 
     def propagate(

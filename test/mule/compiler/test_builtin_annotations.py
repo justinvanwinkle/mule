@@ -323,3 +323,179 @@ def test_builtin_int_annotation_specializes_arithmetic_and_elides_return_check()
     assert "mule_format_modulo" not in body
     assert "unary.protocol" not in body
     assert " = add i64 " in body
+
+
+def test_declaration_recognition_covers_containers_unions_classes_and_varargs():
+    compilation = compile_source(
+        "class Point:\n"
+        " x: int\n"
+        " y: int\n"
+        " def __init__(self, x: int, y: int):\n"
+        "  self.x = x\n"
+        "  self.y = y\n"
+        "def f(\n"
+        " b: bool,\n"
+        " n: None,\n"
+        " pair: tuple[int, str],\n"
+        " nums: tuple[int, ...],\n"
+        " mapping: dict[str, list[int]],\n"
+        " nested: list[tuple[int, int]],\n"
+        " maybe: int | None,\n"
+        " pt: Point,\n"
+        " *args: int,\n"
+        " **kwargs: int,\n"
+        ") -> tuple[int, int]:\n"
+        " return (1, 2)\n"
+        "print(f)\n"
+    )
+    fn = next(lam for lam in compilation.lambdas if lam.name == "mule_fn_f")
+    assert {k: v.display_name for k, v in fn.local_annotations.items()} == {
+        "b": "bool",
+        "n": "None",
+        "pair": "tuple[int, str]",
+        "nums": "tuple[int, ...]",
+        "mapping": "dict[str, list[int]]",
+        "nested": "list[tuple[int, int]]",
+        "maybe": "int | None",
+        "pt": "Point",
+        "args": "tuple[int, ...]",
+        "kwargs": "dict[str, int]",
+    }
+
+
+def test_parameter_facts_specialize_callbacks_across_tuple_dict_nested_and_class_contracts(
+    tmp_path,
+):
+    source = (
+        "class Point:\n"
+        " x: int\n"
+        " y: int\n"
+        " def __init__(self, x: int, y: int):\n"
+        "  self.x = x\n"
+        "  self.y = y\n"
+        " def sum_coords(self) -> int:\n"
+        "  return self.x + self.y\n"
+        "\n"
+        "def sum_pair(pair: tuple[int, int]) -> int:\n"
+        " a, b = pair\n"
+        " return a + b + pair[0]\n"
+        "\n"
+        "def sum_nested_pairs(pairs: list[tuple[int, int]]) -> int:\n"
+        " total = 0\n"
+        " for a, b in pairs:\n"
+        "  total += a * b\n"
+        " return total\n"
+        "\n"
+        "def sum_matrix(grid: list[list[int]]) -> int:\n"
+        " total = 0\n"
+        " for i in range(len(grid)):\n"
+        "  row = grid[i]\n"
+        "  for x in row:\n"
+        "   total += x\n"
+        " return total\n"
+        "\n"
+        "def lookup_add(d: dict[str, int], k: str) -> int:\n"
+        " return d[k] + d.get(k, 0)\n"
+        "\n"
+        "def point_metric(p: Point, scale: int | None) -> int:\n"
+        " base = p.x * p.y + p.sum_coords()\n"
+        " if scale is not None:\n"
+        "  return base * scale\n"
+        " return base\n"
+        "\n"
+        "callbacks = [sum_pair, sum_nested_pairs, sum_matrix, lookup_add, point_metric]\n"
+        "print(callbacks[0]((10, 20)))\n"
+        "print(callbacks[1]([(2, 3), (4, 5)]))\n"
+        "print(callbacks[2]([[1, 2], [3, 4]]))\n"
+        "print(callbacks[3]({'a': 21}, 'a'))\n"
+        "print(callbacks[4](Point(3, 4), 2))\n"
+        "print(callbacks[4](Point(3, 4), None))\n"
+    )
+    llvm = emit_llvm(source)
+    for fn_name in (
+        "sum_pair",
+        "sum_nested_pairs",
+        "sum_matrix",
+        "lookup_add",
+        "point_metric",
+    ):
+        assert f'define internal ptr @"mule_fn_{fn_name}.spec.0"(' in llvm
+
+    pair_spec = llvm.split('define internal ptr @"mule_fn_sum_pair.spec.0"(')[1].split(
+        "\n}"
+    )[0]
+    assert "@mule_tuple_slot(" in pair_spec
+    assert "@llvm.sadd.with.overflow.i64(" in pair_spec
+
+    nested_spec = llvm.split('define internal ptr @"mule_fn_sum_nested_pairs.spec.0"(')[
+        1
+    ].split("\n}")[0]
+    assert "@mule.fast.next_unpack.2(" in nested_spec
+    assert "@llvm.sadd.with.overflow.i64(" in nested_spec
+
+    matrix_spec = llvm.split('define internal ptr @"mule_fn_sum_matrix.spec.0"(')[
+        1
+    ].split("\n}")[0]
+    assert "@mule_list_getitem(" in matrix_spec
+    assert "@llvm.sadd.with.overflow.i64(" in matrix_spec
+
+    lookup_spec = llvm.split('define internal ptr @"mule_fn_lookup_add.spec.0"(')[
+        1
+    ].split("\n}")[0]
+    assert "mule_import__dict:mule_fn_dict.get.2" in lookup_spec
+    assert "@llvm.sadd.with.overflow.i64(" in lookup_spec
+
+    point_spec = llvm.split('define internal ptr @"mule_fn_point_metric.spec.0"(')[
+        1
+    ].split("\n}")[0]
+    assert "@mule.attr.field(" in point_spec
+    assert "mule.direct.mule_fn_Point.sum_coords" in point_spec
+    assert "@llvm.sadd.with.overflow.i64(" in point_spec
+
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "40\n26\n10\n42\n38\n19\n"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "def f(xs: list[int]) -> int:\n"
+            " return xs[0] + 1\n"
+            "bad = ['not-an-int']\n"
+            "f(bad)\n"
+        ),
+        (
+            "def mutate(alias):\n"
+            " alias[0] = 'corrupted'\n"
+            "def f(xs: list[int], cb) -> int:\n"
+            " first = xs[0]\n"
+            " cb(xs)\n"
+            " return first + xs[0]\n"
+            "data = [10]\n"
+            "f(data, mutate)\n"
+        ),
+        (
+            "def f(pairs: list[tuple[int, int]]) -> int:\n"
+            " total = 0\n"
+            " for a, b in pairs:\n"
+            "  total += a + b\n"
+            " return total\n"
+            "bad = [(1, 'not-an-int')]\n"
+            "f(bad)\n"
+        ),
+        (
+            "def f(d: dict[str, int], k: str) -> int:\n"
+            " return d[k] + 1\n"
+            "bad = {'k': 'not-an-int'}\n"
+            "f(bad, 'k')\n"
+        ),
+    ),
+)
+def test_container_element_contracts_guard_elements_against_bad_inputs_and_alias_mutation(
+    tmp_path, source
+):
+    result = run_native(tmp_path, source)
+    assert result.returncode != 0
+    assert "TypeError" in result.stderr

@@ -380,7 +380,7 @@ def type_check(gen, vop):
         gen.store(result, gen.take(operand))
         return
     actual = operand.tn.type or UNKNOWN
-    checked = check.safety and not actual.fits(check.contract.fact)
+    checked = check.safety and not actual.fits(check.contract.checked_type)
     if checked:
         # Keep the unrefined operand owned by its original slot until the
         # assertion succeeds, so error cleanup releases its actual value.
@@ -473,6 +473,37 @@ class _ContractAssertion:
         gen.check_status(status)
         gen.line(f"br label %{done}")
         gen.lines.append(done + ":")
+
+    def check_contract_type(self, contract):
+        valid = contract.checked_type.accept(_InferredResultPredicate(self, self.value))
+        self.finish_inferred_check(contract, valid)
+
+    def visit_BooleanContract(self, contract):
+        self.check_contract_type(contract)
+
+    def visit_NoneContract(self, contract):
+        self.check_contract_type(contract)
+
+    def visit_TextContract(self, contract):
+        self.check_contract_type(contract)
+
+    def visit_BytesContract(self, contract):
+        self.check_contract_type(contract)
+
+    def visit_ListContract(self, contract):
+        self.check_contract_type(contract)
+
+    def visit_TupleContract(self, contract):
+        self.check_contract_type(contract)
+
+    def visit_DictContract(self, contract):
+        self.check_contract_type(contract)
+
+    def visit_ClassContract(self, contract):
+        self.check_contract_type(contract)
+
+    def visit_UnionContract(self, contract):
+        self.check_contract_type(contract)
 
 
 class _UnpackedReturnShape(ValueTypeVisitor):
@@ -612,6 +643,22 @@ class _InferredResultPredicate(ValueTypeVisitor):
 
     def visit_FloatType(self, fact):
         return self.kind(_ReturnValueKind.FLOAT)
+
+    def visit_RealType(self, fact):
+        return self.combine(
+            "or",
+            (self.visit_PythonIntegerType(fact), self.visit_FloatType(fact)),
+            "false",
+        )
+
+    def visit_InstanceType(self, fact):
+        layout = self.gen.operation(f"call i64 @mule.attr.layout(ptr {self.value})")
+        expected = self.gen.operation(
+            f"load i64, ptr {self.gen.module.class_layout_slot(fact.identity)}"
+        )
+        known = self.gen.operation(f"icmp ne i64 {expected}, 0")
+        same = self.gen.operation(f"icmp eq i64 {layout}, {expected}")
+        return self.gen.operation(f"and i1 {known}, {same}")
 
     def visit_TextType(self, fact):
         return self.kind(_ReturnValueKind.TEXT)

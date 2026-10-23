@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from mule import ast
 
@@ -87,6 +87,7 @@ from .fndb import (
     RESOLVE_SUPER_METHOD,
     SETATTR,
     UNARY,
+    UNPACK_REF,
     flow_propagation,
 )
 from .ir1util import clone_lambda_component, join_blocks_if_possible, made_function
@@ -160,13 +161,26 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
     def analyze(self, contract, full: ValueType, declared=None) -> ValueType:
         effective = contract if contract is not None else declared
         while self.queue and not (
-            self.disqualified and self.text_disqualified and self.list_disqualified
+            self.disqualified
+            and self.text_disqualified
+            and self.list_disqualified
+            and self.sequence_disqualified
         ):
             var = self.queue.pop()
             for ref in var.refs:
                 if ref.dest is not None and ref.lvar is not None:
                     self.current = ref.lvar
                     ref.dest.accept(self)
+        if effective is not None:
+            spec_type = effective.speculative_parameter_type(full)
+            if spec_type.fits(INTEGER) or spec_type.fits_float(FLOAT):
+                return spec_type if not self.disqualified else UNKNOWN
+            if spec_type.fits_text(TEXT_TYPE):
+                return spec_type if not self.text_disqualified else UNKNOWN
+            if spec_type.is_exact_list:
+                return spec_type if not self.list_disqualified else UNKNOWN
+            if spec_type is not UNKNOWN:
+                return spec_type if not self.sequence_disqualified else UNKNOWN
         if (
             self.numeric
             and not self.disqualified
@@ -174,29 +188,14 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         ):
             return full
         if (
-            (
-                self.text
-                or (
-                    effective is not None
-                    and effective.fact is TEXT_TYPE
-                    and (self.has_getitem or self.has_len)
-                )
-            )
+            self.text
             and not self.text_disqualified
             and not self.numeric
             and (effective is None or not effective.contradicts(TEXT_TYPE))
         ):
             return TEXT_TYPE
         if (
-            (
-                self.list_seq
-                or (self.has_len and self.has_getitem)
-                or (
-                    effective is not None
-                    and effective.fact.is_exact_list
-                    and (self.has_getitem or self.has_len)
-                )
-            )
+            (self.list_seq or (self.has_len and self.has_getitem))
             and not self.list_disqualified
             and not self.numeric
             and not self.text
@@ -299,6 +298,7 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
             self.numeric = True
             self.text_disqualified = True
             self.list_disqualified = True
+            self.sequence_disqualified = True
             return
         if node.args and node.args[0] is lvar and info in _GET_ITEM_OR_SLICE:
             self.has_getitem = True
@@ -359,10 +359,10 @@ class _SpecializesBody(NodeVisitor):
     def visit_Combination(self, node):
         cand_type = self.candidate.get(node, UNKNOWN)
         gen_type = self.general.get(node, UNKNOWN)
-        if cand_type != gen_type and (
-            cand_type.fits(INTEGER)
-            or cand_type.fits(BOOLEAN)
-            or cand_type.fits_float(FLOAT)
+        if (
+            cand_type != gen_type
+            and cand_type is not UNKNOWN
+            and not gen_type.fits(cand_type)
         ):
             return True
         if is_predictable_len_call(node) and len(node.args[0].uses) == 1:
@@ -373,17 +373,22 @@ class _SpecializesBody(NodeVisitor):
                 return True
         if (
             node.kind is CallKind.KNOWN
-            and node.fun_info in _SPECIALIZABLE_CONTAINER_OPS
+            and (
+                node.fun_info in _SPECIALIZABLE_CONTAINER_OPS
+                or node.fun_info in _GET_SET_DEL_ATTR
+                or node.fun_info is PROTOCOLS["unpack"]
+                or node.fun_info is UNPACK_REF
+            )
             and node.args
             and len(node.args[0].uses) == 1
         ):
             arg_use = node.args[0].uses[0]
             cand_recv = self.candidate.get(arg_use, UNKNOWN)
             gen_recv = self.general.get(arg_use, UNKNOWN)
-            if cand_recv != gen_recv and (
-                cand_recv.is_exact_list
-                or cand_recv.fits_text(TEXT_TYPE)
-                or cand_recv.fits_dict()
+            if (
+                cand_recv != gen_recv
+                and cand_recv is not UNKNOWN
+                and not gen_recv.fits(cand_recv)
             ):
                 return True
         if (
@@ -443,6 +448,7 @@ class EntryContext:
     types: dict[object, ValueType]
     targets: dict[object, Lambda]
     return_type: ValueType
+    element_contracts: dict[object, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -452,6 +458,7 @@ class LambdaFacts:
     variants: tuple[EntryContext, ...] = ()
     return_type: ValueType = UNKNOWN
     parameters: tuple[ValueType, ...] = ()
+    element_contracts: dict[object, object] = field(default_factory=dict)
 
 
 def global_bindings(
@@ -1752,10 +1759,21 @@ def analyze(
                     partial_params = tuple(
                         param
                         if param is not UNKNOWN
-                        and (contract is not None or lambda_.vars[0].name != "self")
+                        and (
+                            contract is not None
+                            or (
+                                var.name in lambda_.local_annotations
+                                and ("local", lambda_, var.name)
+                                not in annotations.ignored
+                            )
+                            or lambda_.vars[0].name != "self"
+                        )
                         else UNKNOWN
-                        for param, contract in zip(
-                            spec_params, signature.annotations, strict=True
+                        for var, param, contract in zip(
+                            lambda_.vars,
+                            spec_params,
+                            signature.annotations,
+                            strict=True,
                         )
                     )
                     if any(param is not UNKNOWN for param in partial_params):
@@ -2416,6 +2434,7 @@ def analyze(
             general.targets(),
             return_type=summaries[lambda_, "general"].normalized_bottom(),
             parameters=parameters[lambda_, "general"],
+            element_contracts=dict(general.element_contracts),
         )
         entries = []
         obs_params = parameters.get((lambda_, "observed"))
@@ -2438,17 +2457,22 @@ def analyze(
             body = bodies[key]
             candidate_types = body.types()
             ret_type = summaries[key].normalized_bottom()
-            if identifier == "fixnum" and not _specializes_body(
-                graph,
-                facts.types,
-                candidate_types,
-                facts.targets,
-                body.targets(),
+            if (
+                identifier == "fixnum"
+                and body.element_contracts == facts.element_contracts
+                and not _specializes_body(
+                    graph,
+                    facts.types,
+                    candidate_types,
+                    facts.targets,
+                    body.targets(),
+                )
             ):
                 continue
             if (
                 identifier == "observed"
                 and not any(param.is_fixnum for param in parameters[key])
+                and body.element_contracts == facts.element_contracts
                 and not _specializes_body(
                     graph,
                     facts.types,
@@ -2462,12 +2486,16 @@ def analyze(
             if (
                 identifier == "observed"
                 and parameters[key] == parameters.get((lambda_, "fixnum"))
-                and _specializes_body(
-                    graph,
-                    facts.types,
-                    bodies[lambda_, "fixnum"].types(),
-                    facts.targets,
-                    bodies[lambda_, "fixnum"].targets(),
+                and (
+                    bodies[lambda_, "fixnum"].element_contracts
+                    != facts.element_contracts
+                    or _specializes_body(
+                        graph,
+                        facts.types,
+                        bodies[lambda_, "fixnum"].types(),
+                        facts.targets,
+                        bodies[lambda_, "fixnum"].targets(),
+                    )
                 )
             ):
                 continue
@@ -2478,6 +2506,7 @@ def analyze(
                     candidate_types,
                     body.targets(),
                     ret_type,
+                    dict(body.element_contracts),
                 )
             )
         facts.variants = tuple(entries)
@@ -2695,12 +2724,17 @@ def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
     cloned_component, node_map, restore = clone_lambda_component(lambda_)
     old_types = context.types
     old_targets = context.targets
+    old_element_contracts = context.element_contracts
     try:
         cloned_types = {
             node_map.get(node, node): vtype for node, vtype in old_types.items()
         }
         cloned_targets = {
             node_map.get(node, node): target for node, target in old_targets.items()
+        }
+        cloned_element_contracts = {
+            node_map.get(node, node): contract
+            for node, contract in old_element_contracts.items()
         }
         graph = build_lambda_graph(lambda_)
         if _publish_derived_types(lambda_, graph, cloned_types):
@@ -2716,11 +2750,13 @@ def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
             cloned_targets = collector.targets
         context.types = cloned_types
         context.targets = cloned_targets
+        context.element_contracts = cloned_element_contracts
         yield
     finally:
         _ACTIVE_SPECIALIZED_CONTEXTS.discard(active_key)
         context.types = old_types
         context.targets = old_targets
+        context.element_contracts = old_element_contracts
         restore()
 
 
