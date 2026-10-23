@@ -440,8 +440,11 @@ class _Propagation(NodeVisitor, LeafVisitor):
         ):
             self.walk.element_contracts.pop(node, None)
             return static_type
-        if self.walk.lambda_.policy.safety == 0 or self.walk.lambda_.is_protocol:
+        if self.walk.lambda_.is_protocol:
             return static_type
+        if self.walk.lambda_.policy.safety == 0:
+            # Trust the declared type without scheduling an element check.
+            return elem_contract.refine(static_type)
         self.walk.element_contracts[node] = elem_contract
         return elem_contract.refine(static_type)
 

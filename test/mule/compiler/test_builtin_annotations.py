@@ -6,6 +6,7 @@ from mule import ast
 from mule.compiler import emit_llvm
 from mule.compiler.main import compile_source
 from mule.compiler.node import CallKind, Combination
+from test.mule.compiler.rewrite_support import build_case
 from test.mule.compiler.test_annotations import contradiction_warnings
 from test.mule.compiler.test_native import run_native
 from test.mule.parser.ast_query import expect
@@ -499,3 +500,39 @@ def test_container_element_contracts_guard_elements_against_bad_inputs_and_alias
     result = run_native(tmp_path, source)
     assert result.returncode != 0
     assert "TypeError" in result.stderr
+
+
+def test_safety_zero_retains_nested_element_types_without_contract_checks(tmp_path):
+    source = """\
+from mule import int64, optimize
+
+@optimize(speed=3, safety=0, debug=0)
+def dot(data: tuple[list[list[int]], list[list[int]]]) -> int:
+    left, right = data
+    total: int64 = 0
+    for i in range(len(left)):
+        row_a = left[i]
+        row_b = right[i]
+        for k in range(len(row_a)):
+            total += row_a[k] * row_b[k]
+    return total
+
+value = int(input())
+callbacks = [dot]
+print(callbacks[0](([[value, 2], [3, 4]], [[5, 6], [7, value]])))
+"""
+    llvm = emit_llvm(source)
+    specialized = llvm.split('define internal ptr @"mule_fn_dot.spec.0"(')[1].split(
+        "\n}"
+    )[0]
+    assert "@mule_list_getitem_borrow(" in specialized
+    assert "@mule_fast_getitem(" not in specialized
+    assert "@mule_assert_" not in specialized
+
+    case = build_case(tmp_path, source, optimize=2)
+    optimized = case.function_ir(r"^mule_fn_dot\.spec\.0$")
+    assert "@mule_list_getitem_borrow(" in optimized
+    assert "@mule_fast_getitem(" not in optimized
+    assert "@mule_assert_" not in optimized
+    for value in ("3\n", "-7\n"):
+        case.compare(value)
