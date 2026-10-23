@@ -3941,8 +3941,8 @@ def _async_with(function, node):
     span = node.span
     item, rest = node.items[0], node.items[1:]
     body = list(node.body) if not rest else [replace(node, items=rest)]
-    manager, exit_, value, error, handled = (
-        function.temporary().name for _ in range(5)
+    manager, enter_, exit_, value, error, handled = (
+        function.temporary().name for _ in range(6)
     )
 
     def name(identifier):
@@ -3966,18 +3966,43 @@ def _async_with(function, node):
             name(exit_),
             ast.Attribute(name(error), "__class__", span=span),
             name(error),
-            none,
+            ast.Attribute(name(error), "__traceback__", span=span),
         ),
         span=span,
     )
     return [
         assign(name(manager), item.context),
-        assign(name(exit_), ast.Attribute(name(manager), "__aexit__", span=span)),
+        ast.Try(
+            [
+                assign(name(exit_), ast.Attribute(name(manager), "__aexit__", span=span)),
+                assign(
+                    name(enter_), ast.Attribute(name(manager), "__aenter__", span=span)
+                ),
+            ],
+            [
+                ast.ExceptionHandler(
+                    name("AttributeError"),
+                    None,
+                    [
+                        ast.Raise(
+                            call(
+                                name("TypeError"),
+                                ast.TextLiteral(
+                                    "object does not support the asynchronous context manager protocol",
+                                    span=span,
+                                ),
+                            ),
+                            span=span,
+                        )
+                    ],
+                    span=span,
+                )
+            ],
+            span=span,
+        ),
         assign(
             name(value),
-            ast.Await(
-                call(ast.Attribute(name(manager), "__aenter__", span=span)), span=span
-            ),
+            ast.Await(call(name(enter_)), span=span),
         ),
         assign(name(handled), ast.BooleanLiteral(False, span=span)),
         ast.Try(
@@ -4020,7 +4045,9 @@ def _async_for(function, node):
     """``async for``, expanded: await ``__anext__`` until it raises
     StopAsyncIteration, then run the ``else`` clause unless the body broke out."""
     span = node.span
-    iterator, value, exhausted = (function.temporary().name for _ in range(3))
+    iterable, aiter_, iterator, anext_, value, exhausted = (
+        function.temporary().name for _ in range(6)
+    )
 
     def name(identifier):
         return ast.Name(identifier, span=span)
@@ -4028,18 +4055,46 @@ def _async_for(function, node):
     def assign(target, value):
         return ast.Assignment([target], value, span=span)
 
+    def type_error(message):
+        return ast.Raise(
+            ast.Call(
+                name("TypeError"),
+                [ast.CallArgument(ast.TextLiteral(message, span=span), span=span)],
+                span=span,
+            ),
+            span=span,
+        )
+
     loop = ast.While(
         ast.BooleanLiteral(True, span=span),
         [
             ast.Try(
                 [
                     assign(
+                        name(anext_),
+                        ast.Attribute(name(iterator), "__anext__", span=span),
+                    )
+                ],
+                [
+                    ast.ExceptionHandler(
+                        name("AttributeError"),
+                        None,
+                        [
+                            type_error(
+                                "'async for' received an object from __aiter__ that does not implement __anext__"
+                            )
+                        ],
+                        span=span,
+                    )
+                ],
+                span=span,
+            ),
+            ast.Try(
+                [
+                    assign(
                         name(value),
                         ast.Await(
-                            ast.Call(
-                                ast.Attribute(name(iterator), "__anext__", span=span),
-                                span=span,
-                            ),
+                            ast.Call(name(anext_), span=span),
                             span=span,
                         ),
                     )
@@ -4065,9 +4120,31 @@ def _async_for(function, node):
         span=span,
     )
     statements = [
+        assign(name(iterable), node.iterable),
+        ast.Try(
+            [
+                assign(
+                    name(aiter_),
+                    ast.Attribute(name(iterable), "__aiter__", span=span),
+                )
+            ],
+            [
+                ast.ExceptionHandler(
+                    name("AttributeError"),
+                    None,
+                    [
+                        type_error(
+                            "'async for' requires an object with __aiter__ method"
+                        )
+                    ],
+                    span=span,
+                )
+            ],
+            span=span,
+        ),
         assign(
             name(iterator),
-            ast.Call(ast.Attribute(node.iterable, "__aiter__", span=span), span=span),
+            ast.Call(name(aiter_), span=span),
         ),
         assign(name(exhausted), ast.BooleanLiteral(False, span=span)),
         loop,

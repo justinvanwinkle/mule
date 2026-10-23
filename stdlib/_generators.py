@@ -228,6 +228,14 @@ class coroutine(generator):
     def __next__(self):
         raise TypeError("'coroutine' object is not an iterator")
 
+    def send(self, value):
+        state = coroutine_state(self._handle)
+        if state == _FINISHED:
+            raise RuntimeError("cannot reuse already awaited coroutine")
+        if state == _CREATED and value is not None:
+            raise TypeError("can't send non-None value to a just-started coroutine")
+        return self._resume(value, None)
+
     def __await__(self):
         return _CoroutineIterator(self)
 
@@ -265,10 +273,10 @@ class _CoroutineIterator:
         return self
 
     def __next__(self):
-        return generator.send(self.target, None)
+        return coroutine.send(self.target, None)
 
     def send(self, value):
-        return generator.send(self.target, value)
+        return coroutine.send(self.target, value)
 
     def throw(self, kind, value=None, traceback=None):
         return generator.throw(self.target, kind, value, traceback)
@@ -277,17 +285,96 @@ class _CoroutineIterator:
         return generator.close(self.target)
 
 
-def await_value(awaitable):
-    """``await``: delegate to the awaitable's iterator; return its result."""
+def _awaitable_iterator(awaitable):
+    if is_instance(awaitable, generator) and not is_instance(awaitable, coroutine):
+        if awaitable.gi_code.co_flags & 0x100:
+            return awaitable
     method = getattr(awaitable, "__await__", None)
     if method is None:
         raise TypeError(
             f"'{type(awaitable).__name__}' object can't be awaited"
         )
     iterator = method()
-    if isinstance(iterator, coroutine):
+    if is_instance(iterator, coroutine):
         raise TypeError("__await__() returned a coroutine")
-    return yield_from(iterator)
+    if getattr(type(iterator), "__next__", None) is None:
+        raise TypeError(
+            f"__await__() returned non-iterator of type '{type(iterator).__name__}'"
+        )
+    return iterator
+
+
+def await_value(awaitable):
+    """``await``: delegate to the awaitable's iterator; return its result."""
+    return yield_from(_awaitable_iterator(awaitable))
+
+
+def aiter(iterable, /):
+    method = getattr(type(iterable), "__aiter__", None)
+    if method is None:
+        raise TypeError(f"'{type(iterable).__name__}' object is not an async iterable")
+    iterator = method(iterable)
+    if getattr(type(iterator), "__anext__", None) is None:
+        raise TypeError(
+            f"aiter() returned not an async iterator of type '{type(iterator).__name__}'"
+        )
+    return iterator
+
+
+class _AnextAwaitable:
+    def __init__(self, awaitable, default):
+        self._awaitable = awaitable
+        self._default = default
+        self._iterator = None
+
+    def _iter(self):
+        if self._iterator is None:
+            self._iterator = _awaitable_iterator(self._awaitable)
+        return self._iterator
+
+    def __await__(self):
+        return self
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.send(None)
+
+    def send(self, value):
+        try:
+            iterator = self._iter()
+            if value is None:
+                return next(iterator)
+            return iterator.send(value)
+        except StopAsyncIteration:
+            raise StopIteration(self._default)
+
+    def throw(self, kind, value=None, traceback=None):
+        try:
+            iterator = self._iter()
+            throw = getattr(iterator, "throw", None)
+            if throw is None:
+                raise _exception(kind, value)
+            return throw(kind, value, traceback)
+        except StopAsyncIteration:
+            raise StopIteration(self._default)
+
+    def close(self):
+        if self._iterator is not None:
+            close = getattr(self._iterator, "close", None)
+            if close is not None:
+                close()
+
+
+def anext(iterator, default=_MISSING, /):
+    method = getattr(type(iterator), "__anext__", None)
+    if method is None:
+        raise TypeError(f"'{type(iterator).__name__}' object is not an async iterator")
+    awaitable = method(iterator)
+    if default is _MISSING:
+        return awaitable
+    return _AnextAwaitable(awaitable, default)
 
 
 class _AsyncGeneratorValue:
@@ -307,6 +394,8 @@ class async_generator:
 
     def __init__(self, function, arguments, name, qualname):
         self._body = generator(function, arguments, name, qualname)
+        self._running_async = False
+        self._started = False
         self.__name__ = name
         self.__qualname__ = qualname
 
@@ -314,20 +403,20 @@ class async_generator:
         return self
 
     def __anext__(self):
-        return _AsyncGeneratorStep(self._body, None, None)
+        return _AsyncGeneratorStep(self, None, None)
 
     def asend(self, value):
-        return _AsyncGeneratorStep(self._body, value, None)
+        return _AsyncGeneratorStep(self, value, None)
 
     def athrow(self, kind, value=None, traceback=None):
-        return _AsyncGeneratorStep(self._body, None, _exception(kind, value))
+        return _AsyncGeneratorStep(self, None, _exception(kind, value))
 
     def aclose(self):
-        return _AsyncGeneratorStep(self._body, None, GeneratorExit())
+        return _AsyncGeneratorStep(self, None, GeneratorExit())
 
     @property
     def ag_running(self):
-        return self._body.gi_running
+        return self._running_async or self._body.gi_running
 
     @property
     def ag_suspended(self):
@@ -354,11 +443,13 @@ class _AsyncGeneratorStep:
     the body yields a wrapped value, which completes the step, passing
     every other yielded value up to the awaiting task."""
 
-    def __init__(self, body, value, exception):
-        self.body = body
+    def __init__(self, ag, value, exception):
+        self.ag = ag
+        self.body = ag._body
         self.value = value
         self.exception = exception
-        self.closing = isinstance(exception, GeneratorExit)
+        self.closing = is_instance(exception, GeneratorExit)
+        self._state = 0
 
     def __await__(self):
         return self
@@ -370,32 +461,78 @@ class _AsyncGeneratorStep:
         return self.send(None)
 
     def send(self, value):
-        if self.exception is not None:
-            exception, self.exception = self.exception, None
-            return self._step(lambda: self.body.throw(exception))
-        if self.value is not None:
-            value, self.value = self.value, None
+        if self._state == 2:
+            raise StopIteration
+        if self._state == 0:
+            if self.ag._running_async:
+                raise RuntimeError("anext(): asynchronous generator is already running")
+            if not self.closing and not self.ag._started:
+                self.ag._started = True
+                import sys
+
+                hook = sys.get_asyncgen_hooks().firstiter
+                if hook is not None:
+                    hook(self.ag)
+            self.ag._running_async = True
+            self._state = 1
+            if self.exception is not None:
+                exception, self.exception = self.exception, None
+                return self._step(lambda: self.body.throw(exception))
+            if self.value is not None:
+                value, self.value = self.value, None
         return self._step(lambda: self.body.send(value))
 
     def throw(self, kind, value=None, traceback=None):
+        if self._state == 2:
+            raise StopIteration
         exception = _exception(kind, value)
+        if self._state == 0:
+            if self.ag._running_async:
+                raise RuntimeError("anext(): asynchronous generator is already running")
+            if not self.closing and not self.ag._started:
+                self.ag._started = True
+                import sys
+
+                hook = sys.get_asyncgen_hooks().firstiter
+                if hook is not None:
+                    hook(self.ag)
+            self.ag._running_async = True
+            self._state = 1
         return self._step(lambda: self.body.throw(exception))
 
     def close(self):
-        pass
+        if self._state == 1:
+            self.ag._running_async = False
+        self._state = 2
 
     def _step(self, resume):
         try:
             result = resume()
         except StopIteration:
+            self.ag._running_async = False
+            self._state = 2
             if self.closing:
                 raise StopIteration
             raise StopAsyncIteration
+        except StopAsyncIteration as error:
+            self.ag._running_async = False
+            self._state = 2
+            if coroutine_state(self.body._handle) == _FINISHED:
+                raise RuntimeError("async generator raised StopAsyncIteration") from error
+            raise
         except GeneratorExit:
+            self.ag._running_async = False
+            self._state = 2
             if self.closing:
                 raise StopIteration
             raise
-        if isinstance(result, _AsyncGeneratorValue):
+        except BaseException:
+            self.ag._running_async = False
+            self._state = 2
+            raise
+        if is_instance(result, _AsyncGeneratorValue):
+            self.ag._running_async = False
+            self._state = 2
             if self.closing:
                 raise RuntimeError("async generator ignored GeneratorExit")
             raise StopIteration(result.value)

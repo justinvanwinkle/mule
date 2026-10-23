@@ -665,3 +665,43 @@ def _clear_type_cache():
 
 def _clear_internal_caches():
     pass
+
+
+class _AsyncgenHooks(_StructSequence):
+    _name = "asyncgen_hooks"
+    _fields = ("firstiter", "finalizer")
+
+
+_asyncgen_hooks = _AsyncgenHooks(None, None)
+_MISSING = object()
+_coroutine_origin_tracking_depth = 0
+
+
+def get_asyncgen_hooks():
+    return _asyncgen_hooks
+
+
+def set_asyncgen_hooks(firstiter=_MISSING, finalizer=_MISSING):
+    global _asyncgen_hooks
+    if firstiter is not _MISSING and firstiter is not None and not callable(firstiter):
+        raise TypeError(f"callable firstiter expected, got {type(firstiter).__name__}")
+    if finalizer is not _MISSING and finalizer is not None and not callable(finalizer):
+        raise TypeError(f"callable finalizer expected, got {type(finalizer).__name__}")
+    current = _asyncgen_hooks
+    _asyncgen_hooks = _AsyncgenHooks(
+        current.firstiter if firstiter is _MISSING else firstiter,
+        current.finalizer if finalizer is _MISSING else finalizer,
+    )
+
+
+def get_coroutine_origin_tracking_depth():
+    return _coroutine_origin_tracking_depth
+
+
+def set_coroutine_origin_tracking_depth(depth):
+    global _coroutine_origin_tracking_depth
+    if not isinstance(depth, int):
+        raise TypeError(f"an integer is required (got type {type(depth).__name__})")
+    if depth < 0:
+        raise ValueError("depth must be >= 0")
+    _coroutine_origin_tracking_depth = depth

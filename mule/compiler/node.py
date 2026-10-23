@@ -864,6 +864,8 @@ class Lambda(Functional):
         "default_types",
         "entries",
         "environment",
+        "generator_body",
+        "generator_outer",
         "home",
         "is_protocol",
         "lets",
@@ -908,6 +910,8 @@ class Lambda(Functional):
         self.namespace = namespace
         self.code: CodeInfo | None = None
         self.coroutine_body: bool = False
+        self.generator_body: Lambda | None = None
+        self.generator_outer: Lambda | None = None
         self.owner_class: str | None = None
         # The identity of the class whose body defines this function, for
         # receiver typing; ``owner_class`` names native layouts only.

@@ -168,9 +168,14 @@ def find_cleanup_points(component: Component, converters) -> None:
 
 
 def _nested_cleanups(inner: Cleanup | None, outer: Cleanup | None):
-    """Cleanups from ``inner`` outward, stopping at ``outer``."""
+    """Cleanups from ``inner`` outward, stopping at any cleanup still enclosing ``outer``."""
+    enclosing = set()
+    cursor = outer
+    while cursor is not None:
+        enclosing.add(cursor)
+        cursor = cursor.parent
     cleanup = inner
-    while cleanup is not None and cleanup is not outer:
+    while cleanup is not None and cleanup not in enclosing:
         yield cleanup
         cleanup = cleanup.parent
 

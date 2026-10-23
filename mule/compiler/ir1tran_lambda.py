@@ -270,6 +270,8 @@ def _start_generator(function, definition, kind, start):
         qualname=function.qualname,
         body_kind=kind,
     )
+    lambda_.generator_body = inner
+    inner.generator_outer = lambda_
     ctran, created = Ctran(), Lvar()
     function.define_function(start, ctran, created, inner, body, definition.name)
     following, arguments = Ctran(), Lvar()
@@ -302,8 +304,110 @@ def _start_generator(function, definition, kind, start):
     return function.block().start
 
 
+class _MangleNames(ast.Visitor):
+    """Mangle ``__name`` private identifiers inside class scopes (CPython ``_Py_Mangle``)."""
+
+    def __init__(self):
+        self.class_name: str | None = None
+
+    def mangle(self, name: str | None) -> str | None:
+        if (
+            name is None
+            or self.class_name is None
+            or not name.startswith("__")
+            or name.endswith("__")
+            or "." in name
+        ):
+            return name
+        prefix = self.class_name.lstrip("_")
+        if not prefix:
+            return name
+        return f"_{prefix}{name}"
+
+    def visit_Node(self, node):
+        for child in node.children():
+            child.accept(self)
+
+    def visit_Name(self, node: ast.Name):
+        node.identifier = self.mangle(node.identifier)
+
+    def visit_Attribute(self, node: ast.Attribute):
+        node.value.accept(self)
+        node.attribute = self.mangle(node.attribute)
+
+    def visit_Parameter(self, node: ast.Parameter):
+        node.name = self.mangle(node.name)
+        self.visit_Node(node)
+
+    def visit_Global(self, node: ast.Global):
+        node.identifiers = [self.mangle(name) for name in node.identifiers]
+
+    def visit_Nonlocal(self, node: ast.Nonlocal):
+        node.identifiers = [self.mangle(name) for name in node.identifiers]
+
+    def visit_ExceptionHandler(self, node: ast.ExceptionHandler):
+        node.binding = self.mangle(node.binding)
+        self.visit_Node(node)
+
+    def visit_ImportItem(self, node: ast.ImportItem):
+        if node.alias is not None:
+            node.alias = self.mangle(node.alias)
+        elif "." not in node.name:
+            mangled = self.mangle(node.name)
+            if mangled != node.name:
+                node.alias = mangled
+
+    def visit_TypeParameter(self, node: ast.TypeParameter):
+        node.name = self.mangle(node.name)
+        self.visit_Node(node)
+
+    def visit_TypeAlias(self, node: ast.TypeAlias):
+        node.name = self.mangle(node.name)
+        self.visit_Node(node)
+
+    def visit_CapturePattern(self, node: ast.CapturePattern):
+        node.name = self.mangle(node.name)
+
+    def visit_StarPattern(self, node: ast.StarPattern):
+        node.name = self.mangle(node.name)
+
+    def visit_MappingPattern(self, node: ast.MappingPattern):
+        node.rest = self.mangle(node.rest)
+        self.visit_Node(node)
+
+    def visit_KeywordPattern(self, node: ast.KeywordPattern):
+        node.name = self.mangle(node.name)
+        self.visit_Node(node)
+
+    def visit_AsPattern(self, node: ast.AsPattern):
+        node.name = self.mangle(node.name)
+        self.visit_Node(node)
+
+    def visit_FunctionDefinition(self, node: ast.FunctionDefinition):
+        node.name = self.mangle(node.name)
+        self.visit_Node(node)
+
+    def visit_ClassDefinition(self, node: ast.ClassDefinition):
+        for decorator in node.decorators:
+            decorator.accept(self)
+        for type_parameter in node.type_parameters:
+            type_parameter.accept(self)
+        for argument in node.arguments:
+            argument.accept(self)
+        raw_name = node.name
+        node.name = self.mangle(node.name)
+        saved = self.class_name
+        self.class_name = raw_name
+        try:
+            for statement in node.body:
+                statement.accept(self)
+        finally:
+            self.class_name = saved
+
+
 def convert_module(converter: Converter, tree: ast.Module) -> Lambda:
     """Convert the module body into the top-level lambda executed at load."""
+    tree.accept(_MangleNames())
     entry = Lambda(
         f"{converter.prefix}mule_module",
         None,

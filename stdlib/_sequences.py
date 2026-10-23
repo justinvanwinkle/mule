@@ -30,6 +30,7 @@ from _attributes import delattr, getattr, hasattr, setattr
 from _descriptors import classmethod, property, staticmethod, super
 from _generators import generator as _generator
 from _generators import yield_from as _yield_from
+from _generators import aiter, anext
 from _generators import async_generator as _async_generator
 from _generators import async_generator_yield as _async_generator_yield
 from _generators import await_value as _await_value
@@ -3821,6 +3822,8 @@ _install_builtin("range", range)
 _install_builtin("enumerate", enumerate)
 _install_builtin("iter", iter)
 _install_builtin("next", next)
+_install_builtin("aiter", aiter)
+_install_builtin("anext", anext)
 _install_builtin("list", list)
 _install_builtin("tuple", tuple)
 _install_builtin("chr", chr)

@@ -1119,6 +1119,8 @@ class ModuleGenerator:
     def code_descriptor(self, lambda_: Lambda) -> str:
         """The constant code metadata (the runtime's ``CodeInfo``) that
         traceback entries for ``lambda_`` refer to."""
+        if lambda_.generator_outer is not None:
+            return self.code_descriptor(lambda_.generator_outer)
         symbol = _suffixed(_symbol(lambda_.name), ".code")
         if symbol not in self.code_descriptors:
             code = self.code(lambda_)
@@ -1137,11 +1139,14 @@ class ModuleGenerator:
 
     def code_metadata(self, lambda_: Lambda) -> ast.Tuple:
         """Immutable Python introspection facts, from the existing IR signature."""
+        if lambda_.generator_outer is not None:
+            return self.code_metadata(lambda_.generator_outer)
         code = self.code(lambda_)
         signature = lambda_.signature
         parameters = lambda_.parameters
         kinds = signature.kinds
-        closed = self.closed_variables.get(lambda_, set())
+        body = lambda_.generator_body or lambda_
+        closed = self.closed_variables.get(body, set())
         positional_kinds = (
             ast.ParameterKind.POSITIONAL_ONLY,
             ast.ParameterKind.POSITIONAL_OR_KEYWORD,
@@ -1162,7 +1167,7 @@ class ModuleGenerator:
         names = [parameters[index] for index in order]
         names += [
             var.name
-            for var in lambda_.locals
+            for var in body.locals
             if var.name not in parameters
             and not var.name.startswith("$")
             and var not in closed

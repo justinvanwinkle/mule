@@ -2382,6 +2382,7 @@ class function(object):
                     raise NotImplementedError("changing native execution flags is not implemented")
             elif before != after:
                 raise NotImplementedError("changing native code layout or debug metadata is not implemented")
+        set_code_cache(self, value)
         namespace_bind(function_attributes(self), "__code__", value)
 
     @property
