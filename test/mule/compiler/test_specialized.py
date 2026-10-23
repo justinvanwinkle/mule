@@ -361,6 +361,16 @@ def test_known_fixnum_kernel_executes_machine_arithmetic(tmp_path, optimize, lto
             ),
             "7 3.5\n",
         ),
+        (
+            (
+                "def shrink(xs):\n"
+                " if len(xs) <= 1:\n"
+                "  return list(xs)\n"
+                " return [xs[0]] + shrink(list(xs[1:]))\n"
+                "print(shrink('abc'))\n"
+            ),
+            "['a', 'b', 'c']\n",
+        ),
     ],
     ids=[
         "parameter-numeric-kinds",
@@ -376,6 +386,7 @@ def test_known_fixnum_kernel_executes_machine_arithmetic(tmp_path, optimize, lto
         "return-type-through-local-call",
         "global-rebind-changes-return-representation",
         "callable-parameter-general-path",
+        "recursive-mixed-sequence-domains",
     ],
 )
 def test_specialized_parameter_behavior(tmp_path, source, expected):

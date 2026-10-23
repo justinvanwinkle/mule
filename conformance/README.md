@@ -8,11 +8,11 @@ interpreter prints.
 
 | Directory | Covers |
 | --- | --- |
-| `numbers/` | Integer, bigint, float, complex and bool arithmetic, conversions, rounding, precedence |
-| `strings/` | `str`, `bytes` and `bytearray` methods, Unicode, slicing, `%`, `str.format`, f-strings, format specs, t-strings |
-| `containers/` | Lists, tuples, dicts, sets, slicing, unpacking, starred displays, comprehensions, copying |
-| `builtins/` | Iteration builtins, `range`, numeric and attribute builtins, `print`, `repr`, hashing, `memoryview` |
-| `control_flow/` | Branches, loops with `else`, cleanup ordering, assignment evaluation order, walrus, every `match` pattern kind |
+| `numbers/` | Integer, bigint, float, complex and bool arithmetic, conversions, rounding, precedence, numeric descriptors and subclasses |
+| `strings/` | `str`, `bytes` and `bytearray` methods, descriptors, subclasses, Unicode, slicing, `%`, `str.format`, f-strings, format specs, t-strings |
+| `containers/` | Lists, tuples, dicts, dict views, sets, frozensets, descriptors, subclasses, slicing, unpacking, starred displays, comprehensions, copying |
+| `builtins/` | `object` and `type` descriptors, iteration builtins, `range`, `slice`, numeric and attribute builtins, `print`, `repr`, hashing, `memoryview` |
+| `control_flow/` | Branches, `for` loops over builtin iterables, loops with `else`, cleanup ordering, assignment evaluation order, walrus, every `match` pattern kind |
 | `scoping/` | LEGB, `global`/`nonlocal`, class-body scope, `del`, exception-variable unbinding, `eval`/`exec`, PEP 695 scopes |
 | `functions/` | Parameter kinds, binding errors, call unpacking, closures, decorators, introspection, annotations, generics |
 | `generators/` | `send`/`throw`/`close`, `yield from`, PEP 479, generator expressions, cleanup |

@@ -14,46 +14,104 @@ SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`),
 together with the SBCL source references, Python semantic adaptations, and
 staged implementation plan for each area.
 
-## Builtin-type conformance coverage (known gap)
+## Builtin-type conformance coverage (partially implemented)
 
-Status: incomplete coverage; the systematic coverage work below is not implemented.
+Status: initial focused conformance programs for `object`, `type`, `bool`, `int`,
+`float`, `complex`, `str`, `bytes`, `bytearray`, `memoryview`, `list`, `tuple`,
+`dict` (including views), `set`, `frozenset`, `range`, `slice`, and `for`-loop
+iteration are in place and recorded in `conformance/gaps.toml`; full method-by-method
+CPython 3.14 parity and remaining runtime descriptor fixes remain open.
 
-The conformance suite contains useful builtin, container, and protocol programs,
-but it does not establish complete conformance for builtin types. Coverage needs
-an explicit inventory of builtin types and their exposed methods and protocols,
-not only programs that happen to exercise common operations. For example,
-`conformance/containers/list_methods.py` exercises ordinary list operations, while
-`conformance/builtins/type_and_len.py` exercises custom-object length protocols.
-Neither establishes the complete `list` descriptor and subclass contract.
+The conformance suite contains builtin, container, and protocol programs, and now
+separates passing core type/descriptor/subclass cases from isolated runtime gaps:
 
-The runtime failures found in `perf/suite/dataclass_ast.py` exposed this gap:
+- **Passing focused conformance cases**:
+  - `conformance/control_flow/for_loops.py`: `for`-loop iteration over `list`,
+    `tuple`, `str`, `bytes`, `bytearray`, `dict`, `dict.keys()`, `dict.values()`,
+    `dict.items()`, `set`, `frozenset`, `range`, `enumerate`, `zip`, `reversed`,
+    `map`, `filter`, custom `__iter__`/`__next__`, sequence `__getitem__`
+    iteration, nested/starred unpacking targets, `break`/`continue`/`else`, and
+    non-iterable `TypeError`.
+  - `conformance/builtins/object_type_descriptors.py`: `object` and `type`
+    construction, dynamic `type(name, bases, namespace)` class creation,
+    `object.__eq__`/`__ne__` (including `NotImplemented` fallback),
+    `object.__getattribute__`/`__setattr__`/`__delattr__`, `type.mro`,
+    `type.__subclasses__`, `type.__getattribute__`/`__setattr__`/`__delattr__`,
+    and receiver `TypeError`s.
+  - `conformance/builtins/range_slice_basics.py`: `range` and `slice`
+    constructors, `start`/`stop`/`step` attributes, `len(range)`, indexing,
+    slicing, membership, sequence slicing with explicit `slice` objects, and
+    error checks (`ValueError` on zero step, `IndexError` on out-of-range index,
+    `TypeError` on `hash(slice)`).
+  - `conformance/numbers/int_bool_descriptors.py`: `int` and `bool` constructors,
+    base parsing, `bit_length`, `to_bytes`/`from_bytes`, numeric properties,
+    explicit descriptor calls (`int.__int__`, `int.__index__`, `int.__float__`,
+    `int.__round__`, `int.__divmod__`, `int.__repr__`, `bool.__repr__`),
+    `int` subclass inheritance/overrides, and receiver `TypeError`s.
+  - `conformance/numbers/float_descriptors.py`: `float` constructors, arithmetic,
+    `is_integer`, `as_integer_ratio`, `hex`, numeric properties, explicit
+    descriptor calls (`float.__int__`, `float.__float__`, `float.__round__`,
+    `float.__divmod__`, `float.is_integer`, `float.as_integer_ratio`,
+    `float.hex`), `float` subclassing, and receiver `TypeError`s.
+  - `conformance/strings/str_descriptors.py`: `str` constructors, indexing,
+    slicing, concatenation, repetition, comparisons, `in`, explicit descriptor
+    calls (`str.__len__`, `str.__getitem__`, `str.__contains__`, `str.upper`,
+    `str.lower`, `str.strip`, `str.split`, `str.join`, `str.replace`,
+    `str.startswith`, `str.endswith`, `str.find`, `str.count`, `str.encode`),
+    `str` subclass overrides vs base descriptor calls, and receiver `TypeError`s.
+  - `conformance/strings/bytes_bytearray_memoryview.py`: `bytes`, `bytearray`,
+    and `memoryview` constructors, indexing, slicing, methods, in-place
+    `bytearray` and writable `memoryview` mutation, subclassing, and `ValueError`
+    range checks.
+  - `conformance/containers/list_tuple_descriptors.py`: `list` and `tuple`
+    constructors, indexing, slicing, methods, explicit base-descriptor calls
+    (`list.__len__`, `list.__getitem__`, `list.__setitem__`, `list.__delitem__`,
+    `list.append`, `list.extend`, `list.insert`, `list.pop`, `list.remove`,
+    `list.reverse`, `list.sort`, `list.count`, `list.index`, `list.copy`,
+    `list.clear`, `tuple.__len__`, `tuple.__getitem__`, `tuple.count`,
+    `tuple.index`), `list`/`tuple` subclass overrides vs base descriptor calls,
+    and receiver `TypeError`s.
+  - `conformance/containers/dict_set_descriptors.py`: `dict`, `dict_keys`,
+    `dict_values`, `dict_items`, `set`, and `frozenset` constructors, views,
+    set algebra, explicit descriptor calls, `dict` subclass `__missing__` and
+    `__getitem__` overrides vs `dict.__getitem__`, `set` subclassing, and
+    `KeyError`/unhashable `TypeError` checks.
+- **Isolated builtin-type conformance gaps recorded in `conformance/gaps.toml`**:
+  - `conformance/classes/builtin_subclass_len_override.py`: builtin `len(sub)` on
+    `list` and `str` subclasses currently takes the `mule_fast_len` storage fast
+    path instead of consulting a subclass `__len__` override (`sub.__len__()` and
+    `Base.__len__(sub)` already distinguish override vs storage length).
+  - `conformance/numbers/complex_descriptors.py`: `complex.__repr__` formats
+    integral float components with `.0` (`(3.0-4.0j)` instead of `(3-4j)`), and
+    `complex.conjugate(1.0)` raises `AttributeError` instead of `TypeError`.
+  - `conformance/strings/bytes_bytearray_descriptors.py`: `BytesStorage` (`bytes`)
+    does not yet expose `bytes.__len__` or ASCII case methods (`upper`, `lower`)
+    as class descriptors, and `bytes`/`bytearray` descriptors do not validate
+    receiver types with `TypeError`.
+  - `conformance/containers/dict_set_receiver_errors.py`: explicit `dict`, `set`,
+    and `frozenset` descriptor calls (`dict.__len__([])`, `set.add([], 1)`) raise
+    `AttributeError` on internal table fields instead of `TypeError` when given a
+    non-instance receiver.
+  - Broader method-completeness files (`conformance/numbers/int_methods.py`,
+    `conformance/numbers/float_methods.py`, `conformance/builtins/range_objects.py`,
+    `conformance/classes/builtin_subclasses.py`) remain recorded gaps for
+    `int.bit_count` / `int.as_integer_ratio` / `int.is_integer`, `float.fromhex`,
+    `range.count` / `range.index` / `range.__eq__` / `range.__repr__`, and
+    `str.format_map` / `tuple.__new__`.
 
-- Mule's compiled list implementation lacked `list.__len__`, although ordinary
-  builtin `len(list_value)` worked. Sequence-pattern lowering called the missing
-  method on its materialized list and raised `AttributeError`.
-- Investigation also found that builtin `len()` bypasses an overriding
-  `__len__` on a list subclass through the Rust `mule_fast_len` storage path.
-  This is a separate unresolved defect. Adding the missing base descriptor does
-  not fix it. The explicit base call `list.__len__(instance)` must return the
-  storage length, while `len(instance)` must honor the subclass override.
+Remaining coverage and implementation work:
 
-Required coverage work:
-
-1. Inventory builtin types and exposed operations against the Python 3.14 oracle.
-   Record which contracts have executable conformance cases and which remain gaps.
-2. Test syntax and builtin dispatch separately from bound method calls and explicit
-   base-descriptor calls. Include builtin subclasses, inherited methods, overrides,
-   invalid receivers, argument errors, empty values, and relevant mutation effects.
-3. Compare observable results, exception classes, and evaluation effects with
-   CPython. Do not treat the presence of a method or successful compilation as
-   evidence that its semantics conform.
-4. Keep cases focused so an unsupported feature cannot hide unrelated builtin
-   coverage. Record remaining failures through the existing conformance-gap
-   mechanism. Focused compiler regressions supplement this matrix; they do not
-   establish that the rest of a builtin type conforms.
-
-This is a verification gap as well as an implementation gap. Passing the existing
-tests or a benchmark does not establish complete builtin-type compatibility.
+1. Expand method-by-method and operator-dunder conformance cases across remaining
+   builtin types against the Python 3.14 oracle.
+2. Fix the isolated runtime gaps above (`len()` on `list`/`str` subclasses,
+   `bytes.__len__` and ASCII case methods, receiver type validation on `complex` /
+   `bytes` / `bytearray` / `dict` / `set` / `frozenset` descriptors, `range`
+   methods/equality/repr, `int.bit_count`/`as_integer_ratio`/`is_integer`, and
+   `float.fromhex`).
+3. Keep cases focused so an unsupported feature cannot hide unrelated builtin
+   coverage, and regenerate `conformance/gaps.toml` via
+   `uv run python -m tools.record_conformance_gaps` whenever compiler or stdlib
+   changes land.
 
 ## 0. High-impact architectural parity gaps from the 14-workload suite audit (proposed)
 
