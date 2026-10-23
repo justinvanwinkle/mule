@@ -29,7 +29,7 @@ from mule import ast
 
 from . import vops
 from .annotation_types import EXPORTS, ContractVisitor
-from .ctype import UNKNOWN
+from .ctype import BOTTOM, UNKNOWN
 from .ir1util import block_exception_target
 from .ltn import primitive_type_of
 from .node import (
@@ -103,27 +103,37 @@ def select_representations(component: IR2Component) -> None:
 
 
 def _variable_type(tn, component, writes) -> PrimitiveType:
-    """Preserve float storage candidates or the union of immortal writers."""
+    """Derive a local variable TN's primitive type from its writers."""
     context = component.context
+    value_type = BOTTOM
     written_types = set()
     for vop, _ref in writes.get(tn, ()):
         name = vop.info.name
         if name == "move":
-            written = vop.args[0].tn.primitive_type
+            source = vop.args[0].tn
+            written = source.primitive_type
+            written_value = source.type or UNKNOWN
         elif name == "move-argument":
-            written = primitive_type_of(context.parameters[vop.codegen_info])
+            written_value = context.parameters[vop.codegen_info]
+            written = primitive_type_of(written_value)
         elif name == "load-closure":
             written = tn.primitive_type
+            written_value = tn.type or UNKNOWN
         elif name == "unbind-local":
             continue
         else:
             written = T
+            written_value = UNKNOWN
         written_types.add(written)
+        value_type = value_type.join(written_value)
+    joined_ptype = primitive_type_of(value_type)
+    if joined_ptype.boxed_layout is not None:
+        return joined_ptype
     if len(written_types) == 1:
         written = next(iter(written_types))
         if written.boxed_layout is not None:
             return written
-    if written_types.issubset(IMMORTAL_TYPES):
+    if joined_ptype in IMMORTAL_TYPES or written_types.issubset(IMMORTAL_TYPES):
         return IMMORTAL_T
     return T
 

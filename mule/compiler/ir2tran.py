@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from .annotation_types import Contract
 from .ctype import (
     BOOLEAN,
+    BOTTOM,
     NONE_TYPE,
     PYTHON_INTEGER,
     TEXT_TYPE,
@@ -46,7 +47,7 @@ from .ctype import (
     ValueType,
 )
 from .ir1util import block_exception_target, made_lambda
-from .ltn import EntryContext, primitive_type_of
+from .ltn import EntryContext, primitive_type_of, template_results_ok
 from .node import (
     Bind,
     CallKind,
@@ -2373,8 +2374,10 @@ class _Converter(NodeVisitor):
             raise ValueError(f"{lvar!r} is a compile-time operand")
         if not info.locs:
             tn = self.component.tn(info.primitive_type)
-            uses = lvar.uses
-            tn.type = self.context.type_of(uses[0]) if len(uses) == 1 else UNKNOWN
+            value_type = BOTTOM
+            for producer in lvar.uses:
+                value_type = value_type.join(self.context.type_of(producer))
+            tn.type = value_type
             info.locs.append(tn)
         return info.locs[0]
 
@@ -2644,11 +2647,44 @@ class _Converter(NodeVisitor):
         store_var.node = None
 
     def visit_Cast(self, node: Cast):
+        operand = self.lvar_tn(node.value)
+        actual = operand.type or UNKNOWN
+        checked = (
+            node.type_check
+            and bool(node.safety)
+            and not actual.fits(node.contract.checked_type)
+        )
+        if (
+            not checked
+            and self.context.plan is None
+            and node.lvar is not None
+            and len(node.lvar.uses) == 1
+            and not node.lvar.info.locs
+            and operand.leaf is None
+            and node not in self.context.element_contracts
+        ):
+            target_type = self.context.type_of(node)
+            target_ptype = node.lvar.info.primitive_type
+            if actual.fits(target_type) and operand.primitive_type is target_ptype:
+                node.lvar.info.locs.append(operand)
+                return
+            writes = self.component.writes.get(operand, ())
+            if (
+                (not target_type.is_fixnum or actual.is_fixnum)
+                and len(writes) == 1
+                and not self.component.reads.get(operand)
+                and writes[0][0].info.translate is not None
+                and template_results_ok(writes[0][0].info, target_ptype)
+            ):
+                operand.type = target_type
+                operand.primitive_type = target_ptype
+                node.lvar.info.locs.append(operand)
+                return
         result, discard = self.result_tn(node)
         self.emit(
             vops.TYPE_CHECK,
             node,
-            args=(self.lvar_tn(node.value),),
+            args=(operand,),
             results=(result,),
             info=TypeCheck(
                 node.contract, node.location, node.safety if node.type_check else 0

@@ -374,4 +374,5 @@ __all__ = [
     "find_template_for_ltn_policy",
     "ltn_analyze",
     "primitive_type_of",
+    "template_results_ok",
 ]
