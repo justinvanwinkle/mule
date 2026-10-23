@@ -3653,7 +3653,7 @@ class _ArgumentGuard(ValueTypeVisitor):
                 f"call i32 @mule_tuple_shape_matches(ptr {self.value}, i64 {arity})"
             )
             valid = self.gen.operation(f"icmp ne i32 {matched}, 0")
-        if not fact.elements:
+        if not fact.elements or all(element is UNKNOWN for element in fact.elements):
             return valid
         start = self.gen.fresh("guard.tuple.start")[1:]
         fields = self.gen.fresh("guard.tuple.fields")[1:]
@@ -4982,6 +4982,23 @@ class FunctionGenerator:
             result = self.operation(f"call ptr @mule_storage_pop(ptr {receiver})")
             self.release(receiver)
             return result
+        if info.exact_dict_get:
+            owned_receiver = (
+                receiver if self.owns_reference(receiver) else self.retain(receiver)
+            )
+            key = arguments[0]
+            owned_key = key if self.owns_reference(key) else self.retain(key)
+            if len(arguments) >= 2:
+                default = arguments[1]
+                owned_default = (
+                    default if self.owns_reference(default) else self.retain(default)
+                )
+            else:
+                self.immortal_values.add("@mule.none")
+                owned_default = "@mule.none"
+            return self.sequence_call(
+                "dict_get", [owned_receiver, owned_key, owned_default]
+            )
         if info.exact_text_find:
             sub = arguments[0]
             start = arguments[1] if len(arguments) >= 2 else "@mule.none"

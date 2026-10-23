@@ -5916,10 +5916,61 @@ class _StaticDecoratorBinding(ast.Visitor):
         return node.function.accept(_StaticAnnotationReference(self.converter))
 
 
+class _BaseClassName(ast.Visitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Name(self, node: ast.Name):
+        return node.identifier
+
+
+_BASE_CLASS_NAME = _BaseClassName()
+
+
+class _DefinesNew(ast.Visitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_FunctionDefinition(self, node: ast.FunctionDefinition):
+        return node.name == "__new__"
+
+
+_DEFINES_NEW = _DefinesNew()
+
+
+class _ClassHierarchyScan(ast.Visitor):
+    def __init__(self):
+        self.subclassed_names: set[str] = set()
+        self.has_dynamic_base: bool = False
+
+    def visit_Node(self, node):
+        for child in node.children():
+            child.accept(self)
+
+    def visit_ClassDefinition(self, node: ast.ClassDefinition):
+        for arg in node.arguments:
+            if arg.kind == ast.ArgumentKind.POSITIONAL:
+                base_name = arg.value.accept(_BASE_CLASS_NAME)
+                if base_name is not None:
+                    self.subclassed_names.add(base_name)
+                else:
+                    self.has_dynamic_base = True
+            elif arg.kind == ast.ArgumentKind.STARRED:
+                self.has_dynamic_base = True
+        for child in node.body:
+            child.accept(self)
+
+
 class _TopLevelDeclaredClasses(ast.Visitor):
-    def __init__(self, converter: Converter, shadows: _AnnotationShadows):
+    def __init__(
+        self,
+        converter: Converter,
+        shadows: _AnnotationShadows,
+        hierarchy: _ClassHierarchyScan,
+    ):
         self.converter = converter
         self.shadows = shadows
+        self.hierarchy = hierarchy
 
     def visit_Node(self, node):
         pass
@@ -5929,6 +5980,9 @@ class _TopLevelDeclaredClasses(ast.Visitor):
             node.type_parameters
             or "*" in self.shadows.names
             or self.shadows.counts.get(node.name, 0) != 1
+            or self.hierarchy.has_dynamic_base
+            or node.name in self.hierarchy.subclassed_names
+            or any(stmt.accept(_DEFINES_NEW) for stmt in node.body)
             or any(
                 decorator.accept(
                     _StaticDecoratorBinding(self.converter)
@@ -5974,7 +6028,10 @@ class _AnnotationShadows(_ImportNames):
     def register_declared_classes(
         self, converter: Converter, statements: list[ast.Statement]
     ) -> None:
-        registrar = _TopLevelDeclaredClasses(converter, self)
+        hierarchy = _ClassHierarchyScan()
+        for statement in statements:
+            statement.accept(hierarchy)
+        registrar = _TopLevelDeclaredClasses(converter, self, hierarchy)
         for statement in statements:
             statement.accept(registrar)
 

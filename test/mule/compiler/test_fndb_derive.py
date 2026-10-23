@@ -353,3 +353,23 @@ def test_entry_context_runs_specialized_ir1_transforms_without_mutating_general(
     gen_body = llvm[gen_start:gen_end]
     assert "mule.fast.binary" in gen_body
     assert "@mule.call.1" in gen_body
+
+
+def test_annotated_dict_get_and_list_element_borrow_specialize_in_ir2():
+    from mule.compiler import emit_llvm
+
+    source = (
+        "def dot_and_lookup(xs: list[int], ys: list[int], counts: dict[str, int], k: str) -> int:\n"
+        " total = 0\n"
+        " for i in range(len(xs)):\n"
+        "  total += xs[i] * ys[i]\n"
+        " return total + counts.get(k, 0)\n"
+    )
+    llvm = emit_llvm(source)
+    body_start = llvm.index('define internal ptr @"mule_fn_dot_and_lookup.spec.0"')
+    body_end = llvm.index("\n}", body_start)
+    body = llvm[body_start:body_end]
+    assert '@"mule.protocol.dict_get"' in body
+    assert "@mule_resolve_method" not in body
+    assert "@mule_list_getitem_borrow" in body
+    assert "@mule_list_getitem(" not in body

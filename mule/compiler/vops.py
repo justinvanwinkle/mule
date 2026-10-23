@@ -458,13 +458,15 @@ class _ContractAssertion:
         bits = gen.operation(f"ptrtoint ptr {self.value} to i64")
         tag = gen.operation(f"and i64 {bits}, 1")
         fixnum = gen.operation(f"icmp ne i64 {tag}, 0")
+        non_fixnum = gen.fresh("integer.non_fixnum")[1:]
+        integer = gen.fresh("integer.check")[1:]
+        done = gen.fresh("integer.checked")[1:]
+        gen.line(f"br i1 {fixnum}, label %{done}, label %{non_fixnum}")
+        gen.lines.append(non_fixnum + ":")
         true = gen.operation(f"icmp eq ptr {self.value}, @mule.true")
         false = gen.operation(f"icmp eq ptr {self.value}, @mule.false")
         boolean = gen.operation(f"or i1 {true}, {false}")
-        immediate = gen.operation(f"or i1 {fixnum}, {boolean}")
-        integer = gen.fresh("integer.check")[1:]
-        done = gen.fresh("integer.checked")[1:]
-        gen.line(f"br i1 {immediate}, label %{done}, label %{integer}")
+        gen.line(f"br i1 {boolean}, label %{done}, label %{integer}")
         gen.lines.append(integer + ":")
         status = gen.operation(
             f"call i32 @mule_assert_integer(ptr {self.value}, ptr null, "
@@ -538,11 +540,13 @@ class _UnpackedResultPredicate(ValueTypeVisitor):
         raise TypeError(f"unsupported unpacked return contract {fact!r}")
 
     def visit_TupleType(self, fact):
-        if not fact.elements:
+        if not fact.elements or all(element is UNKNOWN for element in fact.elements):
             return "true"
         gen = self.assertion.gen
         predicates = []
         for index, element in enumerate(fact.elements):
+            if element is UNKNOWN:
+                continue
             slot = gen.operation(
                 f"getelementptr ptr, ptr {self.assertion.value}, i64 {index}"
             )
@@ -694,7 +698,7 @@ class _InferredResultPredicate(ValueTypeVisitor):
                 f"call i32 @mule_tuple_shape_matches(ptr {self.value}, i64 {arity})"
             )
             valid = self.gen.operation(f"icmp ne i32 {matched}, 0")
-        if not fact.elements:
+        if not fact.elements or all(element is UNKNOWN for element in fact.elements):
             return valid
         source = self.gen.current_block()
         fields = self.gen.fresh("return.tuple.fields")[1:]
@@ -703,6 +707,8 @@ class _InferredResultPredicate(ValueTypeVisitor):
         self.gen.lines.append(fields + ":")
         predicates = []
         for index, element in enumerate(fact.elements):
+            if element is UNKNOWN:
+                continue
             item = self.gen.operation(
                 f"call ptr @mule_tuple_borrow_item(ptr {self.value}, i64 {index})"
             )

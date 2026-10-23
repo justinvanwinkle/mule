@@ -975,8 +975,9 @@ def _update_class_field_types(
                 cur_type = class_facts[recv_cls].fields.get(field_name, BOTTOM)
                 if cur_type is not BOTTOM:
                     stored_type = cur_type
-            prev = direct_stores[recv_cls].get(field_name, BOTTOM)
-            direct_stores[recv_cls][field_name] = prev.join(stored_type)
+            if stored_type is not UNKNOWN:
+                prev = direct_stores[recv_cls].get(field_name, BOTTOM)
+                direct_stores[recv_cls][field_name] = prev.join(stored_type)
         if (
             found_context
             and not saw_typed_receiver
