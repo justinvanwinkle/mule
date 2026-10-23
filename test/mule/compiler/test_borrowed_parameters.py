@@ -184,3 +184,30 @@ globals()['choose'] = replacement
 print(caller(marker), marker)
 """,
     )
+
+
+def test_exact_dict_protocols_borrow_rooted_operands_and_preserve_lifetimes(tmp_path):
+    source = """
+def update_word(word):
+    counts = {"alpha": 1}
+    if word in counts:
+        counts[word] = counts[word] + 1
+    else:
+        counts[word] = counts.get(word, 0) + 1
+    return counts[word]
+"""
+    llvm = emit_llvm(source)
+    body = function_body(llvm, '"mule_fn_update_word.body"')
+    assert 'call ptr @"mule.protocol.dict_contains"' in body
+    assert 'call ptr @"mule.protocol.dict_getitem"' in body
+    assert 'call ptr @"mule.protocol.dict_get"' in body
+    assert 'call ptr @"mule.protocol.dict_setitem"' in body
+    assert "@mule.fast.retain" not in body
+    compare(
+        tmp_path,
+        source
+        + """
+for item in ["alpha", "beta"]:
+    print(update_word(item))
+""",
+    )

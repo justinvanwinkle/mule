@@ -1921,7 +1921,10 @@ class _Walk:
                 if global_constants is not None
                 else UNKNOWN
             )
-            if (target := global_targets.get(name)) is not None:
+            target = global_targets.get(name)
+            if target is None and imported_targets is not None:
+                target = imported_targets.get(name)
+            if target is not None:
                 invalidated_globals[(_GLOBAL, name)] = Fact(
                     const_type
                     if const_type is not UNKNOWN

@@ -181,6 +181,26 @@ _NON_INTEGER_FIRST_PRIMITIVES = frozenset(
     }
 )
 
+_BORROWED_PRIMITIVE_ARGS = {
+    "_tuple_storage": frozenset({0}),
+    "_text_storage": frozenset({0}),
+    "_storage_compatible": frozenset({0, 1}),
+    "_class_is_subclass": frozenset({0, 1}),
+    "_storage_length": frozenset({0}),
+    "_text_length": frozenset({0}),
+    "_text_codepoint": frozenset({0, 1}),
+    "_integer_storage": frozenset({0}),
+    "_storage_hash": frozenset({0}),
+    "_identity_hash": frozenset({0}),
+    "_text_character": frozenset({0, 1}),
+    "_text_slice": frozenset({0, 1, 2}),
+    "_type_name": frozenset({0}),
+    "_storage_read": frozenset({0, 1}),
+    "_storage_write": frozenset({0, 1}),
+    "_storage_append": frozenset({0}),
+    "_storage_delete": frozenset({0, 1}),
+}
+
 PRIMITIVES = {
     name: defknown(
         name,
@@ -189,6 +209,7 @@ PRIMITIVES = {
             name,
             (lambda node: TEXT_TYPE) if name in _COMPILED_CALLS else None,
         ),
+        borrowed_args=_BORROWED_PRIMITIVE_ARGS.get(name, frozenset()),
         non_integer_first_arg=(name in _NON_INTEGER_FIRST_PRIMITIVES),
     )
     for name in _EMITTERS

@@ -217,9 +217,9 @@ declare i32 @mule_check_args(ptr, i32)
 declare i32 @mule_assert_integer(ptr, ptr, ptr, ptr)
 declare i32 @mule_assert_float(ptr, ptr)
 declare i32 @mule_assert_real(ptr, ptr)
-declare i32 @mule_value_kind(ptr)
+declare i32 @mule_value_kind(ptr) nounwind willreturn memory(read)
 declare i32 @mule_integer_in_bounds(ptr, ptr, ptr)
-declare ptr @mule_tuple_borrow_item(ptr, i64)
+declare ptr @mule_tuple_borrow_item(ptr, i64) nounwind willreturn memory(read)
 declare i32 @mule_inferred_return_error(ptr)
 declare ptr @mule_arg(ptr, i32)
 declare ptr @mule_retain(ptr returned)
@@ -266,9 +266,9 @@ declare ptr @mule_storage_delete(ptr, ptr, ptr)
 declare ptr @mule_storage_pop(ptr)
 declare ptr @mule_storage_tuple(ptr)
 declare ptr @mule_tuple_storage(ptr)
-declare i32 @mule_tuple_shape_matches(ptr, i64)
-declare i32 @mule_list_shape_matches(ptr, i64)
-declare i32 @mule_exact_list(ptr)
+declare i32 @mule_tuple_shape_matches(ptr, i64) nounwind willreturn memory(read)
+declare i32 @mule_list_shape_matches(ptr, i64) nounwind willreturn memory(read)
+declare i32 @mule_exact_list(ptr) nounwind willreturn memory(read)
 declare nonnull ptr @mule_tuple_slot(ptr, i64)
 declare ptr @mule_storage_compatible(ptr, ptr)
 declare ptr @mule_integer_storage(ptr)
@@ -426,6 +426,16 @@ class Program:
 # Every protocol (``$mule.*`` compilation namespaces) runs under the one
 # protocol globals namespace, so their cells are keyed by it.
 PROTOCOL_NAMESPACE = "$mule.protocols"
+
+_BORROWED_SEQUENCE_PROTOCOLS = frozenset(
+    {
+        "dict_get",
+        "dict_getitem",
+        "dict_setitem",
+        "dict_contains",
+        "dict_not_contains",
+    }
+)
 
 
 def runtime_namespace(namespace: str) -> str:
@@ -863,30 +873,31 @@ class ModuleGenerator:
                     ) = info
         escapes = analyze_escapes(lambdas)
         self.borrowed_callees = {}
-        if not program.bootstrap and not program.exports:
-            for function in lambdas:
-                if (
-                    function is program.entry
-                    or function in self.native_plans
-                    or function in self.return_tuple_arities
-                    or function.is_protocol
-                    or function.takes_closure
-                    or function.signature.variadic
-                    or function.signature.default_parameters
-                    or function.method_class is not None
-                    # CO_GENERATOR, CO_COROUTINE, CO_ASYNC_GENERATOR.
-                    or (function.code is not None and function.code.flags & 0x2A0)
-                ):
-                    continue
-                candidates = frozenset(
-                    index
-                    for index, var in enumerate(function.vars)
-                    if not var.indirect
-                    and not var.sets
-                    and not escapes.parameter_escapes(function, index)
+        for function in lambdas:
+            if (
+                function is program.entry
+                or function in self.native_plans
+                or function in self.return_tuple_arities
+                or function.takes_closure
+                or function.signature.variadic
+                or function.signature.default_parameters
+                or function.method_class is not None
+                # CO_GENERATOR, CO_COROUTINE, CO_ASYNC_GENERATOR.
+                or (function.code is not None and function.code.flags & 0x2A0)
+            ):
+                continue
+            candidates = frozenset(
+                index
+                for index, var in enumerate(function.vars)
+                if not var.indirect
+                and not var.sets
+                and (
+                    function.is_protocol
+                    or not escapes.parameter_escapes(function, index)
                 )
-                if candidates:
-                    self.borrowed_callees[function] = candidates
+            )
+            if candidates:
+                self.borrowed_callees[function] = candidates
         logger.debug(
             "Backend input: %d lambdas, %d native entries, %d class layouts",
             len(lambdas),
@@ -1446,8 +1457,13 @@ class ModuleGenerator:
         body = self.bodies[self.sequence_functions[name]]
         params = ", ".join(f"ptr %arg.{i}" for i in range(arity))
         operands = ", ".join(["ptr %globals", *(f"ptr %arg.{i}" for i in range(arity))])
-        releases = "\n".join(
-            f"  call void @mule.fast.release(ptr %arg.{i})" for i in range(arity)
+        borrowed_protocol = name in _BORROWED_SEQUENCE_PROTOCOLS
+        releases = (
+            ""
+            if borrowed_protocol
+            else "\n".join(
+                f"  call void @mule.fast.release(ptr %arg.{i})" for i in range(arity)
+            )
         )
         self.auxiliary.append(
             f"define internal ptr {symbol}({params}) {{\n"
@@ -2045,6 +2061,7 @@ class ModuleGenerator:
         steps: tuple[tuple[EntryContext | None, tuple[ValueType | None, ...]], ...],
         *,
         proven: bool = False,
+        same_namespace: bool = False,
         receiver_call: bool = False,
         borrowed_arguments: frozenset[int] = frozenset(),
     ) -> str:
@@ -2058,6 +2075,7 @@ class ModuleGenerator:
             arity,
             step_key,
             proven,
+            same_namespace,
             receiver_call,
             borrowed_arguments,
         )
@@ -2074,8 +2092,13 @@ class ModuleGenerator:
             *(f"ptr %arg.{i}" for i in range(arity)),
         ]
         builder = _HelperBuilder(self)
-        body_globals = "%callee.globals"
-        if proven:
+        body_globals = "%globals" if proven and same_namespace else "%callee.globals"
+        if proven and same_namespace:
+            builder.lines = [
+                f"define internal ptr {symbol}({', '.join(params)}) {{",
+                "entry:",
+            ]
+        elif proven:
             builder.lines = [
                 f"define internal ptr {symbol}({', '.join(params)}) {{",
                 "entry:",
@@ -2442,12 +2465,21 @@ class ModuleGenerator:
     def contexts(self, lambda_: Lambda):
         """The general entry context and the guarded variants."""
         facts = self.facts[lambda_]
+        borrowed_params = (
+            frozenset(range(len(lambda_.vars)))
+            if any(
+                self.sequence_functions.get(name) is lambda_
+                for name in _BORROWED_SEQUENCE_PROTOCOLS
+            )
+            else frozenset()
+        )
         general = EntryContext(
             None,
             facts.types,
             facts.targets,
             facts.parameters or (UNKNOWN,) * len(lambda_.vars),
             facts.return_type,
+            borrowed_parameters=borrowed_params,
             borrowed_callees=self.borrowed_callees,
             element_contracts=facts.element_contracts,
         )
@@ -2458,6 +2490,7 @@ class ModuleGenerator:
                 context.targets,
                 context.parameters,
                 context.return_type,
+                borrowed_parameters=borrowed_params,
                 borrowed_callees=self.borrowed_callees,
                 element_contracts=context.element_contracts,
             )
@@ -5004,22 +5037,17 @@ class FunctionGenerator:
             self.release(receiver)
             return result
         if info.exact_dict_get:
-            owned_receiver = (
-                receiver if self.owns_reference(receiver) else self.retain(receiver)
-            )
             key = arguments[0]
-            owned_key = key if self.owns_reference(key) else self.retain(key)
             if len(arguments) >= 2:
                 default = arguments[1]
-                owned_default = (
-                    default if self.owns_reference(default) else self.retain(default)
-                )
             else:
                 self.immortal_values.add("@mule.none")
-                owned_default = "@mule.none"
-            return self.sequence_call(
-                "dict_get", [owned_receiver, owned_key, owned_default]
-            )
+                default = "@mule.none"
+            result = self.sequence_call("dict_get", [receiver, key, default])
+            self.release(receiver)
+            for arg in arguments:
+                self.release(arg)
+            return result
         if info.exact_text_find:
             sub = arguments[0]
             start = arguments[1] if len(arguments) >= 2 else "@mule.none"
@@ -5228,12 +5256,18 @@ class FunctionGenerator:
                 ]
             )
             return self.operation(f"call ptr {helper}({operands})")
+        proven = site.proven and not keywords
         helper = module.direct_call_helper(
             function,
             keywords,
             len(arguments),
             tuple(steps),
-            proven=site.proven and not keywords,
+            proven=proven,
+            same_namespace=(
+                proven
+                and runtime_namespace(function.namespace)
+                == runtime_namespace(self.lambda_.namespace)
+            ),
             borrowed_arguments=frozenset(
                 index
                 for index, ref in enumerate(argument_refs)

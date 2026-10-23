@@ -279,6 +279,11 @@ def load_global(gen, vop):
         # A native body's class dependency was loaded and guarded at entry.
         gen.store(result, gen.dependency(vop.codegen_info))
         return
+    if result.tn.borrowed_from is not None:
+        cell = gen.module.cell(vop.codegen_info.namespace, vop.codegen_info.name)
+        value = gen.operation(f"load ptr, ptr {cell}, !nonnull !{{}}")
+        gen.publish(result, value)
+        return
     gen.pointer_result(
         result, gen.module.load_global(vop.codegen_info, gen.lambda_.policy.safety)
     )
@@ -1197,12 +1202,16 @@ def _define_compare(operator, opcode):
         left, right = vop.args
         lhs, rhs = gen.take(left), gen.take(right)
         if opcode in (8, 9):
-            if (right.tn.type or UNKNOWN).fits_dict():
+            is_dict = (right.tn.type or UNKNOWN).fits_dict()
+            if is_dict:
                 name = "dict_contains" if opcode == 8 else "dict_not_contains"
             else:
                 name = "contains" if opcode == 8 else "not_contains"
             value = gen.sequence_call(name, [rhs, lhs])
             gen.publish(result, value)
+            if is_dict:
+                gen.release(lhs)
+                gen.release(rhs)
             gen.check_pointer(value)
             gen.refine(result.tn, value)
             return
@@ -1940,14 +1949,12 @@ def structural_unpack(gen, vop):
 
 def _exact_dict_call(gen, vop, name):
     """Call the ``_sequences`` entry for an operand proven to be an exact
-    ``dict``. The getitem and setitem VOPs borrow their operands; the compiled
-    entry consumes owned ones. Transfer existing owners and acquire a new
-    reference only for an operand that the caller borrowed."""
-    operands = []
-    for ref in vop.args:
-        value = gen.take(ref)
-        operands.append(value if gen.owns_reference(value) else gen.retain(value))
+    ``dict``. Both the VOPs and the compiled ``dict_getitem`` /
+    ``dict_setitem`` entries borrow their operands."""
+    operands = [gen.take(ref) for ref in vop.args]
     result = gen.sequence_call(name, operands)
+    for operand in operands:
+        gen.release(operand)
     gen.publish(vop.results[0], result)
     gen.check_pointer(result)
     gen.refine(vop.results[0].tn, result)

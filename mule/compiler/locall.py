@@ -1583,8 +1583,15 @@ def analyze(
     proven_by_namespace: dict[str, frozenset[str]] = {
         ns: frozenset(
             name
-            for name, target in targets.items()
-            if global_counts[ns].get(name) == 1 and target.is_protocol
+            for name, target in {
+                **imported_targets_by_ns.get(ns, {}),
+                **targets,
+            }.items()
+            if (
+                global_counts[ns].get(name, 0) <= 1
+                and (fn := target.as_lambda()) is not None
+                and fn.is_protocol
+            )
         )
         for ns, targets in global_targets.items()
     }

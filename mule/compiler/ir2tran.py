@@ -239,6 +239,8 @@ def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
             or source.leaf is None
             or info.reuse_local != source.leaf.name
         )
+    if name in ("compare-in", "compare-not_in") and len(vop.args) == 2:
+        return (vop.args[1].tn.type or UNKNOWN).fits_dict()
     if name == "full-call" and vop.args:
         return ref is vop.args[0] or any(
             ref is vop.args[index + 1]
@@ -251,6 +253,7 @@ def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
             or info.exact_text_split
             or info.exact_text_partition
             or info.exact_text_affix
+            or info.exact_dict_get
         ):
             return True
     return name.startswith("primitive-") and name not in _NON_BORROWING_PRIMITIVES
@@ -1155,6 +1158,8 @@ def _propagate_local_aliases(component: IR2Component) -> bool:
                         continue
                     for load in loads:
                         load.args[0] = TNRef(source, False)
+                        if source.borrowed_from is source and load.codegen_info.move:
+                            load.codegen_info = replace(load.codegen_info, move=False)
                     removed.update((acquisition, assignment))
                     break
             if removed:
@@ -1198,29 +1203,47 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
         for vop in block.vops:
             is_load = vop.info is vops.LOAD_LOCAL
             is_const = vop.info is vops.CONSTANT
-            if not is_load and not is_const:
+            is_global = vop.info is vops.LOAD_GLOBAL
+            if not is_load and not is_const and not is_global:
+                continue
+            result = vop.results[0].tn
+            result_reads = reads.get(result)
+            result_writes = writes.get(result)
+            if result_writes is None or len(result_writes) != 1 or result_reads is None:
                 continue
             if is_load:
                 access: LocalAccess = linked(vop.codegen_info, vop, "local access")
                 if not access.bound or access.move:
                     continue
                 source = vop.args[0].tn
+            elif is_global:
+                access = None
+                if (
+                    result.leaf is not None
+                    or result.primitive_type is not T
+                    or len(result_reads) != 1
+                ):
+                    continue
+                reader, ref = result_reads[0]
+                if (
+                    reader.info is not vops.FULL_CALL
+                    or not reader.args
+                    or ref is not reader.args[0]
+                    or not reader.codegen_info.proven
+                    or reader.codegen_info.keywords
+                ):
+                    continue
+                source = None
             else:
                 access = None
-                result_tn = vop.results[0].tn
                 if (
-                    result_tn.leaf is not None
-                    or result_tn.primitive_type is not T
+                    result.leaf is not None
+                    or result.primitive_type is not T
                     or vop.codegen_info is None
                     or not vop.codegen_info.accept(_BORROWABLE_CONSTANT)
                 ):
                     continue
                 source = None
-            result = vop.results[0].tn
-            result_reads = reads.get(result)
-            result_writes = writes.get(result)
-            if result_writes is None or len(result_writes) != 1 or result_reads is None:
-                continue
             aliases, consumers = proof.consumers(result, source)
             if not aliases or not proof.protected(vop, consumers, source):
                 continue
@@ -1637,12 +1660,15 @@ def _mark_last_local_reads(component: IR2Component) -> None:
         and (tn := environment.vars.get(var)) is not None
         and tn.borrowed_from is not tn
     }
-    if not candidates:
-        return
     for block in component.blocks:
         for vop in block.vops:
-            if vop.info is vops.LOAD_LOCAL and vop.args[0].tn in candidates:
+            if vop.info is vops.LOAD_LOCAL and (
+                vop.args[0].tn in candidates
+                or vop.args[0].tn.borrowed_from is vop.args[0].tn
+            ):
                 vop.codegen_info = replace(vop.codegen_info, move=False)
+    if not candidates:
+        return
     blocks = component.blocks
     if (
         len(blocks) == 1
@@ -1841,7 +1867,10 @@ class _LoadLeaf(LeafVisitor):
                 args=(source,),
                 results=(result,),
                 info=LocalAccess(
-                    leaf.name, node.final, bound, allow_unbound=node.allow_unbound
+                    leaf.name,
+                    node.final and source.borrowed_from is not source,
+                    bound,
+                    allow_unbound=node.allow_unbound,
                 ),
             )
         if discard:
