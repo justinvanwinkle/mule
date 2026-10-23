@@ -49,7 +49,7 @@ optimization level 3. See the [command and build reference](spec/native-compiler
 
 ## Performance
 
-The chart below includes **all 14 workloads** from the recorded October 22,
+The chart below includes **all 14 workloads** from the recorded October 23,
 2026 suite run. It compares Mule `-O2` without LTO and SBCL with CPython 3.15.0.
 Each panel shows median elapsed **milliseconds** for CPython, Mule, and SBCL.
 **Shorter bars mean faster execution.** Every panel uses its own linear scale
@@ -65,7 +65,7 @@ timer. Each result was checked against CPython. SBCL runs corresponding Common
 Lisp implementations, not the Python sources.
 
 **This is a measured snapshot, not a general speed claim.** The measured checkout
-was `45c936432`. Mule still trails CPython on
+was `749a0158c`. Mule still trails CPython on
 several workloads. Raw samples, variation, commands, input sizes, hashes, and
 revision identity are in the [published results](docs/assets/results.json).
 The [report HTML source](docs/assets/index.html) also includes whole-process timings.
