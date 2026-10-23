@@ -1656,9 +1656,20 @@ def analyze(
                 if var not in seen_captured:
                     seen_captured.add(var)
                     captured_vars.append(var)
+    closed_captures = {
+        var
+        for var in captured_vars
+        if all(
+            lambda_ in closed_lambdas
+            for lambda_ in lambdas
+            if lambda_.environment is not None and var in lambda_.environment.closure
+        )
+    }
     for var in captured_vars:
-        if not var.sets or (
-            var in var.home.vars and var.name not in var.home.local_annotations
+        if (
+            (var.indirect and var not in closed_captures)
+            or not var.sets
+            or (var in var.home.vars and var.name not in var.home.local_annotations)
         ):
             var.optimistic_type = UNKNOWN
         else:
@@ -2129,11 +2140,23 @@ def analyze(
                     changed = True
 
         for var in captured_vars:
-            if not var.sets or (
-                var in var.home.vars and var.name not in var.home.local_annotations
-            ):
+            parameter = var in var.home.vars
+            if var.indirect and var not in closed_captures:
+                # Escaping cells expose replacement and deletion through
+                # cell_contents, including replacement of nested containers.
                 continue
-            joined = BOTTOM
+            if parameter and var not in closed_captures:
+                continue
+            if not parameter and not var.sets:
+                continue
+            # Parameter initialization is a definition too. Only nonescaping
+            # closures can use it without an environment-specific guard: an
+            # escaping function exposes its cells to arbitrary external writes.
+            joined = (
+                parameters[var.home, "general"][var.home.vars.index(var)]
+                if parameter
+                else BOTTOM
+            )
             for store in var.sets:
                 home_body = bodies.get((store.home_lambda, "general"))
                 if home_body is None:
@@ -2278,11 +2301,12 @@ def analyze(
                                 changed = True
                 raw_domains = tuple(
                     domain
-                    if (domain := type_.dispatch_domain()) is not None
+                    if (domain := argument.argument_domain().dispatch_domain())
+                    is not None
                     and (contract is None or not contract.contradicts(domain))
                     else UNKNOWN
-                    for type_, contract in zip(
-                        call.arguments,
+                    for argument, contract in zip(
+                        call.argument_facts,
                         target.signature.annotations,
                         strict=True,
                     )

@@ -53,6 +53,43 @@ Following SBCL's entry-point splitting in `src/compiler/locall.lisp`, Mule never
 
 At each guarded call site, code generation compares the caller's derived argument `ValueType`s against the target's published entry contexts (`observed`, `fixnum`, `general`) and calls the most specific matching entry directly.
 
+### Callable code identities and captured values
+
+SBCL's `src/compiler/locall.lisp`, `substitute-let-funargs`, preserves functional
+arguments by substituting their functional leaves and scheduling local-call
+reanalysis. Mule retains the same knowledge in its value-type lattice because
+Python function objects remain first-class values and can have distinct closure
+environments despite sharing a compiled body. A callable type can identify its
+compiled code without identifying the function object or its environment.
+Entry dispatch must check that code identity before treating a callback target
+as proven. Direct calls still obtain globals, defaults, and closure storage from
+the actual callable supplied by the program. Predicted module bindings remain
+untrusted until checked. Joins of different code identities widen to a general
+function type. This representation preserves functional knowledge through the
+existing parameter and return solver rather than replacing Python values with
+compile-time function objects.
+
+Captured parameter facts must include the defining function's incoming values
+and every possible captured write. Facts from a guarded defining entry do not
+become unconditional facts for all closure objects sharing that code. Unknown
+external creation contexts therefore retain unknown captured values.
+
+Captured parameter initialization participates in inference when every function
+that captures the parameter is a nonescaping, direct-call-closed lambda. Shared
+cells reachable through escaping functions remain unknown: Python exposes their
+replacement and deletion through `cell_contents`. This applies to scalar and
+container values, so nested callable facts cannot survive an unsupported cell
+assumption. Inference for immutable retained function objects still preserves
+their native entry identity. It does not equate distinct closure instances.
+
+The specialized callback path can therefore resolve calls and derive arithmetic
+results while a general fallback remains less precise. For example, a native
+`range` branch supplies integer elements even when a general iterator fallback
+does not. Facts from the native branch do not establish an integer result for
+the entire function. Likewise, returning a callable through a proven local
+helper preserves its identity, but a mutable global helper binding does not
+establish the returned code identity without an additional checked boundary.
+
 ### Checked inferred results within a compilation unit
 
 Status: implemented for unambiguous same-unit named definitions and supported

@@ -59,6 +59,7 @@ from .ctype import (
     UNBOUND,
     UNKNOWN,
     UNKNOWN_UNBOUND,
+    FunctionType,
     InstanceType,
     IntegerType,
     IteratorType,
@@ -116,6 +117,12 @@ class Fact:
             return _fact(type_)
         return Fact(type_, self.target, self.proven)
 
+    def argument_domain(self) -> ValueType:
+        """A guarded entry may test a predicted callable's code identity."""
+        if self.target is not None and (target := self.target.as_lambda()) is not None:
+            return FunctionType(target=target)
+        return self.type
+
 
 NO_FACT = Fact(BOTTOM)
 UNBOUND_FACT = Fact(UNBOUND)
@@ -172,6 +179,9 @@ _CANONICAL_FACTS: dict[int, Fact] = {
 
 
 def _fact(value_type: ValueType) -> Fact:
+    target = value_type.callable_target()
+    if target is not None:
+        return Fact(value_type, target, True)
     canonical = _CANONICAL_FACTS.get(id(value_type))
     return Fact(value_type) if canonical is None else canonical
 
@@ -179,8 +189,12 @@ def _fact(value_type: ValueType) -> Fact:
 @dataclass(frozen=True, slots=True)
 class CallSite:
     target: Lambda | ClassConstructorTarget | ForeignCallTarget | None
-    arguments: tuple[ValueType, ...]
+    argument_facts: tuple[Fact, ...]
     proven: bool = False
+
+    @property
+    def arguments(self) -> tuple[ValueType, ...]:
+        return tuple(fact.type for fact in self.argument_facts)
 
 
 @dataclass(slots=True)
@@ -596,7 +610,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
         return fact
 
     def visit_Lambda(self, leaf):
-        return Fact(FUNCTION_TYPE, leaf, True)
+        return Fact(FunctionType(target=leaf), leaf, True)
 
     def visit_Set(self, node: Set):
         key = _key(node.var)
@@ -1231,7 +1245,7 @@ def _propagate_make_function(visitor: _Propagation, node: Combination):
                 definition.location,
                 ("local", lambda_, lambda_.vars[index].name),
             )
-    return Fact(FUNCTION_TYPE, lambda_, True)
+    return Fact(FunctionType(target=lambda_), lambda_, True)
 
 
 @defpropagate("%call_resolved")
@@ -1266,7 +1280,14 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
                     else receiver_type
                 )
                 visitor.walk.method_calls.append(
-                    CallSite(method, (seeded_receiver, *arg_types), False)
+                    CallSite(
+                        method,
+                        (
+                            _fact(seeded_receiver),
+                            *(visitor.fact_of(arg) for arg in args[1:]),
+                        ),
+                        False,
+                    )
                 )
             visitor.walk.method_targets[node] = method
             visitor.invalidate()
@@ -1739,6 +1760,7 @@ class _Walk:
                 made_function(var.sets[0].value.uses[0])
                 if resolved_type is FUNCTION_TYPE
                 and len(var.sets) == 1
+                and not var.indirect
                 and var.home is not None
                 and var not in var.home.vars
                 and var.sets[0].value is not None
@@ -1920,7 +1942,7 @@ class _Walk:
         calls = tuple(
             CallSite(
                 (callee := facts.get(node.fun.use(), NO_FACT)).target,
-                tuple(facts.get(arg.use(), NO_FACT).type for arg in node.args),
+                tuple(facts.get(arg.use(), NO_FACT) for arg in node.args),
                 callee.proven,
             )
             for block, node in self.graph.call_nodes

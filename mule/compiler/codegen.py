@@ -2074,11 +2074,14 @@ class ModuleGenerator:
             *(f"ptr %arg.{i}" for i in range(arity)),
         ]
         builder = _HelperBuilder(self)
-        body_globals = "%globals" if proven else "%callee.globals"
+        body_globals = "%callee.globals"
         if proven:
             builder.lines = [
                 f"define internal ptr {symbol}({', '.join(params)}) {{",
                 "entry:",
+                "  %fn.globals.slot = alloca ptr",
+                "  %callee.entry = call ptr @mule_method_entry(ptr %callee, ptr %fn.globals.slot)",
+                "  %callee.globals = load ptr, ptr %fn.globals.slot",
             ]
         else:
             if receiver_call:
@@ -2263,11 +2266,14 @@ class ModuleGenerator:
             "ptr %tuple.out",
         ]
         builder = _HelperBuilder(self)
-        body_globals = "%globals" if proven else "%callee.globals"
+        body_globals = "%callee.globals"
         if proven:
             builder.lines = [
                 f"define internal ptr {symbol}({', '.join(params)}) {{",
                 "entry:",
+                "  %fn.globals.slot = alloca ptr",
+                "  %callee.entry = call ptr @mule_method_entry(ptr %callee, ptr %fn.globals.slot)",
+                "  %callee.globals = load ptr, ptr %fn.globals.slot",
             ]
         else:
             fallback_helper = (
@@ -3577,6 +3583,17 @@ class _ArgumentGuard(ValueTypeVisitor):
     def visit_UnknownType(self, fact: ValueType) -> str:
         return "true"
 
+    def visit_FunctionType(self, fact) -> str:
+        target = fact.callable_target()
+        if target is None:
+            return self.visit_ValueType(fact)
+        slot = self.gen.operation("alloca ptr")
+        entry = self.gen.operation(
+            f"call ptr @mule_method_entry(ptr {self.value}, ptr {slot})"
+        )
+        expected = self.gen.module.functions[target]
+        return self.gen.operation(f"icmp eq ptr {entry}, {expected}")
+
     def visit_IntegerType(self, fact: ValueType) -> str:
         if not fact.is_fixnum:
             return self.visit_ValueType(fact)
@@ -4579,6 +4596,10 @@ class FunctionGenerator:
             else:
                 converted.append(self.load(ref))
         callee = self.load(callable_ref)
+        self.operation(
+            f"call ptr @mule_method_entry(ptr {callee}, ptr %callee.globals.slot)"
+        )
+        callee_globals = self.operation("load ptr, ptr %callee.globals.slot")
         closure = (
             self.operation(f"call ptr @mule_function_closure_of(ptr {callee})")
             if self.module.closure_of(entry.function)
@@ -4594,7 +4615,7 @@ class FunctionGenerator:
             taken = self.take(ref)
             if sc is not DESCRIPTOR and ref.tn.sc in OBJECT:
                 raw_owned.append(taken)
-        operands = ["ptr %globals", "ptr %numeric.error"]
+        operands = [f"ptr {callee_globals}", "ptr %numeric.error"]
         if closure is not None:
             operands.append(f"ptr {closure}")
         operands.extend(
@@ -5242,6 +5263,7 @@ class FunctionGenerator:
             self.lines.insert(self.entry_end, "  %float.scratch = alloca double")
         if self.uses_numeric_error:
             self.lines.insert(self.entry_end, "  %numeric.error = alloca i1")
+            self.lines.insert(self.entry_end, "  %callee.globals.slot = alloca ptr")
 
     def emit_raw(self) -> str:
         """Native entry: borrowed raw slots and scalars, ownership only at edges."""

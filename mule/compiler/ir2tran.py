@@ -2598,14 +2598,22 @@ class _Converter(NodeVisitor):
             return
         fun = node.fun
         target = self.context.targets.get(fun.use()) if len(fun.uses) == 1 else None
+        code_target = (
+            self.context.type_of(fun.use()).callable_target()
+            if len(fun.uses) == 1
+            else None
+        )
+        proven = target is not None and (
+            code_target is target or (node.kind is CallKind.GUARDED and node.proven)
+        )
         info = node.info
         site = CallSite(
             info.keywords if info is not None else (),
             info.location if info is not None else None,
-            target if node.kind is CallKind.GUARDED else None,
-            node.proven if node.kind is CallKind.GUARDED else False,
+            target,
+            proven,
             self.context.borrowed_callees.get(target, frozenset())
-            if node.kind is CallKind.GUARDED
+            if target is not None
             and (info is None or not info.keywords)
             and target is not None
             and target in self.context.borrowed_callees

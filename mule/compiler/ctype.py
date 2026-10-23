@@ -153,6 +153,9 @@ class ValueType:
     def as_fact(self, wrap):
         return wrap(self)
 
+    def callable_target(self):
+        return None
+
     def normalized_bottom(self):
         return self
 
@@ -588,6 +591,9 @@ class ValueType:
     def fits_function(self, expected):
         return False
 
+    def fits_possible_function(self, expected):
+        return False
+
     def fits_tuple(self, expected):
         return False
 
@@ -684,6 +690,9 @@ class UnknownType(ValueType):
         )
 
     def fits_possible_instance(self, expected):
+        return not self.may_be_unbound
+
+    def fits_possible_function(self, expected):
         return not self.may_be_unbound
 
     def runtime_parent_class_type(self):
@@ -1705,7 +1714,23 @@ class BytesType(PrimitiveType):
 
 @dataclass(frozen=True, slots=True)
 class FunctionType(ValueType):
+    """A Python function, optionally restricted to one compiled code body.
+
+    Code identity says nothing about the function's globals, defaults, or
+    closure values. Calls must continue to use the actual function object.
+    """
+
     may_be_unbound: bool = False
+    target: object | None = None
+
+    def callable_target(self):
+        return None if self.may_be_unbound else self.target
+
+    def dispatch_domain(self):
+        return self if self.target is not None and not self.may_be_unbound else None
+
+    def dispatch_rank(self) -> int:
+        return 0 if self.target is not None else 2**64
 
     def runtime_class_type(self):
         return UNKNOWN if self.may_be_unbound else CLASS_FUNCTION_TYPE
@@ -1733,9 +1758,11 @@ class FunctionType(ValueType):
         return other.join_function(self)
 
     def join_function(self, left):
+        target = self.target if self.target is left.target else None
+        unbound = self.may_be_unbound or left.may_be_unbound
         return (
-            FunctionType(may_be_unbound=True)
-            if self.may_be_unbound or left.may_be_unbound
+            FunctionType(unbound, target)
+            if unbound or target is not None
             else FUNCTION_TYPE
         )
 
@@ -1743,7 +1770,22 @@ class FunctionType(ValueType):
         return actual.fits_function(self)
 
     def fits_function(self, expected):
-        return not self.may_be_unbound
+        return (not self.may_be_unbound or expected.may_be_unbound) and (
+            expected.target is None or self.target is expected.target
+        )
+
+    def fits_possible_function(self, expected):
+        return not self.may_be_unbound and (
+            self.target is None
+            or expected.target is None
+            or self.target is expected.target
+        )
+
+    def accepts_dispatch(self, actual):
+        return actual.fits_function(self)
+
+    def accepts_possible_dispatch(self, actual):
+        return actual.fits_possible_function(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3096,6 +3138,11 @@ class UnionType(ValueType):
 
     def fits_function(self, expected):
         return self._fits_family(expected, lambda member: member.fits_function(member))
+
+    def fits_possible_function(self, expected):
+        return not self.may_be_unbound and any(
+            member.fits_possible_function(expected) for member in self.members
+        )
 
     def fits_tuple(self, expected):
         return self._fits_family(expected, lambda member: member.fits_tuple(member))
