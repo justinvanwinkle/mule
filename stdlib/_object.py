@@ -1457,7 +1457,7 @@ class int(object):
                     x = _convert_int(res)
                 else:
                     x = _convert_int(x)
-            elif not is_instance(x, float) and not is_instance(x, str):
+            elif not is_instance(x, str):
                 owner = type_of(x)
                 missing = _MISSING
                 converted = False

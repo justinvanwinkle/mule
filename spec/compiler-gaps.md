@@ -340,6 +340,92 @@ suite failure or performance measurement.
   4. **Known container methods**: Specialize `dict.get(k, default)`,
      `list.pop()`, `str.startswith(prefix)`, and `str.endswith(suffix)` on
      proven receiver types in `seqtran.py`.
+  5. **`bytes` and `bytearray` type representation, element-type derivation,
+     and physical indexing/mutation VOPs (`array-tran.lisp`)**:
+     - **SBCL reference**: `src/compiler/array-tran.lisp` (`deftransform aref`
+       and `data-vector-ref` / `data-vector-set` on
+       `(simple-array (unsigned-byte 8) (*))`, which derive element type
+       `(unsigned-byte 8)` = `[0, 255]` and lower to inline byte-load /
+       byte-store VOPs `data-vector-ref-with-offset/simple-array-unsigned-byte-8`
+       and `data-vector-set-with-offset/simple-array-unsigned-byte-8` in
+       `src/compiler/x86-64/array.lisp`).
+     - **Current Mule defect (observed in `perf/suite/bytes_codec.py`)**:
+       - `ctype.py` has `BYTES_TYPE` (`ExactBuiltinType("bytes")`), and
+         `annotation_types.py` maps `bytes` to `BYTES_TYPE`, but there is no
+         `BYTEARRAY_TYPE` (`ExactBuiltinType("bytearray")`), and `fndb.py` has
+         no `KNOWN` entry for `bytes(...)` or `bytearray(...)`. Consequently,
+         `decoded = bytearray()` in `bytes_codec.py` calls the global
+         `bytearray` dynamically and derives `UNKNOWN`.
+       - Because `decoded` has `derived_type = UNKNOWN`, `decoded.append(b)` in
+         the inner packet-decoding loop resolves `.append` via inline cache and
+         speculatively dispatches to `ListStorage.append` (which always misses
+         on `ByteArrayStorage` and falls back to dynamic call on every byte).
+       - `_derive_getitem` (`mule/compiler/fndb.py`) and `_transfer_combination`
+         (`mule/compiler/constraint.py`) do not derive `IntegerType(0, 255)` for
+         integer-indexed `BYTES_TYPE` or `BYTEARRAY_TYPE` (`packet[pos]`,
+         `decoded[k]`), nor for `for b in bytes/bytearray` iteration. Every
+         loaded byte therefore has `derived_type = UNKNOWN`, which cascades
+         through `decode_varint` and `run`:
+         - All bitwise and arithmetic operations on loaded bytes
+           (`(byte & 0x7F) << shift`, `result | ...`, `(byte & 0x80) == 0`,
+           `(right + 3) & 0xFF`, `left ^ 0x5A`) lose fixnum proofs and emit
+           generic `@mule.fast.binary.*` and `@mule_binary_reuse` fallbacks with
+           reference-count releases.
+         - In `for b in decoded: s1 = (s1 + b) % 65521`, because `b` is
+           `UNKNOWN`, `s1 + b` derives `UNKNOWN` (which does not `.fits(REAL)`),
+           causing `vops.py` (`opcode == 5 and not left_type.fits(REAL)`) to
+           emit a call to `@"mule.compiled.mule_format_modulo.2"` (the Python
+           `%` string-formatting protocol check) on every byte, and widening
+           `s1`, `s2`, `packet_checksum`, and `digest` to `UNKNOWN`.
+         - In `decode_varint`, because `result` widens to `UNKNOWN`, its
+           inferred return type is `TupleType((UNKNOWN, PYTHON_INTEGER))`, so
+           `payload_len` in `run` is only known as unbounded `PYTHON_INTEGER`
+           from its return annotation rather than a proven non-negative fixnum,
+           preventing `for j in range(payload_len):` from using a pure unboxed
+           fixnum counter loop without an iterator fallback block.
+       - `vops.py` (`protocol-getitem` / `protocol-setitem`) has no inline
+         physical byte-vector load/store fast path for proven `BYTES_TYPE` or
+         `BYTEARRAY_TYPE` with `FIXNUM` index, calling `@mule.fast.getitem` /
+         `@mule.fast.setitem.move` out of line instead of inline bounds check +
+         `load i8` / `store i8`.
+     - **Required implementation**:
+       1. Add `BYTEARRAY_TYPE = ExactBuiltinType("bytearray")` to `ctype.py`,
+          map `bytearray` in `annotation_types.py` and `ir1tran.py`, and
+          register `bytes` (`-> BYTES_TYPE`) and `bytearray` (`-> BYTEARRAY_TYPE`)
+          in `fndb.py`.
+       2. Derive `IntegerType(0, 255)` for `getitem(BYTES_TYPE | BYTEARRAY_TYPE, INTEGER)`
+          in `fndb.py` and `constraint.py`, and propagate element type
+          `IntegerType(0, 255)` across `iterate` / `next_item` on `BYTES_TYPE`
+          and `BYTEARRAY_TYPE`.
+       3. Emit inline byte-buffer load/store VOPs in `vops.py` for
+          `getitem(BYTES_TYPE | BYTEARRAY_TYPE, FIXNUM)` (`u8` zero-extended to
+          tagged fixnum `(zext i8 << 1) | 1`) and
+          `setitem(BYTEARRAY_TYPE, FIXNUM, FIXNUM)` (bounds check + `[0, 255]`
+          range check + `store i8`), and specialize `bytearray.append` on
+          `BYTEARRAY_TYPE` receivers with proven `[0, 255]` or `FIXNUM`
+          operands.
+  6. **Direct `for`-loop lowering over proven sequences (`seqtran.lisp`
+     `dolist` / vector loop transforms)**:
+     - **SBCL reference**: `src/compiler/seqtran.lisp` (`define-source-transform dolist`,
+       `map` / `dosequence` transforms over vectors and lists), which lower
+       sequence iteration directly into pointer/index loops without allocating
+       iterator objects or signaling end-of-iteration conditions.
+     - **Current Mule defect (observed in `perf/suite/bytes_codec.py`)**:
+       - While `for j in range(...)` lowers to a counted loop in `ir1tran.py`,
+         `for packet in data:` (with `data: list[bytes]`) and `for b in decoded:`
+         (with `decoded: bytearray`) allocate a heap iterator via
+         `@mule.fast.iterate.move`, call `@mule.fast.next_item` on each step,
+         and terminate by raising and catching `StopIteration`
+         (`@mule_catch_exception` + `@"mule.protocol.iteration_exhausted"`).
+     - **Required implementation**:
+       - When the iterable of a `for` loop is proven to be a non-subclassed
+         `LIST_TYPE`, `TUPLE_TYPE`, `BYTES_TYPE`, or `BYTEARRAY_TYPE` (or under
+         an entry/loop guard on exact storage kind), lower or transform the
+         iterator protocol into a direct indexed loop (`idx = 0; while idx < len(seq): ...`)
+         reading storage directly at `idx` without allocating an iterator or
+         raising `StopIteration` on termination (re-reading current length on
+         each step for mutable `list` / `bytearray` to preserve Python's
+         mutation-during-iteration semantics).
 
 ### 1D. Numeric, division, and float transforms (`srctran.py` / `modarith.py` / `float-tran.lisp`) (proposed)
 
@@ -347,12 +433,26 @@ suite failure or performance measurement.
   `src/compiler/modarith.lisp`, and `src/compiler/float-tran.lisp`.
 - **Remaining gaps and proposed transforms**:
   1. **Division and modulo by arbitrary constant integers**: SBCL transforms
-     `(truncate x c)` and `(rem x c)` on machine integers into multiply-high +
-     shift sequences (`Granlund-Montgomery`). In Mule, when the dividend is
-     proven `int64` / `FIXNUM` and the divisor is a non-zero constant integer,
-     emit Python floor-division / modulo adjustment over hardware signed
-     division or magic-multiplier lowering in IR2/LLVM instead of the generic
-     helper when overflow (`INT64_MIN // -1`) is excluded by interval bounds.
+     `(truncate x c)` and `(rem x c)` / `(mod x c)` on machine integers (`truncate-by-constant`
+     in `src/compiler/srctran.lisp` and `src/compiler/x86-64/arith.lisp`) into
+     multiply-high + shift sequences (`Granlund-Montgomery`; e.g. `(mod (+ s1 b) 65521)`
+     in `perf/suite/bytes_codec.lisp` compiles to `MOV RSI, 281539415969072; MUL RSI; MUL RDI`
+     with zero branches or calls). In Mule, even when both operands are proven
+     `FIXNUM`, `//` (`opcode == 4`) and `%` (`opcode == 5`) currently call the
+     out-of-line helper `@mule.fixnum.binary.4` / `@mule.fixnum.binary.5` in
+     `vops.py` (`_emit_fixnum_binary`). When the dividend is proven non-negative
+     `FIXNUM` (`low >= 0`) and the divisor is a positive `FIXNUM` (`low > 0`),
+     Python floor division `//` and modulo `%` coincide with unsigned/non-negative
+     hardware `udiv` / `urem` (`sdiv` / `srem`) and cannot overflow; emitting
+     inline `urem i64` / `udiv i64` in `_emit_fixnum_binary` (and inline
+     sign-adjusted `sdiv`/`srem` for general proven `FIXNUM`s with non-zero
+     constant divisor) allows LLVM to lower `% 65521` and `% 25` in
+     `bytes_codec.py` directly into the same Granlund-Montgomery multiply-high
+     register sequence as SBCL. Also refine `_derive_modulo` and
+     `_derive_floor_divide` in `fndb.py` so `x % c` with `x.low >= 0` and
+     constant `c > 0` derives `IntegerType(0, min(x.high, c - 1))` (proving
+     `s1` and `s2` in `bytes_codec.py` stay within `[0, 65520]` across loop
+     iterations).
   2. **Commutative canonicalization and reassociation**: Normalize
      `const + x -> x + const` and `const & x -> x & const` on proven commutative
      domains (`INTEGER`, `BOOLEAN`) so associative transforms in `modarith.py`

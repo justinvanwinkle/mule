@@ -265,7 +265,12 @@ Rust supplies physical memory ownership and the GC barrier only.
 
 Current dictionary field inference does not establish exact-list field proofs.
 The guarded physical lowering must not treat these fields as statically proven
-lists or remove bounds checks without an independent proof. Making storage
+lists or remove bounds checks without an independent proof. When `protocol-getitem`
+is statically proven to index an exact `list` with a fixnum index (`list_borrow`
+or `list_owned`), it emits the physical buffer length check and element load
+inline in LLVM IR (skipping negative-index wrapping when the index interval is
+proven non-negative) and calls `@mule_list_getitem_borrow` or `@mule_list_getitem`
+only on the cold out-of-bounds slow path. Making storage
 operations visible is an implementation capability; speedups require separate
 measurement.
 
