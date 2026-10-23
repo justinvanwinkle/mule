@@ -324,13 +324,16 @@ def test_trend_chart_plots_historical_series_and_pairs_typed_variants():
     assert panel is not None
     lines = panel.findall(".//svg:polyline[@data-runtime='mule-o2']", NS)
     assert len(lines) == 1
-    points = panel.findall(".//svg:circle[@data-runtime='mule-o2']", NS)
+    points = panel.findall(".//*[@data-runtime='mule-o2'][@data-ms]")
     assert [float(pt.attrib["data-ms"]) for pt in points] == [80.0, 40.0, 25.0]
-    cxs = [float(pt.attrib["cx"]) for pt in points]
-    cys = [float(pt.attrib["cy"]) for pt in points]
+    cxs = [float(pt.attrib.get("cx", pt.attrib.get("data-x"))) for pt in points]
     assert cxs[0] < cxs[1] < cxs[2]
-    # Lower elapsed time is closer to the zero baseline (larger y coordinate in SVG).
-    assert cys[0] < cys[1] < cys[2]
+    assert [pt.attrib.get("data-clipped") for pt in points] == ["true", "true", None]
+    # Only the recent value fits the new scale. Its position is linear from zero.
+    zero = float(panel.find(".//*[@data-zero-y]").attrib["data-zero-y"])
+    assert zero - float(points[2].attrib["cy"]) == pytest.approx(
+        160 * 25 / 30, abs=0.02
+    )
 
     # Paired untyped and typed scenarios share a single trend panel.
     for r, typed_mule in ((run1, 0.030), (run2, 0.015), (run3, 0.012)):
@@ -376,7 +379,92 @@ def test_trend_chart_breaks_lines_on_failed_runs():
 
     root = ET.fromstring(trend_chart(run3, [history.entry(run1), history.entry(run2)]))
     panel = root.find(".//svg:g[@data-case='scenario_one']", NS)
-    points = panel.findall(".//svg:circle[@data-runtime='mule-o2']", NS)
+    points = panel.findall(".//*[@data-runtime='mule-o2'][@data-ms]")
     # Failed middle run has no point and breaks the polyline so it does not bridge across failure.
     assert [float(pt.attrib["data-ms"]) for pt in points] == [60.0, 30.0]
     assert panel.findall(".//svg:polyline[@data-runtime='mule-o2']", NS) == []
+
+
+@pytest.mark.parametrize(
+    "run_count,window", [(1, 1), (3, 1), (9, 3), (40, 10), (48, 10)]
+)
+def test_trend_scale_uses_recent_quarter_capped_at_ten_runs(run_count, window):
+    from perf.suite.perfutils import history
+
+    runs = []
+    for index in range(run_count):
+        source = report((0.010,))
+        source["created_utc"] = f"run-{index}"
+        if index == run_count - window - 1:
+            source["rows"][0]["summary"]["kernel_seconds"]["median"] = 100
+        if index == run_count - window:
+            source["rows"][0]["summary"]["kernel_seconds"]["median"] = 0.020
+        runs.append(source)
+    root = ET.fromstring(trend_chart(runs[-1], [history.entry(r) for r in runs]))
+    panel = root.find(".//svg:g[@data-case='scenario_one']", NS)
+    assert float(panel.attrib["data-upper-ms"]) == pytest.approx(24)
+    assert int(panel.attrib["data-scale-runs"]) == window
+    points = panel.findall(".//*[@data-ms]")
+    assert len(points) == run_count
+    clipped = panel.findall(".//svg:path[@data-clipped='true']", NS)
+    assert len(clipped) == (1 if run_count > window else 0)
+    if clipped:
+        assert float(clipped[0].attrib["data-ms"]) == 100000
+        assert "100000 ms" in " ".join(panel.itertext())
+
+
+@pytest.mark.parametrize("run_count", [30, 100])
+def test_trend_long_above_scale_history_keeps_panel_compact_and_timings_available(
+    run_count,
+):
+    from perf.suite.perfutils import history
+
+    runs = []
+    for index in range(run_count):
+        source = report((0.010, 0.080 if index < run_count - 10 else 0.020, 0.010))
+        source["created_utc"] = f"run-{index}"
+        runs.append(source)
+    root = ET.fromstring(trend_chart(runs[-1], [history.entry(r) for r in runs]))
+    panel = root.find(".//svg:g[@data-case='scenario_one']", NS)
+    assert float(panel.find("svg:rect", NS).attrib["height"]) <= 400
+    points = panel.findall(".//*[@data-runtime='mule-o2'][@data-ms]")
+    assert [float(point.attrib["data-ms"]) for point in points] == [
+        80 if index < run_count - 10 else 20 for index in range(run_count)
+    ]
+    for point in points:
+        assert point.find("svg:title", NS) is not None
+    summary = panel.find("svg:text[@data-above-scale-runtime='mule-o2']", NS)
+    assert float(summary.attrib["data-min-ms"]) == 80
+    assert float(summary.attrib["data-max-ms"]) == 80
+
+
+def test_trend_clips_lines_at_actual_scale_crossing_and_preserves_failure_gaps():
+    from perf.suite.perfutils import history
+
+    runs = []
+    for index, value in enumerate((100, 10, None, 100, 10, 10, 10, 10)):
+        source = report(((value or 10) / 1000,))
+        source["created_utc"] = f"run-{index}"
+        if value is None:
+            source["rows"][0]["status"] = "timeout"
+        runs.append(source)
+    root = ET.fromstring(trend_chart(runs[-1], [history.entry(r) for r in runs]))
+    panel = root.find(".//svg:g[@data-case='scenario_one']", NS)
+    zero = float(panel.find(".//*[@data-zero-y]").attrib["data-zero-y"])
+    points = panel.findall(".//svg:circle[@data-ms]", NS)
+    left = float(panel.find(".//*[@data-clipped='true']").attrib["data-x"])
+    second_x = float(points[0].attrib["cx"])
+    lines = panel.findall(".//svg:polyline[@data-runtime='cpython']", NS)
+    assert len(lines) == 2
+    first_segment = [
+        tuple(map(float, pair.split(","))) for pair in lines[0].attrib["points"].split()
+    ]
+    # The line enters the scale near the second run, not below the outlier marker.
+    assert first_segment[0][0] == pytest.approx(
+        left + (second_x - left) * 88 / 90, abs=0.02
+    )
+    assert first_segment[0][1] == pytest.approx(zero - 160, abs=0.02)
+    for line in lines:
+        for pair in line.attrib["points"].split():
+            _, y = map(float, pair.split(","))
+            assert zero - 160 <= y <= zero
