@@ -13,11 +13,22 @@ def _abc():
 
 
 def sequence(subject):
-    """The subject's items for a sequence pattern, or None."""
+    """The subject's items for a sequence pattern without a star capture, or None."""
+    if isinstance(subject, (list, tuple)):
+        return subject
     if isinstance(subject, (str, bytes, bytearray)):
         return None
+    if isinstance(subject, _abc().Sequence):
+        return list(subject)
+    return None
+
+
+def sequence_list(subject):
+    """The subject's items as a list for a sequence pattern with a star capture, or None."""
     if isinstance(subject, (list, tuple)):
         return list(subject)
+    if isinstance(subject, (str, bytes, bytearray)):
+        return None
     if isinstance(subject, _abc().Sequence):
         return list(subject)
     return None
@@ -52,7 +63,19 @@ def mapping_rest(subject, keys):
     return rest
 
 
-_SELF_MATCHING = (bool, bytearray, bytes, dict, float, frozenset, int, list, set, str, tuple)
+_SELF_MATCHING = (
+    bool,
+    bytearray,
+    bytes,
+    dict,
+    float,
+    frozenset,
+    int,
+    list,
+    set,
+    str,
+    tuple,
+)
 
 
 def class_attributes(subject, cls, positional, keywords):
@@ -62,6 +85,34 @@ def class_attributes(subject, cls, positional, keywords):
         raise TypeError("called match pattern must be a class")
     if not isinstance(subject, cls):
         return None
+    if not positional and not keywords:
+        return ()
+    if not keywords:
+        match_args = getattr(cls, "__match_args__", None)
+        if match_args is None:
+            self_matching = False
+            for builtin in _SELF_MATCHING:
+                if issubclass(cls, builtin):
+                    self_matching = True
+            if not self_matching or positional > 1:
+                raise TypeError(
+                    f"{cls.__name__}() accepts 0 positional sub-patterns ({positional} given)"
+                )
+            return (subject,)
+        if not isinstance(match_args, tuple):
+            raise TypeError(f"{cls.__name__}.__match_args__ must be a tuple")
+        if positional > len(match_args):
+            raise TypeError(
+                f"{cls.__name__}() accepts {len(match_args)} positional "
+                f"sub-pattern{'s' if len(match_args) != 1 else ''} ({positional} given)"
+            )
+        values = []
+        for i in range(positional):
+            try:
+                values.append(getattr(subject, match_args[i]))
+            except AttributeError:
+                return None
+        return values
     names = []
     values = []
     if positional:
@@ -87,7 +138,9 @@ def class_attributes(subject, cls, positional, keywords):
             names.extend(match_args[:positional])
     for name in keywords:
         if name in names:
-            raise TypeError(f"{cls.__name__}() got multiple sub-patterns for attribute {name!r}")
+            raise TypeError(
+                f"{cls.__name__}() got multiple sub-patterns for attribute {name!r}"
+            )
         names.append(name)
     for name in names:
         try:

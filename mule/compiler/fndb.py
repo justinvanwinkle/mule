@@ -316,6 +316,26 @@ def _constrain_instance_check(visitor, node, state, truth: bool) -> bool:
             narrowed = narrowed.narrow_by_runtime_class(cls, False)
     if narrowed is not current.type:
         state[source] = visitor.narrowed_fact(current, narrowed)
+        for alias in visitor.walk.aliases.get(source, ()):
+            if alias not in visitor.walk.indirect and alias in state:
+                alias_current = state[alias]
+                if truth:
+                    alias_narrowed = BOTTOM
+                    for cls in classes:
+                        alias_narrowed = alias_narrowed.join(
+                            alias_current.type.narrow_by_runtime_class(cls, True)
+                        )
+                else:
+                    alias_narrowed = alias_current.type
+                    for cls in classes:
+                        alias_narrowed = alias_narrowed.narrow_by_runtime_class(
+                            cls, False
+                        )
+                if (
+                    alias_narrowed is not BOTTOM
+                    and alias_narrowed is not alias_current.type
+                ):
+                    state[alias] = visitor.narrowed_fact(alias_current, alias_narrowed)
     return True
 
 

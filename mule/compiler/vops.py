@@ -444,7 +444,7 @@ def local_extent_call(gen, vop):
         vop.args[1:],
         arguments,
         unpack_arity=gen.unpacked_call_arity(vop),
-        result_contract=gen.unpacked_call_contract(vop),
+        result_contract=gen.call_result_contract(vop),
     )
     gen.publish(vop.results[0], value)
     gen.check_pointer(value)
@@ -500,7 +500,11 @@ def type_check(gen, vop):
         gen.store(result, gen.take(operand))
         return
     actual = operand.tn.type or UNKNOWN
-    checked = check.safety and not actual.fits(check.contract.checked_type)
+    checked = (
+        check.safety
+        and not actual.fits(check.contract.checked_type)
+        and not gen.is_direct_result_check(vop)
+    )
     if checked:
         # Keep the unrefined operand owned by its original slot until the
         # assertion succeeds, so error cleanup releases its actual value.
@@ -734,6 +738,43 @@ class _InferredResultPredicate(ValueTypeVisitor):
             lower = self.gen.operation(f"icmp sge i64 {decoded}, {fact.minimum}")
             upper = self.gen.operation(f"icmp sle i64 {decoded}, {fact.maximum}")
             return self.combine("and", (valid, lower, upper), "true")
+        if (fact.minimum is None or fact.minimum <= (1 << 62) - 1) and (
+            fact.maximum is None or fact.maximum >= -(1 << 62)
+        ):
+            bits = self.gen.operation(f"ptrtoint ptr {self.value} to i64")
+            tag = self.gen.operation(f"and i64 {bits}, 1")
+            fixnum = self.gen.operation(f"icmp ne i64 {tag}, 0")
+            checks = []
+            need_min = fact.minimum is not None and fact.minimum > -(1 << 62)
+            need_max = fact.maximum is not None and fact.maximum < (1 << 62) - 1
+            if need_min or need_max:
+                decoded = self.gen.operation(f"ashr i64 {bits}, 1")
+                if need_min:
+                    checks.append(
+                        self.gen.operation(f"icmp sge i64 {decoded}, {fact.minimum}")
+                    )
+                if need_max:
+                    checks.append(
+                        self.gen.operation(f"icmp sle i64 {decoded}, {fact.maximum}")
+                    )
+            fast_ok = self.combine("and", checks, "true") if checks else "true"
+            source = self.gen.current_block()
+            slow_label = self.gen.fresh("return.int.slow")[1:]
+            done_label = self.gen.fresh("return.int.done")[1:]
+            self.gen.line(f"br i1 {fixnum}, label %{done_label}, label %{slow_label}")
+            self.gen.lines.append(slow_label + ":")
+            minimum = self.assertion.integer_bound(fact.minimum)
+            maximum = self.assertion.integer_bound(fact.maximum)
+            valid = self.gen.operation(
+                f"call i32 @mule_integer_in_bounds(ptr {self.value}, ptr {minimum}, ptr {maximum})"
+            )
+            slow_ok = self.gen.operation(f"icmp ne i32 {valid}, 0")
+            last = self.gen.current_block()
+            self.gen.line(f"br label %{done_label}")
+            self.gen.lines.append(done_label + ":")
+            return self.gen.operation(
+                f"phi i1 [{fast_ok}, %{source}], [{slow_ok}, %{last}]"
+            )
         minimum = self.assertion.integer_bound(fact.minimum)
         maximum = self.assertion.integer_bound(fact.maximum)
         valid = self.gen.operation(
@@ -829,10 +870,9 @@ class _InferredResultPredicate(ValueTypeVisitor):
         if arity is None:
             valid = self.kind(_ReturnValueKind.TUPLE)
         else:
-            matched = self.gen.operation(
-                f"call i32 @mule_tuple_shape_matches(ptr {self.value}, i64 {arity})"
+            valid = self.gen.operation(
+                f"call i1 @mule.fast.tuple.shape(ptr {self.value}, i64 {arity})"
             )
-            valid = self.gen.operation(f"icmp ne i32 {matched}, 0")
         if not fact.elements or all(element is UNKNOWN for element in fact.elements):
             return valid
         source = self.gen.current_block()
@@ -845,7 +885,7 @@ class _InferredResultPredicate(ValueTypeVisitor):
             if element is UNKNOWN:
                 continue
             item = self.gen.operation(
-                f"call ptr @mule_tuple_borrow_item(ptr {self.value}, i64 {index})"
+                f"call ptr @mule.fast.tuple.borrow(ptr {self.value}, i64 {index})"
             )
             predicates.append(
                 element.accept(_InferredResultPredicate(self.assertion, item))
@@ -896,7 +936,7 @@ def full_call(gen, vop):
         arguments,
         values,
         unpack_arity=gen.unpacked_call_arity(vop),
-        result_contract=gen.unpacked_call_contract(vop),
+        result_contract=gen.call_result_contract(vop),
     )
     gen.publish(result, value)
     gen.release(function)
@@ -1528,21 +1568,26 @@ def hasattr_(gen, vop):
 @define_vop("setattr", translate=fndb.SETATTR, args=(OBJECT, OBJECT))
 def setattr_(gen, vop):
     receiver, value = gen.take(vop.args[0]), gen.take(vop.args[1])
-    status = _write_attribute(gen, receiver, vop.codegen_info.name, value)
+    move_value = gen.owns_reference(value) and value != receiver
+    status = _write_attribute(
+        gen, receiver, vop.codegen_info.name, value, move_value=move_value
+    )
     gen.release(receiver)
-    gen.release(value)
+    if not move_value:
+        gen.release(value)
     gen.check_status(status)
 
 
-def _write_attribute(gen, receiver, name, value):
-    """Assign a borrowed value, completing old-value destruction before return."""
+def _write_attribute(gen, receiver, name, value, *, move_value: bool = False):
+    """Assign a borrowed or moved value, completing old-value destruction before return."""
     cache = gen.module.attribute_cache()
     site = _AttributeSite(gen, receiver, cache, ATTR_FIELD)
     slot = gen.operation(
         f"call ptr @mule.attr.field(ptr {receiver}, i64 {site.encoded})"
     )
     old = gen.operation(f"load ptr, ptr {slot}")
-    gen.line(f"call ptr @mule.fast.retain(ptr {value})")
+    if not move_value:
+        gen.line(f"call ptr @mule.fast.retain(ptr {value})")
     gen.line(f"store ptr {value}, ptr {slot}")
     gen.line(f"call void @mule.fast.release(ptr {old})")
     stored = gen.current_block()
@@ -1552,6 +1597,8 @@ def _write_attribute(gen, receiver, name, value):
         f"call i32 @mule_set_attr_cached(ptr {receiver}, ptr {gen.module.text(name)}, "
         f"ptr {value}, ptr {cache})"
     )
+    if move_value:
+        gen.release(value)
     gen.line(f"br label %{site.join}")
     gen.lines.append(f"{site.join}:")
     return gen.operation(f"phi i32 [0, %{stored}], [{slow}, %{site.slow}]")
@@ -1610,11 +1657,17 @@ def value_cell_clear(gen, vop):
 
 @define_vop("isinstance", translate=fndb.ISINSTANCE, results=(OBJECT,))
 def isinstance_(gen, vop):
-    """Single-class or multi-class ``isinstance`` without a tuple. The
-    class operands are passed in a stack buffer; the runtime answers plain
-    classes from the class pointer and its MRO, and only an
-    ``__instancecheck__`` metaclass or a non-class reaches compiled code."""
+    """Single-class or multi-class ``isinstance`` without a tuple. A single
+    class checks exact instance identity inline before calling the runtime;
+    multiple classes are passed in a stack buffer."""
     value, *classes = (gen.take(arg) for arg in vop.args)
+    if len(classes) == 1:
+        gen.pointer_result(
+            vop.results[0],
+            f"call ptr @mule.fast.isinstance.1(ptr {value}, ptr {classes[0]})",
+            (value, classes[0]),
+        )
+        return
     gen.argv(classes)
     gen.pointer_result(
         vop.results[0],
@@ -2485,7 +2538,7 @@ def unpack_ref(gen, vop):
     position = gen.take(vop.args[1])
     if access.proved:
         result = gen.operation(
-            f"call ptr @mule_tuple_slot(ptr {parent}, i64 {access.index})"
+            f"call ptr @mule.fast.tuple.slot(ptr {parent}, i64 {access.index})"
         )
     else:
         result = gen.operation(
@@ -3031,6 +3084,7 @@ ARGS_TAG = 9
 # Runtime layout tests check these offsets against both List and Args objects.
 VALUE_BUFFER_DATA_OFFSET = 24
 VALUE_BUFFER_LENGTH_OFFSET = 32
+SEQUENCE_CLASS_OFFSET = 48
 INSTANCE_TAG = 16
 CLASS_TAG = 15
 INSTANCE_CLASS_OFFSET = 24
@@ -3137,6 +3191,32 @@ entry:
   %index = lshr i64 %encoded, {ATTR_SHIFT}
   %slot = getelementptr ptr, ptr %fields, i64 %index
   ret ptr %slot
+}}
+
+define internal ptr @mule.fast.isinstance.1(ptr %value, ptr %class) alwaysinline {{
+entry:
+  %bits = ptrtoint ptr %value to i64
+  %tag = and i64 %bits, 1
+  %integer = icmp ne i64 %tag, 0
+  %null = icmp eq ptr %value, null
+  %skip = or i1 %integer, %null
+  br i1 %skip, label %slow, label %object
+object:
+  %tag.addr = getelementptr i8, ptr %value, i64 {DATA_OFFSET}
+  %kind = load i32, ptr %tag.addr
+  %kind.off = sub i32 %kind, {INSTANCE_TAG}
+  %is.inst = icmp ult i32 %kind.off, 2
+  br i1 %is.inst, label %inst, label %slow
+inst:
+  %actual.addr = getelementptr i8, ptr %value, i64 {INSTANCE_CLASS_OFFSET}
+  %actual = load ptr, ptr %actual.addr
+  %exact = icmp eq ptr %actual, %class
+  br i1 %exact, label %hit, label %slow
+hit:
+  ret ptr @mule.true
+slow:
+  %res = call ptr @mule_isinstance_single(ptr %value, ptr %class)
+  ret ptr %res
 }}"""
 
 
@@ -3240,6 +3320,48 @@ length:
 slow:
   %fallback = call ptr @mule_storage_length(ptr %sequence)
   ret ptr %fallback
+}}
+
+define internal ptr @mule.fast.tuple.borrow(ptr %tuple, i64 %index) alwaysinline {{
+entry:
+  %data.addr = getelementptr i8, ptr %tuple, i64 {VALUE_BUFFER_DATA_OFFSET}
+  %data = load ptr, ptr %data.addr
+  %slot = getelementptr ptr, ptr %data, i64 %index
+  %value = load ptr, ptr %slot
+  ret ptr %value
+}}
+
+define internal ptr @mule.fast.tuple.slot(ptr %tuple, i64 %index) alwaysinline {{
+entry:
+  %value = call ptr @mule.fast.tuple.borrow(ptr %tuple, i64 %index)
+  %owned = call ptr @mule.fast.retain(ptr %value)
+  ret ptr %owned
+}}
+
+define internal i1 @mule.fast.tuple.shape(ptr %value, i64 %arity) alwaysinline {{
+entry:
+  %bits = ptrtoint ptr %value to i64
+  %tag = and i64 %bits, 1
+  %fixnum = icmp ne i64 %tag, 0
+  %null = icmp eq ptr %value, null
+  %skip = or i1 %fixnum, %null
+  br i1 %skip, label %no, label %object
+object:
+  %kind.addr = getelementptr i8, ptr %value, i64 {DATA_OFFSET}
+  %kind = load i32, ptr %kind.addr
+  %is.tuple = icmp eq i32 %kind, {ARGS_TAG}
+  br i1 %is.tuple, label %check, label %no
+check:
+  %class.addr = getelementptr i8, ptr %value, i64 {SEQUENCE_CLASS_OFFSET}
+  %class = load ptr, ptr %class.addr
+  %plain = icmp eq ptr %class, null
+  %len.addr = getelementptr i8, ptr %value, i64 {VALUE_BUFFER_LENGTH_OFFSET}
+  %len = load i64, ptr %len.addr
+  %len.ok = icmp eq i64 %len, %arity
+  %ok = and i1 %plain, %len.ok
+  ret i1 %ok
+no:
+  ret i1 false
 }}"""
 
 

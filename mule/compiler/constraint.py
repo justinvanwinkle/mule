@@ -1268,6 +1268,24 @@ def _propagate_sequence_available(visitor: _Propagation, node: Combination):
     return BOOLEAN_FACT
 
 
+@defpropagate("%isinstance")
+def _propagate_instance_check(visitor: _Propagation, node: Combination):
+    if not node.args:
+        return BOOLEAN_FACT
+    value_type = visitor.type_of(node.args[0])
+    if value_type is BOTTOM:
+        return NO_FACT
+    class_types = [visitor.type_of(arg) for arg in node.args[1:]]
+    if any(cls is BOTTOM for cls in class_types):
+        return NO_FACT
+    if not all(cls.fits_class() for cls in class_types):
+        visitor.invalidate()
+        return BOOLEAN_FACT
+    if any(value_type.is_instance_of(cls) is True for cls in class_types):
+        return BOOLEAN_TRUE_FACT
+    return BOOLEAN_FACT
+
+
 @defpropagate("%range_advance")
 def _propagate_range_advance(visitor: _Propagation, node: Combination):
     state = linked(node.info, node, "info")
@@ -2321,7 +2339,9 @@ class _Walk:
                     edge = linked(visitor.handler_state, visitor, "handler state")
                     self.invalidate_globals(edge)
                 else:
-                    edge = self.constrain_edge(block, target, visitor, state)
+                    edge = self.constrain_edge(
+                        block, target, visitor, state, edge_states
+                    )
                     if edge is None:
                         continue
                 key = block, target
@@ -2335,12 +2355,12 @@ class _Walk:
                         queued.add(target)
         return did_widen
 
-    def constrain_edge(self, block, target, visitor, state):
+    def constrain_edge(self, block, target, visitor, state, edge_states=None):
         """Narrow an integer local on a branch edge tested against a constant,
         or return ``None`` when a constant boolean test makes the edge dead."""
         last = block.last
         if last is not None:
-            return last.accept(_ConstrainEdge(target, visitor, state))
+            return last.accept(_ConstrainEdge(target, visitor, state, edge_states))
         return state
 
 
@@ -2399,10 +2419,11 @@ _FALSE_NARROWING = _NarrowTruthiness(False)
 class _ConstrainEdge(NodeVisitor):
     """Only a two-way branch narrows its edges."""
 
-    def __init__(self, target, visitor: _Propagation, state):
+    def __init__(self, target, visitor: _Propagation, state, edge_states=None):
         self.target = target
         self.visitor = visitor
         self.state = state
+        self.edge_states = edge_states
 
     def visit_Node(self, node):
         return self.state
@@ -2433,6 +2454,73 @@ class _ConstrainEdge(NodeVisitor):
             return self.state
         local = self.visitor.origins.get(node.test)
         if local is not None and local in self.visitor.state:
+            walk = self.visitor.walk
+            nodes = walk.block_nodes.get(node.block, ())
+            test_ref = node.test.use()
+            if (
+                self.edge_states is not None
+                and len(nodes) == 2
+                and nodes[0] is test_ref
+                and nodes[1] is node
+                and local not in walk.indirect
+                and node.block is not walk.entry
+                and node.block not in walk.headers
+            ):
+                pending_edges = [
+                    (pred, node.block)
+                    for pred in walk.predecessors.get(node.block, ())
+                    if (pred, node.block) in self.edge_states
+                ]
+                seen_edges = set(pending_edges)
+                feasible = []
+                filtered = False
+                while pending_edges:
+                    u, v = pending_edges.pop()
+                    if (
+                        len(walk.block_nodes.get(u, ())) == 1
+                        and u is not walk.entry
+                        and u not in walk.headers
+                    ):
+                        in_edges = [
+                            (gp, u)
+                            for gp in walk.predecessors.get(u, ())
+                            if (gp, u) in self.edge_states
+                        ]
+                        if in_edges:
+                            for edge_key in in_edges:
+                                if edge_key not in seen_edges:
+                                    seen_edges.add(edge_key)
+                                    pending_edges.append(edge_key)
+                            continue
+                    pred_edge = self.edge_states[u, v]
+                    pred_fact = pred_edge.get(local)
+                    pred_truth = (
+                        pred_fact.type.truth_value() if pred_fact is not None else None
+                    )
+                    if (truth and pred_truth is False) or (
+                        not truth and pred_truth is True
+                    ):
+                        filtered = True
+                    else:
+                        feasible.append(pred_edge)
+                if filtered:
+                    if not feasible:
+                        return None
+                    edge = feasible[0].copy()
+                    for pred_edge in feasible[1:]:
+                        edge, _ = join_states(edge, pred_edge)
+                    if test_ref.final:
+                        edge[local] = UNBOUND_FACT
+                    else:
+                        current = edge[local]
+                        narrowed = current.type.accept(
+                            _TRUE_NARROWING if truth else _FALSE_NARROWING
+                        )
+                        if narrowed is BOTTOM:
+                            return None
+                        if narrowed != current.type:
+                            edge[local] = self.visitor.narrowed_fact(current, narrowed)
+                    return edge
             current = self.visitor.state[local]
             narrowed = current.type.accept(
                 _TRUE_NARROWING if truth else _FALSE_NARROWING
@@ -2446,6 +2534,23 @@ class _ConstrainEdge(NodeVisitor):
         return self.state
 
 
+class _PrecedingLeafSet(NodeVisitor):
+    def __init__(self, leaf):
+        self.leaf = leaf
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Set(self, node: Set):
+        if (
+            node.var is self.leaf
+            and node.value is not None
+            and len(node.value.uses) == 1
+        ):
+            return node.value.uses[0]
+        return None
+
+
 class _ConstrainComparison(NodeVisitor):
     """A known comparison or predicate call on a branch edge narrows its operands."""
 
@@ -2455,6 +2560,13 @@ class _ConstrainComparison(NodeVisitor):
         self.truth = truth
 
     def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        if node.prev is not None and node.prev.use is not None:
+            producer = node.prev.use.accept(_PrecedingLeafSet(node.leaf))
+            if producer is not None and producer.block is node.block:
+                return producer.accept(self)
         return None
 
     def visit_Combination(self, node):

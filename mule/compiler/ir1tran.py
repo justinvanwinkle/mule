@@ -314,6 +314,9 @@ class Converter:
         self.class_definitions = 0
         self.class_identities: dict[int, str] = {}
         self.declared_class_bindings: dict[str, _CompilerBinding] = {}
+        self.declared_class_match_info: dict[
+            str, tuple[tuple[str, ...] | None, frozenset[str]]
+        ] = {}
         self.class_fields = {}
         self.module_annotation_shadows = set()
         self.interface_bindings = {}
@@ -3813,12 +3816,43 @@ class _MatchLowering:
             span=self.span,
         )
 
+    def unshadowed_global(self, name: str) -> bool:
+        fn = self.function
+        return (
+            fn.class_binding(name) is None
+            and fn.class_reader(name) is None
+            and fn.variable(name).accept(_IS_GLOBAL_VAR)
+        )
+
+    def unshadowed_builtin(self, name: str) -> bool:
+        shadows = self.function.converter.module_annotation_shadows
+        return (
+            self.function.lambda_.policy.safety < 3
+            and "*" not in shadows
+            and name not in shadows
+            and self.unshadowed_global(name)
+        )
+
     def statements(self, node):
-        subject = self.temporary()
-        result = [
-            self.assign(subject, node.subject),
-            *self.cases(node.cases, 0, subject),
-        ]
+        elements = node.subject.accept(_UNPACK_FREE_SEQUENCE_SUBJECT)
+        if elements is not None and all(
+            case.pattern.accept(_FixedTuplePattern(len(elements)))
+            for case in node.cases
+        ):
+            subject_items = [self.temporary() for _ in elements]
+            result = [
+                *[
+                    self.assign(target, element)
+                    for target, element in zip(subject_items, elements, strict=True)
+                ],
+                *self.tuple_cases(node.cases, 0, subject_items),
+            ]
+        else:
+            subject = self.temporary()
+            result = [
+                self.assign(subject, node.subject),
+                *self.cases(node.cases, 0, subject),
+            ]
         if self.helpers is not None:
             result.insert(
                 0,
@@ -3828,6 +3862,29 @@ class _MatchLowering:
                 ),
             )
         return result
+
+    def tuple_cases(self, cases, position, subject_items):
+        if position == len(cases):
+            return []
+        case = cases[position]
+        flag = self.temporary()
+        test = self.name(flag)
+        if case.guard is not None:
+            test = ast.Boolean(
+                ast.BooleanOperator.AND, [test, case.guard], span=self.span
+            )
+        return [
+            *self.tuple_pattern(case.pattern, subject_items, flag),
+            ast.If(
+                test,
+                list(case.body) or [ast.Pass(span=self.span)],
+                self.tuple_cases(cases, position + 1, subject_items),
+                span=self.span,
+            ),
+        ]
+
+    def tuple_pattern(self, pattern, subject_items, flag):
+        return pattern.accept(_TuplePatternTest(self, subject_items, flag))
 
     def cases(self, cases, position, subject):
         if position == len(cases):
@@ -3854,26 +3911,55 @@ class _MatchLowering:
         value in the variable ``subject``."""
         return pattern.accept(_PatternTest(self, subject, flag))
 
+    def direct_items(self, expressions, patterns, flag, *, flag_is_true: bool = False):
+        """Match each pattern against the corresponding expression in order,
+        stopping at the first failure without building an intermediate sequence."""
+        result = []
+        for expr, pattern in reversed(list(zip(expressions, patterns, strict=True))):
+            is_capture, capture_name = pattern.accept(_CAPTURE_PATTERN_INFO)
+            if is_capture:
+                bind = [] if capture_name is None else [self.assign(capture_name, expr)]
+                if result:
+                    result = [*bind, *result]
+                elif flag_is_true:
+                    result = bind
+                else:
+                    result = [*bind, self.assign(flag, self.constant(True))]
+            else:
+                item = self.temporary()
+                result = [
+                    self.assign(item, expr),
+                    *self.pattern(pattern, item, flag),
+                    *([self.when(flag, result)] if result else []),
+                ]
+        return result
+
     def items(self, values, patterns, flag, positions):
         """Match each pattern against the item at its position, in order,
         stopping at the first failure."""
-        result = []
-        for pattern, position in reversed(list(zip(patterns, positions, strict=True))):
-            item = self.temporary()
-            result = [
-                self.assign(item, self.index(values, position)),
-                *self.pattern(pattern, item, flag),
-                *([self.when(flag, result)] if result else []),
-            ]
-        return result
+        return self.direct_items(
+            [self.index(values, position) for position in positions],
+            patterns,
+            flag,
+        )
 
     def sequence(self, pattern, subject, flag):
         values = self.temporary()
         elements = pattern.elements
         stars = _star_positions(elements)
-        length = ast.Call(
-            ast.Attribute(self.name(values), "__len__", span=self.span), span=self.span
-        )
+        has_named_star = any(element.accept(_HAS_NAMED_STAR) for element in elements)
+        helper_name = "sequence_list" if has_named_star else "sequence"
+        if self.unshadowed_builtin("len"):
+            length = ast.Call(
+                self.name("len"),
+                [ast.CallArgument(self.name(values), span=self.span)],
+                span=self.span,
+            )
+        else:
+            length = ast.Call(
+                ast.Attribute(self.name(values), "__len__", span=self.span),
+                span=self.span,
+            )
         count = ast.IntegerLiteral(len(elements) - len(stars), span=self.span)
         size_check = self.compare(
             length,
@@ -3887,10 +3973,15 @@ class _MatchLowering:
         matched = [
             *captures,
             self.assign(flag, self.constant(True)),
-            *self.items(values, patterns, flag, positions),
+            *self.direct_items(
+                [self.index(values, position) for position in positions],
+                patterns,
+                flag,
+                flag_is_true=True,
+            ),
         ]
         return [
-            self.assign(values, self.call("sequence", self.name(subject))),
+            self.assign(values, self.call(helper_name, self.name(subject))),
             self.assign(
                 flag,
                 self.compare(
@@ -3954,6 +4045,66 @@ class _MatchLowering:
         ]
 
     def class_pattern(self, pattern, subject, flag):
+        cls_name = pattern.class_name.accept(_BASE_CLASS_NAME)
+        match_info = (
+            self.function.converter.declared_class_match_info.get(cls_name)
+            if cls_name is not None
+            else None
+        )
+        if (
+            match_info is not None
+            and self.unshadowed_global(cls_name)
+            and self.unshadowed_builtin("isinstance")
+        ):
+            match_args, guaranteed_fields = match_info
+            pos_count = len(pattern.positional)
+            if (match_args is not None or pos_count == 0) and (
+                pos_count <= len(match_args or ())
+            ):
+                field_names = [
+                    *(match_args or ())[:pos_count],
+                    *(keyword.name for keyword in pattern.keywords),
+                ]
+                if len(set(field_names)) == len(field_names) and all(
+                    field in guaranteed_fields for field in field_names
+                ):
+                    patterns = [
+                        *pattern.positional,
+                        *(keyword.pattern for keyword in pattern.keywords),
+                    ]
+                    active_pairs = [
+                        (field, subpattern)
+                        for field, subpattern in zip(field_names, patterns, strict=True)
+                        if subpattern.accept(_CAPTURE_PATTERN_INFO) != (True, None)
+                    ]
+                    isinstance_call = ast.Call(
+                        self.name("isinstance"),
+                        [
+                            ast.CallArgument(self.name(subject), span=self.span),
+                            ast.CallArgument(
+                                ast.Tuple([pattern.class_name], span=self.span),
+                                span=self.span,
+                            ),
+                        ],
+                        span=self.span,
+                    )
+                    sub_stmts = (
+                        self.direct_items(
+                            [
+                                ast.Attribute(self.name(subject), field, span=self.span)
+                                for field, _ in active_pairs
+                            ],
+                            [subpattern for _, subpattern in active_pairs],
+                            flag,
+                            flag_is_true=True,
+                        )
+                        if active_pairs
+                        else []
+                    )
+                    return [
+                        self.assign(flag, isinstance_call),
+                        *([self.when(flag, sub_stmts)] if sub_stmts else []),
+                    ]
         values = self.temporary()
         names = ast.Tuple(
             [
@@ -4095,8 +4246,8 @@ class _PatternTest(ast.Visitor):
 
     def visit_OrPattern(self, node):
         lowering, subject, flag = self.lowering, self.subject, self.flag
-        result = [lowering.assign(flag, lowering.constant(False))]
-        for alternative in node.alternatives:
+        result = list(lowering.pattern(node.alternatives[0], subject, flag))
+        for alternative in node.alternatives[1:]:
             result.append(
                 ast.If(
                     ast.Unary(
@@ -4116,6 +4267,119 @@ class _PatternTest(ast.Visitor):
 
     def visit_ClassPattern(self, node):
         return self.lowering.class_pattern(node, self.subject, self.flag)
+
+
+class _CapturePatternInfo(ast.Visitor):
+    def visit_Node(self, node):
+        return (False, None)
+
+    def visit_CapturePattern(self, node: ast.CapturePattern):
+        return (True, node.name)
+
+
+_CAPTURE_PATTERN_INFO = _CapturePatternInfo()
+
+
+class _HasNamedStar(ast.Visitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_StarPattern(self, node: ast.StarPattern):
+        return node.name is not None
+
+
+_HAS_NAMED_STAR = _HasNamedStar()
+
+
+class _IsUnpackNode(ast.Visitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_Unpack(self, node: ast.Unpack):
+        return True
+
+
+_IS_UNPACK_NODE = _IsUnpackNode()
+
+
+class _UnpackFreeSequenceSubject(ast.Visitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Tuple(self, node: ast.Tuple):
+        if any(element.accept(_IS_UNPACK_NODE) for element in node.elements):
+            return None
+        return list(node.elements)
+
+    def visit_List(self, node: ast.List):
+        if any(element.accept(_IS_UNPACK_NODE) for element in node.elements):
+            return None
+        return list(node.elements)
+
+
+_UNPACK_FREE_SEQUENCE_SUBJECT = _UnpackFreeSequenceSubject()
+
+
+class _FixedTuplePattern(ast.Visitor):
+    def __init__(self, arity: int):
+        self.arity = arity
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_CapturePattern(self, node: ast.CapturePattern):
+        return node.name is None
+
+    def visit_OrPattern(self, node: ast.OrPattern):
+        return all(alt.accept(self) for alt in node.alternatives)
+
+    def visit_SequencePattern(self, node: ast.SequencePattern):
+        return len(node.elements) == self.arity and not _star_positions(node.elements)
+
+
+class _TuplePatternTest(ast.Visitor):
+    """Matches a fixed-arity sequence pattern directly against pre-evaluated
+    tuple/list subject item temporaries."""
+
+    def __init__(self, lowering: _MatchLowering, subject_items: list[str], flag: str):
+        self.lowering = lowering
+        self.subject_items = subject_items
+        self.flag = flag
+
+    def visit_Node(self, node):
+        self.lowering.function.error("unsupported pattern", node, unsupported=True)
+
+    def visit_CapturePattern(self, node: ast.CapturePattern):
+        lowering = self.lowering
+        return [lowering.assign(self.flag, lowering.constant(True))]
+
+    def visit_OrPattern(self, node: ast.OrPattern):
+        lowering, flag = self.lowering, self.flag
+        result = list(node.alternatives[0].accept(self))
+        for alternative in node.alternatives[1:]:
+            result.append(
+                ast.If(
+                    ast.Unary(
+                        ast.UnaryOperator.NOT, lowering.name(flag), span=lowering.span
+                    ),
+                    alternative.accept(self),
+                    span=lowering.span,
+                )
+            )
+        return result
+
+    def visit_SequencePattern(self, node: ast.SequencePattern):
+        lowering, flag = self.lowering, self.flag
+        sub_stmts = lowering.direct_items(
+            [lowering.name(item) for item in self.subject_items],
+            node.elements,
+            flag,
+            flag_is_true=True,
+        )
+        return [
+            lowering.assign(flag, lowering.constant(True)),
+            *sub_stmts,
+        ]
 
 
 class _StarPositions(ast.Visitor):
@@ -6326,10 +6590,43 @@ class _ClassHierarchyScan(ast.Visitor):
     def __init__(self):
         self.subclassed_names: set[str] = set()
         self.has_dynamic_base: bool = False
+        self.has_delattr: bool = False
+        self.mutated_match_args: bool = False
 
     def visit_Node(self, node):
         for child in node.children():
             child.accept(self)
+
+    def visit_Delete(self, node: ast.Delete):
+        for target in node.targets:
+            if target.accept(_IS_ATTRIBUTE_NODE):
+                self.has_delattr = True
+        self.visit_Node(node)
+
+    def visit_Call(self, node: ast.Call):
+        callee_name = node.function.accept(_BASE_CLASS_NAME)
+        if callee_name == "delattr":
+            self.has_delattr = True
+            self.mutated_match_args = True
+        elif callee_name == "setattr":
+            self.mutated_match_args = True
+        self.visit_Node(node)
+
+    def visit_Assignment(self, node: ast.Assignment):
+        for target in node.targets:
+            if target.accept(_TARGETS_MATCH_ARGS):
+                self.mutated_match_args = True
+        self.visit_Node(node)
+
+    def visit_AnnotatedAssignment(self, node: ast.AnnotatedAssignment):
+        if node.target.accept(_TARGETS_MATCH_ARGS):
+            self.mutated_match_args = True
+        self.visit_Node(node)
+
+    def visit_AugmentedAssignment(self, node: ast.AugmentedAssignment):
+        if node.target.accept(_TARGETS_MATCH_ARGS):
+            self.mutated_match_args = True
+        self.visit_Node(node)
 
     def visit_ClassDefinition(self, node: ast.ClassDefinition):
         for arg in node.arguments:
@@ -6343,6 +6640,202 @@ class _ClassHierarchyScan(ast.Visitor):
                 self.has_dynamic_base = True
         for child in node.body:
             child.accept(self)
+
+
+class _IsAttributeNode(ast.Visitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_Attribute(self, node: ast.Attribute):
+        return True
+
+
+_IS_ATTRIBUTE_NODE = _IsAttributeNode()
+
+
+class _TargetsMatchArgs(ast.Visitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_Attribute(self, node: ast.Attribute):
+        return node.attribute == "__match_args__"
+
+    def visit_Tuple(self, node: ast.Tuple):
+        return any(el.accept(self) for el in node.elements)
+
+    def visit_List(self, node: ast.List):
+        return any(el.accept(self) for el in node.elements)
+
+
+_TARGETS_MATCH_ARGS = _TargetsMatchArgs()
+
+
+class _StringLiteralTuple(ast.Visitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Tuple(self, node: ast.Tuple):
+        names: list[str] = []
+        for element in node.elements:
+            text = element.accept(_TEXT_LITERAL_VALUE)
+            if text is None:
+                return None
+            names.append(text)
+        return tuple(names)
+
+
+class _TextLiteralValue(ast.Visitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_TextLiteral(self, node: ast.TextLiteral):
+        return node.value
+
+
+_TEXT_LITERAL_VALUE = _TextLiteralValue()
+_STRING_LITERAL_TUPLE = _StringLiteralTuple()
+
+
+class _SelfAttributeAssignment(ast.Visitor):
+    def __init__(self, self_name: str):
+        self.self_name = self_name
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Assignment(self, node: ast.Assignment):
+        if len(node.targets) != 1:
+            return None
+        return node.targets[0].accept(self)
+
+    def visit_AnnotatedAssignment(self, node: ast.AnnotatedAssignment):
+        if node.value is None:
+            return None
+        return node.target.accept(self)
+
+    def visit_Attribute(self, node: ast.Attribute):
+        if node.value.accept(_BASE_CLASS_NAME) == self.self_name:
+            return node.attribute
+        return None
+
+
+class _EarlyExitCheck(ast.Visitor):
+    def __init__(self):
+        self.has_early_exit = False
+
+    def visit_Node(self, node):
+        for child in node.children():
+            child.accept(self)
+
+    def visit_FunctionDefinition(self, node: ast.FunctionDefinition):
+        pass
+
+    def visit_ClassDefinition(self, node: ast.ClassDefinition):
+        pass
+
+    def visit_Return(self, node: ast.Return):
+        self.has_early_exit = True
+
+    def visit_Raise(self, node: ast.Raise):
+        self.has_early_exit = True
+
+    def visit_Yield(self, node: ast.Yield):
+        self.has_early_exit = True
+
+    def visit_YieldFrom(self, node: ast.YieldFrom):
+        self.has_early_exit = True
+
+
+class _DeclaredClassMatchExtractor(ast.Visitor):
+    """Extracts static ``(__match_args__, guaranteed_fields)`` for a top-level
+    class with no bases or decorators."""
+
+    def __init__(self):
+        self.valid = True
+        self.has_match_args = False
+        self.match_args: tuple[str, ...] | None = None
+        self.slots: tuple[str, ...] | None = None
+        self.init_fields: set[str] = set()
+        self.class_attrs: set[str] = set()
+
+    def visit_Node(self, node):
+        self.valid = False
+
+    def visit_Pass(self, node: ast.Pass):
+        pass
+
+    def visit_ExpressionStatement(self, node: ast.ExpressionStatement):
+        if node.expression.accept(_TEXT_LITERAL_VALUE) is None:
+            self.valid = False
+
+    def visit_AnnotatedAssignment(self, node: ast.AnnotatedAssignment):
+        name = node.target.accept(_BASE_CLASS_NAME)
+        if name is None:
+            self.valid = False
+            return
+        if node.value is not None:
+            self._record_class_assignment(name, node.value)
+
+    def visit_Assignment(self, node: ast.Assignment):
+        if len(node.targets) != 1:
+            self.valid = False
+            return
+        name = node.targets[0].accept(_BASE_CLASS_NAME)
+        if name is None:
+            self.valid = False
+            return
+        self._record_class_assignment(name, node.value)
+
+    def _record_class_assignment(self, name: str, value: ast.Node):
+        if name == "__match_args__":
+            if self.has_match_args:
+                self.valid = False
+                return
+            self.has_match_args = True
+            parsed = value.accept(_STRING_LITERAL_TUPLE)
+            if parsed is None:
+                self.valid = False
+            else:
+                self.match_args = parsed
+        elif name == "__slots__":
+            parsed = value.accept(_STRING_LITERAL_TUPLE)
+            if parsed is not None:
+                self.slots = parsed
+        else:
+            self.valid = False
+
+    def visit_FunctionDefinition(self, node: ast.FunctionDefinition):
+        if node.decorators or node.name in (
+            "__getattr__",
+            "__getattribute__",
+            "__setattr__",
+            "__delattr__",
+        ):
+            self.valid = False
+            return
+        self.class_attrs.add(node.name)
+        if node.name == "__init__":
+            positional = [
+                param
+                for param in node.parameters
+                if param.kind
+                in (
+                    ast.ParameterKind.POSITIONAL_ONLY,
+                    ast.ParameterKind.POSITIONAL_OR_KEYWORD,
+                )
+            ]
+            if not positional:
+                return
+            self_name = positional[0].name
+            extractor = _SelfAttributeAssignment(self_name)
+            exit_check = _EarlyExitCheck()
+            for stmt in node.body:
+                stmt.accept(exit_check)
+                if exit_check.has_early_exit:
+                    break
+                attr_name = stmt.accept(extractor)
+                if attr_name is not None:
+                    self.init_fields.add(attr_name)
 
 
 class _TopLevelDeclaredClasses(ast.Visitor):
@@ -6383,6 +6876,23 @@ class _TopLevelDeclaredClasses(ast.Visitor):
         self.converter.declared_class_bindings[node.name] = _DeclaredTypeBinding(
             ClassContract(node.name, identity)
         )
+        if (
+            not node.arguments
+            and not node.decorators
+            and not self.hierarchy.has_delattr
+            and not self.hierarchy.mutated_match_args
+        ):
+            extractor = _DeclaredClassMatchExtractor()
+            for stmt in node.body:
+                stmt.accept(extractor)
+            if extractor.valid:
+                guaranteed = extractor.init_fields - extractor.class_attrs
+                if extractor.slots is not None:
+                    guaranteed = guaranteed & set(extractor.slots)
+                self.converter.declared_class_match_info[node.name] = (
+                    extractor.match_args,
+                    frozenset(guaranteed),
+                )
 
 
 class _GlobalDeclarations(ast.Visitor):

@@ -95,16 +95,14 @@ pub unsafe extern "C" fn mule_native_new(class: Value) -> Value {
     let Data::Class(layout) = (unsafe { &(*class).data }) else {
         unreachable!();
     };
-    let mut payload = Vec::new();
-    if payload.try_reserve_exact(layout.fields.len()).is_err() {
+    let Some(payload) = (unsafe { object::alloc_zeroed_i64_box(layout.fields.len()) }) else {
         object::error("MemoryError", "native payload allocation failed");
         return std::ptr::null_mut();
-    }
-    payload.resize(layout.fields.len(), 0);
+    };
     unsafe {
         object::new_value(Data::NativeInstance {
             ty: object::retain(class),
-            payload: payload.into_boxed_slice(),
+            payload,
         })
     }
 }

@@ -134,7 +134,7 @@ specials! {
     IPow => "__ipow__", ILShift => "__ilshift__", IRShift => "__irshift__",
     IAnd => "__iand__", IXor => "__ixor__", IOr => "__ior__",
     InstanceCheck => "__instancecheck__", SubclassCheck => "__subclasscheck__",
-    ClassGetItem => "__class_getitem__", LengthHint => "__length_hint__",
+    Class => "__class__", ClassGetItem => "__class_getitem__", LengthHint => "__length_hint__",
     Dir => "__dir__", Reduce => "__reduce__", ReduceEx => "__reduce_ex__",
     GetState => "__getstate__", SetState => "__setstate__",
     Copy => "__copy__", DeepCopy => "__deepcopy__", Fspath => "__fspath__",
@@ -153,6 +153,7 @@ const UNRESOLVED: Value = 1 as Value;
 struct SpecialTable {
     epoch: Cell<usize>,
     entries: [Cell<Value>; SPECIAL_COUNT],
+    own_abstract_methods: Cell<Value>,
 }
 
 impl SpecialTable {
@@ -160,6 +161,7 @@ impl SpecialTable {
         SpecialTable {
             epoch: Cell::new(0),
             entries: std::array::from_fn(|_| Cell::new(UNRESOLVED)),
+            own_abstract_methods: Cell::new(UNRESOLVED),
         }
     }
 }
@@ -244,6 +246,7 @@ impl ClassLayout {
             for entry in &table.entries {
                 entry.set(UNRESOLVED);
             }
+            table.own_abstract_methods.set(UNRESOLVED);
             table.epoch.set(epoch);
         }
         let entry = &table.entries[special as usize];
@@ -253,6 +256,28 @@ impl ClassLayout {
         }
         let value = self.resolve_special(special.name());
         entry.set(value);
+        value
+    }
+
+    pub fn own_abstract_methods(&self) -> Value {
+        let epoch = ATTRIBUTE_EPOCH.load(Ordering::Relaxed);
+        let table = &self.specials;
+        if table.epoch.get() != epoch {
+            for entry in &table.entries {
+                entry.set(UNRESOLVED);
+            }
+            table.own_abstract_methods.set(UNRESOLVED);
+            table.epoch.set(epoch);
+        }
+        let value = table.own_abstract_methods.get();
+        if value != UNRESOLVED {
+            return value;
+        }
+        let value = self
+            .attribute_lookup
+            .get("__abstractmethods__")
+            .map_or(std::ptr::null_mut(), |&index| self.attributes[index].1);
+        table.own_abstract_methods.set(value);
         value
     }
 
@@ -1348,7 +1373,7 @@ pub unsafe fn construct(class: Value, args: &[Value]) -> Value {
             instance
         };
         let initializer = hook(layout, Special::Init);
-        if !initializer.is_null() && is_instance(instance, class) {
+        if !initializer.is_null() && (creator.is_null() || is_instance(instance, class)) {
             let result = call_attribute(initializer, instance, class, args);
             if result.is_null() {
                 object::release(instance);
@@ -1373,18 +1398,90 @@ pub unsafe fn construct(class: Value, args: &[Value]) -> Value {
     }
 }
 
+pub unsafe fn construct_owned(class: Value, args: &[Value]) -> Value {
+    unsafe {
+        let call = metaclass_call(class);
+        if !call.is_null() {
+            let result = call_attribute(call, class, class_of_value(class), args);
+            for &arg in args {
+                object::release(arg);
+            }
+            return result;
+        }
+        let Data::Class(layout) = &(*class).data else {
+            unreachable!();
+        };
+        if let Some(native) = &layout.native {
+            let result =
+                (native.constructor)(native.globals, class, args.len() as isize, args.as_ptr());
+            for &arg in args {
+                object::release(arg);
+            }
+            return result;
+        }
+        let creator = hook(layout, Special::New);
+        if !creator.is_null() {
+            let result = construct(class, args);
+            for &arg in args {
+                object::release(arg);
+            }
+            return result;
+        }
+        let Some(instance) = allocate(class, layout) else {
+            for &arg in args {
+                object::release(arg);
+            }
+            return std::ptr::null_mut();
+        };
+        let initializer = hook(layout, Special::Init);
+        if !initializer.is_null() {
+            let result = if attribute_kind(initializer) == METHOD {
+                object::call_with_receiver_owned(initializer, object::retain(instance), args)
+            } else {
+                let res = call_attribute(initializer, instance, class, args);
+                for &arg in args {
+                    object::release(arg);
+                }
+                res
+            };
+            if result.is_null() {
+                object::release(instance);
+                return result;
+            }
+            let valid = result == object::none_value();
+            object::release(result);
+            if !valid {
+                object::error("TypeError", "__init__() should return None");
+                object::release(instance);
+                return std::ptr::null_mut();
+            }
+        } else {
+            for &arg in args {
+                object::release(arg);
+            }
+            if !args.is_empty() {
+                object::error(
+                    "TypeError",
+                    &format!("{}() takes no arguments", layout.name),
+                );
+                object::release(instance);
+                return std::ptr::null_mut();
+            }
+        }
+        instance
+    }
+}
+
 /// A new instance of `class` with every field unset.
 pub unsafe fn check_not_abstract(layout: &ClassLayout) -> bool {
     unsafe {
-        if let Some(&index) = layout.attribute_lookup.get("__abstractmethods__") {
-            let abs = layout.attributes[index].1;
-            if !abs.is_null() && object::truth(abs) == Some(true) {
-                object::error(
-                    "TypeError",
-                    &format!("Can't instantiate abstract class {}", layout.name),
-                );
-                return false;
-            }
+        let abs = layout.own_abstract_methods();
+        if !abs.is_null() && object::truth(abs) == Some(true) {
+            object::error(
+                "TypeError",
+                &format!("Can't instantiate abstract class {}", layout.name),
+            );
+            return false;
         }
         true
     }
@@ -1434,10 +1531,11 @@ pub unsafe extern "C" fn mule_isinstance_class(value: Value, class: Value) -> i3
         // performs; only a metaclass overriding it needs the protocol. As
         // CPython's `PyObject_IsInstance`, which skips the hook for an exact
         // `type`, compare the metaclass's hook with `type`'s own.
-        if !layout.metaclass.is_null() {
+        let type_cls = builtin_type(Builtin::Type);
+        if !layout.metaclass.is_null() && layout.metaclass != type_cls {
             if let Some(meta) = layout_of_class(layout.metaclass) {
                 let hook = meta.special_slot(Special::InstanceCheck);
-                let plain = layout_of_class(builtin_type(Builtin::Type))
+                let plain = layout_of_class(type_cls)
                     .map_or(std::ptr::null_mut(), |ty| ty.special_slot(Special::InstanceCheck));
                 if !hook.is_null() && hook != plain {
                     return -1;
@@ -1446,14 +1544,10 @@ pub unsafe extern "C" fn mule_isinstance_class(value: Value, class: Value) -> i3
         }
         match class_layout_quiet(actual) {
             Some(actual_layout) => {
-                if actual_layout.mro.contains(&class) {
+                if !layout.subclasses.is_empty() && actual_layout.mro.contains(&class) {
                     return 1;
                 }
-                let object_layout = layout_of_class(builtin_type(Builtin::Object));
-                let custom_class = actual_layout
-                    .find("__class__")
-                    .is_some_and(|(owner, _, _)| !object_layout.is_some_and(|obj| std::ptr::eq(owner, obj)));
-                if custom_class
+                if !actual_layout.special_slot(Special::Class).is_null()
                     || !actual_layout.special_slot(Special::GetAttr).is_null()
                     || !actual_layout.special_slot(Special::GetAttribute).is_null()
                 {
@@ -1484,6 +1578,20 @@ unsafe fn class_layout_quiet<'a>(value: Value) -> Option<&'a ClassLayout> {
 /// does. A class `mule_isinstance_class` cannot answer goes through the
 /// compiled `isinstance` protocol. Returns `True`/`False`, or NULL with an
 /// error. All operands are borrowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_isinstance_single(value: Value, class: Value) -> Value {
+    unsafe {
+        match mule_isinstance_class(value, class) {
+            1 => object::bool_value(true),
+            0 => object::bool_value(false),
+            _ => match isinstance_protocol(value, class) {
+                Some(matched) => object::bool_value(matched),
+                None => std::ptr::null_mut(),
+            },
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_isinstance_any(
     value: Value,

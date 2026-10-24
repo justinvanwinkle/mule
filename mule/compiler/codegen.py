@@ -303,6 +303,7 @@ declare ptr @mule_attribute_lookup_once(ptr, ptr)
 declare ptr @mule_attribute_lookup_or(ptr, ptr, ptr)
 declare ptr @mule_getattr_default(ptr, ptr, ptr, ptr)
 declare ptr @mule_hasattr(ptr, ptr, ptr)
+declare ptr @mule_isinstance_single(ptr, ptr)
 declare ptr @mule_isinstance_any(ptr, ptr, i64)
 declare ptr @mule_builtins_module_init(ptr)
 declare void @mule_register_finalizer(ptr)
@@ -1682,7 +1683,7 @@ class ModuleGenerator:
         for idx in range(arity):
             copies.extend(
                 [
-                    f"  %elem.{idx} = call ptr @mule_tuple_slot(ptr %tuple, i64 {idx})",
+                    f"  %elem.{idx} = call ptr @mule.fast.tuple.slot(ptr %tuple, i64 {idx})",
                     f"  %slot.{idx} = getelementptr ptr, ptr %out, i64 {idx}",
                     f"  store ptr %elem.{idx}, ptr %slot.{idx}",
                 ]
@@ -1723,10 +1724,9 @@ class ModuleGenerator:
         self.protocol_helpers[key] = symbol
         slow = self.protocol_helper("unpack", 2)
         self.auxiliary.append(
-            f"define internal ptr {symbol}(ptr %value, ptr %count) {{\n"
+            f"define internal ptr {symbol}(ptr %value, ptr %count) alwaysinline {{\n"
             "entry:\n"
-            f"  %matched = call i32 @mule_tuple_shape_matches(ptr %value, i64 {arity})\n"
-            "  %valid = icmp ne i32 %matched, 0\n"
+            f"  %valid = call i1 @mule.fast.tuple.shape(ptr %value, i64 {arity})\n"
             "  br i1 %valid, label %tuple, label %list.check\n"
             "tuple:\n"
             "  call void @mule.fast.release(ptr %count)\n"
@@ -2085,6 +2085,7 @@ class ModuleGenerator:
         receiver_call: bool = False,
         borrowed_arguments: frozenset[int] = frozenset(),
         local_environment: bool = False,
+        result_contract=None,
     ) -> str:
         step_key = tuple(
             (None if ctx is None else ctx.id, needed) for ctx, needed in steps
@@ -2100,6 +2101,7 @@ class ModuleGenerator:
             receiver_call,
             borrowed_arguments,
             local_environment,
+            result_contract,
         )
         existing = self.protocol_helpers.get(key)
         if existing is not None:
@@ -2207,6 +2209,31 @@ class ModuleGenerator:
             )
             builder.line(f"  %res.{tag} = call ptr {body}({body_args})")
             builder.line("  call void @mule_leave_frame()")
+            returned = (
+                self.facts[function].return_type
+                if context is None
+                else context.return_type
+            )
+            if result_contract is not None and not returned.fits(
+                result_contract.checked_type
+            ):
+                checker = self.return_contract_helper(result_contract)
+                builder.line(f"  %null.{tag} = icmp eq ptr %res.{tag}, null")
+                builder.line(
+                    f"  br i1 %null.{tag}, label %invoke.failed.{tag}, label %invoke.check.{tag}"
+                )
+                builder.lines.append(f"invoke.failed.{tag}:")
+                builder.line("  ret ptr null")
+                builder.lines.append(f"invoke.check.{tag}:")
+                checked = builder.operation(f"call i32 {checker}(ptr %res.{tag})")
+                rejected = builder.operation(f"icmp slt i32 {checked}, 0")
+                builder.line(
+                    f"  br i1 {rejected}, label %invoke.incompatible.{tag}, label %invoke.accepted.{tag}"
+                )
+                builder.lines.append(f"invoke.incompatible.{tag}:")
+                builder.line(f"  call void @mule.fast.release(ptr %res.{tag})")
+                builder.line("  ret ptr null")
+                builder.lines.append(f"invoke.accepted.{tag}:")
             if context is not None:
                 assumed = context.return_type.accept(
                     _TypeAssumption(builder, f"%res.{tag}")
@@ -2245,12 +2272,34 @@ class ModuleGenerator:
             builder.lines.append("fallback:")
             for index in borrowed_arguments:
                 builder.line(f"  call ptr @mule.fast.retain(ptr %arg.{index})")
-            builder.lines.extend(
-                [
-                    f"  %fallback.res = call ptr {fallback_helper}({fallback_args})",
-                    "  ret ptr %fallback.res",
-                ]
+            builder.line(
+                f"  %fallback.res = call ptr {fallback_helper}({fallback_args})"
             )
+            if result_contract is not None:
+                checker = self.return_contract_helper(result_contract)
+                builder.lines.extend(
+                    [
+                        "  %fallback.null = icmp eq ptr %fallback.res, null",
+                        "  br i1 %fallback.null, label %fallback.err, label %fallback.check",
+                        "fallback.err:",
+                        "  ret ptr null",
+                        "fallback.check:",
+                    ]
+                )
+                checked = builder.operation(f"call i32 {checker}(ptr %fallback.res)")
+                rejected = builder.operation(f"icmp slt i32 {checked}, 0")
+                builder.line(
+                    f"  br i1 {rejected}, label %fallback.incompatible, label %fallback.ok"
+                )
+                builder.lines.extend(
+                    [
+                        "fallback.incompatible:",
+                        "  call void @mule.fast.release(ptr %fallback.res)",
+                        "  ret ptr null",
+                        "fallback.ok:",
+                    ]
+                )
+            builder.line("  ret ptr %fallback.res")
         builder.lines.append("}")
         self.auxiliary.append("\n".join(builder.lines))
         return symbol
@@ -2482,7 +2531,7 @@ class ModuleGenerator:
             for slot_idx in range(unpack_arity):
                 builder.lines.extend(
                     [
-                        f"  %slot.val.{slot_idx} = call ptr @mule_tuple_slot(ptr %unpacked, i64 {slot_idx})",
+                        f"  %slot.val.{slot_idx} = call ptr @mule.fast.tuple.slot(ptr %unpacked, i64 {slot_idx})",
                         f"  %slot.addr.{slot_idx} = getelementptr ptr, ptr %tuple.out, i64 {slot_idx}",
                         f"  store ptr %slot.val.{slot_idx}, ptr %slot.addr.{slot_idx}",
                     ]
@@ -3750,10 +3799,9 @@ class _ArgumentGuard(ValueTypeVisitor):
                 f"icmp eq i32 {kind}, {int(vops._ReturnValueKind.TUPLE)}"
             )
         else:
-            matched = self.gen.operation(
-                f"call i32 @mule_tuple_shape_matches(ptr {self.value}, i64 {arity})"
+            valid = self.gen.operation(
+                f"call i1 @mule.fast.tuple.shape(ptr {self.value}, i64 {arity})"
             )
-            valid = self.gen.operation(f"icmp ne i32 {matched}, 0")
         if not fact.elements or all(element is UNKNOWN for element in fact.elements):
             return valid
         start = self.gen.fresh("guard.tuple.start")[1:]
@@ -3768,7 +3816,7 @@ class _ArgumentGuard(ValueTypeVisitor):
             if element is UNKNOWN:
                 continue
             item = self.gen.operation(
-                f"call ptr @mule_tuple_borrow_item(ptr {self.value}, i64 {index})"
+                f"call ptr @mule.fast.tuple.borrow(ptr {self.value}, i64 {index})"
             )
             elem_valid = element.accept(_ArgumentGuard(self.gen, item))
             checked = (
@@ -4073,6 +4121,7 @@ class FunctionGenerator:
     def _find_unpacked_calls(self, component) -> None:
         self.unpacked_calls: dict[object, int] = {}
         self.unpacked_call_assertions: dict[object, object] = {}
+        self.direct_call_assertions: dict[object, object] = {}
         self.unpacked_unpacks: set[object] = set()
         self.unpacked_slot_unpacks: dict[object, int] = {}
         self.unpacked_sequence_available: dict[object, int] = {}
@@ -4340,6 +4389,32 @@ class FunctionGenerator:
                 temp_tn.type = NONE_TYPE
                 discard_tn.type = NONE_TYPE
                 idx = cursor + 2
+            for idx in range(n_vops - 1):
+                call_vop = vops_list[idx]
+                assertion_vop = vops_list[idx + 1]
+                if (
+                    call_vop in self.unpacked_calls
+                    or call_vop.info not in (vops.FULL_CALL, vops.LOCAL_EXTENT_CALL)
+                    or assertion_vop.info is not vops.TYPE_CHECK
+                    or assertion_vop in self.unpacked_call_assertions.values()
+                ):
+                    continue
+                site = call_vop.codegen_info
+                target = site.target
+                if (
+                    target is None
+                    or target.call_order(site.keywords, len(call_vop.args) - 1) is None
+                ):
+                    continue
+                delivered = call_vop.results[0].tn
+                if (
+                    assertion_vop.args[0].tn is not delivered
+                    or delivered.sc not in OBJECT
+                    or len(writes.get(delivered, ())) != 1
+                    or len(reads.get(delivered, ())) != 1
+                ):
+                    continue
+                self.direct_call_assertions[call_vop] = assertion_vop
 
     def is_unpacked_return_vop(self, vop) -> bool:
         return self.unpacked and vop.node is not None and vop.node in self.return_uses
@@ -4354,14 +4429,19 @@ class FunctionGenerator:
     def unpacked_call_arity(self, vop) -> int | None:
         return self.unpacked_calls.get(vop)
 
-    def unpacked_call_contract(self, vop):
-        assertion = self.unpacked_call_assertions.get(vop)
+    def call_result_contract(self, vop):
+        assertion = self.unpacked_call_assertions.get(
+            vop
+        ) or self.direct_call_assertions.get(vop)
         if assertion is None or not assertion.codegen_info.safety:
             return None
         return assertion.codegen_info.contract
 
     def is_unpacked_result_check(self, vop):
         return vop in self.unpacked_call_assertions.values()
+
+    def is_direct_result_check(self, vop) -> bool:
+        return vop in self.direct_call_assertions.values()
 
     def is_unpacked_unpack(self, vop) -> bool:
         return vop in self.unpacked_unpacks
@@ -5400,6 +5480,7 @@ class FunctionGenerator:
                 and index in site.borrowable_arguments
             ),
             local_environment=site.local_environment,
+            result_contract=result_contract,
         )
         operands = ", ".join(
             [

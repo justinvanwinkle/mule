@@ -681,15 +681,16 @@ pub unsafe fn new_value(data: Data) -> Value {
 }
 
 const OBJECT_POOL_CAP: usize = 512;
-const TUPLE2_POOL_CAP: usize = 1024;
+const TUPLE_POOL_MAX_LEN: usize = 4;
+const TUPLE_POOL_CAP: usize = 512;
 pub(crate) const SLICE_POOL_MAX_LEN: usize = 8;
 const SLICE_POOL_CAP: usize = 512;
 
 struct ObjectPool {
     slots: [*mut Object; OBJECT_POOL_CAP],
     len: usize,
-    tuple2_slots: [*mut Object; TUPLE2_POOL_CAP],
-    tuple2_len: usize,
+    tuple_slots: [[*mut Object; TUPLE_POOL_CAP]; TUPLE_POOL_MAX_LEN],
+    tuple_lens: [usize; TUPLE_POOL_MAX_LEN],
     slice_slots: [[*mut Value; SLICE_POOL_CAP]; SLICE_POOL_MAX_LEN],
     slice_lens: [usize; SLICE_POOL_MAX_LEN],
 }
@@ -699,8 +700,8 @@ impl ObjectPool {
         Self {
             slots: [std::ptr::null_mut(); OBJECT_POOL_CAP],
             len: 0,
-            tuple2_slots: [std::ptr::null_mut(); TUPLE2_POOL_CAP],
-            tuple2_len: 0,
+            tuple_slots: [[std::ptr::null_mut(); TUPLE_POOL_CAP]; TUPLE_POOL_MAX_LEN],
+            tuple_lens: [0; TUPLE_POOL_MAX_LEN],
             slice_slots: [[std::ptr::null_mut(); SLICE_POOL_CAP]; SLICE_POOL_MAX_LEN],
             slice_lens: [0; SLICE_POOL_MAX_LEN],
         }
@@ -715,11 +716,13 @@ impl ObjectPool {
                 let ptr = *self.slots.get_unchecked(self.len);
                 std::alloc::dealloc(ptr.cast::<u8>(), std::alloc::Layout::new::<Object>());
             }
-            while self.tuple2_len > 0 {
-                self.tuple2_len -= 1;
-                let ptr = *self.tuple2_slots.get_unchecked(self.tuple2_len);
-                std::ptr::drop_in_place(&mut (*ptr).data);
-                std::alloc::dealloc(ptr.cast::<u8>(), std::alloc::Layout::new::<Object>());
+            for idx in 0..TUPLE_POOL_MAX_LEN {
+                while self.tuple_lens[idx] > 0 {
+                    self.tuple_lens[idx] -= 1;
+                    let ptr = *self.tuple_slots[idx].get_unchecked(self.tuple_lens[idx]);
+                    std::ptr::drop_in_place(&mut (*ptr).data);
+                    std::alloc::dealloc(ptr.cast::<u8>(), std::alloc::Layout::new::<Object>());
+                }
             }
             for idx in 0..SLICE_POOL_MAX_LEN {
                 let cap = idx + 1;
@@ -835,6 +838,17 @@ pub unsafe fn alloc_zeroed_value_box(len: usize) -> Option<Box<[Value]>> {
 }
 
 #[inline(always)]
+pub unsafe fn alloc_zeroed_i64_box(len: usize) -> Option<Box<[i64]>> {
+    unsafe {
+        let ptr = alloc_value_slice(len)?.cast::<i64>();
+        if len > 0 {
+            std::ptr::write_bytes(ptr, 0, len);
+        }
+        Some(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)))
+    }
+}
+
+#[inline(always)]
 unsafe fn alloc_object(obj: Object) -> Value {
     unsafe {
         let ptr = allocate_object_storage();
@@ -844,43 +858,78 @@ unsafe fn alloc_object(obj: Object) -> Value {
 }
 
 #[inline(always)]
-unsafe fn alloc_tuple2(v0: Value, v1: Value, tracked: bool) -> Value {
+unsafe fn alloc_small_tuple_borrowed(len: usize, values: *const Value) -> Value {
     unsafe {
+        let idx = len - 1;
         let cell = OBJECT_POOL.with(|c| c.get());
         let pool = &mut *cell;
-        if pool.tuple2_len > 0 {
-            pool.tuple2_len -= 1;
-            let ptr = *pool.tuple2_slots.get_unchecked(pool.tuple2_len);
+        let count = *pool.tuple_lens.get_unchecked(idx);
+        if count > 0 {
+            let next = count - 1;
+            *pool.tuple_lens.get_unchecked_mut(idx) = next;
+            let ptr = *pool.tuple_slots.get_unchecked(idx).get_unchecked(next);
+            let mut tracked = false;
+            if let Data::Args(ref mut buf, ..) = (*ptr).data {
+                let dst = buf.as_mut_ptr();
+                for i in 0..len {
+                    let v = retain(*values.add(i));
+                    tracked |= Data::may_cycle(v);
+                    *dst.add(i) = v;
+                }
+                buf.set_len(len);
+            }
             (*ptr).references.store(1, std::sync::atomic::Ordering::Relaxed);
             (*ptr).tracked = tracked;
             (*ptr).gc_slot = 0;
-            if let Data::Args(ref mut values, ..) = (*ptr).data {
-                let buf = values.as_mut_ptr();
-                *buf = v0;
-                *buf.add(1) = v1;
-                values.set_len(2);
-                if tracked {
-                    crate::gc::track(ptr);
-                }
-                return ptr;
+            if tracked {
+                crate::gc::track(ptr);
             }
+            return ptr;
         }
-        let Some(mut values) = ValueBuffer::try_with_capacity_exact(2) else {
-            release(v0);
-            release(v1);
+        sequence_buffer(len as isize, values).map_or(std::ptr::null_mut(), |buf| {
+            new_value(Data::Args(buf, std::ptr::null_mut(), std::ptr::null_mut()))
+        })
+    }
+}
+
+#[inline(always)]
+unsafe fn alloc_small_tuple_owned(len: usize, values: *const Value, tracked: bool) -> Value {
+    unsafe {
+        let idx = len - 1;
+        let cell = OBJECT_POOL.with(|c| c.get());
+        let pool = &mut *cell;
+        let count = *pool.tuple_lens.get_unchecked(idx);
+        if count > 0 {
+            let next = count - 1;
+            *pool.tuple_lens.get_unchecked_mut(idx) = next;
+            let ptr = *pool.tuple_slots.get_unchecked(idx).get_unchecked(next);
+            if let Data::Args(ref mut buf, ..) = (*ptr).data {
+                std::ptr::copy_nonoverlapping(values, buf.as_mut_ptr(), len);
+                buf.set_len(len);
+            }
+            (*ptr).references.store(1, std::sync::atomic::Ordering::Relaxed);
+            (*ptr).tracked = tracked;
+            (*ptr).gc_slot = 0;
+            if tracked {
+                crate::gc::track(ptr);
+            }
+            return ptr;
+        }
+        let Some(mut buf) = ValueBuffer::try_with_capacity_exact(len) else {
+            for i in 0..len {
+                release(*values.add(i));
+            }
             error("MemoryError", "sequence allocation failed");
             pool.flush();
             return std::ptr::null_mut();
         };
-        let buf = values.as_mut_ptr();
-        *buf = v0;
-        *buf.add(1) = v1;
-        values.set_len(2);
+        std::ptr::copy_nonoverlapping(values, buf.as_mut_ptr(), len);
+        buf.set_len(len);
         let value = alloc_object(Object {
             references: std::sync::atomic::AtomicUsize::new(1),
             tracked,
             gc_slot: 0,
-            data: Data::Args(values, std::ptr::null_mut(), std::ptr::null_mut()),
+            data: Data::Args(buf, std::ptr::null_mut(), std::ptr::null_mut()),
         });
         if tracked {
             crate::gc::track(value);
@@ -920,19 +969,31 @@ unsafe fn drop_and_dealloc_object(value: Value) {
         if !has_error() {
             match &mut (*value).data {
                 Data::Args(values, ty, attrs)
-                    if ty.is_null() && attrs.is_null() && values.capacity() == 2 =>
+                    if ty.is_null()
+                        && attrs.is_null()
+                        && (1..=TUPLE_POOL_MAX_LEN).contains(&values.capacity()) =>
                 {
+                    let idx = values.capacity() - 1;
                     let cell = OBJECT_POOL.with(|c| c.get());
                     let pool = &mut *cell;
-                    if pool.tuple2_len < TUPLE2_POOL_CAP {
+                    let count = *pool.tuple_lens.get_unchecked(idx);
+                    if count < TUPLE_POOL_CAP {
                         values.set_len(0);
-                        *pool.tuple2_slots.get_unchecked_mut(pool.tuple2_len) = value;
-                        pool.tuple2_len += 1;
+                        *pool.tuple_slots.get_unchecked_mut(idx).get_unchecked_mut(count) = value;
+                        *pool.tuple_lens.get_unchecked_mut(idx) = count + 1;
                         return;
                     }
                 }
                 Data::Instance { fields, attributes, .. } if attributes.is_null() => {
                     let slice = std::mem::replace(fields, Vec::new().into_boxed_slice());
+                    let len = slice.len();
+                    let ptr = Box::into_raw(slice).cast::<Value>();
+                    dealloc_value_slice(ptr, len);
+                    dealloc_object(value);
+                    return;
+                }
+                Data::NativeInstance { payload, .. } => {
+                    let slice = std::mem::replace(payload, Vec::new().into_boxed_slice());
                     let len = slice.len();
                     let ptr = Box::into_raw(slice).cast::<Value>();
                     dealloc_value_slice(ptr, len);
@@ -1070,6 +1131,12 @@ unsafe fn destroy(value: Value) {
                 drop_and_dealloc_object(value);
                 return;
             }
+            Data::NativeInstance { ty, .. } => {
+                (*value).references.store(0, std::sync::atomic::Ordering::Relaxed);
+                release(*ty);
+                drop_and_dealloc_object(value);
+                return;
+            }
             _ => (),
         }
         (*value).references.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -1116,6 +1183,11 @@ pub unsafe fn release_data(value: Value, mut data: Data) {
         data.visit_owned_values(|child| release(child));
         if let Data::Instance { fields, .. } = &mut data {
             let slice = std::mem::replace(fields, Vec::new().into_boxed_slice());
+            let len = slice.len();
+            let ptr = Box::into_raw(slice).cast::<Value>();
+            dealloc_value_slice(ptr, len);
+        } else if let Data::NativeInstance { payload, .. } = &mut data {
+            let slice = std::mem::replace(payload, Vec::new().into_boxed_slice());
             let len = slice.len();
             let ptr = Box::into_raw(slice).cast::<Value>();
             dealloc_value_slice(ptr, len);
@@ -1858,6 +1930,9 @@ pub unsafe fn call_owned(callable: Value, args: &[Value]) -> Value {
             if let Data::BoundMethod { receiver, method } = &(*callable).data {
                 return call_with_receiver_owned(*method, retain(*receiver), args);
             }
+            if matches!(&(*callable).data, Data::Class(_)) {
+                return crate::classes::construct_owned(callable, args);
+            }
         }
         let result = call(callable, args);
         for &arg in args {
@@ -1888,20 +1963,39 @@ pub unsafe fn call_with_receiver(method: Value, receiver: Value, args: &[Value])
                 if mule_enter_frame() < 0 {
                     return std::ptr::null_mut();
                 }
-                let mut view = Object {
-                    references: std::sync::atomic::AtomicUsize::new(usize::MAX),
-                    tracked: false,
-                    gc_slot: 0,
-                    data: Data::ReceiverArgs {
-                        receiver,
-                        values: args.as_ptr(),
-                        count: args.len(),
-                        defaults,
-                        closure: *closure,
-                        owned_mask: Cell::new(0),
-                    },
+                let result = if args.len() < 63 {
+                    let mut stack_args = [std::ptr::null_mut(); 64];
+                    stack_args[0] = receiver;
+                    stack_args[1..=args.len()].copy_from_slice(args);
+                    let mut view = Object {
+                        references: std::sync::atomic::AtomicUsize::new(usize::MAX),
+                        tracked: false,
+                        gc_slot: 0,
+                        data: Data::ArgumentView {
+                            values: stack_args.as_ptr(),
+                            count: args.len() + 1,
+                            defaults,
+                            closure: *closure,
+                            owned_mask: Cell::new(0),
+                        },
+                    };
+                    entry(*globals, &mut view)
+                } else {
+                    let mut view = Object {
+                        references: std::sync::atomic::AtomicUsize::new(usize::MAX),
+                        tracked: false,
+                        gc_slot: 0,
+                        data: Data::ReceiverArgs {
+                            receiver,
+                            values: args.as_ptr(),
+                            count: args.len(),
+                            defaults,
+                            closure: *closure,
+                            owned_mask: Cell::new(0),
+                        },
+                    };
+                    entry(*globals, &mut view)
                 };
-                let result = entry(*globals, &mut view);
                 mule_leave_frame();
                 if result.is_null() && !has_error() {
                     error(
@@ -1955,15 +2049,17 @@ pub unsafe fn call_with_receiver_owned(method: Value, receiver: Value, args: &[V
                     }
                     return std::ptr::null_mut();
                 }
+                let mut stack_args = [std::ptr::null_mut(); 64];
+                stack_args[0] = receiver;
+                stack_args[1..=args.len()].copy_from_slice(args);
                 let mask = (1u64 << (args.len() + 1)) - 1;
                 let mut view = Object {
                     references: std::sync::atomic::AtomicUsize::new(usize::MAX),
                     tracked: false,
                     gc_slot: 0,
-                    data: Data::ReceiverArgs {
-                        receiver,
-                        values: args.as_ptr(),
-                        count: args.len(),
+                    data: Data::ArgumentView {
+                        values: stack_args.as_ptr(),
+                        count: args.len() + 1,
                         defaults,
                         closure: *closure,
                         owned_mask: Cell::new(mask),
@@ -1971,16 +2067,12 @@ pub unsafe fn call_with_receiver_owned(method: Value, receiver: Value, args: &[V
                 };
                 let result = (*entry)(*globals, &mut view);
                 mule_leave_frame();
-                if let Data::ReceiverArgs { owned_mask, .. } = &view.data {
+                if let Data::ArgumentView { owned_mask, .. } = &view.data {
                     let mut rem = owned_mask.get();
-                    if (rem & 1) != 0 {
-                        release(receiver);
-                        rem &= !1;
-                    }
                     while rem != 0 {
                         let idx = rem.trailing_zeros() as usize;
                         rem &= rem - 1;
-                        release(*args.get_unchecked(idx - 1));
+                        release(*stack_args.get_unchecked(idx));
                     }
                 }
                 if result.is_null() && !has_error() {
@@ -3337,11 +3429,8 @@ pub unsafe extern "C" fn mule_sequence_tuple(count: isize, values: *const Value)
         if count == 0 {
             return empty_tuple();
         }
-        if count == 2 && !values.is_null() {
-            let v0 = retain(*values);
-            let v1 = retain(*values.add(1));
-            let tracked = Data::may_cycle(v0) || Data::may_cycle(v1);
-            return alloc_tuple2(v0, v1, tracked);
+        if (1..=TUPLE_POOL_MAX_LEN as isize).contains(&count) && !values.is_null() {
+            return alloc_small_tuple_borrowed(count as usize, values);
         }
         sequence_buffer(count, values)
             .map_or(std::ptr::null_mut(), |values| new_value(Data::Args(values, std::ptr::null_mut(), std::ptr::null_mut())))
@@ -3365,12 +3454,20 @@ pub unsafe extern "C" fn mule_sequence_tuple_owned(
         if count == 0 {
             return empty_tuple();
         }
-        if count == 2 && !values.is_null() {
-            let v0 = *values;
-            let v1 = *values.add(1);
-            if !v0.is_null() && !v1.is_null() {
-                let tracked = Data::may_cycle(v0) || Data::may_cycle(v1);
-                return alloc_tuple2(v0, v1, tracked);
+        if (1..=TUPLE_POOL_MAX_LEN as isize).contains(&count) && !values.is_null() {
+            let len = count as usize;
+            let mut tracked = false;
+            let mut any_null = false;
+            for i in 0..len {
+                let v = *values.add(i);
+                if v.is_null() {
+                    any_null = true;
+                    break;
+                }
+                tracked |= Data::may_cycle(v);
+            }
+            if !any_null {
+                return alloc_small_tuple_owned(len, values, tracked);
             }
         }
         if count < 0 || (count != 0 && values.is_null()) {

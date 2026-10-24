@@ -2,6 +2,7 @@
 
 import pytest
 
+from mule.compiler.driver import emit_llvm
 from test.mule.compiler.test_modules import execute
 
 
@@ -117,3 +118,21 @@ produce = replacement
 print(consume())
 """
     assert run_source(tmp_path, source) == "3.5\n"
+
+
+def test_direct_call_helper_absorbs_return_contract_into_fallback_branch():
+    ir = emit_llvm(
+        """
+def produce(flag):
+    return 3 if flag else 10
+def consume(flag):
+    return produce(flag) + 2
+"""
+    )
+    marker = 'define internal ptr @"mule.direct.mule_fn_produce.'
+    start = ir.index(marker)
+    end = ir.index("\n}", start)
+    helper = ir[start:end]
+    direct_part, fallback_part = helper.split("\nfallback:\n", 1)
+    assert "mule.return.check" not in direct_part
+    assert "mule.return.check" in fallback_part
