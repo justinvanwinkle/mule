@@ -2435,17 +2435,20 @@ class _Converter(NodeVisitor):
     # VOP emission
 
     def emit(self, template, node, args=(), results=(), info=None) -> VOP:
-        arg_refs = [TNRef(tn, False) for tn in args]
-        result_refs = [TNRef(tn, True) for tn in results]
+        arg_refs = [TNRef(tn, False) for tn in args] if args else []
+        result_refs = [TNRef(tn, True) for tn in results] if results else []
         vop = VOP(template, node, arg_refs, result_refs)
         vop.codegen_info = info
-        reads = self.component.reads
-        for ref in arg_refs:
-            reads[ref.tn].append((vop, ref))
-        writes = self.component.writes
-        for ref in result_refs:
-            writes[ref.tn].append((vop, ref))
-        return linked(self.current, self, "current block").append(vop)
+        if arg_refs:
+            reads = self.component.reads
+            for ref in arg_refs:
+                reads[ref.tn].append((vop, ref))
+        if result_refs:
+            writes = self.component.writes
+            for ref in result_refs:
+                writes[ref.tn].append((vop, ref))
+        self.current.vops.append(vop)
+        return vop
 
     def emit_discard(self, node, tn) -> None:
         self.emit(vops.DISCARD, node, args=(tn,))
