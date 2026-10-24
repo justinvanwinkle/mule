@@ -19,6 +19,8 @@ The inspected source is `~/checkout/sbcl` at commit
 | `src/compiler/ir2tran.lisp`, `ir2-convert-block`, `ir2-convert-ref`, `ir2-convert-set`, `ir2-convert-template`, `ir2-convert-local-known-call` (1029–1042) | Convert each IR1 block into VOPs; references, assignments, branches, casts, and returns use fixed templates; calls use the selected template or the guarded full-call template (`ir2tran.py`). |
 | `src/compiler/represent.lisp`, `select-tn-representation`, `select-representations` | Choose each TN's storage class from its primitive type by operand-restriction cost; natively planned bodies hold every value in a machine representation (`represent.py`). |
 | `src/compiler/codegen.lisp`, `generate-code` | Invoke each VOP's generator in block order to emit the function (`codegen.py`, `vops.py`). |
+| `src/compiler/ir1util.lisp`, `find-constant` (3068–3106) | Coalesce equal immutable constant literals into shared `Constant` leaves in `*ir1-namespace*` (`ir1tran.py`). |
+| `src/compiler/seqtran.lisp`, `string=*` (1271–1388); `src/compiler/equality-constraints.lisp` (1286–1303) | Fold disjoint-length string equality, narrow `TextType` across `==`/`!=` branch edges, and inline short Latin-1 word comparisons (`typetran.py`, `constraint.py`, `vops.py`). |
 | `src/compiler/x86-64/arith.lisp`, `+/signed=>integer` (949–975) | Emit machine addition and overflow checks, allocating a bigint only when needed. |
 
 Mule reproduces these mechanisms in Python with LLVM as the required backend.
@@ -326,11 +328,25 @@ equal string literals share one canonical `Value` across functions and compilati
 units while still releasing their unit slots on teardown. `sys.intern` and
 `sys._is_interned` operate on the same runtime table, pinning dynamically
 interned exact `str` instances until process finalization and rejecting `str`
-subclasses in `sys.intern`. Following SBCL's `equal-constant-value` coalescing in
-`src/compiler/ir1util.lisp` and `eq` transforms in `src/compiler/typetran.lisp`,
-IR1 folds `is` and `is not` on proven string literals, and IR2 lowers `==` and
-`!=` to pointer comparison (`icmp eq`/`ne`) when either operand is a universal
-singleton or both operands are proven interned strings (`is_interned_text`).
+subclasses in `sys.intern`. Following SBCL's `find-constant` and
+`equal-constant-value` coalescing in `src/compiler/ir1util.lisp`, `eq` transforms
+in `src/compiler/typetran.lisp`, string equality and length transforms in
+`src/compiler/seqtran.lisp`, and equality constraints in
+`src/compiler/equality-constraints.lisp`:
+- IR1 coalesces equal immutable constant literals (`int`, bit-exact `float`,
+  `str`, `bytes`, `bool`, `None`, `Ellipsis`, and `tuple`s of coalescible
+  literals) into a single `Constant` leaf per compilation namespace while
+  retaining per-reference source coordinates.
+- IR1 folds `is` and `is not` on proven string literals, narrows `TextType`
+  variables across `==` and `!=` branch edges (including known string length
+  from 1-character indexing and constant-bound slices), and folds `==` and `!=`
+  when known string values or lengths are disjoint.
+- IR2 lowers `==` and `!=` to pointer comparison (`icmp eq`/`ne`) when either
+  operand is a universal singleton or both operands are proven interned strings
+  (`is_interned_text`), and emits inline `i16` header + `i64` word comparisons
+  against the `#[repr(C)]` `Text` / `#[repr(u8)]` `Kind` `InlineLatin1` payload
+  for 2..=24-byte Latin-1 constant strings without materializing a heap constant
+  or calling `@mule_text_eq`.
 Joins preserve the possibility of an unbound
 local; its runtime error must remain observable.
 

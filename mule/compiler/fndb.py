@@ -23,7 +23,6 @@ from .ctype import (
     EMPTY_LIST_TYPE,
     FLOAT,
     FUNCTION_TYPE,
-    INTERNED_TEXT_TYPE,
     NONE_TYPE,
     TEXT_TYPE,
     UNKNOWN,
@@ -75,8 +74,8 @@ class _LiteralType(ast.Visitor):
     def visit_TextLiteral(self, node):
         return (
             TextType(node.value)
-            if len(node.value.encode("utf-8", "surrogatepass")) <= 64
-            else INTERNED_TEXT_TYPE
+            if node.value == "" or (len(node.value) == 1 and ord(node.value) <= 0xFF)
+            else TEXT_TYPE
         )
 
     def visit_BytesLiteral(self, node):
@@ -162,7 +161,8 @@ def _derive_getslice(node) -> ValueType | None:
         return None
     if any(_arg_type(arg).may_be_unbound for arg in node.args):
         return UNKNOWN
-    return _arg_type(node.args[0]).getslice_type()
+    arg_types = [_arg_type(arg) for arg in node.args[1:4]]
+    return _arg_type(node.args[0]).getslice_type(*arg_types)
 
 
 def _derive_build_list(node) -> ValueType | None:

@@ -328,7 +328,7 @@ def _disjoint_equality_comparison(
     left_arity = left_type.exact_length()
     right_arity = right_type.exact_length()
     if (
-        left_family == "tuple"
+        left_family in ("tuple", "text")
         and left_arity is not None
         and right_arity is not None
         and left_arity != right_arity
@@ -343,7 +343,7 @@ def _fold_disjoint_equality_comparison(node: Combination, *, negate: bool) -> bo
     left, right = node.args
     if not (_is_side_effect_free_ref(left) and _is_side_effect_free_ref(right)):
         return False
-    equal = _disjoint_equality_comparison(lvar_type(left), lvar_type(right))
+    equal = _disjoint_equality_comparison(_lvar_text_type(left), _lvar_text_type(right))
     if equal is None:
         return False
     _replace_comparison_with_bool(node, not equal if negate else equal)

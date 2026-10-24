@@ -11,17 +11,19 @@ use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
 
 const INLINE_LATIN1_CAP: usize = 24;
 
+#[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Kind {
     InlineLatin1 {
         len: u8,
         words: [u64; 3],
     },
-    Latin1(Vec<u8>),
-    Ucs2(Vec<u16>),
-    Ucs4(Vec<u32>),
+    Latin1(u8, Vec<u8>),
+    Ucs2(u8, Vec<u16>),
+    Ucs4(u8, Vec<u32>),
 }
 
+#[repr(C)]
 #[derive(Debug)]
 pub struct Text {
     kind: Kind,
@@ -55,9 +57,9 @@ impl PartialEq for Text {
                     && words_a[0] == words_b[0]
                     && (*len_a <= 8 || (words_a[1] == words_b[1] && words_a[2] == words_b[2]))
             }
-            (Kind::Latin1(a), Kind::Latin1(b)) => a == b,
-            (Kind::Ucs2(a), Kind::Ucs2(b)) => a == b,
-            (Kind::Ucs4(a), Kind::Ucs4(b)) => a == b,
+            (Kind::Latin1(_, a), Kind::Latin1(_, b)) => a == b,
+            (Kind::Ucs2(_, a), Kind::Ucs2(_, b)) => a == b,
+            (Kind::Ucs4(_, a), Kind::Ucs4(_, b)) => a == b,
             _ => false,
         }
     }
@@ -120,7 +122,7 @@ fn latin1_kind_from_slice(slice: &[u8]) -> Result<Kind, AllocationError> {
     }
     let mut values = reserve(slice.len())?;
     values.extend_from_slice(slice);
-    Ok(Kind::Latin1(values))
+    Ok(Kind::Latin1(0, values))
 }
 
 impl Text {
@@ -159,16 +161,16 @@ impl Text {
             } else {
                 let mut values = reserve(length)?;
                 values.extend(codes.map(|code| code as u8));
-                Kind::Latin1(values)
+                Kind::Latin1(0, values)
             }
         } else if widest <= 0xffff {
             let mut values = reserve(length)?;
             values.extend(codes.map(|code| code as u16));
-            Kind::Ucs2(values)
+            Kind::Ucs2(0, values)
         } else {
             let mut values = reserve(length)?;
             values.extend(codes);
-            Kind::Ucs4(values)
+            Kind::Ucs4(0, values)
         };
         Ok(Self::from_kind(kind))
     }
@@ -234,24 +236,24 @@ impl Text {
         if units.len() <= INLINE_LATIN1_CAP {
             return Self::from_kind(pack_inline_latin1(&units));
         }
-        Self::from_kind(Kind::Latin1(units))
+        Self::from_kind(Kind::Latin1(0, units))
     }
 
     pub fn from_ucs2(units: Vec<u16>) -> Self {
-        Self::from_kind(Kind::Ucs2(units))
+        Self::from_kind(Kind::Ucs2(0, units))
     }
 
     pub fn from_ucs4(units: Vec<u32>) -> Self {
-        Self::from_kind(Kind::Ucs4(units))
+        Self::from_kind(Kind::Ucs4(0, units))
     }
 
     #[inline]
     pub fn len(&self) -> usize {
         match &self.kind {
             Kind::InlineLatin1 { len, .. } => usize::from(*len),
-            Kind::Latin1(values) => values.len(),
-            Kind::Ucs2(values) => values.len(),
-            Kind::Ucs4(values) => values.len(),
+            Kind::Latin1(_, values) => values.len(),
+            Kind::Ucs2(_, values) => values.len(),
+            Kind::Ucs4(_, values) => values.len(),
         }
     }
 
@@ -262,9 +264,9 @@ impl Text {
     /// Bytes per codepoint: 1, 2, or 4, as `PyUnicode_KIND` reports.
     pub fn kind(&self) -> usize {
         match &self.kind {
-            Kind::InlineLatin1 { .. } | Kind::Latin1(_) => 1,
-            Kind::Ucs2(_) => 2,
-            Kind::Ucs4(_) => 4,
+            Kind::InlineLatin1 { .. } | Kind::Latin1(..) => 1,
+            Kind::Ucs2(..) => 2,
+            Kind::Ucs4(..) => 4,
         }
     }
 
@@ -276,7 +278,7 @@ impl Text {
                 std::hint::assert_unchecked(n <= INLINE_LATIN1_CAP);
                 Some(std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), n))
             },
-            Kind::Latin1(values) => Some(values),
+            Kind::Latin1(_, values) => Some(values),
             _ => None,
         }
     }
@@ -291,9 +293,9 @@ impl Text {
                     None
                 }
             }
-            Kind::Latin1(values) => values.get(index).map(|code| u32::from(*code)),
-            Kind::Ucs2(values) => values.get(index).map(|code| u32::from(*code)),
-            Kind::Ucs4(values) => values.get(index).copied(),
+            Kind::Latin1(_, values) => values.get(index).map(|code| u32::from(*code)),
+            Kind::Ucs2(_, values) => values.get(index).map(|code| u32::from(*code)),
+            Kind::Ucs4(_, values) => values.get(index).copied(),
         }
     }
 
@@ -500,7 +502,7 @@ impl Text {
                             values.extend_from_slice(slice);
                         }
                     }
-                    Kind::Latin1(values)
+                    Kind::Latin1(0, values)
                 }
             }
             2 => {
@@ -508,14 +510,14 @@ impl Text {
                 for piece in pieces {
                     values.extend(piece.codepoints().map(|code| code as u16));
                 }
-                Kind::Ucs2(values)
+                Kind::Ucs2(0, values)
             }
             _ => {
                 let mut values = reserve(length)?;
                 for piece in pieces {
                     values.extend(piece.codepoints());
                 }
-                Kind::Ucs4(values)
+                Kind::Ucs4(0, values)
             }
         };
         Ok(Self::from_kind(storage))

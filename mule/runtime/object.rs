@@ -396,6 +396,10 @@ pub const FLOAT_TAG: u32 = 3;
 pub const FLOAT_VALUE_OFFSET: usize = 24;
 pub const FLOAT_CLASS_OFFSET: usize = 32;
 pub const FLOAT_ATTRIBUTES_OFFSET: usize = 40;
+pub const TEXT_TAG: u32 = 4;
+pub const TEXT_KIND_TAG_OFFSET: usize = 24;
+pub const TEXT_INLINE_LEN_OFFSET: usize = 25;
+pub const TEXT_INLINE_WORDS_OFFSET: usize = 32;
 pub const INSTANCE_TAG: u32 = 16;
 pub const NATIVE_INSTANCE_TAG: u32 = 17;
 pub const NATIVE_INSTANCE_CLASS_OFFSET: usize = 24;
@@ -4494,6 +4498,39 @@ mod lifetime_tests {
             assert_eq!(word::<usize>(instance, NATIVE_INSTANCE_LENGTH_OFFSET), 2);
             release(instance);
             release(class);
+        }
+    }
+
+    #[test]
+    fn compiled_inline_text_offsets_match_object_storage() {
+        unsafe {
+            let short = new_value(Data::Text(
+                Text::from_rust_str("GET"),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ));
+            assert_eq!(word::<u32>(short, DATA_OFFSET), TEXT_TAG);
+            assert_eq!(word::<u8>(short, TEXT_KIND_TAG_OFFSET), 0);
+            assert_eq!(word::<u8>(short, TEXT_INLINE_LEN_OFFSET), 3);
+            assert_eq!(word::<u16>(short, TEXT_KIND_TAG_OFFSET), 3u16 << 8);
+            assert_eq!(
+                word::<u64>(short, TEXT_INLINE_WORDS_OFFSET),
+                u64::from_le_bytes(*b"GET\0\0\0\0\0")
+            );
+            assert_eq!(word::<u64>(short, TEXT_INLINE_WORDS_OFFSET + 8), 0);
+            assert_eq!(word::<u64>(short, TEXT_INLINE_WORDS_OFFSET + 16), 0);
+            release(short);
+
+            let heap = new_value(Data::Text(
+                Text::from_rust_str("abcdefghijklmnopqrstuvwxyz"),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ));
+            assert_eq!(word::<u32>(heap, DATA_OFFSET), TEXT_TAG);
+            assert_eq!(word::<u8>(heap, TEXT_KIND_TAG_OFFSET), 1);
+            assert_eq!(word::<u8>(heap, TEXT_INLINE_LEN_OFFSET), 0);
+            assert_eq!(word::<u16>(heap, TEXT_KIND_TAG_OFFSET), 1);
+            release(heap);
         }
     }
 

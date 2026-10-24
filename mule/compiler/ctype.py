@@ -394,7 +394,13 @@ class ValueType:
     def compare_primitive(self, left):
         return UNKNOWN
 
+    def compare_text(self, operator, left):
+        return self.compare_primitive(left)
+
     def narrow(self, operator, bound, truth):
+        return self
+
+    def narrow_equality(self, other, is_equal: bool):
         return self
 
     def narrow_none(self, is_none: bool):
@@ -475,7 +481,7 @@ class ValueType:
     def flow_getitem_type(self, index):
         return self.getitem_type(index)
 
-    def getslice_type(self):
+    def getslice_type(self, start=None, stop=None, step=None):
         return UNKNOWN
 
     def iterate_type(self):
@@ -1597,7 +1603,8 @@ def _is_singleton_text(literal: str | None) -> bool:
 class TextType(PrimitiveType):
     literal: str | None = None
     may_be_unbound: bool = False
-    interned: bool = False
+    interned: bool | None = None
+    length: int | None = None
 
     def runtime_class_type(self):
         return UNKNOWN if self.may_be_unbound else CLASS_STR_TYPE
@@ -1619,7 +1626,11 @@ class TextType(PrimitiveType):
 
     @property
     def is_interned_text(self) -> bool:
-        return not self.may_be_unbound and (self.interned or self.literal is not None)
+        if self.may_be_unbound:
+            return False
+        if self.interned is not None:
+            return self.interned or _is_singleton_text(self.literal)
+        return self.literal is not None
 
     def singleton_text(self) -> str | None:
         if not self.may_be_unbound and _is_singleton_text(self.literal):
@@ -1633,6 +1644,49 @@ class TextType(PrimitiveType):
 
     def exact_text(self) -> str | None:
         return None if self.may_be_unbound else self.literal
+
+    def comparison(self, operator, right):
+        if operator in {
+            ast.ComparisonOperator.IS,
+            ast.ComparisonOperator.IS_NOT,
+        }:
+            return right.compare_identity_with(self, operator)
+        if operator in {
+            ast.ComparisonOperator.IN,
+            ast.ComparisonOperator.NOT_IN,
+        }:
+            return BOOLEAN
+        return right.compare_text(operator, self)
+
+    def compare_text(self, operator, left):
+        if self.may_be_unbound or left.may_be_unbound:
+            return BOOLEAN
+        left_text = left.exact_text()
+        right_text = self.exact_text()
+        if left_text is not None and right_text is not None:
+            if operator is ast.ComparisonOperator.EQUAL:
+                res = left_text == right_text
+            elif operator is ast.ComparisonOperator.NOT_EQUAL:
+                res = left_text != right_text
+            elif operator is ast.ComparisonOperator.LESS:
+                res = left_text < right_text
+            elif operator is ast.ComparisonOperator.LESS_EQUAL:
+                res = left_text <= right_text
+            elif operator is ast.ComparisonOperator.GREATER:
+                res = left_text > right_text
+            elif operator is ast.ComparisonOperator.GREATER_EQUAL:
+                res = left_text >= right_text
+            else:
+                return BOOLEAN
+            return BOOLEAN_TRUE if res else BOOLEAN_FALSE
+        left_len = left.exact_length()
+        right_len = self.exact_length()
+        if left_len is not None and right_len is not None and left_len != right_len:
+            if operator is ast.ComparisonOperator.EQUAL:
+                return BOOLEAN_FALSE
+            if operator is ast.ComparisonOperator.NOT_EQUAL:
+                return BOOLEAN_TRUE
+        return BOOLEAN
 
     def compare_identity_with(self, left, operator):
         if self.may_be_unbound or left.may_be_unbound:
@@ -1653,11 +1707,11 @@ class TextType(PrimitiveType):
         return BOOLEAN
 
     def exact_length(self) -> int | None:
-        return (
-            len(self.literal)
-            if (not self.may_be_unbound and self.literal is not None)
-            else None
-        )
+        if self.may_be_unbound:
+            return None
+        if self.literal is not None:
+            return len(self.literal)
+        return self.length
 
     def codepoint_at(self, index: int):
         if self.may_be_unbound or self.literal is None:
@@ -1669,9 +1723,13 @@ class TextType(PrimitiveType):
         return None
 
     def truth_value(self) -> bool | None:
-        if self.may_be_unbound or self.literal is None:
+        if self.may_be_unbound:
             return None
-        return bool(self.literal)
+        if self.literal is not None:
+            return bool(self.literal)
+        if self.length is not None:
+            return self.length > 0
+        return None
 
     def dispatch_domain(self):
         return None if self.may_be_unbound else TEXT_TYPE
@@ -1686,26 +1744,88 @@ class TextType(PrimitiveType):
         return other.join_text(self)
 
     def join_text(self, left):
-        if left is self:
+        if left is self or left == self:
             return self
         unbound = self.may_be_unbound or left.may_be_unbound
         literal = self.literal if self.literal == left.literal else None
-        interned = (
-            (self.interned or left.interned)
+        both_interned = (
+            (self.interned is True or left.interned is True)
             and self.as_bound().is_interned_text
             and left.as_bound().is_interned_text
         )
-        if literal is None and not unbound:
-            return INTERNED_TEXT_TYPE if interned else TEXT_TYPE
-        return TextType(literal, may_be_unbound=unbound, interned=interned)
+        if literal is not None:
+            lit_interned = (
+                self.as_bound().is_interned_text and left.as_bound().is_interned_text
+            )
+            return TextType(
+                literal,
+                may_be_unbound=unbound,
+                interned=None if lit_interned else False,
+            )
+        length = (
+            self.length
+            if (self.length is not None and self.length == left.length)
+            else None
+        )
+        if not unbound and length is None:
+            return INTERNED_TEXT_TYPE if both_interned else TEXT_TYPE
+        return TextType(
+            None,
+            may_be_unbound=unbound,
+            interned=True if both_interned else None,
+            length=length,
+        )
 
     def widen(self, new):
-        if new.fits_text(TEXT_TYPE) and self.literal != new.exact_text():
-            interned = self.interned and new.as_bound().is_interned_text
-            if not new.may_be_unbound:
+        if new.fits_text(TEXT_TYPE) and (
+            self.literal != new.exact_text() or self.length != new.length
+        ):
+            interned = bool(self.interned) and new.as_bound().is_interned_text
+            length = (
+                self.length
+                if (self.length is not None and self.length == new.length)
+                else None
+            )
+            if not new.may_be_unbound and length is None:
                 return INTERNED_TEXT_TYPE if interned else TEXT_TYPE
-            return TextType(may_be_unbound=True, interned=interned)
+            return TextType(
+                may_be_unbound=new.may_be_unbound,
+                interned=True if interned else None,
+                length=length,
+            )
         return new
+
+    def narrow_equality(self, other, is_equal: bool):
+        if self.may_be_unbound or other.may_be_unbound:
+            return self
+        my_len = self.exact_length()
+        other_len = other.exact_length()
+        if (
+            is_equal
+            and my_len is not None
+            and other_len is not None
+            and my_len != other_len
+        ):
+            return BOTTOM
+        other_text = other.exact_text()
+        if other_text is not None:
+            if is_equal:
+                if self.literal is not None and self.literal != other_text:
+                    return BOTTOM
+                is_interned = self.is_interned_text or _is_singleton_text(other_text)
+                return TextType(
+                    other_text,
+                    interned=None if is_interned else False,
+                )
+            if self.literal is not None and self.literal == other_text:
+                return BOTTOM
+        if is_equal and my_len is None and other_len is not None:
+            return TextType(
+                None,
+                interned=self.interned,
+                length=other_len,
+            )
+        return self
 
     def widen_constant(self):
         return TextType(may_be_unbound=True) if self.may_be_unbound else TEXT_TYPE
@@ -1748,14 +1868,23 @@ class TextType(PrimitiveType):
         return (
             not self.may_be_unbound
             and (expected.literal is None or self.literal == expected.literal)
+            and (expected.length is None or self.exact_length() == expected.length)
             and (not expected.interned or self.is_interned_text)
         )
 
     def fits_possible_text(self, expected):
-        return not self.may_be_unbound and (
-            expected.literal is None
-            or self.literal is None
-            or self.literal == expected.literal
+        return (
+            not self.may_be_unbound
+            and (
+                expected.literal is None
+                or self.literal is None
+                or self.literal == expected.literal
+            )
+            and (
+                expected.length is None
+                or self.exact_length() is None
+                or self.exact_length() == expected.length
+            )
         )
 
     def fits_immortal(self, expected):
@@ -1765,10 +1894,38 @@ class TextType(PrimitiveType):
         return True
 
     def getitem_type(self, index):
-        return UNKNOWN if self.may_be_unbound else TEXT_TYPE
+        if self.may_be_unbound:
+            return UNKNOWN
+        if self.literal is not None and not index.may_be_unbound:
+            idx = index.exact_integer()
+            if idx is not None:
+                if idx < 0:
+                    idx += len(self.literal)
+                if 0 <= idx < len(self.literal):
+                    return TextType(self.literal[idx])
+        if not index.may_be_unbound and index.fits(PYTHON_INTEGER):
+            return TextType(length=1)
+        return TEXT_TYPE
 
-    def getslice_type(self):
-        return UNKNOWN if self.may_be_unbound else TEXT_TYPE
+    def getslice_type(self, start=None, stop=None, step=None):
+        if self.may_be_unbound:
+            return UNKNOWN
+        if (
+            start is not None
+            and stop is not None
+            and (step is None or step.fits_none(NONE_TYPE) or step.exact_integer() == 1)
+        ):
+            s_idx = start.exact_integer()
+            e_idx = stop.exact_integer()
+            if s_idx is not None and e_idx is not None:
+                if self.literal is not None:
+                    sliced = self.literal[s_idx:e_idx]
+                    if len(sliced.encode("utf-8", "surrogatepass")) <= 64:
+                        return TextType(sliced, interned=False)
+                src_len = self.exact_length()
+                if src_len is not None and 0 <= s_idx <= e_idx <= src_len:
+                    return TextType(length=e_idx - s_idx, interned=False)
+        return TEXT_TYPE
 
     def iterate_type(self):
         if self.may_be_unbound:
@@ -1871,7 +2028,7 @@ class BytesType(PrimitiveType):
             return IntegerType(0, 255)
         return UNKNOWN
 
-    def getslice_type(self):
+    def getslice_type(self, start=None, stop=None, step=None):
         return UNKNOWN if self.may_be_unbound else BYTES_TYPE
 
     def iterate_type(self):
@@ -1975,7 +2132,7 @@ class ByteArrayType(PrimitiveType):
             return IntegerType(0, 255)
         return UNKNOWN
 
-    def getslice_type(self):
+    def getslice_type(self, start=None, stop=None, step=None):
         return UNKNOWN if self.may_be_unbound else BYTEARRAY_TYPE
 
     def iterate_type(self):
@@ -2301,7 +2458,7 @@ class TupleType(ValueType):
                 return joined
         return UNKNOWN
 
-    def getslice_type(self):
+    def getslice_type(self, start=None, stop=None, step=None):
         if self.may_be_unbound:
             return UNKNOWN
         if self.elements:
@@ -2625,7 +2782,7 @@ class ListType(ValueType):
             return self.element
         return UNKNOWN
 
-    def getslice_type(self):
+    def getslice_type(self, start=None, stop=None, step=None):
         return UNKNOWN if self.may_be_unbound else self
 
     def iterate_type(self):
@@ -3667,6 +3824,13 @@ class UnionType(ValueType):
             else self.map(lambda m: m.narrow(operator, bound, truth))
         )
 
+    def narrow_equality(self, other, is_equal: bool):
+        return (
+            self
+            if self.may_be_unbound
+            else self.map(lambda m: m.narrow_equality(other, is_equal))
+        )
+
     def binary(self, operator, right):
         return (
             UNKNOWN
@@ -3714,6 +3878,9 @@ class UnionType(ValueType):
     def compare_primitive(self, left):
         return self.map(lambda m: m.compare_primitive(left))
 
+    def compare_text(self, operator, left):
+        return self.map(lambda m: m.compare_text(operator, left))
+
     def runtime_class_type(self):
         return (
             UNKNOWN
@@ -3739,8 +3906,12 @@ class UnionType(ValueType):
             else self.map(lambda m: m.flow_getitem_type(index))
         )
 
-    def getslice_type(self):
-        return UNKNOWN if self.may_be_unbound else self.map(lambda m: m.getslice_type())
+    def getslice_type(self, start=None, stop=None, step=None):
+        return (
+            UNKNOWN
+            if self.may_be_unbound
+            else self.map(lambda m: m.getslice_type(start, stop, step))
+        )
 
     def iterate_type(self):
         return UNKNOWN if self.may_be_unbound else self.map(lambda m: m.iterate_type())
@@ -4690,7 +4861,7 @@ def value_type_from_dict(data: dict | None) -> ValueType:
         return NoneType(may_be_unbound=unbound) if unbound else NONE_TYPE
     if kind == "text":
         lit = data.get("literal")
-        interned = bool(data.get("interned", False))
+        interned = data.get("interned")
         if lit is None and not unbound:
             return INTERNED_TEXT_TYPE if interned else TEXT_TYPE
         return TextType(lit, may_be_unbound=unbound, interned=interned)

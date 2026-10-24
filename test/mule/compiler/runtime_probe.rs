@@ -77,6 +77,18 @@ unsafe fn specialized_abi(globals: Value) {
         let literal_b = mule_literal_text(c"interned literal".as_ptr(), 16);
         assert_eq!(literal_a, literal_b);
         assert_eq!((*literal_a).reference_count(), 2);
+        assert_eq!(
+            *(literal_a.cast::<u8>().add(TEXT_KIND_TAG_OFFSET).cast::<u16>()),
+            16u16 << 8
+        );
+        assert_eq!(
+            *(literal_a.cast::<u8>().add(TEXT_INLINE_WORDS_OFFSET).cast::<u64>()),
+            u64::from_le_bytes(*b"interned")
+        );
+        assert_eq!(
+            *(literal_a.cast::<u8>().add(TEXT_INLINE_WORDS_OFFSET + 8).cast::<u64>()),
+            u64::from_le_bytes(*b" literal")
+        );
         release(literal_b);
         assert_eq!((*literal_a).reference_count(), 1);
         release(literal_a);
