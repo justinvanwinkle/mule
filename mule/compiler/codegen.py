@@ -3687,7 +3687,7 @@ class _ArgumentGuard(ValueTypeVisitor):
         return valid
 
     def visit_TextType(self, fact: TextType) -> str:
-        if fact.literal is not None:
+        if fact.literal is not None or fact.interned:
             return self.visit_ValueType(fact)
         matched = self.gen.operation(f"call ptr @mule_text_storage(ptr {self.value})")
         return self.gen.operation(f"icmp eq ptr {matched}, @mule.true")

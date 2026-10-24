@@ -23,6 +23,7 @@ from .ctype import (
     EMPTY_LIST_TYPE,
     FLOAT,
     FUNCTION_TYPE,
+    INTERNED_TEXT_TYPE,
     NONE_TYPE,
     TEXT_TYPE,
     UNKNOWN,
@@ -73,7 +74,9 @@ class _LiteralType(ast.Visitor):
 
     def visit_TextLiteral(self, node):
         return (
-            TextType(node.value) if len(node.value.encode("utf-8")) <= 64 else TEXT_TYPE
+            TextType(node.value)
+            if len(node.value.encode("utf-8", "surrogatepass")) <= 64
+            else INTERNED_TEXT_TYPE
         )
 
     def visit_BytesLiteral(self, node):

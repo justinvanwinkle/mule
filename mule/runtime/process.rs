@@ -34,6 +34,7 @@ pub extern "C" fn mule_run_finalizers() {
     for finalizer in finalizers.into_iter().rev() {
         unsafe { finalizer() };
     }
+    object::release_interned_texts();
 }
 
 thread_local! {
@@ -639,6 +640,40 @@ unsafe extern "C" fn isatty_fd(_: Value, args: Value) -> Value {
             return null_mut();
         };
         object::bool_value(isatty(fd) == 1)
+    }
+}
+
+unsafe extern "C" fn intern_text(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands::<1>(args) else {
+            return null_mut();
+        };
+        if value.is_null() || object::is_fixnum(value) {
+            return fail("TypeError", "intern_text requires an exact str");
+        }
+        match &(*value).data {
+            Data::Text(_, ty, attrs) if ty.is_null() && attrs.is_null() => {
+                object::intern_text_value(value)
+            }
+            _ => fail("TypeError", "intern_text requires an exact str"),
+        }
+    }
+}
+
+unsafe extern "C" fn is_interned_text(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([value]) = operands::<1>(args) else {
+            return null_mut();
+        };
+        if value.is_null() || object::is_fixnum(value) {
+            return fail("TypeError", "is_interned_text requires a str");
+        }
+        match &(*value).data {
+            Data::Text(_, ty, attrs) => object::bool_value(
+                ty.is_null() && attrs.is_null() && object::is_interned_text_value(value),
+            ),
+            _ => fail("TypeError", "is_interned_text requires a str"),
+        }
     }
 }
 
@@ -1623,7 +1658,7 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
         if !bound {
             return null_mut();
         }
-        let exports: [(&str, Native); 16] = [
+        let exports: [(&str, Native); 18] = [
             ("read_pointer", read_pointer),
             ("read_c_string", read_c_string),
             ("byte_length", byte_length),
@@ -1640,6 +1675,8 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
             ("register_modules", crate::builtins::register_modules),
             ("active_exception", active_exception),
             ("current_frame", current_frame),
+            ("intern_text", intern_text),
+            ("is_interned_text", is_interned_text),
         ];
         for (name, entry) in exports {
             let function = object::function(null_mut(), entry, name);

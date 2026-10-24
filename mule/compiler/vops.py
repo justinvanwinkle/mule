@@ -1399,8 +1399,9 @@ def _define_compare(operator, opcode):
             and right_type.fits_text(right_type)
         ):
             if opcode in (0, 1) and (
-                left_type.interned_text() is not None
-                or right_type.interned_text() is not None
+                left_type.singleton_text() is not None
+                or right_type.singleton_text() is not None
+                or (left_type.is_interned_text and right_type.is_interned_text)
             ):
                 predicate = "eq" if opcode == 0 else "ne"
                 condition = gen.operation(f"icmp {predicate} ptr {lhs}, {rhs}")

@@ -319,7 +319,10 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
 
 ## Supported source subset
 
-- Literal integers, floats, text, bytes, booleans, and `None`.
+- Literal integers, floats, text, bytes, booleans, and `None`. Text literals
+  are interned across compilation units with precomputed hashes; `sys.intern`
+  and `sys._is_interned` share the process-wide intern table for exact `str`
+  objects.
 - Local/global name lookup, identifier assignment, chained assignment, augmented
   assignment, and assignment expressions.
 - Binary and unary operators, comparison chains, short-circuit `and`/`or`, and

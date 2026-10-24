@@ -24,6 +24,7 @@ from .ctype import (
     FIXNUM_MIN,
     FLOAT,
     INTEGER,
+    INTERNED_TEXT_TYPE,
     OPTIONAL_FIXNUM,
     PYTHON_INTEGER,
     TEXT_TYPE,
@@ -392,47 +393,43 @@ def _propagate_text_codepoint(visitor, node) -> ValueType | None:
         visitor.prove_argument_type(args[0], TEXT_TYPE)
         idx = idx_type.exact_integer()
         if idx is not None:
-            cp = text_type.codepoint_at(idx)
-            if cp is not None:
-                return IntegerType(cp, cp)
+            return text_type.codepoint_at(idx)
     return None
 
 
 @defpropagate("_text_character")
 def _propagate_text_character(visitor, node) -> ValueType | None:
     args = node.args
-    if len(args) == 1:
-        arg_type = visitor.type_of(args[0])
-        if arg_type is BOTTOM:
+    if len(args) == 2:
+        text_type = visitor.type_of(args[0])
+        idx_type = visitor.type_of(args[1])
+        if text_type is BOTTOM or idx_type is BOTTOM:
             return BOTTOM
         visitor.prove_argument_type(args[0], TEXT_TYPE)
-        cp = arg_type.exact_integer()
-        if cp is not None and 0 <= cp <= 0x10FFFF and not (0xD800 <= cp <= 0xDFFF):
-            return TextType(chr(cp))
+        idx = idx_type.exact_integer()
+        if idx is not None:
+            cp_type = text_type.codepoint_at(idx)
+            if cp_type is not None:
+                cp = cp_type.exact_integer()
+                if cp is not None:
+                    return TextType(chr(cp))
     return None
 
 
 @defpropagate("_text_slice")
 def _propagate_text_slice(visitor, node) -> ValueType | None:
     args = node.args
-    if len(args) == 4:
+    if len(args) == 3:
         arg_types = [visitor.type_of(arg) for arg in args]
         if any(t is BOTTOM for t in arg_types):
             return BOTTOM
         visitor.prove_argument_type(args[0], TEXT_TYPE)
         start = arg_types[1].exact_integer()
         stop = arg_types[2].exact_integer()
-        step = arg_types[3].exact_integer()
-        if (
-            start is not None
-            and stop is not None
-            and step is not None
-            and step != 0
-            and arg_types[0].fits_text(TEXT_TYPE)
-            and arg_types[0].literal is not None
-        ):
-            sliced = arg_types[0].literal[start:stop:step]
-            if len(sliced) <= 256:
+        literal = arg_types[0].exact_text()
+        if start is not None and stop is not None and literal is not None:
+            sliced = literal[start:stop]
+            if len(sliced.encode("utf-8", "surrogatepass")) <= 64:
                 return TextType(sliced)
     return None
 
@@ -479,6 +476,8 @@ NATIVE_MODULE_EXPORTS: dict[tuple[str, str], ValueType] = {
     ("_mule_native", "math_fabs"): FLOAT,
     ("_mule_native", "math_float_bits"): INTEGER,
     ("_mule_native", "math_float_format"): TEXT_TYPE,
+    ("_mule_native", "intern_text"): INTERNED_TEXT_TYPE,
+    ("_mule_native", "is_interned_text"): BOOLEAN,
 }
 
 
@@ -593,10 +592,41 @@ def _derive_native_typed_value(
     return UNKNOWN
 
 
+def _derive_native_intern_text(
+    arg_types, keywords=(), *, receiver_type=None
+) -> ValueType:
+    if len(arg_types) == 1:
+        if arg_types[0] is BOTTOM:
+            return BOTTOM
+        exact = arg_types[0].exact_text()
+        if exact is not None:
+            return TextType(exact, interned=True)
+    return INTERNED_TEXT_TYPE
+
+
+def _derive_native_is_interned_text(
+    arg_types, keywords=(), *, receiver_type=None
+) -> ValueType:
+    if len(arg_types) == 1:
+        if arg_types[0] is BOTTOM:
+            return BOTTOM
+        if arg_types[0].is_interned_text:
+            return BOOLEAN_TRUE
+    return BOOLEAN
+
+
 NATIVE_MODULE_TARGETS: dict[tuple[str, str], ForeignCallTarget] = {
     key: ForeignCallTarget(return_type=ret_type)
     for key, ret_type in NATIVE_MODULE_EXPORTS.items()
 }
+NATIVE_MODULE_TARGETS[("_mule_native", "intern_text")] = ForeignCallTarget(
+    return_type=INTERNED_TEXT_TYPE,
+    derive_fn=_derive_native_intern_text,
+)
+NATIVE_MODULE_TARGETS[("_mule_native", "is_interned_text")] = ForeignCallTarget(
+    return_type=BOOLEAN,
+    derive_fn=_derive_native_is_interned_text,
+)
 NATIVE_MODULE_TARGETS[("_mule_native", "type_of")] = ForeignCallTarget(
     derive_fn=_derive_native_type_of,
     propagate_fn=_propagate_native_type_of,

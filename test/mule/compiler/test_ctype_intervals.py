@@ -1,6 +1,11 @@
 from mule import ast
+from mule.compiler import emit_llvm
 from mule.compiler.ctype import (
+    BOOLEAN,
+    BOOLEAN_FALSE,
+    BOOLEAN_TRUE,
     INTEGER,
+    INTERNED_TEXT_TYPE,
     PYTHON_INTEGER,
     TEXT_TYPE,
     UNKNOWN,
@@ -92,3 +97,76 @@ def test_tuple_type_elements():
     assert tags.getitem_type(INTEGER) == TEXT_TYPE
     assert tags.getitem_type(PYTHON_INTEGER) == TEXT_TYPE
     assert tags.getitem_type(UNKNOWN) == UNKNOWN
+
+
+def test_text_type_interning_and_identity_comparisons():
+    op_is = ast.ComparisonOperator.IS
+    op_is_not = ast.ComparisonOperator.IS_NOT
+
+    # Singletons (empty and 1-char Latin-1) are both immortal and interned
+    empty = TextType("")
+    ascii_char = TextType("a")
+    latin1_char = TextType("\xff")
+    for singleton in (empty, ascii_char, latin1_char):
+        assert singleton.is_immortal is True
+        assert singleton.singleton_text() == singleton.literal
+        assert singleton.is_interned_text is True
+        assert singleton.interned_text() == singleton.literal
+
+    # Multi-character literals are interned heap objects, not immediate singletons
+    multi = TextType("compile_time_literal")
+    other = TextType("other_literal")
+    assert multi.is_immortal is False
+    assert multi.singleton_text() is None
+    assert multi.is_interned_text is True
+    assert multi.interned_text() == "compile_time_literal"
+    assert INTERNED_TEXT_TYPE.is_immortal is False
+    assert INTERNED_TEXT_TYPE.singleton_text() is None
+    assert INTERNED_TEXT_TYPE.is_interned_text is True
+    assert INTERNED_TEXT_TYPE.interned_text() is None
+    assert TEXT_TYPE.is_interned_text is False
+
+    # Identity comparisons fold on known literals
+    assert multi.compare_identity_with(multi, op_is) is BOOLEAN_TRUE
+    assert multi.compare_identity_with(multi, op_is_not) is BOOLEAN_FALSE
+    assert multi.compare_identity_with(other, op_is) is BOOLEAN_FALSE
+    assert multi.compare_identity_with(other, op_is_not) is BOOLEAN_TRUE
+    assert multi.compare_identity_with(TEXT_TYPE, op_is) is BOOLEAN
+
+    # Join preserves interned proof when both branches are explicitly interned
+    assert INTERNED_TEXT_TYPE.join(multi) == INTERNED_TEXT_TYPE
+    assert INTERNED_TEXT_TYPE.join(TEXT_TYPE) == TEXT_TYPE
+
+
+def test_interned_text_equality_and_identity_llvm_lowering():
+    ir = emit_llvm(
+        "import _mule_native\n"
+        "def same_literal():\n"
+        " return 'alpha_beta' is 'alpha_beta'\n"
+        "def diff_literal():\n"
+        " return 'alpha_beta' is 'alpha_gamma'\n"
+        "def eq_interned(x: str, y: str):\n"
+        " a = _mule_native.intern_text(x)\n"
+        " b = _mule_native.intern_text(y)\n"
+        " return a == b\n"
+        "def eq_uninterned_multi_literal(x):\n"
+        " s = str(x)\n"
+        " return s == 'alpha_beta'\n"
+    )
+    same_body = ir.split('define internal ptr @"mule_fn_same_literal.body"')[1].split(
+        "\n}"
+    )[0]
+    diff_body = ir.split('define internal ptr @"mule_fn_diff_literal.body"')[1].split(
+        "\n}"
+    )[0]
+    assert "@mule.true" in same_body
+    assert "@mule.false" in diff_body
+    uninterned_body = ir.split(
+        'define internal ptr @"mule_fn_eq_uninterned_multi_literal.body"'
+    )[1].split("\n}")[0]
+    assert "call i32 @mule_text_eq" in uninterned_body
+    eq_interned_body = ir.split('define internal ptr @"mule_fn_eq_interned.body"')[
+        1
+    ].split("\n}")[0]
+    assert "icmp eq ptr" in eq_interned_body
+    assert "@mule_text_eq" not in eq_interned_body

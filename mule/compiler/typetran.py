@@ -278,6 +278,18 @@ def _identity_comparison(left_type: ValueType, right_type: ValueType) -> bool | 
         right_bool = right_type.exact_boolean()
         if right_bool is not None:
             return left_bool == right_bool
+    left_text = left_type.exact_text()
+    if left_text is not None:
+        right_text = right_type.exact_text()
+        if right_text is not None:
+            if left_text != right_text:
+                return False
+            if (
+                (left_type.is_interned_text and right_type.is_interned_text)
+                or left_type.singleton_text() is not None
+                or right_type.singleton_text() is not None
+            ):
+                return True
     return None
 
 
@@ -287,7 +299,7 @@ def _fold_identity_comparison(node: Combination, *, negate: bool) -> bool:
     left, right = node.args
     if not (_is_side_effect_free_ref(left) and _is_side_effect_free_ref(right)):
         return False
-    same = _identity_comparison(lvar_type(left), lvar_type(right))
+    same = _identity_comparison(_lvar_text_type(left), _lvar_text_type(right))
     if same is None:
         return False
     _replace_comparison_with_bool(node, not same if negate else same)

@@ -124,6 +124,10 @@ class ValueType:
         return False
 
     @property
+    def is_interned_text(self) -> bool:
+        return False
+
+    @property
     def needs_release(self):
         return True
 
@@ -444,6 +448,9 @@ class ValueType:
         return None
 
     def codepoint_at(self, index: int):
+        return None
+
+    def singleton_text(self) -> str | None:
         return None
 
     def interned_text(self) -> str | None:
@@ -1500,6 +1507,9 @@ class ImmortalType(ValueType):
     def fits_possible_none(self, expected):
         return True
 
+    def fits_possible_text(self, expected):
+        return True
+
     def fits_possible_immortal(self, expected):
         return True
 
@@ -1577,10 +1587,17 @@ class NoneType(PrimitiveType):
         return True
 
 
+def _is_singleton_text(literal: str | None) -> bool:
+    return literal is not None and (
+        literal == "" or (len(literal) == 1 and ord(literal) <= 0xFF)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class TextType(PrimitiveType):
     literal: str | None = None
     may_be_unbound: bool = False
+    interned: bool = False
 
     def runtime_class_type(self):
         return UNKNOWN if self.may_be_unbound else CLASS_STR_TYPE
@@ -1594,21 +1611,46 @@ class TextType(PrimitiveType):
 
     @property
     def is_immortal(self):
-        return not self.may_be_unbound and self.interned_text() is not None
+        return not self.may_be_unbound and _is_singleton_text(self.literal)
 
     @property
     def needs_release(self):
-        return self.may_be_unbound or self.interned_text() is None
+        return self.may_be_unbound or not _is_singleton_text(self.literal)
+
+    @property
+    def is_interned_text(self) -> bool:
+        return not self.may_be_unbound and (self.interned or self.literal is not None)
+
+    def singleton_text(self) -> str | None:
+        if not self.may_be_unbound and _is_singleton_text(self.literal):
+            return self.literal
+        return None
 
     def interned_text(self) -> str | None:
-        if self.may_be_unbound or self.literal is None:
-            return None
-        if self.literal == "" or (len(self.literal) == 1 and ord(self.literal) <= 0xFF):
+        if not self.may_be_unbound and self.is_interned_text:
             return self.literal
         return None
 
     def exact_text(self) -> str | None:
         return None if self.may_be_unbound else self.literal
+
+    def compare_identity_with(self, left, operator):
+        if self.may_be_unbound or left.may_be_unbound:
+            return BOOLEAN
+        is_same = operator is ast.ComparisonOperator.IS
+        if left.fits_none(NONE_TYPE):
+            return BOOLEAN_FALSE if is_same else BOOLEAN_TRUE
+        left_text = left.exact_text()
+        if self.literal is not None and left_text is not None:
+            if self.literal != left_text:
+                return BOOLEAN_FALSE if is_same else BOOLEAN_TRUE
+            if (
+                (self.is_interned_text and left.is_interned_text)
+                or self.singleton_text() is not None
+                or left.singleton_text() is not None
+            ):
+                return BOOLEAN_TRUE if is_same else BOOLEAN_FALSE
+        return BOOLEAN
 
     def exact_length(self) -> int | None:
         return (
@@ -1648,15 +1690,21 @@ class TextType(PrimitiveType):
             return self
         unbound = self.may_be_unbound or left.may_be_unbound
         literal = self.literal if self.literal == left.literal else None
+        interned = (
+            (self.interned or left.interned)
+            and self.as_bound().is_interned_text
+            and left.as_bound().is_interned_text
+        )
         if literal is None and not unbound:
-            return TEXT_TYPE
-        return TextType(literal, may_be_unbound=unbound)
+            return INTERNED_TEXT_TYPE if interned else TEXT_TYPE
+        return TextType(literal, may_be_unbound=unbound, interned=interned)
 
     def widen(self, new):
         if new.fits_text(TEXT_TYPE) and self.literal != new.exact_text():
-            return (
-                TEXT_TYPE if not new.may_be_unbound else TextType(may_be_unbound=True)
-            )
+            interned = self.interned and new.as_bound().is_interned_text
+            if not new.may_be_unbound:
+                return INTERNED_TEXT_TYPE if interned else TEXT_TYPE
+            return TextType(may_be_unbound=True, interned=interned)
         return new
 
     def widen_constant(self):
@@ -1697,8 +1745,10 @@ class TextType(PrimitiveType):
         return actual.fits_possible_text(self)
 
     def fits_text(self, expected):
-        return not self.may_be_unbound and (
-            expected.literal is None or self.literal == expected.literal
+        return (
+            not self.may_be_unbound
+            and (expected.literal is None or self.literal == expected.literal)
+            and (not expected.interned or self.is_interned_text)
         )
 
     def fits_possible_text(self, expected):
@@ -1707,6 +1757,12 @@ class TextType(PrimitiveType):
             or self.literal is None
             or self.literal == expected.literal
         )
+
+    def fits_immortal(self, expected):
+        return self.is_immortal
+
+    def fits_possible_immortal(self, expected):
+        return True
 
     def getitem_type(self, index):
         return UNKNOWN if self.may_be_unbound else TEXT_TYPE
@@ -3385,6 +3441,10 @@ class UnionType(ValueType):
         return not self.may_be_unbound and all(m.is_heap_object for m in self.members)
 
     @property
+    def is_interned_text(self) -> bool:
+        return not self.may_be_unbound and all(m.is_interned_text for m in self.members)
+
+    @property
     def needs_release(self):
         return self.may_be_unbound or any(m.needs_release for m in self.members)
 
@@ -4169,6 +4229,7 @@ IMMORTAL = ImmortalType()
 IMMORTAL_UNBOUND = ImmortalType(may_be_unbound=True)
 NONE_TYPE = NoneType()
 TEXT_TYPE = TextType()
+INTERNED_TEXT_TYPE = TextType(interned=True)
 BYTES_TYPE = BytesType()
 BYTEARRAY_TYPE = ByteArrayType()
 FUNCTION_TYPE = FunctionType()
@@ -4502,6 +4563,7 @@ class _SerializeValueType(ValueTypeVisitor):
         return {
             "kind": "text",
             "literal": fact.literal,
+            "interned": fact.interned,
             "unbound": fact.may_be_unbound,
         }
 
@@ -4628,9 +4690,10 @@ def value_type_from_dict(data: dict | None) -> ValueType:
         return NoneType(may_be_unbound=unbound) if unbound else NONE_TYPE
     if kind == "text":
         lit = data.get("literal")
+        interned = bool(data.get("interned", False))
         if lit is None and not unbound:
-            return TEXT_TYPE
-        return TextType(lit, may_be_unbound=unbound)
+            return INTERNED_TEXT_TYPE if interned else TEXT_TYPE
+        return TextType(lit, may_be_unbound=unbound, interned=interned)
     if kind == "bytes":
         return BytesType(may_be_unbound=unbound) if unbound else BYTES_TYPE
     if kind == "bytearray":

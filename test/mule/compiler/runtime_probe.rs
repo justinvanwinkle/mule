@@ -73,6 +73,13 @@ unsafe fn specialized_abi(globals: Value) {
             assert_eq!((*value).reference_count(), usize::MAX);
         }
         assert_eq!(mule_retain(small(42)), small(42));
+        let literal_a = mule_literal_text(c"interned literal".as_ptr(), 16);
+        let literal_b = mule_literal_text(c"interned literal".as_ptr(), 16);
+        assert_eq!(literal_a, literal_b);
+        assert_eq!((*literal_a).reference_count(), 2);
+        release(literal_b);
+        assert_eq!((*literal_a).reference_count(), 1);
+        release(literal_a);
         let owned = text("retained");
         assert_eq!(mule_retain(owned), owned);
         assert_eq!((*owned).reference_count(), 2);
@@ -249,7 +256,13 @@ unsafe fn integer(decimal: &str) -> Value {
 }
 
 unsafe fn text(value: &str) -> Value {
-    unsafe { mule_literal_text(value.as_ptr().cast(), value.len() as isize) }
+    unsafe {
+        new_value(Data::Text(
+            mule_runtime::text::Text::from_rust_str(value),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        ))
+    }
 }
 
 unsafe fn show(value: Value) -> bool {
@@ -624,10 +637,11 @@ unsafe extern "C" fn module_entry(globals: Value, args: Value) -> Value {
                 clear_error();
             }
             "literals" => {
+                let snow = "snow ☃\0end";
                 for value in [
                     integer("-123456789012345678901234567890"),
                     mule_literal_float(1.25),
-                    text("snow ☃\0end"),
+                    mule_literal_text(snow.as_ptr().cast(), snow.len() as isize),
                     mule_literal_bytes(b"a\0b".as_ptr().cast(), 3),
                     mule_none(),
                     mule_bool(0),
