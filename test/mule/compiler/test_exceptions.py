@@ -307,3 +307,26 @@ except TypeError as error:
     assert result.stdout == (
         "outer inner inner True\nNone first False\nNone hidden True\n() ()\ncause type error\n"
     )
+
+
+def test_multi_clause_try_enters_handler_once_per_catch():
+    from mule.compiler import emit_llvm
+
+    llvm = emit_llvm(
+        """
+def handle(x):
+    try:
+        if x < 0:
+            raise ValueError(x)
+        if x == 0:
+            raise KeyError(x)
+        return x
+    except KeyError as err:
+        return len(err.args)
+    except ValueError as err:
+        return len(err.args) + 1
+"""
+    )
+    entries = llvm.split("\ndefine ")[1:]
+    body = next(entry for entry in entries if ' @"mule_fn_handle.body"(' in entry)
+    assert body.count("call i32 @mule_enter_handler(") == 1

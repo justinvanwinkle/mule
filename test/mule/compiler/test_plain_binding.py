@@ -54,3 +54,33 @@ def test_plain_entry_binds_omitted_defaults_without_the_general_binder():
     )
     assert "call ptr @mule_arg_or_default(ptr %args, i32 1, i32 0)" in wrapper
     assert "call ptr @mule_binding_default_at(ptr %args, i32 1)" in wrapper
+
+
+def test_unused_variadic_parameters_skip_tuple_and_dict_allocation(tmp_path):
+    from mule.compiler import emit_llvm
+
+    source = """
+def unused_both(a, *args, **kwargs):
+    return a + 1
+
+def used_args(a, *args, **kwargs):
+    return (a, args)
+
+g1 = unused_both
+g2 = used_args
+print(g1(10), g1(10, 20, 30, x=1, y=2))
+print(g2(10, 20, x=1))
+"""
+    compare(tmp_path, source)
+    llvm = emit_llvm(source)
+    entries = {entry.split("(", 1)[0]: entry for entry in llvm.split("\ndefine ")[1:]}
+    for name in (
+        'ptr @"mule_fn_unused_both.fn"',
+        'internal ptr @"mule_fn_unused_both.fn.binding"',
+        'internal ptr @"mule_fn_unused_both.fn.view"',
+    ):
+        wrapper = entries[name]
+        assert "@mule_rest_args" not in wrapper
+        assert "build_dict" not in wrapper
+    assert "@mule_rest_args" in entries['ptr @"mule_fn_used_args.fn"']
+    assert "build_dict" not in entries['ptr @"mule_fn_used_args.fn"']

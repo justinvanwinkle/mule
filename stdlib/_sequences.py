@@ -86,8 +86,9 @@ class BaseException:
     _suppress_context = False
 
     def __new__(cls, *args, **kwargs):
-        instance = object.__new__(cls)
-        instance._args = args
+        instance = _allocate_instance(cls)
+        if args:
+            instance._args = args
         return instance
 
     def __init__(self, *args):

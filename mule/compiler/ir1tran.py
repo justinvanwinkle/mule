@@ -1129,9 +1129,10 @@ class FunctionConverter:
                 finally:
                     self.class_scopes = saved
                 start = following
-            following = Ctran()
-            self.known(start, following, None, fndb.LEAVE_HANDLER, (), source)
-            start = following
+            if cleanup.info is not False:
+                following = Ctran()
+                self.known(start, following, None, fndb.LEAVE_HANDLER, (), source)
+                start = following
         return start
 
     def with_cleanup(self, cleanup: Cleanup | None):
@@ -2926,30 +2927,32 @@ class _Statements(ast.Visitor):
         exception = function.temporary()
         current = Ctran()
         function.set_var(ctran, current, exception, caught, node)
-        for handler in node.handlers:
-            body, unmatched = function.block(), function.block()
-            if handler.exception is None:
-                function.jump(current, body)
-            else:
-                ctran, raised = Ctran(), Lvar()
-                function.ref(current, ctran, raised, exception, handler)
-                entered = Ctran()
-                function.known(
-                    ctran, entered, None, fndb.ENTER_HANDLER, (raised,), handler
-                )
-                match_unwind = function.block()
-                match_active = Cleanup(
-                    CleanupKind.HANDLER_BODY,
-                    target=match_unwind,
-                    parent=outer,
-                    loops=function.lexenv.loops,
-                )
-                with function.with_cleanup(match_active):
-                    check_block = function.block()
-                    function.jump(entered, check_block)
-                    check_start = linked(check_block.start, check_block, "start")
-                    match_active.mess_up = check_start.next
-                    ctran, expected = function.value(check_start, handler.exception)
+        ctran, raised = Ctran(), Lvar()
+        function.ref(current, ctran, raised, exception, node)
+        entered = Ctran()
+        function.known(ctran, entered, None, fndb.ENTER_HANDLER, (raised,), node)
+        match_unwind, reraise = function.block(), function.block()
+        unwinds = [
+            function.block() if handler.binding is not None else None
+            for handler in node.handlers
+        ]
+        match_active = Cleanup(
+            CleanupKind.HANDLER_BODY,
+            target=match_unwind,
+            parent=outer,
+            loops=function.lexenv.loops,
+        )
+        with function.with_cleanup(match_active):
+            check_entry = function.block()
+            function.jump(entered, check_entry)
+            current = linked(check_entry.start, check_entry, "start")
+            match_active.mess_up = current.next
+            for handler, unwind in zip(node.handlers, unwinds, strict=True):
+                body, unmatched = function.block(), function.block()
+                if handler.exception is None:
+                    function.jump(current, body)
+                else:
+                    ctran, expected = function.value(current, handler.exception)
                     following, raised = Ctran(), Lvar()
                     function.ref(ctran, following, raised, exception, handler)
                     ctran, matches = Ctran(), Lvar()
@@ -2962,54 +2965,55 @@ class _Statements(ast.Visitor):
                         handler,
                     )
                     function.if_node(ctran, matches, body, unmatched, handler)
-                ctran = Ctran()
-                function.known(
-                    match_unwind.start, ctran, None, fndb.LEAVE_HANDLER, (), handler
-                )
-                self.terminal(ctran, fndb.UNWIND, (), handler)
-            ctran, raised = Ctran(), Lvar()
-            function.ref(body.start, ctran, raised, exception, handler)
-            entered = Ctran()
-            function.known(ctran, entered, None, fndb.ENTER_HANDLER, (raised,), handler)
-            unwind = function.block()
-            active = Cleanup(
-                CleanupKind.HANDLER_BODY,
-                target=unwind,
-                binding=handler.binding,
-                parent=outer,
-            )
-            with function.with_cleanup(active):
-                # The handler body's own error destination starts a new block.
-                inner = function.block()
-                function.jump(entered, inner)
-                current = linked(inner.start, inner, "start")
-                active.mess_up = current.next
-                if handler.binding is not None:
-                    function.converter.reserved(handler.binding, handler)
-                    ctran, raised = Ctran(), Lvar()
-                    function.ref(current, ctran, raised, exception, handler)
-                    current = Ctran()
-                    function.store(ctran, current, handler.binding, raised, handler)
-                frontier = function.convert_body(current, handler.body)
-                if frontier is not None:
-                    # An empty suite still needs an exit in the active cleanup,
-                    # so environment analysis can emit the handler-leaving code.
-                    function.jump(frontier, done)
+                if handler.binding is None:
+                    frontier = function.convert_body(
+                        linked(body.start, body, "start"), handler.body
+                    )
+                    if frontier is not None:
+                        # An empty suite still needs an exit in the active cleanup,
+                        # so environment analysis can emit the handler-leaving code.
+                        function.jump(frontier, done)
+                else:
+                    active = Cleanup(
+                        CleanupKind.HANDLER_BODY,
+                        target=unwind,
+                        binding=handler.binding,
+                        parent=match_active,
+                        loops=function.lexenv.loops,
+                        info=False,
+                    )
+                    with function.with_cleanup(active):
+                        # The handler body's own error destination starts a new block.
+                        inner = function.block()
+                        function.jump(linked(body.start, body, "start"), inner)
+                        current = linked(inner.start, inner, "start")
+                        active.mess_up = current.next
+                        function.converter.reserved(handler.binding, handler)
+                        ctran, raised = Ctran(), Lvar()
+                        function.ref(current, ctran, raised, exception, handler)
+                        current = Ctran()
+                        function.store(ctran, current, handler.binding, raised, handler)
+                        frontier = function.convert_body(current, handler.body)
+                        if frontier is not None:
+                            function.jump(frontier, done)
+                current = linked(unmatched.start, unmatched, "start")
+            function.jump(current, reraise)
+        for handler, unwind in zip(node.handlers, unwinds, strict=True):
+            if unwind is None:
+                continue
             current = linked(unwind.start, unwind, "start")
-            if handler.binding is not None:
-                ctran = Ctran()
-                function.unbind(
-                    current, ctran, handler.binding, handler, missing_ok=True
-                )
-                current = ctran
             ctran = Ctran()
-            function.known(current, ctran, None, fndb.LEAVE_HANDLER, (), handler)
-            self.terminal(ctran, fndb.UNWIND, (), handler)
-            current = linked(unmatched.start, unmatched, "start")
+            function.unbind(current, ctran, handler.binding, handler, missing_ok=True)
+            following = Ctran()
+            function.known(ctran, following, None, fndb.LEAVE_HANDLER, (), handler)
+            self.terminal(following, fndb.UNWIND, (), handler)
         # No handler matched: reinstall the original caught exception.
         ctran, value = Ctran(), Lvar()
-        function.ref(current, ctran, value, exception, node, final=True)
+        function.ref(reraise.start, ctran, value, exception, node, final=True)
         self.terminal(ctran, fndb.RESUME_EXCEPTION, (value,), node)
+        ctran = Ctran()
+        function.known(match_unwind.start, ctran, None, fndb.LEAVE_HANDLER, (), node)
+        self.terminal(ctran, fndb.UNWIND, (), node)
         ctran = Ctran()
         function.set_var(done.start, ctran, exception, None, node)
         function.flow(ctran, next_)

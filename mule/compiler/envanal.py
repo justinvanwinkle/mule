@@ -205,9 +205,11 @@ def _leave_handler_body(function, cleanup, block) -> None:
             following = Ctran()
             function.unbind(start, following, cleanup.binding, source, missing_ok=True)
             start = following
-        following = Ctran()
-        function.known(start, following, None, fndb.LEAVE_HANDLER, (), source)
-        function.finish_cleanup_block(following, block)
+        if cleanup.info is not False:
+            following = Ctran()
+            function.known(start, following, None, fndb.LEAVE_HANDLER, (), source)
+            start = following
+        function.finish_cleanup_block(start, block)
 
 
 def _run_finally_body(function, cleanup, block) -> None:

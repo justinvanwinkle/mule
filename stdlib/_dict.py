@@ -570,9 +570,10 @@ class dict(_Table):
         return self
 
     def get(self, key, default=None):
-        if _type_name(self) in ("_InstanceDict", "_GlobalsDict"):
-            return self.get(key, default)
-        _require_dict(self)
+        if not _is_dict(self):
+            if _type_name(self) in ("_InstanceDict", "_GlobalsDict"):
+                return self.get(key, default)
+            _require_dict(self)
         entry = _table_lookup(self, key)
         return _storage_read(self._values, entry) if entry >= 0 else default
 

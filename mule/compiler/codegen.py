@@ -5810,34 +5810,46 @@ class FunctionGenerator:
                 "plain:",
             ]
             if rest_idx is not None:
-                lines += [
-                    f"  %rest.more = icmp sgt i32 %plain.count, {positional}",
-                    f"  %rest.start = select i1 %rest.more, i32 {positional}, i32 %plain.count",
-                    f"  %plain.{rest_idx} = call ptr @mule_rest_args(ptr %args, i32 %rest.start)",
-                    f"  %plain.missing = icmp eq ptr %plain.{rest_idx}, null",
-                    "  br i1 %plain.missing, label %failed, label %plain.ok",
-                    "plain.ok:",
-                ]
-            if keywords_idx is not None:
-                build_dict = module.protocol_helper("build_dict", 1)
-                lines += [
-                    f"  %plain.empty = {module.constant_tuple(ast.Tuple([]))}",
-                    "  %plain.empty.missing = icmp eq ptr %plain.empty, null",
-                    "  br i1 %plain.empty.missing, label %plain.cleanup, label %plain.dictionary",
-                    "plain.dictionary:",
-                    f"  %plain.{keywords_idx} = call ptr {build_dict}(ptr %plain.empty)",
-                    f"  %plain.dictionary.missing = icmp eq ptr %plain.{keywords_idx}, null",
-                    "  br i1 %plain.dictionary.missing, label %plain.cleanup, label %plain.ready",
-                    "plain.cleanup:",
-                ]
-                if rest_idx is not None:
+                rest_var = lambda_.vars[rest_idx]
+                if rest_var.refs or rest_var.sets or rest_var.indirect:
+                    lines += [
+                        f"  %rest.more = icmp sgt i32 %plain.count, {positional}",
+                        f"  %rest.start = select i1 %rest.more, i32 {positional}, i32 %plain.count",
+                        f"  %plain.{rest_idx} = call ptr @mule_rest_args(ptr %args, i32 %rest.start)",
+                        f"  %plain.missing = icmp eq ptr %plain.{rest_idx}, null",
+                        "  br i1 %plain.missing, label %failed, label %plain.ok",
+                        "plain.ok:",
+                    ]
+                else:
                     lines.append(
-                        f"  call void @mule.fast.release(ptr %plain.{rest_idx})"
+                        f"  %plain.{rest_idx} = getelementptr i8, ptr null, i64 0"
                     )
-                lines += [
-                    "  br label %failed",
-                    "plain.ready:",
-                ]
+            if keywords_idx is not None:
+                kw_var = lambda_.vars[keywords_idx]
+                if kw_var.refs or kw_var.sets or kw_var.indirect:
+                    build_dict = module.protocol_helper("build_dict", 1)
+                    lines += [
+                        f"  %plain.empty = {module.constant_tuple(ast.Tuple([]))}",
+                        "  %plain.empty.missing = icmp eq ptr %plain.empty, null",
+                        "  br i1 %plain.empty.missing, label %plain.cleanup, label %plain.dictionary",
+                        "plain.dictionary:",
+                        f"  %plain.{keywords_idx} = call ptr {build_dict}(ptr %plain.empty)",
+                        f"  %plain.dictionary.missing = icmp eq ptr %plain.{keywords_idx}, null",
+                        "  br i1 %plain.dictionary.missing, label %plain.cleanup, label %plain.ready",
+                        "plain.cleanup:",
+                    ]
+                    if rest_idx is not None:
+                        lines.append(
+                            f"  call void @mule.fast.release(ptr %plain.{rest_idx})"
+                        )
+                    lines += [
+                        "  br label %failed",
+                        "plain.ready:",
+                    ]
+                else:
+                    lines.append(
+                        f"  %plain.{keywords_idx} = getelementptr i8, ptr null, i64 0"
+                    )
             for index, kind in enumerate(kinds):
                 if kind in (
                     ast.ParameterKind.VAR_POSITIONAL,
@@ -6071,64 +6083,74 @@ class FunctionGenerator:
             ]
 
         if rest_idx is not None:
-            lines += [
-                f"  %kw.rest.many = icmp sgt i64 %kw.npos, {positional}",
-                f"  %kw.rest.from = select i1 %kw.rest.many, i64 {positional}, i64 %kw.npos",
-                "  %kw.rest.start = trunc i64 %kw.rest.from to i32",
-                f"  %bound.{rest_idx} = call ptr @mule_rest_args(ptr %args, i32 %kw.rest.start)",
-                f"  %kw.rest.bad = icmp eq ptr %bound.{rest_idx}, null",
-                "  br i1 %kw.rest.bad, label %failed, label %kw.rest.ok",
-                "kw.rest.ok:",
-            ]
-            owned.append(f"%bound.{rest_idx}")
+            rest_var = lambda_.vars[rest_idx]
+            if rest_var.refs or rest_var.sets or rest_var.indirect:
+                lines += [
+                    f"  %kw.rest.many = icmp sgt i64 %kw.npos, {positional}",
+                    f"  %kw.rest.from = select i1 %kw.rest.many, i64 {positional}, i64 %kw.npos",
+                    "  %kw.rest.start = trunc i64 %kw.rest.from to i32",
+                    f"  %bound.{rest_idx} = call ptr @mule_rest_args(ptr %args, i32 %kw.rest.start)",
+                    f"  %kw.rest.bad = icmp eq ptr %bound.{rest_idx}, null",
+                    "  br i1 %kw.rest.bad, label %failed, label %kw.rest.ok",
+                    "kw.rest.ok:",
+                ]
+                owned.append(f"%bound.{rest_idx}")
+            else:
+                lines.append(f"  %bound.{rest_idx} = getelementptr i8, ptr null, i64 0")
         if keywords_idx is not None:
-            build_dict = module.protocol_helper("build_dict", 1)
-            setitem = module.protocol_helper("setitem", 3)
-            extra = f"%bound.{keywords_idx}"
-            lines += [
-                f"  %kw.empty = {module.constant_tuple(ast.Tuple([]))}",
-                "  %kw.empty.bad = icmp eq ptr %kw.empty, null",
-                "  br i1 %kw.empty.bad, label %kw.dict.fail, label %kw.dict.make",
-                "kw.dict.make:",
-                f"  {extra} = call ptr {build_dict}(ptr %kw.empty)",
-                f"  %kw.dict.bad = icmp eq ptr {extra}, null",
-                "  br i1 %kw.dict.bad, label %kw.dict.fail, label %kw.dict.ok",
-                *fail_block("kw.dict.fail"),
-                "kw.dict.ok:",
-            ]
-            owned.append(extra)
-            lines += [
-                "  br label %kw.extra.head",
-                "kw.extra.head:",
-                "  %kw.e = phi i64 [0, %kw.dict.ok], [%kw.e.next, %kw.extra.next]",
-                "  %kw.e.done = icmp eq i64 %kw.e, %kw.count",
-                "  br i1 %kw.e.done, label %kw.extra.end, label %kw.extra.test",
-                "kw.extra.test:",
-                "  %kw.e.flag.addr = getelementptr i8, ptr %kw.extra, i64 %kw.e",
-                "  %kw.e.flag = load i8, ptr %kw.e.flag.addr",
-                "  %kw.e.set = icmp ne i8 %kw.e.flag, 0",
-                "  br i1 %kw.e.set, label %kw.extra.insert, label %kw.extra.next",
-                "kw.extra.insert:",
-                "  %kw.e.key = call ptr @mule_binding_keyword_text(ptr %args, i64 %kw.e)",
-                "  %kw.e.key.bad = icmp eq ptr %kw.e.key, null",
-                "  br i1 %kw.e.key.bad, label %kw.extra.fail, label %kw.extra.store",
-                "kw.extra.store:",
-                "  %kw.e.value.addr = getelementptr ptr, ptr %kw.values, i64 %kw.e",
-                "  %kw.e.value.borrowed = load ptr, ptr %kw.e.value.addr",
-                "  %kw.e.value = call ptr @mule.fast.retain(ptr %kw.e.value.borrowed)",
-                f"  %kw.e.dict = call ptr @mule.fast.retain(ptr {extra})",
-                f"  %kw.e.result = call ptr {setitem}(ptr %kw.e.dict, ptr %kw.e.key, ptr %kw.e.value)",
-                "  %kw.e.result.bad = icmp eq ptr %kw.e.result, null",
-                "  br i1 %kw.e.result.bad, label %kw.extra.fail, label %kw.extra.done",
-                "kw.extra.done:",
-                "  call void @mule.fast.release(ptr %kw.e.result)",
-                "  br label %kw.extra.next",
-                "kw.extra.next:",
-                "  %kw.e.next = add i64 %kw.e, 1",
-                "  br label %kw.extra.head",
-                *fail_block("kw.extra.fail"),
-                "kw.extra.end:",
-            ]
+            kw_var = lambda_.vars[keywords_idx]
+            if kw_var.refs or kw_var.sets or kw_var.indirect:
+                build_dict = module.protocol_helper("build_dict", 1)
+                setitem = module.protocol_helper("setitem", 3)
+                extra = f"%bound.{keywords_idx}"
+                lines += [
+                    f"  %kw.empty = {module.constant_tuple(ast.Tuple([]))}",
+                    "  %kw.empty.bad = icmp eq ptr %kw.empty, null",
+                    "  br i1 %kw.empty.bad, label %kw.dict.fail, label %kw.dict.make",
+                    "kw.dict.make:",
+                    f"  {extra} = call ptr {build_dict}(ptr %kw.empty)",
+                    f"  %kw.dict.bad = icmp eq ptr {extra}, null",
+                    "  br i1 %kw.dict.bad, label %kw.dict.fail, label %kw.dict.ok",
+                    *fail_block("kw.dict.fail"),
+                    "kw.dict.ok:",
+                ]
+                owned.append(extra)
+                lines += [
+                    "  br label %kw.extra.head",
+                    "kw.extra.head:",
+                    "  %kw.e = phi i64 [0, %kw.dict.ok], [%kw.e.next, %kw.extra.next]",
+                    "  %kw.e.done = icmp eq i64 %kw.e, %kw.count",
+                    "  br i1 %kw.e.done, label %kw.extra.end, label %kw.extra.test",
+                    "kw.extra.test:",
+                    "  %kw.e.flag.addr = getelementptr i8, ptr %kw.extra, i64 %kw.e",
+                    "  %kw.e.flag = load i8, ptr %kw.e.flag.addr",
+                    "  %kw.e.set = icmp ne i8 %kw.e.flag, 0",
+                    "  br i1 %kw.e.set, label %kw.extra.insert, label %kw.extra.next",
+                    "kw.extra.insert:",
+                    "  %kw.e.key = call ptr @mule_binding_keyword_text(ptr %args, i64 %kw.e)",
+                    "  %kw.e.key.bad = icmp eq ptr %kw.e.key, null",
+                    "  br i1 %kw.e.key.bad, label %kw.extra.fail, label %kw.extra.store",
+                    "kw.extra.store:",
+                    "  %kw.e.value.addr = getelementptr ptr, ptr %kw.values, i64 %kw.e",
+                    "  %kw.e.value.borrowed = load ptr, ptr %kw.e.value.addr",
+                    "  %kw.e.value = call ptr @mule.fast.retain(ptr %kw.e.value.borrowed)",
+                    f"  %kw.e.dict = call ptr @mule.fast.retain(ptr {extra})",
+                    f"  %kw.e.result = call ptr {setitem}(ptr %kw.e.dict, ptr %kw.e.key, ptr %kw.e.value)",
+                    "  %kw.e.result.bad = icmp eq ptr %kw.e.result, null",
+                    "  br i1 %kw.e.result.bad, label %kw.extra.fail, label %kw.extra.done",
+                    "kw.extra.done:",
+                    "  call void @mule.fast.release(ptr %kw.e.result)",
+                    "  br label %kw.extra.next",
+                    "kw.extra.next:",
+                    "  %kw.e.next = add i64 %kw.e, 1",
+                    "  br label %kw.extra.head",
+                    *fail_block("kw.extra.fail"),
+                    "kw.extra.end:",
+                ]
+            else:
+                lines.append(
+                    f"  %bound.{keywords_idx} = getelementptr i8, ptr null, i64 0"
+                )
         for index in range(count):
             if index in variadic:
                 continue
