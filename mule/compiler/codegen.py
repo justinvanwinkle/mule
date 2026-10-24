@@ -436,6 +436,9 @@ _BORROWED_SEQUENCE_PROTOCOLS = frozenset(
         "dict_setitem",
         "dict_contains",
         "dict_not_contains",
+        "bytearray_getitem",
+        "bytearray_setitem",
+        "bytearray_append",
     }
 )
 
@@ -1768,12 +1771,12 @@ class ModuleGenerator:
         )
         return symbol
 
-    def positional_call_helper(self, arity: int) -> str:
-        key = f"$call.{arity}"
+    def positional_call_helper(self, arity: int, *, borrowed: bool = False) -> str:
+        key = f"$call.borrowed.{arity}" if borrowed else f"$call.{arity}"
         existing = self.protocol_helpers.get(key)
         if existing is not None:
             return existing
-        symbol = f"@mule.call.{arity}"
+        symbol = f"@mule.call.borrowed.{arity}" if borrowed else f"@mule.call.{arity}"
         self.protocol_helpers[key] = symbol
         params = ", ".join(["ptr %callee", *(f"ptr %arg.{i}" for i in range(arity))])
         lines = [f"define internal ptr {symbol}({params}) {{", "entry:"]
@@ -1787,8 +1790,9 @@ class ModuleGenerator:
             buf = "%argv"
         else:
             buf = "null"
+        target = "@mule_call" if borrowed else "@mule_call_owned"
         lines.append(
-            f"  %result = call ptr @mule_call_owned(ptr %callee, i64 {arity}, ptr {buf})"
+            f"  %result = call ptr {target}(ptr %callee, i64 {arity}, ptr {buf})"
         )
         lines.extend(["  ret ptr %result", "}"])
         self.auxiliary.append("\n".join(lines))
@@ -5138,6 +5142,13 @@ class FunctionGenerator:
             for arg in arguments:
                 self.release(arg)
             return result
+        if info.exact_bytearray_append:
+            arg = arguments[0]
+            result = self.sequence_call("bytearray_append", [receiver, arg])
+            self.release(receiver)
+            self.release(arg)
+            self.immortal_values.add(result)
+            return result
         if info.exact_text_find:
             sub = arguments[0]
             start = arguments[1] if len(arguments) >= 2 else "@mule.none"
@@ -5459,7 +5470,9 @@ class FunctionGenerator:
         if self.coroutine_local_tns:
             n_locals = len(self.coroutine_local_tns)
             self.line(f"%coroutine.locals = alloca [{n_locals} x ptr]")
-            self.line(f"store [{n_locals} x ptr] zeroinitializer, ptr %coroutine.locals")
+            self.line(
+                f"store [{n_locals} x ptr] zeroinitializer, ptr %coroutine.locals"
+            )
             self.line(
                 f"call void @mule_coroutine_set_locals(ptr %coroutine.locals, i64 {n_locals})"
             )

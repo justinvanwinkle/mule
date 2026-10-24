@@ -233,6 +233,8 @@ class RangeState:
     arguments: tuple = ()
     direct: bool = False
     step_sign: int = 0
+    fused: bool = False
+    callee_leaf: object = None
 
     def clone(self, map_lvar):
         return RangeState(
@@ -241,6 +243,8 @@ class RangeState:
             tuple(map_lvar(arg) for arg in self.arguments),
             self.direct,
             self.step_sign,
+            self.fused,
+            self.callee_leaf,
         )
 
 
@@ -3085,7 +3089,11 @@ class _Statements(ast.Visitor):
         function.set_var(ctran, current, iterator, iterated, node)
         generic, range_done = function.block(), function.block()
         if callee is not None:
-            state = RangeState(*_range_interval(candidate), tuple(arguments))
+            state = RangeState(
+                *_range_interval(candidate),
+                tuple(arguments),
+                step_sign=1 if len(arguments) <= 2 else 0,
+            )
             range_test, range_body = function.block(), function.block()
             ctran, loaded = Ctran(), Lvar()
             function.ref(current, ctran, loaded, callee, candidate, final=True)

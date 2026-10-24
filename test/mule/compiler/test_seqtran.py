@@ -451,3 +451,62 @@ def test_seqtran_folds_bound_local_constants_in_getitem_getslice_not_and_getattr
     assert list(known_calls(fn, "%unary_not")) == []
     assert len(list(known_calls(fn, "%getattr"))) == 1
     check_ir1_consistency(compilation.components)
+
+
+def test_range_prepare_dynamic_int_fuses_fast_fixnum_branch():
+    from mule.compiler.driver import emit_llvm
+
+    src = "def f(n: int):\n total = 0\n for i in range(n):\n  total += i\n return total\nprint(f(5))\n"
+    ir = emit_llvm(src)
+    body_start = ir.index('define internal ptr @"mule_fn_f.body"(')
+    body_end = ir.index("\n}", body_start)
+    body = ir[body_start:body_end]
+    assert "\nrange.fast." in body
+    assert "\nrange.slow." in body
+    fast_start = body.index("\nrange.fast.")
+    slow_start = body.index("\nrange.slow.", fast_start)
+    fast_block = body[fast_start:slow_start]
+    assert "call " not in fast_block
+    assert "store i64 " in fast_block
+
+
+def test_bytearray_varint_chain_specializes_getitem_setitem_append_and_modulo():
+    from mule.compiler.driver import emit_llvm
+
+    src = """def decode_varint(buf, idx):
+    shift = 0
+    result = 0
+    while True:
+        b = buf[idx]
+        idx += 1
+        result |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            return result, idx
+
+def decode_packets(packets):
+    checksum = 0
+    for packet in packets:
+        n, idx = decode_varint(packet, 0)
+        decoded = bytearray()
+        for j in range(n):
+            decoded.append(packet[idx + j] ^ (j & 0xFF))
+        if n > 1:
+            decoded[0], decoded[n - 1] = decoded[n - 1], decoded[0]
+        a = 1
+        for b in decoded:
+            a = (a + b) % 65521
+        checksum ^= a
+    return checksum
+
+print(decode_packets([b"\\x03abc"]))
+"""
+    ir = emit_llvm(src)
+    spec_start = ir.index('define internal ptr @"mule_fn_decode_packets.spec.0"(')
+    spec_end = ir.index("\n}", spec_start)
+    spec_body = ir[spec_start:spec_end]
+    assert "\nrange.fast." in spec_body
+    assert "bytearray_append" in spec_body
+    assert "bytearray_getitem" in spec_body
+    assert "bytearray_setitem" in spec_body
+    assert "urem i64 " in spec_body
+    assert "131043" in spec_body

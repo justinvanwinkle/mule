@@ -33,8 +33,10 @@ from .ctype import (
     BOOLEAN_FALSE,
     BOOLEAN_TRUE,
     BOTTOM,
+    BYTEARRAY_TYPE,
     BYTES_TYPE,
     CLASS_BOOL_TYPE,
+    CLASS_BYTEARRAY_TYPE,
     CLASS_BYTES_TYPE,
     CLASS_DICT_TYPE,
     CLASS_FLOAT_TYPE,
@@ -1805,9 +1807,19 @@ class _GlobalCalleeName(NodeVisitor, LeafVisitor):
     def visit_GlobalVar(self, leaf):
         return leaf.name
 
+    def visit_LambdaVar(self, leaf):
+        if leaf.hidden and len(leaf.sets) == 1:
+            value = leaf.sets[0].value
+            if value is not None and len(value.uses) == 1:
+                return value.uses[0].accept(self)
+        return None
+
 
 class _ImportedCalleeName(_GlobalCalleeName):
     def visit_LambdaVar(self, leaf):
+        source = super().visit_LambdaVar(leaf)
+        if source is not None:
+            return source
         if len(leaf.sets) == 1 and (leaf.home is None or leaf not in leaf.home.vars):
             return leaf.name
         return None
@@ -2486,6 +2498,9 @@ BOOTSTRAP_CLASS_TARGETS: dict[str, ClassConstructorTarget] = {
     "BytesStorage": ClassConstructorTarget(
         base_type=BYTES_TYPE, cls_type=CLASS_BYTES_TYPE
     ),
+    "bytearray": ClassConstructorTarget(
+        base_type=BYTEARRAY_TYPE, cls_type=CLASS_BYTEARRAY_TYPE
+    ),
     "tuple": ClassConstructorTarget(base_type=TupleType(), cls_type=CLASS_TUPLE_TYPE),
     "TupleStorage": ClassConstructorTarget(
         base_type=TupleType(), cls_type=CLASS_TUPLE_TYPE
@@ -2510,6 +2525,7 @@ BOOTSTRAP_BUILTIN_TARGETS: dict[str, ClassConstructorTarget | ForeignCallTarget]
         return_type=IntegerType(0, (1 << 60) - 1),
         derive_fn=_derive_builtin_len,
     ),
+    "range": ForeignCallTarget(return_type=IteratorType(INTEGER)),
     "ord": ForeignCallTarget(return_type=IntegerType(0, 0x10FFFF)),
     "chr": ForeignCallTarget(return_type=TEXT_TYPE),
 }

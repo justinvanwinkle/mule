@@ -104,8 +104,10 @@ def _bytes_special(value):
 
 
 def _index_integer(value):
+    if type_of(value) is int:
+        return _integer_storage(value)
     if is_instance(value, int):
-        return _convert_int(value)
+        return _integer_storage(_convert_int(value))
     owner = type_of(value)
     missing = _binding_missing()
     method = class_lookup_default(owner, "__index__", missing)
@@ -114,7 +116,7 @@ def _index_integer(value):
     result = bind_instance_attribute(method, value, owner)()
     if not is_instance(result, int):
         raise TypeError(f"__index__ returned non-int (type {type_of(result).__name__})")
-    return _convert_int(result)
+    return _integer_storage(_convert_int(result))
 
 
 def _integer_byteorder(value, operation):

@@ -4,6 +4,7 @@ import re
 
 import pytest
 
+from mule.compiler import emit_llvm
 from mule.compiler.codegen import ModuleGenerator, Program
 from mule.compiler.ctype import BYTES_TYPE, IntegerType
 from mule.compiler.ir1opt import constant_lvar_value
@@ -206,3 +207,38 @@ def test_inline_fixnum_divmod_nonpower2_matches_python(tmp_path):
     spec_asm = case.function_assembly(r"mule_fn_bounded_divmod\.spec\.")
     assert not re.search(r"\bi?div[qlwb]\b", spec_asm), spec_asm
     assert not re.search(r"mule_binary", spec_asm), spec_asm
+
+
+def test_bytearray_varint_adler32_chain_emits_inline_urem_without_releases():
+    source = (
+        "def decode_varint(buf, pos):\n"
+        " value = 0\n"
+        " shift = 0\n"
+        " while True:\n"
+        "  b = buf[pos]\n"
+        "  pos += 1\n"
+        "  value |= (b & 0x7F) << shift\n"
+        "  if not (b & 0x80):\n"
+        "   return value, pos\n"
+        "  shift += 7\n"
+        "def run_packet(packet):\n"
+        " payload_len, pos = decode_varint(packet, 0)\n"
+        " decoded = bytearray()\n"
+        " for j in range(payload_len):\n"
+        "  decoded.append((packet[pos + j] ^ j) & 0xFF)\n"
+        " a = 1\n"
+        " b_acc = 0\n"
+        " for b in decoded:\n"
+        "  a = (a + b) % 65521\n"
+        "  b_acc = (b_acc + a) % 65521\n"
+        " return (b_acc << 16) | a\n"
+        "run_packet(b'\\x03abc')\n"
+    )
+    ir = emit_llvm(source)
+    start = ir.find('define internal i64 @"mule_fn_run_packet.numeric.observed"')
+    assert start >= 0
+    end = ir.find("\ndefine ", start + 1)
+    fn_ir = ir[start:end]
+    assert fn_ir.count("urem i64") >= 2
+    assert "@mule_format_modulo" not in fn_ir
+    assert "@mule.fixnum.binary.5" not in fn_ir

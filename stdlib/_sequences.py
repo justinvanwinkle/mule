@@ -672,6 +672,8 @@ def abs(value, /):
 
 
 def integer_index(value):
+    if _index_method(value) is None:
+        return _integer_storage(value)
     return _index_integer(value)
 
 
@@ -689,6 +691,11 @@ def getitem(value, index):
         if entry >= 0:
             return _storage_read(value._values, entry)
         raise KeyError(index)
+    if cls is bytearray:
+        values = value.values
+        if is_slice(index):
+            return bytearray(_selected(values, index))
+        return _storage_read(values, storage_index(values, index))
     if cls is list and is_slice(index):
         return _selected(value, index)
     return _getitem_general(value, index)
@@ -722,6 +729,52 @@ def dict_contains(table, key):
 
 def dict_not_contains(table, key):
     return _table_lookup(table, key) < 0
+
+
+def bytearray_getitem(array, index):
+    values = array.values
+    if _index_method(index) is None:
+        index = _integer_storage(index)
+    else:
+        index = _index_integer(index)
+    length = _storage_length(values)
+    if index < 0:
+        index += length
+    if index < 0 or index >= length:
+        raise IndexError("sequence index out of range")
+    return _storage_read(values, index)
+
+
+def bytearray_setitem(array, index, item):
+    values = array.values
+    if _index_method(index) is None:
+        index = _integer_storage(index)
+    else:
+        index = _index_integer(index)
+    length = _storage_length(values)
+    if index < 0:
+        index += length
+    if index < 0 or index >= length:
+        raise IndexError("sequence index out of range")
+    if _index_method(item) is None:
+        item = _integer_storage(item)
+    else:
+        item = _index_integer(item)
+    if item < 0 or item > 255:
+        raise ValueError("byte must be in range(0, 256)")
+    _storage_write(values, index, item)
+
+
+def bytearray_append(array, value):
+    if _index_method(value) is None:
+        value = _integer_storage(value)
+    else:
+        value = _index_integer(value)
+    if value < 0 or value > 255:
+        raise ValueError("byte must be in range(0, 256)")
+    if buffer_exports(array):
+        raise BufferError("Existing exports of data: object cannot be re-sized")
+    _storage_append(array.values, value)
 
 
 def _getitem_general(value, index):
@@ -789,10 +842,16 @@ def sum(iterable, /, start=0):
     comp = 0.0
     in_float = _type_of(total) is float
     for item in iterable:
-        if not in_float and (_type_of(total) is int or _type_of(total) is bool) and _type_of(item) is float:
+        if (
+            not in_float
+            and (_type_of(total) is int or _type_of(total) is bool)
+            and _type_of(item) is float
+        ):
             total = total + item
             in_float = True
-        elif in_float and (_type_of(item) is float or _type_of(item) is int or _type_of(item) is bool):
+        elif in_float and (
+            _type_of(item) is float or _type_of(item) is int or _type_of(item) is bool
+        ):
             val = float(item)
             t = total + val
             if t - t == 0.0:
@@ -1166,7 +1225,9 @@ def add_keyword(keywords, name, value):
 def merge_keywords(keywords, mapping):
     keys = getattr(mapping, "keys", None)
     if keys is None:
-        raise TypeError(f"argument after ** must be a mapping, not {_type_name(mapping)}")
+        raise TypeError(
+            f"argument after ** must be a mapping, not {_type_name(mapping)}"
+        )
     for name in keys():
         if not _text_storage(name):
             raise TypeError("keywords must be strings")
@@ -1378,6 +1439,13 @@ def setitem(value, index, item):
     if cls is dict:
         _table_insert(value, index, item)
         return
+    if cls is bytearray:
+        if is_slice(index):
+            bytearray.__setitem__(value, index, item)
+            return
+        values = value.values
+        _storage_write(values, storage_index(values, index), _byte_value(item))
+        return
     if cls is list and is_slice(index):
         _list_set_slice(value, index, item)
         return
@@ -1388,7 +1456,10 @@ def setitem(value, index, item):
 
 
 def storage_index(value, index):
-    index = integer_index(index)
+    if _index_method(index) is None:
+        index = _integer_storage(index)
+    else:
+        index = _index_integer(index)
     length = _storage_length(value)
     if index < 0:
         index += length
@@ -2624,6 +2695,19 @@ def _iterate(value, membership):
         iterator.index = 0
         iterator.exhausted = False
         return iterator
+    if cls is bytearray:
+        iterator = _allocate_instance(StorageIterator)
+        iterator.sequence = value.values
+        iterator.index = 0
+        iterator.exhausted = False
+        return iterator
+    if cls is range:
+        iterator = _allocate_instance(RangeIterator)
+        iterator.current = value.start
+        iterator.stop = value.stop
+        iterator.step = value.step
+        iterator.exhausted = False
+        return iterator
     missing = _binding_missing()
     method = _optional_special(value, "__iter__")
     if method is not missing:
@@ -2798,18 +2882,18 @@ class range:
             start = 0
             stop = (
                 start_or_stop
-                if type(start_or_stop) is int
+                if _type_of(start_or_stop) is int
                 else integer_index(start_or_stop)
             )
             step = 1
         else:
             start = (
                 start_or_stop
-                if type(start_or_stop) is int
+                if _type_of(start_or_stop) is int
                 else integer_index(start_or_stop)
             )
-            stop = stop if type(stop) is int else integer_index(stop)
-            if type(step) is not int:
+            stop = stop if _type_of(stop) is int else integer_index(stop)
+            if _type_of(step) is not int:
                 step = integer_index(step)
             if step == 0:
                 raise ValueError("range step must not be zero")
@@ -2818,7 +2902,12 @@ class range:
         self.step = step
 
     def __iter__(self):
-        return RangeIterator(self.start, self.stop, self.step)
+        iterator = _allocate_instance(RangeIterator)
+        iterator.current = self.start
+        iterator.stop = self.stop
+        iterator.step = self.step
+        iterator.exhausted = False
+        return iterator
 
     def __repr__(self):
         if self.step == 1:
@@ -2826,7 +2915,7 @@ class range:
         return f"range({self.start}, {self.stop}, {self.step})"
 
     def __contains__(self, value):
-        value_type = type(value)
+        value_type = _type_of(value)
         if value_type is int or value_type is bool:
             if self.step > 0:
                 if value < self.start or value >= self.stop:
@@ -3160,7 +3249,10 @@ def _integer_storage_kind(value):
 
 
 def _byte_value(value, range_message="byte must be in range(0, 256)"):
-    value = _index_integer(value)
+    if _index_method(value) is None:
+        value = _integer_storage(value)
+    else:
+        value = _index_integer(value)
     if value < 0 or value > 255:
         raise ValueError(range_message)
     return value
@@ -3219,12 +3311,18 @@ def _byte_sublist(values, start, end):
     return result
 
 
+_DEFAULT_BYTES_SOURCE = b""
+
+
 class bytearray:
     """A mutable sequence of bytes, stored as a list of ints in range(256)."""
 
-    def __init__(self, source=b"", encoding=None, errors="strict"):
+    def __init__(self, source=_DEFAULT_BYTES_SOURCE, encoding=None, errors="strict"):
         if buffer_exports(self):
             raise BufferError("Existing exports of data: object cannot be re-sized")
+        if source is _DEFAULT_BYTES_SOURCE and encoding is None:
+            self.values = []
+            return
         self.values = _byte_values(source, encoding, errors)
 
     def hex(self, sep=_HEX_MISSING, bytes_per_sep=1):
@@ -3267,29 +3365,31 @@ class bytearray:
         return _storage_length(self.values)
 
     def __getitem__(self, index):
+        values = self.values
         if is_slice(index):
-            return bytearray(_selected(self.values, index))
-        return _storage_read(self.values, storage_index(self.values, index))
+            return bytearray(_selected(values, index))
+        return _storage_read(values, storage_index(values, index))
 
     def __setitem__(self, index, value):
+        values = self.values
         if is_slice(index):
             replacement = _byte_values(value, None, "strict")
-            start, stop, step, count = positions(index, _storage_length(self.values))
+            start, stop, step, count = positions(index, _storage_length(values))
             if step == 1:
-                self._check_resize(len(self.values) - count + len(replacement))
+                self._check_resize(len(values) - count + len(replacement))
                 if stop < start:
                     stop = start
                 tail = []
                 at = stop
-                while at < _storage_length(self.values):
-                    _storage_append(tail, _storage_read(self.values, at))
+                while at < _storage_length(values):
+                    _storage_append(tail, _storage_read(values, at))
                     at += 1
-                while _storage_length(self.values) > start:
-                    del self.values[_storage_length(self.values) - 1]
+                while _storage_length(values) > start:
+                    del values[_storage_length(values) - 1]
                 for item in replacement:
-                    _storage_append(self.values, item)
+                    _storage_append(values, item)
                 for item in tail:
-                    _storage_append(self.values, item)
+                    _storage_append(values, item)
                 return
             if len(replacement) != count:
                 raise ValueError(
@@ -3297,12 +3397,10 @@ class bytearray:
                 )
             at = 0
             while at < count:
-                _storage_write(self.values, start + at * step, replacement[at])
+                _storage_write(values, start + at * step, replacement[at])
                 at += 1
             return
-        _storage_write(
-            self.values, storage_index(self.values, index), _byte_value(value)
-        )
+        _storage_write(values, storage_index(values, index), _byte_value(value))
 
     def __delitem__(self, index):
         count = positions(index, len(self.values))[3] if is_slice(index) else 1
@@ -3312,7 +3410,11 @@ class bytearray:
         del self.values[index]
 
     def __iter__(self):
-        return SequenceIterator(self)
+        iterator = _allocate_instance(StorageIterator)
+        iterator.sequence = self.values
+        iterator.index = 0
+        iterator.exhausted = False
+        return iterator
 
     def __contains__(self, item, /):
         return _bytes_find(self.values, item, 0, None) >= 0
@@ -3340,7 +3442,9 @@ class bytearray:
     def __imul__(self, count):
         repeated = _repeat(self.values, count)
         self._check_resize(len(repeated))
-        self.values = repeated
+        _storage_delete(self.values, 0, _storage_length(self.values))
+        for item in repeated:
+            _storage_append(self.values, item)
         return self
 
     def __repr__(self):
@@ -3348,7 +3452,8 @@ class bytearray:
 
     def append(self, value):
         value = _byte_value(value)
-        self._check_resize(len(self.values) + 1)
+        if buffer_exports(self):
+            raise BufferError("Existing exports of data: object cannot be re-sized")
         _storage_append(self.values, value)
 
     def extend(self, values):

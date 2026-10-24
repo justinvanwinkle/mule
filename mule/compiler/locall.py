@@ -2356,10 +2356,9 @@ def analyze(
                 parameters[gen_key] = merged_gen
                 changed = True
         for key, body in bodies.items():
-            if key[1] == "fixnum" and (
-                (key[0], "observed") in bodies
-                or any(param.is_fixnum for param in parameters[key])
-            ):
+            if (key[0], "observed") in bodies and key[1] in ("fixnum", "general"):
+                continue
+            if key[1] == "fixnum" and any(param.is_fixnum for param in parameters[key]):
                 continue
             for call in body.calls:
                 if any(arg is BOTTOM for arg in call.arguments):

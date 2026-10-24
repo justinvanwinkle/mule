@@ -56,6 +56,9 @@ class ValueTypeVisitor:
     def visit_BytesType(self, fact):
         return self.visit_PrimitiveType(fact)
 
+    def visit_ByteArrayType(self, fact):
+        return self.visit_PrimitiveType(fact)
+
     def visit_FunctionType(self, fact):
         return self.visit_ValueType(fact)
 
@@ -209,6 +212,9 @@ class ValueType:
     def join_bytes(self, left):
         return self.join_alternatives(left)
 
+    def join_bytearray(self, left):
+        return self.join_alternatives(left)
+
     def join_function(self, left):
         return self.join_alternatives(left)
 
@@ -351,6 +357,9 @@ class ValueType:
         return UNKNOWN
 
     def binary_bytes(self, operator, left):
+        return UNKNOWN
+
+    def binary_bytearray(self, operator, left):
         return UNKNOWN
 
     def binary_tuple(self, operator, left):
@@ -603,6 +612,12 @@ class ValueType:
     def fits_possible_bytes(self, expected):
         return self.fits_bytes(expected)
 
+    def fits_bytearray(self, expected=None):
+        return False
+
+    def fits_possible_bytearray(self, expected=None):
+        return self.fits_bytearray(expected)
+
     def fits_function(self, expected):
         return False
 
@@ -709,6 +724,9 @@ class UnknownType(ValueType):
         return not self.may_be_unbound and expected.literal is None
 
     def fits_possible_bytes(self, expected):
+        return not self.may_be_unbound
+
+    def fits_possible_bytearray(self, expected):
         return not self.may_be_unbound
 
     def fits_possible_list(self, expected=None):
@@ -907,6 +925,14 @@ class IntegerType(PrimitiveType):
             ast.BinaryOperator.MODULO,
         }:
             return BYTES_TYPE
+        return UNKNOWN
+
+    def binary_bytearray(self, operator, left):
+        if not left.may_be_unbound and operator in {
+            ast.BinaryOperator.MULTIPLY,
+            ast.BinaryOperator.MODULO,
+        }:
+            return BYTEARRAY_TYPE
         return UNKNOWN
 
     def binary_list(self, operator, left):
@@ -1746,6 +1772,14 @@ class BytesType(PrimitiveType):
             return BYTES_TYPE
         return UNKNOWN
 
+    def binary_bytearray(self, operator, left):
+        if not left.may_be_unbound and operator in {
+            ast.BinaryOperator.ADD,
+            ast.BinaryOperator.MODULO,
+        }:
+            return BYTEARRAY_TYPE
+        return UNKNOWN
+
     def binary_integer(self, operator, left):
         if not left.may_be_unbound and operator == ast.BinaryOperator.MULTIPLY:
             return BYTES_TYPE
@@ -1798,6 +1832,107 @@ class BytesType(PrimitiveType):
         if self.may_be_unbound or storage_methods is None:
             return UNKNOWN
         return storage_methods.get(("BytesStorage", name), UNKNOWN)
+
+
+@dataclass(frozen=True, slots=True)
+class ByteArrayType(PrimitiveType):
+    may_be_unbound: bool = False
+
+    def runtime_class_type(self):
+        return UNKNOWN if self.may_be_unbound else CLASS_BYTEARRAY_TYPE
+
+    def runtime_parent_class_type(self):
+        return CLASS_OBJECT_TYPE
+
+    def same_runtime_class(self, other) -> bool:
+        return other.fits_bytearray(BYTEARRAY_TYPE)
+
+    @property
+    def is_heap_object(self):
+        return not self.may_be_unbound
+
+    def dispatch_domain(self):
+        return None if self.may_be_unbound else BYTEARRAY_TYPE
+
+    def dispatch_rank(self) -> int:
+        return 2**64 if self.may_be_unbound else 0
+
+    def accept(self, visitor):
+        return visitor.visit_ByteArrayType(self)
+
+    def join(self, other):
+        return other.join_bytearray(self)
+
+    def join_bytearray(self, left):
+        return (
+            ByteArrayType(may_be_unbound=True)
+            if self.may_be_unbound or left.may_be_unbound
+            else BYTEARRAY_TYPE
+        )
+
+    def binary(self, operator, right):
+        if self.may_be_unbound:
+            return right.binary_unknown(operator, self)
+        if operator == ast.BinaryOperator.MODULO and not right.may_be_unbound:
+            return BYTEARRAY_TYPE
+        return right.binary_bytearray(operator, self)
+
+    def binary_bytearray(self, operator, left):
+        if not left.may_be_unbound and operator in {
+            ast.BinaryOperator.ADD,
+            ast.BinaryOperator.MODULO,
+        }:
+            return BYTEARRAY_TYPE
+        return UNKNOWN
+
+    def binary_bytes(self, operator, left):
+        if not left.may_be_unbound and operator == ast.BinaryOperator.ADD:
+            return BYTEARRAY_TYPE
+        return UNKNOWN
+
+    def binary_integer(self, operator, left):
+        if not left.may_be_unbound and operator == ast.BinaryOperator.MULTIPLY:
+            return BYTEARRAY_TYPE
+        return UNKNOWN
+
+    def binary_boolean(self, operator, left):
+        if not left.may_be_unbound and operator == ast.BinaryOperator.MULTIPLY:
+            return BYTEARRAY_TYPE
+        return UNKNOWN
+
+    def accepts(self, actual):
+        return actual.fits_bytearray(self)
+
+    def accepts_dispatch(self, actual):
+        return actual.fits_bytearray(self)
+
+    def accepts_possible_dispatch(self, actual):
+        return actual.fits_possible_bytearray(self)
+
+    def fits_bytearray(self, expected=None):
+        return not self.may_be_unbound
+
+    def getitem_type(self, index):
+        if self.may_be_unbound or index.may_be_unbound:
+            return UNKNOWN
+        if index.fits(PYTHON_INTEGER):
+            return IntegerType(0, 255)
+        return UNKNOWN
+
+    def getslice_type(self):
+        return UNKNOWN if self.may_be_unbound else BYTEARRAY_TYPE
+
+    def iterate_type(self):
+        if self.may_be_unbound:
+            return UNKNOWN
+        return IteratorType(IntegerType(0, 255))
+
+    def method_return_type(
+        self, name: str, arity: int, has_keywords: bool, storage_methods=None
+    ):
+        if self.may_be_unbound or storage_methods is None:
+            return UNKNOWN
+        return storage_methods.get(("bytearray", name), UNKNOWN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3124,6 +3259,7 @@ class BottomType(ValueType):
     join_immortal = join_unknown
     join_text = join_unknown
     join_bytes = join_unknown
+    join_bytearray = join_unknown
     join_function = join_unknown
     join_tuple = join_unknown
     join_list = join_unknown
@@ -3157,6 +3293,7 @@ class BottomType(ValueType):
     binary_real = binary_unknown
     binary_text = binary_unknown
     binary_bytes = binary_unknown
+    binary_bytearray = binary_unknown
     binary_tuple = binary_unknown
     binary_list = binary_unknown
 
@@ -3202,6 +3339,7 @@ class UnboundType(ValueType):
     join_immortal = join_unknown
     join_text = join_unknown
     join_bytes = join_unknown
+    join_bytearray = join_unknown
     join_function = join_unknown
     join_tuple = join_unknown
     join_list = join_unknown
@@ -3326,6 +3464,9 @@ class UnionType(ValueType):
     def fits_bytes(self, expected):
         return self._fits_family(expected, lambda member: member.fits_bytes(member))
 
+    def fits_bytearray(self, expected=None):
+        return self._fits_family(expected, lambda member: member.fits_bytearray(member))
+
     def fits_function(self, expected):
         return self._fits_family(expected, lambda member: member.fits_function(member))
 
@@ -3400,6 +3541,11 @@ class UnionType(ValueType):
     def fits_possible_bytes(self, expected):
         return self._may_fit_family(
             expected, lambda member: member.fits_possible_bytes(member)
+        )
+
+    def fits_possible_bytearray(self, expected):
+        return self._may_fit_family(
+            expected, lambda member: member.fits_possible_bytearray(member)
         )
 
     def fits_possible_tuple(self, expected):
@@ -3478,6 +3624,7 @@ class UnionType(ValueType):
     binary_real = binary_unknown
     binary_text = binary_unknown
     binary_bytes = binary_unknown
+    binary_bytearray = binary_unknown
     binary_tuple = binary_unknown
     binary_list = binary_unknown
 
@@ -3733,6 +3880,13 @@ class InstanceType(ValueType):
         return self.identity == expected.identity and (
             expected.may_be_unbound or not self.may_be_unbound
         )
+
+    def method_return_type(
+        self, name: str, arity: int, has_keywords: bool, storage_methods=None
+    ):
+        if self.may_be_unbound or storage_methods is None or not self.identity:
+            return UNKNOWN
+        return storage_methods.get((self.identity, name), UNKNOWN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -4013,6 +4167,7 @@ IMMORTAL_UNBOUND = ImmortalType(may_be_unbound=True)
 NONE_TYPE = NoneType()
 TEXT_TYPE = TextType()
 BYTES_TYPE = BytesType()
+BYTEARRAY_TYPE = ByteArrayType()
 FUNCTION_TYPE = FunctionType()
 BOTTOM = BottomType()
 UNBOUND = UnboundType()
@@ -4029,6 +4184,7 @@ CLASS_BOOL_TYPE = ClassType((BOOLEAN,))
 CLASS_FLOAT_TYPE = ClassType((FLOAT,))
 CLASS_STR_TYPE = ClassType((TEXT_TYPE,))
 CLASS_BYTES_TYPE = ClassType((BYTES_TYPE,))
+CLASS_BYTEARRAY_TYPE = ClassType((BYTEARRAY_TYPE,))
 CLASS_NONE_TYPE = ClassType((NONE_TYPE,))
 CLASS_FUNCTION_TYPE = ClassType((FUNCTION_TYPE,))
 CLASS_TUPLE_TYPE = ClassType((TupleType(),))
@@ -4043,6 +4199,7 @@ BUILTIN_CLASS_TYPES: dict[str, ClassType] = {
     "float": CLASS_FLOAT_TYPE,
     "str": CLASS_STR_TYPE,
     "bytes": CLASS_BYTES_TYPE,
+    "bytearray": CLASS_BYTEARRAY_TYPE,
     "tuple": CLASS_TUPLE_TYPE,
     "list": CLASS_LIST_TYPE,
     "dict": CLASS_DICT_TYPE,
@@ -4052,6 +4209,7 @@ BUILTIN_CLASS_TYPES: dict[str, ClassType] = {
 STORAGE_CLASS_TYPES: dict[str, ValueType] = {
     "TextStorage": TEXT_TYPE,
     "BytesStorage": BYTES_TYPE,
+    "bytearray": BYTEARRAY_TYPE,
     "TupleStorage": TupleType(),
     "ListStorage": LIST_TYPE,
     "dict": DICT_TYPE,
@@ -4112,7 +4270,11 @@ def _float_binary(operator, left, right):
     if left.may_be_unbound or right.may_be_unbound:
         return UNKNOWN
     if operator == ast.BinaryOperator.POWER:
-        if left.maximum is not None and left.maximum < 0 and right.exact_integer() is None:
+        if (
+            left.maximum is not None
+            and left.maximum < 0
+            and right.exact_integer() is None
+        ):
             return UNKNOWN
         return FLOAT
     if operator in {
@@ -4171,6 +4333,24 @@ def _integer_binary(operator, left, right, factory=IntegerType):
             for minimum, maximum in ((lo, hi), (rlo, rhi)):
                 if minimum is not None and minimum >= 0 and maximum is not None:
                     return IntegerType(0, maximum)
+            if lo is not None and lo >= 0 and rlo is not None and rlo >= 0:
+                return IntegerType(0, None)
+        if (
+            operator == ast.BinaryOperator.BIT_OR
+            and lo is not None
+            and lo >= 0
+            and rlo is not None
+            and rlo >= 0
+        ):
+            return IntegerType(max(lo, rlo), None)
+        if (
+            operator == ast.BinaryOperator.BIT_XOR
+            and lo is not None
+            and lo >= 0
+            and rlo is not None
+            and rlo >= 0
+        ):
+            return IntegerType(0, None)
         if (
             operator == ast.BinaryOperator.MULTIPLY
             and lo is not None
@@ -4325,6 +4505,9 @@ class _SerializeValueType(ValueTypeVisitor):
     def visit_BytesType(self, fact):
         return {"kind": "bytes", "unbound": fact.may_be_unbound}
 
+    def visit_ByteArrayType(self, fact):
+        return {"kind": "bytearray", "unbound": fact.may_be_unbound}
+
     def visit_FunctionType(self, fact):
         return {"kind": "function", "unbound": fact.may_be_unbound}
 
@@ -4447,6 +4630,8 @@ def value_type_from_dict(data: dict | None) -> ValueType:
         return TextType(lit, may_be_unbound=unbound)
     if kind == "bytes":
         return BytesType(may_be_unbound=unbound) if unbound else BYTES_TYPE
+    if kind == "bytearray":
+        return ByteArrayType(may_be_unbound=unbound) if unbound else BYTEARRAY_TYPE
     if kind == "function":
         return FunctionType(may_be_unbound=unbound) if unbound else FUNCTION_TYPE
     if kind == "tuple":
