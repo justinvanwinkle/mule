@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 
@@ -196,6 +197,80 @@ def test_graph_propagates_dependency_failure_without_running_consumer(
     assert caught.value is failure
     assert second.error is failure
     assert calls == []
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_graph_reports_original_error_before_independent_work_finishes(
+    tmp_path, workers
+):
+    reported = threading.Event()
+    messages = []
+    failure = SyntaxError("unsupported operation", ("example.py", 7, 1, "bad()"))
+
+    class FailureLog(logging.Handler):
+        def emit(self, record):
+            messages.append(self.format(record))
+            reported.set()
+
+    def fail(inputs, directory):
+        raise failure
+
+    def independent(inputs, directory):
+        # Completion must not be required before the error becomes visible.
+        if not reported.wait(5):
+            raise RuntimeError("build error was not reported while work remained")
+        (directory / "finished.txt").write_text("finished")
+
+    logger = logging.getLogger("mule")
+    handler = FailureLog()
+    logger.addHandler(handler)
+    try:
+        with Graph(workers) as graph:
+            producer = graph.step(
+                "compile example.py",
+                lambda: Step(
+                    graph,
+                    "compile example.py",
+                    inputs=[],
+                    settings={"test": str(tmp_path), "role": "failure"},
+                    outputs=(),
+                    action=fail,
+                ),
+            )
+            other = graph.step(
+                "independent",
+                lambda: Step(
+                    graph,
+                    "independent",
+                    inputs=[],
+                    settings={"test": str(tmp_path), "role": "independent"},
+                    outputs=("finished.txt",),
+                    action=independent,
+                ),
+            )
+            target = graph.step(
+                "link",
+                lambda: Step(
+                    graph,
+                    "link",
+                    inputs=[producer, other],
+                    settings={},
+                    outputs=(),
+                    action=lambda *args: pytest.fail("failed dependency was ignored"),
+                ),
+            )
+            with pytest.raises(SyntaxError) as caught:
+                graph.run(target)
+        assert caught.value is failure
+        assert other.error is None
+        assert other.path("finished.txt").read_text() == "finished"
+        assert len(messages) == 1
+        assert "compile example.py" in messages[0]
+        assert "example.py" in messages[0]
+        assert "line 7" in messages[0]
+        assert "unsupported operation" in messages[0]
+    finally:
+        logger.removeHandler(handler)
 
 
 @pytest.mark.parametrize("workers", [1, 2])
