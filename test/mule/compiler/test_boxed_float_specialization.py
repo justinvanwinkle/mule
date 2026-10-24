@@ -160,7 +160,7 @@ def test_object_float_division_keeps_python_error_at_safety_zero(tmp_path):
     result = run_native(
         tmp_path,
         """
-from mule import optimize
+from mule_types import optimize
 @optimize(speed=3, safety=0)
 def run():
     value = 1.5

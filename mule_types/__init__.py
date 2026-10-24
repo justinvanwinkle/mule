@@ -3,7 +3,7 @@
 The numeric classes describe contracts to Mule's compiler. They are annotation
 markers, not numeric constructors or an implementation of fixed-width arithmetic.
 The host decorator preserves functions so annotated comparison programs can also
-run on a standard Python interpreter after putting this directory on its path.
+run on a standard Python interpreter.
 """
 
 __all__ = (

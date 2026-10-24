@@ -120,7 +120,7 @@ class Contract:
 
     @property
     def display_name(self):
-        return f"mule.{self.name}"
+        return f"mule_types.{self.name}"
 
     def accept(self, visitor):
         return visitor.visit_Contract(self)

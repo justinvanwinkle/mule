@@ -1,23 +1,23 @@
 """Exercise native method calls with annotated numeric arguments and loop state."""
 
-import mule
+import mule_types
 
 
-@mule.optimize(speed=3, safety=0)
+@mule_types.optimize(speed=3, safety=0)
 class Counter:
-    value: mule.int64
+    value: mule_types.int64
 
     def __init__(self):
         self.value = 0
 
-    def add(self, amount: mule.int64):
+    def add(self, amount: mule_types.int64):
         self.value += amount
 
 
-@mule.optimize(speed=3, safety=3)
-def count(limit: mule.int64) -> mule.int64:
+@mule_types.optimize(speed=3, safety=3)
+def count(limit: mule_types.int64) -> mule_types.int64:
     counter = Counter()
-    index: mule.int64 = 0
+    index: mule_types.int64 = 0
     while index < limit:
         counter.add(3)
         index += 1

@@ -310,8 +310,8 @@ def test_power_of_two_floor_divide_and_modulo_strength_reductions():
 
 def test_srctran_end_to_end_with_compile_source_and_negative_integers():
     source = (
-        "import mule\n"
-        "def f(x: mule.int64):\n"
+        "import mule_types\n"
+        "def f(x: mule_types.int64):\n"
         " b = x > 0\n"
         " return (x + 0, x * 1, -(-x), ~(~x), x // 8, x % 16, b | False, b & True)\n"
         "def neg_div_mod():\n"
@@ -577,10 +577,10 @@ def test_power_of_two_multiply_strength_reductions(expr: str, expected_shift: in
 def test_absorbing_zero_rejects_impure_or_unbound_operands():
     # A call with potential side effects must NOT fold when multiplied/anded/modded by 0/1
     source = (
-        "import mule\n"
-        "def g(x: mule.int64) -> mule.int64:\n"
+        "import mule_types\n"
+        "def g(x: mule_types.int64) -> mule_types.int64:\n"
         " return x + 1\n"
-        "def caller(x: mule.int64):\n"
+        "def caller(x: mule_types.int64):\n"
         " return (g(x) * 0, 0 * g(x), g(x) % 1, g(x) % -1, g(x) & 0, 0 & g(x))\n"
     )
     compilation = compile_source(source)
@@ -608,8 +608,8 @@ def test_absorbing_zero_rejects_impure_or_unbound_operands():
 
     # End-to-end compile_source with 8 * x, x * 8, x * -1, -1 * x, x // -1, x * 0, 0 * x
     e2e = compile_source(
-        "import mule\n"
-        "def h(x: mule.int64):\n"
+        "import mule_types\n"
+        "def h(x: mule_types.int64):\n"
         " return (x * 0, 0 * x, x * -1, -1 * x, x * 8, 8 * x, x // -1, x % 1, x % -1, x & 0, 0 & x)\n"
     )
     h_fn = next(fn for fn in e2e.lambdas if fn.source_name == "h")

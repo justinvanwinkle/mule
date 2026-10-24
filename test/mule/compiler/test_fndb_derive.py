@@ -269,8 +269,8 @@ def test_locall_feedback_terminates_cleanly_when_transform_declines():
 
 def test_locall_feedback_triggers_srctran_and_modarith_on_flow_proven_locals():
     compilation = compile_source(
-        "import mule\n"
-        "def f(x: mule.int64, raw):\n"
+        "import mule_types\n"
+        "def f(x: mule_types.int64, raw):\n"
         " s = 'yes' if raw else 'no'\n"
         " flag = bool(raw)\n"
         " zero = 0\n"
@@ -302,9 +302,9 @@ def test_locall_feedback_triggers_srctran_and_modarith_on_flow_proven_locals():
 
 def test_locall_feedback_triggers_str_transform_and_preserves_local_call_type():
     compilation = compile_source(
-        "import mule\n"
-        "def f(x: mule.int64, items, flag):\n"
-        " def step(a: mule.int64) -> mule.int64:\n"
+        "import mule_types\n"
+        "def f(x: mule_types.int64, items, flag):\n"
+        " def step(a: mule_types.int64) -> mule_types.int64:\n"
         "  return a\n"
         " s = 'yes' if flag else 'no'\n"
         " n = len(items)\n"
@@ -322,8 +322,8 @@ def test_locall_feedback_triggers_str_transform_and_preserves_local_call_type():
 
 def test_closed_local_function_promotes_caller_types_and_triggers_ir1_transforms():
     compilation = compile_source(
-        "import mule\n"
-        "def outer(n: mule.int64, raw):\n"
+        "import mule_types\n"
+        "def outer(n: mule_types.int64, raw):\n"
         " def helper(x, stride, s):\n"
         "  return (x + 0) * stride, str(s)\n"
         " label = 'yes' if raw else 'no'\n"

@@ -19,7 +19,7 @@ def _compile_fn(source: str):
 
 def test_redundant_bitmask_nested_bit_and():
     _, fn = _compile_fn(
-        "import mule\ndef f(x: mule.int64) -> mule.int64:\n return (x & 0xff) & 0xffff\n"
+        "import mule_types\ndef f(x: mule_types.int64) -> mule_types.int64:\n return (x & 0xff) & 0xffff\n"
     )
     bit_ands = list(known_calls(fn, "%bit_and"))
     assert len(bit_ands) == 1
@@ -29,7 +29,7 @@ def test_redundant_bitmask_nested_bit_and():
 
 def test_redundant_bitmask_commutative_nested_bit_and():
     _, fn = _compile_fn(
-        "import mule\ndef f(x: mule.int64) -> mule.int64:\n return 0xffff & (x & 0xff)\n"
+        "import mule_types\ndef f(x: mule_types.int64) -> mule_types.int64:\n return 0xffff & (x & 0xff)\n"
     )
     bit_ands = list(known_calls(fn, "%bit_and"))
     assert len(bit_ands) == 1
@@ -60,8 +60,8 @@ def test_redundant_bitmask_range_loop_and_narrowed_branch():
 
     # In a branch-narrowed interval `0 <= x <= 15`, `x & 0xff` is eliminated completely.
     _, fn_branch = _compile_fn(
-        "import mule\n"
-        "def f(x: mule.int64) -> mule.int64:\n"
+        "import mule_types\n"
+        "def f(x: mule_types.int64) -> mule_types.int64:\n"
         " if x >= 0:\n"
         "  if x < 16:\n"
         "   return x & 0xff\n"
@@ -115,7 +115,7 @@ def test_non_redundant_bitmask_preserved():
 )
 def test_associative_integer_constant_folding(expr, expected_op, expected_const):
     _, fn = _compile_fn(
-        f"import mule\ndef f(x: mule.int64) -> mule.int64:\n return {expr}\n"
+        f"import mule_types\ndef f(x: mule_types.int64) -> mule_types.int64:\n return {expr}\n"
     )
     calls = list(known_calls(fn, expected_op))
     assert len(calls) == 1
@@ -133,7 +133,7 @@ def test_associative_integer_constant_folding(expr, expected_op, expected_const)
 )
 def test_associative_integer_cancels_to_variable(expr):
     _, fn = _compile_fn(
-        f"import mule\ndef f(x: mule.int64) -> mule.int64:\n return {expr}\n"
+        f"import mule_types\ndef f(x: mule_types.int64) -> mule_types.int64:\n return {expr}\n"
     )
     for op in ("%add", "%subtract", "%bit_xor"):
         assert list(known_calls(fn, op)) == []
@@ -153,7 +153,7 @@ def test_associative_integer_cancels_to_variable(expr):
 
 def test_associative_chained_three_steps():
     _, fn = _compile_fn(
-        "import mule\ndef f(x: mule.int64) -> mule.int64:\n return ((x + 1) + 2) + 3\n"
+        "import mule_types\ndef f(x: mule_types.int64) -> mule_types.int64:\n return ((x + 1) + 2) + 3\n"
     )
     adds = list(known_calls(fn, "%add"))
     assert len(adds) == 1
@@ -179,7 +179,7 @@ def test_associative_guards_preserve_semantics():
 
     # Negative shift count must not fold
     _, fn_neg_shift = _compile_fn(
-        "import mule\ndef f(x: mule.int64):\n return (x >> 2) >> -1\n"
+        "import mule_types\ndef f(x: mule_types.int64):\n return (x >> 2) >> -1\n"
     )
     assert len(list(known_calls(fn_neg_shift, "%right_shift"))) == 2
 
@@ -201,7 +201,7 @@ def test_associative_guards_preserve_semantics():
 )
 def test_commutative_associative_constant_combination(expr, op_name, expected_const):
     _, fn = _compile_fn(
-        f"import mule\ndef f(x: mule.int64) -> mule.int64:\n return {expr}\n"
+        f"import mule_types\ndef f(x: mule_types.int64) -> mule_types.int64:\n return {expr}\n"
     )
     calls = list(known_calls(fn, op_name))
     assert len(calls) == 1
@@ -213,7 +213,7 @@ def test_commutative_associative_constant_combination(expr, op_name, expected_co
 @pytest.mark.parametrize("expr", ["(5 + x) - 5", "5 + (x - 5)"])
 def test_commutative_associative_zero_offset_collapses_to_x(expr):
     _, fn = _compile_fn(
-        f"import mule\ndef f(x: mule.int64) -> mule.int64:\n return {expr}\n"
+        f"import mule_types\ndef f(x: mule_types.int64) -> mule_types.int64:\n return {expr}\n"
     )
     assert list(known_calls(fn, "%add")) == []
     assert list(known_calls(fn, "%subtract")) == []

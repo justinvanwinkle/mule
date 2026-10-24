@@ -35,10 +35,13 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import traceback
 from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from functools import cache, cached_property
 from pathlib import Path
+
+from mule.diagnostics import logger
 
 from .inputs import digest, file_digest, recording, unchanged
 
@@ -518,6 +521,11 @@ class Graph:
         # Graph.run raises a step's failure; dependents fail without running.
         except Exception as error:  # noqa: BLE001
             step.error = error
+            logger.error(
+                "%s failed:\n%s",
+                step.name,
+                "".join(traceback.format_exception_only(error)).rstrip(),
+            )
         step.resolved()
 
     def _drain(self) -> None:

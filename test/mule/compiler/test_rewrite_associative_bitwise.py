@@ -25,8 +25,8 @@ def test_associative_flags_combine_constants_in_optimized_work(
     tmp_path, operator, name, first, second, combined
 ):
     source = (
-        "import mule\n"
-        "def flags(word: mule.int64) -> mule.int64:\n"
+        "import mule_types\n"
+        "def flags(word: mule_types.int64) -> mule_types.int64:\n"
         f" return (word {operator} {first}) {operator} {second}\n"
         "word = int(input())\n"
         "normalized = flags(word)\n"
@@ -82,8 +82,8 @@ def test_associative_flags_combine_constants_in_optimized_work(
 @pytest.mark.integration
 def test_associative_flag_toggle_cancellation_preserves_runtime_word(tmp_path):
     source = (
-        "import mule\n"
-        "def restore(word: mule.int64) -> mule.int64:\n"
+        "import mule_types\n"
+        "def restore(word: mule_types.int64) -> mule_types.int64:\n"
         " return (word ^ 21930) ^ 21930\n"
         "word = int(input())\n"
         "print(restore(word), word)\n"
@@ -125,8 +125,8 @@ def test_associative_flag_toggle_cancellation_preserves_runtime_word(tmp_path):
 )
 def test_associative_shared_flag_word_keeps_intermediate_value(operator, name):
     source = (
-        "import mule\n"
-        "def audit(word: mule.int64):\n"
+        "import mule_types\n"
+        "def audit(word: mule_types.int64):\n"
         f" intermediate = word {operator} 85\n"
         f" final = intermediate {operator} 170\n"
         " return intermediate, final\n"
@@ -147,8 +147,8 @@ def test_associative_constant_combination_respects_fold_size(operator, name, bit
     first = (1 << (bits - 1)) | 5
     second = first if operator == "&" else 2
     source = (
-        "import mule\n"
-        "def flags(word: mule.int64):\n"
+        "import mule_types\n"
+        "def flags(word: mule_types.int64):\n"
         f" return (word {operator} {first}) {operator} {second}\n"
     )
     compilation = compile_source(source)
@@ -165,8 +165,8 @@ def test_associative_flag_fallbacks_preserve_types_aliases_and_effect_order(
     tmp_path, observe_finalizers
 ):
     source = """
-import mule
-def audit(word: mule.int64):
+import mule_types
+def audit(word: mule_types.int64):
     intermediate = word ^ 85
     final = intermediate ^ 170
     return intermediate, final
@@ -178,7 +178,7 @@ def mask():
 def nonadjacent(word):
     return (word ^ 85) ^ mask()
 
-def typed_nonadjacent(word: mule.int64):
+def typed_nonadjacent(word: mule_types.int64):
     return (word ^ 85) ^ mask()
 
 def boolean_word(raw):
@@ -188,7 +188,7 @@ def boolean_word(raw):
     print((word & True) & True, (word | False) | False)
     print((word & 1) & 1, (word | 0) | 0)
 
-def wide_flags(word: mule.int64):
+def wide_flags(word: mule_types.int64):
     at = (word | 170141183460469231731687303715884105733) | 2
     above = (word | 340282366920938463463374607431768211461) | 2
     return at, above

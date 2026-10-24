@@ -8,7 +8,7 @@ import math
 
 from perfutils import run_case
 
-from mule import float64, int64, optimize
+from mule_types import float64, int64, optimize
 
 __speed__ = 3
 __safety__ = 0

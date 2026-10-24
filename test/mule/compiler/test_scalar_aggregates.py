@@ -211,7 +211,7 @@ def test_scalar_candidate_retains_checked_element_contracts(tmp_path):
     case = build_case(
         tmp_path,
         """\
-from mule import optimize
+from mule_types import optimize
 
 @optimize(safety=3)
 def checked(value, convert):

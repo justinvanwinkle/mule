@@ -7,7 +7,9 @@ import pytest
 from mule.compiler import emit_llvm
 from test.mule.compiler.test_native import run_native
 
-HEADER = "from mule import float64, int64, optimize\n@optimize(speed=3, safety=3)\n"
+HEADER = (
+    "from mule_types import float64, int64, optimize\n@optimize(speed=3, safety=3)\n"
+)
 SCALE = (
     HEADER + "def scale(x: float64, y: float64) -> float64:\n"
     " total: float64 = x * 2.5 + y\n"
@@ -90,7 +92,7 @@ def test_float_entry_ignores_contradicted_integer_argument(tmp_path):
 
 def test_narrow_float_widths_keep_boxed_bodies():
     source = (
-        "from mule import float32, optimize\n@optimize(speed=3, safety=3)\n"
+        "from mule_types import float32, optimize\n@optimize(speed=3, safety=3)\n"
         "def half(x: float32) -> float32:\n return x / 2\nprint(half(3.0))\n"
     )
     assert not native_bodies(emit_llvm(source))

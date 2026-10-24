@@ -1,6 +1,6 @@
 """Optimization policy, following SBCL's ``policy.lisp`` qualities.
 
-Mule exposes three qualities through the ``mule.optimize`` directive. Derived
+Mule exposes three qualities through the ``mule_types.optimize`` directive. Derived
 decisions (whether a cast becomes a check, whether a body may inline) are
 methods here so that every phase consults one authority.
 """

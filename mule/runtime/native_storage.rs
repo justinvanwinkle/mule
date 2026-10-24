@@ -158,7 +158,7 @@ pub unsafe extern "C" fn mule_unbox_i64(value: Value, output: *mut i64) -> i32 {
         unsafe { *output = integer };
         0
     } else {
-        object::error("TypeError", "expected mule.int64");
+        object::error("TypeError", "expected mule_types.int64");
         -1
     }
 }
@@ -199,7 +199,7 @@ pub unsafe extern "C" fn mule_unbox_f64(value: Value, output: *mut f64) -> i32 {
         unsafe { *output = float };
         0
     } else {
-        object::error("TypeError", "expected mule.float64");
+        object::error("TypeError", "expected mule_types.float64");
         -1
     }
 }

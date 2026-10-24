@@ -105,7 +105,7 @@ def test_node_derived_type_and_lvar_type_for_constants_and_lambdas():
 
 def test_node_derived_type_for_cast_and_lambda_var():
     compilation = compile_toplevel(
-        "import mule\ndef f(x: mule.int64) -> mule.int64:\n return x\n"
+        "import mule_types\ndef f(x: mule_types.int64) -> mule_types.int64:\n return x\n"
     )
     fn = compilation.lambdas[1]
     assert fn.component is not None

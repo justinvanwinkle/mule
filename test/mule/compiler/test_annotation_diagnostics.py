@@ -78,7 +78,7 @@ def test_application_and_third_party_warnings_stay_visible(filename):
 
 def test_actual_storage_errors_are_not_suppressed_by_library_origin():
     source = (
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "@optimize(speed=3)\n"
         "class Record:\n"
         " value: int64\n"

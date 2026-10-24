@@ -148,7 +148,9 @@ class RewriteCase:
         """
         # The real annotation module keeps marker imports executable under CPython.
         # Copy it only after native compilation, without changing the source program.
-        shutil.copyfile(STDLIB / "mule.py", self.source_path.parent / "mule.py")
+        shutil.copyfile(
+            STDLIB / "mule_types.py", self.source_path.parent / "mule_types.py"
+        )
         environment = os.environ.copy()
         environment.pop("PYTHONPATH", None)
         environment["LC_ALL"] = "C.UTF-8"

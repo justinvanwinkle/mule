@@ -465,14 +465,15 @@ They do not establish complete Python or C extension compatibility.
 - `examples/`: native compiler examples and upstream performance reference programs.
 - `examples/benchmarks-game/`: unmodified Python 3, Rust, SBCL, and Go comparison sources,
   upstream licenses, expected outputs, and source hashes in `UPSTREAM.json`.
-- `stdlib/mule.py`: numeric annotation markers and the `optimize` compiler directive.
+- `mule_types/__init__.py`: numeric annotation markers and the `optimize` compiler directive, separate from the `mule` compiler package.
+- `stdlib/mule_types.py`: relative symlink to the annotation package for compiled module resolution.
 - `stdlib/_native_class.py`: compiler-private class construction and field protocols compiled by Mule.
 - `stdlib/_arguments.py`: compiled general constructor forwarding.
 - `stdlib/_sequences.py`: compiled sequence, iterator, and exception algorithms.
 - `stdlib/_format.py`: compiler-private formatting rules compiled by Mule.
 - `stdlib/bootstrap/unittest.py`: initial assertion API compiled by Mule for simple upstream suites.
 - `tools/run_stdlib_tests.py`: attempt all upstream suites and report native execution separately from compilation.
-- `examples/mule.py`: relative symlink to the annotation library for direct host Python runs.
+- `examples/mule_types.py` and `perf/suite/mule_types.py`: relative symlinks to the annotation library for direct host Python runs.
 - `spec/`: initial specifications and explicit boundaries of implemented behavior.
 - `old/`: earlier implementations, including Python bootstrap code, Common Lisp,
   LLVM experiments, a C++ runtime, and generated artifacts. Treat these as

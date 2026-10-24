@@ -53,10 +53,10 @@ uv run python -m perfutils list
 ### Annotated and policy variations
 
 Separate `<case>_typed` variations have the exact same code as their `<case>`
-counterparts apart from explicit Mule type contracts (`from mule import int64, float64, optimize`),
+counterparts apart from explicit Mule type contracts (`from mule_types import int64, float64, optimize`),
 high-speed/zero-safety/zero-debug compiler policy (`__speed__ = 3`, `__safety__ = 0`, `__debug_level__ = 0`, `@optimize(speed=3, safety=0, debug=0)`),
 and equivalent SBCL declarations (`(declaim (optimize (speed 3) (safety 0) (debug 0)))`, `(signed-byte 64)`, and `double-float`).
-Each Python script remains valid runnable CPython via the host markers in `mule` / `stdlib/mule.py`,
+Each Python script remains valid runnable CPython via the host markers in `mule_types` / `stdlib/mule_types.py`,
 computes the exact same result tuple as its unannotated counterpart, and is
 displayed visually alongside its untyped counterpart in SVG charts, HTML
 dashboards, and history tables:

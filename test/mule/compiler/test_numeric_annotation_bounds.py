@@ -10,7 +10,9 @@ from mule.compiler.driver import Toolchain
 def test_int32_contract_passes_tagged_integer_bounds(tmp_path):
     source = tmp_path / "bounds.ll"
     source.write_text(
-        emit_llvm("from mule import int32\ndef identity(value: int32): return value\n")
+        emit_llvm(
+            "from mule_types import int32\ndef identity(value: int32): return value\n"
+        )
     )
     toolchain = Toolchain()
     optimized = subprocess.run(

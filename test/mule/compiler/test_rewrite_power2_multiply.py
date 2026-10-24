@@ -21,8 +21,8 @@ def test_power2_multiply_normal_inference_retargets_to_shift(
     expression = f"{operand} * value" if constant_first else f"value * {operand}"
     assignment = f" stride = {factor}\n" if local_factor else ""
     compilation = compile_source(
-        "import mule\n"
-        "def scale(value: mule.int64):\n"
+        "import mule_types\n"
+        "def scale(value: mule_types.int64):\n"
         f"{assignment} return {expression}\n"
     )
     function = next(fn for fn in compilation.lambdas if fn.source_name == "scale")
@@ -38,7 +38,7 @@ def test_power2_multiply_normal_inference_retargets_to_shift(
 def test_non_power2_or_non_integer_factor_keeps_multiplication(factor, constant_first):
     expression = f"{factor!r} * value" if constant_first else f"value * {factor!r}"
     compilation = compile_source(
-        f"import mule\ndef scale(value: mule.int64):\n return {expression}\n"
+        f"import mule_types\ndef scale(value: mule_types.int64):\n return {expression}\n"
     )
     function = next(fn for fn in compilation.lambdas if fn.source_name == "scale")
     assert list(known_calls(function, "%multiply"))
@@ -47,8 +47,8 @@ def test_non_power2_or_non_integer_factor_keeps_multiplication(factor, constant_
 
 def test_runtime_factor_and_nonexact_operand_keep_multiplication():
     compilation = compile_source(
-        "import mule\n"
-        "def dynamic(value: mule.int64, stride: mule.int64):\n"
+        "import mule_types\n"
+        "def dynamic(value: mule_types.int64, stride: mule_types.int64):\n"
         " return value * stride\n"
         "def generic(value):\n"
         " return 8 * value, value * 8\n"
