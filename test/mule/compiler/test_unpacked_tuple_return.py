@@ -60,7 +60,7 @@ def test_unpacked_tuple_return_execution_and_rebinding_fallback(tmp_path):
     completed = run_native(
         tmp_path,
         """
-from mule import optimize
+from mule_types import optimize
 def step(label, index):
     if index == 0:
         return "zero", 1, index + 10

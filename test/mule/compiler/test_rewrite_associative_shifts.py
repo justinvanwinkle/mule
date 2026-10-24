@@ -70,8 +70,8 @@ def _returned_input_operations(case, body, input_parameters):
 def test_shift_field_normal_pipeline_combines_nonnegative_counts(operator, counts):
     inner, outer = counts
     compilation = compile_source(
-        "import mule\n"
-        "def shift_field(value: mule.int32):\n"
+        "import mule_types\n"
+        "def shift_field(value: mule_types.int32):\n"
         f" return (value {operator} {inner}) {operator} {outer}\n"
     )
     function = next(fn for fn in compilation.lambdas if fn.source_name == "shift_field")
@@ -91,8 +91,8 @@ def test_shift_field_normal_pipeline_keeps_invalid_or_excessive_counts(
 ):
     inner, outer = counts
     compilation = compile_source(
-        "import mule\n"
-        "def shift_field(value: mule.int32):\n"
+        "import mule_types\n"
+        "def shift_field(value: mule_types.int32):\n"
         f" return (value {operator} {inner}) {operator} {outer}\n"
     )
     function = next(fn for fn in compilation.lambdas if fn.source_name == "shift_field")
@@ -109,8 +109,8 @@ def test_shift_field_normal_pipeline_keeps_invalid_or_excessive_counts(
 )
 def test_shift_field_optimized_path_has_combined_native_work(tmp_path, expression):
     source = (
-        "import mule\n"
-        "def shift_field(value: mule.int32) -> mule.int32:\n"
+        "import mule_types\n"
+        "def shift_field(value: mule_types.int32) -> mule_types.int32:\n"
         f" return {expression}\n"
         "print(shift_field(int(input())))\n"
     )

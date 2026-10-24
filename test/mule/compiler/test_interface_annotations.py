@@ -35,7 +35,8 @@ def compile_declaration(caplog, source):
 @pytest.mark.parametrize("annotation", ("int", "float", "int64"))
 def test_ellipsis_retains_interface_without_constraining_body(caplog, body, annotation):
     compilation, function = compile_declaration(
-        caplog, f"from mule import int64\ndef declaration() -> {annotation}:\n {body}\n"
+        caplog,
+        f"from mule_types import int64\ndef declaration() -> {annotation}:\n {body}\n",
     )
     expected = EXPORTS["int64"] if annotation == "int64" else BUILTINS[annotation]
     assert function.signature.return_annotation is expected
@@ -132,7 +133,7 @@ def test_async_placeholder_retains_awaited_interface_without_result_assertion(ca
 def test_native_ellipsis_calls_preserve_none_and_numeric_errors(tmp_path, safety):
     result = run_native(
         tmp_path,
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         f"@optimize(speed=3, safety={safety})\n"
         "def integer() -> int64:\n ...\n"
         f"@optimize(speed=3, safety={safety})\n"
@@ -167,7 +168,7 @@ def test_native_abstract_body_and_override_remain_callable(tmp_path):
 def test_optimized_native_placeholder_does_not_assume_declared_result(tmp_path):
     source = tmp_path / "declaration.py"
     source.write_text(
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "@optimize(speed=3, safety=0)\n"
         "def declaration() -> int64:\n ...\n"
         "print(declaration())\n"

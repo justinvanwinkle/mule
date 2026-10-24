@@ -123,7 +123,7 @@ def test_range_proven_integer_roundtrip_eliminates_box_and_limb_storage(
 def test_wide_integer_forwarding_keeps_original_object_identity(tmp_path):
     result = run_native(
         tmp_path,
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "@optimize(speed=3, safety=3)\n"
         "def identity(value: int64) -> int64:\n return value\n"
         "for text in ('9223372036854775807', '-9223372036854775808'):\n"
@@ -135,7 +135,7 @@ def test_wide_integer_forwarding_keeps_original_object_identity(tmp_path):
 
 def test_fresh_integer_factory_results_use_managed_private_lifetimes(tmp_path):
     source = """
-from mule import int64, optimize
+from mule_types import int64, optimize
 def check(text):
     @optimize(speed=3, safety=3)
     def make(value: int64) -> int64:
@@ -159,7 +159,7 @@ for text in ('4611686018427387904', '-4611686018427387906',
 def test_checked_native_integer_store_rejects_non_integer_and_overflow(tmp_path):
     result = run_native(
         tmp_path,
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "@optimize(speed=3, safety=3)\n"
         "class Box:\n value: int64\n def __init__(self):\n  self.value = 42\n"
         "box = Box()\n"
@@ -173,7 +173,7 @@ def test_checked_native_integer_store_rejects_non_integer_and_overflow(tmp_path)
 def test_integer_subclass_identity_and_native_storage_value_are_preserved(tmp_path):
     result = run_native(
         tmp_path,
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "class Number(int):\n pass\n"
         "@optimize(speed=3, safety=3)\n"
         "def identity(value: int64) -> int64:\n return value\n"
@@ -189,7 +189,7 @@ def test_integer_subclass_identity_and_native_storage_value_are_preserved(tmp_pa
 
 def test_boolean_none_and_object_reference_coercions_preserve_identity(tmp_path):
     source = """
-from mule import int64, optimize
+from mule_types import int64, optimize
 @optimize(speed=3, safety=3)
 def less(value: int64):
     return value < 3

@@ -21,7 +21,7 @@ def test_negative_unit_normal_pipeline_retargets_integer_operation(
     expression, operation
 ):
     compilation = compile_source(
-        f"import mule\ndef reverse_charge(x: mule.int64):\n return {expression}\n"
+        f"import mule_types\ndef reverse_charge(x: mule_types.int64):\n return {expression}\n"
     )
     function = next(
         fn for fn in compilation.lambdas if fn.source_name == "reverse_charge"

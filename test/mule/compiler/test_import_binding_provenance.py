@@ -7,7 +7,7 @@ def test_ignored_parameter_annotation_preserves_attribute_error(tmp_path):
     result = execute(
         tmp_path,
         {},
-        "from mule import int32\n"
+        "from mule_types import int32\n"
         "def read(value: int32):\n"
         " return value.missing\n"
         "try:\n"

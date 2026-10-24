@@ -6,7 +6,7 @@ to the result; preparation is separate from the measured kernels.
 
 from perfutils import run_case
 
-from mule import int64, optimize
+from mule_types import int64, optimize
 
 __speed__ = 3
 __safety__ = 0

@@ -14,10 +14,10 @@ from mule.compiler.node import ValuedNode
 from test.mule.compiler.rewrite_support import build_case
 
 FLOW_SOURCE = """\
-import mule
+import mule_types
 
-def report(n: mule.int64, raw):
-    def step(value: mule.int64) -> mule.int64:
+def report(n: mule_types.int64, raw):
+    def step(value: mule_types.int64) -> mule_types.int64:
         return value
 
     def render(value, stride, label):
@@ -37,12 +37,12 @@ print(report(number, flag))
 
 
 ENTRY_SOURCE = """\
-import mule
+import mule_types
 
 def format_sample(value, label):
     return (value + 0) * 8, str(label)
 
-def report(n: mule.int64, raw):
+def report(n: mule_types.int64, raw):
     label = 'enabled' if raw else 'off'
     result = format_sample(n & 1023, label)
     print(result, result[1] is label)

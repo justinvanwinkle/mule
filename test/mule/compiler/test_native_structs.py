@@ -9,7 +9,7 @@ from mule.compiler.main import compile_source as lower
 from test.mule.compiler.test_native import run_native
 
 COUNTER = (
-    "from mule import int64, optimize\n"
+    "from mule_types import int64, optimize\n"
     "@optimize(speed=3, safety=0)\n"
     "class Counter:\n"
     " value: int64\n"
@@ -89,7 +89,7 @@ def test_native_fields_preserve_instance_aliasing_and_independent_storage(tmp_pa
 
 def test_native_class_multiple_fields_keep_distinct_offsets(tmp_path):
     source = (
-        "import mule as m\n@m.optimize(speed=3, safety=0)\nclass Pair:\n"
+        "import mule_types as m\n@m.optimize(speed=3, safety=0)\nclass Pair:\n"
         " left: m.int64\n right: m.int64\n"
         " def __init__(self, left: m.int64, right: m.int64):\n"
         "  self.left = left\n  self.right = right\n"
@@ -115,7 +115,7 @@ def test_native_methods_return_none_and_integer_results(tmp_path):
 
 def test_unannotated_native_method_return_propagates_through_forward_call(tmp_path):
     source = (
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "@optimize(speed=3, safety=0)\nclass C:\n value: int64\n"
         " def __init__(self):\n  self.value = 7\n"
         " def first(self):\n  return self.second()\n"
@@ -130,7 +130,7 @@ def test_unannotated_native_method_return_propagates_through_forward_call(tmp_pa
 
 def test_native_int64_method_arithmetic_and_comparison_loop(tmp_path):
     source = (
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "@optimize(speed=3, safety=0)\nclass Calculator:\n value: int64\n"
         " def __init__(self):\n  self.value = -3\n"
         " def transform(self, amount: int64) -> int64:\n"
@@ -149,7 +149,7 @@ def test_native_int64_method_arithmetic_and_comparison_loop(tmp_path):
 @pytest.mark.parametrize("value", ("'wrong'", "1.25", str(-(2**63) - 1), str(2**63)))
 def test_native_field_rejects_known_wrong_constructor_assignment(value):
     source = (
-        "from mule import int64, optimize\n@optimize(speed=3, safety=0)\n"
+        "from mule_types import int64, optimize\n@optimize(speed=3, safety=0)\n"
         f"class Bad:\n value: int64\n def __init__(self):\n  self.value = {value}\n"
         "Bad()\n"
     )
@@ -179,10 +179,10 @@ def test_native_field_boundary_rejects_unknown_external_assignment(
 @pytest.mark.parametrize(
     "source",
     [
-        "from mule import int64, optimize\n@optimize(speed=3)\nclass C:\n value: int64 = 0\n",
-        "from mule import int64, optimize\n@optimize(speed=3)\nclass C:\n value: int64\n def __init__(self):\n  self.other = 1\n",
-        "from mule import int64, optimize\nclass Base:\n pass\n@optimize(speed=3)\nclass C(Base):\n value: int64\n",
-        "from mule import int64, optimize\n@optimize(speed=3)\nclass C:\n value: int64\n def __getattr__(self, name):\n  return 1\n",
+        "from mule_types import int64, optimize\n@optimize(speed=3)\nclass C:\n value: int64 = 0\n",
+        "from mule_types import int64, optimize\n@optimize(speed=3)\nclass C:\n value: int64\n def __init__(self):\n  self.other = 1\n",
+        "from mule_types import int64, optimize\nclass Base:\n pass\n@optimize(speed=3)\nclass C(Base):\n value: int64\n",
+        "from mule_types import int64, optimize\n@optimize(speed=3)\nclass C:\n value: int64\n def __getattr__(self, name):\n  return 1\n",
     ],
 )
 def test_unsupported_native_class_forms_are_rejected(source):
@@ -208,7 +208,7 @@ def test_native_class_rejects_undeclared_attributes_and_class_mutation(
 
 def test_native_constructor_rejects_return_without_initializing_field():
     source = (
-        "from mule import int64, optimize\n@optimize(speed=3, safety=3)\n"
+        "from mule_types import int64, optimize\n@optimize(speed=3, safety=3)\n"
         "class Uninitialized:\n value: int64\n def __init__(self):\n  pass\n"
         "print(Uninitialized().value)\n"
     )
@@ -218,7 +218,7 @@ def test_native_constructor_rejects_return_without_initializing_field():
 
 def test_native_class_requires_constructor():
     source = (
-        "from mule import int64, optimize\n@optimize(speed=3, safety=3)\n"
+        "from mule_types import int64, optimize\n@optimize(speed=3, safety=3)\n"
         "class Uninitialized:\n value: int64\n"
         "print(Uninitialized().value)\n"
     )
@@ -237,7 +237,7 @@ def test_native_class_requires_constructor():
 )
 def test_native_constructor_rejects_uninitialized_read_return_or_escape(body):
     source = (
-        "from mule import int64, optimize\ndef expose(value):\n pass\n"
+        "from mule_types import int64, optimize\ndef expose(value):\n pass\n"
         "@optimize(speed=3, safety=3)\nclass C:\n value: int64\n"
         " def __init__(self, flag: int64):\n" + body
     )
@@ -253,7 +253,7 @@ def test_checked_native_int64_arithmetic_reports_overflow(
     tmp_path, operation, start, amount
 ):
     source = (
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "@optimize(speed=3, safety=3)\nclass C:\n value: int64\n"
         " def __init__(self, value: int64):\n  self.value = value\n"
         f" def apply(self, amount: int64):\n  self.value {operation}= amount\n"
@@ -316,7 +316,7 @@ def test_typed_caller_falls_back_after_native_class_global_rebinding(tmp_path):
 
 def test_native_method_keeps_dynamic_module_function_lookup(tmp_path):
     source = (
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "def amount() -> int64:\n return 1\n"
         "@optimize(speed=3, safety=0)\nclass C:\n value: int64\n"
         " def __init__(self):\n  self.value = 0\n"
@@ -341,7 +341,7 @@ def test_int64_parameters_do_not_narrow_unannotated_integer_results(
     tmp_path, expression, value, expected
 ):
     source = (
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         f"@optimize(speed=3, safety=0)\ndef calculate(value: int64):\n return {expression}\n"
         f"print(calculate(int('{value}')))\n"
     )
@@ -352,7 +352,7 @@ def test_int64_parameters_do_not_narrow_unannotated_integer_results(
 
 def test_unannotated_integer_intermediates_preserve_arbitrary_precision(tmp_path):
     source = (
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "@optimize(speed=3, safety=3)\ndef calculate(value: int64) -> int64:\n"
         " doubled = value + value\n answer = doubled - value\n return answer\n"
         f"print(calculate(int('{2**62}')))\n"
@@ -364,7 +364,7 @@ def test_unannotated_integer_intermediates_preserve_arbitrary_precision(tmp_path
 
 def test_method_receiver_reassignment_preserves_local_binding_semantics(tmp_path):
     source = (
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "@optimize(speed=3, safety=0)\nclass C:\n value: int64\n"
         " def __init__(self):\n  self.value = 7\n"
         " def read(self) -> int64:\n  self = 42\n  return self\n"
@@ -377,7 +377,7 @@ def test_method_receiver_reassignment_preserves_local_binding_semantics(tmp_path
 
 def test_native_constructor_effects_and_non_none_return_are_preserved(tmp_path):
     source = (
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "def argument():\n print('argument')\n return 7\n"
         "@optimize(speed=3, safety=0)\nclass C:\n value: int64\n"
         " def __init__(self, value: int64):\n"
@@ -392,7 +392,7 @@ def test_native_constructor_effects_and_non_none_return_are_preserved(tmp_path):
 
 def test_native_optional_local_preserves_unbound_error(tmp_path):
     source = (
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "@optimize(speed=3, safety=0)\ndef read(flag: int64) -> int64:\n"
         " if flag:\n  value: int64 = 42\n return value\nread(0)\n"
     )
@@ -403,7 +403,7 @@ def test_native_optional_local_preserves_unbound_error(tmp_path):
 
 def test_native_branch_join_preserves_initialized_local_on_both_paths(tmp_path):
     source = (
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "@optimize(speed=3, safety=3)\ndef choose(flag: int64) -> int64:\n"
         " if flag:\n  value: int64 = 7\n else:\n  value = 11\n return value\n"
         "print(choose(1), choose(0))\n"
@@ -415,7 +415,7 @@ def test_native_branch_join_preserves_initialized_local_on_both_paths(tmp_path):
 
 def test_constructor_site_inside_loop_preserves_instances_and_effects(tmp_path):
     source = (
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "@optimize(speed=3, safety=0)\nclass C:\n value: int64\n"
         " def __init__(self, value: int64):\n"
         "  self.value = value\n  print(value)\n"
@@ -446,7 +446,7 @@ def test_recursive_native_class_calls_preserve_recursion_error(
         )
         call = "C().recurse(0)\n"
     source = (
-        "from mule import int64, optimize\n"
+        "from mule_types import int64, optimize\n"
         "@optimize(speed=3, safety=0)\nclass C:\n value: int64\n" + body + call
     )
     result = run_native(tmp_path, source)

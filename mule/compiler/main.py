@@ -126,7 +126,7 @@ def ignore_contradicted_annotations(compilation: Compilation) -> bool:
     them is removed. Returns whether anything changed, so analysis reruns.
 
     Python never enforces annotations, so a provably wrong one is reported
-    rather than rejected. A typed native field's ``mule.int64`` declaration
+    rather than rejected. A typed native field's ``mule_types.int64`` declaration
     defines its raw storage, so a contradiction there remains an error."""
     ledger = compilation.annotations
     pending = ledger.contradictions

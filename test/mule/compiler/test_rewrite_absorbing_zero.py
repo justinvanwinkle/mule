@@ -51,8 +51,8 @@ def test_absorbing_bound_record_integer_removes_ir1_operation(
 @pytest.mark.parametrize(("expression", "operation"), _RULES)
 def test_absorbing_call_operand_remains_in_ir1(expression, operation):
     compilation = compile_source(
-        "import mule\n"
-        "def read_record(record) -> mule.int64:\n"
+        "import mule_types\n"
+        "def read_record(record) -> mule_types.int64:\n"
         " print(record)\n"
         " return len(record)\n"
         "def record_zero(record):\n"

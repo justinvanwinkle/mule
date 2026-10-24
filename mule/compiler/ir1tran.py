@@ -450,7 +450,7 @@ class Converter:
         ).declared_contract(self, expression)
 
     def policy(self, decorators, inherited):
-        """Apply the definition's ``mule.optimize`` directives. They are
+        """Apply the definition's ``mule_types.optimize`` directives. They are
         compile-time declarations, not runtime decorators."""
         policy = inherited
         for decorator in decorators:
@@ -2537,7 +2537,7 @@ class _Statements(ast.Visitor):
         start, next_, _ = self.frame
         current = start
         for item in node.items:
-            if item.name == "mule":
+            if item.name == "mule_types":
                 function._import_directive(ast.Import([item], span=node.span))
                 continue
             current, imported = function.import_module(current, item.name, node)
@@ -2564,7 +2564,7 @@ class _Statements(ast.Visitor):
         if node.level == 0 and node.module == "__future__":
             function._import_directive(node)
             return
-        if node.level == 0 and node.module == "mule":
+        if node.level == 0 and node.module == "mule_types":
             directives = [item for item in node.items if item.name in _EXPORT_BINDINGS]
             runtime = [item for item in node.items if item.name not in _EXPORT_BINDINGS]
             if directives:
@@ -4803,7 +4803,7 @@ def _native_class_body(function, node, policy):
     """The validated body of a typed native class, or None for an ordinary
     class. A class requests the native layout with ``optimize(speed=3)`` and
     annotated declarations; its body is then restricted to a docstring,
-    methods, bare ``mule.int64`` declarations and ``pass``."""
+    methods, bare ``mule_types.int64`` declarations and ``pass``."""
     requested = (
         policy.speed == 3
         and any(decorator.accept(_NativeClassOptIn()) for decorator in node.decorators)
@@ -5178,7 +5178,7 @@ class _CompilerBinding:
 
     def policy(self, converter, decorator, policy):
         """The policy after ``decorator``, which calls this binding; only
-        the ``mule.optimize`` directive changes it."""
+        the ``mule_types.optimize`` directive changes it."""
         return policy
 
     def runtime_decorators(self, decorator):
@@ -5187,7 +5187,7 @@ class _CompilerBinding:
 
     def directive(self, converter, node):
         converter.error(
-            "only imported mule.optimize decorators are supported",
+            "only imported mule_types.optimize decorators are supported",
             node,
             unsupported=True,
         )
@@ -5339,7 +5339,7 @@ class _ImportBindings(ast.Visitor):
 
     def visit_Import(self, node):
         for item in node.items:
-            if item.name != "mule":
+            if item.name != "mule_types":
                 continue
             self.bind(item.alias or item.name, _MODULE_BINDING, item)
 
@@ -5357,7 +5357,7 @@ class _ImportBindings(ast.Visitor):
             self.converter.error(
                 "unsupported __future__ compiler directive", node, unsupported=True
             )
-        if node.module != "mule" or node.level:
+        if node.module != "mule_types" or node.level:
             return
         for item in node.items:
             binding = _EXPORT_BINDINGS.get(item.name)
@@ -5587,7 +5587,7 @@ class _PolicyDecorator(ast.Visitor):
 
     def visit_Node(self, node):
         self.converter.error(
-            "only imported mule.optimize decorators are supported",
+            "only imported mule_types.optimize decorators are supported",
             node,
             unsupported=True,
         )
@@ -5618,7 +5618,7 @@ class _PolicyDecorator(ast.Visitor):
 
 class _DecoratorBinding(ast.Visitor):
     """The compiler binding a decorator calls, such as the imported
-    ``mule.optimize`` directive; a decorator that is not a call calls none."""
+    ``mule_types.optimize`` directive; a decorator that is not a call calls none."""
 
     def __init__(self, converter):
         self.converter = converter

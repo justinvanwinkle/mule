@@ -1,8 +1,8 @@
 # Optimization policies
 
 Status: a signed-64-bit subset of native structs is implemented; the complete
-policy matrix remains a target. Explicit `@mule.optimize(speed=3)` classes with
-bare `mule.int64` fields use raw storage, require definite construction
+policy matrix remains a target. Explicit `@mule_types.optimize(speed=3)` classes with
+bare `mule_types.int64` fields use raw storage, require definite construction
 initialization, and can select native internal method and caller entries.
 The compiler keeps compiled generic entries for bodies that cannot establish
 the required proofs. See [current behavior](native-compiler.md#annotation-contracts)
@@ -37,11 +37,11 @@ They do not justify skipping SBCL's analysis or representation stages.
 
 - **Declaration syntax.** Lisp `defstruct` slot descriptions and `optimize`
   declarations become Python class-body annotations and the imported
-  `@mule.optimize` compiler directive. Python classes normally allow dynamic
+  `@mule_types.optimize` compiler directive. Python classes normally allow dynamic
   mutation, so native layout restrictions require the user's explicit
   `speed=3` class policy. The consequence is an intentionally restricted Python
   class contract; an undecorated spelling alone cannot establish that contract.
-- **Machine representation.** Full signed `mule.int64` values select an LLVM
+- **Machine representation.** Full signed `mule_types.int64` values select an LLVM
   `i64` field and internal argument/result representation, including values
   outside Mule's tagged-integer range. LLVM constant-offset addressing and
   loads/stores replace SBCL's raw-instance VOPs because LLVM is the required
@@ -91,16 +91,16 @@ for omitting SBCL's storage and lifetime analyses.
 ## Policy axes and scope
 
 ```python
-import mule
+import mule_types
 
-@mule.optimize(speed=3, safety=3, debug=0)
+@mule_types.optimize(speed=3, safety=3, debug=0)
 class Counter:
-    value: mule.int64
+    value: mule_types.int64
 
     def __init__(self):
         self.value = 0
 
-    def add(self, amount: mule.int64):
+    def add(self, amount: mule_types.int64):
         self.value += amount
 ```
 
@@ -261,7 +261,7 @@ outside the valid program contract. Python's ordinary `int` remains arbitrary
 precision and can use GMP; its presence in a field is not a fixed-width promise.
 
 Annotations on operands do not constrain otherwise unannotated intermediate
-results. For example, `x: mule.int64` does not make `x * x` a bounded integer.
+results. For example, `x: mule_types.int64` does not make `x * x` a bounded integer.
 Select raw arithmetic only when the operation's result itself has a declared
 fixed-width contract or analysis proves its complete mathematical range fits.
 Otherwise preserve Python's arbitrary-precision intermediate through a compiled

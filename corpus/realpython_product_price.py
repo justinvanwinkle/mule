@@ -18,7 +18,7 @@ timeout = 5.0
 [mule]
 status = "pending"
 phase = "compile"
-reason = "only imported mule.optimize decorators are supported"
+reason = "only imported mule_types.optimize decorators are supported"
 '''
 
 class Product:

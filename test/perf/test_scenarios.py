@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import mule_types  # noqa: F401
 from test.python_host import python_host
 
 SUITE = Path(__file__).resolve().parents[2] / "perf" / "suite"
@@ -47,8 +48,6 @@ TYPED_PAIRS = (
 
 @pytest.fixture
 def load_case(monkeypatch):
-    import mule  # noqa: F401
-
     monkeypatch.syspath_prepend(str(SUITE))
     return importlib.import_module
 
@@ -312,7 +311,7 @@ def test_new_and_annotated_scenarios_compile_through_ir1(name):
 
 
 def _strip_python_types_and_policy(source: str):
-    """Erase type annotations, mule imports, and policy directives from an AST."""
+    """Erase type annotations, mule_types imports, and policy directives from an AST."""
     import ast as host_ast
 
     tree = host_ast.parse(source)
@@ -330,7 +329,7 @@ def _strip_python_types_and_policy(source: str):
             return node
 
         def visit_ImportFrom(self, node):
-            if node.module == "mule":
+            if node.module == "mule_types":
                 return None
             return node
 

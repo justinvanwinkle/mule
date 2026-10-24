@@ -103,7 +103,7 @@ def test_kwargs_annotation_checks_values_without_casting_keys_or_container(
 ):
     result = run_native(
         tmp_path,
-        "from mule import optimize\n"
+        "from mule_types import optimize\n"
         f"@optimize(safety={safety})\n"
         "def collect(**named: int):\n"
         " return named\n"

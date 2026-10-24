@@ -50,10 +50,10 @@ def test_bucket_divmod_nonpositive_or_nonpower_keeps_language_operations(divisor
 def test_signed_bucket_native_shift_and_mask_match_python(tmp_path):
     case = build_case(
         tmp_path,
-        "import mule\n"
-        "def signed_bucket(value: mule.int64) -> mule.int64:\n"
+        "import mule_types\n"
+        "def signed_bucket(value: mule_types.int64) -> mule_types.int64:\n"
         " return value // 8\n"
-        "def bucket_offset(value: mule.int64) -> mule.int64:\n"
+        "def bucket_offset(value: mule_types.int64) -> mule_types.int64:\n"
         " return value % 8\n"
         "value = int(input())\n"
         "print(signed_bucket(value), bucket_offset(value))\n",
