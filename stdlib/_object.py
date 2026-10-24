@@ -78,6 +78,8 @@ from _mule_native import set_function_annotations
 from _mule_native import byte_length
 from _mule_native import read_byte
 from _mule_native import mark_wrapper_descriptor
+from _mule_native import weak_handle
+from _mule_native import weak_target
 
 # The runtime's conversion functions, captured before the classes below
 # take over their builtin names.
@@ -352,10 +354,7 @@ def _format_number(value, kind, format_spec):
                     first_sep = grouped.find(group)
                     first_len = len(grouped) if first_sep < 0 else first_sep
                     if first_len == group_size:
-                        if len(grouped) + 1 < target_len:
-                            grouped = "0" + group + grouped
-                        else:
-                            grouped = "0" + grouped
+                        grouped = "0" + group + grouped
                     else:
                         grouped = "0" + grouped
                 digits = grouped + tail
@@ -674,12 +673,7 @@ class type(object):
         return list(class_mro(cls))
 
     def __instancecheck__(cls, instance):
-        if is_instance(instance, cls):
-            return True
-        custom_cls = getattr(instance, "__class__", None)
-        if custom_cls is not None and custom_cls is not type_of(instance) and is_class(custom_cls):
-            return is_subclass(custom_cls, cls)
-        return False
+        return is_instance(instance, cls)
 
     def __subclasscheck__(cls, subclass):
         if not is_class(subclass):
@@ -875,14 +869,25 @@ def _instance_dict(owner):
     key = identity_hash(owner)
     bucket = _INSTANCE_DICTS.get(key)
     if bucket is not None:
-        for existing_owner, wrapper in bucket:
-            if existing_owner is owner:
-                return wrapper
+        live = []
+        found = None
+        for handle in bucket:
+            wrapper = weak_target(handle)
+            if wrapper is not None:
+                live.append(handle)
+                if wrapper._owner is owner:
+                    found = wrapper
+        if found is not None:
+            _INSTANCE_DICTS[key] = live
+            return found
+        bucket = live
     wrapper = _InstanceDict(owner)
+    handle = weak_handle(wrapper, None, None)
     if bucket is None:
-        _INSTANCE_DICTS[key] = [(owner, wrapper)]
+        _INSTANCE_DICTS[key] = [handle]
     else:
-        bucket.append((owner, wrapper))
+        bucket.append(handle)
+        _INSTANCE_DICTS[key] = bucket
     return wrapper
 
 
@@ -898,14 +903,25 @@ def _globals_dict(namespace):
     key = identity_hash(namespace)
     bucket = _GLOBALS_DICTS.get(key)
     if bucket is not None:
-        for owner, wrapper in bucket:
-            if owner is namespace:
-                return wrapper
+        live = []
+        found = None
+        for handle in bucket:
+            wrapper = weak_target(handle)
+            if wrapper is not None:
+                live.append(handle)
+                if wrapper._namespace is namespace:
+                    found = wrapper
+        if found is not None:
+            _GLOBALS_DICTS[key] = live
+            return found
+        bucket = live
     wrapper = _GlobalsDict(namespace)
+    handle = weak_handle(wrapper, None, None)
     if bucket is None:
-        _GLOBALS_DICTS[key] = [(namespace, wrapper)]
+        _GLOBALS_DICTS[key] = [handle]
     else:
-        bucket.append((namespace, wrapper))
+        bucket.append(handle)
+        _GLOBALS_DICTS[key] = bucket
     return wrapper
 
 
@@ -3164,12 +3180,7 @@ def isinstance(obj, classinfo, /):
     if type_of(classinfo) is type:
         if type_of(obj) is classinfo:
             return True
-        if is_instance(obj, classinfo):
-            return True
-        custom_cls = getattr(obj, "__class__", None)
-        if custom_cls is not None and custom_cls is not type_of(obj) and is_class(custom_cls):
-            return is_subclass(custom_cls, classinfo)
-        return False
+        return is_instance(obj, classinfo)
     if is_instance(classinfo, tuple):
         n = len(classinfo)
         if n == 0:

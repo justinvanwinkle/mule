@@ -2546,7 +2546,544 @@ def _bytes_slice_result(source, start, end):
     return byte_copy(source, start, end - start)
 
 
+def _require_bytes(receiver, method):
+    if not is_instance(receiver, bytes):
+        raise TypeError(
+            "descriptor '"
+            + method
+            + "' requires a 'bytes' object but received a '"
+            + _type_name(receiver)
+            + "'"
+        )
+
+
+def _require_bytearray(receiver, method):
+    if not is_instance(receiver, bytearray):
+        raise TypeError(
+            "descriptor '"
+            + method
+            + "' requires a 'bytearray' object but received a '"
+            + _type_name(receiver)
+            + "'"
+        )
+
+
+def _bytes_upper(values):
+    result = []
+    index = 0
+    length = _storage_length(values)
+    while index < length:
+        b = _storage_read(values, index)
+        _storage_append(result, b - 32 if 97 <= b <= 122 else b)
+        index += 1
+    return result
+
+
+def _bytes_lower(values):
+    result = []
+    index = 0
+    length = _storage_length(values)
+    while index < length:
+        b = _storage_read(values, index)
+        _storage_append(result, b + 32 if 65 <= b <= 90 else b)
+        index += 1
+    return result
+
+
+def _bytes_swapcase(values):
+    result = []
+    index = 0
+    length = _storage_length(values)
+    while index < length:
+        b = _storage_read(values, index)
+        if 97 <= b <= 122:
+            b -= 32
+        elif 65 <= b <= 90:
+            b += 32
+        _storage_append(result, b)
+        index += 1
+    return result
+
+
+def _bytes_capitalize(values):
+    result = []
+    index = 0
+    length = _storage_length(values)
+    while index < length:
+        b = _storage_read(values, index)
+        if index == 0:
+            if 97 <= b <= 122:
+                b -= 32
+        elif 65 <= b <= 90:
+            b += 32
+        _storage_append(result, b)
+        index += 1
+    return result
+
+
+def _bytes_title(values):
+    result = []
+    index = 0
+    length = _storage_length(values)
+    prev_cased = False
+    while index < length:
+        b = _storage_read(values, index)
+        if 97 <= b <= 122:
+            if not prev_cased:
+                b -= 32
+            prev_cased = True
+        elif 65 <= b <= 90:
+            if prev_cased:
+                b += 32
+            prev_cased = True
+        else:
+            prev_cased = False
+        _storage_append(result, b)
+        index += 1
+    return result
+
+
+def _bytes_isalpha(values):
+    length = _storage_length(values)
+    if length == 0:
+        return False
+    index = 0
+    while index < length:
+        b = _storage_read(values, index)
+        if not ((65 <= b <= 90) or (97 <= b <= 122)):
+            return False
+        index += 1
+    return True
+
+
+def _bytes_isdigit(values):
+    length = _storage_length(values)
+    if length == 0:
+        return False
+    index = 0
+    while index < length:
+        b = _storage_read(values, index)
+        if not (48 <= b <= 57):
+            return False
+        index += 1
+    return True
+
+
+def _bytes_isalnum(values):
+    length = _storage_length(values)
+    if length == 0:
+        return False
+    index = 0
+    while index < length:
+        b = _storage_read(values, index)
+        if not ((65 <= b <= 90) or (97 <= b <= 122) or (48 <= b <= 57)):
+            return False
+        index += 1
+    return True
+
+
+def _bytes_isspace(values):
+    length = _storage_length(values)
+    if length == 0:
+        return False
+    index = 0
+    while index < length:
+        if not _is_ascii_whitespace(_storage_read(values, index)):
+            return False
+        index += 1
+    return True
+
+
+def _bytes_isupper(values):
+    length = _storage_length(values)
+    cased = False
+    index = 0
+    while index < length:
+        b = _storage_read(values, index)
+        if 97 <= b <= 122:
+            return False
+        if 65 <= b <= 90:
+            cased = True
+        index += 1
+    return cased
+
+
+def _bytes_islower(values):
+    length = _storage_length(values)
+    cased = False
+    index = 0
+    while index < length:
+        b = _storage_read(values, index)
+        if 65 <= b <= 90:
+            return False
+        if 97 <= b <= 122:
+            cased = True
+        index += 1
+    return cased
+
+
+def _bytes_istitle(values):
+    length = _storage_length(values)
+    cased = False
+    prev_cased = False
+    index = 0
+    while index < length:
+        b = _storage_read(values, index)
+        if 65 <= b <= 90:
+            if prev_cased:
+                return False
+            prev_cased = True
+            cased = True
+        elif 97 <= b <= 122:
+            if not prev_cased:
+                return False
+            prev_cased = True
+            cased = True
+        else:
+            prev_cased = False
+        index += 1
+    return cased
+
+
+def _bytes_isascii(values):
+    length = _storage_length(values)
+    index = 0
+    while index < length:
+        if _storage_read(values, index) >= 128:
+            return False
+        index += 1
+    return True
+
+
+def _bytes_zfill(values, width):
+    width = _index_integer(width)
+    length = _storage_length(values)
+    pad = width - length
+    if pad <= 0:
+        return None
+    result = []
+    start = 0
+    if length > 0:
+        first = _storage_read(values, 0)
+        if first == 43 or first == 45:
+            _storage_append(result, first)
+            start = 1
+    while pad > 0:
+        _storage_append(result, 48)
+        pad -= 1
+    while start < length:
+        _storage_append(result, _storage_read(values, start))
+        start += 1
+    return result
+
+
+def _bytes_expandtabs(values, tabsize):
+    tabsize = _index_integer(tabsize)
+    result = []
+    col = 0
+    index = 0
+    length = _storage_length(values)
+    while index < length:
+        b = _storage_read(values, index)
+        if b == 9:
+            if tabsize > 0:
+                spaces = tabsize - (col % tabsize)
+                col += spaces
+                while spaces > 0:
+                    _storage_append(result, 32)
+                    spaces -= 1
+        else:
+            _storage_append(result, b)
+            if b == 10 or b == 13:
+                col = 0
+            else:
+                col += 1
+        index += 1
+    return result
+
+
+def _bytes_percent_format(values, args):
+    original = args
+    mapping = None
+    if not _tuple_storage(args):
+        args = (args,)
+    count = _storage_length(args)
+    consumed = 0
+    index = 0
+    size = _storage_length(values)
+    result = []
+    while index < size:
+        b = _storage_read(values, index)
+        index += 1
+        if b != 37:
+            _storage_append(result, b)
+            continue
+        if index == size:
+            raise ValueError("incomplete format")
+        if _storage_read(values, index) == 37:
+            index += 1
+            _storage_append(result, 37)
+            continue
+        key = None
+        if _storage_read(values, index) == 40:
+            close = index + 1
+            while close < size and _storage_read(values, close) != 41:
+                close += 1
+            if close == size:
+                raise ValueError("incomplete format key")
+            key_bytes = []
+            while index + 1 < close:
+                index += 1
+                _storage_append(key_bytes, _storage_read(values, index))
+            key = bytes_from_values(key_bytes)
+            index = close + 1
+            if index == size:
+                raise ValueError("incomplete format")
+        left = False
+        zero = False
+        plus = False
+        space = False
+        alternate = False
+        while index < size and _storage_read(values, index) in (45, 48, 43, 32, 35):
+            flag = _storage_read(values, index)
+            if flag == 45:
+                left = True
+            elif flag == 48:
+                zero = True
+            elif flag == 43:
+                plus = True
+            elif flag == 32:
+                space = True
+            else:
+                alternate = True
+            index += 1
+        width = 0
+        if index < size and _storage_read(values, index) == 42:
+            index += 1
+            if mapping is not None or consumed == count:
+                raise TypeError("not enough arguments for format string")
+            width = _index_integer(_storage_read(args, consumed))
+            consumed += 1
+            if width < 0:
+                left = True
+                width = -width
+        else:
+            while index < size and 48 <= _storage_read(values, index) <= 57:
+                width = width * 10 + (_storage_read(values, index) - 48)
+                index += 1
+        precision = -1
+        if index < size and _storage_read(values, index) == 46:
+            index += 1
+            precision = 0
+            if index < size and _storage_read(values, index) == 42:
+                index += 1
+                if mapping is not None or consumed == count:
+                    raise TypeError("not enough arguments for format string")
+                precision = _index_integer(_storage_read(args, consumed))
+                consumed += 1
+                if precision < 0:
+                    precision = -1
+            else:
+                while index < size and 48 <= _storage_read(values, index) <= 57:
+                    precision = precision * 10 + (_storage_read(values, index) - 48)
+                    index += 1
+        if index < size and _storage_read(values, index) in (104, 108, 76):
+            index += 1
+        if index == size:
+            raise ValueError("incomplete format")
+        conv = chr(_storage_read(values, index))
+        index += 1
+        if conv not in "diouxXeEfFgGcrsba":
+            raise ValueError("unsupported bytes percent format conversion")
+        if key is not None:
+            mapping = original
+            arg = mapping[key]
+            consumed = count
+        else:
+            if consumed == count:
+                raise TypeError("not enough arguments for format string")
+            arg = _storage_read(args, consumed)
+            consumed += 1
+        if conv in ("s", "b"):
+            piece = _bytes_like_values(arg)
+            if precision >= 0 and _storage_length(piece) > precision:
+                piece = _byte_sublist(piece, 0, precision)
+            pad = width - _storage_length(piece)
+            if pad > 0:
+                if left:
+                    piece = piece + [32] * pad
+                else:
+                    piece = [32] * pad + piece
+            for item in piece:
+                _storage_append(result, item)
+        elif conv in ("r", "a"):
+            text = ascii(arg)
+            if precision >= 0:
+                text = text[:precision]
+            piece = [ord(ch) for ch in text]
+            pad = width - _storage_length(piece)
+            if pad > 0:
+                if left:
+                    piece = piece + [32] * pad
+                else:
+                    piece = [32] * pad + piece
+            for item in piece:
+                _storage_append(result, item)
+        elif conv == "c":
+            if is_instance(arg, bytes):
+                if _storage_length(arg) != 1:
+                    raise TypeError("%c requires an integer in range(256) or a single byte")
+                byte_val = _storage_read(arg, 0)
+            elif is_instance(arg, bytearray):
+                if _storage_length(arg.values) != 1:
+                    raise TypeError("%c requires an integer in range(256) or a single byte")
+                byte_val = _storage_read(arg.values, 0)
+            else:
+                byte_val = _byte_value(arg, "%c arg not in range(256)")
+            piece = [byte_val]
+            pad = width - 1
+            if pad > 0:
+                if left:
+                    piece = piece + [32] * pad
+                else:
+                    piece = [32] * pad + piece
+            for item in piece:
+                _storage_append(result, item)
+        else:
+            spec = "%"
+            if left:
+                spec += "-"
+            if zero:
+                spec += "0"
+            if plus:
+                spec += "+"
+            if space:
+                spec += " "
+            if alternate:
+                spec += "#"
+            if width > 0:
+                spec += str(width)
+            if precision >= 0:
+                spec += "." + str(precision)
+            spec += conv
+            rendered = spec % (arg,)
+            for ch in rendered:
+                _storage_append(result, ord(ch))
+    if consumed != count and mapping is None:
+        if _tuple_storage(original) or is_instance(original, bytes) or is_instance(original, bytearray) or _OptionalMapping(original) is None:
+            raise TypeError("not all arguments converted during bytes formatting")
+    return result
+
+
+def _OptionalMapping(value):
+    missing = _binding_missing()
+    if class_lookup_default(type_of(value), "__getitem__", missing) is missing:
+        return None
+    return value
+
+
 class BytesStorage:
+    def __len__(self):
+        _require_bytes(self, "__len__")
+        return _storage_length(self)
+
+    def __add__(self, other):
+        _require_bytes(self, "__add__")
+        values = _bytes_like_values(self)
+        for item in _bytes_like_values(other):
+            _storage_append(values, item)
+        return bytes_from_values(values)
+
+    def __eq__(self, other):
+        _require_bytes(self, "__eq__")
+        if is_instance(other, bytes):
+            if _storage_length(self) != _storage_length(other):
+                return False
+            index = 0
+            while index < _storage_length(self):
+                if _storage_read(self, index) != _storage_read(other, index):
+                    return False
+                index += 1
+            return True
+        if is_instance(other, bytearray):
+            return other == self
+        return NotImplemented
+
+    def __ne__(self, other):
+        _require_bytes(self, "__ne__")
+        res = self.__eq__(other)
+        return res if res is NotImplemented else not res
+
+    def __hash__(self):
+        _require_bytes(self, "__hash__")
+        return _storage_hash(self)
+
+    def __mod__(self, args):
+        _require_bytes(self, "__mod__")
+        return bytes_from_values(_bytes_percent_format(self, args))
+
+    def upper(self):
+        _require_bytes(self, "upper")
+        return bytes_from_values(_bytes_upper(self))
+
+    def lower(self):
+        _require_bytes(self, "lower")
+        return bytes_from_values(_bytes_lower(self))
+
+    def swapcase(self):
+        _require_bytes(self, "swapcase")
+        return bytes_from_values(_bytes_swapcase(self))
+
+    def capitalize(self):
+        _require_bytes(self, "capitalize")
+        return bytes_from_values(_bytes_capitalize(self))
+
+    def title(self):
+        _require_bytes(self, "title")
+        return bytes_from_values(_bytes_title(self))
+
+    def isalpha(self):
+        _require_bytes(self, "isalpha")
+        return _bytes_isalpha(self)
+
+    def isdigit(self):
+        _require_bytes(self, "isdigit")
+        return _bytes_isdigit(self)
+
+    def isalnum(self):
+        _require_bytes(self, "isalnum")
+        return _bytes_isalnum(self)
+
+    def isspace(self):
+        _require_bytes(self, "isspace")
+        return _bytes_isspace(self)
+
+    def isupper(self):
+        _require_bytes(self, "isupper")
+        return _bytes_isupper(self)
+
+    def islower(self):
+        _require_bytes(self, "islower")
+        return _bytes_islower(self)
+
+    def istitle(self):
+        _require_bytes(self, "istitle")
+        return _bytes_istitle(self)
+
+    def isascii(self):
+        _require_bytes(self, "isascii")
+        return _bytes_isascii(self)
+
+    def zfill(self, width, /):
+        _require_bytes(self, "zfill")
+        res = _bytes_zfill(self, width)
+        if res is None:
+            return _bytes_slice_result(self, 0, _storage_length(self))
+        return bytes_from_values(res)
+
+    def expandtabs(self, tabsize=8):
+        _require_bytes(self, "expandtabs")
+        return bytes_from_values(_bytes_expandtabs(self, tabsize))
     def ljust(self, width, fillchar=b" ", /):
         return _bytes_padding_result(
             self, _byte_padding(self, width, fillchar, 0, "ljust")
@@ -2576,6 +3113,7 @@ class BytesStorage:
     __slots__ = ()
 
     def __getitem__(self, index):
+        _require_bytes(self, "__getitem__")
         if is_slice(index):
             start, stop, step, count = positions(index, _storage_length(self))
             if step == 1:
@@ -2584,15 +3122,18 @@ class BytesStorage:
         return _storage_read(self, storage_index(self, index))
 
     def __iter__(self):
+        _require_bytes(self, "__iter__")
         return SequenceIterator(self)
 
     def __buffer__(self, flags, /):
         return memoryview(self)
 
     def __contains__(self, item, /):
+        _require_bytes(self, "__contains__")
         return _bytes_find(self, item, 0, None) >= 0
 
     def decode(self, encoding="utf-8", errors=_CODEC_ERRORS_MISSING):
+        _require_bytes(self, "decode")
         return decode(self, encoding, errors)
 
     def find(self, sub, start=0, end=None):
@@ -3512,15 +4053,18 @@ class bytearray:
             self.values.append(0)
 
     def __len__(self):
+        _require_bytearray(self, "__len__")
         return _storage_length(self.values)
 
     def __getitem__(self, index):
+        _require_bytearray(self, "__getitem__")
         values = self.values
         if is_slice(index):
             return bytearray(_selected(values, index))
         return _storage_read(values, storage_index(values, index))
 
     def __setitem__(self, index, value):
+        _require_bytearray(self, "__setitem__")
         values = self.values
         if is_slice(index):
             replacement = _byte_values(value, None, "strict")
@@ -3584,15 +4128,28 @@ class bytearray:
         return result if result is NotImplemented else not result
 
     def __add__(self, other):
+        _require_bytearray(self, "__add__")
         return bytearray(self.values + _byte_values(other, None, "strict"))
 
+    def __iadd__(self, other):
+        _require_bytearray(self, "__iadd__")
+        self.extend(other)
+        return self
+
+    def __mod__(self, args):
+        _require_bytearray(self, "__mod__")
+        return bytearray(_bytes_percent_format(self.values, args))
+
     def __mul__(self, count):
+        _require_bytearray(self, "__mul__")
         return bytearray(_repeat(self.values, count))
 
     def __rmul__(self, count):
+        _require_bytearray(self, "__rmul__")
         return bytearray(_repeat(self.values, count))
 
     def __imul__(self, count):
+        _require_bytearray(self, "__imul__")
         repeated = _repeat(self.values, count)
         self._check_resize(len(repeated))
         _storage_delete(self.values, 0, _storage_length(self.values))
@@ -3601,46 +4158,119 @@ class bytearray:
         return self
 
     def __repr__(self):
+        _require_bytearray(self, "__repr__")
         return "bytearray(" + repr(bytes_from_values(self.values)) + ")"
 
     def append(self, value):
+        _require_bytearray(self, "append")
         value = _byte_value(value)
         if buffer_exports(self):
             raise BufferError("Existing exports of data: object cannot be re-sized")
         _storage_append(self.values, value)
 
     def extend(self, values):
+        _require_bytearray(self, "extend")
         values = _byte_values(values, None, "strict")
         self._check_resize(len(self.values) + len(values))
         for item in values:
             _storage_append(self.values, item)
 
     def insert(self, index, value):
+        _require_bytearray(self, "insert")
         self._check_resize(len(self.values) + 1)
         self.values.insert(_list_position(self.values, index), _byte_value(value))
 
     def pop(self, index=-1):
+        _require_bytearray(self, "pop")
         index = storage_index(self.values, index)
         self._check_resize(len(self.values) - 1)
         return self.values.pop(index)
 
     def remove(self, value):
+        _require_bytearray(self, "remove")
         index = self.values.index(_byte_value(value))
         self._check_resize(len(self.values) - 1)
         del self.values[index]
 
     def clear(self):
+        _require_bytearray(self, "clear")
         self._check_resize(0)
         self.values.clear()
 
     def copy(self):
+        _require_bytearray(self, "copy")
         return bytearray(self.values)
 
     def reverse(self):
+        _require_bytearray(self, "reverse")
         self.values.reverse()
 
     def decode(self, encoding="utf-8", errors=_CODEC_ERRORS_MISSING):
+        _require_bytearray(self, "decode")
         return decode(bytes_from_values(self.values), encoding, errors)
+
+    def upper(self):
+        _require_bytearray(self, "upper")
+        return bytearray(_bytes_upper(self.values))
+
+    def lower(self):
+        _require_bytearray(self, "lower")
+        return bytearray(_bytes_lower(self.values))
+
+    def swapcase(self):
+        _require_bytearray(self, "swapcase")
+        return bytearray(_bytes_swapcase(self.values))
+
+    def capitalize(self):
+        _require_bytearray(self, "capitalize")
+        return bytearray(_bytes_capitalize(self.values))
+
+    def title(self):
+        _require_bytearray(self, "title")
+        return bytearray(_bytes_title(self.values))
+
+    def isalpha(self):
+        _require_bytearray(self, "isalpha")
+        return _bytes_isalpha(self.values)
+
+    def isdigit(self):
+        _require_bytearray(self, "isdigit")
+        return _bytes_isdigit(self.values)
+
+    def isalnum(self):
+        _require_bytearray(self, "isalnum")
+        return _bytes_isalnum(self.values)
+
+    def isspace(self):
+        _require_bytearray(self, "isspace")
+        return _bytes_isspace(self.values)
+
+    def isupper(self):
+        _require_bytearray(self, "isupper")
+        return _bytes_isupper(self.values)
+
+    def islower(self):
+        _require_bytearray(self, "islower")
+        return _bytes_islower(self.values)
+
+    def istitle(self):
+        _require_bytearray(self, "istitle")
+        return _bytes_istitle(self.values)
+
+    def isascii(self):
+        _require_bytearray(self, "isascii")
+        return _bytes_isascii(self.values)
+
+    def zfill(self, width, /):
+        _require_bytearray(self, "zfill")
+        res = _bytes_zfill(self.values, width)
+        if res is None:
+            return bytearray(self.values)
+        return bytearray(res)
+
+    def expandtabs(self, tabsize=8):
+        _require_bytearray(self, "expandtabs")
+        return bytearray(_bytes_expandtabs(self.values, tabsize))
 
     def find(self, sub, start=0, end=None):
         return _bytes_find(self.values, sub, start, end)

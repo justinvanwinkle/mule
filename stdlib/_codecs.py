@@ -45,7 +45,17 @@ def _xmlcharrefreplace_errors(exc):
 
 
 def _namereplace_errors(exc):
-    return "".join("\\N{%s}" % (getattr(c, "name", "UNKNOWN")) for c in exc.object[exc.start:exc.end]), exc.end
+    from unicodedata import name as _ucd_name
+    from _str import _escaped_character
+
+    pieces = []
+    for c in exc.object[exc.start:exc.end]:
+        char_name = _ucd_name(c, "")
+        if char_name:
+            pieces.append("\\N{" + char_name + "}")
+        else:
+            pieces.append(_escaped_character(ord(c)))
+    return "".join(pieces), exc.end
 
 
 def _surrogateescape_errors(exc):
@@ -261,70 +271,234 @@ def latin_1_decode(value, errors="strict", final=False):
     return _decode_as(value, "latin-1", errors)
 
 
-def utf_16_encode(value, errors="strict"):
-    return _encode_as(value, "utf-16", errors)
+def _utf_16_encode_bytes(value, errors, little_endian, bom):
+    if not isinstance(value, str):
+        value = str(value)
+    result = bytearray()
+    if bom:
+        result.extend(b"\xff\xfe" if little_endian else b"\xfe\xff")
+    index = 0
+    size = len(value)
+    while index < size:
+        code = ord(value[index])
+        if 0xD800 <= code <= 0xDFFF and errors != "surrogatepass":
+            exc = UnicodeEncodeError("utf-16", value, index, index + 1, "surrogates not allowed")
+            replacement, index = lookup_error(errors)(exc)
+            if isinstance(replacement, str):
+                result.extend(_utf_16_encode_bytes(replacement, "strict", little_endian, False)[0])
+            else:
+                result.extend(replacement)
+            continue
+        if code < 0x10000:
+            if little_endian:
+                result.append(code & 0xFF)
+                result.append((code >> 8) & 0xFF)
+            else:
+                result.append((code >> 8) & 0xFF)
+                result.append(code & 0xFF)
+        else:
+            part = code - 0x10000
+            high = 0xD800 | (part >> 10)
+            low = 0xDC00 | (part & 0x3FF)
+            if little_endian:
+                result.extend((high & 0xFF, (high >> 8) & 0xFF, low & 0xFF, (low >> 8) & 0xFF))
+            else:
+                result.extend(((high >> 8) & 0xFF, high & 0xFF, (low >> 8) & 0xFF, low & 0xFF))
+        index += 1
+    return bytes(result), size
+
+
+def _utf_16_decode_bytes(data, errors, little_endian, final):
+    data = bytes(data)
+    size = len(data)
+    pieces = []
+    index = 0
+    while index < size:
+        if index + 1 >= size:
+            if not final:
+                break
+            exc = UnicodeDecodeError("utf-16", data, index, size, "truncated data")
+            replacement, index = lookup_error(errors)(exc)
+            pieces.append(replacement)
+            continue
+        b0 = data[index]
+        b1 = data[index + 1]
+        word = (b0 | (b1 << 8)) if little_endian else ((b0 << 8) | b1)
+        if 0xD800 <= word <= 0xDBFF:
+            if index + 3 >= size:
+                if not final:
+                    break
+                exc = UnicodeDecodeError("utf-16", data, index, index + 2, "unexpected end of data")
+                replacement, index = lookup_error(errors)(exc)
+                pieces.append(replacement)
+                continue
+            b2 = data[index + 2]
+            b3 = data[index + 3]
+            word2 = (b2 | (b3 << 8)) if little_endian else ((b2 << 8) | b3)
+            if 0xDC00 <= word2 <= 0xDFFF:
+                pieces.append(chr(0x10000 + ((word - 0xD800) << 10) + (word2 - 0xDC00)))
+                index += 4
+                continue
+            if errors == "surrogatepass":
+                pieces.append(chr(word))
+                index += 2
+                continue
+            exc = UnicodeDecodeError("utf-16", data, index, index + 2, "illegal UTF-16 surrogate")
+            replacement, index = lookup_error(errors)(exc)
+            pieces.append(replacement)
+            continue
+        if 0xDC00 <= word <= 0xDFFF and errors != "surrogatepass":
+            exc = UnicodeDecodeError("utf-16", data, index, index + 2, "illegal encoding")
+            replacement, index = lookup_error(errors)(exc)
+            pieces.append(replacement)
+            continue
+        pieces.append(chr(word))
+        index += 2
+    return "".join(pieces), index
+
+
+def utf_16_encode(value, errors="strict", byteorder=0):
+    if byteorder == 0:
+        return _utf_16_encode_bytes(value, errors, True, True)
+    return _utf_16_encode_bytes(value, errors, byteorder < 0, False)
 
 
 def utf_16_decode(value, errors="strict", final=False):
-    return _decode_as(value, "utf-16", errors)
+    text, consumed, _ = utf_16_ex_decode(value, errors, 0, final)
+    return text, consumed
 
 
 def utf_16_le_encode(value, errors="strict"):
-    return _encode_as(value, "utf-16-le", errors)
+    return _utf_16_encode_bytes(value, errors, True, False)
 
 
 def utf_16_le_decode(value, errors="strict", final=False):
-    return _decode_as(value, "utf-16-le", errors)
+    return _utf_16_decode_bytes(value, errors, True, final)
 
 
 def utf_16_be_encode(value, errors="strict"):
-    return _encode_as(value, "utf-16-be", errors)
+    return _utf_16_encode_bytes(value, errors, False, False)
 
 
 def utf_16_be_decode(value, errors="strict", final=False):
-    return _decode_as(value, "utf-16-be", errors)
+    return _utf_16_decode_bytes(value, errors, False, final)
 
 
-def utf_16_ex_decode(value, errors="strict", final=False):
+def utf_16_ex_decode(value, errors="strict", byteorder=0, final=False):
     data = bytes(value)
-    if data[:2] == b"\xff\xfe":
-        return data[2:].decode("utf-16-le", errors), len(data)
-    if data[:2] == b"\xfe\xff":
-        return data[2:].decode("utf-16-be", errors), len(data)
-    return _decode_as(value, "utf-16-le", errors)
+    order = byteorder
+    offset = 0
+    if order == 0:
+        if len(data) < 2 and not final:
+            return "", 0, 0
+        if data[:2] == b"\xff\xfe":
+            order = -1
+            offset = 2
+        elif data[:2] == b"\xfe\xff":
+            order = 1
+            offset = 2
+    little = order <= 0
+    text, consumed = _utf_16_decode_bytes(data[offset:], errors, little, final)
+    return text, offset + consumed, order
 
 
-def utf_32_encode(value, errors="strict"):
-    return _encode_as(value, "utf-32", errors)
+def _utf_32_encode_bytes(value, errors, little_endian, bom):
+    if not isinstance(value, str):
+        value = str(value)
+    result = bytearray()
+    if bom:
+        result.extend(b"\xff\xfe\x00\x00" if little_endian else b"\x00\x00\xfe\xff")
+    index = 0
+    size = len(value)
+    while index < size:
+        code = ord(value[index])
+        if 0xD800 <= code <= 0xDFFF and errors != "surrogatepass":
+            exc = UnicodeEncodeError("utf-32", value, index, index + 1, "surrogates not allowed")
+            replacement, index = lookup_error(errors)(exc)
+            if isinstance(replacement, str):
+                result.extend(_utf_32_encode_bytes(replacement, "strict", little_endian, False)[0])
+            else:
+                result.extend(replacement)
+            continue
+        if little_endian:
+            result.extend((code & 0xFF, (code >> 8) & 0xFF, (code >> 16) & 0xFF, (code >> 24) & 0xFF))
+        else:
+            result.extend(((code >> 24) & 0xFF, (code >> 16) & 0xFF, (code >> 8) & 0xFF, code & 0xFF))
+        index += 1
+    return bytes(result), size
+
+
+def _utf_32_decode_bytes(data, errors, little_endian, final):
+    data = bytes(data)
+    size = len(data)
+    pieces = []
+    index = 0
+    while index < size:
+        if index + 3 >= size:
+            if not final:
+                break
+            exc = UnicodeDecodeError("utf-32", data, index, size, "truncated data")
+            replacement, index = lookup_error(errors)(exc)
+            pieces.append(replacement)
+            continue
+        b0, b1, b2, b3 = data[index], data[index + 1], data[index + 2], data[index + 3]
+        if little_endian:
+            code = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+        else:
+            code = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+        if code > 0x10FFFF or (0xD800 <= code <= 0xDFFF and errors != "surrogatepass"):
+            exc = UnicodeDecodeError("utf-32", data, index, index + 4, "code point out of range")
+            replacement, index = lookup_error(errors)(exc)
+            pieces.append(replacement)
+            continue
+        pieces.append(chr(code))
+        index += 4
+    return "".join(pieces), index
+
+
+def utf_32_encode(value, errors="strict", byteorder=0):
+    if byteorder == 0:
+        return _utf_32_encode_bytes(value, errors, True, True)
+    return _utf_32_encode_bytes(value, errors, byteorder < 0, False)
 
 
 def utf_32_decode(value, errors="strict", final=False):
-    return _decode_as(value, "utf-32", errors)
+    text, consumed, _ = utf_32_ex_decode(value, errors, 0, final)
+    return text, consumed
 
 
 def utf_32_le_encode(value, errors="strict"):
-    return _encode_as(value, "utf-32-le", errors)
+    return _utf_32_encode_bytes(value, errors, True, False)
 
 
 def utf_32_le_decode(value, errors="strict", final=False):
-    return _decode_as(value, "utf-32-le", errors)
+    return _utf_32_decode_bytes(value, errors, True, final)
 
 
 def utf_32_be_encode(value, errors="strict"):
-    return _encode_as(value, "utf-32-be", errors)
+    return _utf_32_encode_bytes(value, errors, False, False)
 
 
 def utf_32_be_decode(value, errors="strict", final=False):
-    return _decode_as(value, "utf-32-be", errors)
+    return _utf_32_decode_bytes(value, errors, False, final)
 
 
-def utf_32_ex_decode(value, errors="strict", final=False):
+def utf_32_ex_decode(value, errors="strict", byteorder=0, final=False):
     data = bytes(value)
-    if data[:4] == b"\xff\xfe\x00\x00":
-        return data[4:].decode("utf-32-le", errors), len(data)
-    if data[:4] == b"\x00\x00\xfe\xff":
-        return data[4:].decode("utf-32-be", errors), len(data)
-    return _decode_as(value, "utf-32-le", errors)
+    order = byteorder
+    offset = 0
+    if order == 0:
+        if len(data) < 4 and not final:
+            return "", 0, 0
+        if data[:4] == b"\xff\xfe\x00\x00":
+            order = -1
+            offset = 4
+        elif data[:4] == b"\x00\x00\xfe\xff":
+            order = 1
+            offset = 4
+    little = order <= 0
+    text, consumed = _utf_32_decode_bytes(data[offset:], errors, little, final)
+    return text, offset + consumed, order
 
 
 def utf_7_encode(value, errors="strict"):
@@ -337,54 +511,80 @@ def utf_7_decode(value, errors="strict", final=False):
 
 def charmap_encode(value, errors="strict", mapping=None):
     result = bytearray()
-    for char in value:
+    index = 0
+    size = len(value)
+    while index < size:
+        char = value[index]
         code = ord(char)
         mapped = None
         if mapping is not None:
             if isinstance(mapping, (str, bytes)):
                 mapped = mapping[code] if code < len(mapping) else None
                 if isinstance(mapped, str):
-                    mapped = ord(mapped)
+                    mapped = None if mapped == "\ufffe" else ord(mapped)
             else:
                 mapped = mapping.get(code)
         else:
             mapped = code if code < 256 else None
         if mapped is None:
             if errors == "ignore":
+                index += 1
                 continue
             if errors == "replace":
                 result.append(63)
+                index += 1
                 continue
-            raise UnicodeEncodeError("charmap", value, 0, 1, "character maps to <undefined>")
+            exc = UnicodeEncodeError("charmap", value, index, index + 1, "character maps to <undefined>")
+            replacement, index = lookup_error(errors)(exc)
+            if isinstance(replacement, str):
+                result.extend(charmap_encode(replacement, "strict", mapping)[0])
+            else:
+                result.extend(replacement)
+            continue
         result.append(mapped)
-    return bytes(result), len(value)
+        index += 1
+    return bytes(result), size
 
 
 def charmap_decode(value, errors="strict", mapping=None):
     data = bytes(value)
     result = []
-    for byte in data:
+    index = 0
+    size = len(data)
+    while index < size:
+        byte = data[index]
         if mapping is None:
             result.append(chr(byte))
+            index += 1
             continue
         if isinstance(mapping, (str, bytes)):
-            char = mapping[byte]
-            result.append(char if isinstance(char, str) else chr(char))
+            char = mapping[byte] if byte < len(mapping) else "\ufffe"
+            mapped = char if isinstance(char, str) else chr(char)
+            if mapped == "\ufffe":
+                mapped = None
         else:
             mapped = mapping.get(byte)
-            if mapped is None:
-                if errors == "ignore":
-                    continue
-                if errors == "replace":
-                    result.append("\ufffd")
-                    continue
-                raise UnicodeDecodeError("charmap", data, 0, 1, "character maps to <undefined>")
-            result.append(chr(mapped) if isinstance(mapped, int) else mapped)
-    return "".join(result), len(data)
+            if isinstance(mapped, int):
+                mapped = None if mapped == 0xFFFE else chr(mapped)
+        if mapped is None:
+            if errors == "ignore":
+                index += 1
+                continue
+            if errors == "replace":
+                result.append("\ufffd")
+                index += 1
+                continue
+            exc = UnicodeDecodeError("charmap", data, index, index + 1, "character maps to <undefined>")
+            replacement, index = lookup_error(errors)(exc)
+            result.append(replacement)
+            continue
+        result.append(mapped)
+        index += 1
+    return "".join(result), size
 
 
 def charmap_build(mapping):
-    return mapping
+    return {ord(ch): i for i, ch in enumerate(mapping) if ch != "\ufffe"}
 
 
 _ESCAPES = {

@@ -159,6 +159,8 @@ def percent_decimal(pattern, values):
                         _text_character(pattern, index)
                     )
                     index += 1
+        if index < size and _text_character(pattern, index) in "hlL":
+            index += 1
         if index == size:
             raise ValueError("incomplete format")
         conversion = _text_character(pattern, index)
@@ -197,7 +199,10 @@ def percent_decimal(pattern, values):
                     raise TypeError("%c requires int or char")
                 body = value
             else:
-                body = chr(_index_integer(value))
+                code = _index_integer(value)
+                if code < 0 or code >= 0x110000:
+                    raise OverflowError("%c arg not in range(0x110000)")
+                body = chr(code)
             zero_pad = False
         elif conversion in "diu":
             numeric = True

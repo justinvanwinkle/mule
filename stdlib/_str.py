@@ -11,6 +11,7 @@ from _mule_native import bytes_from_values
 from _mule_native import byte_length
 from _mule_native import byte_copy
 from _mule_native import read_byte
+from _attributes import getattr
 from _descriptors import staticmethod
 from _object import _index_integer
 from _slice import is_slice, positions
@@ -476,12 +477,25 @@ def encode(text, encoding, errors):
             _append_ascii(values, _escaped_character(code))
         elif errors == "xmlcharrefreplace":
             _append_ascii(values, "&#" + _decimal(code) + ";")
+        elif errors == "namereplace":
+            from unicodedata import name as _ucd_name
+
+            char_name = _ucd_name(_text_from_codepoints([code]), "")
+            if _text_length(char_name) > 0:
+                _append_ascii(values, "\\N{" + char_name + "}")
+            else:
+                _append_ascii(values, _escaped_character(code))
         elif errors == "strict":
+            end = index + 1
             if codec == "utf-8":
                 reason = "surrogates not allowed"
+                while end < size and 0xD800 <= _text_codepoint(text, end) <= 0xDFFF:
+                    end += 1
             else:
                 reason = f"ordinal not in range({limit + 1})"
-            raise UnicodeEncodeError(codec, text, index, index + 1, reason)
+                while end < size and _text_codepoint(text, end) > limit:
+                    end += 1
+            raise UnicodeEncodeError(codec, text, index, end, reason)
         else:
             raise LookupError(f"unknown error handler name '{errors}'")
         index += 1
@@ -956,7 +970,16 @@ def _field_value(name, fields):
         index += 1
         start = index
         if character == ".":
-            raise AttributeError("format field attribute access is not supported")
+            while index < size:
+                next_char = _text_character(name, index)
+                if next_char == "." or next_char == "[":
+                    break
+                index += 1
+            attr = _text_slice(name, start, index)
+            if _text_length(attr) == 0:
+                raise ValueError("Empty attribute in format string")
+            value = getattr(value, attr)
+            continue
         while index < size and _text_character(name, index) != "]":
             index += 1
         if index == size:
@@ -1019,12 +1042,12 @@ def _replacement_field(template, index, size, fields, depth):
         position += 2
         if position < field_size and _text_character(field, position) != ":":
             raise ValueError("expected ':' after conversion specifier")
+    value = _field_value(name, fields)
     if position < field_size:
         specification = _text_slice(field, position + 1, field_size)
         if depth > 1:
             raise ValueError("Max string recursion exceeded")
         specification = _expand(specification, fields, depth + 1)
-    value = _field_value(name, fields)
     if conversion is not None:
         if conversion == "r":
             value = _representation_protocol(value)
@@ -1173,7 +1196,7 @@ def ord(value, /):
             raise TypeError(
                 f"ord() expected a character, but string of length {size} found"
             )
-        return value[0]
+        return _text_codepoint(_text_from_codepoints([value[0]]), 0)
     raise TypeError(
         f"ord() expected string of length 1, but {_type_name(value)} found"
     )

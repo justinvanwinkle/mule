@@ -2347,7 +2347,7 @@ class _TemplatePart(ast.Visitor):
         current, value = function.value(self.start, node.expression)
         operands = [value]
         for operand in (
-            ast.TextLiteral(node.expression_text or "", span=node.span),
+            ast.TextLiteral((node.expression_text or "").rstrip(), span=node.span),
             ast.TextLiteral(node.conversion, span=node.span)
             if node.conversion is not None
             else ast.NoneLiteral(None, span=node.span),

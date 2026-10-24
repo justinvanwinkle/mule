@@ -3975,7 +3975,32 @@ unsafe extern "C" fn is_instance_export(_: Value, args: Value) -> Value {
         let Some([value, class]) = operands(args) else {
             return std::ptr::null_mut();
         };
-        object::bool_value(is_instance(value, class))
+        if is_instance(value, class) {
+            return object::bool_value(true);
+        }
+        let actual = class_of_value(value);
+        if let Some(actual_layout) = class_layout_quiet(actual) {
+            let object_layout = layout_of_class(builtin_type(Builtin::Object));
+            let custom_class = actual_layout
+                .find("__class__")
+                .is_some_and(|(owner, _, _)| !object_layout.is_some_and(|obj| std::ptr::eq(owner, obj)));
+            if custom_class
+                || !actual_layout.special_slot(Special::GetAttr).is_null()
+                || !actual_layout.special_slot(Special::GetAttribute).is_null()
+            {
+                let dunder_class = mule_get_attr(value, c"__class__".as_ptr());
+                if dunder_class.is_null() {
+                    object::clear_error();
+                } else {
+                    let result = !object::is_fixnum(dunder_class)
+                        && matches!(&(*dunder_class).data, Data::Class(_))
+                        && is_subclass(dunder_class, class);
+                    object::release(dunder_class);
+                    return object::bool_value(result);
+                }
+            }
+        }
+        object::bool_value(false)
     }
 }
 
