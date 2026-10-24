@@ -95,6 +95,7 @@ def find_initial_dfo(initial: Component, lambdas) -> list[Component]:
     components = []
     for lambda_ in lambdas:
         component = Component(lambda_.name)
+        component.constants = initial.constants
         component.kind = (
             ComponentKind.TOPLEVEL
             if lambda_.kind is FunctionalKind.TOPLEVEL

@@ -4,6 +4,7 @@ from mule.compiler.ctype import (
     BOOLEAN,
     BOOLEAN_FALSE,
     BOOLEAN_TRUE,
+    BOTTOM,
     INTEGER,
     INTERNED_TEXT_TYPE,
     PYTHON_INTEGER,
@@ -137,6 +138,16 @@ def test_text_type_interning_and_identity_comparisons():
     assert INTERNED_TEXT_TYPE.join(multi) == INTERNED_TEXT_TYPE
     assert INTERNED_TEXT_TYPE.join(TEXT_TYPE) == TEXT_TYPE
 
+    # Equality narrowing refines exact text value without assuming uninterned strings are interned
+    narrowed_uninterned = TEXT_TYPE.narrow_equality(multi, True)
+    assert narrowed_uninterned.exact_text() == "compile_time_literal"
+    assert narrowed_uninterned.is_interned_text is False
+    narrowed_interned = INTERNED_TEXT_TYPE.narrow_equality(multi, True)
+    assert narrowed_interned.exact_text() == "compile_time_literal"
+    assert narrowed_interned.is_interned_text is True
+    assert multi.narrow_equality(other, True) is BOTTOM
+    assert multi.narrow_equality(multi, False) is BOTTOM
+
 
 def test_interned_text_equality_and_identity_llvm_lowering():
     ir = emit_llvm(
@@ -149,9 +160,12 @@ def test_interned_text_equality_and_identity_llvm_lowering():
         " a = _mule_native.intern_text(x)\n"
         " b = _mule_native.intern_text(y)\n"
         " return a == b\n"
-        "def eq_uninterned_multi_literal(x):\n"
+        "def eq_inline_latin1_literal(x):\n"
         " s = str(x)\n"
         " return s == 'alpha_beta'\n"
+        "def eq_heap_latin1_literal(x):\n"
+        " s = str(x)\n"
+        " return s == 'alpha_beta_gamma_delta_epsilon'\n"
     )
     same_body = ir.split('define internal ptr @"mule_fn_same_literal.body"')[1].split(
         "\n}"
@@ -161,10 +175,17 @@ def test_interned_text_equality_and_identity_llvm_lowering():
     )[0]
     assert "@mule.true" in same_body
     assert "@mule.false" in diff_body
-    uninterned_body = ir.split(
-        'define internal ptr @"mule_fn_eq_uninterned_multi_literal.body"'
+    inline_body = ir.split(
+        'define internal ptr @"mule_fn_eq_inline_latin1_literal.body"'
     )[1].split("\n}")[0]
-    assert "call i32 @mule_text_eq" in uninterned_body
+    assert "icmp eq i16" in inline_body
+    assert "icmp eq i64" in inline_body
+    assert "@mule_text_eq" not in inline_body
+    assert "@mule.borrowed.text" not in inline_body
+    heap_body = ir.split('define internal ptr @"mule_fn_eq_heap_latin1_literal.body"')[
+        1
+    ].split("\n}")[0]
+    assert "call i32 @mule_text_eq" in heap_body
     eq_interned_body = ir.split('define internal ptr @"mule_fn_eq_interned.body"')[
         1
     ].split("\n}")[0]

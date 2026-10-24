@@ -270,7 +270,8 @@ class _RewriteIntConstant(NodeVisitor, LeafVisitor):
         ref = self._ref
         if ref is None:
             return False
-        literal = ast.IntegerLiteral(self.value, span=leaf.value.span)
+        span = ref.source.span if ref.source is not None else leaf.value.span
+        literal = ast.IntegerLiteral(self.value, span=span)
         if ref in leaf.refs:
             leaf.refs.remove(ref)
         new_leaf = Constant(literal)

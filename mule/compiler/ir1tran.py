@@ -31,6 +31,7 @@ Python adaptations beyond those listed in ``node.py``:
 
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NoReturn
@@ -248,6 +249,57 @@ class RangeState:
         )
 
 
+class _ConstantKey(ast.Visitor):
+    """Canonical similarity key for IR1 constant coalescing (SBCL's
+    ``find-constant`` over ``*ir1-namespace*``)."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_NoneLiteral(self, node: ast.NoneLiteral):
+        return ("none",)
+
+    def visit_BooleanLiteral(self, node: ast.BooleanLiteral):
+        return ("bool", node.value)
+
+    def visit_IntegerLiteral(self, node: ast.IntegerLiteral):
+        return ("int", node.value)
+
+    def visit_FloatLiteral(self, node: ast.FloatLiteral):
+        return ("float", struct.pack("=d", node.value))
+
+    def visit_TextLiteral(self, node: ast.TextLiteral):
+        return ("str", node.value)
+
+    def visit_BytesLiteral(self, node: ast.BytesLiteral):
+        return ("bytes", node.value)
+
+    def visit_EllipsisLiteral(self, node: ast.EllipsisLiteral):
+        return ("ellipsis",)
+
+    def visit_Tuple(self, node: ast.Tuple):
+        items = []
+        for element in node.elements:
+            key = element.accept(self)
+            if key is None:
+                return None
+            items.append(key)
+        return ("tuple", tuple(items))
+
+
+_CONSTANT_KEY = _ConstantKey()
+
+
+def find_constant_leaf(constants: dict[tuple, Constant], literal) -> Constant:
+    key = literal.accept(_CONSTANT_KEY)
+    if key is None:
+        return Constant(literal)
+    leaf = constants.get(key)
+    if leaf is None:
+        leaf = constants[key] = Constant(literal)
+    return leaf
+
+
 class Namespace:
     """Per-compilation leaf tables: free (global) variables, known functions,
     and constants (SBCL's ``*ir1-namespace*``)."""
@@ -255,6 +307,7 @@ class Namespace:
     def __init__(self):
         self.free_vars: dict[tuple[str, str], GlobalVar] = {}
         self.known: dict[str, KnownFunction] = {}
+        self.constants: dict[tuple, Constant] = {}
 
     def global_var(self, namespace: str, name: str) -> GlobalVar:
         key = namespace, name
@@ -268,6 +321,9 @@ class Namespace:
         if leaf is None:
             leaf = self.known[info.name] = KnownFunction(info)
         return leaf
+
+    def find_constant(self, literal) -> Constant:
+        return find_constant_leaf(self.constants, literal)
 
 
 class Converter:
@@ -294,6 +350,8 @@ class Converter:
         self.namespace = namespace
         self.component = component
         self.ir1_namespace = ir1_namespace or Namespace()
+        if self.component is not None:
+            self.component.constants = self.ir1_namespace.constants
         # Compiled stdlib protocols name the backend's physical primitives by
         # underscored global names; those resolve to known functions, and
         # ``primitive_data`` supplies a primitive's compile-time operand.
@@ -421,6 +479,9 @@ class Converter:
 
     def known(self, info) -> KnownFunction:
         return self.ir1_namespace.known_function(info)
+
+    def find_constant(self, literal) -> Constant:
+        return self.ir1_namespace.find_constant(literal)
 
     def function(
         self,
@@ -870,7 +931,9 @@ class FunctionConverter:
         return node
 
     def constant(self, start, next_, result, literal) -> Ref:
-        return self.ref(start, next_, result, Constant(literal), literal)
+        return self.ref(
+            start, next_, result, self.converter.find_constant(literal), literal
+        )
 
     def load(self, start, next_, result, name, source, *, final=False):
         scope = self.class_binding(name) or self.class_reader(name)
