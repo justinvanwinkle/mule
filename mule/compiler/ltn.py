@@ -150,6 +150,7 @@ class EntryContext:
     borrowed_callees: dict = field(default_factory=dict)
     element_contracts: dict = field(default_factory=dict)
     escape_facts: object = None
+    base_escape_facts: object = None
     local_environments: object = None
 
     def type_of(self, node) -> ValueType:

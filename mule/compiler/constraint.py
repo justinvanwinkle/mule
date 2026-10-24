@@ -183,11 +183,13 @@ _CANONICAL_FACTS: dict[int, Fact] = {
 
 
 def _fact(value_type: ValueType) -> Fact:
+    canonical = _CANONICAL_FACTS.get(id(value_type))
+    if canonical is not None:
+        return canonical
     target = value_type.callable_target()
     if target is not None:
         return Fact(value_type, target, True)
-    canonical = _CANONICAL_FACTS.get(id(value_type))
-    return Fact(value_type) if canonical is None else canonical
+    return Fact(value_type)
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,16 +237,37 @@ def join_fact(left: Fact, right: Fact) -> Fact:
     # object keeps later joins and state comparisons on the identity path.
     if left is right or left == right:
         return left
+    if left is NO_FACT:
+        return right
+    if right is NO_FACT:
+        return left
     joined = left.type.merge_information(right.type, left, right, _combine)
-    return left if joined == left else joined
+    if joined is left or joined == left:
+        return left
+    if joined is right or joined == right:
+        return right
+    return joined
 
 
 def _combine(a: Fact, b: Fact) -> Fact:
     target = a.target if a.target is b.target else None
+    proven = (a.proven and b.proven) if target is not None else False
     joined_type = a.type.join(b.type)
+    if (
+        (joined_type is a.type or joined_type == a.type)
+        and target is a.target
+        and proven == a.proven
+    ):
+        return a
+    if (
+        (joined_type is b.type or joined_type == b.type)
+        and target is b.target
+        and proven == b.proven
+    ):
+        return b
     if target is None:
         return _fact(joined_type)
-    return Fact(joined_type, target, a.proven and b.proven)
+    return Fact(joined_type, target, proven)
 
 
 def join_states(left: dict, right: dict) -> tuple[dict, bool]:
@@ -286,6 +309,9 @@ _INTERNED_TEXTS = {
 _INTERNED_TEXT_FACTS = {s: Fact(vt) for s, vt in _INTERNED_TEXTS.items()}
 _INTERNED_TEXT_FACT = Fact(INTERNED_TEXT_TYPE)
 _CANONICAL_FACTS[id(INTERNED_TEXT_TYPE)] = _INTERNED_TEXT_FACT
+_CANONICAL_FACTS[id(_UNBOUNDED_TUPLE)] = _UNBOUNDED_TUPLE_FACT
+_CANONICAL_FACTS.update({id(fact.type): fact for fact in _SMALL_INT_FACTS.values()})
+_CANONICAL_FACTS.update({id(fact.type): fact for fact in _SMALL_TUPLE_FACTS})
 _CANONICAL_FACTS.update({id(fact.type): fact for fact in _INTERNED_TEXT_FACTS.values()})
 
 

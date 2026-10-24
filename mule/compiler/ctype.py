@@ -896,6 +896,8 @@ class IntegerType(PrimitiveType):
             maximum = None
         if minimum == self.minimum and maximum == self.maximum:
             return self
+        if minimum is None and maximum is None and not self.may_be_unbound:
+            return INTEGER
         return replace(self, minimum=minimum, maximum=maximum)
 
     def widen_constant(self):
@@ -904,7 +906,11 @@ class IntegerType(PrimitiveType):
             and self.maximum is not None
             and FIXNUM_MIN <= self.minimum <= self.maximum <= FIXNUM_MAX
         ):
-            return IntegerType(FIXNUM_MIN, FIXNUM_MAX, self.may_be_unbound)
+            return (
+                IntegerType(FIXNUM_MIN, FIXNUM_MAX, True)
+                if self.may_be_unbound
+                else _FIXNUM_INTEGER
+            )
         return IntegerType(may_be_unbound=True) if self.may_be_unbound else INTEGER
 
     def binary(self, operator, right):
@@ -4411,7 +4417,8 @@ EMPTY_LIST_TYPE = ListType(BOTTOM)
 DICT_TYPE = DictType()
 EMPTY_DICT_TYPE = DictType(BOTTOM, BOTTOM)
 ITERATOR_TYPE = IteratorType()
-OPTIONAL_FIXNUM = union_type(IntegerType(FIXNUM_MIN, FIXNUM_MAX), NONE_TYPE)
+_FIXNUM_INTEGER = IntegerType(FIXNUM_MIN, FIXNUM_MAX)
+OPTIONAL_FIXNUM = union_type(_FIXNUM_INTEGER, NONE_TYPE)
 ANY_CLASS_TYPE = ClassType()
 CLASS_TYPE_TYPE = ClassType((ANY_CLASS_TYPE,))
 CLASS_INT_TYPE = ClassType((INTEGER,))

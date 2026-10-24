@@ -1908,20 +1908,25 @@ def analyze(
     def _current_graph(target_lam: Lambda) -> LambdaGraph:
         if not analysis_finished:
             return graphs[target_lam]
-        cached_graph = post_graphs.get(target_lam)
         comp = target_lam.component
+        cached_graph = post_graphs.get(target_lam)
+        if cached_graph is not None and (comp is None or not comp.reoptimize):
+            return cached_graph
         current_blocks = tuple(comp.blocks()) if comp is not None else ()
         current_nodes = {block: tuple(block.nodes()) for block in current_blocks}
+        base_graph = cached_graph or graphs.get(target_lam)
         if (
-            cached_graph is None
-            or cached_graph.blocks != current_blocks
-            or cached_graph.block_nodes != current_nodes
+            base_graph is not None
+            and base_graph.blocks == current_blocks
+            and base_graph.block_nodes == current_nodes
         ):
-            # Inserting a checked result changes def-use edges within existing
-            # blocks. Cached propagation must include the new Cast producers.
-            cached_graph = build_lambda_graph(target_lam)
-            post_graphs[target_lam] = cached_graph
-            deriver_cache.clear()
+            post_graphs[target_lam] = base_graph
+            return base_graph
+        # Inserting a checked result changes def-use edges within existing
+        # blocks. Cached propagation must include the new Cast producers.
+        cached_graph = build_lambda_graph(target_lam)
+        post_graphs[target_lam] = cached_graph
+        deriver_cache.clear()
         return cached_graph
 
     def _resolve_deriver_call(
@@ -1982,7 +1987,7 @@ def analyze(
                     builtin_targets=builtin_targets,
                     class_facts=class_facts,
                 )
-            if len(deriver_cache) > 64:
+            if len(deriver_cache) > 4096:
                 deriver_cache.clear()
             deriver_cache[cache_key] = body
             return body
@@ -2593,7 +2598,6 @@ def analyze(
         _mark_guarded_calls(graph, general)
         _publish_derived_types(lambda_, graph, facts.types)
     analysis_finished = True
-    deriver_cache.clear()
     return results
 
 
@@ -2814,6 +2818,8 @@ def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
     old_types = context.types
     old_targets = context.targets
     old_element_contracts = context.element_contracts
+    old_escape_facts = context.escape_facts
+    old_base_escape_facts = context.base_escape_facts
     try:
         cloned_types = {
             node_map.get(node, node): vtype for node, vtype in old_types.items()
@@ -2840,12 +2846,16 @@ def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
         context.types = cloned_types
         context.targets = cloned_targets
         context.element_contracts = cloned_element_contracts
+        context.base_escape_facts = old_escape_facts or old_base_escape_facts
+        context.escape_facts = None
         yield
     finally:
         _ACTIVE_SPECIALIZED_CONTEXTS.discard(active_key)
         context.types = old_types
         context.targets = old_targets
         context.element_contracts = old_element_contracts
+        context.escape_facts = old_escape_facts
+        context.base_escape_facts = old_base_escape_facts
         restore()
 
 

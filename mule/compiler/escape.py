@@ -79,6 +79,21 @@ class EscapeFacts:
         return self._aliases.get(node, frozenset())
 
 
+def _is_local_function_ref(ref: Ref, lambda_: Lambda) -> bool:
+    if lambda_.environment is not None and lambda_.environment.closure:
+        return True
+    if ref.dest is None:
+        return False
+    maker = ref.dest.accept(_ALLOCATION)
+    if maker is None or maker.fun_info is not fndb.MAKE_FUNCTION:
+        return True
+    if maker.lvar is None or maker.lvar.dest is None:
+        return False
+    return maker.lvar.dest.accept(
+        _LOCAL_BINDING
+    ).var is not None or maker.lvar.dest.accept(_DirectFunctionUse(maker, lambda_))
+
+
 def _expand_lambdas(lambdas) -> tuple[Lambda, ...]:
     ordered = []
     seen = set()
@@ -91,7 +106,12 @@ def _expand_lambdas(lambdas) -> tuple[Lambda, ...]:
         ordered.append(lambda_)
         for ref in lambda_.refs:
             owner = ref.home_lambda
-            if owner is not None and owner not in seen and owner.component is not None:
+            if (
+                owner is not None
+                and owner not in seen
+                and owner.component is not None
+                and _is_local_function_ref(ref, lambda_)
+            ):
                 pending.append(owner)
         if lambda_.environment is not None:
             for var in lambda_.environment.closure:
@@ -114,17 +134,75 @@ def _expand_lambdas(lambdas) -> tuple[Lambda, ...]:
     return tuple(ordered)
 
 
-def analyze_escapes(lambdas) -> EscapeFacts:
-    lambdas = _expand_lambdas(lambdas)
-    local_environments = find_local_environments(lambdas)
+def _expand_local_family(
+    lambdas, local_environments: LocalEnvironments
+) -> tuple[Lambda, ...]:
+    ordered = []
+    seen = set()
+    pending = [lambda_ for lambda_ in lambdas if lambda_.component is not None]
+    while pending:
+        lambda_ = pending.pop(0)
+        if lambda_ in seen or lambda_.component is None:
+            continue
+        seen.add(lambda_)
+        ordered.append(lambda_)
+        entry = local_environments.functions.get(lambda_)
+        if (
+            entry is not None
+            and entry.owner not in seen
+            and entry.owner.component is not None
+        ):
+            pending.append(entry.owner)
+        if lambda_.environment is not None:
+            for var in lambda_.environment.closure:
+                owner = var.home
+                if (
+                    owner is not None
+                    and owner not in seen
+                    and owner.component is not None
+                ):
+                    pending.append(owner)
+        for child_entry in local_environments.functions.values():
+            if (
+                child_entry.owner is lambda_
+                and child_entry.function not in seen
+                and child_entry.function.component is not None
+            ):
+                pending.append(child_entry.function)
+        for block in lambda_.component.blocks():
+            for node in block.nodes():
+                allocation = node.accept(_ALLOCATION)
+                if allocation is not None and allocation.fun_info is fndb.MAKE_FUNCTION:
+                    child = made_lambda(allocation)
+                    if child not in seen and child.component is not None:
+                        pending.append(child)
+    return tuple(ordered)
+
+
+def analyze_escapes(
+    lambdas,
+    *,
+    local_environments: LocalEnvironments | None = None,
+    base_facts: EscapeFacts | None = None,
+    expand: bool = True,
+) -> EscapeFacts:
+    if base_facts is not None and local_environments is not None:
+        lambdas = _expand_local_family(lambdas, local_environments)
+    elif expand:
+        lambdas = _expand_lambdas(lambdas)
+    else:
+        lambdas = tuple(lambda_ for lambda_ in lambdas if lambda_.component is not None)
+    if local_environments is None:
+        local_environments = find_local_environments(lambdas)
     facts = EscapeFacts()
     solver = _Solver(facts, local_environments)
     for lambda_ in lambdas:
         facts._analyzed.update(lambda_.locals)
-    for lambda_ in lambdas:
-        for block in lambda_.component.blocks():
-            for node in block.nodes():
-                solver.record_call_inputs(node)
+    if local_environments.functions:
+        for lambda_ in lambdas:
+            for block in lambda_.component.blocks():
+                for node in block.nodes():
+                    solver.record_call_inputs(node)
     for lambda_ in lambdas:
         solver.add_lambda(lambda_)
     makers = []
@@ -143,7 +221,7 @@ def analyze_escapes(lambdas) -> EscapeFacts:
         if child.environment is not None:
             for var in child.environment.closure:
                 solver.escapes_with(var, maker)
-    solver.solve()
+    solver.solve(base_facts)
     for allocation in facts._allocations:
         aliases, pending = set(), list(solver.depends_on.get(allocation, ()))
         while pending:
@@ -221,10 +299,16 @@ class _Solver:
         self.depends_on.setdefault(var, []).append(other)
         self.dependents.setdefault(other, []).append(var)
 
-    def solve(self) -> None:
+    def solve(self, base_facts: EscapeFacts | None = None) -> None:
         for dependency in self.dependents:
             if dependency not in self.facts._analyzed:
-                self.escape(dependency)
+                if base_facts is not None and dependency in base_facts._analyzed:
+                    if dependency in base_facts._escaping:
+                        self.non_container_escape(dependency)
+                    if dependency in base_facts._allocation_escaping:
+                        self.escape(dependency)
+                else:
+                    self.escape(dependency)
         while self.pending:
             other = self.pending.pop()
             for var in self.dependents.get(other, ()):

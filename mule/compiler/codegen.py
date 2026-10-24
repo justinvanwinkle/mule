@@ -678,7 +678,12 @@ def compile_component(lambda_: Lambda, context, *, select_calls=None):
     """Run the IR2 phases for one body (``compile-component`` for a backend
     whose register allocation LLVM performs)."""
     with specialized_ir1_context(lambda_, context):
-        context.escape_facts = analyze_escapes([lambda_])
+        if context.escape_facts is None:
+            context.escape_facts = analyze_escapes(
+                [lambda_],
+                local_environments=context.local_environments,
+                base_facts=context.base_escape_facts,
+            )
         with phase("LTN %s context %s", lambda_.name, context.id, level=logging.DEBUG):
             ltn_analyze(lambda_, context)
         with phase(
@@ -880,8 +885,11 @@ class ModuleGenerator:
                         self.return_tuple_arities[lambda_],
                         self.return_tuple_uses[lambda_],
                     ) = info
-        escapes = analyze_escapes(lambdas)
         self.local_environments = find_local_environments(lambdas)
+        self.escape_facts = analyze_escapes(
+            lambdas, local_environments=self.local_environments, expand=False
+        )
+        escapes = self.escape_facts
         self.borrowed_callees = {}
         for function in lambdas:
             if (
@@ -2566,6 +2574,7 @@ class ModuleGenerator:
             borrowed_parameters=borrowed_params,
             borrowed_callees=self.borrowed_callees,
             element_contracts=facts.element_contracts,
+            escape_facts=self.escape_facts,
             local_environments=self.local_environments,
         )
         variants = [
@@ -2578,6 +2587,7 @@ class ModuleGenerator:
                 borrowed_parameters=borrowed_params,
                 borrowed_callees=self.borrowed_callees,
                 element_contracts=context.element_contracts,
+                escape_facts=self.escape_facts,
                 local_environments=self.local_environments,
             )
             for context in facts.variants
@@ -2871,7 +2881,14 @@ class ModuleGenerator:
         for lambda_, plan in self.native_plans.items():
             facts = self.facts[lambda_]
             context = EntryContext(
-                "native", facts.types, facts.targets, (), facts.return_type, plan
+                "native",
+                facts.types,
+                facts.targets,
+                (),
+                facts.return_type,
+                plan,
+                escape_facts=self.escape_facts,
+                local_environments=self.local_environments,
             )
             functions.append(self.emit_body(lambda_, context))
         functions.extend(

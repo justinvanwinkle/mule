@@ -316,3 +316,38 @@ print(kernel(int(input())))
     case = build_case(tmp_path, source, optimize=2)
     for value in ("0\n", "1\n", "25\n"):
         case.compare(value)
+
+
+def test_single_function_escape_analysis_excludes_unrelated_toplevel_functions():
+    source = """\
+def unrelated(x):
+    pair = (x, x + 1)
+    return pair[0] + pair[1]
+
+def target(y):
+    def helper(p):
+        return p[0] + p[1]
+    local_pair = (y, y + 2)
+    return helper(local_pair)
+"""
+    compilation = compile_source(source)
+    target_fn = next(
+        fn
+        for fn in compilation.lambdas
+        if fn.code is not None and fn.code.name == "target"
+    )
+    unrelated_fn = next(
+        fn
+        for fn in compilation.lambdas
+        if fn.code is not None and fn.code.name == "unrelated"
+    )
+    facts = analyze_escapes([target_fn])
+    target_allocs = [
+        node for node in facts._allocations if node.home_lambda is target_fn
+    ]
+    unrelated_allocs = [
+        node for node in facts._allocations if node.home_lambda is unrelated_fn
+    ]
+    assert target_allocs
+    assert not any(facts.allocation_escapes(node) for node in target_allocs)
+    assert not unrelated_allocs
