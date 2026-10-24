@@ -441,6 +441,7 @@ class ModuleCompiler:
                     elif ret_type == EMPTY_DICT_TYPE:
                         ret_type = DICT_TYPE
                     self.storage_methods[class_name, method_name] = ret_type
+                    self.storage_methods[class_id, method_name] = ret_type
             bases = class_bases.get(class_name, ())
             for base_name in bases:
                 for (owner_name, method_name), ret_type in list(

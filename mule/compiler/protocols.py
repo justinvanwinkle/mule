@@ -195,6 +195,8 @@ _BORROWED_PRIMITIVE_ARGS = {
     "_text_character": frozenset({0, 1}),
     "_text_slice": frozenset({0, 1, 2}),
     "_type_name": frozenset({0}),
+    "_type_of": frozenset({0}),
+    "_index_method": frozenset({0}),
     "_storage_read": frozenset({0, 1}),
     "_storage_write": frozenset({0, 1}),
     "_storage_append": frozenset({0}),

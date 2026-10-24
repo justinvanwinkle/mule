@@ -39,8 +39,10 @@ from .ctype import (
     ANY_CLASS_TYPE,
     BOOLEAN,
     BOTTOM,
+    BYTEARRAY_TYPE,
     BYTES_TYPE,
     CLASS_BOOL_TYPE,
+    CLASS_BYTEARRAY_TYPE,
     CLASS_BYTES_TYPE,
     CLASS_DICT_TYPE,
     CLASS_FLOAT_TYPE,
@@ -60,6 +62,7 @@ from .ctype import (
     UNKNOWN,
     DictType,
     IntegerType,
+    IteratorType,
     TupleType,
     ValueType,
 )
@@ -1259,6 +1262,7 @@ BOOTSTRAP_BUILTIN_TARGETS: dict[
     "float": ClassConstructorTarget(FLOAT, CLASS_FLOAT_TYPE),
     "str": ClassConstructorTarget(TEXT_TYPE, CLASS_STR_TYPE),
     "bytes": ClassConstructorTarget(BYTES_TYPE, CLASS_BYTES_TYPE),
+    "bytearray": ClassConstructorTarget(BYTEARRAY_TYPE, CLASS_BYTEARRAY_TYPE),
     "tuple": ClassConstructorTarget(TupleType(), CLASS_TUPLE_TYPE),
     "list": ClassConstructorTarget(LIST_TYPE, CLASS_LIST_TYPE),
     "dict": ClassConstructorTarget(DICT_TYPE, CLASS_DICT_TYPE),
@@ -1269,6 +1273,7 @@ BOOTSTRAP_BUILTIN_TARGETS: dict[
     "len": ForeignCallTarget(
         IntegerType(0, (1 << 60) - 1), derive_fn=_derive_len_builtin
     ),
+    "range": ForeignCallTarget(IteratorType(INTEGER)),
     "input": ForeignCallTarget(TEXT_TYPE),
 }
 

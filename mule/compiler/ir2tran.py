@@ -67,7 +67,12 @@ from .node import (
     Set,
     linked,
 )
-from .seqtran import is_predictable_len_call, known_length_primitive
+from .seqtran import (
+    _PREDICTABLE_RANGE_CALLEE_REF,
+    _RangeIteratorRef,
+    is_predictable_len_call,
+    known_length_primitive,
+)
 from .vmdef import templates_for
 from .vop import (
     BOOLEAN_T,
@@ -264,7 +269,12 @@ def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
             or info.exact_text_partition
             or info.exact_text_affix
             or info.exact_dict_get
+            or info.exact_bytearray_append
         ):
+            return True
+    if name == "range-prepare":
+        info = vop.codegen_info
+        if info is not None and (info.direct or info.fused):
             return True
     return name.startswith("primitive-") and name not in _NON_BORROWING_PRIMITIVES
 
@@ -340,6 +350,7 @@ class MethodResolution:
     exact_text_partition: bool = False
     exact_text_affix: bool = False
     exact_dict_get: bool = False
+    exact_bytearray_append: bool = False
 
     @property
     def is_exact(self) -> bool:
@@ -351,6 +362,7 @@ class MethodResolution:
             or self.exact_text_partition
             or self.exact_text_affix
             or self.exact_dict_get
+            or self.exact_bytearray_append
         )
 
 
@@ -365,6 +377,7 @@ class MethodCall:
     exact_text_partition: bool = False
     exact_text_affix: bool = False
     exact_dict_get: bool = False
+    exact_bytearray_append: bool = False
     # The method the receiver's class resolves the name to, when analysis
     # typed the receiver; code generation guards the resolved function's
     # identity and calls this method's body directly.
@@ -1907,10 +1920,14 @@ class _LoadLeaf(LeafVisitor):
         else:
             source = environment.copies.get(leaf) or converter.var_tn(leaf)
             types = converter.component.context.types
-            bound = leaf in environment.copies or (
-                not node.allow_unbound
-                and node in types
-                and not types[node].may_be_unbound
+            bound = (
+                leaf in environment.copies
+                or (leaf.hidden and node.lvar is None and node.final)
+                or (
+                    not node.allow_unbound
+                    and node in types
+                    and not types[node].may_be_unbound
+                )
             )
             converter.emit(
                 vops.LOAD_LOCAL,
@@ -2258,6 +2275,7 @@ class _ScanIntParse(NodeVisitor):
 
     def visit_Combination(self, node: Combination):
         self.converter.note_int_parse(node)
+        self.converter.note_range_prepare(node)
 
 
 class _ExactDictGetCall(NodeVisitor):
@@ -2307,6 +2325,7 @@ class _Converter(NodeVisitor):
         self._scan_int_parse: _ScanIntParse | None = _ScanIntParse(self)
         self._skipped_nodes: set = set()
         self._fused_int_calls: dict[Combination, Combination | None] = {}
+        self._fused_range_prepares: dict[Combination, tuple] = {}
         self.stack_cells = {}
 
     def close(self) -> None:
@@ -2315,6 +2334,7 @@ class _Converter(NodeVisitor):
         self._scan_int_parse = None
         self._skipped_nodes.clear()
         self._fused_int_calls.clear()
+        self._fused_range_prepares.clear()
 
     # TNs
 
@@ -2438,6 +2458,7 @@ class _Converter(NodeVisitor):
             self.emit(vops.INSERT_SAFEPOINT, block.start.next)
         self._skipped_nodes.clear()
         self._fused_int_calls.clear()
+        self._fused_range_prepares.clear()
         nodes = tuple(block.nodes())
         scan = linked(self._scan_int_parse, self, "int-parse scanner")
         for node in nodes:
@@ -2517,6 +2538,88 @@ class _Converter(NodeVisitor):
                     return
         self._skipped_nodes.add(fun_ref)
         self._fused_int_calls[node] = None
+
+    def note_range_prepare(self, node: Combination) -> None:
+        if (
+            node.kind is not CallKind.KNOWN
+            or node.fun_info is not fndb.RANGE_PREPARE
+            or self.context.plan is not None
+            or self.lambda_.policy.safety >= 3
+            or node.lexenv.policy.safety >= 3
+            or self.lambda_.name.startswith(_PROTOCOL_PREFIXES)
+        ):
+            return
+        state = node.info
+        if (
+            state is None
+            or state.direct
+            or len(node.args) != 2
+            or not (1 <= len(state.arguments) <= 3)
+        ):
+            return
+        callee_lvar = node.args[0]
+        if len(callee_lvar.uses) != 1 or not callee_lvar.uses[0].accept(
+            _PREDICTABLE_RANGE_CALLEE_REF
+        ):
+            return
+        if len(node.args[1].uses) != 1:
+            return
+        setup = (
+            node.args[1].uses[0].accept(_RangeIteratorRef(node.block, state.arguments))
+        )
+        if setup is None:
+            return
+        iterator_ref, iterator_set, iterate_call, range_call = setup
+        iterator_var = iterator_ref.leaf
+        if (
+            iterator_var in self.stack_cells
+            or iterator_var in self.environment.cells
+            or iterator_var in self.environment.copies
+        ):
+            return
+        if any(
+            len(arg.uses) != 1 or arg.dest is not range_call for arg in state.arguments
+        ):
+            return
+        if len(iterate_call.fun.uses) != 1 or len(range_call.fun.uses) != 1:
+            return
+        callee_ref_2 = callee_lvar.uses[0]
+        callee_var = callee_ref_2.leaf
+        callee_ref_1 = range_call.fun.uses[0]
+        iterate_ref = iterate_call.fun.uses[0]
+        if (
+            callee_ref_1.block is not node.block
+            or iterate_ref.block is not node.block
+            or callee_ref_2.block is not node.block
+            or iterator_ref.block is not node.block
+        ):
+            return
+        if len(callee_var.refs) != 2 or len(callee_var.sets) != 1:
+            return
+        callee_set = callee_var.sets[0]
+        if (
+            callee_set.block is not node.block
+            or callee_set.value is None
+            or len(callee_set.value.uses) != 1
+        ):
+            return
+        range_global_ref = callee_set.value.uses[0]
+        if range_global_ref.block is not node.block:
+            return
+        self._skipped_nodes.update(
+            (
+                range_global_ref,
+                callee_set,
+                callee_ref_1,
+                range_call,
+                iterate_ref,
+                iterate_call,
+                iterator_set,
+                callee_ref_2,
+                iterator_ref,
+            )
+        )
+        self._fused_range_prepares[node] = (iterator_var, range_global_ref.leaf)
 
     def convert_transfer(self, block) -> None:
         """A block that does not end in a branch, return, or raise jumps to
@@ -3034,6 +3137,18 @@ class _Converter(NodeVisitor):
             and call.accept(_EXACT_DICT_GET_CALL)
         )
 
+    def is_exact_bytearray_append(self, resolve: Combination, call) -> bool:
+        if resolve.fun_info is not fndb.RESOLVE_METHOD:
+            return False
+        receiver = self.context.type_of(resolve.args[0].use())
+        info = linked(resolve.info, resolve, "method info")
+        return (
+            receiver.fits_bytearray()
+            and info.name == "append"
+            and call is not None
+            and call.accept(_EXACT_LIST_APPEND_CALL)
+        )
+
     def convert_resolve_method(self, node: Combination):
         args = tuple(self.lvar_tn(arg) for arg in node.args)
         lvar = node.lvar
@@ -3046,6 +3161,7 @@ class _Converter(NodeVisitor):
         exact_text_partition = self.is_exact_text_partition(node, lvar.dest)
         exact_text_affix = self.is_exact_text_affix(node, lvar.dest)
         exact_dict_get = self.is_exact_dict_get(node, lvar.dest)
+        exact_bytearray_append = self.is_exact_bytearray_append(node, lvar.dest)
         method = self.lvar_tn(lvar)
         bound = self.component.tn(T, name="receiver")
         info = linked(node.info, node, "method info")
@@ -3058,6 +3174,7 @@ class _Converter(NodeVisitor):
             exact_text_partition,
             exact_text_affix,
             exact_dict_get,
+            exact_bytearray_append,
         )
         if resolution.is_exact:
             method.type = NoneType()
@@ -3085,6 +3202,7 @@ class _Converter(NodeVisitor):
         exact_text_partition = self.is_exact_text_partition(resolve, node)
         exact_text_affix = self.is_exact_text_affix(resolve, node)
         exact_dict_get = self.is_exact_dict_get(resolve, node)
+        exact_bytearray_append = self.is_exact_bytearray_append(resolve, node)
         result, discard = self.result_tn(node)
         self.emit(
             node.template,
@@ -3101,6 +3219,7 @@ class _Converter(NodeVisitor):
                 exact_text_partition,
                 exact_text_affix,
                 exact_dict_get,
+                exact_bytearray_append,
                 self.context.targets.get(node),
                 self.context.type_of(resolve.args[0].use())
                 if len(resolve.args[0].uses) == 1
@@ -3111,9 +3230,48 @@ class _Converter(NodeVisitor):
             self.emit_discard(node, result)
 
     def convert_range(self, node: Combination):
-        state = self.range_tn(node.info)
+        info = node.info
+        state = self.range_tn(info)
+        step_sign = info.step_sign if info is not None else 0
+        if (
+            info is not None
+            and step_sign == 0
+            and len(info.arguments) == 3
+            and len(info.arguments[2].uses) == 1
+        ):
+            step_type = self.context.type_of(info.arguments[2].use())
+            if step_type.minimum is not None and step_type.minimum > 0:
+                step_sign = 1
+            elif step_type.maximum is not None and step_type.maximum < 0:
+                step_sign = -1
+        if node in self._fused_range_prepares:
+            iterator_var, callee_leaf = self._fused_range_prepares[node]
+            arg_tns = [self.lvar_tn(arg) for arg in info.arguments]
+            result, discard = self.result_tn(node)
+            iterator_tn = self.var_tn(iterator_var)
+            fused_info = replace(
+                info,
+                step_sign=step_sign,
+                fused=True,
+                callee_leaf=callee_leaf,
+            )
+            self.emit(
+                node.template,
+                node,
+                args=(*arg_tns, state),
+                results=(result, iterator_tn),
+                info=fused_info,
+            )
+            if discard:
+                self.emit_discard(node, result)
+            return
         args = [self.lvar_tn(arg) for arg in node.args]
-        self.convert_template(node, [*args, state])
+        codegen_info = (
+            replace(info, step_sign=step_sign)
+            if info is not None and step_sign != info.step_sign
+            else info
+        )
+        self.convert_template(node, [*args, state], codegen_info)
 
     def visit_Node(self, node):
         return None

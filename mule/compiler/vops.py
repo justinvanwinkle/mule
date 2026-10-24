@@ -23,7 +23,7 @@ from mule import ast
 
 from . import fndb
 from .annotation_types import ContractVisitor
-from .ctype import INTEGER, REAL, UNKNOWN, ValueTypeVisitor
+from .ctype import INTEGER, PYTHON_INTEGER, REAL, UNKNOWN, ValueTypeVisitor
 from .vmdef import define_vop
 from .vop import (
     BOOLEAN,
@@ -1975,7 +1975,7 @@ def _decode_fixnum_operand(gen, operand) -> str:
 @define_vop(
     "range-prepare",
     translate=fndb.RANGE_PREPARE,
-    results=(OBJECT,),
+    results=(OBJECT, OBJECT),
     arg_escapes=(False, False, False, False),
 )
 def range_prepare(gen, vop):
@@ -2001,6 +2001,113 @@ def range_prepare(gen, vop):
         if vop.results:
             gen.publish(vop.results[0], "@mule.true")
             gen.refine(vop.results[0].tn, "@mule.true")
+        return
+    if info is not None and info.fused:
+        state = vop.args[-1].tn.slot
+        arg_operands = vop.args[:-1]
+        arity = len(arg_operands)
+        result, iterator_out = vop.results
+        if info.step_sign != 0 and all(
+            op.tn.type is not None
+            and op.tn.type.fits(PYTHON_INTEGER)
+            and op.tn.type.is_fixnum
+            and not op.tn.type.may_be_unbound
+            for op in arg_operands
+        ):
+            if arity == 1:
+                start = "0"
+                stop = _decode_fixnum_operand(gen, arg_operands[0])
+                step = "1"
+            elif arity == 2:
+                start = _decode_fixnum_operand(gen, arg_operands[0])
+                stop = _decode_fixnum_operand(gen, arg_operands[1])
+                step = "1"
+            else:
+                start = _decode_fixnum_operand(gen, arg_operands[0])
+                stop = _decode_fixnum_operand(gen, arg_operands[1])
+                step = _decode_fixnum_operand(gen, arg_operands[2])
+            for index, word in enumerate((start, stop, step)):
+                address = gen.operation(f"getelementptr i64, ptr {state}, i64 {index}")
+                gen.line(f"store i64 {word}, ptr {address}")
+            gen.publish(result, "@mule.true")
+            gen.refine(result.tn, "@mule.true")
+            return
+        arg_values = [gen.take(op) for op in arg_operands]
+        bits_list = []
+        fast_ok = None
+        for val in arg_values:
+            bits = gen.operation(f"ptrtoint ptr {val} to i64")
+            bits_list.append(bits)
+            tag = gen.operation(f"and i64 {bits}, 1")
+            is_fix = gen.operation(f"icmp ne i64 {tag}, 0")
+            fast_ok = (
+                is_fix
+                if fast_ok is None
+                else gen.operation(f"and i1 {fast_ok}, {is_fix}")
+            )
+        step_decoded = None
+        if arity == 3 and info.step_sign == 0:
+            step_decoded = gen.operation(f"ashr i64 {bits_list[2]}, 1")
+            step_nz = gen.operation(f"icmp ne i64 {step_decoded}, 0")
+            fast_ok = gen.operation(f"and i1 {fast_ok}, {step_nz}")
+        fast_label, slow_label, done_label = (
+            gen.fresh(name)[1:] for name in ("range.fast", "range.slow", "range.done")
+        )
+        gen.line(f"br i1 {fast_ok}, label %{fast_label}, label %{slow_label}")
+        gen.lines.append(f"{fast_label}:")
+        if arity == 1:
+            start = "0"
+            stop = gen.operation(f"ashr i64 {bits_list[0]}, 1")
+            step = "1"
+        elif arity == 2:
+            start = gen.operation(f"ashr i64 {bits_list[0]}, 1")
+            stop = gen.operation(f"ashr i64 {bits_list[1]}, 1")
+            step = "1"
+        else:
+            start = gen.operation(f"ashr i64 {bits_list[0]}, 1")
+            stop = gen.operation(f"ashr i64 {bits_list[1]}, 1")
+            step = (
+                step_decoded
+                if step_decoded is not None
+                else gen.operation(f"ashr i64 {bits_list[2]}, 1")
+            )
+        for index, word in enumerate((start, stop, step)):
+            address = gen.operation(f"getelementptr i64, ptr {state}, i64 {index}")
+            gen.line(f"store i64 {word}, ptr {address}")
+        fast_end = gen.current_block()
+        gen.line(f"br label %{done_label}")
+        gen.lines.append(f"{slow_label}:")
+        callee = gen.operation(
+            gen.module.load_global(info.callee_leaf, gen.lambda_.policy.safety)
+        )
+        call_helper = gen.module.positional_call_helper(arity, borrowed=True)
+        operands = ", ".join([f"ptr {callee}", *(f"ptr {val}" for val in arg_values)])
+        range_obj = gen.operation(f"call ptr {call_helper}({operands})")
+        gen.release(callee)
+        for val in arg_values:
+            gen.release(val)
+        gen.check_pointer(range_obj)
+        iter_helper = gen.module.iterate_helper(move=True)
+        iter_obj = gen.operation(f"call ptr {iter_helper}(ptr {range_obj})")
+        gen.check_pointer(iter_obj)
+        gen.store(iterator_out, iter_obj)
+        stored = gen.operation(
+            f"call i32 @mule_range_storage(ptr {iter_obj}, ptr %range.buffer)"
+        )
+        words = gen.operation("load [3 x i64], ptr %range.buffer")
+        gen.line(f"store [3 x i64] {words}, ptr {state}")
+        accepted = gen.operation(f"icmp ne i32 {stored}, 0")
+        slow_res = gen.operation(
+            f"select i1 {accepted}, ptr @mule.true, ptr @mule.false"
+        )
+        slow_end = gen.current_block()
+        gen.line(f"br label %{done_label}")
+        gen.lines.append(f"{done_label}:")
+        final_res = gen.operation(
+            f"phi ptr [@mule.true, %{fast_end}], [{slow_res}, %{slow_end}]"
+        )
+        gen.publish(result, final_res)
+        gen.refine(result.tn, final_res)
         return
     callee, iterator = gen.take(vop.args[0]), gen.take(vop.args[1])
     state = vop.args[2].tn.slot
@@ -2056,7 +2163,7 @@ def range_available(gen, vop):
 def range_advance(gen, vop):
     info = vop.codegen_info
     state = vop.args[0].tn.slot
-    if info is not None and info.direct and len(info.arguments) <= 2:
+    if info is not None and len(info.arguments) <= 2:
         current = gen.operation(f"load i64, ptr {state}")
         following = gen.operation(f"add nsw i64 {current}, 1")
     else:
@@ -2180,6 +2287,11 @@ def _exact_dict_call(gen, vop, name):
 def protocol_getitem(gen, vop):
     if (vop.args[0].tn.type or UNKNOWN).fits_dict():
         _exact_dict_call(gen, vop, "dict_getitem")
+        return
+    if (vop.args[0].tn.type or UNKNOWN).fits_bytearray() and (
+        vop.args[1].tn.type or UNKNOWN
+    ).fits(PYTHON_INTEGER):
+        _exact_dict_call(gen, vop, "bytearray_getitem")
         return
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])
@@ -2305,6 +2417,11 @@ def text_slice2_compare(gen, vop):
 def protocol_setitem(gen, vop):
     if (vop.args[0].tn.type or UNKNOWN).fits_dict():
         _exact_dict_call(gen, vop, "dict_setitem")
+        return
+    if (vop.args[0].tn.type or UNKNOWN).fits_bytearray() and (
+        vop.args[1].tn.type or UNKNOWN
+    ).fits(PYTHON_INTEGER):
+        _exact_dict_call(gen, vop, "bytearray_setitem")
         return
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])

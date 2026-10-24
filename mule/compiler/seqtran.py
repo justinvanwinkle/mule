@@ -1466,6 +1466,8 @@ def _transform_range_prepare(node: Combination) -> bool:
 
 
 __all__ = [
+    "_PREDICTABLE_RANGE_CALLEE_REF",
+    "_RangeIteratorRef",
     "_transform_constant_getslice",
     "_transform_empty_container_not",
     "_transform_len",
