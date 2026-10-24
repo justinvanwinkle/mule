@@ -410,8 +410,8 @@ def compile_unit(
     if any(node.accept(open_check) for node in nodes):
         compiler.resolve("io", None, None)
     builtins_check = _ReferencesGlobal("builtins")
-    compile_global = _ReferencesGlobal("compile", "eval")
-    compile_attr = _ReferencesBuiltin("compile", "eval")
+    compile_global = _ReferencesGlobal("compile", "eval", "exec")
+    compile_attr = _ReferencesBuiltin("compile", "eval", "exec")
     if any(node.accept(compile_global) for node in nodes) or (
         any(node.accept(builtins_check) for node in nodes)
         and any(node.accept(compile_attr) for node in nodes)

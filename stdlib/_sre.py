@@ -44,20 +44,49 @@ def _is_word(char):
     return char == "_" or char.isalnum()
 
 
+def _is_ascii_word(code):
+    return (
+        (48 <= code <= 57)
+        or (65 <= code <= 90)
+        or (97 <= code <= 122)
+        or code == 95
+    )
+
+
+def _is_ascii_space(code):
+    return 9 <= code <= 13 or code == 32
+
+
 def _category_matches(category, char, code):
-    if category == 0 or category == 10:
+    if category == 0:
+        return 48 <= code <= 57
+    if category == 1:
+        return not (48 <= code <= 57)
+    if category == 2:
+        return _is_ascii_space(code)
+    if category == 3:
+        return not _is_ascii_space(code)
+    if category == 4 or category == 8:
+        return _is_ascii_word(code)
+    if category == 5 or category == 9:
+        return not _is_ascii_word(code)
+    if category == 6:
+        return code == 10 or code == 13
+    if category == 7:
+        return code != 10 and code != 13
+    if category == 10:
         return char.isdecimal()
-    if category == 1 or category == 11:
+    if category == 11:
         return not char.isdecimal()
-    if category == 2 or category == 12:
+    if category == 12:
         return char.isspace()
-    if category == 3 or category == 13:
+    if category == 13:
         return not char.isspace()
-    if category == 4 or category == 8 or category == 14:
+    if category == 14:
         return _is_word(char)
-    if category == 5 or category == 9 or category == 15:
+    if category == 15:
         return not _is_word(char)
-    if category == 6 or category == 16:
+    if category == 16:
         return char in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
     return char not in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
@@ -197,7 +226,7 @@ class _Engine:
                 if marks[2 * group] >= 0:
                     pc += 3
                 else:
-                    pc = pc + 2 + code[pc + 2]
+                    pc = pc + 1 + code[pc + 2]
             elif (
                 op == _REPEAT
                 or op == _REPEAT_ONE
@@ -216,7 +245,7 @@ class _Engine:
             elif op == _ASSERT or op == _ASSERT_NOT:
                 stop = pc + 1 + code[pc + 1]
                 direction = code[pc + 2]
-                states = self._assert_states(pc + 3, pos, direction, stop)
+                states = self._assert_states(pc + 3, pos, direction, stop, marks)
                 if op == _ASSERT:
                     if not states:
                         return
@@ -228,13 +257,13 @@ class _Engine:
             else:
                 raise ValueError("unsupported SRE opcode %r" % (op,))
 
-    def _assert_states(self, pc, pos, direction, stop):
+    def _assert_states(self, pc, pos, direction, stop, marks):
         if direction == 0:
-            return list(self.run(pc, pos, self._fresh_marks(), stop))
+            return list(self.run(pc, pos, marks, stop))
         start = pos - direction
         if start < 0:
             return []
-        return [state for state in self.run(pc, start, self._fresh_marks(), stop)
+        return [state for state in self.run(pc, start, marks, stop)
                 if state[0] == pos]
 
     def _fresh_marks(self):
@@ -485,7 +514,7 @@ class _Engine:
                 if marks[2 * group] >= 0:
                     pc += 3
                 else:
-                    pc = pc + 2 + code[pc + 2]
+                    pc = pc + 1 + code[pc + 2]
             elif (
                 op == _REPEAT
                 or op == _REPEAT_ONE
@@ -508,7 +537,7 @@ class _Engine:
             elif op == _ASSERT or op == _ASSERT_NOT:
                 stop = pc + 1 + code[pc + 1]
                 direction = code[pc + 2]
-                states = self._assert_states(pc + 3, pos, direction, stop)
+                states = self._assert_states(pc + 3, pos, direction, stop, marks)
                 if op == _ASSERT:
                     if not states:
                         return None
@@ -660,13 +689,17 @@ class _Engine:
             return pos == 0 or self.char(pos - 1) == 10
         if at == 7:
             return pos == self.end
-        if at == 6:
-            return pos == self.end or (pos == self.end - 1 and self.char(pos) == 10)
         if at == 5:
+            return pos == self.end or (pos == self.end - 1 and self.char(pos) == 10)
+        if at == 6:
             return pos == self.end or self.char(pos) == 10
         # word boundary codes 3, 4 and locale/unicode variants 8..11
-        before = pos > 0 and _is_word(self.text_char(pos - 1))
-        after = pos < self.end and _is_word(self.text_char(pos))
+        if at == 10 or at == 11:
+            before = pos > 0 and _is_word(self.text_char(pos - 1))
+            after = pos < self.end and _is_word(self.text_char(pos))
+        else:
+            before = pos > 0 and _is_ascii_word(self.char(pos - 1))
+            after = pos < self.end and _is_ascii_word(self.char(pos))
         boundary = before != after
         return not boundary if (at == 4 or at == 9 or at == 11) else boundary
 
@@ -735,7 +768,8 @@ class Pattern:
         self.pattern = pattern
         self.flags = flags
         self._code = code
-        self.groups = ngroups + 1
+        self.groups = ngroups
+        self._ngroups = ngroups + 1
         self.groupindex = groupindex
         self._indexgroup = indexgroup
         pc = 1 + code[1] if code and code[0] == _INFO else 0
@@ -759,7 +793,7 @@ class Pattern:
             else:
                 next_pc = pc + 2
             if (
-                self.groups == 1
+                self.groups == 0
                 and next_pc < len(code)
                 and code[next_pc] == _SUCCESS
             ):
@@ -780,7 +814,7 @@ class Pattern:
         length = len(string)
         end = length if (endpos is None or endpos > length) else (0 if endpos < 0 else endpos)
         engine = _Engine(self._code, string, end)
-        engine.groups = self.groups
+        engine.groups = self._ngroups
         return engine
 
     def _pc_can_start_at(self, engine, pc, pos):
@@ -819,7 +853,7 @@ class Pattern:
             if anchored_end and pos + 1 != engine.end:
                 return None
             return Match(self, engine.string, [pos, pos + 1], pos, engine.end)
-        marks = [-1] * (2 * self.groups)
+        marks = [-1] * (2 * self._ngroups)
         found = engine._search_state(0, pos, marks, anchored_end)
         if found is None:
             return None
@@ -842,7 +876,7 @@ class Pattern:
         engine_end = engine.end
         anchored_start = (
             self._first_op == _AT
-            and (self._code[self._first_pc + 1] == 0 or self._code[self._first_pc + 1] == 1)
+            and (self._code[self._first_pc + 1] == 0 or self._code[self._first_pc + 1] == 2)
         )
         while start <= engine_end:
             found = self._match_at_engine(engine, start)
@@ -875,7 +909,7 @@ class Pattern:
         engine = self._engine(string, endpos)
         start = 0 if pos < 0 else pos
         limit = engine.end
-        groups = self.groups
+        groups = self._ngroups
         while start <= limit:
             found = self._search_engine(engine, start)
             if found is None:
@@ -897,7 +931,7 @@ class Pattern:
         engine = self._engine(string, None)
         start = 0
         limit = engine.end
-        groups = self.groups
+        groups = self._ngroups
         while start <= limit:
             if maxsplit and count >= maxsplit:
                 break
@@ -1036,7 +1070,7 @@ class Match:
         self.pos = pos
         self.endpos = endpos
         self.lastindex = None
-        group = pattern.groups - 1
+        group = pattern._ngroups - 1
         while group > 0:
             if marks[2 * group] >= 0:
                 self.lastindex = group
@@ -1092,7 +1126,7 @@ class Match:
         marks = self._marks
         string = self.string
         group = 1
-        limit = self.re.groups
+        limit = self.re._ngroups
         while group < limit:
             start = marks[2 * group]
             values.append(

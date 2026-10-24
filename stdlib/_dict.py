@@ -360,6 +360,45 @@ class _TableIterator:
         raise StopIteration
 
 
+class _TableReverseIterator:
+    """Iterates a table's keys, values or items in reverse; mutation ends iteration."""
+
+    def __init__(self, table, kind):
+        self.table = table
+        self.kind = kind
+        self.index = _storage_length(table._keys)
+        self.used = table._used
+        self.keys = table._keys
+        self.entries = _storage_length(table._keys)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        table = self.table
+        keys = table._keys
+        if (
+            table._used != self.used
+            or keys is not self.keys
+            or _storage_length(keys) != self.entries
+        ):
+            self.used = -1
+            raise RuntimeError(
+                ("dictionary" if self.kind else "set") + " changed size during iteration"
+            )
+        while self.index > 0:
+            index = self.index - 1
+            self.index = index
+            key = _storage_read(keys, index)
+            if key is not _DELETED:
+                if self.kind == 2:
+                    return _storage_read(table._values, index)
+                if self.kind == 3:
+                    return (key, _storage_read(table._values, index))
+                return key
+        raise StopIteration
+
+
 def _representation(open, items, close):
     return open + ", ".join(items) + close
 
@@ -474,13 +513,7 @@ class dict(_Table):
 
     def __reversed__(self):
         _require_dict(self)
-        keys = []
-        positions = _table_live(self)
-        index = _storage_length(positions)
-        while index > 0:
-            index -= 1
-            _storage_append(keys, _storage_read(self._keys, _storage_read(positions, index)))
-        return iter(keys)
+        return _TableReverseIterator(self, 1)
 
     def __eq__(self, other):
         _require_dict(self)
@@ -537,6 +570,8 @@ class dict(_Table):
         return self
 
     def get(self, key, default=None):
+        if _type_name(self) in ("_InstanceDict", "_GlobalsDict"):
+            return self.get(key, default)
         _require_dict(self)
         entry = _table_lookup(self, key)
         return _storage_read(self._values, entry) if entry >= 0 else default
@@ -727,6 +762,9 @@ class dict_keys(_SetView):
     def __iter__(self):
         return _TableIterator(self.mapping, 1)
 
+    def __reversed__(self):
+        return _TableReverseIterator(self.mapping, 1)
+
     def __contains__(self, key):
         return key in self.mapping
 
@@ -738,6 +776,9 @@ class dict_values(_DictView):
     def __iter__(self):
         return _TableIterator(self.mapping, 2)
 
+    def __reversed__(self):
+        return _TableReverseIterator(self.mapping, 2)
+
     def __repr__(self):
         return self._repr_view("dict_values([", "])")
 
@@ -745,6 +786,9 @@ class dict_values(_DictView):
 class dict_items(_SetView):
     def __iter__(self):
         return _TableIterator(self.mapping, 3)
+
+    def __reversed__(self):
+        return _TableReverseIterator(self.mapping, 3)
 
     def __contains__(self, item):
         if not _tuple_storage(item) or len(item) != 2:

@@ -1915,6 +1915,8 @@ class _Walk:
             resolved_type = (
                 vtype if vtype is not None and vtype is not BOTTOM else UNKNOWN
             )
+            if any(s.value is None for s in var.sets):
+                resolved_type = resolved_type.with_unbound()
             target = (
                 made_function(var.sets[0].value.uses[0])
                 if resolved_type is FUNCTION_TYPE
@@ -1959,7 +1961,11 @@ class _Walk:
                 var: (
                     self.initial.get(var, UNKNOWN_FACT)
                     if var in closure
-                    else UNKNOWN_FACT
+                    else (
+                        UNKNOWN_UNBOUND_FACT
+                        if any(s.value is None for s in var.sets)
+                        else UNKNOWN_FACT
+                    )
                 )
                 for var in self.indirect
             },

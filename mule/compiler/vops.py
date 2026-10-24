@@ -472,7 +472,12 @@ def store_global(gen, vop):
 
 @define_vop("unbind-global")
 def unbind_global(gen, vop):
-    gen.line(gen.module.delete_global(vop.codegen_info))
+    var, missing_ok = vop.codegen_info
+    if missing_ok:
+        gen.line(gen.module.delete_global(var, missing_ok=True))
+    else:
+        status = gen.operation(gen.module.delete_global(var))
+        gen.check_status(status)
 
 
 @define_vop("discard", args=(None,), arg_escapes=(False,))
@@ -925,7 +930,7 @@ def _binary_generic(gen, vop, opcode, *, inplace):
     left, right = vop.args
     lhs, rhs = gen.take(left), gen.take(right)
     left_type = left.tn.type or UNKNOWN
-    if opcode == 5 and not left_type.fits(REAL):
+    if opcode == 5 and not inplace and not left_type.fits(REAL):
         value = gen.compiled_call_named("mule_format_modulo", (lhs, rhs))
         gen.publish(result, value)
         gen.check_pointer(value)

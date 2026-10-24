@@ -140,6 +140,7 @@ _BORROWING_VOPS = frozenset(
         "binary-bit_or",
         "inplace-divide",
         "inplace-floor_divide",
+        "inplace-modulo",
         "inplace-power",
         "inplace-left_shift",
         "inplace-right_shift",
@@ -243,7 +244,7 @@ def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
     ):
         lhs_type = ref.tn.type or UNKNOWN
         return lhs_type.is_fixnum or lhs_type.fits_text(TEXT_TYPE)
-    if name in ("binary-modulo", "inplace-modulo") and len(vop.args) == 2:
+    if name == "binary-modulo" and len(vop.args) == 2:
         return (vop.args[0].tn.type or UNKNOWN).fits(REAL)
     if name in _RIGHT_BORROWING_VOPS and len(vop.args) == 2 and ref is vop.args[1]:
         info = vop.codegen_info
@@ -2015,7 +2016,7 @@ class _StoreVar(LeafVisitor):
         converter = self.converter
         node = linked(self.node, self, "assignment node")
         if node.value is None:
-            converter.emit(vops.UNBIND_GLOBAL, node, info=leaf)
+            converter.emit(vops.UNBIND_GLOBAL, node, info=(leaf, node.missing_ok))
         else:
             converter.emit(
                 vops.STORE_GLOBAL,

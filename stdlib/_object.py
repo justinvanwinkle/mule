@@ -396,7 +396,7 @@ class object:
     def __ge__(self, other):
         return NotImplemented
 
-    def __init_subclass__(cls, **keywords):
+    def __init_subclass__(cls):
         pass
 
     def __subclasshook__(cls, subclass, /):
@@ -415,16 +415,20 @@ _slot_descriptors_ready = False
 
 
 def _declared_slots(name, namespace):
-    slots = namespace.get('__slots__', ())
-    if isinstance(slots, str):
-        slots = (slots,)
+    raw_slots = namespace.get('__slots__', ())
+    if isinstance(raw_slots, str):
+        slots = (raw_slots,)
+    else:
+        slots = raw_slots
     result = []
+    all_slots = []
     for slot in slots:
         if not isinstance(slot, str):
             raise TypeError("__slots__ items must be strings, not '" + type(slot).__name__ + "'")
         if not slot.isidentifier():
             raise TypeError('__slots__ must be identifiers')
         if slot in ('__dict__', '__weakref__'):
+            all_slots.append(slot)
             continue
         if slot in namespace:
             raise ValueError("'" + slot + "' in __slots__ conflicts with class variable")
@@ -433,7 +437,8 @@ def _declared_slots(name, namespace):
             if prefix:
                 slot = '_' + prefix + slot
         result.append(slot)
-    return result
+        all_slots.append(slot)
+    return result, tuple(all_slots)
 
 
 class type(object):
@@ -479,12 +484,18 @@ class type(object):
                     raise TypeError(
                         f"type '{class_name(base)}' is not an acceptable base type"
                     )
-        slots = _declared_slots(name, namespace) if '__slots__' in namespace else []
+        if '__slots__' in namespace:
+            slots, raw_slot_tuple = _declared_slots(name, namespace)
+        else:
+            slots, raw_slot_tuple = [], None
         fields = list(namespace.get('__mule_fields__', ()))
         for slot in slots:
             if slot not in fields:
                 fields.append(slot)
         names, values = [], []
+        if raw_slot_tuple is not None:
+            names.append("__mule_slots__")
+            values.append(raw_slot_tuple)
         for key in namespace:
             value = namespace[key]
             if key == "__mule_fields__":
@@ -520,6 +531,12 @@ class type(object):
                     "metaclass conflict: the metaclass of a derived class "
                     "must be a (non-strict) subclass of the metaclasses "
                     "of all its bases"
+                )
+        if winner is not metaclass:
+            winner_new = class_lookup(winner, "__new__")
+            if winner_new is not class_lookup(type, "__new__"):
+                return winner.__new__(
+                    winner, name, original_bases, namespace, **keywords
                 )
         cls = new_class(
             winner,
@@ -611,9 +628,27 @@ def _class_type_params(cls):
     return ()
 
 
-type.__annotations__ = property(_class_annotations)
-type.__annotate__ = property(_class_annotate)
-type.__type_params__ = property(_class_type_params)
+def _set_class_annotations(cls, value):
+    generic_set_attribute(cls, "__annotations__", value)
+
+
+def _del_class_annotations(cls):
+    generic_delete_attribute(cls, "__annotations__")
+
+
+def _set_class_annotate(cls, value):
+    generic_set_attribute(cls, "__annotate__", value)
+
+
+def _set_class_type_params(cls, value):
+    generic_set_attribute(cls, "__type_params__", value)
+
+
+type.__annotations__ = property(
+    _class_annotations, _set_class_annotations, _del_class_annotations
+)
+type.__annotate__ = property(_class_annotate, _set_class_annotate)
+type.__type_params__ = property(_class_type_params, _set_class_type_params)
 
 
 def _bases(cls):
@@ -937,6 +972,8 @@ class _ClassDict(object):
 class mappingproxy(object):
     """A read-only view of a mapping, as ``type.__dict__`` returns."""
 
+    __module__ = "builtins"
+
     def __init__(self, mapping):
         self._mapping = mapping
 
@@ -972,6 +1009,8 @@ class mappingproxy(object):
 
 
 class NoneType(object):
+    __module__ = "builtins"
+
     def __new__(cls):
         return None
 
@@ -1489,7 +1528,7 @@ class int(object):
                 owner = type_of(x)
                 missing = _MISSING
                 converted = False
-                for hook in ("__int__", "__index__", "__trunc__"):
+                for hook in ("__int__", "__index__"):
                     method = class_lookup_default(owner, hook, missing)
                     if method is not missing:
                         res = bind_instance_attribute(method, x, owner)()
@@ -2268,10 +2307,112 @@ class float(object):
         value = self.__int__()
         return value + 1 if value < _convert_float(self) else value
 
+    def __add__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__add__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) + _convert_float(other)
+
+    def __radd__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__radd__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) + _convert_float(self)
+
+    def __sub__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__sub__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) - _convert_float(other)
+
+    def __rsub__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__rsub__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) - _convert_float(self)
+
+    def __mul__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__mul__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) * _convert_float(other)
+
+    def __rmul__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__rmul__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) * _convert_float(self)
+
+    def __truediv__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__truediv__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) / _convert_float(other)
+
+    def __rtruediv__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__rtruediv__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) / _convert_float(self)
+
+    def __floordiv__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__floordiv__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) // _convert_float(other)
+
+    def __rfloordiv__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__rfloordiv__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) // _convert_float(self)
+
+    def __mod__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__mod__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) % _convert_float(other)
+
+    def __rmod__(self, other):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__rmod__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) % _convert_float(self)
+
+    def __pow__(self, other, mod=None):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__pow__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if mod is not None:
+            raise TypeError("pow() 3rd argument not allowed unless all arguments are integers")
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(self) ** _convert_float(other)
+
+    def __rpow__(self, other, mod=None):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__rpow__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        if mod is not None:
+            return NotImplemented
+        if not is_instance(other, int) and not is_instance(other, float):
+            return NotImplemented
+        return _convert_float(other) ** _convert_float(self)
+
     def __divmod__(self, other):
         if not is_instance(self, float):
             raise TypeError(f"descriptor '__divmod__' requires a 'float' object but received a '{type_of(self).__name__}'")
-        if not isinstance(other, (int, float)):
+        if not is_instance(other, int) and not is_instance(other, float):
             return NotImplemented
         left, right = _convert_float(self), _convert_float(other)
         if right == 0.0:
@@ -2281,7 +2422,7 @@ class float(object):
     def __rdivmod__(self, other):
         if not is_instance(self, float):
             raise TypeError(f"descriptor '__rdivmod__' requires a 'float' object but received a '{type_of(self).__name__}'")
-        if not isinstance(other, (int, float)):
+        if not is_instance(other, int) and not is_instance(other, float):
             return NotImplemented
         left, right = _convert_float(other), _convert_float(self)
         if right == 0.0:
@@ -2308,6 +2449,8 @@ class float(object):
 
 class code(object):
     """A function's compiled-code metadata."""
+
+    __module__ = "builtins"
 
     def __init__(self, name, filename, qualname=None, firstlineno=0,
                  argcount=0, posonly=0, kwonly=0, flags=0, varnames=(),
@@ -2385,6 +2528,8 @@ def _code_for(receiver, fallback=None):
 class function(object):
     """The class of functions defined in compiled Python."""
 
+    __module__ = "builtins"
+
     # The runtime supplies a function's real globals and closure cells
     # before class lookup (see function_attribute in the runtime), so these
     # getters only serve values with no native function behind them. Their
@@ -2392,6 +2537,11 @@ class function(object):
     # to name the descriptor types.
     @property
     def __globals__(self):
+        attrs = function_attributes(self)
+        if attrs is not None:
+            for key, value in namespace_items(attrs):
+                if key == "__globals__":
+                    return value
         return _globals_dict(function_globals(self))
 
     @property
@@ -2536,6 +2686,9 @@ class function(object):
             return self
         return bound_method(self, instance)
 
+    def __call__(self, *args, **kwargs):
+        return self(*args, **kwargs)
+
 
 _builtin_type_cache = None
 
@@ -2553,6 +2706,8 @@ def _builtin_types():
 
 class getset_descriptor(property):
     """A builtin attribute's named accessor, distinct from user properties."""
+
+    __module__ = "builtins"
 
     def __init__(self, owner, name, accessor):
         property.__init__(self, accessor.fget, accessor.fset, accessor.fdel, accessor.__doc__)
@@ -2581,6 +2736,8 @@ class getset_descriptor(property):
 
 class member_descriptor(getset_descriptor):
     """A builtin object's exposed stored field."""
+
+    __module__ = "builtins"
 
 
 class _SlotAccessor:
@@ -2622,14 +2779,21 @@ def _install_builtin_descriptors():
 class builtin_function_or_method(object):
     """The class of functions the runtime implements natively."""
 
+    __module__ = "builtins"
+
     def __get__(self, instance, owner=None):
         if instance is None:
             return self
         return bound_method(self, instance)
 
+    def __call__(self, *args, **kwargs):
+        return self(*args, **kwargs)
+
 
 class method(object):
     """A function bound to the instance it was read from."""
+
+    __module__ = "builtins"
 
     def __new__(cls, function, instance, /):
         if not callable(function):
@@ -2659,9 +2823,14 @@ class method(object):
         except AttributeError:
             return getattr(bound_method_function(self), name)
 
+    def __call__(self, *args, **kwargs):
+        return self(*args, **kwargs)
+
 
 class module(object):
     """A module namespace."""
+
+    __module__ = "builtins"
 
     def __init__(self, name, doc=None):
         self.__name__ = name
@@ -2696,6 +2865,8 @@ class traceback(object):
     """One entry of an exception's traceback: a frame the exception passed
     through, the line it was running, and the entry nearer the raise."""
 
+    __module__ = "builtins"
+
     @property
     def tb_frame(self):
         return traceback_field(self, 0)
@@ -2718,6 +2889,8 @@ class frame(object):
     """A function call, live or one an exception passed through. Compiled
     frames do not keep their local variables; ``f_locals`` is the frame's
     globals under the framelocalsproxy type, as it is for a module frame."""
+
+    __module__ = "builtins"
 
     @property
     def f_code(self):

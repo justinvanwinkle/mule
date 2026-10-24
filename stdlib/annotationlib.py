@@ -202,7 +202,14 @@ class ForwardRef:
             else:
                 raise NameError(_NAME_ERROR_MSG.format(name=arg), name=arg)
         else:
-            code = self.__forward_code__
+            try:
+                code = self.__forward_code__
+            except SyntaxError:
+                raise
+            except Exception:
+                if is_forwardref_format:
+                    return self
+                raise
             try:
                 return eval(code, globals=globals, locals=locals)
             except Exception:

@@ -28,13 +28,6 @@ stdout = "int float bool True True\ncomplex True True\nsmall int value 5 -2 -2 0
 stderr = ""
 exit_code = 0
 
-["builtins/int_conversions"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "plain 42 -7 3 10\nbase 2 11 11 -3\nbase 8 15 15 15\nbase 16 255 255 255 255\nbase 36 35 1295 1066082\nbase 0 decimal 123 0 0 1000\nunderscores 1000000 255 2\nbase kw 3 7\nfrom float 3 -3 100000000000000000000 0\nfrom bool 1 0\nfrom bytes 42 -5 255\nno args 0\nunicode digits 123 10\nbig 9999999999999999999999999999999999999999\nbad '' 10 ValueError\nbad '12a' 10 ValueError\nbad '1__0' 10 ValueError\nbad '_1' 10 ValueError\nbad '1_' 10 ValueError\nbad '0b2' 0 ValueError\nbad '08' 0 ValueError\nbad '0x' 16 ValueError\nbad '2' 2 ValueError\nbad 'z' 35 ValueError\nbad '1.5' 10 ValueError\nbad ' ' 10 ValueError\nbad '- 1' 10 ValueError\nbad '1 1' 10 ValueError\nbad base 1 ValueError\nbad base 37 ValueError\nbad base -1 ValueError\nbase with non string TypeError\nspecial float OverflowError\nspecial float ValueError\nint None TypeError\nint list TypeError\ndunder int 7 8\ndunder trunc 9\nsubclass converted 5 int\nbase with index 9\nroundtrip 12345 -9 64\n"
-stderr = ""
-exit_code = 0
-
 ["builtins/isinstance_issubclass"]
 phase = "run"
 reason = "native output differs from CPython"
@@ -63,13 +56,6 @@ stdout = "repr range(2, 20, 3) range(0, 5) range(0, 5) range(5, 0, -1)\nlist [2,
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/builtins/range_objects.py\", line 17, in <module>\n    print(\"count index\", r.count(8), r.count(9), r.index(11))\nAttributeError: 'range' object has no attribute 'count'\n"
 exit_code = 1
 
-["builtins/range_slice_basics"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "range_attrs: (0, 5, 1) (2, 10, 3) (10, 2, -2)\nrange_repr: range(0, 5) range(2, 10, 3) range(10, 2, -2) range(5, 2)\nrange_len: 5 3 4 0\nrange_index: 2 5 8 10 4\nrange_slice: 5 11 3 [5, 8]\nrange_contains: True False True False\nslice_attrs: (None, 4, None) (1, 5, None) (1, 7, 2)\nslice_repr: slice(None, 4, None) slice(1, 5, None) slice(1, 7, 2)\nslice_apply: [10, 20, 30, 40] [20, 30, 40, 50] [20, 40, 60] bdf\nzero_step: ValueError\nrange_index_error: IndexError\nslice_unhashable: TypeError\n"
-stderr = ""
-exit_code = 0
-
 ["builtins/repr_str_ascii"]
 phase = "run"
 reason = "native output differs from CPython"
@@ -77,17 +63,10 @@ stdout = "repr 'plain' ascii 'plain'\nrepr \"it's\" ascii \"it's\"\nrepr 'say \"
 stderr = ""
 exit_code = 0
 
-["builtins/slice_ellipsis_notimplemented"]
-phase = "run"
-reason = "TypeError: '<' not supported between instances of 'slice' and 'slice'"
-stdout = "one arg slice(None, 5, None) None 5 None\ntwo args slice(1, 4, None) three slice(1, 9, 2)\nany objects slice('a', [1], None)\napply [2, 5] [9, 5, 1] ello\nindices (0, 3, 1) (3, 5, 1) (0, 20, 7)\nindices negative step (-1, -1, -1) (5, -1, -3)\nindices negative length ValueError\neq True True\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/builtins/slice_ellipsis_notimplemented.py\", line 16, in <module>\n    print(\"ordering\", slice(1, 2) < slice(1, 3))\nTypeError: '<' not supported between instances of 'slice' and 'slice'\n"
-exit_code = 1
-
 ["builtins/type_and_len"]
 phase = "run"
 reason = "native output differs from CPython"
-stdout = "type int\ntype bool\ntype float\ntype complex\ntype str\ntype bytes\ntype bytearray\ntype list\ntype tuple\ntype dict\ntype set\ntype frozenset\ntype NoneType\ntype range\ntype slice\ntype ellipsis\ntype NotImplementedType\ntype type\ntype object\ntype builtin_function_or_method\ntype function\ntype list_iterator\ntype list_iterator\ntype generator\ntype dict_keys\ntype dict_values\ntype dict_items\ntype memoryview\ntype is True True False True\nuser Child True False type\ntype of function function function\ngenerator function function generator function\nmodule type builtins builtins\nqualname Child int\ncall type to construct 12 ['a', 'b'] 3.5\ncustom len 0 1000000\nlen overflow OverflowError\nlen via __index__ TypeError\nlen returns bool 0\ninstance __len__ ignored TypeError\nexplicit call instance attr 3\nlen builtin name len\n"
+stdout = "type int\ntype bool\ntype float\ntype complex\ntype str\ntype bytes\ntype bytearray\ntype list\ntype tuple\ntype dict\ntype set\ntype frozenset\ntype NoneType\ntype range\ntype slice\ntype ellipsis\ntype NotImplementedType\ntype type\ntype object\ntype builtin_function_or_method\ntype function\ntype list_iterator\ntype list_iterator\ntype generator\ntype dict_keys\ntype dict_values\ntype dict_items\ntype memoryview\ntype is True True False True\nuser Child True False type\ntype of function function function\ngenerator function function generator function\nmodule type builtins builtins\nqualname Child int\ncall type to construct 12 ['a', 'b'] 3.5\ncustom len 0 1000000\nlen overflow OverflowError\nlen via __index__ 4\nlen returns bool 0\ninstance __len__ ignored TypeError\nexplicit call instance attr 3\nlen builtin name len\n"
 stderr = ""
 exit_code = 0
 
@@ -96,272 +75,6 @@ phase = "run"
 reason = "TypeError: got an unexpected keyword argument 'strict'"
 stdout = "zip [(1, 'a'), (2, 'b')]\nzip one [('a',), ('b',)]\nzip none []\nzip three [(0, 'x', True), (1, 'y', False), (2, 'z', None)]\nunzip [(1, 2), ('a', 'b')]\nzip strict ok [(1, 'a'), (2, 'b')]\nzip strict 3 1 ValueError\nzip strict 1 2 ValueError\nzip strict 0 1 ValueError\nzip strict yields before error [('a', 1), ('b', 2)] ValueError\nzip pull order ['a0', 'b0', 'a1']\nzip same iterator [(0, 1), (2, 3)]\nzip type zip\nzip non iterable TypeError\nmap one ['1', '2']\nmap two [32, 9]\nmap three ['ace', 'bdf']\nmap lazy map\nmap not called yet []\nmap next 1 [1]\n"
 stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/builtins/zip_map_filter.py\", line 48, in <module>\n    print(\"map strict ok\", list(map(max, [1, 2], [3, 0], strict=True)))\nTypeError: got an unexpected keyword argument 'strict'\n"
-exit_code = 1
-
-["classes/abc_isinstance_hooks"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "abstract methods []\nconcrete square with area 9 []\nsuper to abstract impl+base-run\nabstract classmethod ConcreteFactory []\nABCMeta direct ABCMeta True\nregistered isinstance True True\nregistered not in mro False\nregister decorator Goose True\nsubclasshook True False True\ncollections.abc structural True True True\nnot Sequence False True True\nHashable False True False\ninstancecheck True False False\nsubclasscheck True False\ntuple of classes False True\nexact type shortcut True True\nunion isinstance True False True\nissubclass non-class TypeError\nbefore update True\n"
-stderr = ""
-exit_code = 0
-
-["classes/builtin_subclasses"]
-phase = "run"
-reason = "AttributeError: 'str' object has no attribute 'format_map'"
-stdout = "loud list [10, 2, 3, 4] 2 4 19\nloud list log ['append 3', 'setitem 0', 'getitem 1', 'len']\nslice type list [2, 3] ['getitem slice(1, 3, None)']\nconcat type list list\nisinstance list True True\nmissing via [] 1 <b>\nget bypasses missing None False\nafter [('a', 1), ('b', '<b>')]\ndict keys ['MixedInit', 'SetDef', 'Updated', 'upper']\ngetitem lowered 2 2\nbypassed key not found KeyError\ndict copy type dict dict\nstr() HEY! format HEY! repr 'hey'\nlen override 1000 concat heyx str\njoin hey-hey upper type str\nprint direct HEY!\nint subclass ops 8 8 15 10 int\nformat int sub 0005 $5 $5\nbool / hash False True True\nbool override True True yes\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/builtin_subclasses.py\", line 131, in <module>\n    fmt = \"{x}-{y}\".format_map(cd)\nAttributeError: 'str' object has no attribute 'format_map'\n"
-exit_code = 1
-
-["classes/dataclasses_basic"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "repr Item(name='apple', price=1.5, tags=[])\neq True False False\ndefault_factory distinct ['fruit'] []\ncompare=False field False\nfields [('name', 'str'), ('price', 'float'), ('tags', 'list'), ('hidden', 'int')]\nhash disabled by eq None\nmutable default ValueError\nnon-default after default TypeError\nsorted [Version(major=0, minor=9), Version(major=1, minor=0), Version(major=1, minor=0), Version(major=1, minor=2)]\ncompare True True True\norder vs tuple TypeError\nfrozen set FrozenInstanceError True\nfrozen del FrozenInstanceError\nfrozen hashable True v Coord(x=4, y=2)\npost_init Rect(w=4, h=6, area=24) 24\nInitVar not field ['w', 'h', 'area'] True\nInitVar default class attr 1.0\ninit=False not accepted TypeError\npost_init validation negative: -1\neq=False False True True\nunsafe_hash True\nrepr=False keeps custom <custom 4>\nClassVar excluded ['v'] WithClassVar(v=5)\nmatch_args ('name', 'price', 'tags', 'hidden')\nmatch dataclass pear 3.0\n"
-stderr = ""
-exit_code = 0
-
-["classes/descriptors"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "set_name log ['set_name Person.name', 'set_name Person.age']\nget Ann 30\nclass access <Typed name on Person>\ntype check age must be int\nafter delete False delete age\nbefore shadow non-data value data value\nafter shadow instance nd data value\nafter assign assigned nd data value assigned d\nset-only get 4 {'so': 4}\ndelete-only delonly\nfunction __get__ bound to F bound to F bound to F\nfunction get None True\ncounted 1 2 1 3\nclass returns descriptor Counted\nlate set_name False\nmanual set_name late\nobjtype ('none', 'K') ('none', 'K2') ('obj', 'K2')\nset_name error ValueError\n"
-stderr = ""
-exit_code = 0
-
-["classes/enum_flags_match"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "values [('R', 1), ('W', 2), ('X', 4)]\ncombine Perm.RW True 3\nunnamed combination Perm.R|W|X 7 R|W|X\ncontains True False True\niterate members of combo ['R', 'W', 'X']\nlen combo 3 1\nand/xor/invert Perm.W Perm.W|X Perm.W|X Perm(0)\nempty Perm(0) False True None\nlookup by int Perm.RW Perm.R|X\nout of range Flag ValueError\nIntFlag 3 True 4 int 12 int\nIntFlag repr 5\nIntFlag with int 7 9 2\nIntFlag bool False 0\nmatch enum ['warm', 'cool', 'cool'] unknown\nmatch flag read-write read exec(R|X) other\nmatch capture got RED other b\nclass pattern green via class pattern name BLUE\nmapping pattern red key 1 no red\nSTRICT ValueError\nCONFORM Conform.A|B 3\nKEEP 7\niter flag ['ONE', 'TWO'] ['NONE', 'ONE', 'TWO', 'BOTH']\n"
-stderr = ""
-exit_code = 0
-
-["classes/enums_basic"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "repr/str <Color.RED: 1> Color.RED Color.BLUE\nname/value GREEN 2\niteration skips aliases ['RED', 'GREEN', 'BLUE']\nmembers incl aliases ['RED', 'GREEN', 'BLUE', 'CRIMSON']\nalias identity True RED\nlookup by value Color.GREEN Color.RED\nlookup by name Color.BLUE Color.RED\nbad value ValueError\nbad name KeyError\nmethods red=1 True False Color.GREEN\nlen 3 contains True True\neq with value False True\nEnum ordering TypeError\nhashable r\ntype Color True\nset value AttributeError\nauto values [('A', 1), ('B', 2), ('C', 10), ('D', 11)]\ncustom auto ['x', 'y']\nunique ValueError\nIntEnum ops True 6 True [<Priority.LOW: 1>, 3, <Priority.HIGH: 10>]\nIntEnum str/format 5 5 <Priority.MID: 5> 005\nIntEnum index 20 10 True\nStrEnum read read True W WRITE\nStrEnum join read+w\ntuple-valued (5.976e+24, 6378140.0) 5.976e+24 22.746\nfunctional [('CAT', 1), ('DOG', 2), ('BIRD', 3)] Animal.DOG\nfunctional pairs Shape.TRI 4\nsubclass empty enum A!\nextend enum with members TypeError\nsingleton False\n_missing_ Status.OK Status.ERR\n_missing_ None ValueError\nreversed ['BLUE', 'GREEN', 'RED']\n"
-stderr = ""
-exit_code = 0
-
-["classes/init_subclass_class_getitem"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "registry [('alpha', 'Alpha', 0), ('b', 'Beta', 5), ('gamma', 'Gamma', 9)]\ninherited key not reused gamma\nplugin base in registry False\nchained [('MixA', 'Combined', 1), ('MixB', 'Combined', 2)]\nvalidator BadV missing ['stop']\ngood validator ok GoodV\nclass_getitem Box[<class 'int'>] Box['x'] Box[(1, 2)] SubBox[None]\ninstance not subscriptable TypeError\ngeneric alias True True\nalias call creates instance Seq\nboth ('class', 1) ('instance', 1)\npep695 params ['T', 'U']\npep695 alias True ['int', 'str']\npep695 instance Pair 1 x\n"
-stderr = ""
-exit_code = 0
-
-["classes/metaclass_prepare_conflict"]
-phase = "run"
-reason = "AttributeError: 'function' object has no attribute '__prepare__'"
-stdout = "inside body sees injected: prepared for Form\norder ('injected', 'zeta', 'alpha', 'middle', 'zeta', 'beta')\nns type LoggingDict injected prepared for Form\nfinal zeta 3\nauto namespace HELLO X!\nprepare kwargs [('a', 1), ('b', 'two')]\nmetaclass conflict TypeError\nresolved MetaAB\nauto most-derived SubMetaA\nupgraded SubMetaA\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/metaclass_prepare_conflict.py\", line 158, in <module>\n    class ViaFunc(metaclass=func_meta):\nAttributeError: 'function' object has no attribute '__prepare__'\n"
-exit_code = 1
-
-["classes/slots"]
-phase = "run"
-reason = "KeyError: 'x'"
-stdout = "slots values Pt(1, 2) 1 2\nslot reassigned 10\nunknown attr AttributeError\nhas __dict__ False\nhas __weakref__ False\nslots attr ('x', 'y')\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/slots.py\", line 28, in <module>\n    print(\"slot descriptor type\", type(Pt.__dict__[\"x\"]).__name__)\nKeyError: 'x'\n"
-exit_code = 1
-
-["classes/super_forms"]
-phase = "run"
-reason = "TypeError: missing required argument 'type'"
-stdout = "chain C.m>B.m>A.m\nclassmethod chain C.make>B.make>A.make(C) C.make>B.make>A.make(C)\ntwo-arg A.m\ntwo-arg from C B.m>A.m A.m\nnested __class__ A.m\nlambda __class__ B\ngenerator super ['A.m', 'B']\nstaticmethod via super A.st\nclassmethod via two-arg super A.make(C)\nsuper object method hello from Base for Derived\nsuper type attr hello from Base for Derived\n__class__ vs type(self) (True, False)\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 106, in <module>\n    print(\"super outside class\", outside())\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/classes/super_forms.py\", line 101, in outside\n    super()\nTypeError: missing required argument 'type'\n"
-exit_code = 1
-
-["containers/dict_views"]
-phase = "run"
-reason = "TypeError: 'dict_keys' object is not reversible"
-stdout = "views ['a', 'b', 'c'] [1, 2, 3] [('a', 1), ('b', 2), ('c', 3)]\nlive after add ['a', 'b', 'c', 'd'] 4 4\nlive after delete ['b', 'c', 'd']\nkeys and set ['b']\nkeys or ['b', 'c', 'd', 'z']\nkeys minus ['c', 'd']\nkeys xor ['c', 'd', 'q']\nkeys rand ['c']\nkeys vs list ['c', 'd']\nkeys disjoint True False\nkeys eq set True False\nkeys lt True True\nother dict keys ['b', 'c']\nitems set ops [('b', 2)]\nitems minus [('c', 3), ('d', 4)]\nitems contains True False False\nitems eq True\nvalues contains True False\nvalues not equal to itself False\nvalues set op TypeError\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/containers/dict_views.py\", line 36, in <module>\n    print(\"reversed keys\", list(reversed(d.keys())))\nTypeError: 'dict_keys' object is not reversible\n"
-exit_code = 1
-
-["control_flow/match_mapping"]
-phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'compile'"
-stdout = "mapping {'type': 'point', 'x': 1, 'y': 2, 'extra': 'ignored'} -> point 1,2\nmapping {'type': 'circle', 'r': 5, 'color': 'red', 'fill': True} -> circle r=5 rest={'color': 'red', 'fill': True}\nmapping {'type': 'circle', 'r': 1} -> circle r=1 rest={}\nmapping {'name': 'bob', 1: 'uno', 2: 'dos'} -> dotted key name=bob one=uno\nmapping {'nested': {'inner': [1, 2, 3], 'other': 0}} -> nested a=1 b=[2, 3]\nmapping {'nested': {'inner': 'str'}} -> no match dict\nmapping {'opt': None} -> opt is None\nmapping {'opt': 0} -> no match dict\nmapping {} -> empty mapping\nmapping {'k': 'anything'} -> has k\nmapping [('type', 'point')] -> no match list\nmapping not a mapping -> no match str\nempty pattern matches non-empty dict\nrest [('b', 2), ('c', 3), ('z', 26)] src unchanged [('a', 1), ('b', 2), ('c', 3)]\npresent matched 1 keys ['present']\nmapping type OrderedDict 1\nmapping type Counter 2\nmapping type ChainMap 9\ncustom mapping 1 2 []\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/control_flow/match_mapping.py\", line 103, in <module>\n    compile(\"match v:\\n case {'a': 1, 'a': 2}: pass\\n\", \"<test>\", \"exec\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 36, in _compile\n    from _ast_parse import compile as compile_owned\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 4, in <module>\n    from mule import ast as syntax\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/mule/ast.py\", line 845, in <module>\n    @dataclass(slots=True)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1466, in wrap\n    return _process_class(cls, init, repr, eq, order, unsafe_hash,\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1058, in _process_class\n    cls_annotations = annotationlib.get_annotations(\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1023, in get_annotations\n    ann = _get_and_call_annotate(obj, format)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1175, in _get_and_call_annotate\n    ann = call_annotate_function(annotate, format, owner=obj)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 836, in call_annotate_function\n    out[key] = ref.evaluate(format=Format.FORWARDREF)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 205, in evaluate\n    code = self.__forward_code__\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 287, in __forward_code__\n    self.__code__ = compile(_rewrite_star_unpack(arg), \"<string>\", \"eval\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 36, in _compile\n    from _ast_parse import compile as compile_owned\nAttributeError: 'module' object has no attribute 'compile'\n"
-exit_code = 1
-
-["protocols/bool_len"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "bool beats len False ['bool']\nlen fallback False True ['len 0', 'len 3']\nneither is truthy True\nlen() still works with __bool__ 5\ncontexts fallback LenOnly True 1 yes\ncontext log ['len 0', 'len 0', 'len 0', 'len 0', 'len 0', 'len 2', 'len 0', 'len 1']\nor returns operand True ['len 0']\nand returns operand True ['len 4']\nbool returns int TypeError\nif with bad bool TypeError\nNegLen len ValueError\nNegLen bool ValueError\nFloatLen len TypeError\nFloatLen bool TypeError\nHugeLen len OverflowError\nHugeLen bool OverflowError\nbool as len 1 True\nlen via __index__ TypeError\nbool None TypeError\ninherited bool wins True\nbuiltin truthiness False False False False False False False False False False False\nbuiltin truthy True True True True True True\nany True ['len 0', 'len 1']\nall False ['len 1', 'len 0']\nfilter None [7, 1]\n"
-stderr = ""
-exit_code = 0
-
-["protocols/container_getitem"]
-phase = "run"
-reason = "TypeError: unhashable type: 'slice'"
-stdout = "int key 3 -1\nslice slice(1, 5, None) slice(None, None, 2) slice(None, None, None) slice(1, 2, 3) slice(None, None, None)\next slice tuple (slice(1, 2, None), 3) (Ellipsis, 0) (slice(None, None, None), slice(None, None, None)) () (1,)\nslice attrs 1 10 2\narbitrary keys k None (1, 2)\nlog tail [('set', 0, 'a'), ('set', slice(1, 3, None), [9, 9]), ('del', 2), ('del', slice(None, None, 2))]\nindex 10 50 30\nslice Seq[20, 30] Seq[50, 40, 30, 20, 10] Seq[10, 30, 50] Seq[40, 50]\nout of range Seq index out of range\nbad type bad index type str\nafter set Seq[11, 21, 22, 23, 40, 50] 6\nafter del Seq[21, 22, 23]\nslice.indices (6, -1, -2) (2, 5, 1) (1, 10, 3)\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/container_getitem.py\", line 83, in <module>\n    print(\"slice eq/hash\", slice(1, 2) == slice(1, 2), hash(slice(1, 2)) == hash(slice(1, 2)))\nTypeError: unhashable type: 'slice'\n"
-exit_code = 1
-
-["protocols/index_protocol"]
-phase = "run"
-reason = "TypeError: 'Idx' object cannot be interpreted as an integer"
-stdout = "index 3 9 c 1\nslice bounds [2, 3, 4] [0, 3, 6, 9] ello\nrange [0, 1, 2, 3] [1, 5, 9] 2 range(2, 5)\nbin/hex/oct 0b101 0xff 0o10\noperator.index 42\nint() via __index__ 7\nrepetition ababab [0, 0] xx b'zz'\nbytes(n) b'\\x00\\x00\\x00' bytearray(b'\\x00\\x00')\nchr A\nround ndigits 3.14\nlist insert/pop ['x', 2, 3]\nhex on int subclass 0x1\nslice.indices (1, 6, 2)\nbad __index__ subscript TypeError\nbad __index__ operator.index TypeError\nbad __index__ bin TypeError\n__int__ not index TypeError\nint() uses __int__ 2\nbin needs __index__ TypeError\nrange needs __index__ TypeError\nfloat rejected list[float] TypeError\nfloat rejected range(float) TypeError\nfloat rejected hex(float) TypeError\ncustom container gets raw key Idx slice\nhuge index IndexError\nhuge slice clamps [] [0, 1, 2]\nrange huge len ok True\nhuge range len OverflowError\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/index_protocol.py\", line 103, in <module>\n    print(\"percent formatting\", \"%x %o\" % (Idx(255), Idx(8)))\nTypeError: 'Idx' object cannot be interpreted as an integer\n"
-exit_code = 1
-
-["protocols/inplace_operators"]
-phase = "run"
-reason = "TypeError: unsupported operand type(s) for %: 'Acc' and 'int'"
-stdout = "iadd/isub Acc(13) True ['iadd', 'isub']\nimul Acc(39)\nifloordiv Acc(9)\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/inplace_operators.py\", line 75, in <module>\n    a %= 5; print(\"imod\", a)\nTypeError: unsupported operand type(s) for %: 'Acc' and 'int'\n"
-exit_code = 1
-
-["protocols/notimplemented_fallback"]
-phase = "run"
-reason = "AttributeError: 'float' object has no attribute '__radd__'"
-stdout = "left handles A wins ['A.__add__']\nright reflects B rwins ['A.__add__', 'B.__radd__']\nneither TypeError ['A.__add__', 'B.__radd__']\nright wins ignored left radd B rwins ['A.__add__', 'B.__radd__']\neq both NotImplemented False ['A.__eq__', 'B.__eq__']\neq identity fallback True ['A.__eq__', 'A.__eq__']\nne both NotImplemented True ['A.__eq__', 'B.__eq__']\nlt reflects to gt B.__gt__ result ['A.__lt__', 'B.__gt__']\nlt neither TypeError ['A.__lt__', 'B.__gt__']\ndirect call True\nNotImplemented repr NotImplemented NotImplementedType\nint.__add__ str True 3\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/notimplemented_fallback.py\", line 92, in <module>\n    print(\"float.__radd__ int\", (1.5).__radd__(1))\nAttributeError: 'float' object has no attribute '__radd__'\n"
-exit_code = 1
-
-["protocols/numeric_conversions"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "int() 998\nfloat() -2.2\ncomplex() (-2.7+1j)\nround round(-2.7) round(-2.7, 2) round(-2.7)\nmath.trunc/floor/ceil trunc(-2.7) floor(-2.7) ceil(-2.7)\nabs Num(2.7)\nbare int TypeError\nbare float TypeError\nbare complex TypeError\nbare round TypeError\nbare trunc TypeError\nbare floor TypeError\nbare ceil TypeError\nbare abs TypeError\nint via __index__ 7 float via __index__ 7.0 complex via __index__ (7+0j)\ncomplex via __float__ (2.5+0j)\nint ignores __float__ TypeError\nint via __trunc__ 9\nmath.floor via __float__ 2 3\nbad return int TypeError\nbad return float TypeError\nbad return complex TypeError\nround builtins 0 2 2 0 2.67 1200 1200 1400\nround types int float int\nmath funcs on floats -2 -3 -2 3 0\nint() truncation -2 2 -12 255 5 1\nfloat parse 1000.0 -inf True 1e+20\ncomplex parse (1+2j) (1-0j) (3+0j) (2+0j)\nint too big for float OverflowError\nint(inf) OverflowError\nint(nan) ValueError\nFrac 3 3.143 3.142857142857143 3 3 3.1429\nsubclass conversions float int int\nsubclass math int int int\nint.__round__ ndigits 1230 20 20\ndivmod mixed (3, 1) (-4, 1) (3.0, 1.5) (-4.0, 0.5)\npow types 0.5 float 2.0 4 True\nmath.fsum / isclose 1.0 True\n"
-stderr = ""
-exit_code = 0
-
-["protocols/reflected_operators"]
-phase = "run"
-reason = "TypeError: can only concatenate str (not \"OnlyR\") to str"
-stdout = "radd via int Num(13) ['Num(3).__radd__(10)']\nradd via sum Num(3) 2\nrsub rmul Num(7) Num(30)\nrtruediv rfloordiv rmod Num(3.0) Num(3) Num(1)\nrpow Num(8)\nrshifts Num(8) Num(8)\nrbitwise Num(2) Num(7) Num(6)\nrmatmul rmatmul [1, 2] @ 3\nrdivmod ('rdivmod', (5, 2))\nsubclass reflected first Num(3) ['Num(1).__add__(Sub(2))']\nsubclass no override Num(3) ['Num(1).__add__(SubNoOverride(2))']\nunrelated R handled ['L.__add__', 'R.__radd__']\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/protocols/reflected_operators.py\", line 142, in <module>\n    print(\"builtin left falls to radd\", \"s\" + OnlyR(), [1] + OnlyR(), (1,) + OnlyR())\nTypeError: can only concatenate str (not \"OnlyR\") to str\n"
-exit_code = 1
-
-["protocols/rich_comparisons"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "all six True True False False False True\nsorted [v1.0.1, v1.5, v2]\nsort uses only lt ['lt']\nmax/min v1.10 v1.2\nlt reflects to gt True ['OnlyGt(5).__gt__']\nint < custom reflects True ['OnlyGt(5).__gt__']\ngt does not reflect to gt TypeError\nne derived from eq False True ['EqOnly(1).__eq__', 'EqOnly(1).__eq__']\neq with int both sides False False ['EqOnly(1).__eq__', 'EqOnly(1).__eq__']\nsubclass reflected first Base.__lt__ Base.__lt__\nchain True ['a', 'b', 'c']\nchain short-circuit False ['a', 'b']\nmixed chain True True\nnon-bool results ['not', 'a', 'bool'] 0 False\nin chain uses truthiness ['not', 'a', 'bool']\ntotal_ordering [2, 9, T, K, A] True False True\ntuple lexi True True True\nidentity shortcut in containers False True\n"
-stderr = ""
-exit_code = 0
-
-["scoping/builtin_shadowing"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "builtin len 2\nmodule shadow module len\nfunction sees module shadow module len\nrestored after del 2 3\nlocal shadow (1, 2) [1, 2]\ndel local does not restore builtin ('local sum', 'UnboundLocalError')\nstr is not a type\nstr restored 5\nid shadowed by loop 1\nid restored is callable True\nclass shadows range ['custom', 'custom']\nrange restored [0, 1]\nparam shadow (1, 2) 3\nnested shadow ('inner abs', 1)\nenclosing shadow enclosing sorted\nabs still works 3\nEllipsis name shadowed ellipsis True\nEllipsis restored True\nglobals() shadow global max\nglobals() restored 2\ncomprehension var did not leak [1, 2] int\nexcept-as builtin name unbound, builtin visible again True\n"
-stderr = ""
-exit_code = 0
-
-["scoping/class_body_scope"]
-phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'compile'"
-stdout = "later attribute class x reused\nlist display ['class x']\nmethod sees global global x\nmethod via self class x\nfirst iterable from class scope class x\ncomprehension body uses global ['global x']\ncomprehension body cannot see class name NameError (factor invisible in comprehension body)\nfirst iterable ok [2, 4, 6]\nnested iterable NameError (values invisible in nested comprehension)\nlambda in class body uses global global factor\nclass body global 1 1 6\nenclosing function visible pre-label pre\nclass shadow vs method ('class name', 'function name')\nclass body read-before-assign ('global v', 'class v')\nnested class cannot see outer class body NameError\nclass body dunders D __main__\nclass body loop var deleted False False\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/scoping/class_body_scope.py\", line 154, in <module>\n    compile(\"class F:\\n    [(y := 1) for _ in range(1)]\\n\", \"<t>\", \"exec\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 36, in _compile\n    from _ast_parse import compile as compile_owned\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 4, in <module>\n    from mule import ast as syntax\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/mule/ast.py\", line 845, in <module>\n    @dataclass(slots=True)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1466, in wrap\n    return _process_class(cls, init, repr, eq, order, unsafe_hash,\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1058, in _process_class\n    cls_annotations = annotationlib.get_annotations(\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1023, in get_annotations\n    ann = _get_and_call_annotate(obj, format)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1175, in _get_and_call_annotate\n    ann = call_annotate_function(annotate, format, owner=obj)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 836, in call_annotate_function\n    out[key] = ref.evaluate(format=Format.FORWARDREF)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 205, in evaluate\n    code = self.__forward_code__\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 287, in __forward_code__\n    self.__code__ = compile(_rewrite_star_unpack(arg), \"<string>\", \"eval\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 36, in _compile\n    from _ast_parse import compile as compile_owned\nAttributeError: 'module' object has no attribute 'compile'\n"
-exit_code = 1
-
-["scoping/comprehension_scope"]
-phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'compile'"
-stdout = "list comp var does not leak [0, 1, 4, 9] global x\nall comprehension kinds isolate ['a', 'b'] [1, 2, 3] {0: 0, 1: 2} global x\nfunction local not clobbered ([0, 1, 2], 'local y')\nenclosing read [0, 3, 6]\niterable uses outer n [10, 20]\nnested [[0, 1, 2], [3, 4, 5]]\nflatten with condition [1, 3, 5]\ndependent clauses [(1, 0), (2, 0), (2, 1)]\nwalrus outward [1, 3, 6] 6\nwalrus in function (['x', 'y', 'z'], 'z')\nwalrus nested (1, 1)\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/scoping/comprehension_scope.py\", line 75, in <module>\n    compile(src, \"<t>\", \"eval\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 36, in _compile\n    from _ast_parse import compile as compile_owned\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 4, in <module>\n    from mule import ast as syntax\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/mule/ast.py\", line 845, in <module>\n    @dataclass(slots=True)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1466, in wrap\n    return _process_class(cls, init, repr, eq, order, unsafe_hash,\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1058, in _process_class\n    cls_annotations = annotationlib.get_annotations(\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1023, in get_annotations\n    ann = _get_and_call_annotate(obj, format)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1175, in _get_and_call_annotate\n    ann = call_annotate_function(annotate, format, owner=obj)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 836, in call_annotate_function\n    out[key] = ref.evaluate(format=Format.FORWARDREF)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 205, in evaluate\n    code = self.__forward_code__\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 287, in __forward_code__\n    self.__code__ = compile(_rewrite_star_unpack(arg), \"<string>\", \"eval\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 36, in _compile\n    from _ast_parse import compile as compile_owned\nAttributeError: 'module' object has no attribute 'compile'\n"
-exit_code = 1
-
-["scoping/del_statement"]
-phase = "run"
-reason = "SystemError: native module returned NULL without an error"
-stdout = "deleted global NameError\ntuple del False False\ndouble del NameError\nlocal del UnboundLocalError\ndel then rebind 2\ndel attribute Obj([('q', 2)]) False\ndel missing attribute AttributeError\ndel class attribute through instance AttributeError\ndel class attribute False\ncustom delattr/delitem [('delattr', 'anything'), ('delitem', 1), ('delitem', slice(1, 3, None)), ('delitem', slice(None, None, 2)), ('delitem', (1, 2)), ('delitem', Ellipsis)]\ndel index [1, 2, 3, 4, 5, 6, 7, 8, 9]\ndel negative index [1, 2, 3, 4, 5, 6, 7, 8]\ndel slice [1, 2, 5, 6, 7, 8]\ndel extended slice [2, 6, 8]\ndel all []\ndel out of range IndexError\ndel dict key {'b': 2, 'c': 3}\ndel missing key KeyError\ndel nested targets [False, False, False]\nmixed del left to right [2, 3] {}\nloop var deleted False\ndel tuple item TypeError\ndel str item TypeError\n"
-stderr = "SystemError: native module returned NULL without an error\n"
-exit_code = 1
-
-["scoping/eval_exec"]
-phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'compile'"
-stdout = ""
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/scoping/eval_exec.py\", line 5, in <module>\n    print(\"eval simple\", eval(\"1 + 2 * 3\"))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 50, in _eval\n    from _ast_parse import evaluate as eval_owned\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 4, in <module>\n    from mule import ast as syntax\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/mule/ast.py\", line 845, in <module>\n    @dataclass(slots=True)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1466, in wrap\n    return _process_class(cls, init, repr, eq, order, unsafe_hash,\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1058, in _process_class\n    cls_annotations = annotationlib.get_annotations(\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1023, in get_annotations\n    ann = _get_and_call_annotate(obj, format)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1175, in _get_and_call_annotate\n    ann = call_annotate_function(annotate, format, owner=obj)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 836, in call_annotate_function\n    out[key] = ref.evaluate(format=Format.FORWARDREF)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 205, in evaluate\n    code = self.__forward_code__\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 287, in __forward_code__\n    self.__code__ = compile(_rewrite_star_unpack(arg), \"<string>\", \"eval\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 36, in _compile\n    from _ast_parse import compile as compile_owned\nAttributeError: 'module' object has no attribute 'compile'\n"
-exit_code = 1
-
-["scoping/global_nonlocal"]
-phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'compile'"
-stdout = "set global g1\nglobal created in function created inside function\nglobal inside nested function ('g2 from inner', 'enclosing local') g2 from inner\nindependent closures 1 2 3 1\nnonlocal skips intermediate ('set by inner', 'set by inner')\nnonlocal binds nearest ('inner rebinds middle', 'outermost')\ndeep nonlocal (10, 20, 20)\nsiblings enclosing changed global changed\nglobal skips enclosing module target\nmulti-name nonlocal (2, 1)\naccumulate 3\nclass body global set in class body\nmethod global set in method\nnonlocal from method ('changed by method', 'class attribute')\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/scoping/global_nonlocal.py\", line 222, in <module>\n    compile(source, \"<test>\", \"exec\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 36, in _compile\n    from _ast_parse import compile as compile_owned\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 4, in <module>\n    from mule import ast as syntax\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/mule/ast.py\", line 845, in <module>\n    @dataclass(slots=True)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1466, in wrap\n    return _process_class(cls, init, repr, eq, order, unsafe_hash,\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1058, in _process_class\n    cls_annotations = annotationlib.get_annotations(\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1023, in get_annotations\n    ann = _get_and_call_annotate(obj, format)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1175, in _get_and_call_annotate\n    ann = call_annotate_function(annotate, format, owner=obj)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 836, in call_annotate_function\n    out[key] = ref.evaluate(format=Format.FORWARDREF)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 205, in evaluate\n    code = self.__forward_code__\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 287, in __forward_code__\n    self.__code__ = compile(_rewrite_star_unpack(arg), \"<string>\", \"eval\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 36, in _compile\n    from _ast_parse import compile as compile_owned\nAttributeError: 'module' object has no attribute 'compile'\n"
-exit_code = 1
-
-["scoping/main_builtins_debug"]
-phase = "run"
-reason = "AttributeError: object has no attribute 'brand_new_builtin'"
-stdout = "__name__ __main__\nrunning as main\nbuiltins.print is print True\ncalled through builtins module\nbuiltins.len 3\nmodule __builtins__ refers to builtins True\nshadowed: hello\nunshadowed\nnew builtin visible everywhere\nfrom function visible everywhere\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/scoping/main_builtins_debug.py\", line 35, in <module>\n    del builtins.brand_new_builtin\nAttributeError: object has no attribute 'brand_new_builtin'\n"
-exit_code = 1
-
-["stdlib/collections_abc_checks"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "isinstance list        101101100000110\nisinstance tuple       101111000000110\nisinstance str         101111000000110\nisinstance bytes       101111000000110\nisinstance dict        101100011000110\nisinstance set         101100000110100\nisinstance frozenset   101110000100100\nisinstance range       101111000000110\nisinstance deque       101101100000110\nisinstance generator   110010000001000\nisinstance int         000010000000000\nisinstance dict_keys   101100000100100\nisinstance dict_items  101100000100100\nisinstance dict_values 101110000000100\nisinstance memoryview  101101000000110\ncallable False False\nodict mutable mapping True\nlist hashable False\nseq iter [0, 1, 4, 9, 16, 25]\nseq contains True False\nseq reversed [25, 16, 9, 4, 1, 0]\nseq index/count 3 1\nseq slice [1, 9]\nseq isinstance True False\nseq index missing ValueError\nmap get 1 dflt\nmap contains True False\nmap views ['a', 'b'] [1, 2] [('a', 1), ('b', 2)]\nmap eq True False\nmap dict() {'a': 1, 'b': 2}\nmap ** unpack {'a': 1, 'b': 2, 'c': 3}\nmap not mutable False False\nmap keys view is Set True {'a'}\nmutmap [('bar', 2), ('baz', 3), ('foo', 1)]\nmutmap setdefault 1 5\nmutmap pop 3 none\nmutmap popitem ('foo', 1)\nmutmap clear 0\nset ops Bits([2, 3]) Bits([1, 2, 3, 4]) Bits([1]) Bits([1, 4])\nset compare True False True True\nstructural True True False\nregistered True True\n"
-stderr = ""
-exit_code = 0
-
-["stdlib/collections_namedtuple_deque"]
-phase = "run"
-reason = "TypeError: unsupported operand type(s) for *: 'deque' and 'int'"
-stdout = "namedtuple repr Point(x=1, y=2)\nnamedtuple index/attr 1 2 True True\nnamedtuple unpack 1 2\nnamedtuple _fields ('x', 'y')\nnamedtuple _asdict {'x': 1, 'y': 2}\nnamedtuple _replace Point(x=1, y=20) Point(x=1, y=2)\nnamedtuple _make Point(x=5, y=6) Point(x='a', y='b')\nnamedtuple immutable AttributeError\nnamedtuple bad replace TypeError\ndefaults Config(host='localhost', port=8080, debug=False) Config(host='h', port=1, debug=True)\n_field_defaults {'port': 8080, 'debug': False}\nrename ('ok', '_1', '_2', '_3')\nsubclass Vec(x=4, y=2) 6 Vec\nsorted namedtuples [Point(x=1, y=2), Point(x=1, y=5), Point(x=2, y=1)]\nnamedtuple as dict key origin\ndeque deque([0, 1, 2, 3, 4])\ndeque pop 4 0 deque([1, 2, 3])\nextendleft reverses deque([-2, -1, 1, 2, 3, 4, 5])\nrotate 2 deque([4, 5, -2, -1, 1, 2, 3])\nrotate -3 deque([-1, 1, 2, 3, 4, 5, -2])\nrotate big deque([-2, -1, 1, 2, 3, 4, 5])\ndeque index/count -2 5 4 1\nremove/insert deque([-2, 'ins', -1, 1, 2, 4, 5])\nreverse deque([5, 4, 2, 1, -1, 'ins', -2])\ndeque in True False\ndel item deque([5, 4, 1, -1, 'ins', -2])\nbounded append 0 [0]\nbounded append 1 [0, 1]\nbounded append 2 [0, 1, 2]\nbounded append 3 [1, 2, 3]\nbounded append 4 [2, 3, 4]\nbounded append 5 [3, 4, 5]\nmaxlen appendleft drops right deque(['L', 3, 4], maxlen=3) 3\nmaxlen extend deque(['y', 'z', '1'], maxlen=3)\nmaxlen zero deque([], maxlen=0)\ntail of iterable deque([98, 99], maxlen=2)\nempty pop IndexError\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/stdlib/collections_namedtuple_deque.py\", line 84, in <module>\n    print(\"deque mul/add\", dd * 2, dd + deque(\"c\"))\nTypeError: unsupported operand type(s) for *: 'deque' and 'int'\n"
-exit_code = 1
-
-["stdlib/fractions_decimal"]
-phase = "run"
-reason = "TypeError: object has no len"
-stdout = "normalized 1/2 1 2\narith 5/6 -1/6 1/6 2/3 -1/3 1/3\npow 1/9 9 0.6666666666666666\nfloor div/mod 3 1/2 (10, Fraction(1, 6))\nmixed int 4/3 2/3 3\nmixed float float 0.8333333333333333\ncompare True True True False\nnegative denom -1/2 1/2\nfrom str 3/4 5/4 7 1/1000\nfrom float exact 3602879701896397/36028797018963968\nfrom_float 1/4 11/10\nlimit_denominator 1/10 311/99\nlimit pi 1000 355/113\nas_integer_ratio (3, 2) (3, 4)\nround 2 4 33/100\nint/float -3 0.125\nis_integer True False\nsum fractions 49/20\nrepr Fraction(1, 3) 5\nhash eq int True True\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/stdlib/fractions_decimal.py\", line 38, in <module>\n    print(\"format\", format(Fraction(1, 3), \".5f\"), f\"{Fraction(22, 7):.3g}\", f\"{Fraction(1, 8):.1%}\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/fractions.py\", line 609, in __format__\n    return self._format_float_style(match)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/fractions.py\", line 588, in _format_float_style\n    padding = fill * (minimumwidth - len(sign) - len(body))\nTypeError: object has no len\n"
-exit_code = 1
-
-["stdlib/io_module"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "write returns 6 5\ntell 11\ngetvalue 'hello\\nworld'\nread at end ''\nread 3 'hel'\nreadline 'lo\\n'\nreadline last 'world' ''\nreadlines ['hello\\n', 'world']\niterate ['hello\\n', 'world']\noverwrite middle 'heLLo\\nworld'\nappend at end 'heLLo\\nworld!'\ntruncate 'heL' 3\nwrite past end pads 'heL\\x00\\x00\\x00\\x00\\x00\\x00\\x00x'\ninit position 0 'init'\nwrite after read 'initial\\ntextZ'\nprint to file\nprint file 'a,b;1 2\\n'\nclosed True\nuse after close ValueError\ncontext read ctx\ncontext closed True\nuniversal newlines ['a\\n', 'b\\n', 'c\\n']\nnewline empty ['a\\r\\n', 'b\\r', 'c\\n']\nreadable/writable/seekable True True True\nbytes write 3 3 2\nbytes getvalue b'abcdefgh' 8\nbytes read b'bc' b'defgh' b''\nseek from end b'gh'\nseek cur 4 b'e'\nbytes write str TypeError\nreadinto 4 bytearray(b'abcd')\ngetbuffer mutates b'Zbc'\nbytes lines [b'l1\\n', b'l2\\n', b'l3'] [b'x\\n', b'y']\nread1 b'abc'\nTextIOWrapper encode b'caf\\xc3\\xa9\\n'\nTextIOWrapper decode ünï\n line2\nnegative seek ValueError\nisinstance True True True\n"
-stderr = ""
-exit_code = 0
-
-["stdlib/itertools_combinatorics"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "product [('a', 1), ('a', 2), ('b', 1), ('b', 2)]\nproduct repeat ['000', '001', '010', '011', '100', '101', '110', '111']\nproduct repeat 2 iters [('a', 'c', 'a', 'c'), ('a', 'c', 'b', 'c'), ('b', 'c', 'a', 'c'), ('b', 'c', 'b', 'c')]\nproduct empty iterable []\nproduct no args [()]\nproduct repeat 0 [()]\nproduct eager consume ['start']\nproduct gen [(1, 'x'), (1, 'y'), (2, 'x'), (2, 'y')]\npermutations ['abc', 'acb', 'bac', 'bca', 'cab', 'cba']\npermutations r [(0, 1), (0, 2), (0, 3), (1, 0), (1, 2), (1, 3), (2, 0), (2, 1), (2, 3), (3, 0), (3, 1), (3, 2)]\npermutations r>n []\npermutations r=0 [()]\npermutations dupes [('a', 'a'), ('a', 'b'), ('a', 'a'), ('a', 'b'), ('b', 'a'), ('b', 'a')]\npermutations count 120 120\ncombinations [('a', 'b'), ('a', 'c'), ('a', 'd'), ('b', 'c'), ('b', 'd'), ('c', 'd')]\ncombinations r=n [('a', 'b', 'c')]\ncombinations r>n []\ncombinations order follows input [(3, 1), (3, 2), (1, 2)]\ncombinations count 210 210\ncwr [('a', 'a'), ('a', 'b'), ('a', 'c'), ('b', 'b'), ('b', 'c'), ('c', 'c')]\ncwr r>n 5\ncwr count 35 35\npowerset size 16\nsubsets summing to 5 [(1, 4), (2, 3)]\nperm == fact True\noff-diagonal [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)]\ncombinations negative ValueError\n"
-stderr = ""
-exit_code = 0
-
-["stdlib/math_module"]
-phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'prod'"
-stdout = "floor/ceil/trunc 2.5 2 3 2 int\nfloor/ceil/trunc -2.5 -3 -2 -2 int\nfloor/ceil/trunc 3.0 3 3 3 int\nfloor/ceil/trunc -0.5 -1 0 0 int\nfloor/ceil/trunc 7 7 7 7 int\nround half even 2 4 0\nbig floor 100000000000000000000 -100000000000000000000\nfloor inf OverflowError\nceil nan ValueError\ngcd 6 2 0 0 2\nlcm 12 60 1 0 12\nisqrt 0 3 4 100000000000000000000\nisqrt neg ValueError\ncomb 120 1 0 118264581564861424\nperm 20 120 0\nfactorial 1 3628800 15511210043330985984000000\nfactorial neg ValueError\nfactorial float TypeError\nsum vs fsum 1.0 1.0\nnaive loop 0.9999999999999999 False\nfsum cancellation 1.0 1.0\nisclose True False\nisclose tol True False\nisclose zero False True\nisclose inf/nan True False\ncopysign -3.0 2.5 -1.0\ninf inf -inf True nan\nnan False True True True True\nnan in list identity True False\ninf arithmetic nan 0.0 -0.0 True\nfloat inf parse -inf inf nan\nmax with nan nan 1\nsorted with inf [-inf, 0, 3, inf]\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/stdlib/math_module.py\", line 58, in <module>\n    print(\"prod\", math.prod([1, 2, 3, 4]), math.prod([]), math.prod([2, 3], start=10), math.prod([0.5, 4]))\nAttributeError: 'module' object has no attribute 'prod'\n"
-exit_code = 1
-
-["stdlib/operator_module"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "itemgetter single b\nitemgetter multi ('a', 'c')\nitemgetter dict (2, 1)\nitemgetter slice [2, 3]\nsort by itemgetter [('ann', 25, 'sf'), ('bo', 30, 'nyc'), ('cy', 30, 'la')]\nmax by itemgetter ('bo', 30, 'nyc')\nitemgetter missing IndexError\nattrgetter ann\nattrgetter dotted la\nattrgetter multi ('cy', '10001')\nsort dotted ['cy', 'bo', 'ann']\nattrgetter missing AttributeError\nmethodcaller hi, ann!\nmethodcaller kw yo, bo?\nmethodcaller str ['A', 'B']\nmethodcaller split ['a', 'b,c']\nreduce add 15\nreduce mul 120\nreduce sub -13\nreduce or 15\nreduce and {3}\nreduce concat [1, 2, 3]\nmap pow [8, 9]\nmap truediv/floordiv/mod 3.5 -4 1\nneg/pos/abs/inv -3 -3 3 -6\nshifts xor 16 32 6\ncomparisons True True True False False True\nlogic True True True True\ncontains/countOf/indexOf True 2 2\ngetitem/setitem/delitem 1\nafter set/del [9, 3]\nindex 7 1\nindex float TypeError\nlength_hint 2 0 0 42\niadd mutates list [1, 2] True\niadd tuple new (1,) (1, 2)\nimul str xxx x\nmatmul matmul\ncall 9\ndot product 32\nis_none True True\n"
-stderr = ""
-exit_code = 0
-
-["stdlib/re_module"]
-phase = "run"
-reason = "IndexError: sequence index out of range"
-stdout = "match 123 None\nsearch 123\nfullmatch True None\ngroups ('joe', 'example', 'com') joe@example.com ('joe', 'com')\nspan (9, 24) 13 20\npos info joe@example.com 3\nnamed groups 2024 07 {'year': '2024', 'month': '07', 'day': None} {'year': '2024', 'month': '07', 'day': 'none'}\noptional group None ('2024', '07', '?') month\nfindall plain ['1', '22', '333']\nfindall one group ['a', 'b']\nfindall tuples [('a', '1'), ('b', '2')]\nfindall empty matches ['', 'x', '', '']\nfinditer [('Hi', 0), ('Bob', 9), ('Ann', 17)]\nsub backref world hello bar foo\nsub named backref 1:a, 2:b\nsub \\g<0> x[1]y[22]\nsub function 6 apples and 20 pears\nsub count bAnAna\nsubn ('a b c d', 3)\nsub empty matches -a-b-c-\nsplit ['a', 'b', 'c ', 'd']\nsplit captures ['a', ',', 'b', ';', 'c']\nsplit maxsplit ['a', 'b', 'c d']\nsplit leading ['', 'words', 'here', '']\nIGNORECASE ['Cat', 'cAT', 'cat']\nMULTILINE ['one']\nno MULTILINE ['one']\nDOTALL None True\nVERBOSE [{'int': '3', 'frac': '14'}, {'int': '42', 'frac': None}]\ninline flags ['AB', 'ab', 'aB']\nflags combine False\ncompiled pattern attrs \\b\\w+\\b 1\ncompiled search pos world\ncompiled match pos world\nlookahead ['hi', 'bye']\nneg lookahead ['20', '40']\nlookbehind ['30', '5']\nneg lookbehind ['5', '7']\npassword check True\nnon-greedy ['<a>', '<b>'] ['<a><b>']\nbackref in pattern ['a', 'b', 'n']\nalternation order a\nescape a\\.b\\*c\\? True\nunicode word ['naïve', 'café']\nASCII flag ['naïve']\nbytes pattern [b'1', b'2']\nexpand ba\npossessive/atomic aaab aab\nbad pattern PatternError\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/stdlib/re_module.py\", line 63, in <module>\n    print(\"conditional group\", [bool(re.fullmatch(r\"(<)?\\w+(?(1)>)\", s)) for s in [\"<a>\", \"a\", \"<a\"]])\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/re/__init__.py\", line 172, in fullmatch\n    return _compile(pattern, flags).fullmatch(string)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_sre.py\", line 839, in fullmatch\n    return self._match_at(string, pos, endpos, anchored_end=True)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_sre.py\", line 831, in _match_at\n    return self._match_at_engine(engine, pos, anchored_end)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_sre.py\", line 823, in _match_at_engine\n    found = engine._search_state(0, pos, marks, anchored_end)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_sre.py\", line 496, in _search_state\n    return self._repeat_search(pc, pos, marks, anchored_end)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_sre.py\", line 584, in _repeat_search\n    found = self._search_state(following, at, seen_marks, anchored_end)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_sre.py\", line 496, in _search_state\n    return self._repeat_search(pc, pos, marks, anchored_end)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_sre.py\", line 558, in _repeat_search\n    found = self._search_state(\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_sre.py\", line 366, in _search_state\n    op = code[pc]\nIndexError: sequence index out of range\n"
-exit_code = 1
-
-["stdlib/statistics_module"]
-phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'hypot'"
-stdout = ""
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/stdlib/statistics_module.py\", line 2, in <module>\n    import statistics as st\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/statistics.py\", line 141, in <module>\n    from math import hypot, sqrt, fabs, exp, erfc, tau, log, fsum, sumprod\nAttributeError: 'module' object has no attribute 'hypot'\n"
-exit_code = 1
-
-["stdlib/string_textwrap"]
-phase = "run"
-reason = "native output differs from CPython"
-stdout = "substitute tim likes kiwis; cost: $3\nsubstitute mapping+kw kw wins likes figs; cost: $5\nmissing key KeyError what\nsafe_substitute bo likes ${what}s; cost: $$amount\ninvalid placeholder ValueError\nsafe invalid bad $ sign 1\ntemplate attrs $who likes ${what}s; cost: $$$amount\nget_identifiers ['a', 'b']\nis_valid True False\ncustom delimiter ed is 7yo, 100%\nascii_letters abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\nlowercase/uppercase abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ\ndigits 0123456789 0123456789abcdefABCDEF 01234567\npunctuation !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~\nwhitespace ' \\t\\n\\r\\x0b\\x0c'\nprintable len 100\ncapwords Hello World Of Python\ncapwords sep A-B-C d\ncaesar Hhoor\nFormatter a-   7\nFormatter parse [('a', 'b', '>3', 'r'), ('c', '', '', None)]\nwrap ['            ']\nfill\n            \nwrap long word [' ']\nwrap no break [' ']\nwrap indents ['*    ']\nwrap empty [] []\nwrap max_lines ['            ']\nwrap hyphen []\nwrap tabs []\ndedent '\\ndef f():\\n    return 1\\n  # odd indent\\n'\ndedent mixed '  a\\n\\tb\\n'\ndedent blank lines 'x\\n\\ny\\n'\nindent '> a\\n\\n> b\\n'\nindent predicate '+a\\n+\\n+b'\nshorten             \nshorten placeholder \nshorten fits  \nTextWrapper ['    ']\n"
-stderr = ""
-exit_code = 0
-
-["stdlib/typing_module"]
-phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'compile'"
-stdout = "NamedTuple ann@eng:L1 Employee(name='ann', dept='eng', level=1)\nNamedTuple promote ann@eng:L2 1\nNamedTuple fields ('name', 'dept', 'level') {'dept': 'eng', 'level': 1}\nNamedTuple annotations [('name', 'str'), ('dept', 'str'), ('level', 'int')]\nNamedTuple is tuple True True 3\nNamedTuple missing arg TypeError\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/stdlib/typing_module.py\", line 60, in <module>\n    class Show(TypedDict):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/typing.py\", line 3184, in __new__\n    own_annotations = _lazy_annotationlib.call_annotate_function(\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 836, in call_annotate_function\n    out[key] = ref.evaluate(format=Format.FORWARDREF)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 205, in evaluate\n    code = self.__forward_code__\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 287, in __forward_code__\n    self.__code__ = compile(_rewrite_star_unpack(arg), \"<string>\", \"eval\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 36, in _compile\n    from _ast_parse import compile as compile_owned\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 4, in <module>\n    from mule import ast as syntax\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/mule/ast.py\", line 845, in <module>\n    @dataclass(slots=True)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1466, in wrap\n    return _process_class(cls, init, repr, eq, order, unsafe_hash,\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1058, in _process_class\n    cls_annotations = annotationlib.get_annotations(\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1023, in get_annotations\n    ann = _get_and_call_annotate(obj, format)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1175, in _get_and_call_annotate\n    ann = call_annotate_function(annotate, format, owner=obj)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 836, in call_annotate_function\n    out[key] = ref.evaluate(format=Format.FORWARDREF)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 205, in evaluate\n    code = self.__forward_code__\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 287, in __forward_code__\n    self.__code__ = compile(_rewrite_star_unpack(arg), \"<string>\", \"eval\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 36, in _compile\n    from _ast_parse import compile as compile_owned\nAttributeError: 'module' object has no attribute 'compile'\n"
 exit_code = 1
 
 ["strings/bytearray_mutation"]
@@ -387,9 +100,9 @@ exit_code = 1
 
 ["strings/bytes_bytearray_memoryview"]
 phase = "run"
-reason = "TypeError: object has no len"
+reason = "TypeError: unsupported operand type(s) for +: 'bytes' and 'bytes'"
 stdout = "bytes_construct: b'' b'\\x00\\x00\\x00' b'ABCD' b'hi' b'Hello'\nbytes_index_slice: 4 65 68 b'BC' b'DCBA'\nbytes_ops: b'abcd' b'xyxy' True True False\nbytes_methods: Hello 0aff b'abc' [b'a', b'b', b'c'] b'p-q' b'baNAna' 4 5 True True\nbytearray_mutation: b'ABcdEF' 71 6 65 ABcdEF\nbytearray_slice_del: b'XYdEF'\nmemoryview_ro: 4 97 100 b'bc' b'abcd' [97, 98, 99, 100] 61626364\nmemoryview_rw: b'WxYZ' [87, 120, 89, 90]\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/bytes_bytearray_memoryview.py\", line 81, in <module>\n    len(mb),\nTypeError: object has no len\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/bytes_bytearray_memoryview.py\", line 80, in <module>\n    mb.tag(),\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/bytes_bytearray_memoryview.py\", line 66, in tag\n    return b\"tag:\" + self\nTypeError: unsupported operand type(s) for +: 'bytes' and 'bytes'\n"
 exit_code = 1
 
 ["strings/encode_decode"]
@@ -422,16 +135,9 @@ exit_code = 0
 
 ["strings/percent_format"]
 phase = "run"
-reason = "TypeError: 'float' object cannot be interpreted as an integer"
-stdout = "s r a é'|\"é'\"|\"\\xe9'\"\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/percent_format.py\", line 4, in <module>\n    print(\"d i u\", \"%d %i %u\" % (42, -7, 3), \"%d\" % 3.99, \"%d\" % True)\nTypeError: 'float' object cannot be interpreted as an integer\n"
-exit_code = 1
-
-["strings/repr_tricky"]
-phase = "run"
-reason = "AttributeError: 'module' object has no attribute 'compile'"
-stdout = "repr 'plain' ascii 'plain' len 5\nrepr \"it's\" ascii \"it's\" len 4\nrepr 'say \"hi\"' ascii 'say \"hi\"' len 8\nrepr 'both \\' and \"' ascii 'both \\' and \"' len 12\nrepr 'back\\\\slash' ascii 'back\\\\slash' len 10\nrepr 'tab\\tnewline\\ncr\\r' ascii 'tab\\tnewline\\ncr\\r' len 15\nrepr '\\x00\\x01\\x1f\\x7f' ascii '\\x00\\x01\\x1f\\x7f' len 4\nrepr '\\x80\\x9f\\xa0\\xad' ascii '\\x80\\x9f\\xa0\\xad' len 4\nrepr 'é ñ 中 😀' ascii '\\xe9 \\xf1 \\u4e2d \\U0001f600' len 7\nrepr '\\u200b\\u200e\\u2028\\u2029' ascii '\\u200b\\u200e\\u2028\\u2029' len 4\nrepr '\\ufeff�\\uffff' ascii '\\ufeff\\ufffd\\uffff' len 3\nrepr '\\U000e0001\\U0010ffff' ascii '\\U000e0001\\U0010ffff' len 2\nrepr '\\ud800' ascii '\\ud800' len 1\nrepr '' ascii '' len 0\nrepr \"'\" ascii \"'\" len 1\nrepr '\"' ascii '\"' len 1\nrepr '\\'\"' ascii '\\'\"' len 2\nrepr \"\\\\'\" ascii \"\\\\'\" len 2\nrepr '\\x07\\x08\\x0b\\x0c' ascii '\\x07\\x08\\x0b\\x0c' len 4\nrepr '́' ascii '\\u0301' len 1\nrepr 'á' ascii 'a\\u0301' len 2\nrepr '\\xad' ascii '\\xad' len 1\nrepr '\\u3000' ascii '\\u3000' len 1\nrepr of repr '\"a\\'b\"'\n"
-stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/repr_tricky.py\", line 32, in <module>\n    print(\"eval roundtrip\", all(eval(repr(c)) == c for c in cases))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/repr_tricky.py\", line 32, in <genexpr>\n    print(\"eval roundtrip\", all(eval(repr(c)) == c for c in cases))\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 50, in _eval\n    from _ast_parse import evaluate as eval_owned\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/_ast_parse.py\", line 4, in <module>\n    from mule import ast as syntax\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/mule/ast.py\", line 845, in <module>\n    @dataclass(slots=True)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1466, in wrap\n    return _process_class(cls, init, repr, eq, order, unsafe_hash,\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/dataclasses.py\", line 1058, in _process_class\n    cls_annotations = annotationlib.get_annotations(\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1023, in get_annotations\n    ann = _get_and_call_annotate(obj, format)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 1175, in _get_and_call_annotate\n    ann = call_annotate_function(annotate, format, owner=obj)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 836, in call_annotate_function\n    out[key] = ref.evaluate(format=Format.FORWARDREF)\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 205, in evaluate\n    code = self.__forward_code__\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/annotationlib.py\", line 287, in __forward_code__\n    self.__code__ = compile(_rewrite_star_unpack(arg), \"<string>\", \"eval\")\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/stdlib/ast.py\", line 36, in _compile\n    from _ast_parse import compile as compile_owned\nAttributeError: 'module' object has no attribute 'compile'\n"
+reason = "ValueError: unknown format code 'F' for object of type 'float'"
+stdout = "s r a é'|\"é'\"|\"\\xe9'\"\nd i u 42 -7 3 3 1\no x X 10 ff FF 0o10 0xff 0XFF -ff\n"
+stderr = "Traceback (most recent call last):\n  File \"/home/jvanwinkle/repos/mule-worktrees/conformance-builtin-types/conformance/strings/percent_format.py\", line 6, in <module>\n    print(\"e E f F\", \"%e %E\" % (12345.678, 0.000123), \"%f %F\" % (1.5, float(\"inf\")))\nValueError: unknown format code 'F' for object of type 'float'\n"
 exit_code = 1
 
 ["strings/str_format_method"]

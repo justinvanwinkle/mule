@@ -605,11 +605,17 @@ unsafe fn direct_class(bases: &[Value], namespace: Value, keywords: Value) -> bo
         if builtin_type(Builtin::Tuple).is_null() {
             return true;
         }
-        // Implicit class/static methods and __set_name__ are applied by type.__new__.
+        // Implicit class/static methods, __slots__, and __set_name__ are applied by type.__new__.
+        let slots_ready = !object::lookup(
+            crate::sequences::mule_protocol_globals(),
+            "except_star_finish",
+        )
+        .is_null();
         !bindings.iter().any(|(name, value)| {
             name == "__init_subclass__"
                 || name == "__class_getitem__"
                 || name == "__new__"
+                || (slots_ready && name == "__slots__")
                 || layout_of_class(class_of_value(value))
                     .is_some_and(|layout| layout.find("__set_name__").is_some())
         })
@@ -742,17 +748,25 @@ unsafe fn attribute_kind(value: Value) -> usize {
 
 fn encoded(layout: &ClassLayout, attribute: &str, cache: *mut AttrCache) -> Option<usize> {
     unsafe {
+        let mut class_is_data_descriptor = false;
         let class_attribute = layout.find(attribute).map(|(owner, depth, index)| {
-            let kind = attribute_kind(owner.attributes[index].1);
+            let value = owner.attributes[index].1;
+            let kind = attribute_kind(value);
+            if is_data_descriptor(value)
+                && !instance_layout(value).is_some_and(|l| l.name == "member_descriptor")
+            {
+                class_is_data_descriptor = true;
+            }
             (((depth << DEPTH_SHIFT) | index) << SHIFT) | kind
         });
-        let resolved = match class_attribute {
-            Some(encoded) if encoded & KIND == DATA_DESCRIPTOR => Some(encoded),
-            _ => layout
+        let resolved = if class_is_data_descriptor {
+            class_attribute
+        } else {
+            layout
                 .field_lookup
                 .get(attribute)
                 .map(|index| (index << SHIFT) | FIELD)
-                .or(class_attribute),
+                .or(class_attribute)
         };
         if let Some(encoded) = resolved {
             store_cached(layout, cache, encoded);
@@ -1357,8 +1371,27 @@ pub unsafe fn construct(class: Value, args: &[Value]) -> Value {
 }
 
 /// A new instance of `class` with every field unset.
+pub unsafe fn check_not_abstract(layout: &ClassLayout) -> bool {
+    unsafe {
+        if let Some(&index) = layout.attribute_lookup.get("__abstractmethods__") {
+            let abs = layout.attributes[index].1;
+            if !abs.is_null() && object::truth(abs) == Some(true) {
+                object::error(
+                    "TypeError",
+                    &format!("Can't instantiate abstract class {}", layout.name),
+                );
+                return false;
+            }
+        }
+        true
+    }
+}
+
 unsafe fn allocate(class: Value, layout: &ClassLayout) -> Option<Value> {
     unsafe {
+        if !check_not_abstract(layout) {
+            return None;
+        }
         let mut fields = Vec::new();
         if fields.try_reserve_exact(layout.fields.len()).is_err() {
             object::error("MemoryError", "instance slot allocation failed");
@@ -1693,6 +1726,55 @@ unsafe fn create_class_with(
             );
             return std::ptr::null_mut();
         };
+        if bases.len() > 1 {
+            let has_own_slots = |cls: Value| -> bool {
+                let Some(layout) = layout_of_class(cls) else {
+                    return false;
+                };
+                let base_slots = layout
+                    .base
+                    .is_null()
+                    .then_some(0)
+                    .or_else(|| {
+                        layout_of_class(layout.base)
+                            .map(|b| b.slot_fields.iter().filter(|&&s| s).count())
+                    })
+                    .unwrap_or(0);
+                let own_slots = layout.slot_fields.iter().filter(|&&s| s).count();
+                own_slots > base_slots
+            };
+            let solid_base = |mut cls: Value| -> Value {
+                while !cls.is_null() {
+                    if has_own_slots(cls) {
+                        return cls;
+                    }
+                    let Some(layout) = layout_of_class(cls) else {
+                        break;
+                    };
+                    if layout.base.is_null() {
+                        return cls;
+                    }
+                    cls = layout.base;
+                }
+                cls
+            };
+            let is_sub = |sub: Value, sup: Value| -> bool {
+                sub == sup
+                    || layout_of_class(sub).is_some_and(|l| l.mro.contains(&sup))
+            };
+            let mut winner = solid_base(bases[0]);
+            for &candidate in &bases[1..] {
+                let solid = solid_base(candidate);
+                if is_sub(winner, solid) {
+                    continue;
+                } else if is_sub(solid, winner) {
+                    winner = solid;
+                } else {
+                    object::error("TypeError", "multiple bases have instance lay-out conflict");
+                    return std::ptr::null_mut();
+                }
+            }
+        }
         let inherited = if base.is_null() {
             None
         } else {
@@ -1725,7 +1807,9 @@ unsafe fn create_class_with(
                 }
             }
         }
-        let slots = Some(bindings.get("__slots__")).filter(|value| !value.is_null());
+        let slots = Some(bindings.get("__mule_slots__"))
+            .filter(|value| !value.is_null())
+            .or_else(|| Some(bindings.get("__slots__")).filter(|value| !value.is_null()));
         let declared_slots =
             slots.map_or_else(Vec::new, |slots| declared_slot_names(class_name, slots));
         for index in 0..field_count as usize {
@@ -1755,6 +1839,9 @@ unsafe fn create_class_with(
         let mut attributes: Vec<(String, Value)> = Vec::with_capacity(bindings.len());
         let mut attribute_lookup: HashMap<String, usize> = HashMap::default();
         for (attribute, value) in bindings.iter() {
+            if attribute == "__mule_slots__" {
+                continue;
+            }
             if let Some(index) = attribute_lookup.get(attribute) {
                 let old = attributes[*index].1;
                 attributes[*index].1 = object::retain(value);
@@ -2516,6 +2603,23 @@ unsafe fn set_attribute_with(
                 let Some(attribute) = name(attribute) else {
                     return -1;
                 };
+                let meta = layout.metaclass;
+                if hooks && !meta.is_null() && meta != builtin_type(Builtin::Type) {
+                    if let Some(meta_layout) = layout_of_class(meta) {
+                        let setter = hook(meta_layout, Special::SetAttr);
+                        if !setter.is_null() {
+                            let attribute = text(attribute);
+                            let result =
+                                call_attribute(setter, receiver, meta, &[attribute, value]);
+                            object::release(attribute);
+                            if result.is_null() {
+                                return -1;
+                            }
+                            object::release(result);
+                            return 0;
+                        }
+                    }
+                }
                 return set_class_attribute(receiver, attribute, value);
             }
             let setter = if !hooks {
@@ -2587,6 +2691,41 @@ unsafe fn set_attribute_with(
                     object::release(result);
                     return 0;
                 }
+                Some(VALUE) => {
+                    let position = index.unwrap();
+                    let descriptor = layout
+                        .ancestor(position >> DEPTH_SHIFT)
+                        .attributes[position & INDEX_MASK]
+                        .1;
+                    if is_data_descriptor(descriptor) {
+                        let result = special_method(descriptor, "__set__", &[receiver, value]);
+                        if result.is_null() {
+                            if !object::has_error() {
+                                object::error("AttributeError", "read-only attribute");
+                            }
+                            return -1;
+                        }
+                        object::release(result);
+                        return 0;
+                    }
+                    let Some(attribute) = name(attribute) else {
+                        return -1;
+                    };
+                    if layout.dict_allowed {
+                        if let Data::Instance { attributes, .. } = &mut (*receiver).data {
+                            if attributes.is_null() {
+                                *attributes = object::namespace();
+                            }
+                            return if object::bind(*attributes, attribute, value) { 0 } else { -1 };
+                        }
+                        let attributes = object::typed_attributes(receiver, true);
+                        if !attributes.is_null() {
+                            return if object::bind(attributes, attribute, value) { 0 } else { -1 };
+                        }
+                    }
+                    missing(Some(layout), true, attribute);
+                    return -1;
+                }
                 _ => {
                     let Some(attribute) = name(attribute) else {
                         return -1;
@@ -2612,7 +2751,7 @@ unsafe fn set_attribute_with(
         if let Some(layout) = layout_of_class(owner) {
             if let Some((defining, _, index)) = layout.find(name(attribute).unwrap_or("")) {
                 let descriptor = defining.attributes[index].1;
-                if attribute_kind(descriptor) == DATA_DESCRIPTOR {
+                if is_data_descriptor(descriptor) {
                     let result = special_method(descriptor, "__set__", &[receiver, value]);
                     if result.is_null() {
                         return -1;
@@ -3122,14 +3261,60 @@ unsafe fn delete_attribute_with(receiver: Value, attribute: &str, hooks: bool) -
             if let Some(layout) = layout_of_class(owner) {
                 if let Some((defining, _, index)) = layout.find(attribute) {
                     let descriptor = defining.attributes[index].1;
-                    if attribute_kind(descriptor) == DATA_DESCRIPTOR {
+                    if is_data_descriptor(descriptor) {
                         return special_method(descriptor, "__delete__", &[receiver]);
+                    }
+                }
+            }
+            if !receiver.is_null() && !object::is_fixnum(receiver) {
+                match &mut (*receiver).data {
+                    Data::Namespace(bindings) => {
+                        let removed = bindings.take(attribute);
+                        if !removed.is_null() {
+                            object::release(removed);
+                            return object::none_value();
+                        }
+                    }
+                    Data::Function { attributes, .. } if !attributes.is_null() => {
+                        let Data::Namespace(bindings) = &mut (**attributes).data else {
+                            unreachable!()
+                        };
+                        let removed = bindings.take(attribute);
+                        if !removed.is_null() {
+                            object::release(removed);
+                            return object::none_value();
+                        }
+                    }
+                    _ => {
+                        let typed = object::typed_attributes(receiver, false);
+                        if !typed.is_null() {
+                            let Data::Namespace(bindings) = &mut (*typed).data else {
+                                unreachable!()
+                            };
+                            let removed = bindings.take(attribute);
+                            if !removed.is_null() {
+                                object::release(removed);
+                                return object::none_value();
+                            }
+                        }
                     }
                 }
             }
             return missing(None, false, &attribute);
         };
         if !instance {
+            let meta = layout.metaclass;
+            if hooks && !meta.is_null() && meta != builtin_type(Builtin::Type) {
+                if let Some(meta_layout) = layout_of_class(meta) {
+                    let deleter = meta_layout.method("__delattr__");
+                    if !deleter.is_null() {
+                        let attribute = text(attribute);
+                        let result = call_attribute(deleter, receiver, meta, &[attribute]);
+                        object::release(attribute);
+                        return result;
+                    }
+                }
+            }
             let Data::Class(layout) = &mut (*receiver).data else {
                 unreachable!();
             };

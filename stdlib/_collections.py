@@ -171,6 +171,8 @@ class deque:
             if self._mutations != mutations:
                 raise RuntimeError("deque mutated during iteration")
             yield self._items[self._slot(index)]
+        if self._mutations != mutations:
+            raise RuntimeError("deque mutated during iteration")
 
     def __reversed__(self):
         for index in range(self._size - 1, -1, -1):
@@ -187,6 +189,26 @@ class deque:
             return NotImplemented
         return list(self) == list(other)
 
+    def __lt__(self, other):
+        if not isinstance(other, deque):
+            return NotImplemented
+        return list(self) < list(other)
+
+    def __le__(self, other):
+        if not isinstance(other, deque):
+            return NotImplemented
+        return list(self) <= list(other)
+
+    def __gt__(self, other):
+        if not isinstance(other, deque):
+            return NotImplemented
+        return list(self) > list(other)
+
+    def __ge__(self, other):
+        if not isinstance(other, deque):
+            return NotImplemented
+        return list(self) >= list(other)
+
     def __add__(self, other):
         if not isinstance(other, deque):
             raise TypeError(f'can only concatenate deque (not "{type(other).__name__}") to deque')
@@ -196,6 +218,26 @@ class deque:
 
     def __iadd__(self, other):
         self.extend(other)
+        return self
+
+    def __mul__(self, count):
+        if not hasattr(count, "__index__"):
+            raise TypeError(f"can't multiply sequence by non-int of type '{type(count).__name__}'")
+        n = count.__index__()
+        items = list(self) * (n if n > 0 else 0)
+        return deque(items, maxlen=self._maxlen)
+
+    def __rmul__(self, count):
+        return self.__mul__(count)
+
+    def __imul__(self, count):
+        if not hasattr(count, "__index__"):
+            raise TypeError(f"can't multiply sequence by non-int of type '{type(count).__name__}'")
+        n = count.__index__()
+        items = list(self)
+        self.clear()
+        if n > 0:
+            self.extend(items * n)
         return self
 
     def __copy__(self):

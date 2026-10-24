@@ -65,6 +65,7 @@ from _mule_native import overriding_new
 from _mule_native import class_lookup_default
 from _mule_native import bind_instance_attribute
 from _mule_native import math_fabs
+from _mule_native import set_instance_field
 from _mule_native import type_of
 from _slice import is_slice, positions, slice
 
@@ -797,6 +798,8 @@ def delitem(value, index):
         return
     method = _delitem_method(value)
     if method is None:
+        if _setitem_method(value) is not None:
+            raise AttributeError("__delitem__")
         raise TypeError("object does not support item deletion")
     method(index)
 
@@ -960,6 +963,9 @@ class ReverseIterator:
                 self.index = -1
         raise StopIteration
 
+    def __length_hint__(self):
+        return self.index + 1 if self.index >= 0 else 0
+
 
 ReverseIterator.__name__ = "reversed"
 ReverseIterator.__qualname__ = "reversed"
@@ -993,10 +999,28 @@ def pow(base, exp, mod=None):
     if mod is None:
         return base**exp
     base_cls = type(base)
+    exp_cls = type(exp)
+    if (
+        base_cls is not exp_cls
+        and issubclass(exp_cls, base_cls)
+        and class_lookup_default(exp_cls, "__rpow__", None)
+        is not class_lookup_default(base_cls, "__rpow__", None)
+    ):
+        rmethod = getattr(exp_cls, "__rpow__", None)
+        if rmethod is not None and rmethod is not getattr(int, "__rpow__", None):
+            result = rmethod(exp, base, mod)
+            if result is not NotImplemented:
+                return result
     if base_cls is not int and base_cls is not bool:
         method = getattr(base_cls, "__pow__", None)
         if method is not None and method is not getattr(int, "__pow__", None):
             result = method(base, exp, mod)
+            if result is not NotImplemented:
+                return result
+    if exp_cls is not base_cls and exp_cls is not int and exp_cls is not bool:
+        rmethod = getattr(exp_cls, "__rpow__", None)
+        if rmethod is not None and rmethod is not getattr(int, "__rpow__", None):
+            result = rmethod(exp, base, mod)
             if result is not NotImplemented:
                 return result
     if not (_integer_kind(base) and _integer_kind(exp) and _integer_kind(mod)):
@@ -1299,6 +1323,8 @@ def async_generator_yield(value):
 def _metaclass(bases, explicit):
     """The most derived metaclass among ``explicit`` and the bases' classes."""
     winner = type if explicit is None else explicit
+    if not is_class(winner):
+        return winner
     for base in bases:
         candidate = type(base)
         if issubclass(candidate, winner):
@@ -1356,7 +1382,10 @@ def prepare_class(name, bases, keywords):
     for key in keywords:
         if key != "metaclass":
             others[key] = keywords[key]
-    return metaclass.__prepare__(name, bases, **others)
+    prepare = getattr(metaclass, "__prepare__", None)
+    if prepare is None:
+        return {}
+    return prepare(name, bases, **others)
 
 
 def build_class(name, bases, namespace, keywords, fields):
@@ -1377,7 +1406,8 @@ def build_class(name, bases, namespace, keywords, fields):
             namespace[key] = value
     if changed:
         namespace["__orig_bases__"] = original
-    namespace["__mule_fields__"] = fields
+    if is_class(metaclass):
+        namespace["__mule_fields__"] = fields
     return metaclass(name, bases, namespace, **others)
 
 
@@ -1391,9 +1421,9 @@ def make_interpolation(value, expression, conversion, format_spec):
 
 def make_slice(start, stop, step):
     value = _allocate_instance(slice)
-    value.start = start
-    value.stop = stop
-    value.step = step
+    set_instance_field(value, "start", start)
+    set_instance_field(value, "stop", stop)
+    set_instance_field(value, "step", step)
     return value
 
 
@@ -1451,6 +1481,8 @@ def setitem(value, index, item):
         return
     method = _setitem_method(value)
     if method is None:
+        if _delitem_method(value) is not None:
+            raise AttributeError("__setitem__")
         raise TypeError("object does not support item assignment")
     method(index, item)
 
@@ -1489,6 +1521,15 @@ class SequenceIterator:
         self.index = index + 1
         return item
 
+    def __length_hint__(self):
+        if self.exhausted:
+            return 0
+        try:
+            remaining = len(self.sequence) - self.index
+        except TypeError:
+            return 0
+        return remaining if remaining > 0 else 0
+
 
 class StorageIterator(SequenceIterator):
     """Builtin sequence iteration reads storage, independently of __getitem__."""
@@ -1508,6 +1549,12 @@ class StorageIterator(SequenceIterator):
         item = _storage_read(self.sequence, index)
         self.index = index + 1
         return item
+
+    def __length_hint__(self):
+        if self.exhausted:
+            return 0
+        remaining = _storage_length(self.sequence) - self.index
+        return remaining if remaining > 0 else 0
 
 
 SequenceIterator.__name__ = "iterator"
@@ -2510,6 +2557,9 @@ class BytesStorage:
     def __iter__(self):
         return SequenceIterator(self)
 
+    def __buffer__(self, flags, /):
+        return memoryview(self)
+
     def __contains__(self, item, /):
         return _bytes_find(self, item, 0, None) >= 0
 
@@ -2870,6 +2920,17 @@ class RangeIterator:
             raise StopIteration
         self.current = current + self.step
         return current
+
+    def __length_hint__(self):
+        if self.exhausted:
+            return 0
+        if self.step > 0:
+            if self.current >= self.stop:
+                return 0
+            return (self.stop - self.current - 1) // self.step + 1
+        if self.current <= self.stop:
+            return 0
+        return (self.current - self.stop - 1) // (-self.step) + 1
 
 
 RangeIterator.__name__ = "range_iterator"
@@ -3416,6 +3477,9 @@ class bytearray:
         iterator.exhausted = False
         return iterator
 
+    def __buffer__(self, flags, /):
+        return memoryview(self)
+
     def __contains__(self, item, /):
         return _bytes_find(self.values, item, 0, None) >= 0
 
@@ -3925,6 +3989,16 @@ class memoryview:
     def __iter__(self):
         return SequenceIterator(self)
 
+    def __buffer__(self, flags, /):
+        self._check()
+        return memoryview(self)
+
+    def __hash__(self):
+        self._check()
+        if not self.readonly:
+            raise ValueError("cannot hash writable memoryview object")
+        return hash(self.tobytes())
+
     def __eq__(self, other):
         if _type_name(other) in ("bytes", "bytearray", "memoryview"):
             if _type_name(other) == "memoryview":
@@ -4033,10 +4107,16 @@ def compile(
     )
 
 
-def eval(expression, globals=None, locals=None, /):
+def eval(expression, globals=None, locals=None):
     import ast as _ast
 
     return _ast._eval(expression, globals, locals)
+
+
+def exec(source, globals=None, locals=None, *, closure=None):
+    import ast as _ast
+
+    return _ast._exec(source, globals, locals, closure=closure)
 
 
 _install_storage(list, tuple, str, bytes, dict)
@@ -4044,6 +4124,7 @@ _install_storage(list, tuple, str, bytes, dict)
 _install_builtin("open", open)
 _install_builtin("compile", compile)
 _install_builtin("eval", eval)
+_install_builtin("exec", exec)
 _install_builtin("__import__", __import__)
 _install_builtin("range", range)
 _install_builtin("enumerate", enumerate)
@@ -4182,6 +4263,9 @@ class NotImplementedType:
     def __repr__(self):
         return "NotImplemented"
 
+    def __bool__(self):
+        raise TypeError("NotImplemented should not be used in a boolean context")
+
 
 NotImplemented = NotImplementedType()
 register_not_implemented(NotImplemented)
@@ -4317,6 +4401,12 @@ def call_with_locals(callee, snapshot):
     if callee is dir:
         return sorted(snapshot)
     return callee()
+
+
+def call_with_eval_context(callee, source, globals_ns, locals_ns):
+    if callee is eval or callee is exec:
+        return callee(source, globals_ns, locals_ns)
+    return callee(source)
 
 
 def globals_dict(namespace):
