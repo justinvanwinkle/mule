@@ -245,6 +245,14 @@ impl Namespace {
 /// The offsets compiled code uses are the `*_OFFSET` and `*_TAG` constants
 /// after this enum, mirrored in `mule/compiler/vops.py`; the runtime's
 /// tests check them against real objects.
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FunctionKind {
+    Function = 0,
+    Builtin = 1,
+    WrapperDescriptor = 2,
+}
+
 #[repr(C)]
 pub enum Data {
     None,
@@ -282,6 +290,7 @@ pub enum Data {
         code_info: *const crate::traceback::CodeInfo,
         positional_defaults: Value,
         keyword_defaults: Value,
+        kind: FunctionKind,
     },
     Args(ValueBuffer, Value, Value),
     ArgumentView {
@@ -1167,6 +1176,7 @@ pub unsafe fn function(globals: Value, entry: Native, name: &str) -> Value {
             code_info: std::ptr::null(),
             positional_defaults: std::ptr::null_mut(),
             keyword_defaults: std::ptr::null_mut(),
+            kind: FunctionKind::Function,
         })
     }
 }
@@ -1218,6 +1228,7 @@ pub unsafe fn function_attribute(function: Value, attribute: &str) -> Value {
             closure,
             closure_cells,
             code_info,
+            kind,
             ..
         } = &(*function).data
         else {
@@ -1240,6 +1251,9 @@ pub unsafe fn function_attribute(function: Value, attribute: &str) -> Value {
                 new_value(Data::Text(crate::text::Text::from_rust_str(qualname), std::ptr::null_mut(), std::ptr::null_mut()))
             }
             "__module__" => {
+                if *kind == FunctionKind::Builtin {
+                    return new_value(Data::Text(crate::text::Text::from_rust_str("builtins"), std::ptr::null_mut(), std::ptr::null_mut()));
+                }
                 if globals.is_null() {
                     return retain(none_value());
                 }
@@ -2588,7 +2602,7 @@ fn ascii_escape(code: u32) -> String {
         format!("\\U{code:08x}")
     }
 }
-fn float_repr(value: f64) -> String {
+pub(crate) fn float_repr(value: f64) -> String {
     if value.is_nan() {
         return "nan".into();
     }
@@ -2688,7 +2702,13 @@ pub unsafe fn formatted_value(
                 result.push(b'}');
                 result
             }
-            Data::Function { name, .. } => format!("<native function {name}>").into_bytes(),
+            Data::Function { name, globals, kind, .. } => {
+                if globals.is_null() || *kind == FunctionKind::Builtin {
+                    format!("<built-in function {name}>").into_bytes()
+                } else {
+                    format!("<native function {name}>").into_bytes()
+                }
+            }
             Data::ForeignPointerVector { .. } => b"<foreign pointer vector>".to_vec(),
             Data::ForeignCString { .. } => b"<foreign C string pointer>".to_vec(),
             Data::Class(_) => {

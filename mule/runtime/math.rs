@@ -224,18 +224,25 @@ unsafe extern "C" fn float_format(_: Value, args: Value) -> Value {
             return null_mut();
         };
         if number.is_nan() {
-            let text = if kind == 2 || kind == 4 { "NAN" } else { "nan" };
-            return object::new_value(Data::Text(crate::text::Text::from_rust_str(text), std::ptr::null_mut(), std::ptr::null_mut()));
-        }
-        if number.is_infinite() {
-            let text = match (number < 0.0, kind == 2 || kind == 4) {
-                (true, true) => "-INF",
-                (true, false) => "-inf",
-                (false, true) => "INF",
-                (false, false) => "inf",
+            let text = match kind {
+                2 | 4 | 7 => "NAN",
+                5 => "nan%",
+                _ => "nan",
             };
             return object::new_value(Data::Text(crate::text::Text::from_rust_str(text), std::ptr::null_mut(), std::ptr::null_mut()));
         }
+        if number.is_infinite() {
+            let text = match (number < 0.0, kind) {
+                (true, 2 | 4 | 7) => "-INF",
+                (true, 5) => "-inf%",
+                (true, _) => "-inf",
+                (false, 2 | 4 | 7) => "INF",
+                (false, 5) => "inf%",
+                (false, _) => "inf",
+            };
+            return object::new_value(Data::Text(crate::text::Text::from_rust_str(text), std::ptr::null_mut(), std::ptr::null_mut()));
+        }
+        let raw_precision = precision;
         let precision = usize::try_from(precision).unwrap_or(6);
         let exponent_form = |number: f64, precision: usize, upper: bool| -> String {
             let formatted = format!("{:.*e}", precision, number.abs());
@@ -246,7 +253,7 @@ unsafe extern "C" fn float_format(_: Value, args: Value) -> Value {
         };
         let fixed = |number: f64, precision: usize| -> String { format!("{:.*}", precision, number.abs()) };
         let body = match kind {
-            0 => fixed(number, precision),
+            0 | 7 => fixed(number, precision),
             1 => exponent_form(number, precision, false),
             2 => exponent_form(number, precision, true),
             3 | 4 => {
@@ -283,16 +290,50 @@ unsafe extern "C" fn float_format(_: Value, args: Value) -> Value {
             }
             5 => format!("{}%", fixed(number * 100.0, precision)),
             _ => {
-                let mut text = format!("{}", number.abs());
-                if alternate && !text.contains('.') {
-                    text.push_str(".0");
+                if raw_precision < 0 {
+                    object::float_repr(number.abs())
+                } else {
+                    let total = if precision == 0 { 1 } else { precision };
+                    let exponent = if number == 0.0 {
+                        0
+                    } else {
+                        format!("{:.*e}", total - 1, number.abs())
+                            .split_once('e')
+                            .expect("exponent")
+                            .1
+                            .parse::<i32>()
+                            .expect("exponent value")
+                    };
+                    if exponent < -4 || exponent >= total as i32 {
+                        let mut text = exponent_form(number, total - 1, false);
+                        if !alternate {
+                            if let Some((mantissa, rest)) = text.split_once(['e', 'E']) {
+                                let mantissa = mantissa.trim_end_matches('0').trim_end_matches('.');
+                                text = format!("{mantissa}e{rest}");
+                            }
+                        }
+                        text
+                    } else {
+                        let decimals = (total as i32 - 1 - exponent) as usize;
+                        let mut text = fixed(number, decimals);
+                        if !alternate && text.contains('.') {
+                            let trimmed = text.trim_end_matches('0');
+                            if trimmed.ends_with('.') {
+                                text = format!("{trimmed}0");
+                            } else {
+                                text = trimmed.to_string();
+                            }
+                        }
+                        text
+                    }
                 }
-                text
             }
         };
-        let body = if (kind == 0 || kind == 5 || kind == 6) && alternate && !body.contains(['.', 'e', 'E']) {
+        let body = if alternate && !body.contains('.') {
             let mut body = body;
-            if kind == 5 {
+            if let Some(pos) = body.find(['e', 'E']) {
+                body.insert(pos, '.');
+            } else if kind == 5 {
                 body.insert(body.len() - 1, '.');
             } else {
                 body.push('.');

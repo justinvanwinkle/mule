@@ -1595,7 +1595,7 @@ def value_cell_clear(gen, vop):
 
 @define_vop("isinstance", translate=fndb.ISINSTANCE, results=(OBJECT,))
 def isinstance_(gen, vop):
-    """``isinstance(x, C)`` or ``isinstance(x, (A, B))`` without a tuple. The
+    """Single-class or multi-class ``isinstance`` without a tuple. The
     class operands are passed in a stack buffer; the runtime answers plain
     classes from the class pointer and its MRO, and only an
     ``__instancecheck__`` metaclass or a non-class reaches compiled code."""

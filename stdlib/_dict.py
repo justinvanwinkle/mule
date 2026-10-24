@@ -109,7 +109,7 @@ def hash(value, /):
     result = _integer_storage(result)
     if result < -(1 << 63) or result >= 1 << 63:
         return _integer_hash(result)
-    return result
+    return -2 if result == -1 else result
 
 
 def _integer_storage_kind(value):

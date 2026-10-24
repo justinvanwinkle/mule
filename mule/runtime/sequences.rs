@@ -169,12 +169,16 @@ pub unsafe fn binding(value: Value, name: &str) -> Value {
 pub unsafe extern "C" fn mule_install_builtin(name: Value, value: Value) -> Value {
     unsafe {
         // Builtin classes report the builtins module, wherever they are defined.
-        if !value.is_null() && !object::is_fixnum(value) && matches!(&(*value).data, Data::Class(_)) {
-            let module = object::new_value(Data::Text(crate::text::Text::from_rust_str("builtins"), std::ptr::null_mut(), std::ptr::null_mut()));
-            let status = crate::classes::mule_set_attr(value, c"__module__".as_ptr(), module);
-            object::release(module);
-            if status < 0 {
-                return null_mut();
+        if !value.is_null() && !object::is_fixnum(value) {
+            if matches!(&(*value).data, Data::Class(_)) {
+                let module = object::new_value(Data::Text(crate::text::Text::from_rust_str("builtins"), std::ptr::null_mut(), std::ptr::null_mut()));
+                let status = crate::classes::mule_set_attr(value, c"__module__".as_ptr(), module);
+                object::release(module);
+                if status < 0 {
+                    return null_mut();
+                }
+            } else if let Data::Function { kind, .. } = &mut (*value).data {
+                *kind = object::FunctionKind::Builtin;
             }
         }
         if !name.is_null() && !object::is_fixnum(name) {

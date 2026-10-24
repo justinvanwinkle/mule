@@ -858,11 +858,11 @@ class zip:
 
 
 class map:
-    def __init__(self, function, *iterables):
+    def __init__(self, function, *iterables, strict=False):
         if not iterables:
             raise TypeError("map() must have at least two arguments.")
         self.function = function
-        self.items = zip(*iterables)
+        self.items = zip(*iterables, strict=strict)
 
     def __iter__(self):
         return self
@@ -1089,7 +1089,7 @@ def callable(obj, /):
     if is_class(obj):
         return True
     kind = _type_name(obj)
-    if kind in ("function", "builtin_function_or_method", "method"):
+    if kind in ("function", "builtin_function_or_method", "wrapper_descriptor", "method"):
         return True
     missing = _binding_missing()
     return class_lookup_default(type_of(obj), "__call__", missing) is not missing
@@ -1486,10 +1486,40 @@ class StorageIterator(SequenceIterator):
         return remaining if remaining > 0 else 0
 
 
+class TupleIterator(StorageIterator):
+    pass
+
+
+class ListReverseIterator:
+    def __init__(self, sequence):
+        self.sequence = sequence
+        self.index = _storage_length(sequence) - 1
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        index = self.index
+        if index >= 0 and index < _storage_length(self.sequence):
+            self.index = index - 1
+            return _storage_read(self.sequence, index)
+        self.index = -1
+        raise StopIteration
+
+    def __length_hint__(self):
+        if self.index < 0 or self.index >= _storage_length(self.sequence):
+            return 0
+        return self.index + 1
+
+
 SequenceIterator.__name__ = "iterator"
 SequenceIterator.__qualname__ = "iterator"
 StorageIterator.__name__ = "list_iterator"
 StorageIterator.__qualname__ = "list_iterator"
+TupleIterator.__name__ = "tuple_iterator"
+TupleIterator.__qualname__ = "tuple_iterator"
+ListReverseIterator.__name__ = "list_reverseiterator"
+ListReverseIterator.__qualname__ = "list_reverseiterator"
 
 
 def _selected(sequence, bounds):
@@ -1666,7 +1696,8 @@ class _OrderedSequence:
         return a >= b
 
     def __iter__(self):
-        iterator = _allocate_instance(StorageIterator)
+        cls = TupleIterator if _tuple_storage(self) else StorageIterator
+        iterator = _allocate_instance(cls)
         iterator.sequence = self
         iterator.index = 0
         iterator.exhausted = False
@@ -1757,9 +1788,7 @@ class ListStorage(_OrderedSequence):
         return self
 
     def __reversed__(self):
-        result = self.copy()
-        _reverse_in_place(result)
-        return SequenceIterator(result)
+        return ListReverseIterator(self)
 
     def append(self, value):
         _storage_append(self, value)
@@ -2669,7 +2698,8 @@ def _iterate(value, membership):
     if cls is set or cls is frozenset:
         return set.__iter__(value)
     if cls is list or cls is tuple:
-        iterator = _allocate_instance(StorageIterator)
+        iter_cls = TupleIterator if cls is tuple else StorageIterator
+        iterator = _allocate_instance(iter_cls)
         iterator.sequence = value
         iterator.index = 0
         iterator.exhausted = False
@@ -2735,7 +2765,7 @@ def not_contains(container, item):
 
 def next_item(value):
     cls = _type_of(value)
-    if cls is StorageIterator:
+    if cls is StorageIterator or cls is TupleIterator:
         if value.exhausted:
             raise StopIteration
         index = value.index
@@ -2880,6 +2910,65 @@ class range:
 
     def __iter__(self):
         return RangeIterator(self.start, self.stop, self.step)
+
+    def __reversed__(self):
+        n = self.__len__()
+        if n == 0:
+            return RangeIterator(self.start, self.start, -self.step)
+        last = self.start + (n - 1) * self.step
+        return RangeIterator(last, last - n * self.step, -self.step)
+
+    def __bool__(self):
+        return self.__len__() > 0
+
+    def __eq__(self, other):
+        if _type_of(other) is not range and not is_instance(other, range):
+            return NotImplemented
+        n = self.__len__()
+        if n != other.__len__():
+            return False
+        if n == 0:
+            return True
+        if self.start != other.start:
+            return False
+        if n == 1:
+            return True
+        return self.step == other.step
+
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        return result if result is NotImplemented else not result
+
+    def __hash__(self):
+        n = self.__len__()
+        if n == 0:
+            return hash((0, None, None))
+        if n == 1:
+            return hash((1, self.start, None))
+        return hash((n, self.start, self.step))
+
+    def count(self, value):
+        value_type = type(value)
+        if value_type is int or value_type is bool:
+            return 1 if self.__contains__(value) else 0
+        found = 0
+        for item in self:
+            if item is value or item == value:
+                found += 1
+        return found
+
+    def index(self, value):
+        value_type = type(value)
+        if value_type is int or value_type is bool:
+            if self.__contains__(value):
+                return (value - self.start) // self.step
+            raise ValueError(f"{value!r} is not in range")
+        position = 0
+        for item in self:
+            if item is value or item == value:
+                return position
+            position += 1
+        raise ValueError(f"{value!r} is not in range")
 
     def __repr__(self):
         if self.step == 1:
@@ -3642,6 +3731,7 @@ class memoryview:
     def __init__(self, source):
         self.released = False
         self.format_code = "B"
+        self._shape = None
         if is_instance(source, memoryview):
             source._check()
             self.source = source.source
@@ -3650,6 +3740,7 @@ class memoryview:
             self.length = source.length
             self._readonly = source.readonly
             self.format_code = source.format_code
+            self._shape = source._shape
         elif is_instance(source, bytearray):
             self.source = source
             self.start = 0
@@ -3763,13 +3854,19 @@ class memoryview:
         result.format_code = format
         result.length = total // size
         result.step = size
+        result._shape = None
         if shape is not None:
-            if len(shape) != 1:
-                raise NotImplementedError(
-                    "memoryview: multi-dimensional casts are not supported"
-                )
-            if shape[0] != result.length:
+            shape_tuple = tuple(integer_index(dim) for dim in shape)
+            if not shape_tuple:
+                raise TypeError("memoryview: shape cannot be empty")
+            product = 1
+            for dim in shape_tuple:
+                if dim < 0:
+                    raise TypeError("memoryview: shape elements must be >= 0")
+                product *= dim
+            if product != result.length:
                 raise TypeError("memoryview: product(shape) * itemsize != buffer size")
+            result._shape = shape_tuple
         return result
 
     @property
@@ -3785,7 +3882,7 @@ class memoryview:
     @property
     def ndim(self):
         self._check()
-        return 1
+        return len(self._shape) if self._shape is not None else 1
 
     @property
     def nbytes(self):
@@ -3795,11 +3892,22 @@ class memoryview:
     @property
     def shape(self):
         self._check()
-        return (self.length,)
+        return self._shape if self._shape is not None else (self.length,)
 
     @property
     def strides(self):
         self._check()
+        if self._shape is not None:
+            itemsize = self._itemsize()
+            strides = []
+            stride = itemsize
+            index = len(self._shape) - 1
+            while index >= 0:
+                strides.append(stride)
+                stride *= self._shape[index]
+                index -= 1
+            strides.reverse()
+            return tuple(strides)
         return (self.step,)
 
     @property
@@ -3819,6 +3927,8 @@ class memoryview:
 
     def __len__(self):
         self._check()
+        if self._shape is not None:
+            return self._shape[0]
         return self.length
 
     def __getitem__(self, index):
@@ -3943,10 +4053,26 @@ class memoryview:
         while index < self.length:
             _storage_append(values, self._value_at(index))
             index += 1
+        if self._shape is not None and len(self._shape) > 1:
+            return _reshape_list(values, self._shape, 0)[0]
         return values
 
     def hex(self, sep=_HEX_MISSING, bytes_per_sep=1):
         return _hex_bytes(self.tobytes(), sep, bytes_per_sep)
+
+
+def _reshape_list(values, shape, offset):
+    dim = shape[0]
+    if len(shape) == 1:
+        return values[offset : offset + dim], offset + dim
+    rest = shape[1:]
+    result = []
+    index = 0
+    while index < dim:
+        sub, offset = _reshape_list(values, rest, offset)
+        result.append(sub)
+        index += 1
+    return result, offset
 
 
 def _view_index(view, index):
@@ -4152,8 +4278,19 @@ _install_builtin("EnvironmentError", OSError)
 _install_builtin("IOError", OSError)
 
 
+_NOT_IMPLEMENTED_SINGLETON = None
+
+
 class NotImplementedType:
     """The type of the ``NotImplemented`` singleton."""
+
+    __module__ = "builtins"
+
+    def __new__(cls):
+        global _NOT_IMPLEMENTED_SINGLETON
+        if _NOT_IMPLEMENTED_SINGLETON is None:
+            _NOT_IMPLEMENTED_SINGLETON = object.__new__(cls)
+        return _NOT_IMPLEMENTED_SINGLETON
 
     def __repr__(self):
         return "NotImplemented"
@@ -4167,8 +4304,19 @@ register_not_implemented(NotImplemented)
 _install_builtin("NotImplemented", NotImplemented)
 
 
+_ELLIPSIS_SINGLETON = None
+
+
 class ellipsis:
     """The type of the ``...`` singleton."""
+
+    __module__ = "builtins"
+
+    def __new__(cls):
+        global _ELLIPSIS_SINGLETON
+        if _ELLIPSIS_SINGLETON is None:
+            _ELLIPSIS_SINGLETON = object.__new__(cls)
+        return _ELLIPSIS_SINGLETON
 
     def __repr__(self):
         return "Ellipsis"

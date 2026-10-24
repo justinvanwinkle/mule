@@ -288,7 +288,7 @@ def _isinstance_answer(node) -> ValueType | None:
     return BOOLEAN
 
 
-def _constrain_isinstance(visitor, node, state, truth: bool) -> bool:
+def _constrain_instance_check(visitor, node, state, truth: bool) -> bool:
     """Narrow the tested variable on each branch. True narrows to the union of
     the matching classes; false removes each of them. A true branch the
     classes would make impossible is left unnarrowed, not dead: a metaclass
@@ -316,14 +316,14 @@ def _constrain_isinstance(visitor, node, state, truth: bool) -> bool:
     return True
 
 
-# ``isinstance(x, C)`` and ``isinstance(x, (A, B, ...))`` with the classes
+# ``isinstance`` calls with the classes
 # separated at the call site: ``(x, A, B, ...)``. The tuple is never built.
 ISINSTANCE = defknown(
     "%isinstance",
     "call",
     "unsafe",
     derive_type=_isinstance_answer,
-    constrain_branch=_constrain_isinstance,
+    constrain_branch=_constrain_instance_check,
 )
 ISINSTANCE_BUILTIN = defknown("isinstance", "call", "unsafe")
 SETATTR = defknown(

@@ -77,6 +77,7 @@ from _mule_native import set_function_annotate
 from _mule_native import set_function_annotations
 from _mule_native import byte_length
 from _mule_native import read_byte
+from _mule_native import mark_wrapper_descriptor
 
 # The runtime's conversion functions, captured before the classes below
 # take over their builtin names.
@@ -134,8 +135,10 @@ def _format_number(value, kind, format_spec):
     the float kinds format like float, ``s`` like str; signs, width,
     grouping, and alignment are applied here."""
     fill = " "
-    align = ">"
-    sign_option = "-"
+    align = ">" if kind != "str" else "<"
+    has_align = False
+    sign_option = ""
+    coerce_zero = False
     alternate = False
     zero = False
     width = 0
@@ -146,22 +149,26 @@ def _format_number(value, kind, format_spec):
     if index + 1 < size and format_spec[index + 1] in "<>^=":
         fill = format_spec[index]
         align = format_spec[index + 1]
+        has_align = True
         index += 2
     elif index < size and format_spec[index] in "<>^=":
         align = format_spec[index]
+        has_align = True
         index += 1
     if index < size and format_spec[index] in "+- ":
         sign_option = format_spec[index]
+        index += 1
+    if index < size and format_spec[index] == "z":
+        coerce_zero = True
         index += 1
     if index < size and format_spec[index] == "#":
         alternate = True
         index += 1
     if index < size and format_spec[index] == "0":
         zero = True
-        if fill == " ":
+        if not has_align:
             fill = "0"
-        if align == ">":
-            align = "="
+            align = "=" if kind != "str" else ">"
         index += 1
     while index < size and "0" <= format_spec[index] <= "9":
         width = width * 10 + "0123456789".index(format_spec[index])
@@ -171,33 +178,80 @@ def _format_number(value, kind, format_spec):
         index += 1
     if index < size and format_spec[index] == ".":
         index += 1
+        if index >= size or not ("0" <= format_spec[index] <= "9"):
+            raise ValueError("Format specifier missing precision")
         precision = 0
         while index < size and "0" <= format_spec[index] <= "9":
             precision = precision * 10 + "0123456789".index(format_spec[index])
             index += 1
-    conversion = format_spec[index] if index < size else ""
+    conversion = format_spec[index:] if index < size else ""
+    if len(conversion) > 1:
+        raise ValueError(f"Invalid format specifier '{format_spec}' for object of type '{kind}'")
+    if kind == "str":
+        if align == "=":
+            raise ValueError("'=' alignment not allowed in string format specifier")
+        if sign_option:
+            raise ValueError("Sign not allowed in string format specifier")
+        if coerce_zero:
+            raise ValueError("Negative zero coercion (z) not allowed in string format specifier")
+        if alternate:
+            raise ValueError("Alternate form (#) not allowed in string format specifier")
+        if group:
+            raise ValueError(f"Cannot specify '{group}' with 's'.")
     prefix = ""
     if kind == "float":
-        codes = {"f": 0, "e": 1, "E": 2, "g": 3, "G": 4, "%": 5, "": 6}
+        codes = {"f": 0, "F": 7, "e": 1, "E": 2, "g": 3, "G": 4, "n": 3, "%": 5, "": 6}
         if conversion not in codes:
             raise ValueError("unknown format code '" + conversion + "' for object of type 'float'")
-        if precision < 0:
-            precision = 6
-        body = math_float_format(value, codes[conversion], precision, alternate)
+        val = _convert_float(value)
+        if coerce_zero and val == 0.0:
+            val = 0.0
+        raw_prec = precision
+        if precision < 0 and conversion != "":
+            raw_prec = 6
+        body = math_float_format(val, codes[conversion], raw_prec, alternate)
+        if coerce_zero and body.startswith("-") and val == 0.0:
+            body = body[1:]
+        elif coerce_zero and body.startswith("-"):
+            # Check if rounded value is all zero digits
+            check_digits = body[1:]
+            exp_idx = check_digits.find("e")
+            if exp_idx < 0:
+                exp_idx = check_digits.find("E")
+            if exp_idx >= 0:
+                check_digits = check_digits[:exp_idx]
+            if check_digits.endswith("%"):
+                check_digits = check_digits[:-1]
+            all_zero = True
+            for ch in check_digits:
+                if ch != "0" and ch != ".":
+                    all_zero = False
+                    break
+            if all_zero and check_digits:
+                body = body[1:]
     elif conversion and conversion in "eEfFgG%" and kind == "int":
-        codes = {"f": 0, "e": 1, "E": 2, "g": 3, "G": 4, "%": 5}
+        codes = {"f": 0, "F": 7, "e": 1, "E": 2, "g": 3, "G": 4, "%": 5}
         if precision < 0:
             precision = 6
-        body = math_float_format(_convert_float(value), codes[conversion], precision, alternate)
+        val = _convert_float(value)
+        if coerce_zero and val == 0.0:
+            val = 0.0
+        body = math_float_format(val, codes[conversion], precision, alternate)
         kind = "float"
     elif kind == "int":
-        number = value
+        if coerce_zero:
+            raise ValueError("Negative zero coercion (z) not allowed in integer format specifier")
+        if precision >= 0:
+            raise ValueError("Precision not allowed in integer format specifier")
+        number = _convert_int(value)
         negative = number < 0
         if negative:
             number = -number
-        if conversion in ("d", ""):
-            body = integer_decimal(_convert_int(number))
+        if conversion in ("d", "n", ""):
+            body = integer_decimal(number)
         elif conversion and conversion in "xXo":
+            if group == ",":
+                raise ValueError(f"Cannot specify ',' with '{conversion}'.")
             digits = "0123456789abcdef" if conversion != "X" else "0123456789ABCDEF"
             base = 8 if conversion == "o" else 16
             body = ""
@@ -209,6 +263,8 @@ def _format_number(value, kind, format_spec):
             if alternate:
                 prefix = "0o" if conversion == "o" else ("0x" if conversion == "x" else "0X")
         elif conversion == "b":
+            if group == ",":
+                raise ValueError("Cannot specify ',' with 'b'.")
             body = ""
             if number == 0:
                 body = "0"
@@ -218,14 +274,27 @@ def _format_number(value, kind, format_spec):
             if alternate:
                 prefix = "0b"
         elif conversion == "c":
+            if sign_option:
+                raise ValueError("Sign not allowed with integer format specifier 'c'")
+            if alternate:
+                raise ValueError("Alternate form (#) not allowed with integer format specifier 'c'")
+            if group:
+                raise ValueError(f"Cannot specify '{group}' with 'c'.")
             if negative or value > 0x10FFFF:
                 raise OverflowError("%c arg not in range(0x110000)")
-            return chr(value)
+            text = chr(value)
+            if len(text) < width:
+                pad = width - len(text)
+                if align == "<":
+                    text = text + fill * pad
+                elif align == "^":
+                    before = pad // 2
+                    text = fill * before + text + fill * (pad - before)
+                else:
+                    text = fill * pad + text
+            return text
         else:
             raise ValueError("unknown format code '" + conversion + "' for object of type 'int'")
-        if precision >= 0:
-            while len(body) < precision:
-                body = "0" + body
         body = ("-" if negative else "") + body
     else:
         if conversion not in ("s", ""):
@@ -233,34 +302,70 @@ def _format_number(value, kind, format_spec):
         body = value
         if precision >= 0:
             body = body[:precision]
-    if group and kind != "str":
-        if "e" in body or "E" in body:
-            body = body
-        else:
-            dot = body.find(".")
-            head = body if dot < 0 else body[:dot]
-            tail = "" if dot < 0 else body[dot:]
-            digits = head[1:] if head[:1] in "+- " else head
-            signpart = head[: len(head) - len(digits)]
-            grouped = ""
-            count = 0
-            at = len(digits)
-            while at > 0:
-                start = at - 3 if at >= 3 else 0
-                piece = digits[start:at]
-                grouped = piece + (group + grouped if grouped else "")
-                at = start
-                count += 1
-            body = signpart + grouped + tail
     sign = ""
     digits = body
-    if digits[:1] == "-":
-        sign = "-"
-        digits = digits[1:]
-    elif kind != "str" and sign_option == "+":
-        sign = "+"
-    elif kind != "str" and sign_option == " ":
-        sign = " "
+    if kind != "str":
+        if digits[:1] == "-":
+            sign = "-"
+            digits = digits[1:]
+        elif sign_option == "+":
+            sign = "+"
+        elif sign_option == " ":
+            sign = " "
+    if group and kind != "str":
+        group_size = 4 if (kind == "int" and conversion in ("b", "o", "x", "X")) else 3
+        exp_pos = digits.find("e")
+        if exp_pos < 0:
+            exp_pos = digits.find("E")
+        dot = digits.find(".")
+        pct = digits.endswith("%")
+        if dot >= 0:
+            head = digits[:dot]
+            tail = digits[dot:]
+        elif exp_pos >= 0:
+            head = digits[:exp_pos]
+            tail = digits[exp_pos:]
+        elif pct:
+            head = digits[:-1]
+            tail = "%"
+        else:
+            head = digits
+            tail = ""
+        if head in ("inf", "INF", "nan", "NAN"):
+            pass
+        else:
+            if zero and not has_align and width > 0:
+                overhead = len(sign) + len(prefix) + len(tail)
+                target_len = width - overhead
+                # Group digits from right to left, padding with leading zeros up to target_len
+                grouped = ""
+                at = len(head)
+                while at > 0:
+                    start = at - group_size if at >= group_size else 0
+                    piece = head[start:at]
+                    grouped = piece + (group + grouped if grouped else "")
+                    at = start
+                while len(grouped) < target_len:
+                    # Distance from next separator from the left
+                    first_sep = grouped.find(group)
+                    first_len = len(grouped) if first_sep < 0 else first_sep
+                    if first_len == group_size:
+                        if len(grouped) + 1 < target_len:
+                            grouped = "0" + group + grouped
+                        else:
+                            grouped = "0" + grouped
+                    else:
+                        grouped = "0" + grouped
+                digits = grouped + tail
+            else:
+                grouped = ""
+                at = len(head)
+                while at > 0:
+                    start = at - group_size if at >= group_size else 0
+                    piece = head[start:at]
+                    grouped = piece + (group + grouped if grouped else "")
+                    at = start
+                digits = grouped + tail
     text = sign + prefix + digits
     if len(text) < width:
         pad = width - len(text)
@@ -567,7 +672,12 @@ class type(object):
         return list(class_mro(cls))
 
     def __instancecheck__(cls, instance):
-        return is_instance(instance, cls)
+        if is_instance(instance, cls):
+            return True
+        custom_cls = getattr(instance, "__class__", None)
+        if custom_cls is not None and custom_cls is not type_of(instance) and is_class(custom_cls):
+            return is_subclass(custom_cls, cls)
+        return False
 
     def __subclasscheck__(cls, subclass):
         if not is_class(subclass):
@@ -753,6 +863,25 @@ class _InstanceDict(object):
 
 
 _GLOBALS_DICTS = None
+_INSTANCE_DICTS = None
+
+
+def _instance_dict(owner):
+    global _INSTANCE_DICTS
+    if _INSTANCE_DICTS is None:
+        _INSTANCE_DICTS = {}
+    key = identity_hash(owner)
+    bucket = _INSTANCE_DICTS.get(key)
+    if bucket is not None:
+        for existing_owner, wrapper in bucket:
+            if existing_owner is owner:
+                return wrapper
+    wrapper = _InstanceDict(owner)
+    if bucket is None:
+        _INSTANCE_DICTS[key] = [(owner, wrapper)]
+    else:
+        bucket.append((owner, wrapper))
+    return wrapper
 
 
 def _globals_dict(namespace):
@@ -781,8 +910,8 @@ def _globals_dict(namespace):
 def _object_dictionary(owner):
     namespace = storage_dictionary(owner)
     if namespace is None:
-        return _InstanceDict(owner)
-    return _GlobalsDict(namespace)
+        return _instance_dict(owner)
+    return _globals_dict(namespace)
 
 
 def _replace_dictionary(dictionary, value):
@@ -1244,6 +1373,8 @@ class complex(object):
     def __add__(self, other):
         if not is_instance(self, complex):
             raise TypeError(f"descriptor '__add__' requires a 'complex' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, complex) and (is_instance(other, int) or is_instance(other, float)):
+            return _make_complex(complex, self._real + _convert_float(other), self._imag)
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
@@ -1257,6 +1388,8 @@ class complex(object):
     def __sub__(self, other):
         if not is_instance(self, complex):
             raise TypeError(f"descriptor '__sub__' requires a 'complex' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, complex) and (is_instance(other, int) or is_instance(other, float)):
+            return _make_complex(complex, self._real - _convert_float(other), self._imag)
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
@@ -1265,6 +1398,8 @@ class complex(object):
     def __rsub__(self, other):
         if not is_instance(self, complex):
             raise TypeError(f"descriptor '__rsub__' requires a 'complex' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, complex) and (is_instance(other, int) or is_instance(other, float)):
+            return _make_complex(complex, _convert_float(other) - self._real, -self._imag)
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
@@ -1406,6 +1541,10 @@ class complex(object):
         if index < size and format_spec[index] in "+- ":
             sign_part = format_spec[index]
             index += 1
+        z_part = ""
+        if index < size and format_spec[index] == "z":
+            z_part = "z"
+            index += 1
         alt_part = ""
         if index < size and format_spec[index] == "#":
             alt_part = "#"
@@ -1416,19 +1555,19 @@ class complex(object):
             width = width * 10 + "0123456789".index(format_spec[index])
             index += 1
         rest = format_spec[index:]
-        conversion = rest[-1:] if rest else ""
+        conversion = rest[-1:] if rest and rest[-1:] not in "0123456789.,_" else ""
         if conversion == "%":
             raise ValueError("unknown format code '%' for object of type 'complex'")
-        if not conversion and not rest and not sign_part and not alt_part:
+        if not conversion and not rest and not sign_part and not z_part and not alt_part:
             body = repr(self)
         else:
-            real_spec = sign_part + alt_part + rest
+            real_spec = sign_part + z_part + alt_part + rest
             imag_sign = "+"
-            imag_spec = imag_sign + alt_part + rest
+            imag_spec = imag_sign + z_part + alt_part + rest
             real_text = _format_number(self._real, "float", real_spec)
             imag_text = _format_number(self._imag, "float", imag_spec)
             if not conversion and self._real == 0.0 and (math_float_bits(self._real) >> 63) == 0:
-                imag_only_spec = sign_part + alt_part + rest
+                imag_only_spec = sign_part + z_part + alt_part + rest
                 body = _format_number(self._imag, "float", imag_only_spec) + "j"
             elif not conversion:
                 body = "(" + real_text + imag_text + "j)"
@@ -2772,6 +2911,39 @@ def _install_builtin_descriptors():
     for owner, names in ((function, ("__globals__", "__closure__")), (method, ("__self__", "__func__"))):
         for name in names:
             setattr(owner, name, member_descriptor(owner, name, class_lookup(owner, name)))
+    for name in (
+        "__init__",
+        "__repr__",
+        "__str__",
+        "__format__",
+        "__hash__",
+        "__eq__",
+        "__ne__",
+        "__lt__",
+        "__le__",
+        "__gt__",
+        "__ge__",
+        "__getattribute__",
+        "__setattr__",
+        "__delattr__",
+        "__dir__",
+    ):
+        if name in class_own_names(object):
+            mark_wrapper_descriptor(class_lookup(object, name))
+
+
+class wrapper_descriptor(object):
+    """The class of slot wrapper descriptors on builtin types such as ``object.__init__``."""
+
+    __module__ = "builtins"
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        return bound_method(self, instance)
+
+    def __call__(self, *args, **kwargs):
+        return self(*args, **kwargs)
 
 
 class builtin_function_or_method(object):
@@ -2824,6 +2996,25 @@ class method(object):
     def __call__(self, *args, **kwargs):
         return self(*args, **kwargs)
 
+    def __eq__(self, other):
+        if type_of(other) is not method:
+            return NotImplemented
+        return (
+            bound_method_function(self) == bound_method_function(other)
+            and bound_method_receiver(self) == bound_method_receiver(other)
+        )
+
+    def __ne__(self, other):
+        if type_of(other) is not method:
+            return NotImplemented
+        return not (
+            bound_method_function(self) == bound_method_function(other)
+            and bound_method_receiver(self) == bound_method_receiver(other)
+        )
+
+    def __hash__(self):
+        return hash(bound_method_function(self)) ^ hash(bound_method_receiver(self))
+
 
 class module(object):
     """A module namespace."""
@@ -2849,7 +3040,7 @@ class module(object):
     @property
     def __dict__(self):
         if namespace_items(self) is None:
-            return _InstanceDict(self)
+            return _instance_dict(self)
         return _globals_dict(self)
 
     def __dir__(self):
@@ -2960,6 +3151,7 @@ register_type("bool", bool)
 register_type("float", float)
 register_type("function", function)
 register_type("builtin_function_or_method", builtin_function_or_method)
+register_type("wrapper_descriptor", wrapper_descriptor)
 register_type("method", method)
 register_type("module", module)
 register_type("traceback", traceback)
@@ -2970,7 +3162,12 @@ def isinstance(obj, classinfo, /):
     if type_of(classinfo) is type:
         if type_of(obj) is classinfo:
             return True
-        return is_instance(obj, classinfo)
+        if is_instance(obj, classinfo):
+            return True
+        custom_cls = getattr(obj, "__class__", None)
+        if custom_cls is not None and custom_cls is not type_of(obj) and is_class(custom_cls):
+            return is_subclass(custom_cls, classinfo)
+        return False
     if is_instance(classinfo, tuple):
         n = len(classinfo)
         if n == 0:

@@ -295,13 +295,14 @@ pub enum Builtin {
     Tuple,
     Function,
     BuiltinFunction,
+    WrapperDescriptor,
     Method,
     Module,
     Traceback,
     Frame,
     Dict,
 }
-const BUILTIN_COUNT: usize = 17;
+const BUILTIN_COUNT: usize = 18;
 const BUILTIN_NAMES: [&str; BUILTIN_COUNT] = [
     "object",
     "type",
@@ -315,6 +316,7 @@ const BUILTIN_NAMES: [&str; BUILTIN_COUNT] = [
     "tuple",
     "function",
     "builtin_function_or_method",
+    "wrapper_descriptor",
     "method",
     "module",
     "traceback",
@@ -405,7 +407,8 @@ pub unsafe fn class_of_value(value: Value) -> Value {
             Data::Bytes(..) => Builtin::Bytes,
             Data::List(..) => Builtin::List,
             Data::Args(..) => Builtin::Tuple,
-            Data::Function { globals, .. } if globals.is_null() => Builtin::BuiltinFunction,
+            Data::Function { kind: object::FunctionKind::WrapperDescriptor, .. } => Builtin::WrapperDescriptor,
+            Data::Function { globals, kind, .. } if globals.is_null() || *kind == object::FunctionKind::Builtin => Builtin::BuiltinFunction,
             Data::Function { .. } => Builtin::Function,
             Data::BoundMethod { .. } => Builtin::Method,
             Data::Namespace(_) => Builtin::Module,
@@ -1411,7 +1414,7 @@ pub unsafe fn is_instance(value: Value, class: Value) -> bool {
     unsafe { is_subclass(class_of_value(value), class) }
 }
 
-/// `isinstance(value, class)` for a call site that names one class: 1 or 0,
+/// Instance test for a call site that names one class: 1 or 0,
 /// or -1 when the answer needs the full compiled protocol (`class` is not a
 /// class, or its metaclass defines `__instancecheck__`). Exact class identity
 /// is answered without touching the class; a subclass is one MRO scan, as
@@ -1444,7 +1447,22 @@ pub unsafe extern "C" fn mule_isinstance_class(value: Value, class: Value) -> i3
             }
         }
         match class_layout_quiet(actual) {
-            Some(actual_layout) => i32::from(actual_layout.mro.contains(&class)),
+            Some(actual_layout) => {
+                if actual_layout.mro.contains(&class) {
+                    return 1;
+                }
+                let object_layout = layout_of_class(builtin_type(Builtin::Object));
+                let custom_class = actual_layout
+                    .find("__class__")
+                    .is_some_and(|(owner, _, _)| !object_layout.is_some_and(|obj| std::ptr::eq(owner, obj)));
+                if custom_class
+                    || !actual_layout.special_slot(Special::GetAttr).is_null()
+                    || !actual_layout.special_slot(Special::GetAttribute).is_null()
+                {
+                    return -1;
+                }
+                0
+            }
             None => 0,
         }
     }
@@ -1462,7 +1480,7 @@ unsafe fn class_layout_quiet<'a>(value: Value) -> Option<&'a ClassLayout> {
     }
 }
 
-/// `isinstance(value, (classes[0], ..., classes[count - 1]))` for a call
+/// Multi-class instance test for a call
 /// site whose class operands the compiler separated, so no tuple is built.
 /// Classes are tried in order and the first match ends the test, as CPython
 /// does. A class `mule_isinstance_class` cannot answer goes through the
@@ -4131,12 +4149,25 @@ unsafe extern "C" fn function_captured_defaults(_: Value, args: Value) -> Value 
     }
 }
 
+unsafe extern "C" fn mark_wrapper_descriptor(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([function]) = operands(args) else { return std::ptr::null_mut(); };
+        if !function.is_null() && !object::is_fixnum(function) {
+            if let Data::Function { kind, .. } = &mut (*function).data {
+                *kind = object::FunctionKind::WrapperDescriptor;
+            }
+        }
+        object::none_value()
+    }
+}
+
 pub unsafe fn populate(globals: Value) -> bool {
     unsafe {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 63] = [
+        let exports: [(&str, object::Native); 64] = [
+            ("mark_wrapper_descriptor", mark_wrapper_descriptor),
             ("delete_instance_field", delete_instance_field),
             ("class_lookup_default", class_lookup_default),
             ("class_own_lookup_default", class_own_lookup_default),

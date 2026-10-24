@@ -1168,9 +1168,9 @@ def _transform_hasattr(node: Combination) -> bool:
 
 
 @deftransform("isinstance")
-def _transform_isinstance(node: Combination) -> bool:
-    """``isinstance(x, C)`` with a class operand, or ``isinstance(x, (A, B))``
-    with the tuple built at the call site, becomes ``%isinstance`` with the
+def _transform_instance_check(node: Combination) -> bool:
+    """``isinstance`` with a class operand or with the tuple built at the call
+    site becomes ``%isinstance`` with the
     classes as separate operands, so the tuple is never allocated (SBCL's
     ``typep`` with a constant type specifier is open-coded per type). The
     tuple's elements are already evaluated in order before the call; only

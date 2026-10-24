@@ -1160,16 +1160,23 @@ def format(value, format_spec="", /):
 
 
 def ord(value, /):
-    if not _text_storage(value):
-        raise TypeError(
-            f"ord() expected string of length 1, but {_type_name(value)} found"
-        )
-    size = _text_length(value)
-    if size != 1:
-        raise TypeError(
-            f"ord() expected a character, but string of length {size} found"
-        )
-    return _text_codepoint(value, 0)
+    if _text_storage(value):
+        size = _text_length(value)
+        if size != 1:
+            raise TypeError(
+                f"ord() expected a character, but string of length {size} found"
+            )
+        return _text_codepoint(value, 0)
+    if _type_name(value) in ("bytes", "bytearray") or _type_of(value) is bytes:
+        size = len(value)
+        if size != 1:
+            raise TypeError(
+                f"ord() expected a character, but string of length {size} found"
+            )
+        return value[0]
+    raise TypeError(
+        f"ord() expected string of length 1, but {_type_name(value)} found"
+    )
 
 
 class TextStorage:
