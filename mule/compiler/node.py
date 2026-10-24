@@ -1540,6 +1540,7 @@ class Component:
     """A connected piece of the flow graph with dummy ``head``/``tail`` blocks."""
 
     __slots__ = (
+        "constants",
         "delete_blocks",
         "failed_optimizations",
         "head",
@@ -1575,6 +1576,7 @@ class Component:
         self.info = None
         self.delete_blocks: list[Block] = []
         self.failed_optimizations: dict = {}
+        self.constants: dict = {}
 
     def blocks(self):
         """Blocks in depth-first order, excluding the dummy head and tail."""

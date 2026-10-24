@@ -163,6 +163,9 @@ class _BoxedConstant(ast.Visitor):
         self.gen.pointer_result(self.result, self.gen.constant(node))
 
     def visit_TextLiteral(self, node):
+        if _is_inline_text_compare_only(self.gen, self.result.tn, node.value):
+            self.gen.native_result(self.result, self.gen.fresh("inline.text"))
+            return
         if not self.result.tn.sc.owned or (self.result.tn.type or UNKNOWN).is_immortal:
             self.gen.native_result(
                 self.result, self.gen.operation(self.gen.borrowed_constant(node))
@@ -1390,6 +1393,122 @@ for _operator, _opcode in UNARY_OPCODES.items():
     _define_unary(_operator, _opcode)
 
 
+def _pack_inline_latin1_words(
+    literal: str | None,
+) -> tuple[int, tuple[int, ...]] | None:
+    if literal is None or not (2 <= len(literal) <= 24):
+        return None
+    try:
+        raw = literal.encode("latin-1")
+    except UnicodeEncodeError:
+        return None
+    n = len(raw)
+    padded = raw.ljust(24, b"\x00")
+    w0 = int.from_bytes(padded[0:8], "little", signed=True)
+    if n <= 8:
+        return n, (w0,)
+    w1 = int.from_bytes(padded[8:16], "little", signed=True)
+    if n <= 16:
+        return n, (w0, w1)
+    w2 = int.from_bytes(padded[16:24], "little", signed=True)
+    return n, (w0, w1, w2)
+
+
+class _ConstantTextLiteral(ast.Visitor):
+    def visit_Node(self, node) -> str | None:
+        return None
+
+    def visit_TextLiteral(self, node: ast.TextLiteral) -> str | None:
+        return node.value
+
+
+_CONSTANT_TEXT_LITERAL = _ConstantTextLiteral()
+
+
+def _constant_text_value(gen, tn) -> str | None:
+    writes = gen.component.writes.get(tn, ())
+    if len(writes) != 1:
+        return None
+    writer, _ = writes[0]
+    if writer.info is not CONSTANT or writer.codegen_info is None:
+        return None
+    return writer.codegen_info.accept(_CONSTANT_TEXT_LITERAL)
+
+
+def _tn_exact_text(gen, tn, value_type) -> str | None:
+    exact = value_type.exact_text()
+    if exact is not None:
+        return exact
+    return _constant_text_value(gen, tn)
+
+
+def _uses_inline_latin1_compare(gen, left_tn, left_type, right_tn, right_type) -> bool:
+    if not (left_type.fits_text(left_type) and right_type.fits_text(right_type)):
+        return False
+    if (
+        left_type.singleton_text() is not None
+        or right_type.singleton_text() is not None
+        or (left_type.is_interned_text and right_type.is_interned_text)
+    ):
+        return False
+    return (
+        _pack_inline_latin1_words(_tn_exact_text(gen, right_tn, right_type)) is not None
+        or _pack_inline_latin1_words(_tn_exact_text(gen, left_tn, left_type))
+        is not None
+    )
+
+
+def _is_inline_text_compare_only(gen, tn, value: str) -> bool:
+    if (
+        gen.raw
+        or tn.borrowed_from is None
+        or tn not in gen.registers
+        or _pack_inline_latin1_words(value) is None
+    ):
+        return False
+    reads = gen.component.reads.get(tn, ())
+    if not reads:
+        return False
+    for reader, _ref in reads:
+        if (
+            reader.info.name not in ("compare-equal", "compare-not_equal")
+            or len(reader.args) != 2
+        ):
+            return False
+        left_tn, right_tn = reader.args[0].tn, reader.args[1].tn
+        if left_tn is right_tn:
+            return False
+        left_type = left_tn.type or UNKNOWN
+        right_type = right_tn.type or UNKNOWN
+        if not _uses_inline_latin1_compare(
+            gen, left_tn, left_type, right_tn, right_type
+        ):
+            return False
+    return True
+
+
+def _emit_inline_latin1_compare(
+    gen, value: str, length: int, words: tuple[int, ...], opcode: int
+) -> str:
+    header_ptr = gen.operation(
+        f"getelementptr inbounds i8, ptr {value}, i64 {TEXT_KIND_TAG_OFFSET}"
+    )
+    header = gen.operation(f"load i16, ptr {header_ptr}, align 8")
+    expected_header = length << 8
+    matched = gen.operation(f"icmp eq i16 {header}, {expected_header}")
+    for index, word in enumerate(words):
+        word_offset = TEXT_INLINE_WORDS_OFFSET + index * 8
+        word_ptr = gen.operation(
+            f"getelementptr inbounds i8, ptr {value}, i64 {word_offset}"
+        )
+        loaded_word = gen.operation(f"load i64, ptr {word_ptr}, align 8")
+        word_match = gen.operation(f"icmp eq i64 {loaded_word}, {word}")
+        matched = gen.operation(f"and i1 {matched}, {word_match}")
+    if opcode == 1:
+        matched = gen.operation(f"xor i1 {matched}, true")
+    return gen.operation(f"select i1 {matched}, ptr @mule.true, ptr @mule.false")
+
+
 def _define_compare(operator, opcode):
     @define_vop(
         f"compare-{operator.name.lower()}",
@@ -1451,12 +1570,33 @@ def _define_compare(operator, opcode):
                     f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
                 )
             elif opcode in (0, 1):
-                matched = gen.operation(f"call i32 @mule_text_eq(ptr {lhs}, ptr {rhs})")
-                predicate = "ne" if opcode == 0 else "eq"
-                condition = gen.operation(f"icmp {predicate} i32 {matched}, 0")
-                boolean = gen.operation(
-                    f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
+                right_inline = _pack_inline_latin1_words(
+                    _tn_exact_text(gen, right.tn, right_type)
                 )
+                left_inline = (
+                    None
+                    if right_inline is not None
+                    else _pack_inline_latin1_words(
+                        _tn_exact_text(gen, left.tn, left_type)
+                    )
+                )
+                if right_inline is not None:
+                    boolean = _emit_inline_latin1_compare(
+                        gen, lhs, right_inline[0], right_inline[1], opcode
+                    )
+                elif left_inline is not None:
+                    boolean = _emit_inline_latin1_compare(
+                        gen, rhs, left_inline[0], left_inline[1], opcode
+                    )
+                else:
+                    matched = gen.operation(
+                        f"call i32 @mule_text_eq(ptr {lhs}, ptr {rhs})"
+                    )
+                    predicate = "ne" if opcode == 0 else "eq"
+                    condition = gen.operation(f"icmp {predicate} i32 {matched}, 0")
+                    boolean = gen.operation(
+                        f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
+                    )
             else:
                 boolean = gen.operation(
                     f"call ptr @mule_compare(i32 {opcode}, ptr {lhs}, ptr {rhs})"
@@ -3078,6 +3218,10 @@ declare {i64, i1} @llvm.smul.with.overflow.i64(i64, i64)
 # Byte offsets of runtime object storage that compiled attribute sites read;
 # `mule/runtime/object.rs` defines them and its tests check them.
 DATA_OFFSET = 16
+TEXT_TAG = 4
+TEXT_KIND_TAG_OFFSET = 24
+TEXT_INLINE_LEN_OFFSET = 25
+TEXT_INLINE_WORDS_OFFSET = 32
 LIST_TAG = 13
 ARGS_TAG = 9
 # The authoritative repr(C) ValueBuffer header follows the Data discriminator.

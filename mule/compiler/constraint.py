@@ -1064,7 +1064,8 @@ def _make_unary_propagator(operator: ast.UnaryOperator):
 def _make_comparison_propagator(operator: ast.ComparisonOperator):
     def _prop(visitor: _Propagation, node: Combination):
         args = node.args
-        left, right = visitor.type_of(args[0]), visitor.type_of(args[1])
+        left = _equality_target_type(visitor, args[0])
+        right = _equality_target_type(visitor, args[1])
         if left is BOTTOM or right is BOTTOM:
             return NO_FACT
         fact = _fact(left.comparison(operator, right))
@@ -1126,6 +1127,41 @@ def _constrain_identity_comparison(
     return changed
 
 
+class _ConstantTextLiteralType(NodeVisitor, LeafVisitor, ast.Visitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Constant(self, leaf):
+        return leaf.value.accept(self)
+
+    def visit_TextLiteral(self, node: ast.TextLiteral):
+        if len(node.value.encode("utf-8", "surrogatepass")) <= 64:
+            return _INTERNED_TEXTS.get(node.value) or TextType(node.value)
+        return None
+
+
+_CONSTANT_TEXT_LITERAL_TYPE = _ConstantTextLiteralType()
+
+
+def _equality_target_type(visitor: _Propagation, lvar) -> ValueType:
+    other_type = visitor.type_of(lvar)
+    if (
+        other_type.fits(TEXT_TYPE)
+        and other_type.exact_text() is None
+        and len(lvar.uses) == 1
+    ):
+        literal_type = lvar.uses[0].accept(_CONSTANT_TEXT_LITERAL_TYPE)
+        if literal_type is not None:
+            return literal_type
+    return other_type
+
+
 def _make_comparison_constrainer(operator: ast.ComparisonOperator):
     if operator in (ast.ComparisonOperator.IS, ast.ComparisonOperator.IS_NOT):
 
@@ -1149,6 +1185,12 @@ def _make_comparison_constrainer(operator: ast.ComparisonOperator):
         if len(node.args) != 2:
             return False
         left, right = node.args
+        left_type = _equality_target_type(visitor, left)
+        right_type = _equality_target_type(visitor, right)
+        cmp = left_type.comparison(operator, right_type)
+        if (cmp is BOOLEAN_FALSE and truth) or (cmp is BOOLEAN_TRUE and not truth):
+            state[_DEAD_EDGE] = True
+            return True
         changed = False
         for operand, other, op in (
             (left, right, operator),
@@ -1159,12 +1201,20 @@ def _make_comparison_constrainer(operator: ast.ComparisonOperator):
             local = visitor.origins.get(operand)
             if local is None or local not in visitor.state:
                 continue
+            current = state[local]
+            narrowed = current.type
+            if op in (
+                ast.ComparisonOperator.EQUAL,
+                ast.ComparisonOperator.NOT_EQUAL,
+            ):
+                is_equal = (op is ast.ComparisonOperator.EQUAL) == truth
+                narrowed = narrowed.narrow_equality(
+                    _equality_target_type(visitor, other), is_equal
+                )
             other_type = visitor.type_of(other)
             bound = _comparison_bound(op, other_type, truth)
-            if bound is None:
-                continue
-            current = state[local]
-            narrowed = current.type.narrow(op, bound, truth)
+            if bound is not None and narrowed is not BOTTOM:
+                narrowed = narrowed.narrow(op, bound, truth)
             if narrowed is BOTTOM:
                 state[_DEAD_EDGE] = True
                 return True
@@ -1615,7 +1665,8 @@ def _propagate_getslice(visitor: _Propagation, node: Combination):
         and recv_contract.has_element_contracts()
     ):
         visitor.walk.lvar_contracts[node.lvar] = recv_contract
-    return _fact(receiver_type.getslice_type())
+    arg_types = [visitor.type_of(arg) for arg in args[1:4]]
+    return _fact(receiver_type.getslice_type(*arg_types))
 
 
 @defpropagate("%setitem")

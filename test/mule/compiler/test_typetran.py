@@ -28,7 +28,7 @@ from mule.compiler.debug import check_ir1_consistency
 from mule.compiler.ir1opt import constant_literal, ir1_optimize_until_done
 from mule.compiler.ir1util import known_calls
 from mule.compiler.main import compile_source, compile_toplevel
-from mule.compiler.node import If, Ref, Return, Set
+from mule.compiler.node import Constant, If, Ref, Return, Set
 
 
 def test_double_negation_eliminated_for_boolean_operand():
@@ -578,4 +578,69 @@ def test_negated_order_comparisons_do_not_invert_for_float_or_dynamic_types(
     assert len(list(known_calls(fn, "%unary_not"))) == 2
     assert len(list(known_calls(fn, "%compare_less"))) == 1
     assert len(list(known_calls(fn, "%compare_equal"))) == 1
+    check_ir1_consistency(compilation.components)
+
+
+def test_text_equality_branch_narrowing_and_disjoint_length_folding():
+    compilation = compile_source(
+        "def route(raw_method, raw_s) -> int:\n"
+        " method = str(raw_method)\n"
+        " s = str(raw_s)\n"
+        " ch = s[0]\n"
+        ' if ch == "GET":\n'
+        "  return -1\n"
+        ' if method == "GET":\n'
+        '  if method == "POST":\n'
+        "   return -2\n"
+        "  sub = method[0:2]\n"
+        '  if sub == "GET":\n'
+        "   return -3\n"
+        "  return len(method)\n"
+        " return 0\n"
+    )
+    fn = compilation.lambdas[1]
+    equal_calls = list(known_calls(fn, "%compare_equal"))
+    # Only the single dynamic check (method == "GET") remains;
+    # ch == "GET" (length 1 vs 3), method == "POST" (inside method == "GET"),
+    # and sub == "GET" (slice length 2 vs 3) fold away.
+    assert len(equal_calls) == 1
+    return_nodes = [
+        node
+        for block in fn.component.blocks()
+        for node in block.nodes()
+        if isinstance(node, Return)
+    ]
+    assert len(return_nodes) == 1
+    check_ir1_consistency(compilation.components)
+
+
+def test_ir1_constant_leaf_coalescing_shares_leaf_and_preserves_ref_spans():
+    compilation = compile_toplevel(
+        "def f():\n"
+        ' a = "shared_literal"\n'
+        ' b = "shared_literal"\n'
+        " c = (1, 'shared_literal')\n"
+        " d = (1, 'shared_literal')\n"
+        " return a, b, c, d\n"
+    )
+    fn = compilation.lambdas[1]
+    ir1_optimize_until_done(fn.component)
+    refs = [
+        node
+        for block in fn.component.blocks()
+        for node in block.nodes()
+        if isinstance(node, Ref) and isinstance(node.leaf, Constant)
+    ]
+    text_refs = [
+        r
+        for r in refs
+        if isinstance(r.leaf.value, ast.TextLiteral)
+        and r.leaf.value.value == "shared_literal"
+    ]
+    assert len(text_refs) == 2
+    assert text_refs[0].leaf is text_refs[1].leaf
+    assert text_refs[0].source.span.start.line != text_refs[1].source.span.start.line
+    tuple_refs = [r for r in refs if isinstance(r.leaf.value, ast.Tuple)]
+    assert len(tuple_refs) == 2
+    assert tuple_refs[0].leaf is tuple_refs[1].leaf
     check_ir1_consistency(compilation.components)

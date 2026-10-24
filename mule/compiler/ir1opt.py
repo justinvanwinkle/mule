@@ -833,11 +833,9 @@ _FOLD_DOMAIN_OF = _FoldDomainOf()
 def replace_combination_with_constant(node: Combination, literal) -> None:
     """Substitute a constant reference for a combination and flush its
     operands (``replace-combination-with-constant``)."""
+    from .ir1tran import find_constant_leaf
+
     lvar = linked(node.lvar, node, "lvar")
-    leaf = Constant(literal)
-    ref = Ref(node.lexenv, node.source, leaf)
-    ref.derived_type = constant_type(literal)
-    leaf.refs.append(ref)
     node.lvar = None
     lvar.uses.remove(node)
     _flush_operand(node.fun)
@@ -845,6 +843,14 @@ def replace_combination_with_constant(node: Combination, literal) -> None:
         _flush_operand(arg)
     prev = linked(node.prev, node, "preceding control position")
     block = linked(prev.block, prev, "block")
+    leaf = (
+        find_constant_leaf(block.component.constants, literal)
+        if block.component is not None
+        else Constant(literal)
+    )
+    ref = Ref(node.lexenv, node.source, leaf)
+    ref.derived_type = constant_type(literal)
+    leaf.refs.append(ref)
     following = node.next
     # Splice the reference in where the combination was.
     prev.next = ref

@@ -413,6 +413,7 @@ def _propagate_text_character(visitor, node) -> ValueType | None:
                 cp = cp_type.exact_integer()
                 if cp is not None:
                     return TextType(chr(cp))
+        return TextType(length=1)
     return None
 
 
@@ -427,10 +428,14 @@ def _propagate_text_slice(visitor, node) -> ValueType | None:
         start = arg_types[1].exact_integer()
         stop = arg_types[2].exact_integer()
         literal = arg_types[0].exact_text()
-        if start is not None and stop is not None and literal is not None:
-            sliced = literal[start:stop]
-            if len(sliced.encode("utf-8", "surrogatepass")) <= 64:
-                return TextType(sliced)
+        if start is not None and stop is not None:
+            if literal is not None:
+                sliced = literal[start:stop]
+                if len(sliced.encode("utf-8", "surrogatepass")) <= 64:
+                    return TextType(sliced, interned=False)
+            src_len = arg_types[0].exact_length()
+            if src_len is not None and 0 <= start <= stop <= src_len:
+                return TextType(length=stop - start, interned=False)
     return None
 
 
