@@ -13,6 +13,8 @@ from _mule_native import argc
 from _mule_native import current_frame
 from _mule_native import flush_fd
 from _mule_native import image_search_path
+from _mule_native import intern_text as _intern_text
+from _mule_native import is_interned_text as _is_interned_text
 from _mule_native import read_c_string
 from _mule_native import read_pointer
 from _mule_native import register_modules
@@ -500,7 +502,17 @@ def getfilesystemencodeerrors():
 def intern(string, /):
     if not isinstance(string, str):
         raise TypeError(f"intern() argument must be str, not {type(string).__name__}")
-    return string
+    if type(string) is not str:
+        raise TypeError(f"can't intern {type(string).__name__}")
+    return _intern_text(string)
+
+
+def _is_interned(string, /):
+    if not isinstance(string, str):
+        raise TypeError(f"_is_interned() argument must be str, not {type(string).__name__}")
+    if type(string) is not str:
+        return False
+    return _is_interned_text(string)
 
 
 def exit(status=None, /):

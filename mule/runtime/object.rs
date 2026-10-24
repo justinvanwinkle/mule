@@ -1019,6 +1019,10 @@ unsafe fn destroy(value: Value) {
         }
         match &(*value).data {
             Data::Text(text, ty, attrs) if ty.is_null() && attrs.is_null() => {
+                if (*value).gc_slot != 0 {
+                    unintern_text_value(value, text);
+                    (*value).gc_slot = 0;
+                }
                 if text.is_inline() {
                     dealloc_object(value);
                 } else {
@@ -1213,6 +1217,149 @@ pub fn latin1_character(byte: u8) -> Value {
         }))
     });
     std::ptr::from_ref(&table[byte as usize].0).cast_mut()
+}
+
+const TEXT_INTERNED_MORTAL: u32 = 1;
+const TEXT_INTERNED_PINNED: u32 = 2;
+
+static INTERNED_TEXTS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<i64, Vec<usize>>>,
+> = std::sync::OnceLock::new();
+
+fn interned_texts() -> &'static std::sync::Mutex<std::collections::HashMap<i64, Vec<usize>>> {
+    INTERNED_TEXTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn unintern_text_value(value: Value, text: &Text) {
+    if let Some(mutex) = INTERNED_TEXTS.get() {
+        let hash = text.hash();
+        let mut table = mutex.lock().unwrap();
+        if let Some(bucket) = table.get_mut(&hash) {
+            let target = value as usize;
+            if let Some(pos) = bucket.iter().position(|&entry| entry == target) {
+                bucket.swap_remove(pos);
+            }
+            if bucket.is_empty() {
+                table.remove(&hash);
+            }
+        }
+    }
+}
+
+pub fn release_interned_texts() {
+    let Some(mutex) = INTERNED_TEXTS.get() else {
+        return;
+    };
+    let pinned: Vec<Value> = {
+        let mut table = mutex.lock().unwrap();
+        let mut collected = Vec::new();
+        for bucket in table.values_mut() {
+            for &entry in bucket.iter() {
+                let candidate = entry as Value;
+                unsafe {
+                    if (*candidate).gc_slot == TEXT_INTERNED_PINNED {
+                        (*candidate).gc_slot = TEXT_INTERNED_MORTAL;
+                        collected.push(candidate);
+                    }
+                }
+            }
+        }
+        collected
+    };
+    for candidate in pinned {
+        unsafe { release(candidate) };
+    }
+}
+
+pub unsafe fn is_interned_text_value(value: Value) -> bool {
+    unsafe {
+        (*value).reference_count() == usize::MAX || (*value).gc_slot != 0
+    }
+}
+
+pub fn intern_decoded_text(decoded: Text) -> Value {
+    if decoded.is_empty() {
+        return empty_text();
+    }
+    if decoded.len() == 1 {
+        if let Some(code) = decoded.get(0) {
+            if code <= 0xff {
+                return latin1_character(code as u8);
+            }
+        }
+    }
+    let hash = decoded.hash();
+    let mut table = interned_texts().lock().unwrap();
+    let bucket = table.entry(hash).or_default();
+    for &entry in bucket.iter() {
+        let candidate = entry as Value;
+        let Data::Text(existing, ..) = (unsafe { &(*candidate).data }) else {
+            unreachable!("interned text bucket holds only Text objects");
+        };
+        if existing == &decoded {
+            return unsafe { retain(candidate) };
+        }
+    }
+    let value = unsafe {
+        alloc_object(Object {
+            references: std::sync::atomic::AtomicUsize::new(1),
+            tracked: false,
+            gc_slot: TEXT_INTERNED_MORTAL,
+            data: Data::Text(decoded, std::ptr::null_mut(), std::ptr::null_mut()),
+        })
+    };
+    bucket.push(value as usize);
+    value
+}
+
+pub unsafe fn intern_text_value(value: Value) -> Value {
+    unsafe {
+        if (*value).reference_count() == usize::MAX {
+            return value;
+        }
+        if (*value).gc_slot == TEXT_INTERNED_PINNED {
+            return retain(value);
+        }
+        if (*value).gc_slot == TEXT_INTERNED_MORTAL {
+            (*value).gc_slot = TEXT_INTERNED_PINNED;
+            retain(value);
+            return retain(value);
+        }
+        let Data::Text(ref text, ty, attrs) = (*value).data else {
+            unreachable!("intern_text_value requires an exact str object");
+        };
+        debug_assert!(ty.is_null() && attrs.is_null());
+        if text.is_empty() {
+            return empty_text();
+        }
+        if text.len() == 1 {
+            if let Some(code) = text.get(0) {
+                if code <= 0xff {
+                    return latin1_character(code as u8);
+                }
+            }
+        }
+        let hash = text.hash();
+        let mut table = interned_texts().lock().unwrap();
+        let bucket = table.entry(hash).or_default();
+        for &entry in bucket.iter() {
+            let candidate = entry as Value;
+            let Data::Text(ref existing, ..) = (*candidate).data else {
+                unreachable!("interned text bucket holds only Text objects");
+            };
+            if existing == text {
+                if (*candidate).gc_slot == TEXT_INTERNED_MORTAL {
+                    (*candidate).gc_slot = TEXT_INTERNED_PINNED;
+                    retain(candidate);
+                }
+                return retain(candidate);
+            }
+        }
+        (*value).gc_slot = TEXT_INTERNED_PINNED;
+        retain(value);
+        bucket.push(value as usize);
+        retain(value)
+    }
 }
 pub unsafe fn namespace() -> Value {
     unsafe { new_value(Data::Namespace(Namespace::default())) }
@@ -2993,16 +3140,7 @@ unsafe fn literal_bytes(data: *const c_char, length: isize, text: bool) -> Value
                 return latin1_character(slice[0]);
             }
             return match Text::from_wtf8(slice) {
-                Ok(decoded) => {
-                    if decoded.len() == 1 {
-                        if let Some(code) = decoded.get(0) {
-                            if code <= 0xff {
-                                return latin1_character(code as u8);
-                            }
-                        }
-                    }
-                    new_value(Data::Text(decoded, std::ptr::null_mut(), std::ptr::null_mut()))
-                }
+                Ok(decoded) => intern_decoded_text(decoded),
                 Err(message) => {
                     error("UnicodeDecodeError", message);
                     std::ptr::null_mut()

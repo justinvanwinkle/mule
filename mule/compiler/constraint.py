@@ -54,6 +54,7 @@ from .ctype import (
     IMMORTAL,
     IMMORTAL_UNBOUND,
     INTEGER,
+    INTERNED_TEXT_TYPE,
     LIST_TYPE,
     NONE_TYPE,
     PYTHON_INTEGER,
@@ -283,6 +284,8 @@ _INTERNED_TEXTS = {
     **{chr(code): TextType(chr(code)) for code in range(256)},
 }
 _INTERNED_TEXT_FACTS = {s: Fact(vt) for s, vt in _INTERNED_TEXTS.items()}
+_INTERNED_TEXT_FACT = Fact(INTERNED_TEXT_TYPE)
+_CANONICAL_FACTS[id(INTERNED_TEXT_TYPE)] = _INTERNED_TEXT_FACT
 _CANONICAL_FACTS.update({id(fact.type): fact for fact in _INTERNED_TEXT_FACTS.values()})
 
 

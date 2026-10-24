@@ -318,7 +318,20 @@ terminates without publishing optimistic intermediate facts.
 An integer is a proven fixnum only when its complete interval fits
 `[-2**62, 2**62-1]` and it cannot be unbound. Booleans are immortal heap objects,
 not tagged integers, even though arithmetic accepts them as numeric operands.
-`None` is also an immortal object. Joins preserve the possibility of an unbound
+`None` is also an immortal object. Empty and single-character Latin-1 strings
+are static immortal singletons (`is_immortal`). Multi-character string literals
+are pooled heap objects that are interned in a process-wide runtime table on
+first initialization (`mule_literal_text`) with their hashes precomputed, so
+equal string literals share one canonical `Value` across functions and compilation
+units while still releasing their unit slots on teardown. `sys.intern` and
+`sys._is_interned` operate on the same runtime table, pinning dynamically
+interned exact `str` instances until process finalization and rejecting `str`
+subclasses in `sys.intern`. Following SBCL's `equal-constant-value` coalescing in
+`src/compiler/ir1util.lisp` and `eq` transforms in `src/compiler/typetran.lisp`,
+IR1 folds `is` and `is not` on proven string literals, and IR2 lowers `==` and
+`!=` to pointer comparison (`icmp eq`/`ne`) when either operand is a universal
+singleton or both operands are proven interned strings (`is_interned_text`).
+Joins preserve the possibility of an unbound
 local; its runtime error must remain observable.
 
 Unannotated general function parameters and unknown call results remain unknown. Imported
