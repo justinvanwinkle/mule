@@ -313,7 +313,12 @@ def _ir1_optimize_phase_1(compilation: Compilation) -> None:
             )
             facts_stale = False
         if not any(component.reoptimize for component in compilation.components):
-            return
+            hoisted = False
+            for component in compilation.components:
+                hoisted |= loop.hoist_loop_invariants(component)
+            if not hoisted:
+                return
+            facts_stale = True
     if facts_stale:
         with phase("IR1 local-call and flow analysis", level=logging.DEBUG):
             compilation.facts = locall.analyze(

@@ -421,7 +421,8 @@ They do not establish complete Python or C extension compatibility.
 - `mule/compiler/knownfun.py` and `mule/compiler/fndb.py`: known-operation metadata and the database of Python operations and runtime protocols, following `fun-info.lisp`/`fndb.lisp`.
 - `mule/compiler/policy.py`: optimization policy qualities, following `policy.lisp`.
 - `mule/compiler/ir1opt.py`: IR1 optimization loop: literal folding, flushing unused flushable calls, constant branches, following `ir1opt.lisp`.
-- `mule/compiler/constraint.py`: flow-sensitive propagation of variable facts and node types, following `constraint.lisp`.
+- `mule/compiler/loop.py`: dominator and natural-loop analysis and IR1 loop-invariant code motion, following `loop.lisp`.
+- `mule/compiler/constraint.py`: flow-sensitive propagation of variable facts, relational difference constraints, and node types, following `constraint.lisp` and `equality-constraints.lisp`.
 - `mule/compiler/locall.py`: local-call analysis: guarded calls through module globals, entry contexts, optimistic argument/result solving, following `locall.lisp`.
 - `mule/compiler/checkgen.py`: decides which casts become runtime checks, following `checkgen.lisp`.
 - `mule/compiler/envanal.py`: environment analysis: closed-over variables and cleanup-point insertion for handler, `finally`, and `with` regions, following `envanal.lisp`.

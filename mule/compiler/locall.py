@@ -2753,7 +2753,13 @@ class _NodeHasContextTransform(NodeVisitor):
         else:
             return False
         if not (
-            info.transforms or (info.optimizer is not None and info is not GETITEM)
+            info.transforms
+            or (info.optimizer is not None and info is not GETITEM)
+            or (
+                loop.is_hoistable_op(info)
+                and node.block.loop is not None
+                and node.block.loop.is_natural
+            )
         ):
             return False
         checked_args = (
@@ -2832,11 +2838,19 @@ def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
             for node, contract in old_element_contracts.items()
         }
         graph = build_lambda_graph(lambda_)
-        if _publish_derived_types(lambda_, graph, cloned_types):
+        reopt = _publish_derived_types(lambda_, graph, cloned_types)
+        if reopt:
             ir1opt.ir1_optimize_until_done(cloned_component)
             join_blocks_if_possible(cloned_component)
             find_dfo(cloned_component)
             loop.analyze(cloned_component)
+        hoisted = loop.hoist_loop_invariants(cloned_component)
+        if reopt or hoisted:
+            if hoisted:
+                ir1opt.ir1_optimize_until_done(cloned_component)
+                join_blocks_if_possible(cloned_component)
+                find_dfo(cloned_component)
+                loop.analyze(cloned_component)
             collector = _CollectNodeTypesAndTargets(cloned_types, cloned_targets)
             for block in cloned_component.blocks():
                 for node in block.nodes():

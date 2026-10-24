@@ -1445,6 +1445,8 @@ class Block:
 class Loop:
     """A flow-graph loop with its immediate nesting and exit metadata."""
 
+    is_natural = False
+
     def __init__(self, head, tails=()):
         self.head = head
         self.tails = list(tails)
@@ -1453,6 +1455,15 @@ class Loop:
         self.superior = None
         self.exits = []
         self.depth = 0
+
+    def all_blocks(self) -> set[Block]:
+        blocks: set[Block] = set()
+        pending = [self]
+        while pending:
+            loop = pending.pop()
+            blocks.update(loop.blocks)
+            pending.extend(loop.inferiors)
+        return blocks
 
     def accepts(self, block):
         raise TypeError(f"loop membership is undefined for {self!r}")
@@ -1481,6 +1492,8 @@ class Loop:
 
 
 class NaturalLoop(Loop):
+    is_natural = True
+
     def accepts(self, block):
         return block.dominated_by(self.head)
 

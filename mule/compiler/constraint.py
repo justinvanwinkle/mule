@@ -49,6 +49,8 @@ from .ctype import (
     DICT_TYPE,
     EMPTY_DICT_TYPE,
     EMPTY_LIST_TYPE,
+    FIXNUM_MAX,
+    FIXNUM_MIN,
     FLOAT,
     FUNCTION_TYPE,
     IMMORTAL,
@@ -287,13 +289,76 @@ def join_states(left: dict, right: dict) -> tuple[dict, bool]:
     return joined, True
 
 
-def widen_fact(old: Fact, new: Fact) -> Fact:
-    widened = old.type.widen(new.type)
+def widen_fact(old: Fact, new: Fact, thresholds: tuple[int, ...] = ()) -> Fact:
+    widened = old.type.widen(new.type, thresholds)
     if widened is new.type:
         return new
     if new.target is None:
         return _fact(widened)
     return Fact(widened, new.target, new.proven)
+
+
+_BASE_WIDENING_THRESHOLDS: tuple[int, ...] = (-1, 0, 1)
+
+
+def _join_relations_list(rels_list: list[dict]) -> dict:
+    if not rels_list:
+        return {}
+    first = rels_list[0]
+    if len(rels_list) == 1:
+        return first
+    if not first or any(not r for r in rels_list[1:]):
+        return {}
+    result = {}
+    others = rels_list[1:]
+    for pair, val in first.items():
+        hi = val
+        for other in others:
+            other_val = other.get(pair)
+            if other_val is None:
+                break
+            hi = max(hi, other_val)
+        else:
+            result[pair] = hi
+    return result
+
+
+def _widen_relations(old_rels: dict, new_rels: dict) -> dict:
+    if not old_rels or not new_rels:
+        return {}
+    return {
+        pair: val
+        for pair, val in new_rels.items()
+        if (old_val := old_rels.get(pair)) is not None and val <= old_val
+    }
+
+
+def _tighten_relation(rels: dict, u, v, off: int) -> bool:
+    """Record ``u - v <= off`` and its 1-step transitive consequences.
+    Returns ``False`` when a negative cycle makes the path infeasible."""
+    if u is v:
+        return off >= 0
+    cur = rels.get((u, v))
+    if cur is not None and cur <= off:
+        return True
+    rels[u, v] = off
+    rev = rels.get((v, u))
+    if rev is not None and off + rev < 0:
+        return False
+    updates = []
+    for (a, b), ab_off in rels.items():
+        if b is u and a is not v:
+            updates.append((a, v, ab_off + off))
+        elif a is v and b is not u:
+            updates.append((u, b, off + ab_off))
+    for a, b, new_off in updates:
+        prev = rels.get((a, b))
+        if prev is None or new_off < prev:
+            rels[a, b] = new_off
+            rev_ab = rels.get((b, a))
+            if rev_ab is not None and new_off + rev_ab < 0:
+                return False
+    return True
 
 
 _SMALL_INTS = {i: IntegerType(i, i) for i in range(-16, 257)}
@@ -415,6 +480,61 @@ class _IsUnpackNode(NodeVisitor):
 _IS_UNPACK_NODE = _IsUnpackNode()
 
 
+class _LinearUpdate(NodeVisitor):
+    """Extract ``(src_var, d_min, d_max)`` from ``src_var`` or ``src_var +/- d``."""
+
+    def __init__(self, visitor: _Propagation):
+        self.visitor = visitor
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        if node.lvar is None:
+            return None
+        src_var = self.visitor.origins.get(node.lvar)
+        if src_var is not None and src_var in self.visitor.walk.local_vars_set:
+            t = self.visitor.type_of(node.lvar)
+            if t.fits(PYTHON_INTEGER) and not t.may_be_unbound:
+                return src_var, 0, 0
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if node.kind is not CallKind.KNOWN or len(node.args) != 2:
+            return None
+        info = node.fun_info
+        arg0, arg1 = node.args
+        t0 = self.visitor.type_of(arg0)
+        t1 = self.visitor.type_of(arg1)
+        if not (
+            t0.fits(PYTHON_INTEGER)
+            and not t0.may_be_unbound
+            and t1.fits(PYTHON_INTEGER)
+            and not t1.may_be_unbound
+        ):
+            return None
+        if info in (
+            fndb.BINARY[ast.BinaryOperator.ADD],
+            fndb.INPLACE_BINARY[ast.BinaryOperator.ADD],
+        ):
+            src0 = self.visitor.origins.get(arg0)
+            if src0 is not None and src0 in self.visitor.walk.local_vars_set:
+                return src0, t1.minimum, t1.maximum
+            src1 = self.visitor.origins.get(arg1)
+            if src1 is not None and src1 in self.visitor.walk.local_vars_set:
+                return src1, t0.minimum, t0.maximum
+        elif info in (
+            fndb.BINARY[ast.BinaryOperator.SUBTRACT],
+            fndb.INPLACE_BINARY[ast.BinaryOperator.SUBTRACT],
+        ):
+            src0 = self.visitor.origins.get(arg0)
+            if src0 is not None and src0 in self.visitor.walk.local_vars_set:
+                d_min = -t1.maximum if t1.maximum is not None else None
+                d_max = -t1.minimum if t1.minimum is not None else None
+                return src0, d_min, d_max
+        return None
+
+
 class _Propagation(NodeVisitor, LeafVisitor):
     """Processes one block's nodes against the current variable state."""
 
@@ -422,6 +542,8 @@ class _Propagation(NodeVisitor, LeafVisitor):
         self.walk = walk
         self.state = state
         self.origins = origins
+        self.relations: dict = {}
+        self.edge_relations: dict | None = None
         self.parent_origins: dict[object, object] = {}
         self.type_of_origins: dict[object, object] = {}
         self.tuple_list_origins: dict[object, TupleType] = {}
@@ -430,8 +552,15 @@ class _Propagation(NodeVisitor, LeafVisitor):
         self.changed = set()
         self._current_ref: Ref | None = None
 
-    def reset(self, state: dict[object, Fact], has_handler: bool) -> None:
+    def reset(
+        self,
+        state: dict[object, Fact],
+        has_handler: bool,
+        relations: dict | None = None,
+    ) -> None:
         self.state = state
+        self.relations = relations.copy() if relations is not None else {}
+        self.edge_relations = None
         self.origins.clear()
         self.parent_origins.clear()
         self.type_of_origins.clear()
@@ -479,14 +608,48 @@ class _Propagation(NodeVisitor, LeafVisitor):
         self.walk.element_contracts[node] = elem_contract
         return elem_contract.refine(static_type)
 
+    def _narrow_var_interval(
+        self, var, minimum: int | None, maximum: int | None
+    ) -> None:
+        if var is None or var not in self.state or var in self.walk.indirect:
+            return
+        cur = self.state[var]
+        if not cur.type.fits(PYTHON_INTEGER) or cur.type.may_be_unbound:
+            return
+        narrowed = cur.type
+        if minimum is not None:
+            narrowed = narrowed.narrow(
+                ast.ComparisonOperator.GREATER_EQUAL, minimum, True
+            )
+        if maximum is not None and narrowed is not BOTTOM:
+            narrowed = narrowed.narrow(ast.ComparisonOperator.LESS_EQUAL, maximum, True)
+        if narrowed is not BOTTOM and narrowed != cur.type:
+            self.assign(var, self.narrowed_fact(cur, narrowed))
+
     def prove_argument_type(self, lvar, proven_type: ValueType) -> None:
         recv_var = self.origins.get(lvar)
-        if (
-            recv_var is not None
-            and not recv_var.indirect
-            and self.type_of(lvar) is UNKNOWN
-        ):
-            self.assign(recv_var, _fact(proven_type))
+        if recv_var is not None and not recv_var.indirect:
+            if self.type_of(lvar) is UNKNOWN:
+                self.assign(recv_var, _fact(proven_type))
+            elif proven_type.fits(INTEGER):
+                self._narrow_var_interval(
+                    recv_var, proven_type.minimum, proven_type.maximum
+                )
+        elif len(lvar.uses) == 1 and proven_type.fits(INTEGER):
+            linear = lvar.uses[0].accept(_LinearUpdate(self))
+            if linear is not None:
+                base_var, d_min, d_max = linear
+                lo = (
+                    proven_type.minimum - d_max
+                    if proven_type.minimum is not None and d_max is not None
+                    else None
+                )
+                hi = (
+                    proven_type.maximum - d_min
+                    if proven_type.maximum is not None and d_min is not None
+                    else None
+                )
+                self._narrow_var_interval(base_var, lo, hi)
 
     def update_mutated_container(self, recv_var, updated_type: ValueType) -> None:
         if (
@@ -697,12 +860,20 @@ class _Propagation(NodeVisitor, LeafVisitor):
         key = _key(node.var)
         if key not in self.state:
             return None
+        if self.walk.temp_source:
+            for k, v in list(self.walk.temp_source.items()):
+                if k is key or v is key:
+                    del self.walk.temp_source[k]
         old = self.state[key]
         if node.value is None:
             self.assign(key, UNBOUND_FACT)
             self.type_of_origins.pop(key, None)
+            if self.relations and key in self.walk.local_vars_set:
+                self._drop_relations_for(key)
         else:
             fact = self.fact_of(node.value)
+            if key in self.walk.local_vars_set:
+                fact = self._update_relations_on_set(key, node.value, fact)
             contract = self.walk.local_contracts.get(key)
             if contract is not None:
                 if fact.type is not UNKNOWN and fact.type.fits(contract.checked_type):
@@ -723,6 +894,13 @@ class _Propagation(NodeVisitor, LeafVisitor):
             src_var = self.origins.get(node.value)
             if src_var is not None and src_var in self.state:
                 self.record_alias(key, src_var)
+                if (
+                    key in self.walk.local_vars_set
+                    and key.hidden
+                    and len(key.sets) == 1
+                    and src_var in self.walk.local_vars_set
+                ):
+                    self.walk.temp_source[key] = src_var
             parent_var = self.parent_origins.get(node.value)
             if parent_var is not None and parent_var in self.state:
                 self.record_container_child(parent_var, key)
@@ -737,6 +915,89 @@ class _Propagation(NodeVisitor, LeafVisitor):
         # Origins are locals, so this changes nothing for a global.
         self.forget_origin(node.var)
         return old
+
+    def _drop_relations_for(self, key) -> None:
+        rels = self.relations
+        for pair in [pair for pair in rels if key in pair]:
+            del rels[pair]
+
+    def _update_relations_on_set(self, key, value_lvar, fact: Fact) -> Fact:
+        rels = self.relations
+        linear = (
+            value_lvar.uses[0].accept(_LinearUpdate(self))
+            if len(value_lvar.uses) == 1
+            else None
+        )
+        if linear is not None:
+            src_var, d_min, d_max = linear
+            if src_var is key:
+                for (u, v), off in list(rels.items()):
+                    if u is key:
+                        if d_max is not None:
+                            rels[u, v] = off + d_max
+                        else:
+                            del rels[u, v]
+                    elif v is key:
+                        if d_min is not None:
+                            rels[u, v] = off - d_min
+                        else:
+                            del rels[u, v]
+                if fact.type.fits(PYTHON_INTEGER) and not fact.type.may_be_unbound:
+                    narrowed = fact.type
+                    for (u, v), off in rels.items():
+                        if u is key and v in self.state:
+                            v_type = self.state[v].type
+                            if (
+                                v_type.fits(PYTHON_INTEGER)
+                                and not v_type.may_be_unbound
+                                and v_type.maximum is not None
+                            ):
+                                narrowed = narrowed.narrow(
+                                    ast.ComparisonOperator.LESS_EQUAL,
+                                    v_type.maximum + off,
+                                    True,
+                                )
+                                if narrowed is BOTTOM:
+                                    break
+                        elif v is key and u in self.state:
+                            u_type = self.state[u].type
+                            if (
+                                u_type.fits(PYTHON_INTEGER)
+                                and not u_type.may_be_unbound
+                                and u_type.minimum is not None
+                            ):
+                                narrowed = narrowed.narrow(
+                                    ast.ComparisonOperator.GREATER_EQUAL,
+                                    u_type.minimum - off,
+                                    True,
+                                )
+                                if narrowed is BOTTOM:
+                                    break
+                    if narrowed is not BOTTOM and narrowed != fact.type:
+                        fact = self.narrowed_fact(fact, narrowed)
+                return fact
+            self._drop_relations_for(key)
+            if d_max is not None:
+                _tighten_relation(rels, key, src_var, d_max)
+            if d_min is not None:
+                _tighten_relation(rels, src_var, key, -d_min)
+            return fact
+        self._drop_relations_for(key)
+        if fact.type.fits(PYTHON_INTEGER) and not fact.type.may_be_unbound:
+            k_min, k_max = fact.type.minimum, fact.type.maximum
+            if k_min is not None or k_max is not None:
+                for other_var in self.walk.local_vars_tuple:
+                    if other_var is key or other_var not in self.state:
+                        continue
+                    other_type = self.state[other_var].type
+                    if not other_type.fits(PYTHON_INTEGER) or other_type.may_be_unbound:
+                        continue
+                    o_min, o_max = other_type.minimum, other_type.maximum
+                    if k_max is not None and o_min is not None:
+                        rels[key, other_var] = k_max - o_min
+                    if o_max is not None and k_min is not None:
+                        rels[other_var, key] = o_max - k_min
+        return fact
 
     def visit_Cast(self, node: Cast):
         value = self.type_of(node.value)
@@ -1060,13 +1321,149 @@ def _comparison_bound(
     return None
 
 
+def _extract_linear_term(visitor: _Propagation, lvar):
+    local = visitor.origins.get(lvar)
+    if local is not None and local in visitor.walk.local_vars_set:
+        local = visitor.walk.temp_source.get(local, local)
+        return local, 0
+    if len(lvar.uses) == 1:
+        linear = lvar.uses[0].accept(_LinearUpdate(visitor))
+        if linear is not None:
+            base_var, d_min, d_max = linear
+            if (
+                base_var in visitor.walk.local_vars_set
+                and d_min is not None
+                and d_min == d_max
+            ):
+                return base_var, d_min
+    return None
+
+
+def _relational_comparison(
+    operator: ast.ComparisonOperator,
+    rels: dict,
+    u_var,
+    v_var,
+    delta: int,
+) -> ValueType | None:
+    uv = 0 if u_var is v_var else rels.get((u_var, v_var))
+    vu = 0 if u_var is v_var else rels.get((v_var, u_var))
+    if operator is ast.ComparisonOperator.LESS:
+        if uv is not None and uv + delta <= -1:
+            return BOOLEAN_TRUE
+        if vu is not None and vu - delta <= 0:
+            return BOOLEAN_FALSE
+    elif operator is ast.ComparisonOperator.LESS_EQUAL:
+        if uv is not None and uv + delta <= 0:
+            return BOOLEAN_TRUE
+        if vu is not None and vu - delta <= -1:
+            return BOOLEAN_FALSE
+    elif operator is ast.ComparisonOperator.GREATER:
+        if vu is not None and vu - delta <= -1:
+            return BOOLEAN_TRUE
+        if uv is not None and uv + delta <= 0:
+            return BOOLEAN_FALSE
+    elif operator is ast.ComparisonOperator.GREATER_EQUAL:
+        if vu is not None and vu - delta <= 0:
+            return BOOLEAN_TRUE
+        if uv is not None and uv + delta <= -1:
+            return BOOLEAN_FALSE
+    elif operator is ast.ComparisonOperator.EQUAL:
+        if uv is not None and vu is not None and uv + delta <= 0 and vu - delta <= 0:
+            return BOOLEAN_TRUE
+        if (uv is not None and uv + delta <= -1) or (
+            vu is not None and vu - delta <= -1
+        ):
+            return BOOLEAN_FALSE
+    elif operator is ast.ComparisonOperator.NOT_EQUAL:
+        if (uv is not None and uv + delta <= -1) or (
+            vu is not None and vu - delta <= -1
+        ):
+            return BOOLEAN_TRUE
+        if uv is not None and vu is not None and uv + delta <= 0 and vu - delta <= 0:
+            return BOOLEAN_FALSE
+    return None
+
+
+def _apply_relations_to_state(rels: dict, state: dict, visitor: _Propagation) -> bool:
+    if not rels:
+        return False
+    changed = False
+    for (u, v), off in rels.items():
+        if u not in state or v not in state:
+            continue
+        u_fact = state[u]
+        v_fact = state[v]
+        u_type = u_fact.type
+        v_type = v_fact.type
+        if (
+            not u_type.fits(PYTHON_INTEGER)
+            or u_type.may_be_unbound
+            or not v_type.fits(PYTHON_INTEGER)
+            or v_type.may_be_unbound
+        ):
+            continue
+        if v_type.maximum is not None:
+            u_narrowed = u_type.narrow(
+                ast.ComparisonOperator.LESS_EQUAL, v_type.maximum + off, True
+            )
+            if u_narrowed is BOTTOM:
+                state[_DEAD_EDGE] = True
+                return True
+            if u_narrowed != u_type:
+                state[u] = visitor.narrowed_fact(u_fact, u_narrowed)
+                u_fact = state[u]
+                u_type = u_narrowed
+                changed = True
+        if u_type.minimum is not None:
+            v_narrowed = v_type.narrow(
+                ast.ComparisonOperator.GREATER_EQUAL, u_type.minimum - off, True
+            )
+            if v_narrowed is BOTTOM:
+                state[_DEAD_EDGE] = True
+                return True
+            if v_narrowed != v_type:
+                state[v] = visitor.narrowed_fact(v_fact, v_narrowed)
+                changed = True
+    return changed
+
+
 def _make_binary_propagator(operator: ast.BinaryOperator):
     def _prop(visitor: _Propagation, node: Combination):
         args = node.args
         left, right = visitor.type_of(args[0]), visitor.type_of(args[1])
         if left is BOTTOM or right is BOTTOM:
             return NO_FACT
-        fact = _fact(left.binary(operator, right))
+        res_type = left.binary(operator, right)
+        if (
+            operator is ast.BinaryOperator.SUBTRACT
+            and visitor.relations
+            and res_type.fits(PYTHON_INTEGER)
+            and left.fits(PYTHON_INTEGER)
+            and right.fits(PYTHON_INTEGER)
+            and not left.may_be_unbound
+            and not right.may_be_unbound
+        ):
+            left_term = _extract_linear_term(visitor, args[0])
+            right_term = _extract_linear_term(visitor, args[1])
+            if left_term is not None and right_term is not None:
+                u_var, c0 = left_term
+                v_var, c1 = right_term
+                delta = c0 - c1
+                uv = 0 if u_var is v_var else visitor.relations.get((u_var, v_var))
+                vu = 0 if u_var is v_var else visitor.relations.get((v_var, u_var))
+                narrowed = res_type
+                if vu is not None:
+                    narrowed = narrowed.narrow(
+                        ast.ComparisonOperator.GREATER_EQUAL, -vu + delta, True
+                    )
+                if uv is not None and narrowed is not BOTTOM:
+                    narrowed = narrowed.narrow(
+                        ast.ComparisonOperator.LESS_EQUAL, uv + delta, True
+                    )
+                if narrowed is not BOTTOM:
+                    res_type = narrowed
+        fact = _fact(res_type)
         if left.may_run_user_code or right.may_run_user_code:
             visitor.invalidate()
         return fact
@@ -1094,7 +1491,28 @@ def _make_comparison_propagator(operator: ast.ComparisonOperator):
         right = _equality_target_type(visitor, args[1])
         if left is BOTTOM or right is BOTTOM:
             return NO_FACT
-        fact = _fact(left.comparison(operator, right))
+        res_type = left.comparison(operator, right)
+        if (
+            res_type is BOOLEAN
+            and visitor.relations
+            and left.fits(PYTHON_INTEGER)
+            and right.fits(PYTHON_INTEGER)
+            and not left.may_be_unbound
+            and not right.may_be_unbound
+        ):
+            left_term = _extract_linear_term(visitor, args[0])
+            right_term = _extract_linear_term(visitor, args[1])
+            if left_term is not None and right_term is not None:
+                rel_cmp = _relational_comparison(
+                    operator,
+                    visitor.relations,
+                    left_term[0],
+                    right_term[0],
+                    left_term[1] - right_term[1],
+                )
+                if rel_cmp is not None:
+                    res_type = rel_cmp
+        fact = _fact(res_type)
         if operator not in (
             ast.ComparisonOperator.IS,
             ast.ComparisonOperator.IS_NOT,
@@ -1217,36 +1635,105 @@ def _make_comparison_constrainer(operator: ast.ComparisonOperator):
         if (cmp is BOOLEAN_FALSE and truth) or (cmp is BOOLEAN_TRUE and not truth):
             state[_DEAD_EDGE] = True
             return True
+        left_term = _extract_linear_term(visitor, left)
+        right_term = _extract_linear_term(visitor, right)
+        edge_rels = None
+        if (
+            left_term is not None
+            and right_term is not None
+            and left_type.fits(PYTHON_INTEGER)
+            and right_type.fits(PYTHON_INTEGER)
+            and not left_type.may_be_unbound
+            and not right_type.may_be_unbound
+        ):
+            u_var, c0 = left_term
+            v_var, c1 = right_term
+            delta = c0 - c1
+            if visitor.relations:
+                rel_cmp = _relational_comparison(
+                    operator, visitor.relations, u_var, v_var, delta
+                )
+                if (rel_cmp is BOOLEAN_FALSE and truth) or (
+                    rel_cmp is BOOLEAN_TRUE and not truth
+                ):
+                    state[_DEAD_EDGE] = True
+                    return True
+            eff_op = operator if truth else _NEGATED_COMPARISON.get(operator, operator)
+            edge_rels = (
+                visitor.edge_relations
+                if visitor.edge_relations is not None
+                else visitor.relations
+            ).copy()
+            feasible = True
+            if eff_op is ast.ComparisonOperator.LESS:
+                feasible = _tighten_relation(edge_rels, u_var, v_var, -1 - delta)
+            elif eff_op is ast.ComparisonOperator.LESS_EQUAL:
+                feasible = _tighten_relation(edge_rels, u_var, v_var, -delta)
+            elif eff_op is ast.ComparisonOperator.GREATER:
+                feasible = _tighten_relation(edge_rels, v_var, u_var, -1 + delta)
+            elif eff_op is ast.ComparisonOperator.GREATER_EQUAL:
+                feasible = _tighten_relation(edge_rels, v_var, u_var, delta)
+            elif eff_op is ast.ComparisonOperator.EQUAL:
+                feasible = _tighten_relation(
+                    edge_rels, u_var, v_var, -delta
+                ) and _tighten_relation(edge_rels, v_var, u_var, delta)
+            if not feasible:
+                state[_DEAD_EDGE] = True
+                return True
+            visitor.edge_relations = edge_rels
         changed = False
-        for operand, other, op in (
-            (left, right, operator),
-            (right, left, swapped),
+        for operand, other, op, term in (
+            (left, right, operator, left_term),
+            (right, left, swapped, right_term),
         ):
             if op is None:
                 continue
             local = visitor.origins.get(operand)
+            offset = 0
+            if local is None and term is not None:
+                local, offset = term
             if local is None or local not in visitor.state:
                 continue
-            current = state[local]
-            narrowed = current.type
-            if op in (
-                ast.ComparisonOperator.EQUAL,
-                ast.ComparisonOperator.NOT_EQUAL,
-            ):
-                is_equal = (op is ast.ComparisonOperator.EQUAL) == truth
-                narrowed = narrowed.narrow_equality(
-                    _equality_target_type(visitor, other), is_equal
-                )
+            target_locals = (
+                (local, visitor.walk.temp_source[local])
+                if local in visitor.walk.temp_source
+                else (local,)
+            )
             other_type = visitor.type_of(other)
             bound = _comparison_bound(op, other_type, truth)
-            if bound is not None and narrowed is not BOTTOM:
-                narrowed = narrowed.narrow(op, bound, truth)
-            if narrowed is BOTTOM:
-                state[_DEAD_EDGE] = True
+            eq_target = (
+                _equality_target_type(visitor, other)
+                if offset == 0
+                and op
+                in (
+                    ast.ComparisonOperator.EQUAL,
+                    ast.ComparisonOperator.NOT_EQUAL,
+                )
+                else None
+            )
+            for target_local in target_locals:
+                if target_local not in state:
+                    continue
+                current = state[target_local]
+                if current is UNBOUND_FACT:
+                    continue
+                narrowed = current.type
+                if eq_target is not None:
+                    is_equal = (op is ast.ComparisonOperator.EQUAL) == truth
+                    narrowed = narrowed.narrow_equality(eq_target, is_equal)
+                if bound is not None and narrowed is not BOTTOM:
+                    narrowed = narrowed.narrow(op, bound - offset, truth)
+                if narrowed is BOTTOM:
+                    state[_DEAD_EDGE] = True
+                    return True
+                if narrowed != current.type:
+                    state[target_local] = visitor.narrowed_fact(current, narrowed)
+                    changed = True
+        active_rels = edge_rels if edge_rels is not None else visitor.relations
+        if active_rels and _apply_relations_to_state(active_rels, state, visitor):
+            if _DEAD_EDGE in state:
                 return True
-            if narrowed != current.type:
-                state[local] = visitor.narrowed_fact(current, narrowed)
-                changed = True
+            changed = True
         return changed
 
     return _constrain_ord
@@ -1662,6 +2149,10 @@ def _propagate_getitem(visitor: _Propagation, node: Combination):
     static_item = receiver_type.flow_getitem_type(index_type)
     if static_item is BOTTOM:
         return NO_FACT
+    if index_type.fits(PYTHON_INTEGER) and not index_type.may_be_unbound:
+        bounds = receiver_type.valid_index_bounds()
+        if bounds is not None:
+            visitor.prove_argument_type(args[1], IntegerType(bounds[0], bounds[1]))
     recv_contract = visitor.walk.lvar_contracts.get(args[0])
     elem_contract = (
         recv_contract.getitem_contract(index_type)
@@ -1709,6 +2200,10 @@ def _propagate_setitem(visitor: _Propagation, node: Combination):
     if not recv_type.fits_list(LIST_TYPE) or key_type.may_run_user_code:
         visitor.invalidate()
     if recv_type.fits_list(LIST_TYPE):
+        if key_type.fits(PYTHON_INTEGER) and not key_type.may_be_unbound:
+            bounds = recv_type.valid_index_bounds()
+            if bounds is not None:
+                visitor.prove_argument_type(args[1], IntegerType(bounds[0], bounds[1]))
         elem_type = (
             val_type
             if key_type.fits(PYTHON_INTEGER)
@@ -1804,6 +2299,7 @@ class LambdaGraph:
     indirect: tuple
     volatile_keys: tuple
     call_nodes: tuple
+    thresholds: tuple[int, ...] = _BASE_WIDENING_THRESHOLDS
 
 
 class _GraphScan(NodeVisitor, LeafVisitor):
@@ -1812,6 +2308,7 @@ class _GraphScan(NodeVisitor, LeafVisitor):
     def __init__(self, consumers):
         self.global_names: set[str] = set()
         self.call_nodes: list[tuple[object, Combination]] = []
+        self.threshold_set: set[int] = set(_BASE_WIDENING_THRESHOLDS)
         self.consumers = consumers
         self.block = None
 
@@ -1820,6 +2317,11 @@ class _GraphScan(NodeVisitor, LeafVisitor):
 
     def visit_Set(self, node):
         node.var.accept(self)
+
+    def visit_Constant(self, leaf):
+        val = constant_type(leaf.value).exact_integer()
+        if val is not None and FIXNUM_MIN < val < FIXNUM_MAX:
+            self.threshold_set.update((val - 1, val, val + 1))
 
     def visit_GlobalVar(self, leaf):
         self.global_names.add(leaf.name)
@@ -1859,6 +2361,7 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
     headers, back_edges = _loop_headers(entry, successors)
     global_names = tuple(scan.global_names)
     call_nodes = tuple(scan.call_nodes)
+    thresholds = tuple(sorted(scan.threshold_set))
     closure = (
         tuple(lambda_.environment.closure) if lambda_.environment is not None else ()
     )
@@ -1889,6 +2392,7 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
         indirect=indirect,
         volatile_keys=volatile_keys,
         call_nodes=call_nodes,
+        thresholds=thresholds,
     )
 
 
@@ -1984,7 +2488,11 @@ class _Walk:
         self.global_names = graph.global_names
         self.indirect = graph.indirect
         self.volatile_keys = graph.volatile_keys
+        self.thresholds = graph.thresholds
+        self.local_vars_tuple = tuple(var for var in lambda_.locals if not var.indirect)
+        self.local_vars_set = frozenset(self.local_vars_tuple)
         self.aliases: dict[object, set[object]] = defaultdict(set)
+        self.temp_source: dict[object, object] = {}
         self.parent_containers: dict[object, set[object]] = defaultdict(set)
         self.local_contracts = {
             var: contract
@@ -2188,6 +2696,7 @@ class _Walk:
 
     def run(self) -> Body:
         incoming, edge_states, out_states = {}, {}, {}
+        in_relations, edge_relations = {}, {}
         return_block_origins: dict[object, tuple[dict, dict]] = {}
         return_blocks = (
             frozenset(use.block for use in self.lambda_.return_.result.uses)
@@ -2202,6 +2711,8 @@ class _Walk:
             widened_keys,
             return_blocks,
             return_block_origins,
+            in_relations,
+            edge_relations,
             widening=True,
         ):
             self.propagate(
@@ -2211,6 +2722,8 @@ class _Walk:
                 widened_keys,
                 return_blocks,
                 return_block_origins,
+                in_relations,
+                edge_relations,
                 widening=False,
             )
         self.resolve_call = None
@@ -2266,6 +2779,8 @@ class _Walk:
         widened_keys,
         return_blocks,
         return_block_origins,
+        in_relations,
+        edge_relations,
         *,
         widening: bool,
     ) -> bool:
@@ -2287,6 +2802,7 @@ class _Walk:
         consumers = self.consumers
         headers = self.headers
         back_edges = self.back_edges
+        thresholds = self.thresholds
         facts = self.facts
         visitor = _Propagation(self, {}, {})
 
@@ -2296,6 +2812,11 @@ class _Walk:
             operand_changed = block in cross_changed
             if operand_changed:
                 cross_changed.remove(block)
+            parent_rels = [
+                edge_relations.get((parent, block), {})
+                for parent in predecessors[block]
+                if (parent, block) in edge_states
+            ]
             if widening or block not in headers:
                 parents = [
                     edge_states[parent, block]
@@ -2316,8 +2837,12 @@ class _Walk:
                         parents.append(edge_states[edge_key])
             if block is self.entry:
                 parents.append(self.initial)
+                parent_rels.append({})
             if not parents:
                 continue
+            rels = _join_relations_list(parent_rels)
+            if not widening and block in headers:
+                rels = _widen_relations(in_relations.get(block, {}), rels)
             state = parents[0]
             for parent in parents[1:]:
                 state, _ = join_states(state, parent)
@@ -2334,9 +2859,18 @@ class _Walk:
                     changed = True
                 else:
                     state, changed = join_states(previous, state)
-                if changed:
+                old_rels = in_relations.get(block)
+                if old_rels is not None:
+                    if block in headers and visits[block] >= 1:
+                        rels = _widen_relations(old_rels, rels)
+                    else:
+                        rels = _join_relations_list([old_rels, rels])
+                rel_changed = rels != old_rels and visits[block] < 4
+                if rel_changed:
+                    in_relations[block] = rels
+                if changed or rel_changed:
                     visits[block] += 1
-                    if block in headers and block in incoming:
+                    if changed and block in headers and block in incoming:
                         old_in = incoming[block]
                         widened = {}
                         for key, val in state.items():
@@ -2356,7 +2890,9 @@ class _Walk:
                             ):
                                 key_visits[block, key] += 1
                                 widened_keys[block].add(key)
-                                if key_visits[block, key] > 2:
+                                if key_visits[block, key] in (3, 4):
+                                    widened[key] = widen_fact(old_val, val, thresholds)
+                                elif key_visits[block, key] > 4:
                                     widened[key] = widen_fact(old_val, val)
                                 else:
                                     widened[key] = val
@@ -2368,10 +2904,13 @@ class _Walk:
                     incoming[block] = state
                 elif not operand_changed:
                     continue
-            elif state != previous:
+            elif state != previous or (
+                rels != in_relations.get(block) and visits[block] < 3
+            ):
                 if visits[block] < 3:
                     visits[block] += 1
                     incoming[block] = state
+                    in_relations[block] = rels
                 elif not operand_changed:
                     continue
                 else:
@@ -2382,7 +2921,7 @@ class _Walk:
             state = state.copy()
             handler = handlers[block]
             has_handler = handler is not None
-            visitor.reset(state, has_handler)
+            visitor.reset(state, has_handler, in_relations.get(block))
             for node in block_nodes[block]:
                 fact = node.accept(visitor)
                 if fact is not None:
@@ -2415,17 +2954,30 @@ class _Walk:
                 if target is handler:
                     edge = linked(visitor.handler_state, visitor, "handler state")
                     self.invalidate_globals(edge)
+                    edge_rel = {}
                 else:
+                    visitor.edge_relations = None
                     edge = self.constrain_edge(
                         block, target, visitor, state, edge_states
                     )
                     if edge is None:
                         continue
+                    edge_rel = (
+                        visitor.edge_relations
+                        if visitor.edge_relations is not None
+                        else visitor.relations.copy()
+                    )
                 key = block, target
                 if not widening:
                     visited_edges.add(key)
                 old_edge = edge_states.get(key)
-                if old_edge is None or (old_edge is not edge and old_edge != edge):
+                old_rel = edge_relations.get(key)
+                edge_relations[key] = edge_rel
+                if (
+                    old_edge is None
+                    or (old_edge is not edge and old_edge != edge)
+                    or old_rel != edge_rel
+                ):
                     edge_states[key] = edge
                     if target not in queued:
                         pending.append(target)

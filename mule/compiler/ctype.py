@@ -8,12 +8,27 @@ only proofs that LLVM may use after a successful language operation.
 """
 
 import json
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, replace
 
 from mule import ast
 
 FIXNUM_MIN = -(2**62)
 FIXNUM_MAX = 2**62 - 1
+
+
+def _widen_lower_threshold(value: int, thresholds: tuple[int, ...]) -> int | None:
+    if not thresholds:
+        return None
+    idx = bisect_right(thresholds, value) - 1
+    return thresholds[idx] if idx >= 0 else None
+
+
+def _widen_upper_threshold(value: int, thresholds: tuple[int, ...]) -> int | None:
+    if not thresholds:
+        return None
+    idx = bisect_left(thresholds, value)
+    return thresholds[idx] if idx < len(thresholds) else None
 
 
 class ValueTypeVisitor:
@@ -246,25 +261,25 @@ class ValueType:
     def join_unbound(self, left):
         return self.with_unbound()
 
-    def widen(self, new):
+    def widen(self, new, thresholds: tuple[int, ...] = ()):
         return new
 
-    def widen_integer(self, old):
+    def widen_integer(self, old, thresholds: tuple[int, ...] = ()):
         return self
 
-    def widen_tuple(self, old):
+    def widen_tuple(self, old, thresholds: tuple[int, ...] = ()):
         return self
 
-    def widen_list(self, old):
+    def widen_list(self, old, thresholds: tuple[int, ...] = ()):
         return self
 
-    def widen_dict(self, old):
+    def widen_dict(self, old, thresholds: tuple[int, ...] = ()):
         return self
 
-    def widen_iterator(self, old):
+    def widen_iterator(self, old, thresholds: tuple[int, ...] = ()):
         return self
 
-    def widen_class(self, old):
+    def widen_class(self, old, thresholds: tuple[int, ...] = ()):
         return self
 
     def widen_constant(self):
@@ -451,6 +466,9 @@ class ValueType:
         return None
 
     def exact_length(self) -> int | None:
+        return None
+
+    def valid_index_bounds(self) -> tuple[int, int] | None:
         return None
 
     def codepoint_at(self, index: int):
@@ -885,15 +903,19 @@ class IntegerType(PrimitiveType):
     def join_python_integer(self, left):
         return _join_python_integer(left, self)
 
-    def widen(self, new):
-        return new.widen_integer(self)
+    def widen(self, new, thresholds: tuple[int, ...] = ()):
+        return new.widen_integer(self, thresholds)
 
-    def widen_integer(self, old):
+    def widen_integer(self, old, thresholds: tuple[int, ...] = ()):
         minimum, maximum = self.minimum, self.maximum
-        if old.minimum is None or (minimum is not None and minimum < old.minimum):
+        if old.minimum is None:
             minimum = None
-        if old.maximum is None or (maximum is not None and maximum > old.maximum):
+        elif minimum is not None and minimum < old.minimum:
+            minimum = _widen_lower_threshold(minimum, thresholds)
+        if old.maximum is None:
             maximum = None
+        elif maximum is not None and maximum > old.maximum:
+            maximum = _widen_upper_threshold(maximum, thresholds)
         if minimum == self.minimum and maximum == self.maximum:
             return self
         if minimum is None and maximum is None and not self.may_be_unbound:
@@ -1022,6 +1044,35 @@ class IntegerType(PrimitiveType):
         if minimum == self.minimum and maximum == self.maximum:
             return self
         return replace(self, minimum=minimum, maximum=maximum)
+
+    def narrow_equality(self, other, is_equal: bool):
+        if (
+            self.may_be_unbound
+            or other.may_be_unbound
+            or not other.fits(PYTHON_INTEGER)
+        ):
+            return self
+        exact = other.exact_integer()
+        if exact is not None:
+            return self.narrow(
+                ast.ComparisonOperator.EQUAL
+                if is_equal
+                else ast.ComparisonOperator.NOT_EQUAL,
+                exact,
+                True,
+            )
+        if is_equal:
+            narrowed = self
+            if other.minimum is not None:
+                narrowed = narrowed.narrow(
+                    ast.ComparisonOperator.GREATER_EQUAL, other.minimum, True
+                )
+            if other.maximum is not None and narrowed is not BOTTOM:
+                narrowed = narrowed.narrow(
+                    ast.ComparisonOperator.LESS_EQUAL, other.maximum, True
+                )
+            return narrowed
+        return self
 
     def exact_integer(self):
         if (
@@ -1216,10 +1267,10 @@ class BooleanType(IntegerType):
     def join_immortal(self, left):
         return _join_immortal(self, left)
 
-    def widen(self, new):
+    def widen(self, new, thresholds: tuple[int, ...] = ()):
         return new
 
-    def widen_integer(self, old):
+    def widen_integer(self, old, thresholds: tuple[int, ...] = ()):
         return self
 
     def widen_constant(self):
@@ -1782,7 +1833,7 @@ class TextType(PrimitiveType):
             length=length,
         )
 
-    def widen(self, new):
+    def widen(self, new, thresholds: tuple[int, ...] = ()):
         if new.fits_text(TEXT_TYPE) and (
             self.literal != new.exact_text() or self.length != new.length
         ):
@@ -1898,6 +1949,15 @@ class TextType(PrimitiveType):
 
     def fits_possible_immortal(self, expected):
         return True
+
+    def valid_index_bounds(self) -> tuple[int, int] | None:
+        if self.may_be_unbound:
+            return None
+        exact = self.exact_length()
+        if exact is not None:
+            return (-exact, exact - 1) if exact > 0 else None
+        max_len = (1 << 58) - 1
+        return (-max_len, max_len - 1)
 
     def getitem_type(self, index):
         if self.may_be_unbound:
@@ -2027,6 +2087,12 @@ class BytesType(PrimitiveType):
     def fits_bytes(self, expected):
         return not self.may_be_unbound
 
+    def valid_index_bounds(self) -> tuple[int, int] | None:
+        if self.may_be_unbound:
+            return None
+        max_len = (1 << 48) - 1
+        return (-max_len, max_len - 1)
+
     def getitem_type(self, index):
         if self.may_be_unbound or index.may_be_unbound:
             return UNKNOWN
@@ -2130,6 +2196,12 @@ class ByteArrayType(PrimitiveType):
 
     def fits_bytearray(self, expected=None):
         return not self.may_be_unbound
+
+    def valid_index_bounds(self) -> tuple[int, int] | None:
+        if self.may_be_unbound:
+            return None
+        max_len = (1 << 48) - 1
+        return (-max_len, max_len - 1)
 
     def getitem_type(self, index):
         if self.may_be_unbound or index.may_be_unbound:
@@ -2257,6 +2329,14 @@ class TupleType(ValueType):
     def exact_length(self) -> int | None:
         return None if self.may_be_unbound else self.arity
 
+    def valid_index_bounds(self) -> tuple[int, int] | None:
+        if self.may_be_unbound:
+            return None
+        if self.arity is not None:
+            return (-self.arity, self.arity - 1) if self.arity > 0 else None
+        max_len = (1 << 60) - 1
+        return (-max_len, max_len - 1)
+
     def annotation_conflict(self, contract):
         return False if self.may_be_unbound else contract.tuple_conflict(self)
 
@@ -2320,10 +2400,10 @@ class TupleType(ValueType):
             return left
         return TupleType(arity, elements, may_be_unbound=unbound)
 
-    def widen(self, new):
-        return new.widen_tuple(self)
+    def widen(self, new, thresholds: tuple[int, ...] = ()):
+        return new.widen_tuple(self, thresholds)
 
-    def widen_tuple(self, old):
+    def widen_tuple(self, old, thresholds: tuple[int, ...] = ()):
         if (
             self.arity is not None
             and self.arity == old.arity
@@ -2332,7 +2412,7 @@ class TupleType(ValueType):
             and len(self.elements) == len(old.elements)
         ):
             widened_elems = tuple(
-                widen_fact(o_el, n_el).limit_container_depth(2)
+                widen_fact(o_el, n_el, thresholds).limit_container_depth(2)
                 for o_el, n_el in zip(old.elements, self.elements)
             )
             elements = (
@@ -2725,17 +2805,25 @@ class ListType(ValueType):
             return left
         return ListType(element, may_be_unbound)
 
-    def widen(self, new):
-        return new.widen_list(self)
+    def widen(self, new, thresholds: tuple[int, ...] = ()):
+        return new.widen_list(self, thresholds)
 
-    def widen_list(self, old):
-        element = widen_fact(old.element, self.element).limit_container_depth(2)
+    def widen_list(self, old, thresholds: tuple[int, ...] = ()):
+        element = widen_fact(
+            old.element, self.element, thresholds
+        ).limit_container_depth(2)
         may_be_unbound = old.may_be_unbound or self.may_be_unbound
         if element == self.element and may_be_unbound == self.may_be_unbound:
             return self
         if element is UNKNOWN and not may_be_unbound:
             return LIST_TYPE
         return ListType(element, may_be_unbound)
+
+    def valid_index_bounds(self) -> tuple[int, int] | None:
+        if self.may_be_unbound or self.element is BOTTOM:
+            return None
+        max_len = (1 << 60) - 1
+        return (-max_len, max_len - 1)
 
     def dispatch_domain(self):
         return None if self.may_be_unbound else LIST_TYPE
@@ -3096,12 +3184,12 @@ class DictType(ValueType):
             return left
         return DictType(key, value, may_be_unbound, proven)
 
-    def widen(self, new):
-        return new.widen_dict(self)
+    def widen(self, new, thresholds: tuple[int, ...] = ()):
+        return new.widen_dict(self, thresholds)
 
-    def widen_dict(self, old):
-        key = widen_fact(old.key, self.key).limit_container_depth(2)
-        value = widen_fact(old.value, self.value).limit_container_depth(2)
+    def widen_dict(self, old, thresholds: tuple[int, ...] = ()):
+        key = widen_fact(old.key, self.key, thresholds).limit_container_depth(2)
+        value = widen_fact(old.value, self.value, thresholds).limit_container_depth(2)
         may_be_unbound = old.may_be_unbound or self.may_be_unbound
         proven = old.proven and self.proven
         if (
@@ -3408,11 +3496,13 @@ class IteratorType(ValueType):
             return left
         return IteratorType(element, may_be_unbound)
 
-    def widen(self, new):
-        return new.widen_iterator(self)
+    def widen(self, new, thresholds: tuple[int, ...] = ()):
+        return new.widen_iterator(self, thresholds)
 
-    def widen_iterator(self, old):
-        element = widen_fact(old.element, self.element).limit_container_depth(2)
+    def widen_iterator(self, old, thresholds: tuple[int, ...] = ()):
+        element = widen_fact(
+            old.element, self.element, thresholds
+        ).limit_container_depth(2)
         may_be_unbound = old.may_be_unbound or self.may_be_unbound
         if element == self.element and may_be_unbound == self.may_be_unbound:
             return self
@@ -3934,13 +4024,28 @@ class UnionType(ValueType):
             UNKNOWN if self.may_be_unbound else self.map(lambda m: m.next_item_type())
         )
 
-    def widen(self, new):
+    def valid_index_bounds(self) -> tuple[int, int] | None:
+        if self.may_be_unbound:
+            return None
+        lo = None
+        hi = None
+        for member in self.members:
+            bounds = member.valid_index_bounds()
+            if bounds is None:
+                return None
+            lo = bounds[0] if lo is None else min(lo, bounds[0])
+            hi = bounds[1] if hi is None else max(hi, bounds[1])
+        return (lo, hi) if lo is not None and hi is not None else None
+
+    def widen(self, new, thresholds: tuple[int, ...] = ()):
         members = []
         for member in new.union_members():
             previous = next(
                 (m for m in self.members if m.same_runtime_class(member)), None
             )
-            members.append(member if previous is None else widen_fact(previous, member))
+            members.append(
+                member if previous is None else widen_fact(previous, member, thresholds)
+            )
         result = union_type(*members)
         return result.join(UNBOUND) if new.may_be_unbound else result
 
@@ -4234,10 +4339,10 @@ class ClassType(ValueType):
             return UNKNOWN_UNBOUND if unbound else UNKNOWN
         return ClassType(merged, may_be_unbound=unbound)
 
-    def widen(self, new):
-        return new.widen_class(self)
+    def widen(self, new, thresholds: tuple[int, ...] = ()):
+        return new.widen_class(self, thresholds)
 
-    def widen_class(self, old):
+    def widen_class(self, old, thresholds: tuple[int, ...] = ()):
         if len(self.instance_types) > 6:
             return UNKNOWN_UNBOUND if self.may_be_unbound else UNKNOWN
         return self
@@ -4391,8 +4496,10 @@ class UniqueObjectType(ValueType):
         return BOTTOM if is_none else self
 
 
-def widen_fact(previous: ValueType, current: ValueType) -> ValueType:
-    return previous.widen(previous.join(current)).limit_container_depth(3)
+def widen_fact(
+    previous: ValueType, current: ValueType, thresholds: tuple[int, ...] = ()
+) -> ValueType:
+    return previous.widen(previous.join(current), thresholds).limit_container_depth(3)
 
 
 INTEGER = IntegerType()

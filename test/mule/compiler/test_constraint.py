@@ -808,3 +808,56 @@ def test_fixnum_variant_requires_numeric_use_and_specialized_operation():
     assert [
         context.id for context in variants(compilation, function(compilation, 4))
     ] == ["fixnum"]
+
+
+def test_threshold_widening_preserves_literal_loop_bounds_above_1024():
+    compilation = lower(
+        "def count_to_2000():\n"
+        " i = 0\n"
+        " while i < 2000:\n"
+        "  body_i = i\n"
+        "  i += 1\n"
+        " exit_i = i\n"
+        " return exit_i\n"
+    )
+    fn = function(compilation, 1)
+    assert fact(compilation, fn, stored_value(fn, "body_i").use()) == IntegerType(
+        0, 1999
+    )
+    assert fact(compilation, fn, stored_value(fn, "exit_i").use()) == IntegerType(
+        2000, 2000
+    )
+
+
+def test_relational_constraints_prove_difference_and_loop_exit_equality():
+    compilation = lower(
+        "def loop_rel(n: int):\n"
+        " if 0 <= n <= 500:\n"
+        "  i = 0\n"
+        "  while i < n:\n"
+        "   diff = n - i\n"
+        "   i += 1\n"
+        "  eq = (i == n)\n"
+        "  return eq\n"
+        " return False\n"
+    )
+    fn = function(compilation, 1)
+    assert fact(compilation, fn, stored_value(fn, "diff").use()) == IntegerType(1, 500)
+    assert fact(compilation, fn, stored_value(fn, "eq").use()) == BooleanType(1, 1)
+
+
+def test_post_indexing_narrows_variable_and_offset_bounds():
+    compilation = lower(
+        "def index_bounds(i: int):\n"
+        " if i >= 0:\n"
+        "  t = (10, 20, 30, 40)\n"
+        "  a = t[i]\n"
+        "  b = t[i + 1]\n"
+        "  after = i\n"
+        "  return a + b + after\n"
+        " return 0\n"
+    )
+    fn = function(compilation, 1)
+    assert fact(compilation, fn, stored_value(fn, "after").use()) == PythonIntegerType(
+        0, 2
+    )

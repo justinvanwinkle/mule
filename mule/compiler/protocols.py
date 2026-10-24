@@ -238,6 +238,12 @@ def _propagate_storage_append(visitor, node) -> ValueType | None:
 def _propagate_storage_write(visitor, node) -> ValueType | None:
     args = node.args
     if len(args) == 3:
+        seq_type = visitor.type_of(args[0])
+        exact_len = seq_type.exact_length()
+        max_idx = (
+            exact_len - 1 if exact_len is not None and exact_len > 0 else (1 << 60) - 1
+        )
+        visitor.prove_argument_type(args[1], IntegerType(0, max_idx))
         visitor.mutate_container_element(args[0], visitor.type_of(args[2]))
     return None
 
@@ -252,7 +258,13 @@ def _propagate_storage_read(visitor, node) -> ValueType | None:
             return BOTTOM
         if seq_type == EMPTY_LIST_TYPE and idx_type.fits(PYTHON_INTEGER):
             return BOTTOM
-        return seq_type.getitem_type(idx_type)
+        exact_len = seq_type.exact_length()
+        max_idx = (
+            exact_len - 1 if exact_len is not None and exact_len > 0 else (1 << 60) - 1
+        )
+        idx_bound = IntegerType(0, max_idx)
+        visitor.prove_argument_type(args[1], idx_bound)
+        return seq_type.getitem_type(idx_bound if idx_type is UNKNOWN else idx_type)
     return None
 
 
@@ -391,6 +403,7 @@ def _propagate_text_codepoint(visitor, node) -> ValueType | None:
         if text_type is BOTTOM or idx_type is BOTTOM:
             return BOTTOM
         visitor.prove_argument_type(args[0], TEXT_TYPE)
+        visitor.prove_argument_type(args[1], IntegerType(0, (1 << 58) - 1))
         idx = idx_type.exact_integer()
         if idx is not None:
             return text_type.codepoint_at(idx)
@@ -406,6 +419,7 @@ def _propagate_text_character(visitor, node) -> ValueType | None:
         if text_type is BOTTOM or idx_type is BOTTOM:
             return BOTTOM
         visitor.prove_argument_type(args[0], TEXT_TYPE)
+        visitor.prove_argument_type(args[1], IntegerType(0, (1 << 58) - 1))
         idx = idx_type.exact_integer()
         if idx is not None:
             cp_type = text_type.codepoint_at(idx)
@@ -425,6 +439,8 @@ def _propagate_text_slice(visitor, node) -> ValueType | None:
         if any(t is BOTTOM for t in arg_types):
             return BOTTOM
         visitor.prove_argument_type(args[0], TEXT_TYPE)
+        visitor.prove_argument_type(args[1], IntegerType(0, 1 << 58))
+        visitor.prove_argument_type(args[2], IntegerType(0, 1 << 58))
         start = arg_types[1].exact_integer()
         stop = arg_types[2].exact_integer()
         literal = arg_types[0].exact_text()
@@ -589,6 +605,16 @@ def _derive_native_byte_length(
     return IntegerType(0, (1 << 48) - 1)
 
 
+def _propagate_native_read_byte(
+    node, visitor, args, arg_types, keywords=()
+) -> ValueType:
+    if len(args) == 2:
+        if arg_types[0] is BOTTOM or arg_types[1] is BOTTOM:
+            return BOTTOM
+        visitor.prove_argument_type(args[1], IntegerType(0, (1 << 48) - 1))
+    return IntegerType(0, 255)
+
+
 def _derive_native_typed_value(
     arg_types, keywords=(), *, receiver_type=None
 ) -> ValueType:
@@ -653,6 +679,10 @@ NATIVE_MODULE_TARGETS[("_mule_native", "is_instance")] = ForeignCallTarget(
 NATIVE_MODULE_TARGETS[("_mule_native", "byte_length")] = ForeignCallTarget(
     return_type=IntegerType(0, (1 << 48) - 1),
     derive_fn=_derive_native_byte_length,
+)
+NATIVE_MODULE_TARGETS[("_mule_native", "read_byte")] = ForeignCallTarget(
+    return_type=IntegerType(0, 255),
+    propagate_fn=_propagate_native_read_byte,
 )
 NATIVE_MODULE_TARGETS[("_mule_native", "typed_value")] = ForeignCallTarget(
     return_type=UNKNOWN,

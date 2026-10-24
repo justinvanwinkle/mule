@@ -1309,6 +1309,7 @@ def clone_lambda_component(lambda_: Lambda):
         lambda_.bind,
         lambda_.return_,
         list(lambda_.entries),
+        list(lambda_.locals),
     )
     lambda_.component = new_component
     if lambda_.bind is not None:
@@ -1332,8 +1333,10 @@ def clone_lambda_component(lambda_: Lambda):
             lambda_.bind,
             lambda_.return_,
             entries,
+            locals_list,
         ) = saved_lambda
         lambda_.entries[:] = entries
+        lambda_.locals[:] = locals_list
 
     return new_component, node_map, restore
 

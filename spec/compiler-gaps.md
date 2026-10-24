@@ -4,11 +4,12 @@ Status: **implemented** for declared parameter contracts and sound container
 element propagation (Section 0A), general-context flow-type feedback into IR1
 transforms, unified constant-lvar/dead-operand helpers, and monotonic
 `derive_node_type` (Section 1A), entry-context IR1 specialization / closed-call
-parameter promotion (Section 1B), identity-aware float storage and coercions,
-numeric internal calling conventions, LLVM-visible private leaf boxes
-(parts of Section 5), and local closure extent / fixed aggregate scalar
-replacement (Section 3); **proposed** for Sections 0B–0D, Sections 1C–2 and 4,
-and the rest of Section 5.
+parameter promotion (Section 1B), local closure extent / fixed aggregate scalar
+replacement (Section 3), loop optimizations / loop-invariant code motion /
+induction-variable range and relational constraint inference (Section 4), and
+identity-aware float storage and coercions, numeric internal calling
+conventions, LLVM-visible private leaf boxes (parts of Section 5); **proposed**
+for Sections 0B–0D, Sections 1C–2, and the rest of Section 5.
 
 This document records the remaining architectural and transform gaps between
 SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`),
@@ -518,24 +519,61 @@ suite failure or performance measurement.
 
 ---
 
-## 4. Loop optimizations (`loop.lisp` + loop-invariant code motion) (proposed)
+## 4. Loop optimizations (`loop.lisp` + loop-invariant code motion) (implemented)
 
 - **SBCL reference**: `src/compiler/loop.lisp` (natural loop detection,
-  dominators, loop nesting tree).
-- **Current Mule state**: `mule/compiler/loop.py` computes dominators, natural
-  loops, and loop depth on `Block`s at the end of `ir1_phases`, and `ir1tran.py`
-  specializes `for i in range(...)` into native counted loops.
-- **Remaining gaps and plan**:
-  1. **Loop-invariant code motion (LICM)**: Use the natural loop headers and
-     dominator tree from `mule/compiler/loop.py` to hoist loop-invariant
-     read-only global cell loads (`GlobalVar` with no `Set` inside the loop and
-     no intervening unknown calls), invariant attribute/method resolutions on
-     known immutable receivers, and pure `foldable` known calls whose operands
-     are defined outside the loop into the loop preheader.
-  2. **While-loop induction variable range inference**: Extend `constraint.py`
-     to recognize monotonic `while i < n:` / `i += 1` induction variables on
-     proven integers and bound `i` to `[init, n - 1]` inside the loop body,
-     enabling bounds-check and negative-index elision on sequence indexing.
+  dominators, loop nesting tree), `src/compiler/constraint.lisp`
+  (`constraint-propagate-back` post-operation type narrowing), and
+  `src/compiler/equality-constraints.lisp` (`add-eq-constraint`,
+  `add-difference-constraint`, `constrain-integer-type`).
+- **Implemented Mule architecture**:
+  1. **Natural loop analysis and IR1 loop-invariant code motion (LICM)**
+     (`mule/compiler/loop.py`): `loop_analyze` computes dominators, natural
+     loops (`NaturalLoop`), and loop nesting depth on `Component`s.
+     `hoist_loop_invariants` runs in `_ir1_optimize_phase_1` (`main.py`) and in
+     specialized `EntryContext` optimization (`locall.py`) after constraint
+     propagation and IR1 transforms. For each natural loop in inside-out
+     postorder (skipping loops containing `%yield` / `%await` suspension points
+     or non-entry `Bind`s), it identifies or splits an explicit preheader block
+     outside the loop and hoists loop-invariant expressions from blocks that
+     dominate all loop exits (`loop.exits`, or all back-edge sources when the
+     loop has no normal exits):
+     - read-only module/builtin global cell loads (`Ref(GlobalVar)`) when the
+       loop has no impure calls and no writes to the global, and every reference
+       is proven bound to a stable module/function/class/numeric/sequence value;
+     - pure `foldable` known calls (`Combination`) on proven total domains:
+       integer/float `+`, `-`, `*`, unary `+`/`-`, bitwise `&`/`|`/`^`/`~`,
+       shifts `<<`/`>>` with proven shift count in `[0, 61]`, `//` and `%` with
+       proven non-zero integer divisor (`>= 1` or `<= -1`), `_text_length` on
+       proven `str`, and `_storage_length` on proven `bytes`, `tuple`, or
+       unmutated `list`;
+     - common invariant subexpressions across multiple loop blocks are
+       deduplicated into a single preheader temporary `LambdaVar`.
+  2. **Threshold widening, relational difference constraints, and post-indexing
+     bounds narrowing** (`mule/compiler/ctype.py`,
+     `mule/compiler/constraint.py`, `mule/compiler/protocols.py`):
+     - `widen` / `widen_integer` in `ctype.py` accepts per-function integer
+       comparison thresholds collected from AST comparison and `range(...)`
+       literals (`_collect_comparison_thresholds` in `constraint.py`), so loop
+       back-edge widening stops at literal loop bounds above `1024` (e.g.
+       `while i < 2000:`) before falling back to `FIXNUM_MAX` / unbounded.
+     - `IntegerType.narrow_equality` narrows both endpoints when an interval is
+       compared with `!=` against a singleton endpoint (`[0, n]` with `!= n` ->
+       `[0, n - 1]`).
+     - `_Propagation` in `constraint.py` maintains a relational difference-bound
+       domain (`x - y <= c`, following `equality-constraints.lisp`) across linear
+       updates (`x = x + d`, `x = y + d`), initialization (`i = c` relative to
+       bounded integer locals), and ordered comparisons (`<`, `<=`, `>`, `>=`,
+       `==`, `!=` on `u + c0` vs `v + c1`), propagating relational bounds into
+       variable intervals, `u - v` subtractions (`n - i >= 1` inside
+       `while i < n:`), comparison folding, and loop-exit equality (`i == n`
+       after `while i < n: i += 1`).
+     - Sequence indexing and storage primitives (`%getitem`, `%setitem`,
+       `_storage_read`, `_storage_write`, `_text_codepoint`, `_text_character`,
+       `_text_slice`, `_native_read_byte`) call `visitor.prove_argument_type`
+       with `receiver_type.valid_index_bounds()` so successful indexing narrows
+       both direct index variables (`t[i]`) and linear index offsets (`t[i + 1]`)
+       for subsequent operations in the block.
 
 ---
 
