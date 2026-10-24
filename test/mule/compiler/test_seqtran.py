@@ -510,3 +510,84 @@ print(decode_packets([b"\\x03abc"]))
     assert "bytearray_setitem" in spec_body
     assert "urem i64 " in spec_body
     assert "131043" in spec_body
+
+
+def test_bytearray_argument_guard_and_annotation_specialization():
+    from mule.compiler.driver import emit_llvm
+
+    src = """def mutate(buf: bytearray) -> bytearray:
+    buf.append(buf[0] ^ 1)
+    return buf
+
+def call_known():
+    return mutate(bytearray(b"a"))
+
+def call_unknown(x):
+    return mutate(x)
+
+alias = mutate
+print(call_known())
+"""
+    ir = emit_llvm(src)
+    assert (
+        '@"mule.class.layout.mule_sequences_bytearray" = linkonce_odr global i64 0'
+        in ir
+    )
+    assert 'load i64, ptr @"mule.class.layout.mule_sequences_bytearray"' in ir
+    spec_start = ir.index('define internal ptr @"mule_fn_mutate.spec.0"(')
+    spec_end = ir.index("\n}", spec_start)
+    spec_body = ir[spec_start:spec_end]
+    assert "bytearray_getitem" in spec_body
+    assert "bytearray_append" in spec_body
+
+
+def test_bytearray_protocol_fast_paths_execution(tmp_path):
+    import subprocess
+
+    from mule.compiler.driver import build_executable
+
+    src = """def push_first(buf):
+    buf.append(buf[0] + 1)
+    return len(buf)
+
+def call_unknown(fn, obj):
+    return fn(obj)
+
+def annotated_step(buf: bytearray) -> bytearray:
+    buf[0] = (buf[0] + 2) & 0xFF
+    return buf
+
+ba = bytearray(b"abc")
+ba.extend(b"de")
+ba.extend(bytearray(b"fg"))
+ba += b"hi"
+assert ba == b"abcdefghi"
+assert ba == bytearray(b"abcdefghi")
+assert ba != b"abcdefgh"
+assert list(ba) == [97, 98, 99, 100, 101, 102, 103, 104, 105]
+assert tuple(ba[:3]) == (97, 98, 99)
+x, y, z = ba[:3]
+assert (x, y, z) == (97, 98, 99)
+assert 100 in ba
+assert 200 not in ba
+assert min(ba) == 97
+assert max(ba) == 105
+assert any(ba) is True
+assert all(ba) is True
+assert any(bytearray(3)) is False
+assert all(bytearray(b"\\x01\\x00")) is False
+assert bytes(ba) == b"abcdefghi"
+assert push_first(ba) == 10
+assert call_unknown(push_first, [10]) == 2
+assert bytes(annotated_step(bytearray(b"\\x05"))) == b"\\x07"
+print("ok")
+"""
+    exe = build_executable(
+        src,
+        str(tmp_path / "bytearray_fast_paths.py"),
+        roots=None,
+        workers=1,
+    )
+    completed = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "ok\n"

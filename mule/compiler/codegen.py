@@ -3708,6 +3708,17 @@ class _ArgumentGuard(ValueTypeVisitor):
             f"icmp eq i32 {kind}, {int(vops._ReturnValueKind.BYTES)}"
         )
 
+    def visit_ByteArrayType(self, fact: ValueType) -> str:
+        if fact.may_be_unbound:
+            return self.visit_ValueType(fact)
+        layout = self.gen.operation(f"call i64 @mule.attr.layout(ptr {self.value})")
+        expected = self.gen.operation(
+            f"load i64, ptr {self.gen.module.class_layout_slot('mule_sequences_bytearray')}"
+        )
+        known = self.gen.operation(f"icmp ne i64 {expected}, 0")
+        same = self.gen.operation(f"icmp eq i64 {layout}, {expected}")
+        return self.gen.operation(f"and i1 {known}, {same}")
+
     def visit_ListType(self, fact: ListType) -> str:
         if fact.element != UNKNOWN or fact.may_be_unbound:
             return self.visit_ValueType(fact)

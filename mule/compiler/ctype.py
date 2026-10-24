@@ -1927,6 +1927,9 @@ class ByteArrayType(PrimitiveType):
             return UNKNOWN
         return IteratorType(IntegerType(0, 255))
 
+    def annotation_conflict(self, contract):
+        return False if self.may_be_unbound else contract.bytearray_conflict(self)
+
     def method_return_type(
         self, name: str, arity: int, has_keywords: bool, storage_methods=None
     ):

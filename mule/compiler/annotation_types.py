@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from .ctype import (
     BOOLEAN,
+    BYTEARRAY_TYPE,
     BYTES_TYPE,
     DICT_TYPE,
     FLOAT,
@@ -58,6 +59,9 @@ class ContractVisitor:
         return self.visit_Contract(contract)
 
     def visit_BytesContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_ByteArrayContract(self, contract):
         return self.visit_Contract(contract)
 
     def visit_ListContract(self, contract):
@@ -177,6 +181,9 @@ class Contract:
         return True
 
     def bytes_conflict(self, actual):
+        return True
+
+    def bytearray_conflict(self, actual):
         return True
 
     def list_conflict(self, actual):
@@ -388,6 +395,57 @@ class BytesContract(Contract):
 
     def bytes_conflict(self, actual):
         return False
+
+    def getitem_contract(self, index_type: ValueType) -> Contract | None:
+        return (
+            IntegerContract("uint8", 8, False)
+            if index_type.fits(PYTHON_INTEGER)
+            else None
+        )
+
+    def iter_element_contract(self) -> Contract | None:
+        return IntegerContract("uint8", 8, False)
+
+
+@dataclass(frozen=True, slots=True)
+class ByteArrayContract(Contract):
+    name: str = "bytearray"
+
+    @property
+    def display_name(self):
+        return self.name
+
+    @property
+    def fact(self):
+        return BYTEARRAY_TYPE
+
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return BYTEARRAY_TYPE
+
+    def accept(self, visitor):
+        return visitor.visit_ByteArrayContract(self)
+
+    def bytearray_conflict(self, actual):
+        return False
+
+    def getitem_contract(self, index_type: ValueType) -> Contract | None:
+        return (
+            IntegerContract("uint8", 8, False)
+            if index_type.fits(PYTHON_INTEGER)
+            else None
+        )
+
+    def iter_element_contract(self) -> Contract | None:
+        return IntegerContract("uint8", 8, False)
+
+    def method_result_contract(
+        self, name: str, arg_types: tuple[ValueType, ...]
+    ) -> Contract | None:
+        if name == "pop" and len(arg_types) <= 1:
+            return IntegerContract("uint8", 8, False)
+        if name == "copy" and not arg_types:
+            return self
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -720,6 +778,9 @@ class UnionContract(Contract):
     def bytes_conflict(self, actual):
         return all(m.bytes_conflict(actual) for m in self.members)
 
+    def bytearray_conflict(self, actual):
+        return all(m.bytearray_conflict(actual) for m in self.members)
+
     def list_conflict(self, actual):
         return all(m.list_conflict(actual) for m in self.members)
 
@@ -847,6 +908,9 @@ class _RuntimeCheckedReturnFact(ValueTypeVisitor):
     def visit_BytesType(self, fact):
         return UNKNOWN if fact.may_be_unbound else BYTES_TYPE
 
+    def visit_ByteArrayType(self, fact):
+        return UNKNOWN if fact.may_be_unbound else BYTEARRAY_TYPE
+
     def visit_TupleType(self, fact):
         if fact.may_be_unbound:
             return UNKNOWN
@@ -907,6 +971,7 @@ DECLARATIONS = {
     "bool": BooleanContract(),
     "str": TextContract(),
     "bytes": BytesContract(),
+    "bytearray": ByteArrayContract(),
 }
 
 

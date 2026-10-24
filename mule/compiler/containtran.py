@@ -16,6 +16,7 @@ from . import fndb
 from .constraint import constant_type
 from .ctype import (
     BooleanType,
+    ByteArrayType,
     BytesType,
     IntegerType,
     NoneType,
@@ -160,6 +161,9 @@ class _ReflexiveEqualityType(ValueTypeVisitor):
         return not fact.may_be_unbound
 
     def visit_BytesType(self, fact: BytesType) -> bool:
+        return not fact.may_be_unbound
+
+    def visit_ByteArrayType(self, fact: ByteArrayType) -> bool:
         return not fact.may_be_unbound
 
     def visit_NoneType(self, fact: NoneType) -> bool:

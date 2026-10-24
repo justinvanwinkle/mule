@@ -23,6 +23,7 @@ from .ctype import (
     PYTHON_INTEGER,
     TEXT_TYPE,
     BooleanType,
+    ByteArrayType,
     BytesType,
     FloatType,
     FunctionType,
@@ -224,6 +225,9 @@ class _EqualityFamily(ValueTypeVisitor):
         return None if fact.may_be_unbound else "text"
 
     def visit_BytesType(self, fact: BytesType) -> str | None:
+        return None if fact.may_be_unbound else "bytes"
+
+    def visit_ByteArrayType(self, fact: ByteArrayType) -> str | None:
         return None if fact.may_be_unbound else "bytes"
 
     def visit_NoneType(self, fact: NoneType) -> str | None:

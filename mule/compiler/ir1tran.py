@@ -327,7 +327,10 @@ class Converter:
     def class_identity(self, node: ast.ClassDefinition) -> str:
         identity = self.class_identities.get(id(node))
         if identity is None:
-            identity = f"{self.prefix}mule_cls_{self.class_definitions}"
+            if self.prefix == "mule_sequences_" and node.name == "bytearray":
+                identity = "mule_sequences_bytearray"
+            else:
+                identity = f"{self.prefix}mule_cls_{self.class_definitions}"
             self.class_definitions += 1
             self.class_identities[id(node)] = identity
         return identity

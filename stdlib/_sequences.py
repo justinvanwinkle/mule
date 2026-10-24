@@ -805,7 +805,11 @@ def delitem(value, index):
 
 
 def any(iterable, /):
-    if _type_of(iterable) is list or _type_of(iterable) is tuple:
+    owner = _type_of(iterable)
+    if owner is bytearray:
+        iterable = iterable.values
+        owner = list
+    if owner is list or owner is tuple or owner is bytes:
         index = 0
         length = _storage_length(iterable)
         while index < length:
@@ -820,7 +824,11 @@ def any(iterable, /):
 
 
 def all(iterable, /):
-    if _type_of(iterable) is list or _type_of(iterable) is tuple:
+    owner = _type_of(iterable)
+    if owner is bytearray:
+        iterable = iterable.values
+        owner = list
+    if owner is list or owner is tuple or owner is bytes:
         index = 0
         length = _storage_length(iterable)
         while index < length:
@@ -1208,7 +1216,10 @@ def _length_hint(iterable):
 
 def extend_arguments(positional, iterable):
     owner = type_of(iterable)
-    if owner is tuple or owner is list:
+    if owner is bytearray:
+        iterable = iterable.values
+        owner = list
+    if owner is tuple or owner is list or owner is bytes:
         # Exact element storage is copied by index: the iteration protocol
         # would end with a StopIteration that costs an exception object.
         count = _storage_length(iterable)
@@ -1233,6 +1244,8 @@ def _argument_tuple(iterable):
     owner = type_of(iterable)
     if owner is tuple:
         return iterable
+    if owner is bytearray:
+        return _storage_tuple(iterable.values)
     if owner is list:
         return _storage_tuple(iterable)
     items = []
@@ -3359,6 +3372,8 @@ def contains(container, item):
         return _set_lookup(container, item) >= 0
     if owner is str:
         return TextStorage.__contains__(container, item)
+    if owner is bytearray:
+        return _bytes_find(container.values, item, 0, None) >= 0
     if owner is list or owner is tuple:
         count = _storage_length(container)
         index = 0
@@ -3422,6 +3437,9 @@ def unpack(value, count):
         if length > count:
             raise ValueError("too many values to unpack")
         return value
+    if owner is bytearray:
+        value = value.values
+        owner = list
     if owner is list:
         length = _storage_length(value)
         if length < count:
@@ -3793,7 +3811,10 @@ def _extreme(args, key, default, greatest):
         return best
     iterable = _storage_read(args, 0)
     owner = _type_of(iterable)
-    if owner is list or owner is tuple:
+    if owner is bytearray:
+        iterable = iterable.values
+        owner = list
+    if owner is list or owner is tuple or owner is bytes:
         length = _storage_length(iterable)
         if length == 0:
             if default is not _missing_default:
@@ -3889,6 +3910,12 @@ class bytes(BytesStorage):
     __slots__ = ()
 
     def __new__(cls, source=b"", encoding=None, errors="strict"):
+        if cls is bytes and encoding is None:
+            owner = _type_of(source)
+            if owner is bytes:
+                return source
+            if owner is bytearray:
+                return bytes_from_values(source.values)
         if _text_storage(source):
             if encoding is None:
                 raise TypeError("string argument without an encoding")
@@ -3983,9 +4010,13 @@ def _byte_values(source, encoding, errors):
             _storage_append(values, 0)
             index += 1
         return values
+    items = _make_list(source)
+    length = _storage_length(items)
     values = []
-    for item in _make_list(source):
-        _storage_append(values, _byte_value(item))
+    index = 0
+    while index < length:
+        _storage_append(values, _byte_value(_storage_read(items, index)))
+        index += 1
     return values
 
 
@@ -4117,10 +4148,20 @@ class bytearray:
         return _bytes_find(self.values, item, 0, None) >= 0
 
     def __eq__(self, other):
-        if _type_name(other) == "bytearray":
-            return self.values == other.values
-        if _type_name(other) == "bytes":
-            return self.values == _make_list(other)
+        owner = _type_of(other)
+        if owner is bytearray or is_instance(other, bytearray):
+            return sequence_equal(self.values, other.values)
+        if owner is bytes or is_instance(other, bytes):
+            values = self.values
+            length = _storage_length(values)
+            if length != _storage_length(other):
+                return False
+            index = 0
+            while index < length:
+                if _storage_read(values, index) != _storage_read(other, index):
+                    return False
+                index += 1
+            return True
         return NotImplemented
 
     def __ne__(self, other):
@@ -4170,10 +4211,38 @@ class bytearray:
 
     def extend(self, values):
         _require_bytearray(self, "extend")
+        target = self.values
+        owner = _type_of(values)
+        if owner is bytes:
+            count = _storage_length(values)
+            if count != 0 and buffer_exports(self):
+                raise BufferError(
+                    "Existing exports of data: object cannot be re-sized"
+                )
+            index = 0
+            while index < count:
+                _storage_append(target, _storage_read(values, index))
+                index += 1
+            return
+        if owner is bytearray and values is not self:
+            source = values.values
+            count = _storage_length(source)
+            if count != 0 and buffer_exports(self):
+                raise BufferError(
+                    "Existing exports of data: object cannot be re-sized"
+                )
+            index = 0
+            while index < count:
+                _storage_append(target, _storage_read(source, index))
+                index += 1
+            return
         values = _byte_values(values, None, "strict")
-        self._check_resize(len(self.values) + len(values))
-        for item in values:
-            _storage_append(self.values, item)
+        count = _storage_length(values)
+        self._check_resize(_storage_length(target) + count)
+        index = 0
+        while index < count:
+            _storage_append(target, _storage_read(values, index))
+            index += 1
 
     def insert(self, index, value):
         _require_bytearray(self, "insert")

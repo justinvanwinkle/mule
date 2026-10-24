@@ -197,6 +197,7 @@ class _PrimitiveTypeOf(ValueTypeVisitor):
 
     visit_TextType = visit_ValueType
     visit_BytesType = visit_ValueType
+    visit_ByteArrayType = visit_ValueType
     visit_FunctionType = visit_ValueType
     visit_TupleType = visit_ValueType
 

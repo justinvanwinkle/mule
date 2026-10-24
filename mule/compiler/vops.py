@@ -613,6 +613,9 @@ class _ContractAssertion(ContractVisitor):
     def visit_BytesContract(self, contract):
         self.check_contract_type(contract)
 
+    def visit_ByteArrayContract(self, contract):
+        self.check_contract_type(contract)
+
     def visit_ListContract(self, contract):
         self.check_contract_type(contract)
 
@@ -790,6 +793,15 @@ class _InferredResultPredicate(ValueTypeVisitor):
 
     def visit_BytesType(self, fact):
         return self.kind(_ReturnValueKind.BYTES)
+
+    def visit_ByteArrayType(self, fact):
+        layout = self.gen.operation(f"call i64 @mule.attr.layout(ptr {self.value})")
+        expected = self.gen.operation(
+            f"load i64, ptr {self.gen.module.class_layout_slot('mule_sequences_bytearray')}"
+        )
+        known = self.gen.operation(f"icmp ne i64 {expected}, 0")
+        same = self.gen.operation(f"icmp eq i64 {layout}, {expected}")
+        return self.gen.operation(f"and i1 {known}, {same}")
 
     def visit_ListType(self, fact):
         return self.kind(_ReturnValueKind.LIST)

@@ -51,6 +51,7 @@ from .ctype import (
     BOOLEAN_TRUE,
     BOTTOM,
     BUILTIN_CLASS_TYPES,
+    BYTEARRAY_TYPE,
     BYTES_TYPE,
     DICT_TYPE,
     FIXNUM_MAX,
@@ -2416,7 +2417,7 @@ def analyze(
                         if fix_params is not None
                         and (
                             (fix_param := fix_params[idx])
-                            in (LIST_TYPE, TEXT_TYPE, BYTES_TYPE)
+                            in (LIST_TYPE, TEXT_TYPE, BYTES_TYPE, BYTEARRAY_TYPE)
                             or fix_param.instance_class() is not None
                         )
                         else UNKNOWN
