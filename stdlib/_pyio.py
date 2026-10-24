@@ -2829,6 +2829,11 @@ class StringIO(TextIOWrapper):
         finally:
             decoder.setstate(old_state)
 
+    def write(self, s):
+        if self._snapshot is not None:
+            self.seek(self.tell())
+        return super().write(s)
+
     def __repr__(self):
         # TextIOWrapper tells the encoding in its repr. In StringIO,
         # that's an implementation detail.

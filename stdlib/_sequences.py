@@ -904,6 +904,9 @@ class ReverseIterator:
                 self.index = -1
         raise StopIteration
 
+    def __length_hint__(self):
+        return self.index + 1 if self.index >= 0 else 0
+
 
 ReverseIterator.__name__ = "reversed"
 ReverseIterator.__qualname__ = "reversed"
@@ -1447,6 +1450,15 @@ class SequenceIterator:
         self.index = index + 1
         return item
 
+    def __length_hint__(self):
+        if self.exhausted:
+            return 0
+        try:
+            remaining = len(self.sequence) - self.index
+        except TypeError:
+            return 0
+        return remaining if remaining > 0 else 0
+
 
 class StorageIterator(SequenceIterator):
     """Builtin sequence iteration reads storage, independently of __getitem__."""
@@ -1466,6 +1478,12 @@ class StorageIterator(SequenceIterator):
         item = _storage_read(self.sequence, index)
         self.index = index + 1
         return item
+
+    def __length_hint__(self):
+        if self.exhausted:
+            return 0
+        remaining = _storage_length(self.sequence) - self.index
+        return remaining if remaining > 0 else 0
 
 
 SequenceIterator.__name__ = "iterator"
@@ -2468,6 +2486,9 @@ class BytesStorage:
     def __iter__(self):
         return SequenceIterator(self)
 
+    def __buffer__(self, flags, /):
+        return memoryview(self)
+
     def __contains__(self, item, /):
         return _bytes_find(self, item, 0, None) >= 0
 
@@ -2815,6 +2836,17 @@ class RangeIterator:
             raise StopIteration
         self.current = current + self.step
         return current
+
+    def __length_hint__(self):
+        if self.exhausted:
+            return 0
+        if self.step > 0:
+            if self.current >= self.stop:
+                return 0
+            return (self.stop - self.current - 1) // self.step + 1
+        if self.current <= self.stop:
+            return 0
+        return (self.current - self.stop - 1) // (-self.step) + 1
 
 
 RangeIterator.__name__ = "range_iterator"
@@ -3343,6 +3375,9 @@ class bytearray:
     def __iter__(self):
         return SequenceIterator(self)
 
+    def __buffer__(self, flags, /):
+        return memoryview(self)
+
     def __contains__(self, item, /):
         return _bytes_find(self.values, item, 0, None) >= 0
 
@@ -3848,6 +3883,16 @@ class memoryview:
 
     def __iter__(self):
         return SequenceIterator(self)
+
+    def __buffer__(self, flags, /):
+        self._check()
+        return memoryview(self)
+
+    def __hash__(self):
+        self._check()
+        if not self.readonly:
+            raise ValueError("cannot hash writable memoryview object")
+        return hash(self.tobytes())
 
     def __eq__(self, other):
         if _type_name(other) in ("bytes", "bytearray", "memoryview"):

@@ -1846,6 +1846,7 @@ _SPECIAL_NAMES = frozenset({
     '__subclasshook__', '__weakref__', '__class_getitem__',
     '__match_args__', '__static_attributes__', '__firstlineno__',
     '__annotate__', '__annotate_func__', '__annotations_cache__',
+    '__qualname__', '__name__',
 })
 
 # These special attributes will be not collected as protocol members.
@@ -1906,10 +1907,6 @@ def _no_init_or_replace_init(self, *args, **kwargs):
 
 def _caller(depth=1, default='__main__'):
     try:
-        return sys._getframemodulename(depth + 1) or default
-    except AttributeError:  # For platforms without _getframemodulename()
-        pass
-    try:
         return sys._getframe(depth + 1).f_globals.get('__name__', default)
     except (AttributeError, ValueError):  # For platforms without _getframe()
         pass
@@ -1921,7 +1918,7 @@ def _allow_reckless_class_checks(depth=2):
     The abc and functools modules indiscriminately call isinstance() and
     issubclass() on the whole MRO of a user class, which may contain protocols.
     """
-    return _caller(depth) in {'abc', 'functools', None}
+    return _caller(depth) in {'abc', '_py_abc', 'functools', None}
 
 
 _PROTO_ALLOWLIST = {
@@ -3277,7 +3274,8 @@ class _TypedDictMeta(type):
         tp_dict.__total__ = total
         return tp_dict
 
-    __call__ = dict  # static method
+    def __call__(cls, *args, **kwargs):
+        return dict(*args, **kwargs)
 
     def __subclasscheck__(cls, other):
         # Typed dicts are only for static structural subtyping.

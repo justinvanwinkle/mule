@@ -371,6 +371,8 @@ def _product_items(pools):
 
 class product(_GeneratedIterator):
     def __init__(self, *iterables, repeat=1):
+        if repeat < 0:
+            raise ValueError("repeat argument cannot be negative")
         pools = [tuple(iterable) for iterable in iterables] * repeat
         self._items = _product_items(pools)
 
@@ -400,7 +402,10 @@ def _permutations_items(pool, r):
 class permutations(_GeneratedIterator):
     def __init__(self, iterable, r=None):
         pool = tuple(iterable)
-        self._items = _permutations_items(pool, len(pool) if r is None else r)
+        r = len(pool) if r is None else r
+        if r < 0:
+            raise ValueError("r must be non-negative")
+        self._items = _permutations_items(pool, r)
 
 
 def _combinations_items(pool, r):

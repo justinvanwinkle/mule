@@ -970,6 +970,8 @@ class _ClassDict(object):
 class mappingproxy(object):
     """A read-only view of a mapping, as ``type.__dict__`` returns."""
 
+    __module__ = "builtins"
+
     def __init__(self, mapping):
         self._mapping = mapping
 
@@ -1005,6 +1007,8 @@ class mappingproxy(object):
 
 
 class NoneType(object):
+    __module__ = "builtins"
+
     def __new__(cls):
         return None
 
@@ -2444,6 +2448,8 @@ class float(object):
 class code(object):
     """A function's compiled-code metadata."""
 
+    __module__ = "builtins"
+
     def __init__(self, name, filename, qualname=None, firstlineno=0,
                  argcount=0, posonly=0, kwonly=0, flags=0, varnames=(),
                  cellvars=(), freevars=(), positional_defaults=0, keyword_defaults=(),
@@ -2519,6 +2525,8 @@ def _code_for(receiver, fallback=None):
 
 class function(object):
     """The class of functions defined in compiled Python."""
+
+    __module__ = "builtins"
 
     # The runtime supplies a function's real globals and closure cells
     # before class lookup (see function_attribute in the runtime), so these
@@ -2676,6 +2684,9 @@ class function(object):
             return self
         return bound_method(self, instance)
 
+    def __call__(self, *args, **kwargs):
+        return self(*args, **kwargs)
+
 
 _builtin_type_cache = None
 
@@ -2693,6 +2704,8 @@ def _builtin_types():
 
 class getset_descriptor(property):
     """A builtin attribute's named accessor, distinct from user properties."""
+
+    __module__ = "builtins"
 
     def __init__(self, owner, name, accessor):
         property.__init__(self, accessor.fget, accessor.fset, accessor.fdel, accessor.__doc__)
@@ -2721,6 +2734,8 @@ class getset_descriptor(property):
 
 class member_descriptor(getset_descriptor):
     """A builtin object's exposed stored field."""
+
+    __module__ = "builtins"
 
 
 class _SlotAccessor:
@@ -2762,14 +2777,21 @@ def _install_builtin_descriptors():
 class builtin_function_or_method(object):
     """The class of functions the runtime implements natively."""
 
+    __module__ = "builtins"
+
     def __get__(self, instance, owner=None):
         if instance is None:
             return self
         return bound_method(self, instance)
 
+    def __call__(self, *args, **kwargs):
+        return self(*args, **kwargs)
+
 
 class method(object):
     """A function bound to the instance it was read from."""
+
+    __module__ = "builtins"
 
     def __new__(cls, function, instance, /):
         if not callable(function):
@@ -2799,9 +2821,14 @@ class method(object):
         except AttributeError:
             return getattr(bound_method_function(self), name)
 
+    def __call__(self, *args, **kwargs):
+        return self(*args, **kwargs)
+
 
 class module(object):
     """A module namespace."""
+
+    __module__ = "builtins"
 
     def __init__(self, name, doc=None):
         self.__name__ = name
@@ -2836,6 +2863,8 @@ class traceback(object):
     """One entry of an exception's traceback: a frame the exception passed
     through, the line it was running, and the entry nearer the raise."""
 
+    __module__ = "builtins"
+
     @property
     def tb_frame(self):
         return traceback_field(self, 0)
@@ -2858,6 +2887,8 @@ class frame(object):
     """A function call, live or one an exception passed through. Compiled
     frames do not keep their local variables; ``f_locals`` is the frame's
     globals under the framelocalsproxy type, as it is for a module frame."""
+
+    __module__ = "builtins"
 
     @property
     def f_code(self):
