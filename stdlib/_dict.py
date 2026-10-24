@@ -318,7 +318,16 @@ class _Table:
 
 
 def _empty_indices(size):
-    return [_EMPTY] * size
+    if size == 8:
+        return [-1, -1, -1, -1, -1, -1, -1, -1]
+    if size == 16:
+        return [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+    result = []
+    index = 0
+    while index < size:
+        _storage_append(result, -1)
+        index += 1
+    return result
 
 
 class _TableIterator:

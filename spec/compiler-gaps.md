@@ -496,10 +496,14 @@ suite failure or performance measurement.
     disappear on eligible paths. Recursive calls, zero-argument functions,
     aliases, native scalar entries, and existing unpacked returns retain their
     respective semantics.
-  - `scalar.py` consumes allocation escape proofs for fixed lists and tuples.
-    Constant-index reads, fixed-index list writes, length, and aliases become
-    scalar operations when ownership closes within a block. Normal and error
-    cleanup preserve child ownership and reverse destruction order.
+  - `scalar.py` consumes allocation escape proofs for fixed lists and tuples,
+    including interprocedural non-escaping calls to local and proven guarded
+    functions. Constant-index reads, fixed-index list writes, length,
+    structural unpack, and aliases become scalar operations within a block or
+    across multiple blocks for a single local with inert children, and scalar
+    child slots participate in unboxed representation selection (`DOUBLE_REG`)
+    and frame slot packing. Normal and error cleanup preserve child ownership
+    and reverse destruction order.
 - **Conservative allocation boundaries**: Observable functions and cells,
   defaults/decorators, suspended owning activations, unknown uses, resizing,
   overlapping aggregate lifetimes, pending element checks, and unrepresentable

@@ -369,6 +369,7 @@ UNPACK_REF = defknown(
         if _DERIVATION_MODE.active
         else _arg_type(node.args[0]).getitem_type(_arg_type(node.args[1]))
     ),
+    borrowed_args=frozenset({0, 1}),
 )
 FORMAT = defknown("%format", "call", derive_type=lambda node: TEXT_TYPE)
 
@@ -381,13 +382,19 @@ RANGE_PREPARE = defknown(
     borrowed_args=frozenset({0, 1, 2}),
 )
 RANGE_AVAILABLE = defknown(
-    "%range_available", "flushable", derive_type=lambda node: BOOLEAN
+    "%range_available",
+    "flushable",
+    derive_type=lambda node: BOOLEAN,
+    borrowed_args=frozenset({0}),
 )
-RANGE_ADVANCE = defknown("%range_advance", "unsafe", numeric=True)
+RANGE_ADVANCE = defknown(
+    "%range_advance", "unsafe", numeric=True, borrowed_args=frozenset({0})
+)
 SEQUENCE_AVAILABLE = defknown(
     "%sequence_available",
     "unsafe",
     derive_type=lambda node: None if _DERIVATION_MODE.active else BOOLEAN,
+    borrowed_args=frozenset({0, 1}),
 )
 GETSLICE = defknown(
     "%getslice",

@@ -89,7 +89,9 @@ def select_representations(component: IR2Component) -> None:
     writes = component.writes
     if not raw:
         for tn in component.tns:
-            if tn.leaf is not None:
+            if tn.leaf is not None or (
+                tn.name is not None and tn.name.startswith("$scalar.")
+            ):
                 tn.primitive_type = _variable_type(tn, component, writes)
     floats = _select_float_representations(component) if not raw else {}
     for tn in component.tns:
@@ -109,7 +111,7 @@ def _variable_type(tn, component, writes) -> PrimitiveType:
     written_types = set()
     for vop, _ref in writes.get(tn, ()):
         name = vop.info.name
-        if name == "move":
+        if name in ("move", "scalar-element-store"):
             source = vop.args[0].tn
             written = source.primitive_type
             written_value = source.type or UNKNOWN
@@ -169,7 +171,7 @@ def _select_float_representations(component):
             restriction = _operand_restriction(reader, ref, convention=convention)
             if restriction is not None and DOUBLE not in restriction:
                 demanded.add(tn)
-        if any(
+        if tn.leaf is not None and any(
             writer.info is vops.UNBIND_LOCAL
             for writer, _ref in component.writes.get(tn, ())
         ):

@@ -1647,9 +1647,19 @@ def _repeat(sequence, count):
     if count >= (1 << 63) or count < -(1 << 63):
         raise OverflowError("cannot fit 'int' into an index-sized integer")
     result = []
+    if count <= 0:
+        return result
+    length = _storage_length(sequence)
+    if length == 0:
+        return result
+    if length == 1:
+        item = _storage_read(sequence, 0)
+        while count > 0:
+            _storage_append(result, item)
+            count -= 1
+        return result
     while count > 0:
         index = 0
-        length = _storage_length(sequence)
         while index < length:
             _storage_append(result, _storage_read(sequence, index))
             index += 1

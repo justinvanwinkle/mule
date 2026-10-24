@@ -1738,18 +1738,27 @@ pub unsafe extern "C" fn mule_rest_args(args: Value, start: i32) -> Value {
             object::error("SystemError", "invalid rest argument offset");
             return null_mut();
         }
-        let mut values = Vec::new();
-        if values.try_reserve_exact(count - start as usize).is_err() {
+        let len = count - start as usize;
+        if len == 0 {
+            return object::empty_tuple();
+        }
+        let Some(mut values) = crate::value_buffer::ValueBuffer::try_with_capacity_exact(len) else {
             object::error("MemoryError", "argument allocation failed");
             return null_mut();
-        }
-        for index in start as usize..count {
+        };
+        let dst = values.as_mut_ptr();
+        for (offset, index) in (start as usize..count).enumerate() {
             let Some(value) = object::argument(args, index) else {
+                values.set_len(offset);
+                for &v in values.as_slice() {
+                    object::release(v);
+                }
                 return null_mut();
             };
-            values.push(object::retain(value));
+            *dst.add(offset) = object::retain(value);
         }
-        object::new_value(Data::Args(values.into(), std::ptr::null_mut(), std::ptr::null_mut()))
+        values.set_len(len);
+        object::new_value(Data::Args(values, std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 

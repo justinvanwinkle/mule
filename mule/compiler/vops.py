@@ -458,7 +458,9 @@ def unbind_local(gen, vop):
         gen.line(f"store ptr null, ptr {target.tn.slot}")
         gen.release(value)
     else:
-        gen.line(f"store ptr null, ptr {target.tn.slot}")
+        gen.line(
+            f"store {target.tn.sc.llvm_type} {target.tn.sc.zero}, ptr {target.tn.slot}"
+        )
 
 
 @define_vop("store-global", args=(None,))

@@ -173,10 +173,16 @@ cleanup rather than adding CPython's traceback-local lifetimes.
 
 Fixed tuple/list allocations instead become scalar locals when every use,
 alias, and lifetime is representable. The consumer supports constant-index
-reads, fixed-index list replacement, length, and local aliases. Each accepted
-normal lifetime closes within one IR2 block. Element evaluation order and
+reads, fixed-index list replacement, length, structural unpack, and local
+aliases. Aliasing families close within one IR2 block, while a single named
+local with inert children and no local exception handlers may also span multiple
+blocks (`if/else` joins and loop-carried state). Element evaluation order and
 fixed-index list replacement remain observable. Deleting or replacing the last
-aggregate alias releases its children at the original destruction point. Structural
+aggregate alias releases its children at the original destruction point. When
+all children are inert (`int`, `float`, `bool`, `None`, `str`, `bytes`), the
+final read of each scalar child moves ownership directly without extra
+retain/release traffic, and unboxed representations (`DOUBLE_REG`) apply to
+scalar child slots whose writers all produce unboxed values. Structural
 mutation, unknown calls, and observable aggregate identity retain allocation
 unless a separate proof supports them. Repeated allocation sites must not reuse
 storage while an earlier logical object remains live.

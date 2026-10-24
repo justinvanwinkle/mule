@@ -4,6 +4,8 @@ import subprocess
 
 import pytest
 
+from mule.compiler.escape import analyze_escapes
+from mule.compiler.main import compile_source
 from test.mule.compiler.rewrite_support import build_case
 
 
@@ -239,3 +241,78 @@ for convert in callbacks:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "5\nchecked\n"
+
+
+def test_multi_block_and_unpacked_tuple_scalar_replacement_with_unboxed_floats(
+    tmp_path,
+):
+    case = build_case(
+        tmp_path,
+        """\
+def advance(n: int, seed: float) -> float:
+    state = (seed, seed + 1.0)
+    for step in range(n):
+        left, right = state
+        if step & 1:
+            pair = (right, left + right * 0.5)
+        else:
+            pair = (right, left + right * 0.25)
+        nx, ny = pair
+        state = (nx, ny)
+    final_x, final_y = state
+    return final_x + final_y
+
+line = input().split()
+print(f"{advance(int(line[0]), float(line[1])):.6f}")
+""",
+        optimize=2,
+    )
+    body = case.function_ir(r"^mule_fn_advance\.(?:body|spec\.\d+)$")
+    assert "@mule_sequence_tuple" not in body
+    assert "@mule_sequence_tuple_owned" not in body
+    assert "@mule_retain(" not in body
+    assert "@mule_release(" not in body
+    assert "fadd double" in body
+    assert "fmul double" in body
+    for value in ("0 1.5\n", "1 1.5\n", "12 2.25\n"):
+        case.compare(value)
+
+
+def test_interprocedural_non_escaping_helper_preserves_caller_dynamic_extent(
+    tmp_path,
+):
+    source = """\
+def kernel(limit: int) -> int:
+    def sum_pair(pair):
+        a, b = pair
+        return a + b
+
+    def local_diff(row):
+        return row[1] - row[0]
+
+    total = 0
+    for i in range(limit):
+        pair = (i, i * 2 + 1)
+        row = [i + 3, i * 3 + 5]
+        total += sum_pair(pair) + local_diff(row)
+    return total
+
+print(kernel(int(input())))
+"""
+    compilation = compile_source(source)
+    facts = analyze_escapes(compilation.lambdas)
+    kernel_fn = next(
+        fn
+        for fn in compilation.lambdas
+        if fn.code is not None and fn.code.name == "kernel"
+    )
+    kernel_allocs = [
+        facts.allocation_escapes(node)
+        for node in facts._allocations
+        if node.home_lambda is kernel_fn
+    ]
+    assert len(kernel_allocs) >= 4
+    assert not any(kernel_allocs)
+    case = build_case(tmp_path, source, optimize=2)
+    for value in ("0\n", "1\n", "25\n"):
+        case.compare(value)

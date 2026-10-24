@@ -1395,15 +1395,13 @@ unsafe fn allocate(class: Value, layout: &ClassLayout) -> Option<Value> {
         if !check_not_abstract(layout) {
             return None;
         }
-        let mut fields = Vec::new();
-        if fields.try_reserve_exact(layout.fields.len()).is_err() {
+        let Some(fields) = object::alloc_zeroed_value_box(layout.fields.len()) else {
             object::error("MemoryError", "instance slot allocation failed");
             return None;
-        }
-        fields.resize(layout.fields.len(), std::ptr::null_mut());
+        };
         Some(object::new_value(Data::Instance {
             ty: object::retain(class),
-            fields: fields.into_boxed_slice(),
+            fields,
             attributes: std::ptr::null_mut(),
         }))
     }

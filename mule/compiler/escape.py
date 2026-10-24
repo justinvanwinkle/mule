@@ -31,6 +31,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import fndb
+from .ctype import ListType, TupleType, ValueType, ValueTypeVisitor
+from .ir1opt import lvar_type
 from .ir1util import made_lambda
 from .node import (
     CallKind,
@@ -52,6 +54,7 @@ class EscapeFacts:
 
     def __init__(self):
         self._escaping: set[object] = set()
+        self._allocation_escaping: set[object] = set()
         self._analyzed: set[object] = set()
         self._allocations: set[Combination] = set()
         self._aliases: dict[Combination, frozenset[LambdaVar]] = {}
@@ -66,18 +69,62 @@ class EscapeFacts:
 
     def allocation_escapes(self, node: Combination) -> bool:
         """Whether the newly allocated object can leave its owning activation."""
-        return node not in self._allocations or node in self._escaping
+        if node not in self._allocations:
+            return True
+        if node.fun_info in (fndb.BUILD_LIST, fndb.BUILD_TUPLE):
+            return node in self._allocation_escaping
+        return node in self._escaping
 
     def aliases_for(self, node: Combination) -> frozenset[LambdaVar]:
         return self._aliases.get(node, frozenset())
 
 
+def _expand_lambdas(lambdas) -> tuple[Lambda, ...]:
+    ordered = []
+    seen = set()
+    pending = [lambda_ for lambda_ in lambdas if lambda_.component is not None]
+    while pending:
+        lambda_ = pending.pop(0)
+        if lambda_ in seen or lambda_.component is None:
+            continue
+        seen.add(lambda_)
+        ordered.append(lambda_)
+        for ref in lambda_.refs:
+            owner = ref.home_lambda
+            if owner is not None and owner not in seen and owner.component is not None:
+                pending.append(owner)
+        if lambda_.environment is not None:
+            for var in lambda_.environment.closure:
+                owner = var.home
+                if (
+                    owner is not None
+                    and owner not in seen
+                    and owner.component is not None
+                ):
+                    pending.append(owner)
+        for block in lambda_.component.blocks():
+            for node in block.nodes():
+                callee = node.accept(_REACHABLE_CALLEE)
+                if (
+                    callee is not None
+                    and callee not in seen
+                    and callee.component is not None
+                ):
+                    pending.append(callee)
+    return tuple(ordered)
+
+
 def analyze_escapes(lambdas) -> EscapeFacts:
-    lambdas = tuple(lambdas)
+    lambdas = _expand_lambdas(lambdas)
+    local_environments = find_local_environments(lambdas)
     facts = EscapeFacts()
-    solver = _Solver(facts)
+    solver = _Solver(facts, local_environments)
     for lambda_ in lambdas:
         facts._analyzed.update(lambda_.locals)
+    for lambda_ in lambdas:
+        for block in lambda_.component.blocks():
+            for node in block.nodes():
+                solver.record_call_inputs(node)
     for lambda_ in lambdas:
         solver.add_lambda(lambda_)
     makers = []
@@ -116,13 +163,33 @@ class _Solver:
     which it escapes; a condition is either unconditional or another
     variable escaping."""
 
-    def __init__(self, facts: EscapeFacts):
+    def __init__(
+        self,
+        facts: EscapeFacts,
+        local_environments: LocalEnvironments | None = None,
+    ):
         self.facts = facts
+        self.local_environments = local_environments or LocalEnvironments()
         # var -> variables whose escape makes ``var`` escape
         self.depends_on: dict[LambdaVar, list[LambdaVar]] = {}
         self.dependents: dict[LambdaVar, list[LambdaVar]] = {}
+        self.incoming_args: dict[LambdaVar, list[Lvar]] = {}
         self.pending: list[LambdaVar] = []
+        self.allocation_pending: list[LambdaVar] = []
         self.uses = _UseClassifier(self)
+
+    def proven_callee(self, node: Combination) -> Lambda | None:
+        return _proven_callee(node, self.local_environments)
+
+    def record_call_inputs(self, node) -> None:
+        callee = node.accept(_CALL_NODE)
+        if callee is None:
+            return
+        target = self.proven_callee(callee)
+        if target is None or not self.local_environments.is_local(target):
+            return
+        for var, arg in zip(target.vars, callee.args, strict=True):
+            self.incoming_args.setdefault(var, []).append(arg)
 
     def add_lambda(self, lambda_: Lambda) -> None:
         for var in lambda_.locals:
@@ -135,10 +202,17 @@ class _Solver:
                 self.uses.classify(var, ref.lvar)
 
     def escape(self, var: LambdaVar) -> None:
-        if var in self.facts._escaping:
-            return
-        self.facts._escaping.add(var)
-        self.pending.append(var)
+        if var not in self.facts._escaping:
+            self.facts._escaping.add(var)
+            self.pending.append(var)
+        if var not in self.facts._allocation_escaping:
+            self.facts._allocation_escaping.add(var)
+            self.allocation_pending.append(var)
+
+    def non_container_escape(self, var: LambdaVar) -> None:
+        if var not in self.facts._escaping:
+            self.facts._escaping.add(var)
+            self.pending.append(var)
 
     def escapes_with(self, var: LambdaVar, other: LambdaVar) -> None:
         """``var`` escapes whenever ``other`` does."""
@@ -154,6 +228,10 @@ class _Solver:
         while self.pending:
             other = self.pending.pop()
             for var in self.dependents.get(other, ()):
+                self.non_container_escape(var)
+        while self.allocation_pending:
+            other = self.allocation_pending.pop()
+            for var in self.dependents.get(other, ()):
                 self.escape(var)
 
 
@@ -163,7 +241,7 @@ class _UseClassifier(NodeVisitor):
 
     def __init__(self, solver: _Solver):
         self.solver = solver
-        self.container_origin = _ContainerOrigin()
+        self.container_origin = _ContainerOrigin(solver)
         self.var: LambdaVar | None = None
         self.lvar: Lvar | None = None
 
@@ -209,6 +287,8 @@ class _UseClassifier(NodeVisitor):
 
     def visit_Combination(self, node: Combination):
         if self.lvar is node.fun:
+            if self.solver.proven_callee(node) is not None:
+                return
             # An arbitrary callable's __call__ may publish its receiver.
             self.solver.escape(self.source)
             return
@@ -218,11 +298,34 @@ class _UseClassifier(NodeVisitor):
 
     def known_call(self, node: Combination, index: int) -> None:
         info = node.fun_info
-        if index == 0 and info in _LOCAL_CONTAINER_READERS:
-            if self.source in self.solver.facts._allocations:
-                return
-            if self.source.accept(self.container_origin) is not None:
-                return
+        if (
+            info is fndb.SETATTR
+            and node.info.name == "__annotate__"
+            and len(node.args[0].uses) == 1
+            and self.solver.local_environments.function_for_value(node.args[0].use())
+            is not None
+        ):
+            return
+        if (
+            index == 0
+            and info in _LOCAL_CONTAINER_READERS
+            and (
+                info not in (fndb.PROTOCOLS["getitem"], fndb.PROTOCOLS["setitem"])
+                or (
+                    len(node.args) >= 2
+                    and not lvar_type(node.args[1]).may_run_user_code
+                )
+            )
+        ):
+            if info is fndb.PROTOCOLS["unpack"]:
+                self.classify(self.source, node.lvar)
+            if not (
+                self.source in self.solver.facts._allocations
+                or self.source.accept(self.container_origin) is not None
+                or _is_safe_container_reader_call(node, info)
+            ):
+                self.solver.non_container_escape(self.source)
+            return
         if info is not None and info.borrows_argument(index):
             # The operation reads its argument; its result may still carry
             # the value onward when the function returns it.
@@ -232,18 +335,22 @@ class _UseClassifier(NodeVisitor):
         self.solver.escape(self.source)
 
     def local_call(self, node: Combination, index: int) -> None:
-        callee = _callee_lambda(node)
+        callee = self.solver.proven_callee(node)
         if callee is None or index >= len(callee.vars):
             self.solver.escape(self.source)
             return
         self.solver.escapes_with(self.source, callee.vars[index])
 
     def unknown_call(self, node: Combination, index: int) -> None:
+        callee = self.solver.proven_callee(node)
+        if callee is not None and index < len(callee.vars):
+            self.solver.escapes_with(self.source, callee.vars[index])
+            return
         self.solver.escape(self.source)
 
 
-# How each call kind treats an argument. GUARDED calls fall back to a full
-# call when the prediction fails, so they keep their arguments as one does.
+# How each call kind treats an argument. Unproven GUARDED calls fall back to a
+# full call when the prediction fails, so they keep their arguments as one does.
 _CALL_KIND_USES = {
     CallKind.KNOWN: _UseClassifier.known_call,
     CallKind.LOCAL: _UseClassifier.local_call,
@@ -294,6 +401,88 @@ def _callee_lambda(node: Combination) -> Lambda | None:
     return node.fun.uses[0].accept(_CALLEE_LAMBDA)
 
 
+class _CallNode(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        return node
+
+
+_CALL_NODE = _CallNode()
+
+
+class _ReachableCallee(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if node.kind is CallKind.KNOWN and node.fun_info is fndb.MAKE_FUNCTION:
+            return made_lambda(node)
+        if node.kind is CallKind.LOCAL:
+            return _callee_lambda(node)
+        if node.kind is CallKind.GUARDED and node.proven and node.predicted is not None:
+            return node.predicted.as_lambda()
+        return None
+
+
+_REACHABLE_CALLEE = _ReachableCallee()
+
+
+def _proven_callee(
+    node: Combination, local_environments: LocalEnvironments | None
+) -> Lambda | None:
+    if node.kind is CallKind.LOCAL:
+        return _callee_lambda(node)
+    if node.kind not in (CallKind.FULL, CallKind.GUARDED):
+        return None
+    if node.info is not None and node.info.keywords:
+        return None
+    callee = (
+        local_environments.call_target(node) if local_environments is not None else None
+    )
+    if (
+        callee is None
+        and node.kind is CallKind.GUARDED
+        and node.proven
+        and node.predicted is not None
+    ):
+        callee = node.predicted.as_lambda()
+    if (
+        callee is None
+        or callee.kind is not FunctionalKind.NORMAL
+        or callee.signature.variadic
+        or callee.signature.default_parameters
+        or not callee.signature.positional_body
+        or (callee.code is not None and callee.code.flags & 0x2A0)
+        or len(node.args) != len(callee.vars)
+    ):
+        return None
+    return callee
+
+
+class _BuiltinContainerType(ValueTypeVisitor):
+    def visit_ValueType(self, fact: ValueType) -> bool:
+        return False
+
+    def visit_TupleType(self, fact: TupleType) -> bool:
+        return not fact.may_be_unbound
+
+    def visit_ListType(self, fact: ListType) -> bool:
+        return not fact.may_be_unbound
+
+
+_BUILTIN_CONTAINER_TYPE = _BuiltinContainerType()
+
+
+def _is_safe_container_reader_call(node: Combination, info) -> bool:
+    if not node.args or not lvar_type(node.args[0]).accept(_BUILTIN_CONTAINER_TYPE):
+        return False
+    if info in (fndb.PROTOCOLS["getitem"], fndb.PROTOCOLS["setitem"]):
+        return len(node.args) >= 2 and not lvar_type(node.args[1]).may_run_user_code
+    return True
+
+
 class _Allocation(NodeVisitor):
     def visit_Node(self, node):
         return None
@@ -320,7 +509,8 @@ _LOCAL_CONTAINER_READERS = frozenset(
 
 
 class _ContainerOrigin(NodeVisitor, LeafVisitor):
-    def __init__(self):
+    def __init__(self, solver: _Solver | None = None):
+        self.solver = solver
         self.active = set()
 
     def visit_Node(self, node):
@@ -330,28 +520,53 @@ class _ContainerOrigin(NodeVisitor, LeafVisitor):
         return None
 
     def visit_Cast(self, node):
+        if len(node.value.uses) != 1:
+            return None
         return node.value.use().accept(self)
 
     def visit_Ref(self, node):
         return node.leaf.accept(self)
 
     def visit_Combination(self, node):
-        return (
-            node
-            if node.kind is CallKind.KNOWN
-            and node.fun_info in (fndb.BUILD_LIST, fndb.BUILD_TUPLE)
-            else None
-        )
+        if node.kind is not CallKind.KNOWN:
+            return None
+        if node.fun_info in (fndb.BUILD_LIST, fndb.BUILD_TUPLE):
+            return node
+        if (
+            node.fun_info is fndb.PROTOCOLS["unpack"]
+            and node.args
+            and len(node.args[0].uses) == 1
+        ):
+            return node.args[0].use().accept(self)
+        return None
 
     def visit_LambdaVar(self, var):
-        if var in self.active or var in var.home.vars:
+        if var in self.active:
             return None
-        writes = [assignment for assignment in var.sets if assignment.value is not None]
-        if not writes:
+        if var in var.home.vars:
+            if self.solver is None or not self.solver.local_environments.is_local(
+                var.home
+            ):
+                return None
+            values = [
+                *(
+                    assignment.value
+                    for assignment in var.sets
+                    if assignment.value is not None
+                ),
+                *self.solver.incoming_args.get(var, ()),
+            ]
+        else:
+            values = [
+                assignment.value
+                for assignment in var.sets
+                if assignment.value is not None
+            ]
+        if not values or any(len(value.uses) != 1 for value in values):
             return None
         self.active.add(var)
         try:
-            origins = [assignment.value.use().accept(self) for assignment in writes]
+            origins = [value.use().accept(self) for value in values]
             return origins[0] if all(origin is not None for origin in origins) else None
         finally:
             self.active.remove(var)

@@ -13,9 +13,10 @@ from collections import defaultdict
 from mule import ast
 
 from . import vops
-from .ctype import UNKNOWN
+from .ctype import BOTTOM, UNKNOWN
 from .ir1util import block_exception_target
 from .ir2tran import LocalAccess
+from .ltn import primitive_type_of
 from .vmdef import define_vop
 from .vop import VOP, T, TNRef
 
@@ -74,6 +75,18 @@ def _constant(vop, literal):
     )
 
 
+def _store_op(node, source_tn, slot_tn, *, release=True):
+    if source_tn.borrowed_from is not None:
+        return _operation(_STORE_ELEMENT, node, (source_tn,), (slot_tn,))
+    return _operation(
+        vops.MOVE,
+        node,
+        (source_tn,),
+        (slot_tn,),
+        data=None if release else False,
+    )
+
+
 def _named_owner(tn):
     return (
         tn.leaf is not None and not tn.leaf.expression_temporary and not tn.leaf.hidden
@@ -117,7 +130,10 @@ class _Family:
         self.width = next(iter(shape))[1]
         for tn in self.members:
             for writer, _ in self.component.writes.get(tn, ()):
-                if writer.info.name not in _BUILDERS | _COPIES | {"unbind-local"}:
+                if writer.info.name not in _BUILDERS | _COPIES | {
+                    "structural-unpack",
+                    "unbind-local",
+                }:
                     return False
             for reader, ref in self.component.reads.get(tn, ()):
                 if reader.node in self.component.context.element_contracts:
@@ -125,7 +141,14 @@ class _Family:
                     # and failure-cleanup behavior.
                     return False
                 name = reader.info.name
-                if (
+                if name == "structural-unpack":
+                    if (
+                        reader.args[0] is not ref
+                        or _index(reader.args[1].tn, self.component.writes)
+                        != self.width
+                    ):
+                        return False
+                elif (
                     name in _COPIES | _READS | {"discard", "fast-len"}
                     or name == "protocol-setitem"
                     and self.mutable
@@ -151,6 +174,7 @@ class _Family:
         owners, valid, initialized = set(), set(), set()
         replacements = {}
         slots = []
+        last_read: list[LocalAccess | None] = []
         children_inert = False
         order = {tn: index for index, tn in enumerate(self.component.tns)}
         for vop in block.vops:
@@ -160,6 +184,10 @@ class _Family:
                     owners
                     and not any(_named_owner(tn) for tn in owners)
                     and not _infallible(vop)
+                    and (
+                        not children_inert
+                        or any(slot.cleanup_owner is not None for slot in slots)
+                    )
                 ):
                     return None
                 if owners and not children_inert and not _infallible(vop):
@@ -185,16 +213,20 @@ class _Family:
                 if owners:
                     return None
                 slots = [
-                    self.component.tn(T, name=f"$scalar.{vop.number}.{index}")
-                    for index in range(self.width)
+                    self.component.tn(
+                        ref.tn.primitive_type,
+                        name=f"$scalar.{vop.number}.{index}",
+                    )
+                    for index, ref in enumerate(vop.args)
                 ]
-                for slot in slots:
-                    slot.type = UNKNOWN
+                for ref, slot in zip(vop.args, slots, strict=True):
+                    slot.type = ref.tn.type or UNKNOWN
+                last_read = [None] * self.width
                 children_inert = all(
                     not (ref.tn.type or UNKNOWN).may_run_user_code for ref in vop.args
                 )
                 rewritten = [
-                    _operation(_STORE_ELEMENT, vop.node, (ref.tn,), (slot,))
+                    _store_op(vop.node, ref.tn, slot, release=False)
                     for ref, slot in zip(vop.args, slots, strict=True)
                 ]
                 owners.add(vop.results[0].tn)
@@ -245,21 +277,22 @@ class _Family:
                             children_inert
                             and not (value.type or UNKNOWN).may_run_user_code
                         )
-                        rewritten.append(
-                            _operation(_STORE_ELEMENT, vop.node, (value,), (slot,))
-                        )
+                        slot.type = (slot.type or UNKNOWN).join(value.type or UNKNOWN)
+                        last_read[position] = None
+                        rewritten.append(_store_op(vop.node, value, slot, release=True))
                         rewritten.append(_constant(vop, ast.NoneLiteral(None)))
                     else:
                         target = vop.results[0].tn
-                        rewritten.append(
-                            _operation(
-                                vops.LOAD_LOCAL,
-                                vop.node,
-                                (slot,),
-                                (target,),
-                                LocalAccess(slot.name, False, bound=True),
-                            )
+                        access = LocalAccess(slot.name, False, bound=True)
+                        read_vop = _operation(
+                            vops.LOAD_LOCAL,
+                            vop.node,
+                            (slot,),
+                            (target,),
+                            access,
                         )
+                        last_read[position] = read_vop
+                        rewritten.append(read_vop)
                     borrow_parent = (
                         name == "unpack-ref" and vop.codegen_info.borrow_parent
                     )
@@ -280,20 +313,170 @@ class _Family:
             if not owners:
                 # Match tuple/list child teardown on both last reads and
                 # explicit deletion of the last alias.
-                rewritten.extend(
-                    _operation(vops.UNBIND_LOCAL, vop.node, results=(slot,))
-                    for slot in reversed(slots)
-                )
+                for index in reversed(range(self.width)):
+                    slot = slots[index]
+                    if children_inert and last_read[index] is not None:
+                        last_read[index].codegen_info = LocalAccess(
+                            slot.name, True, bound=True
+                        )
+                    else:
+                        rewritten.append(
+                            _operation(vops.UNBIND_LOCAL, vop.node, results=(slot,))
+                        )
+                last_read = [None] * self.width
                 valid.clear()
             replacements[vop] = rewritten
         return replacements if not owners else None
+
+    def plan_component(self):
+        named = [tn for tn in self.members if _named_owner(tn)]
+        if len(named) != 1:
+            return None
+        owner_tn = named[0]
+        if any(
+            (ref.tn.type or UNKNOWN).may_run_user_code
+            for origin in self.origins
+            for ref in origin.args
+        ):
+            return None
+        slots = [
+            self.component.tn(
+                T,
+                name=f"$scalar.shared.{owner_tn.number}.{index}",
+            )
+            for index in range(self.width)
+        ]
+        slot_types = [BOTTOM] * self.width
+        replacements = {}
+        for block in self.component.blocks:
+            pending_origin = None
+            active_temps = set()
+            for vop in block.vops:
+                related = any(
+                    ref.tn in self.members for ref in (*vop.args, *vop.results)
+                )
+                if not related:
+                    if pending_origin is not None:
+                        return None
+                    continue
+                name = vop.info.name
+                rewritten = []
+                if vop in self.origins:
+                    if pending_origin is not None or active_temps:
+                        return None
+                    res_tn = vop.results[0].tn
+                    if res_tn is not owner_tn:
+                        pending_origin = res_tn
+                    for index, (ref, slot) in enumerate(
+                        zip(vop.args, slots, strict=True)
+                    ):
+                        slot_types[index] = slot_types[index].join(
+                            ref.tn.type or UNKNOWN
+                        )
+                        rewritten.append(
+                            _store_op(vop.node, ref.tn, slot, release=True)
+                        )
+                elif pending_origin is not None:
+                    if (
+                        name != "move"
+                        or vop.args[0].tn is not pending_origin
+                        or vop.results[0].tn is not owner_tn
+                    ):
+                        return None
+                    pending_origin = None
+                elif name == "unbind-local":
+                    return None
+                else:
+                    source = vop.args[0].tn
+                    if source is not owner_tn and source not in active_temps:
+                        return None
+                    if name == "load-local":
+                        access = vop.codegen_info
+                        target = vop.results[0].tn
+                        if (
+                            not access.bound
+                            or access.allow_unbound
+                            or target is owner_tn
+                        ):
+                            return None
+                        if source in active_temps and access.move:
+                            active_temps.discard(source)
+                        active_temps.add(target)
+                    elif name in ("move", "structural-unpack"):
+                        target = vop.results[0].tn
+                        if target is owner_tn:
+                            return None
+                        if source in active_temps and source.borrowed_from is None:
+                            active_temps.discard(source)
+                        active_temps.add(target)
+                    elif name in _READS | {"protocol-setitem"}:
+                        position = _index(vop.args[1].tn, self.component.writes)
+                        if position is None:
+                            return None
+                        position = position + self.width if position < 0 else position
+                        if not 0 <= position < self.width:
+                            return None
+                        slot = slots[position]
+                        if name == "protocol-setitem":
+                            value = vop.args[2].tn
+                            if (value.type or UNKNOWN).may_run_user_code:
+                                return None
+                            slot_types[position] = slot_types[position].join(
+                                value.type or UNKNOWN
+                            )
+                            rewritten.append(
+                                _store_op(vop.node, value, slot, release=True)
+                            )
+                            rewritten.append(_constant(vop, ast.NoneLiteral(None)))
+                        else:
+                            target = vop.results[0].tn
+                            rewritten.append(
+                                _operation(
+                                    vops.LOAD_LOCAL,
+                                    vop.node,
+                                    (slot,),
+                                    (target,),
+                                    LocalAccess(slot.name, False, bound=True),
+                                )
+                            )
+                        borrow_parent = (
+                            name == "unpack-ref" and vop.codegen_info.borrow_parent
+                        )
+                        if (
+                            source in active_temps
+                            and not borrow_parent
+                            and source.borrowed_from is None
+                        ):
+                            active_temps.discard(source)
+                    elif name == "fast-len":
+                        rewritten.append(_constant(vop, ast.IntegerLiteral(self.width)))
+                        if source in active_temps and source.borrowed_from is None:
+                            active_temps.discard(source)
+                    elif name == "discard":
+                        if source in active_temps and source.borrowed_from is None:
+                            active_temps.discard(source)
+                    else:
+                        return None
+                replacements[vop] = rewritten
+            if pending_origin is not None or active_temps:
+                return None
+        for slot, stype in zip(slots, slot_types, strict=True):
+            slot.type = UNKNOWN if stype is BOTTOM else stype
+            slot.primitive_type = primitive_type_of(slot.type)
+        return replacements
 
 
 def _copy_groups(component):
     edges = defaultdict(set)
     for block in component.blocks:
         for vop in block.vops:
-            if vop.info.name in _COPIES and len(vop.args) == len(vop.results) == 1:
+            if (
+                vop.info.name in _COPIES and len(vop.args) == len(vop.results) == 1
+            ) or (
+                vop.info.name == "structural-unpack"
+                and len(vop.args) == 2
+                and len(vop.results) == 1
+            ):
                 source, target = vop.args[0].tn, vop.results[0].tn
                 edges[source].add(target)
                 edges[target].add(source)
@@ -331,6 +514,11 @@ def replace_local_aggregates(component):
             replacement = family.plan(block)
             if replacement is None:
                 del component.tns[original_tns:]
+                component_replacement = family.plan_component()
+                if component_replacement is None:
+                    del component.tns[original_tns:]
+                else:
+                    rewritten.update(component_replacement)
                 break
             planned.append(replacement)
         else:

@@ -3995,11 +3995,19 @@ class FunctionGenerator:
         packable_locals = [
             tn
             for tn in self.local_tns
-            if tn.leaf is not None
-            and tn.leaf.hidden
-            and not tn.leaf.expression_temporary
-            and tn.leaf not in self.environment.cells
-            and tn.leaf not in self.environment.copies
+            if (
+                tn.leaf is not None
+                and tn.leaf.hidden
+                and not tn.leaf.expression_temporary
+                and tn.leaf not in self.environment.cells
+                and tn.leaf not in self.environment.copies
+            )
+            or (
+                tn.leaf is None
+                and tn.cleanup_owner is None
+                and tn.name is not None
+                and tn.name.startswith("$scalar.")
+            )
         ]
         packable_set = set(packable_locals)
         fixed_locals = [tn for tn in self.local_tns if tn not in packable_set]

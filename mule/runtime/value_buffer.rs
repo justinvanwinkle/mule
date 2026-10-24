@@ -2,7 +2,7 @@
 //! length/data slots (`src/compiler/generic/objdef.lisp`). This header owns
 //! the allocation. Rust's unspecified `Vec` layout never crosses the ABI.
 
-use crate::object::Value;
+use crate::object::{Value, alloc_value_slice, dealloc_value_slice};
 use std::collections::TryReserveError;
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut, Range};
@@ -22,6 +22,23 @@ impl ValueBuffer {
             length: 0,
             capacity: 0,
         }
+    }
+
+    #[inline(always)]
+    pub unsafe fn try_with_capacity_exact(capacity: usize) -> Option<Self> {
+        unsafe {
+            let data = alloc_value_slice(capacity)?;
+            Some(Self {
+                data,
+                length: 0,
+                capacity,
+            })
+        }
+    }
+
+    #[inline(always)]
+    pub fn as_mut_ptr(&mut self) -> *mut Value {
+        self.data
     }
 
     pub fn as_slice(&self) -> &[Value] {
@@ -49,10 +66,62 @@ impl ValueBuffer {
     }
 
     pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
+        let target = self.length.checked_add(additional);
+        if let Some(target) = target {
+            if target <= self.capacity {
+                return Ok(());
+            }
+            if target <= crate::object::SLICE_POOL_MAX_LEN {
+                unsafe {
+                    if let Some(new_data) = alloc_value_slice(target) {
+                        if self.length > 0 {
+                            std::ptr::copy_nonoverlapping(self.data, new_data, self.length);
+                        }
+                        if self.capacity > 0 {
+                            dealloc_value_slice(self.data, self.capacity);
+                        }
+                        self.data = new_data;
+                        self.capacity = target;
+                        return Ok(());
+                    }
+                }
+            }
+        }
         self.mutate(|values| values.try_reserve_exact(additional))
     }
 
+    #[inline(always)]
     pub fn push(&mut self, value: Value) {
+        if self.length < self.capacity {
+            unsafe {
+                *self.data.add(self.length) = value;
+                self.length += 1;
+            }
+            return;
+        }
+        if self.capacity == 0 {
+            unsafe {
+                if let Some(new_data) = alloc_value_slice(4) {
+                    *new_data = value;
+                    self.data = new_data;
+                    self.length = 1;
+                    self.capacity = 4;
+                    return;
+                }
+            }
+        } else if self.capacity == 4 {
+            unsafe {
+                if let Some(new_data) = alloc_value_slice(8) {
+                    std::ptr::copy_nonoverlapping(self.data, new_data, 4);
+                    *new_data.add(4) = value;
+                    dealloc_value_slice(self.data, 4);
+                    self.data = new_data;
+                    self.length = 5;
+                    self.capacity = 8;
+                    return;
+                }
+            }
+        }
         self.mutate(|values| values.push(value));
     }
 
@@ -128,7 +197,7 @@ impl Drop for ValueBuffer {
         // Raw Value pointers do not release their referents. Data's ordinary
         // owned-value traversal performs that separately, exactly as for Vec.
         unsafe {
-            drop(Vec::from_raw_parts(self.data, self.length, self.capacity));
+            dealloc_value_slice(self.data, self.capacity);
         }
     }
 }
