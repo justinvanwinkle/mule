@@ -463,8 +463,14 @@ class _SingleAssignedLambdaVar(LeafVisitor):
         return False
 
     def visit_LambdaVar(self, leaf):
-        return (
-            not leaf.indirect and sum(1 for s in leaf.sets if s.value is not None) == 1
+        if leaf.indirect:
+            return False
+        value_sets = [s for s in leaf.sets if s.value is not None]
+        if len(value_sets) == 1:
+            return True
+        return bool(value_sets) and all(
+            s.source is not None and s.source is value_sets[0].source
+            for s in value_sets
         )
 
 

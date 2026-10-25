@@ -139,6 +139,10 @@ class ValueType:
         return False
 
     @property
+    def is_exact_tuple(self):
+        return False
+
+    @property
     def is_interned_text(self) -> bool:
         return False
 
@@ -2352,6 +2356,18 @@ class TupleType(ValueType):
     def is_heap_object(self):
         return not self.may_be_unbound
 
+    @property
+    def is_exact_tuple(self):
+        return not self.may_be_unbound
+
+    @property
+    def may_run_user_code(self):
+        return (
+            self.may_be_unbound
+            or self.elements is None
+            or any(elem.may_run_user_code for elem in self.elements)
+        )
+
     def truth_value(self) -> bool | None:
         if self.may_be_unbound or self.arity is None:
             return None
@@ -2719,6 +2735,10 @@ class ListType(ValueType):
     @property
     def is_exact_list(self):
         return not self.may_be_unbound
+
+    @property
+    def may_run_user_code(self):
+        return self.may_be_unbound or self.element.may_run_user_code
 
     def truth_value(self) -> bool | None:
         if not self.may_be_unbound and self.element is BOTTOM:

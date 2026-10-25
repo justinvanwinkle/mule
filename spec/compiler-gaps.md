@@ -212,19 +212,47 @@ departures from SBCL's compiler and runtime architecture:
      elide redundant return checks when the specialized entry's return type
      already satisfies the contract.
 
-### 0D. Borrowed / unboxed container element reads and loop reference-count elimination (`represent.py`, `vops.py`) (proposed)
+### 0D. Borrowed / unboxed container element reads and loop reference-count elimination (`ir2tran.py`, `vops.py`) (implemented)
 
-- **SBCL reference**: `src/compiler/array-tran.lisp` (`data-vector-ref`) and
-  `src/compiler/represent.lisp`, where vector reads load unboxed or register
-  values without reference-count traffic.
-- **Current Mule defect**:
-  - Even when `list` or `dict` storage is proven, `_storage_read` in an inner
-    loop retains (`mule_retain`) and releases (`mule_release`) every loaded
-    element and boxes scalars in container buffers.
-- **Required implementation**:
-  - Elide `retain`/`release` on non-escaping borrowed reads from proven
-    containers across non-mutating, non-calling basic-block regions, and
-    unbox scalar loads when feeding fixnum/float consumers.
+- **SBCL reference**: `src/compiler/array-tran.lisp` (`aref` ->
+  `data-vector-ref` / `hairy-data-vector-ref/check-bounds`) and
+  `src/compiler/represent.lisp`, where vector and sequence reads load element
+  values into registers without reference-count traffic.
+- **Mule implementation and SBCL adaptation**:
+  - SBCL relies on tracing GC, so `data-vector-ref` loads tagged words directly
+    from vector storage without per-read ownership operations. Mule uses
+    reference-counted heap ownership with tagged 64-bit immediates (fixnums,
+    booleans, `None`, immortal singletons).
+  - `_specialize_list_getitems` (`mule/compiler/ir2tran.py`) and
+    `protocol_getitem` / `_storage_helpers` / `unpack_ref`
+    (`mule/compiler/vops.py`) adapt SBCL's direct vector access to Mule's
+    ownership model in three complementary ways:
+    1. **Fixnum and immortal element elision**: When the loaded element's
+       derived `ValueType` is a proven fixnum or immortal (`is_fixnum` /
+       `is_immortal`), `protocol-getitem` (`list_owned`, `tuple_owned`),
+       `primitive-_storage_read`, and `unpack-ref` omit `@mule.fast.retain`
+       and mark the result TN as borrowed (`borrowed_from = seq_tn`), because
+       tagged immediate words never require reference-count updates.
+    2. **Inline exact-tuple and exact-list physical reads**: `protocol-getitem`
+       now lowers proven exact `tuple` indexing (`tuple_borrow`, `tuple_owned`)
+       inline alongside exact `list` indexing (`list_borrow`, `list_owned`),
+       using `TupleType.exact_length()` when statically known to check bounds
+       without loading the header length field and falling back to
+       `@mule_getitem_borrow` / `@mule_getitem` only on out-of-bounds indices.
+    3. **Borrowed container-element locals and structural unpack across
+       protected regions**: `_try_borrow_container_element_local` and
+       `_try_borrow_unpacked_getitem` (`mule/compiler/ir2tran.py`) trace single-
+       assignment local variables initialized from `protocol-getitem` or
+       `primitive-_storage_read` (such as `row_a = a[i]` across an inner loop,
+       or `m_start, m_end = merged[mid]` via `structural-unpack` /
+       `unpack-ref`) across multi-block regions. When the backing container
+       remains bound to the same local (`_same_local_origin`) and no intervening
+       step along any CFG path to the reads can mutate that container or invoke
+       arbitrary Python user code (`_safe_container_local_region_step`, using
+       `ValueType.may_run_user_code` so stores of tuples/lists with inert
+       elements do not act as false barriers), both the container read and the
+       local variable borrow their reference from the container root without
+       `@mule.fast.retain` or `@mule.fast.release`.
 
 ---
 

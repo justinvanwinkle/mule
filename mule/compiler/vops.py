@@ -2505,20 +2505,26 @@ def protocol_getitem(gen, vop):
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])
     info = vop.codegen_info
-    if info in ("list_borrow", "list_owned"):
-        helper = (
-            "@mule_list_getitem_borrow"
-            if info == "list_borrow"
-            else "@mule_list_getitem"
-        )
+    if info in ("list_borrow", "list_owned", "tuple_borrow", "tuple_owned"):
+        if info == "list_borrow":
+            helper = "@mule_list_getitem_borrow"
+        elif info == "list_owned":
+            helper = "@mule_list_getitem"
+        else:
+            helper = gen.module.getitem_helper()
+        seq_type = vop.args[0].tn.type or UNKNOWN
         idx_type = vop.args[1].tn.type or UNKNOWN
         non_negative = idx_type.minimum is not None and idx_type.minimum >= 0
         bits = gen.operation(f"ptrtoint ptr {index} to i64")
         raw = gen.operation(f"ashr i64 {bits}, 1")
-        len_addr = gen.operation(
-            f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
-        )
-        length = gen.operation(f"load i64, ptr {len_addr}")
+        exact_len = seq_type.exact_length()
+        if exact_len is not None:
+            length = str(exact_len)
+        else:
+            len_addr = gen.operation(
+                f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
+            )
+            length = gen.operation(f"load i64, ptr {len_addr}")
         if non_negative:
             pos = raw
         else:
@@ -2540,7 +2546,15 @@ def protocol_getitem(gen, vop):
         data = gen.operation(f"load ptr, ptr {data_addr}")
         slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {pos}")
         fast_val = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
-        if info == "list_owned":
+        res_tn = vop.results[0].tn
+        res_type = res_tn.type or UNKNOWN
+        unchecked_contract = gen._has_unchecked_element_contract(res_tn)
+        immortal_elem = not unchecked_contract and (
+            not res_tn.sc.owned or res_type.is_fixnum or res_type.is_immortal
+        )
+        if info in ("list_owned", "tuple_owned") and not immortal_elem:
+            if not unchecked_contract and res_type.is_heap_object:
+                gen.heap_values.add(fast_val)
             fast_val = gen.retain(fast_val)
         gen.line(f"br label %{done_lbl}")
         gen.lines.append(slow_lbl + ":")
@@ -2677,9 +2691,19 @@ def unpack_ref(gen, vop):
     access = vop.codegen_info
     parent = gen.load(vop.args[0]) if access.borrow_parent else gen.take(vop.args[0])
     position = gen.take(vop.args[1])
+    res_tn = vop.results[0].tn
+    res_type = res_tn.type or UNKNOWN
+    immortal_elem = not gen._has_unchecked_element_contract(res_tn) and (
+        not res_tn.sc.owned or res_type.is_fixnum or res_type.is_immortal
+    )
     if access.proved:
+        slot_helper = (
+            "@mule.fast.tuple.borrow"
+            if access.borrow_element or immortal_elem
+            else "@mule.fast.tuple.slot"
+        )
         result = gen.operation(
-            f"call ptr @mule.fast.tuple.slot(ptr {parent}, i64 {access.index})"
+            f"call ptr {slot_helper}(ptr {parent}, i64 {access.index})"
         )
     else:
         result = gen.operation(
@@ -2790,8 +2814,17 @@ def text_access(function):
     def emit(gen, vop, values):
         arg_type = (vop.args[0].tn.type or UNKNOWN) if vop.args else UNKNOWN
         if storage_helper is not None:
+            helper = storage_helper
+            if function == "mule_storage_read" and vop.results:
+                res_tn = vop.results[0].tn
+                res_type = res_tn.type or UNKNOWN
+                immortal_elem = not gen._has_unchecked_element_contract(res_tn) and (
+                    not res_tn.sc.owned or res_type.is_fixnum or res_type.is_immortal
+                )
+                if vop.codegen_info == "storage_borrow" or immortal_elem:
+                    helper = "@mule.fast.storage.read.borrow"
             operands = ", ".join(f"ptr {value}" for value in values)
-            return gen.operation(f"call ptr {storage_helper}({operands})")
+            return gen.operation(f"call ptr {helper}({operands})")
         if function == "mule_integer_storage":
             if arg_type.is_fixnum:
                 return values[0]
@@ -3385,6 +3418,35 @@ object:
   ret i32 %kind
 unsupported:
   ret i32 0
+}}
+
+define internal ptr @mule.fast.storage.read.borrow(ptr %sequence, ptr %position) alwaysinline {{
+entry:
+  %bits = ptrtoint ptr %position to i64
+  %tag = and i64 %bits, 1
+  %fixnum = icmp ne i64 %tag, 0
+  br i1 %fixnum, label %check.kind, label %slow
+check.kind:
+  %kind = call i32 @mule.storage.kind(ptr %sequence)
+  %list = icmp eq i32 %kind, {LIST_TAG}
+  %tuple = icmp eq i32 %kind, {ARGS_TAG}
+  %supported = or i1 %list, %tuple
+  br i1 %supported, label %bounds, label %slow
+bounds:
+  %length.addr = getelementptr i8, ptr %sequence, i64 {VALUE_BUFFER_LENGTH_OFFSET}
+  %length = load i64, ptr %length.addr
+  %index = ashr i64 %bits, 1
+  %inside = icmp ult i64 %index, %length
+  br i1 %inside, label %read, label %slow
+read:
+  %data.addr = getelementptr i8, ptr %sequence, i64 {VALUE_BUFFER_DATA_OFFSET}
+  %data = load ptr, ptr %data.addr
+  %slot = getelementptr ptr, ptr %data, i64 %index
+  %value = load ptr, ptr %slot
+  ret ptr %value
+slow:
+  %fallback = call ptr @mule_storage_read(ptr %sequence, ptr %position)
+  ret ptr %fallback
 }}
 
 define internal ptr @mule.fast.storage.read(ptr %sequence, ptr %position) alwaysinline {{
