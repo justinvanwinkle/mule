@@ -949,7 +949,7 @@ class ModuleGenerator:
         # define them, by namespace, and the namespaces code binds names in.
         self.expected_builtins: dict[str, set[str]] = {}
         self.bound_namespaces: set[str] = set()
-        # Namespaces whose cells a linkonce_odr initializer uses, which must
+        # Namespaces whose cells a weak_odr initializer uses, which must
         # then be shared definitions too.
         self.shared_namespaces: set[str] = set()
         self.method_targets: dict[str, list[Function]] = {}
@@ -1079,8 +1079,8 @@ class ModuleGenerator:
         definitions = []
         for namespace, cells in self.global_cells.items():
             shared = namespace in self.shared_namespaces
-            linkage = "linkonce_odr" if shared else "internal"
-            constant = "linkonce_odr constant" if shared else "private constant"
+            linkage = "weak_odr" if shared else "internal"
+            constant = "weak_odr constant" if shared else "private constant"
             definitions.extend(
                 f"{symbol} = {linkage} global {{ptr, i64, ptr, ptr}} "
                 "{ptr @mule.undefined, i64 0, ptr null, ptr null}"
@@ -1245,7 +1245,7 @@ class ModuleGenerator:
         name = _symbol(f"mule.class.layout.{identity}")
         if identity not in self.class_layout_slots:
             self.class_layout_slots.add(identity)
-            self.auxiliary.append(f"{name} = linkonce_odr global i64 0")
+            self.auxiliary.append(f"{name} = weak_odr global i64 0")
         return name
 
     def attribute_cache(self) -> str:
@@ -3420,7 +3420,7 @@ class ModuleGenerator:
         # Every unit importing a native module generates the same initializer;
         # the linker keeps one, so the module stays a singleton. A compiled
         # module's initializer is defined only by the unit owning its body.
-        linkage = "linkonce_odr " if info.native else ""
+        linkage = "weak_odr " if info.native else ""
         cache = self.import_cache(info)
         self.auxiliary.append(f"{cache} = {linkage or 'internal '}global ptr null")
         legacy = [

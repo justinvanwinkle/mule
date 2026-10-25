@@ -13,11 +13,13 @@ import shutil
 import struct
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from functools import cache
 from pathlib import Path
 
 from mule import ast
+from mule.diagnostics import phase
 
 from . import (
     argument_protocol,
@@ -31,6 +33,7 @@ from .artifacts import (
     Node,
     Step,
     ToolchainError,
+    physical_core_count,
     tool_identity,
 )
 from .codegen import ForeignFunction, Program, generate
@@ -62,6 +65,7 @@ __all__ = [
 ]
 
 LINK_LIBRARIES = ("-lgmp", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl")
+BUILTINS_SHARDS = 16
 
 
 @dataclass(slots=True)
@@ -675,33 +679,91 @@ class Build:
     def object(self, unit: Step) -> Step:
         toolchain = self.toolchain
         lto = toolchain.lto
+        sharded = unit.name == "builtins" and not lto
         name = f"{unit.name} object optimize={toolchain.optimize} lto={lto}"
 
         def action(inputs, directory):
-            _run(
-                [
-                    toolchain.clang,
-                    *toolchain.compile_flags(),
-                    "-Wno-override-module",
-                    "-c",
-                    str(unit.path("unit.ll")),
-                    "-o",
-                    str(directory / "unit.o"),
-                ],
-                "LLVM compilation/linking failed",
-            )
+            with phase("compile object %s", unit.name):
+                if sharded:
+                    llvm_split = toolchain.llvm_tool("llvm-split")
+                    shard_prefix = directory / "shard"
+                    _run(
+                        [
+                            llvm_split,
+                            f"-j={BUILTINS_SHARDS}",
+                            f"-o={shard_prefix}",
+                            str(unit.path("unit.ll")),
+                        ],
+                        "LLVM compilation/linking failed",
+                    )
 
+                    def compile_shard(index: int) -> str:
+                        shard = directory / f"shard{index}"
+                        obj = directory / f"shard{index}.o"
+                        _run(
+                            [
+                                toolchain.clang,
+                                *toolchain.compile_flags(),
+                                "-ffunction-sections",
+                                "-fdata-sections",
+                                "-x",
+                                "ir",
+                                "-Wno-override-module",
+                                "-c",
+                                str(shard),
+                                "-o",
+                                str(obj),
+                            ],
+                            "LLVM compilation/linking failed",
+                        )
+                        shard.unlink()
+                        return str(obj)
+
+                    workers = min(BUILTINS_SHARDS, physical_core_count())
+                    with ThreadPoolExecutor(max_workers=workers) as pool:
+                        shard_objects = list(
+                            pool.map(compile_shard, range(BUILTINS_SHARDS))
+                        )
+                    _run(
+                        [
+                            str(lto_linker(toolchain.rustc)),
+                            "-r",
+                            *shard_objects,
+                            "-o",
+                            str(directory / "unit.o"),
+                        ],
+                        "LLVM compilation/linking failed",
+                    )
+                    for obj in shard_objects:
+                        Path(obj).unlink()
+                    return
+                _run(
+                    [
+                        toolchain.clang,
+                        *toolchain.compile_flags(),
+                        "-Wno-override-module",
+                        "-c",
+                        str(unit.path("unit.ll")),
+                        "-o",
+                        str(directory / "unit.o"),
+                    ],
+                    "LLVM compilation/linking failed",
+                )
+
+        settings = {
+            "step": "object",
+            "lto": lto,
+            **toolchain.clang_settings(),
+        }
+        if sharded:
+            settings["shards"] = BUILTINS_SHARDS
         step = self.graph.step(
             name,
             lambda: Step(
                 self.graph,
                 name,
                 inputs=[unit],
-                settings={
-                    "step": "object",
-                    "lto": lto,
-                    **toolchain.clang_settings(),
-                },
+                settings=settings,
                 outputs=("unit.o",),
                 action=action,
             ),
