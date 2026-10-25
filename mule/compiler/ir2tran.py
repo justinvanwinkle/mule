@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from .annotation_types import Contract
 from .ctype import (
     BOOLEAN,
+    BOOLEAN_FALSE,
     BOTTOM,
     NONE_TYPE,
     PYTHON_INTEGER,
@@ -1934,7 +1935,17 @@ def _safe_container_local_region_step(
             return False
         if is_consumer:
             return True
-        return elem_type is not UNKNOWN and elem_type.intersection(item_t) is BOTTOM
+        elem_cls = elem_type.runtime_class_type()
+        item_cls = item_t.runtime_class_type()
+        old_cls = seq_t.getitem_type(idx_t).runtime_class_type()
+        return (
+            elem_cls is not UNKNOWN
+            and item_cls is not UNKNOWN
+            and old_cls is not UNKNOWN
+            and elem_cls.comparison(ast.ComparisonOperator.IS, item_cls)
+            is BOOLEAN_FALSE
+            and elem_cls.comparison(ast.ComparisonOperator.IS, old_cls) is BOOLEAN_FALSE
+        )
     return False
 
 

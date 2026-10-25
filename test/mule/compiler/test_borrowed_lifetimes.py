@@ -278,3 +278,23 @@ def test_container_local_element_retains_when_container_mutated_before_read():
     ]
     assert getitems
     assert all(vop.codegen_info == "list_owned" for vop in getitems)
+
+
+def test_real_list_element_local_with_loop_setitem_compiles_and_preserves_semantics(
+    tmp_path,
+):
+    compare(
+        tmp_path,
+        """
+def step(px: list[float], vx: list[float]) -> float:
+    n = len(px)
+    for i in range(n):
+        xi = px[i]
+        for j in range(i + 1, n):
+            dx = xi - px[j]
+            vx[j] = vx[j] + dx
+    return vx[0] + vx[-1]
+
+print(round(step([1.5, 2.5, 4.0], [0.25, 0.5, 0.75]), 6))
+""",
+    )
