@@ -329,7 +329,7 @@ def _widen_relations(old_rels: dict, new_rels: dict) -> dict:
     if not old_rels or not new_rels:
         return {}
     return {
-        pair: val
+        pair: old_val
         for pair, val in new_rels.items()
         if (old_val := old_rels.get(pair)) is not None and val <= old_val
     }
@@ -2890,7 +2890,7 @@ class _Walk:
             if not parents:
                 continue
             rels = _join_relations_list(parent_rels)
-            if not widening and block in headers:
+            if not widening and (block in headers or visits[block] >= 3):
                 rels = _widen_relations(in_relations.get(block, {}), rels)
             state = parents[0]
             for parent in parents[1:]:
@@ -2910,11 +2910,11 @@ class _Walk:
                     state, changed = join_states(previous, state)
                 old_rels = in_relations.get(block)
                 if old_rels is not None:
-                    if block in headers and visits[block] >= 1:
+                    if (block in headers and visits[block] >= 1) or visits[block] >= 4:
                         rels = _widen_relations(old_rels, rels)
                     else:
                         rels = _join_relations_list([old_rels, rels])
-                rel_changed = rels != old_rels and visits[block] < 4
+                rel_changed = rels != old_rels
                 if rel_changed:
                     in_relations[block] = rels
                 if changed or rel_changed:
@@ -2953,22 +2953,29 @@ class _Walk:
                     incoming[block] = state
                 elif not operand_changed:
                     continue
-            elif (state is not previous and state != previous) or (
-                rels != in_relations.get(block) and visits[block] < 3
-            ):
-                if visits[block] < 3:
+            else:
+                old_rels = in_relations.get(block)
+                if visits[block] >= 3 and previous is not None:
+                    state, state_changed = join_states(previous, state)
+                    if state_changed and block in headers:
+                        state = {
+                            k: widen_fact(previous[k], v)
+                            if v is not previous[k] and v != previous[k]
+                            else v
+                            for k, v in state.items()
+                        }
+                else:
+                    state_changed = state is not previous and state != previous
+                rel_changed = rels != old_rels
+                if state_changed or rel_changed:
                     visits[block] += 1
                     incoming[block] = state
                     in_relations[block] = rels
-                elif not operand_changed:
-                    continue
                 else:
-                    state = previous
-            else:
-                if previous is not None:
-                    state = previous
-                if not operand_changed:
-                    continue
+                    if previous is not None:
+                        state = previous
+                    if not operand_changed:
+                        continue
             # The visitor copies its state on first mutation.
             handler = handlers[block]
             has_handler = handler is not None
