@@ -182,27 +182,35 @@ departures from SBCL's compiler and runtime architecture:
      `entry is _EMPTY` compile to unboxed integer comparisons, and probe-loop
      hash comparisons execute in registers without boxed calls.
 
-### 0C. Preserving `InstanceType(cls)` method specialization in `locall._SpecializesBody` (`mule/compiler/locall.py`) (proposed)
+### 0C. Preserving `InstanceType(cls)` method specialization, instance field inference, and method call return contracts (`locall.py`, `constraint.py`, `return_checks.py`, `codegen.py`) (implemented)
 
-- **SBCL reference**: `src/code/defstruct.lisp` (`slot-access-transform`) and
-  `src/compiler/locall.lisp`, where structure/instance accessors always
-  specialize on the receiver's class layout and propagate slot types.
-- **Current Mule defect**:
-  - `_SpecializesBody` (`mule/compiler/locall.py`) discards a method's `"fixnum"`
-    entry context `(InstanceType(cls), ...)` unless narrowing `self` changes a
-    node's derived type to `INTEGER`, `BOOLEAN`, or `FLOAT`, or specializes a
-    `list`/`str`/`dict` container op.
-  - Methods that read or write instance attributes (`GETATTR` / `SETATTR`, such
-    as `self.value`, `self.left`, `self.right`, `self._head`, `node.prev`) or
-    return `PYTHON_INTEGER` fail `_SpecializesBody` and lose their
-    `InstanceType(cls)` variant (`variants=()`), falling back to generic
-    attribute lookup on `self`.
-- **Required implementation**:
-  - Teach `_SpecializesBody` in `mule/compiler/locall.py` to recognize when
-    `candidate` narrows a `GETATTR` or `SETATTR` receiver to `InstanceType`
-    (enabling direct slot access or narrowing the loaded field's `ValueType`) or
-    narrows a node from `UNKNOWN` to `PYTHON_INTEGER` / `InstanceType` /
-    container types.
+- **SBCL reference**: `src/code/defstruct.lisp` (`slot-access-transform`),
+  `src/compiler/locall.lisp`, and `src/compiler/ir1tran.lisp` (`assert-call-type`),
+  where structure/instance accessors specialize on the receiver's class layout,
+  propagate inferred slot types, and assert derived return types across known
+  and local calls.
+- **Mule implementation and Python adaptations**:
+  1. `_SpecializesBody` (`mule/compiler/locall.py`) retains `"fixnum"` /
+     `"observed"` method entry contexts when `candidate` narrows a `GETATTR` or
+     `SETATTR` receiver to `InstanceType`, and drops `"observed"` when it adds
+     no body, element-contract, or return-type specialization beyond `"fixnum"`.
+  2. `ClassConstructorTarget.propagate_call` (`mule/compiler/node.py`) seeds
+     `__init__` call sites into `method_calls` so `_SanitizeInstanceFieldType`
+     and `_update_class_field_types` (`mule/compiler/locall.py`) infer scalar
+     (`IntegerType`, `BooleanType`, `PythonIntegerType`, `TextType`),
+     `InstanceType` / `UnionType`, and `DictType` instance field types from
+     `__init__` and method stores, resetting stale return summaries when field
+     types narrow.
+  3. Because Python attributes can be rebound dynamically via `setattr`,
+     `_propagate_getattr` (`mule/compiler/constraint.py`) guards scalar and
+     `DictType` instance field reads with an `InferredReturnContract`.
+  4. `assert_inferred_results` (`mule/compiler/return_checks.py`) asserts
+     derived and declared return contracts across both monomorphic and
+     polymorphic `CALL_RESOLVED` method calls on typed instance receivers, and
+     `method_call_helper` / `call_resolved_target` (`mule/compiler/codegen.py`)
+     dispatch directly to specialized `.spec.0` entries via `_entry_steps` and
+     elide redundant return checks when the specialized entry's return type
+     already satisfies the contract.
 
 ### 0D. Borrowed / unboxed container element reads and loop reference-count elimination (`represent.py`, `vops.py`) (proposed)
 

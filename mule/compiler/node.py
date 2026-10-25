@@ -1178,6 +1178,23 @@ class ClassConstructorTarget:
             src_var = visitor.origins.get(args[0])
             if src_var is not None and node.lvar is not None:
                 visitor.type_of_origins[node.lvar] = src_var
+        if (
+            self.init_target is not None
+            and not keywords
+            and self.base_type.instance_class() is not None
+        ):
+            from .constraint import CallSite, _fact
+
+            visitor.walk.method_calls.append(
+                CallSite(
+                    self.init_target,
+                    (
+                        _fact(self.base_type),
+                        *(visitor.fact_of(arg) for arg in args),
+                    ),
+                    False,
+                )
+            )
         return self.derive_return_type(arg_types, keywords)
 
 

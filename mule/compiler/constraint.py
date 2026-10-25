@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from mule import ast
 
 from . import fndb
-from .annotation_types import ListContract
+from .annotation_types import InferredReturnContract, ListContract
 from .ctype import (
     ANY_CLASS_TYPE,
     BOOLEAN,
@@ -1941,6 +1941,18 @@ def _propagate_getattr(visitor: _Propagation, node: Combination):
                 visitor.type_of(node.args[0]), node.info.name
             )
             if field_type is not UNKNOWN:
+                if (
+                    field_type.fits(PYTHON_INTEGER)
+                    or field_type.fits_text(TEXT_TYPE)
+                    or field_type.fits_dict()
+                ):
+                    visitor.apply_element_contract(
+                        node,
+                        UNKNOWN,
+                        InferredReturnContract(
+                            f"attribute {node.info.name}", field_type
+                        ),
+                    )
                 return _fact(field_type)
 
 

@@ -385,6 +385,19 @@ class MethodCall:
     # The receiver's analyzed type, for selecting the target's entry context.
     receiver_type: ValueType = UNKNOWN
 
+    @property
+    def is_exact(self) -> bool:
+        return (
+            self.exact_list_append
+            or self.exact_list_pop
+            or self.exact_text_find
+            or self.exact_text_split
+            or self.exact_text_partition
+            or self.exact_text_affix
+            or self.exact_dict_get
+            or self.exact_bytearray_append
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class FunctionObject:

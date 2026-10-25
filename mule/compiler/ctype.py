@@ -3988,6 +3988,20 @@ class UnionType(ValueType):
         classes = {m.instance_class() for m in self.members if m is not NONE_TYPE}
         return classes.pop() if not self.may_be_unbound and len(classes) == 1 else None
 
+    def dispatch_domain(self):
+        if self.may_be_unbound:
+            return None
+        domains = []
+        for member in self.members:
+            if member is NONE_TYPE:
+                domains.append(NONE_TYPE)
+                continue
+            domain = member.dispatch_domain()
+            if domain is None:
+                return None
+            domains.append(domain)
+        return union_type(*domains) if domains else None
+
     def getitem_type(self, index):
         return (
             UNKNOWN

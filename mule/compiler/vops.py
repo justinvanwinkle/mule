@@ -1902,6 +1902,7 @@ def call_resolved(gen, vop):
         values,
         unpack_arity=gen.unpacked_call_arity(vop),
         argument_refs=arguments,
+        result_contract=gen.call_result_contract(vop),
     )
     gen.publish(vop.results[0], value)
     gen.release(function)
@@ -4270,6 +4271,7 @@ BRANCH = branch
 JUMP = jump
 RETURN = return_
 FULL_CALL = full_call
+CALL_RESOLVED = call_resolved
 LOCAL_CALL = local_call
 FAST_LEN = fast_len
 PARSE_INT_TEXT = parse_int_text

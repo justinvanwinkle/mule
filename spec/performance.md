@@ -186,6 +186,25 @@ inside inner loops:
 See [remaining compiler gaps](compiler-gaps.md#0-high-impact-architectural-parity-gaps-from-the-14-workload-suite-audit-proposed)
 for the SBCL references and staged remediation plan for these four defects.
 
+## Instance field inference, method entry dispatch, and method return contracts, 2026-10-25
+
+With `0C` implemented ([`spec/compiler-gaps.md`](compiler-gaps.md#0c-preserving-instancetypecls-method-specialization-instance-field-inference-and-method-call-return-contracts-locallpy-constraintpy-return_checkspy-codegenpy-implemented)),
+`locall` preserves `InstanceType(cls)` specialization across `GETATTR` / `SETATTR`,
+infers scalar (`IntegerType`, `TextType`) and `DictType` instance fields from
+`__init__` and method stores, asserts derived and declared return contracts
+across monomorphic and polymorphic `CALL_RESOLVED` method calls, and dispatches
+`method_call_helper` / `call_resolved_target` directly to specialized `.spec.0`
+entries via `_entry_steps`.
+
+A three-sample comparison (`uv run python -m perf.suite.perfutils run --config perf/runtimes.example.toml --no-history --samples 3 expression_tree lru_simulation`,
+one warmup, seed 42, default sizes, `--jobs 4`, external CPU 0.908 cores)
+measured:
+
+| Workload | CPython median (s) | Mule `-O2` before (s) | Mule `-O2` after (s) | SBCL median (s) | After / before | Mule / CPython |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `expression_tree` | 4.0448 | 9.3300 | 6.9978 | 1.2816 | 0.750 | 1.73 |
+| `lru_simulation` | 3.9814 | 7.4900 | 6.2344 | 1.6033 | 0.832 | 1.57 |
+
 ## Closure slot lowering, 2026-10-22
 
 The unchanged `perf/suite/closure_pipeline.py` workload now uses constant-index
