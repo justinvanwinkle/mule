@@ -175,8 +175,16 @@ cleanup rather than adding CPython's traceback-local lifetimes.
 
 Fixed tuple/list allocations instead become scalar locals when every use,
 alias, and lifetime is representable. The consumer supports constant-index
-reads, fixed-index list replacement, length, structural unpack, and local
-aliases. Aliasing families close within one IR2 block, while a single named
+reads, bounded runtime-index reads, fixed-index list replacement, length,
+structural unpack, and local aliases. Runtime projections require a builtin
+fixnum index whose complete inferred range lies within the aggregate's positive
+and negative index bounds. Negative indices normalize before selecting an
+existing scalar child. The projection preserves the child's object identity and
+acquires its own reference before the aggregate's final owner releases the
+scalar slots. Unproved indices and dynamic replacement retain ordinary container
+allocation and indexing behavior.
+
+Aliasing families close within one IR2 block, while a single named
 local with inert children and no local exception handlers may also span multiple
 blocks (`if/else` joins and loop-carried state). Element evaluation order and
 fixed-index list replacement remain observable. Deleting or replacing the last
@@ -206,6 +214,15 @@ explicit adaptation, not a claim that SBCL automatically stack-allocates every
 nonescaping aggregate. Scalar replacement avoids introducing a second runtime
 container layout. Existing tuple projection and unpacked-return optimizations
 remain authoritative where they already apply.
+
+SBCL's `src/compiler/srctran.lisp`, the `values-list` optimizer, removes an
+intermediate list by forwarding its constructor operands to a compatible
+consumer. Mule extends its existing scalar-slot consumer in the same producer/
+consumer separation. Unlike a materialized SBCL stack vector, the replaced Mule
+aggregate has no container header or address. A bounded runtime projection must
+therefore select from the scalar children rather than call a container getter.
+This keeps the existing representation and lifetime proof authoritative instead
+of adding another runtime layout or escape analysis.
 
 ### Repeated source-function lowering
 

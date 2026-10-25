@@ -35,6 +35,177 @@ print(kernel(int(input())))
         case.compare(value)
 
 
+@pytest.mark.parametrize("display", ("[index, index + 1]", "(index, index + 1)"))
+@pytest.mark.parametrize(
+    "optimize", (2, pytest.param(3, marks=pytest.mark.integration))
+)
+@pytest.mark.parametrize(
+    "position",
+    (
+        "(selector + index) & 1",
+        "((selector + index) & 1) - 2",
+        "((selector + index) & 3) - 2",
+    ),
+)
+def test_bounded_runtime_projection_removes_local_aggregate(
+    tmp_path, display, position, optimize
+):
+    case = build_case(
+        tmp_path,
+        f"""\
+def kernel(size: int, selector: int) -> int:
+    total = 0
+    for index in range(size):
+        row = {display}
+        total += row[{position}]
+    return total
+
+parts = input().split()
+print(kernel(int(parts[0]), int(parts[1])))
+""",
+        optimize=optimize,
+    )
+    body = case.function_ir(r"^mule_fn_kernel\.(body|spec\.[0-9]+)$")
+    assert "@mule_sequence_list(" not in body
+    assert "@mule_sequence_tuple" not in body
+    assert "@mule_list_getitem" not in body
+    assert "@mule_tuple_getitem" not in body
+    assert "@mule.fast.getitem" not in body
+    assert "@mule_fast_getitem" not in body
+    for value in ("0 0\n", "1 1\n", "17 -3\n", "24 4\n"):
+        case.compare(value)
+
+
+@pytest.mark.parametrize("display", ("[left, right]", "(left, right)"))
+def test_runtime_projection_keeps_selected_child_after_last_alias(tmp_path, display):
+    case = build_case(
+        tmp_path,
+        f"""\
+from _weakref import ref
+
+class Box:
+    def __init__(self, value):
+        self.value = value
+
+def choose(left, right, selector):
+    position = selector & 1
+    pair = {display}
+    alias = pair
+    selected = alias[position]
+    del pair
+    del alias
+    return selected
+
+left = Box(10)
+right = Box(20)
+left_ref = ref(left)
+right_ref = ref(right)
+selected = choose(left, right, int(input()))
+left = None
+right = None
+print(selected.value, selected is left_ref(), selected is right_ref())
+""",
+        optimize=2,
+    )
+    body = case.function_ir(r"^mule_fn_choose\.(?:body|spec\.[0-9]+)$")
+    assert "@mule_sequence_list(" not in body
+    assert "@mule_sequence_tuple" not in body
+    case.compare("0\n")
+    case.compare("1\n")
+
+
+@pytest.mark.parametrize(
+    "display", ("[seed + 0.25, seed + 0.5]", "(seed + 0.25, seed + 0.5)")
+)
+def test_repeated_runtime_projection_preserves_float_identity(tmp_path, display):
+    case = build_case(
+        tmp_path,
+        f"""\
+def same_element(seed: float, selector: int) -> bool:
+    position = selector & 1
+    row = {display}
+    first = row[0]
+    second = row[position]
+    third = row[position]
+    return (first is second) == (position == 0) and second is third
+
+parts = input().split()
+print(same_element(float(parts[0]), int(parts[1])))
+""",
+        optimize=2,
+    )
+    body = case.function_ir(r"^mule_fn_same_element\.(?:body|spec\.[0-9]+)$")
+    assert "@mule_sequence_list(" not in body
+    assert "@mule_sequence_tuple" not in body
+    for value in ("1.25 0\n", "2.75 1\n"):
+        case.compare(value)
+
+
+def test_runtime_projection_of_loop_carried_tuple_uses_reachable_children(tmp_path):
+    case = build_case(
+        tmp_path,
+        """\
+def kernel(size: int, seed: int, selector: int) -> int:
+    state = (seed, seed + 1, seed + 2, seed + 3)
+    total = 0
+    for step in range(size):
+        if step & 1:
+            state = (seed + step, seed + 1, seed + 2, seed + 3)
+        else:
+            state = (seed - step, seed - 1, seed - 2, seed - 3)
+        position = 1 + ((selector + step) & 1)
+        total += state[position]
+    return total + state[0]
+
+parts = input().split()
+print(kernel(int(parts[0]), int(parts[1]), int(parts[2])))
+""",
+        optimize=2,
+    )
+    body = case.function_ir(
+        r"^mule_fn_kernel\.(?:body(?:\.fallback\.fixnum)?|spec\.[0-9]+)$"
+    )
+    assert "@mule_sequence_tuple" not in body
+    assert "@mule_tuple_getitem" not in body
+    # Integer contracts also permit scalar storage in the non-fixnum entry.
+    for value in (
+        "0 11 0\n",
+        "1 11 1\n",
+        "9 -7 0\n",
+        "22 15 1\n",
+        "2 1180591620717411303424 1\n",
+    ):
+        case.compare(value)
+
+
+def test_unproved_runtime_projection_preserves_index_errors(tmp_path):
+    case = build_case(
+        tmp_path,
+        """\
+def choose(value, position):
+    pair = [value, value + 1]
+    try:
+        return pair[position]
+    except IndexError:
+        return 'outside'
+
+position = int(input())
+print(choose(10, position))
+""",
+        optimize=2,
+    )
+    for value in (
+        "-3\n",
+        "-2\n",
+        "-1\n",
+        "0\n",
+        "1\n",
+        "2\n",
+        "999999999999999999999\n",
+    ):
+        case.compare(value)
+
+
 def test_last_list_alias_deletion_releases_children_in_reverse_order(tmp_path):
     case = build_case(
         tmp_path,

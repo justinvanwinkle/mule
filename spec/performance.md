@@ -29,6 +29,65 @@ are not the mechanism: they hide missing compiler work and do not transfer to
 other programs or types. They may be added only once an operation is already as
 specialized as its information allows and a measured remainder justifies them.
 
+## Bounded runtime aggregate projections, 2026-10-25
+
+The fixed-aggregate scalar-replacement pass now accepts proved in-bounds runtime
+indices. Previously, a local two-element list indexed by `(selector + index) & 1`
+still called `mule_sequence_list` and the list getter inside its loop. The new
+consumer selects the existing scalar child references without constructing a
+container. Runtime values and the original source remain unchanged.
+
+The allocation-focused diagnostic is the source in
+`test/mule/compiler/test_scalar_aggregates.py`'s bounded runtime projection test,
+using its list and positive-index variant. Both native executables used O2 without
+LTO. Input was `100000000 37`, supplied on stdin. Builds preceded measurement.
+Each runtime received one separate warmup and three measured runs, with native
+before/after order alternating and CPU affinity fixed to CPUs 0–31. The CPython
+oracle used Python 3.14.7. Subprocess wall-clock measurements include process
+startup and exclude builds and `uv` startup. The comparison isolates the
+allocation change on base `442f52a`.
+
+| Runtime | Elapsed samples (s) | Median (s) |
+| --- | --- | ---: |
+| Before, master `442f52a` | 3.173024, 3.280310, 3.381729 | 3.280310 |
+| After bounded projection elimination | 0.111982, 0.109493, 0.110664 | 0.110664 |
+| CPython 3.14.7 | 5.012698, 5.001364, 5.074642 | 5.012698 |
+
+The candidate takes approximately 0.034 of the baseline elapsed time, about a
+30-fold speedup on this diagnostic. Every measured execution printed
+`5000000000000000`, matching CPython. The existing suite CPU guard accepted the
+phase at 0.812 external CPU cores against its unchanged 2.000-core limit.
+Concurrent `vmstat` samples showed no swap-out or sustained I/O wait. No compiler
+builds ran concurrently.
+An initial one-million-iteration trial was too short for the timer's resolution
+and was not used for this comparison. Another attempt was discarded after
+unrelated CPU and disk activity interfered. The accepted phase ran only after
+the other benchmark suite finished.
+
+The retained source and executables are `/tmp/mule-allocation-tfeezvah.py`,
+`/tmp/mule-allocation-tfeezvah-sharded-before`, and
+`/tmp/mule-allocation-tfeezvah-sharded-after`. Their SHA-256 values are, respectively:
+
+```text
+6934f440f85fc3c69b86a92e701ce04f39819b707e79c0ad618d6fddc9f83b77
+b24c27ce616b421c88bf01c18f9acf83ba9fc5fd649adf3f0b4e9bc6969c46c8
+ea1ed931f9a2e97012c4baec8cc6a95a2099e852590826047971f9e27390f383
+```
+
+Raw samples and CPU evidence are retained in
+`/tmp/mule-allocation-tfeezvah-guarded-1.json`. The temporary adapter reuses
+`measure_with_cpu_guard`; it does not introduce another monitoring mechanism.
+From the repository checkout, the accepted timing command was:
+
+```sh
+env PYTHONPATH="$PWD" taskset -c 0-31 uv run --script --python 3.15t \
+  /tmp/mule-allocation-tfeezvah-measure.py \
+  --output /tmp/mule-allocation-tfeezvah-guarded-1.json
+```
+
+This is a separate allocation-elimination diagnostic, not a rerun of the standard
+suite or evidence that the earlier set-storage regression is resolved.
+
 ## Reproducible comparisons
 
 The new [standalone performance suite](../perf/README.md) lives in `perf/suite/`.
