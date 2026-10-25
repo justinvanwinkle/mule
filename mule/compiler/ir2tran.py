@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from .annotation_types import Contract
 from .ctype import (
     BOOLEAN,
+    BOOLEAN_FALSE,
     BOTTOM,
     NONE_TYPE,
     PYTHON_INTEGER,
@@ -386,6 +387,19 @@ class MethodCall:
     target: Lambda | None = None
     # The receiver's analyzed type, for selecting the target's entry context.
     receiver_type: ValueType = UNKNOWN
+
+    @property
+    def is_exact(self) -> bool:
+        return (
+            self.exact_list_append
+            or self.exact_list_pop
+            or self.exact_text_find
+            or self.exact_text_split
+            or self.exact_text_partition
+            or self.exact_text_affix
+            or self.exact_dict_get
+            or self.exact_bytearray_append
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1629,11 +1643,21 @@ _PURE_BINARY_ARITH_VOPS = frozenset(
         "binary-bit_xor",
         "binary-left_shift",
         "binary-right_shift",
+        "inplace-add",
+        "inplace-subtract",
+        "inplace-multiply",
+        "inplace-floor_divide",
+        "inplace-modulo",
+        "inplace-bit_and",
+        "inplace-bit_or",
+        "inplace-bit_xor",
+        "inplace-left_shift",
+        "inplace-right_shift",
     }
 )
 
 
-def _can_borrow_list_getitem(reader: VOP) -> bool:
+def _can_borrow_list_getitem(reader: VOP, reader_ref: TNRef | None = None) -> bool:
     name = reader.info.name
     if name in _BORROWED_LIST_GETITEM_READERS:
         if name.startswith("boxed-float-"):
@@ -1648,14 +1672,25 @@ def _can_borrow_list_getitem(reader: VOP) -> bool:
             not (arg.tn.type or UNKNOWN).may_run_user_code for arg in reader.args
         )
     if name == "protocol-getitem" and len(reader.args) == 2:
-        return (reader.args[0].tn.type or UNKNOWN).is_exact_list and (
+        seq_type = reader.args[0].tn.type or UNKNOWN
+        return (seq_type.is_exact_list or seq_type.is_exact_tuple) and (
             reader.args[1].tn.type or UNKNOWN
         ).is_fixnum
+    if name == "primitive-_storage_read" and len(reader.args) == 2:
+        return True
+    if name == "primitive-_storage_write" and len(reader.args) == 3:
+        return reader_ref in reader.args[:2]
+    if name == "protocol-setitem" and len(reader.args) == 3:
+        return (
+            reader_ref in reader.args[:2]
+            and (reader.args[0].tn.type or UNKNOWN).is_exact_list
+            and (reader.args[1].tn.type or UNKNOWN).is_fixnum
+        )
     return False
 
 
-def _safe_list_borrow_step(step: VOP, seq_local) -> bool:
-    if any(ref.tn is seq_local for ref in step.results):
+def _safe_list_borrow_step(step: VOP, seq_local, root_local=None) -> bool:
+    if any(ref.tn in (seq_local, root_local) for ref in step.results):
         return False
     name = step.info.name
     if name in ("constant", "coerce", "move"):
@@ -1666,7 +1701,9 @@ def _safe_list_borrow_step(step: VOP, seq_local) -> bool:
         return not check.safety or actual.fits(check.contract.checked_type)
     if name == "load-local":
         access: LocalAccess = linked(step.codegen_info, step, "local access")
-        return bool(access.bound) and not (step.args[0].tn is seq_local and access.move)
+        return bool(access.bound) and not (
+            step.args[0].tn in (seq_local, root_local) and access.move
+        )
     if name in _PURE_FLOAT_STEP_VOPS:
         return step.codegen_info is None or step.codegen_info.reuse_local is None
     if name in _PURE_FIXNUM_VOPS and step.results:
@@ -1674,289 +1711,459 @@ def _safe_list_borrow_step(step: VOP, seq_local) -> bool:
             (arg.tn.type or UNKNOWN).is_fixnum for arg in step.args
         )
     if name == "protocol-getitem" and len(step.args) == 2:
-        return (step.args[0].tn.type or UNKNOWN).is_exact_list and (
+        seq_type = step.args[0].tn.type or UNKNOWN
+        return (seq_type.is_exact_list or seq_type.is_exact_tuple) and (
             step.args[1].tn.type or UNKNOWN
         ).is_fixnum
+    if name == "primitive-_storage_read" and len(step.args) == 2:
+        return (step.args[1].tn.type or UNKNOWN).is_fixnum
     return False
 
 
-def _try_borrow_list_getitem_unpack(
+def _local_may_run_user_code(tn, component: IR2Component) -> bool:
+    if tn.type is not None:
+        return tn.type.may_run_user_code
+    writers = component.writes.get(tn)
+    if not writers:
+        return True
+    for writer, _ in writers:
+        name = writer.info.name
+        if name == "unbind-local":
+            continue
+        if name == "move" and writer.args:
+            if (writer.args[0].tn.type or UNKNOWN).may_run_user_code:
+                return True
+        elif name == "move-argument":
+            if component.context.parameters[writer.codegen_info].may_run_user_code:
+                return True
+        else:
+            return True
+    return False
+
+
+def _has_local_aggregate_origin(tn, component: IR2Component) -> bool:
+    writes = component.writes
+    escape_facts = component.context.escape_facts
+    pending = [tn]
+    seen = set()
+    while pending:
+        cur = pending.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        for writer, _ in writes.get(cur, ()):
+            if (
+                writer.info.name in ("build-list", "build-tuple")
+                and len(writer.args) > 0
+                and not escape_facts.allocation_escapes(writer.node)
+            ):
+                return True
+            if writer.info in (vops.MOVE, vops.LOAD_LOCAL) and writer.args:
+                pending.append(writer.args[0].tn)
+    return False
+
+
+def _try_borrow_unpacked_getitem(
     component: IR2Component,
     block: IR2Block,
-    positions: dict[VOP, int],
-    writer_index: int,
+    index: int,
     vop: VOP,
-    reader_index: int,
-    reader: VOP,
+    borrow_info: str,
     seq_local,
-    proof: _BorrowedLifetime,
+    root_local,
+    writer_index: int,
 ) -> bool:
-    if (
-        reader.info.name != "structural-unpack"
-        or reader.codegen_info is None
-        or not reader.codegen_info.proved
-        or len(reader.args) != 2
-        or not reader.results
-        or vop.node in component.context.element_contracts
-        or reader.node in component.context.element_contracts
-    ):
-        return False
     reads = component.reads
     writes = component.writes
+    if _has_local_aggregate_origin(root_local, component):
+        return False
+    vops_list = block.vops
+    n_vops = len(vops_list)
+    if index + 3 >= n_vops:
+        return False
+    if any(
+        not _safe_list_borrow_step(step, seq_local, root_local)
+        for step in vops_list[writer_index + 1 : index]
+    ):
+        return False
+    count_vop = vops_list[index + 1]
+    unpack_vop = vops_list[index + 2]
+    move_vop = vops_list[index + 3]
+    if (
+        count_vop.info is not vops.CONSTANT
+        or unpack_vop.info.name != "structural-unpack"
+        or not unpack_vop.codegen_info.proved
+        or move_vop.info is not vops.MOVE
+    ):
+        return False
+    arity = unpack_vop.codegen_info.arity
+    if arity is None or arity < 1:
+        return False
     res_tn = vop.results[0].tn
-    if reader.args[0].tn is not res_tn:
-        return False
-    unpack_res_tn = reader.results[0].tn
-    if unpack_res_tn.leaf is not None or len(writes.get(unpack_res_tn, ())) != 1:
-        return False
-    unpack_reads = reads.get(unpack_res_tn, ())
-    if len(unpack_reads) != 1:
-        return False
-    move_vop, _ = unpack_reads[0]
-    if move_vop.info is not vops.MOVE or positions.get(move_vop) != reader_index + 1:
-        return False
+    count_tn = count_vop.results[0].tn
+    unpack_res_tn = unpack_vop.results[0].tn
     temp_tn = move_vop.results[0].tn
     if (
-        temp_tn.leaf is None
+        unpack_vop.args[0].tn is not res_tn
+        or unpack_vop.args[1].tn is not count_tn
+        or move_vop.args[0].tn is not unpack_res_tn
+        or len(writes.get(count_tn, ())) != 1
+        or len(reads.get(count_tn, ())) != 1
+        or len(writes.get(unpack_res_tn, ())) != 1
+        or len(reads.get(unpack_res_tn, ())) != 1
+        or temp_tn.leaf is None
         or not temp_tn.leaf.expression_temporary
         or len(writes.get(temp_tn, ())) != 1
+        or len(reads.get(temp_tn, ())) != arity + 1
     ):
         return False
-    temp_reads = reads.get(temp_tn, ())
-    if not temp_reads:
-        return False
-    unpack_ref_vops: list[VOP] = []
-    discard_load_vop: VOP | None = None
-    for t_reader, t_ref in temp_reads:
-        t_pos = positions.get(t_reader)
-        if t_pos is None or t_pos <= reader_index + 1:
+    slot_records = []
+    cursor = index + 4
+    for slot_idx in range(arity):
+        if cursor + 2 >= n_vops:
             return False
-        if t_reader.info.name == "unpack-ref":
+        pos_vop = vops_list[cursor]
+        ref_vop = vops_list[cursor + 1]
+        if (
+            pos_vop.info is not vops.CONSTANT
+            or ref_vop.info.name != "unpack-ref"
+            or not ref_vop.codegen_info.proved
+            or not ref_vop.codegen_info.borrow_parent
+            or ref_vop.codegen_info.index != slot_idx
+            or ref_vop.args[0].tn is not temp_tn
+            or ref_vop.args[1].tn is not pos_vop.results[0].tn
+            or len(writes.get(pos_vop.results[0].tn, ())) != 1
+            or len(reads.get(pos_vop.results[0].tn, ())) != 1
+        ):
+            return False
+        orig_ref_res_tn = ref_vop.results[0].tn
+        ref_res_tn = orig_ref_res_tn
+        if len(writes.get(ref_res_tn, ())) != 1 or len(reads.get(ref_res_tn, ())) != 1:
+            return False
+        cursor += 2
+        next_vop = vops_list[cursor]
+        checked_res_tn = None
+        if next_vop.info is vops.TYPE_CHECK:
+            check = next_vop.codegen_info
+            actual = next_vop.args[0].tn.type or UNKNOWN
             if (
-                t_ref is not t_reader.args[0]
-                or len(t_reader.results) != 1
-                or t_reader.codegen_info is None
-                or not t_reader.codegen_info.proved
-                or not t_reader.codegen_info.borrow_parent
-                or t_reader.node in component.context.element_contracts
+                next_vop.args[0].tn is not ref_res_tn
+                or (check.safety and not actual.fits(check.contract.checked_type))
+                or cursor + 1 >= n_vops
             ):
                 return False
-            unpack_ref_vops.append(t_reader)
-        elif t_reader.info is vops.LOAD_LOCAL:
+            ref_res_tn = next_vop.results[0].tn
+            checked_res_tn = ref_res_tn
             if (
-                discard_load_vop is not None
-                or t_ref is not t_reader.args[0]
-                or t_reader.codegen_info is None
-                or not t_reader.codegen_info.bound
-                or not t_reader.codegen_info.move
+                len(writes.get(ref_res_tn, ())) != 1
+                or len(reads.get(ref_res_tn, ())) != 1
             ):
                 return False
-            discard_load_vop = t_reader
-        else:
+            cursor += 1
+        store_vop = vops_list[cursor]
+        slot_target = store_vop.results[0].tn if store_vop.results else None
+        if (
+            store_vop.info is not vops.MOVE
+            or store_vop.args[0].tn is not ref_res_tn
+            or slot_target in (None, temp_tn, seq_local, root_local)
+            or (
+                store_vop.codegen_info is not False
+                and _local_may_run_user_code(slot_target, component)
+            )
+        ):
             return False
-    if discard_load_vop is None or not unpack_ref_vops:
+        slot_records.append(
+            (ref_vop, orig_ref_res_tn, checked_res_tn, store_vop, cursor)
+        )
+        cursor += 1
+    if cursor + 1 >= n_vops:
         return False
-    discard_load_index = positions[discard_load_vop]
-    if any(positions[ref_vop] >= discard_load_index for ref_vop in unpack_ref_vops):
+    discard_load_vop = vops_list[cursor]
+    discard_vop = vops_list[cursor + 1]
+    if (
+        discard_load_vop.info is not vops.LOAD_LOCAL
+        or discard_load_vop.args[0].tn is not temp_tn
+        or not discard_load_vop.codegen_info.move
+        or discard_vop.info is not vops.DISCARD
+    ):
         return False
     discard_tn = discard_load_vop.results[0].tn
-    if discard_tn.leaf is not None or len(writes.get(discard_tn, ())) != 1:
-        return False
-    discard_reads = reads.get(discard_tn, ())
-    if len(discard_reads) != 1:
-        return False
-    discard_vop, _ = discard_reads[0]
     if (
-        discard_vop.info is not vops.DISCARD
-        or positions.get(discard_vop) != discard_load_index + 1
+        discard_vop.args[0].tn is not discard_tn
+        or len(writes.get(discard_tn, ())) != 1
+        or len(reads.get(discard_tn, ())) != 1
     ):
         return False
-    allowed = {vop, reader, move_vop, discard_load_vop, *unpack_ref_vops}
-    if any(
-        step not in allowed and not _safe_list_borrow_step(step, seq_local)
-        for step in block.vops[writer_index + 1 : discard_load_index + 1]
-    ):
-        return False
-    vop.codegen_info = "list_borrow"
-    res_tn.borrowed_from = seq_local
-    unpack_res_tn.borrowed_from = seq_local
-    temp_tn.borrowed_from = seq_local
+    vop.codegen_info = borrow_info
+    res_tn.borrowed_from = root_local
+    unpack_res_tn.borrowed_from = root_local
+    temp_tn.borrowed_from = root_local
     move_vop.codegen_info = False
     discard_load_vop.codegen_info = replace(
         discard_load_vop.codegen_info, move=False, borrow=True
     )
-    discard_tn.borrowed_from = seq_local
-    for ref_vop in unpack_ref_vops:
-        ref_res_tn = ref_vop.results[0].tn
-        if ref_res_tn.leaf is not None or len(writes.get(ref_res_tn, ())) != 1:
-            continue
-        ref_res_reads = reads.get(ref_res_tn, ())
-        if len(ref_res_reads) != 1:
-            continue
-        step1, _ = ref_res_reads[0]
-        check_res_tn = None
-        if step1.info is vops.TYPE_CHECK:
-            step1_pos = positions.get(step1)
-            check = step1.codegen_info
-            actual = step1.args[0].tn.type or UNKNOWN
-            if (
-                step1_pos is None
-                or step1_pos >= discard_load_index
-                or step1.node in component.context.element_contracts
-                or (check.safety and not actual.fits(check.contract.checked_type))
-            ):
-                continue
-            check_res_tn = step1.results[0].tn
-            if check_res_tn.leaf is not None or len(writes.get(check_res_tn, ())) != 1:
-                continue
-            check_reads = reads.get(check_res_tn, ())
-            if len(check_reads) != 1:
-                continue
-            store_vop, _ = check_reads[0]
-        else:
-            store_vop = step1
-        store_pos = positions.get(store_vop)
+    discard_tn.borrowed_from = root_local
+    proof = _BorrowedLifetime(component)
+    for (
+        ref_vop,
+        _orig_ref_res_tn,
+        checked_res_tn,
+        store_vop,
+        store_pos,
+    ) in slot_records:
         if (
-            store_vop.info is not vops.MOVE
-            or store_pos is None
-            or store_pos >= discard_load_index
-        ):
-            continue
-        target_local = store_vop.results[0].tn
-        if (
-            not _plain_local(target_local)
-            or target_local is seq_local
-            or len(writes.get(target_local, ())) != 1
-        ):
-            continue
-        target_reads = reads.get(target_local, ())
-        if not target_reads:
-            continue
-        all_aliases = {ref_res_tn, target_local}
-        if check_res_tn is not None:
-            all_aliases.add(check_res_tn)
-        all_consumers = set()
-        extra_boundaries = set()
-        borrowed_loads = []
-        borrowed_moves = [store_vop]
-        ok = True
-        for load_vop, _ in target_reads:
-            if (
-                load_vop.info is not vops.LOAD_LOCAL
-                or load_vop.codegen_info is None
-                or not load_vop.codegen_info.bound
-            ):
-                ok = False
-                break
-            load_res = load_vop.results[0].tn
-            aliases, uses = proof.consumers(load_res, seq_local)
-            if aliases:
-                all_aliases.update(aliases)
-                all_consumers.update(uses)
-                borrowed_loads.append(load_vop)
-                continue
-            load_res_reads = reads.get(load_res, ())
-            if (
-                load_res.leaf is not None
-                or len(writes.get(load_res, ())) != 1
-                or len(load_res_reads) != 1
-            ):
-                ok = False
-                break
-            dest_move, _ = load_res_reads[0]
-            if dest_move.info is not vops.MOVE:
-                ok = False
-                break
-            dest_local = dest_move.results[0].tn
-            if not _plain_local(dest_local) or dest_local in (seq_local, target_local):
-                ok = False
-                break
-            dest_writes = writes.get(dest_local, ())
-            dest_reads = reads.get(dest_local, ())
-            if not dest_writes or not dest_reads:
-                ok = False
-                break
-            other_writers = []
-            for w_vop, _ in dest_writes:
-                if w_vop is dest_move:
-                    continue
-                if w_vop.info is not vops.MOVE:
-                    ok = False
-                    break
-                w_src = w_vop.args[0].tn
-                w_src_writes = writes.get(w_src, ())
-                if w_src.leaf is not None or len(w_src_writes) != 1:
-                    ok = False
-                    break
-                const_vop, _ = w_src_writes[0]
-                w_type = w_src.type or UNKNOWN
-                if const_vop.info is not vops.CONSTANT or not (
-                    w_type.is_fixnum or w_type.is_immortal
-                ):
-                    ok = False
-                    break
-                other_writers.append(w_vop)
-            if not ok or not proof.protected(
-                vop, {dest_move}, seq_local, container_borrow=True
-            ):
-                ok = False
-                break
-            dest_consumers = set()
-            for d_load, _ in dest_reads:
-                if (
-                    d_load.info is not vops.LOAD_LOCAL
-                    or d_load.codegen_info is None
-                    or not d_load.codegen_info.bound
-                ):
-                    ok = False
-                    break
-                d_aliases, d_uses = proof.consumers(d_load.results[0].tn, seq_local)
-                if not d_aliases:
-                    ok = False
-                    break
-                all_aliases.update(d_aliases)
-                dest_consumers.update(d_uses)
-                borrowed_loads.append(d_load)
-            if not ok or not proof.protected(
-                vop,
-                dest_consumers,
+            _try_borrow_container_element_local(
+                component,
+                proof,
+                block,
+                index,
+                ref_vop,
+                replace(ref_vop.codegen_info, borrow_element=True),
                 seq_local,
-                extra_boundaries=other_writers,
-                container_borrow=True,
-            ):
-                ok = False
-                break
-            all_aliases.add(load_res)
-            all_aliases.add(dest_local)
-            all_consumers.add(dest_move)
-            all_consumers.update(dest_consumers)
-            extra_boundaries.update(other_writers)
-            borrowed_loads.append(load_vop)
-            borrowed_moves.append(dest_move)
-            borrowed_moves.extend(other_writers)
-        if ok and proof.protected(
-            vop,
-            all_consumers,
-            seq_local,
-            extra_boundaries=extra_boundaries,
-            container_borrow=True,
+                root_local,
+                writer_index,
+                store_vop,
+                move_index=store_pos,
+                allow_unused=True,
+            )
+            and checked_res_tn is not None
         ):
-            ref_vop.codegen_info = replace(ref_vop.codegen_info, borrow_element=True)
-            for alias in all_aliases:
-                alias.borrowed_from = seq_local
-            for m_vop in borrowed_moves:
-                m_vop.codegen_info = False
-            for l_vop in borrowed_loads:
-                l_vop.codegen_info = replace(
-                    l_vop.codegen_info, move=False, borrow=True
-                )
+            checked_res_tn.borrowed_from = root_local
+    return True
+
+
+def _safe_container_local_region_step(
+    component: IR2Component,
+    step: VOP,
+    local_tn,
+    seq_local,
+    root_local,
+    elem_type: ValueType,
+    *,
+    is_consumer: bool = False,
+    from_storage_read: bool = False,
+) -> bool:
+    for ref in step.results:
+        if ref.tn in (local_tn, seq_local, root_local):
+            return False
+    name = step.info.name
+    if name in ("constant", "coerce", "jump", "insert-safepoint", "discard"):
+        return True
+    if name in _PURE_FLOAT_STEP_VOPS:
+        return step.codegen_info is None or step.codegen_info.reuse_local is None
+    if name == "unpack-ref":
+        return step.codegen_info is not None and bool(step.codegen_info.proved)
+    if name == "type-check":
+        check = step.codegen_info
+        return check is not None and (
+            not check.safety
+            or (step.args[0].tn.type or UNKNOWN).fits(check.contract.checked_type)
+        )
+    if name == "branch":
+        cond_type = (step.args[0].tn.type or UNKNOWN) if step.args else UNKNOWN
+        return not cond_type.may_be_unbound and not cond_type.may_run_user_code
+    if name == "load-local":
+        access: LocalAccess = linked(step.codegen_info, step, "local access")
+        return bool(access.bound) and not (
+            step.args[0].tn in (seq_local, root_local) and access.move
+        )
+    if name == "move":
+        target = step.results[0].tn
+        return (
+            step.codegen_info is False
+            or target.borrowed_from is not None
+            or not _local_may_run_user_code(target, component)
+        )
+    if name in (
+        "compare-is",
+        "compare-is_not",
+        "fast-len",
+        "primitive-_storage_length",
+        "primitive-_text_length",
+        "range-prepare",
+        "range-available",
+        "range-advance",
+    ):
+        return True
+    if name in _CODEPOINT_COMPARISON_VOPS:
+        return (
+            is_consumer
+            or from_storage_read
+            or all(not (arg.tn.type or UNKNOWN).may_run_user_code for arg in step.args)
+        )
+    if name in _PURE_BINARY_ARITH_VOPS and len(step.args) == 2:
+        return all(
+            not (arg.tn.type or UNKNOWN).may_run_user_code
+            and (
+                not name.startswith("inplace-")
+                or not (arg.tn.type or UNKNOWN).is_exact_list
+            )
+            for arg in step.args
+        )
+    if name == "protocol-getitem" and len(step.args) == 2:
+        seq_t = step.args[0].tn.type or UNKNOWN
+        return (seq_t.is_exact_list or seq_t.is_exact_tuple) and (
+            step.args[1].tn.type or UNKNOWN
+        ).is_fixnum
+    if name == "primitive-_storage_read" and len(step.args) == 2:
+        return (step.args[1].tn.type or UNKNOWN).is_fixnum
+    if name == "primitive-_storage_write" and len(step.args) == 3:
+        return is_consumer
+    if name == "protocol-setitem" and len(step.args) == 3:
+        seq_t = step.args[0].tn.type or UNKNOWN
+        idx_t = step.args[1].tn.type or UNKNOWN
+        item_t = step.args[2].tn.type or UNKNOWN
+        if not (
+            seq_t.is_exact_list
+            and idx_t.is_fixnum
+            and not item_t.may_run_user_code
+            and not seq_t.getitem_type(idx_t).may_run_user_code
+        ):
+            return False
+        if is_consumer:
+            return True
+        elem_cls = elem_type.runtime_class_type()
+        item_cls = item_t.runtime_class_type()
+        old_cls = seq_t.getitem_type(idx_t).runtime_class_type()
+        return (
+            elem_cls is not UNKNOWN
+            and item_cls is not UNKNOWN
+            and old_cls is not UNKNOWN
+            and elem_cls.comparison(ast.ComparisonOperator.IS, item_cls)
+            is BOOLEAN_FALSE
+            and elem_cls.comparison(ast.ComparisonOperator.IS, old_cls) is BOOLEAN_FALSE
+        )
+    return False
+
+
+def _try_borrow_container_element_local(
+    component: IR2Component,
+    proof: _BorrowedLifetime,
+    block: IR2Block,
+    index: int,
+    vop: VOP,
+    borrow_info,
+    seq_local,
+    root_local,
+    writer_index: int,
+    move_vop: VOP,
+    *,
+    move_index: int | None = None,
+    allow_unused: bool = False,
+) -> bool:
+    reads = component.reads
+    writes = component.writes
+    res_tn = vop.results[0].tn
+    res_type = res_tn.type or UNKNOWN
+    if res_type.is_fixnum or res_type.is_immortal:
+        return False
+    local_tn = move_vop.results[0].tn
+    if (
+        not _plain_local(local_tn)
+        or local_tn in (seq_local, root_local)
+        or local_tn.borrowed_from is not None
+        or local_tn.leaf in component.lambda_.vars
+        or local_tn.leaf in component.environment.cells
+        or local_tn.leaf in component.environment.copies
+        or component.lambda_.coroutine_body
+        or len(writes.get(local_tn, ())) != 1
+        or _has_local_aggregate_origin(root_local, component)
+    ):
+        return False
+    if any(
+        not _safe_list_borrow_step(step, seq_local, root_local)
+        for step in block.vops[writer_index + 1 : index]
+    ):
+        return False
+    local_reads = reads.get(local_tn, ())
+    if not local_reads:
+        if not allow_unused:
+            return False
+        vop.codegen_info = borrow_info
+        res_tn.borrowed_from = root_local
+        local_tn.borrowed_from = root_local
+        move_vop.codegen_info = False
+        return True
+    from_storage_read = vop.info.name == "primitive-_storage_read"
+    borrowing_loads: list[VOP] = []
+    consumers: set[VOP] = set()
+    for load_vop, _ in local_reads:
+        if (
+            load_vop.info is not vops.LOAD_LOCAL
+            or load_vop.codegen_info is None
+            or not load_vop.codegen_info.bound
+        ):
+            return False
+        load_res_tn = load_vop.results[0].tn
+        if load_res_tn.leaf is not None or len(writes.get(load_res_tn, ())) != 1:
+            return False
+        load_res_reads = reads.get(load_res_tn, ())
+        if len(load_res_reads) != 1:
+            return False
+        consumer_vop, consumer_ref = load_res_reads[0]
+        load_block, load_pos = proof.positions[load_vop]
+        cons_block, cons_pos = proof.positions[consumer_vop]
+        if (
+            cons_block is load_block
+            and cons_pos > load_pos
+            and _can_borrow_list_getitem(consumer_vop, consumer_ref)
+        ):
+            borrowing_loads.append(load_vop)
+            consumers.add(consumer_vop)
+        else:
+            return False
+    if not borrowing_loads:
+        return False
+    single_consumer = len(consumers) == 1
+    if move_index is None:
+        move_index = index + 1
+    boundary = (block, move_index + 1)
+    pending = []
+    for consumer in consumers:
+        c_block, c_index = proof.positions[consumer]
+        if c_block is block and c_index <= move_index:
+            return False
+        pending.append((c_block, c_index + 1))
+    visited = set()
+    while pending:
+        point = pending.pop()
+        if point == boundary or point in visited:
+            continue
+        visited.add(point)
+        b, idx = point
+        if idx == 0:
+            prev = proof.predecessors[b]
+            if not prev or b is component.blocks[0]:
+                return False
+            pending.extend(prev)
+            continue
+        step = b.vops[idx - 1]
+        if not _safe_container_local_region_step(
+            component,
+            step,
+            local_tn,
+            seq_local,
+            root_local,
+            res_type,
+            is_consumer=single_consumer and step in consumers,
+            from_storage_read=from_storage_read,
+        ):
+            return False
+        pending.append((b, idx - 1))
+    vop.codegen_info = borrow_info
+    res_tn.borrowed_from = root_local
+    local_tn.borrowed_from = root_local
+    move_vop.codegen_info = False
+    for load_vop in borrowing_loads:
+        load_vop.codegen_info = replace(load_vop.codegen_info, move=False, borrow=True)
+        load_vop.results[0].tn.borrowed_from = root_local
     return True
 
 
 def _specialize_list_getitems(component: IR2Component) -> None:
-    """Specialize ``protocol-getitem`` on proven exact lists with fixnum
-    indices, and borrow the element when its single block-local consumer only
-    borrows it while the list local stays untouched."""
+    """Specialize ``protocol-getitem`` and ``primitive-_storage_read`` on proven
+    containers with fixnum indices, and borrow elements across protected
+    non-mutating regions."""
     if component.context.plan is not None:
         return
     reads = component.reads
@@ -1965,18 +2172,30 @@ def _specialize_list_getitems(component: IR2Component) -> None:
     for block in component.blocks:
         positions: dict[VOP, int] | None = None
         for index, vop in enumerate(block.vops):
+            name = vop.info.name
             if (
-                vop.info.name != "protocol-getitem"
-                or vop.codegen_info not in (None, "list_owned")
+                vop.codegen_info not in (None, "list_owned", "tuple_owned")
                 or len(vop.args) != 2
                 or not vop.results
             ):
                 continue
             seq_type = vop.args[0].tn.type or UNKNOWN
             idx_type = vop.args[1].tn.type or UNKNOWN
-            if not (seq_type.is_exact_list and idx_type.is_fixnum):
+            if not idx_type.is_fixnum:
                 continue
-            vop.codegen_info = "list_owned"
+            if name == "protocol-getitem":
+                if seq_type.is_exact_list:
+                    vop.codegen_info = "list_owned"
+                    borrow_info = "list_borrow"
+                elif seq_type.is_exact_tuple:
+                    vop.codegen_info = "tuple_owned"
+                    borrow_info = "tuple_borrow"
+                else:
+                    continue
+            elif name == "primitive-_storage_read":
+                borrow_info = "storage_borrow"
+            else:
+                continue
             res_tn = vop.results[0].tn
             if res_tn.leaf is not None or (
                 res_tn.name is not None and res_tn.name.startswith("$")
@@ -2004,16 +2223,17 @@ def _specialize_list_getitems(component: IR2Component) -> None:
             ):
                 continue
             seq_local = seq_writer.args[0].tn
-            if (
-                seq_local.leaf is None
-                or seq_local.leaf.indirect
-                or seq_local.leaf.expression_temporary
-            ):
+            if not _plain_local(seq_local):
                 continue
+            root_local = (
+                seq_local.borrowed_from
+                if seq_local.borrowed_from is not None
+                else seq_local
+            )
             if positions is None:
                 positions = {step: pos for pos, step in enumerate(block.vops)}
             writer_index = positions.get(seq_writer)
-            reader, _ = res_reads[0]
+            reader, reader_ref = res_reads[0]
             reader_index = positions.get(reader)
             if (
                 writer_index is None
@@ -2022,30 +2242,48 @@ def _specialize_list_getitems(component: IR2Component) -> None:
                 or reader_index <= index
             ):
                 continue
-            if reader.info.name == "structural-unpack":
-                if proof is None:
-                    proof = _BorrowedLifetime(component)
-                _try_borrow_list_getitem_unpack(
+            if (
+                name == "protocol-getitem"
+                and reader.info.name == "structural-unpack"
+                and reader_index == index + 2
+                and _try_borrow_unpacked_getitem(
                     component,
                     block,
-                    positions,
-                    writer_index,
+                    index,
                     vop,
-                    reader_index,
-                    reader,
+                    borrow_info,
                     seq_local,
+                    root_local,
+                    writer_index,
+                )
+            ):
+                continue
+            if reader.info is vops.MOVE and reader_index == index + 1:
+                if proof is None:
+                    proof = _BorrowedLifetime(component)
+                _try_borrow_container_element_local(
+                    component,
                     proof,
+                    block,
+                    index,
+                    vop,
+                    borrow_info,
+                    seq_local,
+                    root_local,
+                    writer_index,
+                    reader,
                 )
                 continue
-            if not _can_borrow_list_getitem(reader):
+            if not _can_borrow_list_getitem(reader, reader_ref):
                 continue
             if any(
-                step is not vop and not _safe_list_borrow_step(step, seq_local)
+                step is not vop
+                and not _safe_list_borrow_step(step, seq_local, root_local)
                 for step in block.vops[writer_index + 1 : reader_index]
             ):
                 continue
-            vop.codegen_info = "list_borrow"
-            res_tn.borrowed_from = seq_local
+            vop.codegen_info = borrow_info
+            res_tn.borrowed_from = root_local
 
 
 _SUSPENSION_VOPS = frozenset(

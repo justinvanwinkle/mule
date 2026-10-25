@@ -60,6 +60,7 @@ from .ctype import (
     INTEGER,
     LIST_TYPE,
     NONE_TYPE,
+    PYTHON_INTEGER,
     STORAGE_CLASS_TYPES,
     TEXT_TYPE,
     UNBOUND,
@@ -896,9 +897,8 @@ class ClassFacts:
 
 class _SanitizeInstanceFieldType(ValueTypeVisitor):
     """Restricts a value type stored into an instance field to shapes whose
-    consumers guard their runtime operations (instance/None unions).
-    Unboxed or immediate types are widened to `UNKNOWN` because dynamic
-    `setattr` or cross-module code may store any value into a field."""
+    consumers guard their runtime operations (instance/None unions, fixnums/ints,
+    strings, and dicts)."""
 
     def visit_ValueType(self, fact):
         return UNKNOWN
@@ -908,6 +908,22 @@ class _SanitizeInstanceFieldType(ValueTypeVisitor):
 
     def visit_NoneType(self, fact):
         return UNKNOWN if fact.may_be_unbound else NONE_TYPE
+
+    def visit_IntegerType(self, fact):
+        if fact.may_be_unbound:
+            return UNKNOWN
+        if fact.is_fixnum:
+            return IntegerType(FIXNUM_MIN, FIXNUM_MAX)
+        return PYTHON_INTEGER
+
+    def visit_BooleanType(self, fact):
+        return UNKNOWN if fact.may_be_unbound else BOOLEAN
+
+    def visit_PythonIntegerType(self, fact):
+        return UNKNOWN if fact.may_be_unbound else PYTHON_INTEGER
+
+    def visit_TextType(self, fact):
+        return UNKNOWN if fact.may_be_unbound else TEXT_TYPE
 
     def visit_InstanceType(self, fact):
         if fact.may_be_unbound:
@@ -923,15 +939,33 @@ class _SanitizeInstanceFieldType(ValueTypeVisitor):
         if fact.may_be_unbound:
             return UNKNOWN
         if fact.value is BOTTOM:
-            return DictType(BOTTOM, BOTTOM, False, False)
+            return DictType(BOTTOM, BOTTOM, False, fact.proven)
+        key = fact.key.accept(self) if fact.key is not BOTTOM else BOTTOM
         val = fact.value.accept(self)
-        if val is UNKNOWN or val is BOTTOM or val is NONE_TYPE:
+        if val is BOTTOM or val is NONE_TYPE:
+            return DICT_TYPE if fact.proven else UNKNOWN
+        if val is UNKNOWN and not fact.proven:
             return UNKNOWN
-        return DictType(UNKNOWN, val, False, False)
+        return DictType(key, val, False, fact.proven)
 
 
-class _GetattrOnInstance(NodeVisitor):
+class _GetattrOnInstance(NodeVisitor, LeafVisitor):
     def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if (
+            len(leaf.sets) == 1
+            and leaf.sets[0].value is not None
+            and len(leaf.sets[0].value.uses) == 1
+        ):
+            return leaf.sets[0].value.uses[0].accept(self)
         return None
 
     def visit_Combination(self, node: Combination):
@@ -977,6 +1011,7 @@ def _update_class_field_types(
     setattr_sites: list[tuple[Lambda, Combination]],
     setitem_sites: list[tuple[Lambda, Combination]],
     bodies: dict[tuple[Lambda, str], Body],
+    parameters: dict[tuple[Lambda, str], tuple[ValueType, ...]],
 ) -> bool:
     if not class_facts or not setattr_sites:
         return False
@@ -994,7 +1029,15 @@ def _update_class_field_types(
             if body is None:
                 continue
             recv_fact = body.facts.get(recv_use, NO_FACT)
-            val_fact = body.facts.get(val_use, NO_FACT)
+            val_body = body
+            if (ctx_name == "observed" and lam.signature.default_parameters) or (
+                ctx_name == "fixnum"
+                and lam.vars
+                and parameters.get((lam, "fixnum"), ())[1:]
+                != parameters.get((lam, "general"), ())[1:]
+            ):
+                val_body = bodies.get((lam, "general")) or body
+            val_fact = val_body.facts.get(val_use, NO_FACT)
             if recv_fact.type is BOTTOM or val_fact.type is BOTTOM:
                 continue
             found_context = True
@@ -1009,7 +1052,10 @@ def _update_class_field_types(
                 cur_type = class_facts[recv_cls].fields.get(field_name, BOTTOM)
                 if cur_type is not BOTTOM:
                     stored_type = cur_type
-            if stored_type is not UNKNOWN:
+            if (
+                stored_type is not UNKNOWN
+                or val_use.accept(_GETATTR_ON_INSTANCE) is None
+            ):
                 prev = direct_stores[recv_cls].get(field_name, BOTTOM)
                 direct_stores[recv_cls][field_name] = prev.join(stored_type)
         if (
@@ -1025,21 +1071,27 @@ def _update_class_field_types(
             continue
         inst_lvar, field_name = attr
         inst_use = inst_lvar.use()
+        key_use = node.args[1].use()
         val_use = node.args[2].use()
         for ctx_name in ("observed", "fixnum", "general"):
             body = bodies.get((lam, ctx_name))
             if body is None:
                 continue
             inst_fact = body.facts.get(inst_use, NO_FACT)
+            key_fact = body.facts.get(key_use, NO_FACT)
             val_fact = body.facts.get(val_use, NO_FACT)
-            if inst_fact.type is BOTTOM or val_fact.type is BOTTOM:
+            if (
+                inst_fact.type is BOTTOM
+                or key_fact.type is BOTTOM
+                or val_fact.type is BOTTOM
+            ):
                 continue
             inst_cls = inst_fact.type.instance_class()
             if inst_cls is not None and inst_cls in class_facts:
                 cur_field = direct_stores[inst_cls].get(field_name, BOTTOM)
                 if cur_field.fits_dict():
                     direct_stores[inst_cls][field_name] = cur_field.with_entry(
-                        UNKNOWN, val_fact.type
+                        key_fact.type, val_fact.type
                     )
 
     changed = False
@@ -2609,6 +2661,12 @@ def analyze(
                 continue
             if key[1] == "fixnum" and any(param.is_fixnum for param in parameters[key]):
                 continue
+            if (
+                key[1] == "general"
+                and (key[0], "fixnum") in bodies
+                and not any(param.is_fixnum for param in parameters[key[0], "fixnum"])
+            ):
+                continue
             for call in body.calls:
                 if any(arg is BOTTOM for arg in call.arguments):
                     continue
@@ -2745,11 +2803,12 @@ def analyze(
                     elif affected.intersection(recorded[3]):
                         pending_reset.add(key)
         if field_changes < 3 and _update_class_field_types(
-            class_facts, setattr_sites, setitem_sites, bodies
+            class_facts, setattr_sites, setitem_sites, bodies, parameters
         ):
             field_changes += 1
             inputs.clear()
             deriver_cache.clear()
+            pending_reset.update(parameters)
             changed = True
         if not changed:
             break
@@ -2853,7 +2912,7 @@ def analyze(
                 continue
             if (
                 identifier == "observed"
-                and parameters[key] == parameters.get((lambda_, "fixnum"))
+                and (lambda_, "fixnum") in parameters
                 and (
                     bodies[lambda_, "fixnum"].element_contracts
                     != facts.element_contracts
@@ -2863,6 +2922,44 @@ def analyze(
                         bodies[lambda_, "fixnum"].types(),
                         facts.targets,
                         bodies[lambda_, "fixnum"].targets(),
+                    )
+                )
+                and (
+                    all(
+                        obs_p is UNKNOWN or obs_p == fix_p
+                        for obs_p, fix_p in zip(
+                            parameters[key],
+                            parameters[lambda_, "fixnum"],
+                            strict=True,
+                        )
+                    )
+                    or (
+                        all(
+                            obs_p.fits(fix_p)
+                            for obs_p, fix_p in zip(
+                                parameters[key],
+                                parameters[lambda_, "fixnum"],
+                                strict=True,
+                            )
+                        )
+                        and not any(
+                            obs_p.is_fixnum and not fix_p.is_fixnum
+                            for obs_p, fix_p in zip(
+                                parameters[key],
+                                parameters[lambda_, "fixnum"],
+                                strict=True,
+                            )
+                        )
+                        and body.element_contracts
+                        == bodies[lambda_, "fixnum"].element_contracts
+                        and not _specializes_body(
+                            graph,
+                            bodies[lambda_, "fixnum"].types(),
+                            candidate_types,
+                            bodies[lambda_, "fixnum"].targets(),
+                            body.targets(),
+                        )
+                        and ret_type == summaries[lambda_, "fixnum"].normalized_bottom()
                     )
                 )
             ):

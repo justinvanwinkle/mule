@@ -849,23 +849,36 @@ class DeclaredReturnContract(Contract):
     """Retain an explicit return declaration at a mutable call boundary."""
 
     annotation: Contract
+    inferred_type: ValueType = UNKNOWN
 
     @property
     def fact(self):
-        return self.annotation.fact
+        inferred = self.inferred_type.accept(_RUNTIME_CHECKED_RETURN_FACT)
+        declared = self.annotation.fact
+        if inferred is not UNKNOWN and inferred.fits(declared):
+            return inferred
+        return declared
 
     @property
     def checked_type(self) -> ValueType:
-        return self.annotation.checked_type
+        inferred = self.inferred_type.accept(_RUNTIME_CHECKED_RETURN_FACT)
+        declared = self.annotation.checked_type
+        if inferred is not UNKNOWN and inferred.fits(declared):
+            return inferred
+        return declared
 
     def accept(self, visitor):
+        if self.checked_type != self.annotation.checked_type:
+            return InferredReturnContract(self.name, self.checked_type).accept(visitor)
         return self.annotation.accept(visitor)
 
     def contradicts(self, actual):
         return False
 
     def refine(self, actual):
-        return self.annotation.refine(actual)
+        refined = self.annotation.refine(actual)
+        expected = self.fact
+        return refined if refined.fits(expected) else expected
 
     def requires_check(self, policy_checks):
         return True
@@ -946,8 +959,7 @@ class _RuntimeCheckedReturnFact(ValueTypeVisitor):
         return UNKNOWN if fact.may_be_unbound else ClassType(())
 
     def visit_InstanceType(self, fact):
-        # Rebinding a class can change its runtime instance identity/layout.
-        return UNKNOWN
+        return UNKNOWN if fact.may_be_unbound else fact.as_optional()
 
     def visit_ImmortalType(self, fact):
         # Immortality is a physical ownership fact, not a Python value category.

@@ -861,3 +861,38 @@ def test_post_indexing_narrows_variable_and_offset_bounds():
     assert fact(compilation, fn, stored_value(fn, "after").use()) == PythonIntegerType(
         0, 2
     )
+
+
+def test_nested_loops_drop_invalidated_outer_accumulator_relations():
+    compilation = lower(
+        "def scan_payload(text: str):\n"
+        " n = len(text)\n"
+        " i = 0\n"
+        " val_sum = 0\n"
+        " active = 0\n"
+        " while i < n:\n"
+        "  ch = text[i]\n"
+        "  if ch == ',':\n"
+        "   i += 1\n"
+        "   while i < n and text[i] == ' ':\n"
+        "    i += 1\n"
+        "   if i < n:\n"
+        "    start = i\n"
+        "    i += 1\n"
+        "    while i < n and text[i] <= '9':\n"
+        "     i += 1\n"
+        "    val_sum += int(text[start:i])\n"
+        "  elif ch == 't':\n"
+        "   active = 1\n"
+        "   i += 4\n"
+        "  else:\n"
+        "   i += 1\n"
+        " out_sum = val_sum\n"
+        " out_active = active\n"
+        " return out_sum, out_active\n"
+    )
+    fn = function(compilation, 1)
+    assert fact(compilation, fn, stored_value(fn, "out_sum").use()) == INTEGER
+    assert fact(compilation, fn, stored_value(fn, "out_active").use()) == IntegerType(
+        0, 1
+    )

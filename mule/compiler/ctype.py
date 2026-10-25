@@ -139,6 +139,10 @@ class ValueType:
         return False
 
     @property
+    def is_exact_tuple(self):
+        return False
+
+    @property
     def is_interned_text(self) -> bool:
         return False
 
@@ -2359,6 +2363,18 @@ class TupleType(ValueType):
     def is_heap_object(self):
         return not self.may_be_unbound
 
+    @property
+    def is_exact_tuple(self):
+        return not self.may_be_unbound
+
+    @property
+    def may_run_user_code(self):
+        return (
+            self.may_be_unbound
+            or self.elements is None
+            or any(elem.may_run_user_code for elem in self.elements)
+        )
+
     def truth_value(self) -> bool | None:
         if self.may_be_unbound or self.arity is None:
             return None
@@ -2733,6 +2749,10 @@ class ListType(ValueType):
     @property
     def is_exact_list(self):
         return not self.may_be_unbound
+
+    @property
+    def may_run_user_code(self):
+        return self.may_be_unbound or self.element.may_run_user_code
 
     def truth_value(self) -> bool | None:
         if not self.may_be_unbound and self.element is BOTTOM:
@@ -4008,6 +4028,20 @@ class UnionType(ValueType):
     def instance_class(self):
         classes = {m.instance_class() for m in self.members if m is not NONE_TYPE}
         return classes.pop() if not self.may_be_unbound and len(classes) == 1 else None
+
+    def dispatch_domain(self):
+        if self.may_be_unbound:
+            return None
+        domains = []
+        for member in self.members:
+            if member is NONE_TYPE:
+                domains.append(NONE_TYPE)
+                continue
+            domain = member.dispatch_domain()
+            if domain is None:
+                return None
+            domains.append(domain)
+        return union_type(*domains) if domains else None
 
     def getitem_type(self, index):
         return (

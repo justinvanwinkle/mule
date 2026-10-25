@@ -471,3 +471,57 @@ def test_instance_field_types_specialize_method_calls_and_preserve_dynamic_overr
     result = run_native(tmp_path, source)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "8 30 -2\n30\n-1\n40\n"
+
+
+def test_scalar_and_dict_instance_field_specialization_and_method_return_contracts(
+    tmp_path,
+):
+    source = (
+        "class Entry:\n"
+        " def __init__(self, key: int, val: int):\n"
+        "  self.key = key\n"
+        "  self.val = val\n"
+        "  self.prev = None\n"
+        "class Box:\n"
+        " def __init__(self, limit: int):\n"
+        "  self.limit = limit\n"
+        "  self.table = {}\n"
+        " def put(self, k: int, v: int) -> int:\n"
+        "  cur = self.table.get(k)\n"
+        "  if cur is not None:\n"
+        "   old = cur.val\n"
+        "   cur.val = v\n"
+        "   return old\n"
+        "  if len(self.table) >= self.limit:\n"
+        "   return -1\n"
+        "  self.table[k] = Entry(k, v)\n"
+        "  return 0\n"
+        " def get(self, k: int) -> int:\n"
+        "  cur = self.table.get(k)\n"
+        "  if cur is None:\n"
+        "   return -1\n"
+        "  return cur.val\n"
+        "def run_box(n: int) -> int:\n"
+        " b = Box(8)\n"
+        " acc = 0\n"
+        " for i in range(n):\n"
+        "  acc = (acc + b.put(i & 3, i + 1)) & 0xFFFF\n"
+        "  acc = (acc + b.get(i & 3)) & 0xFFFF\n"
+        " return acc\n"
+        "print(run_box(12))\n"
+        "e = Entry(1, 10)\n"
+        "setattr(e, 'val', 'bad')\n"
+        "b2 = Box(4)\n"
+        "b2.table[1] = e\n"
+        "try:\n"
+        " print(b2.get(1))\n"
+        "except TypeError:\n"
+        " print('caught-field-type-error')\n"
+    )
+    ir = emit_llvm(source)
+    assert '@"mule.protocol.dict_get"' in ir
+    assert "@mule_fast_len(" in ir
+    assert "@llvm.sadd.with.overflow.i64(" in ir
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "114\ncaught-field-type-error\n"

@@ -529,10 +529,7 @@ alias = mutate
 print(call_known())
 """
     ir = emit_llvm(src)
-    assert (
-        '@"mule.class.layout.mule_sequences_bytearray" = linkonce_odr global i64 0'
-        in ir
-    )
+    assert '@"mule.class.layout.mule_sequences_bytearray" = weak_odr global i64 0' in ir
     assert 'load i64, ptr @"mule.class.layout.mule_sequences_bytearray"' in ir
     spec_start = ir.index('define internal ptr @"mule_fn_mutate.spec.0"(')
     spec_end = ir.index("\n}", spec_start)

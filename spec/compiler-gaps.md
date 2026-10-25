@@ -182,48 +182,84 @@ departures from SBCL's compiler and runtime architecture:
      `entry is _EMPTY` compile to unboxed integer comparisons, and probe-loop
      hash comparisons execute in registers without boxed calls.
 
-### 0C. Preserving `InstanceType(cls)` method specialization in `locall._SpecializesBody` (`mule/compiler/locall.py`) (proposed)
+### 0C. Preserving `InstanceType(cls)` method specialization, instance field inference, and method call return contracts (`locall.py`, `constraint.py`, `return_checks.py`, `codegen.py`) (implemented)
 
-- **SBCL reference**: `src/code/defstruct.lisp` (`slot-access-transform`) and
-  `src/compiler/locall.lisp`, where structure/instance accessors always
-  specialize on the receiver's class layout and propagate slot types.
-- **Current Mule defect**:
-  - `_SpecializesBody` (`mule/compiler/locall.py`) discards a method's `"fixnum"`
-    entry context `(InstanceType(cls), ...)` unless narrowing `self` changes a
-    node's derived type to `INTEGER`, `BOOLEAN`, or `FLOAT`, or specializes a
-    `list`/`str`/`dict` container op.
-  - Methods that read or write instance attributes (`GETATTR` / `SETATTR`, such
-    as `self.value`, `self.left`, `self.right`, `self._head`, `node.prev`) or
-    return `PYTHON_INTEGER` fail `_SpecializesBody` and lose their
-    `InstanceType(cls)` variant (`variants=()`), falling back to generic
-    attribute lookup on `self`.
-- **Required implementation**:
-  - Teach `_SpecializesBody` in `mule/compiler/locall.py` to recognize when
-    `candidate` narrows a `GETATTR` or `SETATTR` receiver to `InstanceType`
-    (enabling direct slot access or narrowing the loaded field's `ValueType`) or
-    narrows a node from `UNKNOWN` to `PYTHON_INTEGER` / `InstanceType` /
-    container types.
+- **SBCL reference**: `src/code/defstruct.lisp` (`slot-access-transform`),
+  `src/compiler/locall.lisp`, and `src/compiler/ir1tran.lisp` (`assert-call-type`),
+  where structure/instance accessors specialize on the receiver's class layout,
+  propagate inferred slot types, and assert derived return types across known
+  and local calls.
+- **Mule implementation and Python adaptations**:
+  1. `_SpecializesBody` (`mule/compiler/locall.py`) retains `"fixnum"` /
+     `"observed"` method entry contexts when `candidate` narrows a `GETATTR` or
+     `SETATTR` receiver to `InstanceType`, and drops `"observed"` when it adds
+     no body, element-contract, or return-type specialization beyond `"fixnum"`.
+  2. `ClassConstructorTarget.propagate_call` (`mule/compiler/node.py`) seeds
+     `__init__` call sites into `method_calls` so `_SanitizeInstanceFieldType`
+     and `_update_class_field_types` (`mule/compiler/locall.py`) infer scalar
+     (`IntegerType`, `BooleanType`, `PythonIntegerType`, `TextType`),
+     `InstanceType` / `UnionType`, and `DictType` instance field types from
+     `__init__` and method stores, resetting stale return summaries when field
+     types narrow.
+  3. Because Python attributes can be rebound dynamically via `setattr`,
+     `_propagate_getattr` (`mule/compiler/constraint.py`) guards scalar and
+     `DictType` instance field reads with an `InferredReturnContract`.
+  4. `assert_inferred_results` (`mule/compiler/return_checks.py`) asserts
+     derived and declared return contracts across both monomorphic and
+     polymorphic `CALL_RESOLVED` method calls on typed instance receivers, and
+     `method_call_helper` / `call_resolved_target` (`mule/compiler/codegen.py`)
+     dispatch directly to specialized `.spec.0` entries via `_entry_steps` and
+     elide redundant return checks when the specialized entry's return type
+     already satisfies the contract.
 
-### 0D. Borrowed / unboxed container element reads and loop reference-count elimination (`represent.py`, `ir2tran.py`, `vops.py`) (partially implemented)
+### 0D. Borrowed / unboxed container element reads and loop reference-count elimination (`represent.py`, `ir2tran.py`, `vops.py`) (implemented)
 
-- **SBCL reference**: `src/compiler/array-tran.lisp` (`data-vector-ref`) and
-  `src/compiler/represent.lisp`, where vector reads load unboxed or register
-  values without reference-count traffic.
-- **Implemented**:
-  - Exact-list indexing (`protocol-getitem`) with `FIXNUM` index borrows the
-    element via `@mule_list_getitem_borrow` (`list_borrow`) when feeding float
-    coercions (`@mule.box.f64.load`), pure fixnum/float arithmetic, or proven
-    `structural-unpack` tuple unpacking (`_specialize_list_getitems` and
-    `_try_borrow_list_getitem_unpack` in `ir2tran.py`), eliding `retain`/`release`
-    on the unpacked tuple and borrowing unpacked slot locals via
-    `@mule.fast.tuple.borrow` (`UnpackSlot.borrow_element`) across non-mutating
-    control-flow regions.
-  - `protocol-setitem` on exact lists accepts unboxed `DOUBLE` values directly
-    (`represent.py`, `vops.py`) and updates an exclusively owned (`refs == 1`)
-    `FloatStorage` slot in place before falling back to allocating a fresh box.
-- **Remaining work**:
-  - Extend borrowed element reads to `dict` storage (`_storage_read`) and general
-    cross-block container element borrows.
+- **SBCL reference**: `src/compiler/array-tran.lisp` (`aref` ->
+  `data-vector-ref` / `hairy-data-vector-ref/check-bounds`) and
+  `src/compiler/represent.lisp`, where vector and sequence reads load element
+  values into registers without reference-count traffic.
+- **Mule implementation and SBCL adaptation**:
+  - SBCL relies on tracing GC, so `data-vector-ref` loads tagged words directly
+    from vector storage without per-read ownership operations. Mule uses
+    reference-counted heap ownership with tagged 64-bit immediates (fixnums,
+    booleans, `None`, immortal singletons).
+  - `_specialize_list_getitems` (`mule/compiler/ir2tran.py`) and
+    `protocol_getitem` / `protocol_setitem` / `_storage_helpers` / `unpack_ref`
+    (`mule/compiler/vops.py`) adapt SBCL's direct vector access to Mule's
+    ownership model in four complementary ways:
+    1. **Fixnum and immortal element elision**: When the loaded element's
+       derived `ValueType` is a proven fixnum or immortal (`is_fixnum` /
+       `is_immortal`), `protocol-getitem` (`list_owned`, `tuple_owned`),
+       `primitive-_storage_read`, and `unpack-ref` omit `@mule.fast.retain`
+       and mark the result TN as borrowed (`borrowed_from = seq_tn`), because
+       tagged immediate words never require reference-count updates.
+    2. **Inline exact-tuple and exact-list physical reads**: `protocol-getitem`
+       now lowers proven exact `tuple` indexing (`tuple_borrow`, `tuple_owned`)
+       inline alongside exact `list` indexing (`list_borrow`, `list_owned`),
+       using `TupleType.exact_length()` when statically known to check bounds
+       without loading the header length field and falling back to
+       `@mule_getitem_borrow` / `@mule_getitem` only on out-of-bounds indices.
+    3. **Borrowed container-element locals and structural unpack across
+       protected regions**: `_try_borrow_container_element_local` and
+       `_try_borrow_unpacked_getitem` (`mule/compiler/ir2tran.py`) trace single-
+       assignment local variables initialized from `protocol-getitem` or
+       `primitive-_storage_read` (such as `row_a = a[i]` across an inner loop,
+       or `m_start, m_end = merged[mid]` via `structural-unpack` /
+       `unpack-ref`) across multi-block regions. When the backing container
+       remains bound to the same local (`_same_local_origin`) and no intervening
+       step along any CFG path to the reads can mutate that container or invoke
+       arbitrary Python user code (`_safe_container_local_region_step`, using
+       `ValueType.may_run_user_code` so stores of tuples/lists with inert
+       elements do not act as false barriers), both the container read and the
+       local variable borrow their reference from the container root without
+       `@mule.fast.retain` or `@mule.fast.release`.
+    4. **Unboxed float element reads and in-place list stores**: Exact-list
+       indexing (`protocol-getitem`) with a `FIXNUM` index borrows the element
+       (`list_borrow`) when feeding float coercions (`@mule.box.f64.load`) or
+       pure float arithmetic, and `protocol-setitem` on exact lists accepts
+       unboxed `DOUBLE` values directly (`represent.py`, `vops.py`) and updates
+       an exclusively owned (`refs == 1`) `FloatStorage` slot in place before
+       falling back to allocating a fresh box.
 
 ---
 

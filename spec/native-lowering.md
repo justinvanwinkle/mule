@@ -274,13 +274,17 @@ Rust supplies physical memory ownership and the GC barrier only.
 Current dictionary field inference does not establish exact-list field proofs.
 The guarded physical lowering must not treat these fields as statically proven
 lists or remove bounds checks without an independent proof. When `protocol-getitem`
-is statically proven to index an exact `list` with a fixnum index (`list_borrow`
-or `list_owned`), it emits the physical buffer length check and element load
-inline in LLVM IR (skipping negative-index wrapping when the index interval is
-proven non-negative) and calls `@mule_list_getitem_borrow` or `@mule_list_getitem`
-only on the cold out-of-bounds slow path. Making storage
-operations visible is an implementation capability; speedups require separate
-measurement.
+is statically proven to index an exact `list` or exact `tuple` with a fixnum
+index (`list_borrow`, `list_owned`, `tuple_borrow`, or `tuple_owned`), it emits
+the physical buffer length check (or uses `TupleType.exact_length()` when known)
+and element load inline in LLVM IR (skipping negative-index wrapping when the
+index interval is proven non-negative) and calls `@mule_list_getitem_borrow` /
+`@mule_list_getitem` or `@mule_getitem_borrow` / `@mule_getitem` only on the
+cold out-of-bounds slow path. When the loaded element type is a proven fixnum
+or immortal (`is_fixnum` or `is_immortal`), `protocol-getitem`,
+`primitive-_storage_read`, and `unpack-ref` omit `@mule.fast.retain`. Making
+storage operations visible is an implementation capability; speedups require
+separate measurement.
 
 ## Fixed-length sequence unpacking
 
@@ -567,6 +571,18 @@ reads must not consume borrowed ownership. Acquiring a genuinely owned copy
 from a borrowed reference still requires a retain and a corresponding release.
 The owner's existing overwrite and cleanup points are not moved, preserving
 the observable lifetime boundary rather than deferring destruction.
+
+When a single-assignment local variable (or a fixed-arity `structural-unpack` /
+`unpack-ref` sequence) is initialized from an exact `list`, exact `tuple`, or
+`_storage_read` indexed off a stable local container root, IR2 specialization
+(`_try_borrow_container_element_local`, `_try_borrow_unpacked_getitem`) extends
+this borrowed-lifetime proof across multi-block non-mutating regions. As long as
+all consumers of the element local are borrowing operations (or a single final
+mutation consumer such as `protocol-setitem`) and every reachable CFG path from
+the container read to those consumers preserves the container binding without
+mutating the container or running arbitrary user code, the element local and
+any unpacked slot locals borrow directly from the container root without
+retaining or releasing the loaded element.
 
 ### Local alias copy propagation
 

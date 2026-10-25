@@ -959,7 +959,7 @@ class ModuleGenerator:
         # define them, by namespace, and the namespaces code binds names in.
         self.expected_builtins: dict[str, set[str]] = {}
         self.bound_namespaces: set[str] = set()
-        # Namespaces whose cells a linkonce_odr initializer uses, which must
+        # Namespaces whose cells a weak_odr initializer uses, which must
         # then be shared definitions too.
         self.shared_namespaces: set[str] = set()
         self.method_targets: dict[str, list[Function]] = {}
@@ -1089,8 +1089,8 @@ class ModuleGenerator:
         definitions = []
         for namespace, cells in self.global_cells.items():
             shared = namespace in self.shared_namespaces
-            linkage = "linkonce_odr" if shared else "internal"
-            constant = "linkonce_odr constant" if shared else "private constant"
+            linkage = "weak_odr" if shared else "internal"
+            constant = "weak_odr constant" if shared else "private constant"
             definitions.extend(
                 f"{symbol} = {linkage} global {{ptr, i64, ptr, ptr}} "
                 "{ptr @mule.undefined, i64 0, ptr null, ptr null}"
@@ -1255,7 +1255,7 @@ class ModuleGenerator:
         name = _symbol(f"mule.class.layout.{identity}")
         if identity not in self.class_layout_slots:
             self.class_layout_slots.add(identity)
-            self.auxiliary.append(f"{name} = linkonce_odr global i64 0")
+            self.auxiliary.append(f"{name} = weak_odr global i64 0")
         return name
 
     def attribute_cache(self) -> str:
@@ -1906,8 +1906,21 @@ class ModuleGenerator:
         functions: tuple[Function, ...],
         keywords: tuple[str | None, ...],
         arity: int,
+        supplied: tuple[ValueType, ...] = (),
+        *,
+        result_contract=None,
     ) -> str:
-        key = ("$method.direct", functions, keywords, arity)
+        supply_types = (
+            supplied if len(supplied) == arity + 1 else (UNKNOWN,) * (arity + 1)
+        )
+        key = (
+            "$method.direct",
+            functions,
+            keywords,
+            arity,
+            supply_types,
+            result_contract,
+        )
         existing = self.protocol_helpers.get(key)
         if existing is not None:
             return existing
@@ -1931,13 +1944,22 @@ class ModuleGenerator:
             for function in functions:
                 order = function.call_order(keywords, arity, receiver=bound)
                 if order is not None:
-                    candidates.append((function, order))
+                    if not any(idx < -1 for idx in order):
+                        steps = _entry_steps(
+                            self,
+                            function,
+                            (supply_types[idx + 1] for idx in order),
+                        )
+                    else:
+                        steps = ((None, ()),)
+                    candidates.append((function, order, steps))
             chains.append((bound, shape, candidates))
         targets = tuple(
             f"resolve.{shape}" if candidates else "fallback"
             for _bound, shape, candidates in chains
         )
-        lines = [
+        builder = _HelperBuilder(self)
+        builder.lines = [
             f"define internal ptr {symbol}({', '.join(params)}) {{",
             "entry:",
             "  %fn.globals.slot = alloca ptr",
@@ -1946,13 +1968,53 @@ class ModuleGenerator:
         ]
         need_failed_block = False
 
-        def emit_invoke(function, order, variant_index, bound):
+        def emit_return(
+            res_name: str, context: EntryContext | None, function, tag: str
+        ):
+            returned = (
+                (
+                    self.facts[function].return_type
+                    if function in self.facts
+                    else UNKNOWN
+                )
+                if context is None
+                else context.return_type
+            )
+            if result_contract is not None and not returned.fits(
+                result_contract.checked_type
+            ):
+                checker = self.return_contract_helper(result_contract)
+                builder.line(f"  %null.{tag} = icmp eq ptr {res_name}, null")
+                builder.line(
+                    f"  br i1 %null.{tag}, label %invoke.failed.{tag}, label %invoke.check.{tag}"
+                )
+                builder.lines.append(f"invoke.failed.{tag}:")
+                builder.line("  ret ptr null")
+                builder.lines.append(f"invoke.check.{tag}:")
+                checked = builder.operation(f"call i32 {checker}(ptr {res_name})")
+                rejected = builder.operation(f"icmp slt i32 {checked}, 0")
+                builder.line(
+                    f"  br i1 {rejected}, label %invoke.incompatible.{tag}, label %invoke.accepted.{tag}"
+                )
+                builder.lines.append(f"invoke.incompatible.{tag}:")
+                builder.line(f"  call void @mule.fast.release(ptr {res_name})")
+                builder.line("  ret ptr null")
+                builder.lines.append(f"invoke.accepted.{tag}:")
+            if returned is not UNKNOWN:
+                assumed = returned.accept(_TypeAssumption(builder, res_name))
+                if assumed is not None:
+                    missing = builder.operation(f"icmp eq ptr {res_name}, null")
+                    assumed = builder.operation(f"or i1 {missing}, {assumed}")
+                    builder.line(f"  call void @llvm.assume(i1 {assumed})")
+            builder.line(f"  ret ptr {res_name}")
+
+        def emit_invoke(function, order, steps, variant_index, bound):
             nonlocal need_failed_block
-            lines.append(f"direct.{variant_index}:")
+            builder.lines.append(f"direct.{variant_index}:")
             available = []
             for pos, idx in enumerate(order):
                 if idx < -1:
-                    lines.extend(
+                    builder.lines.extend(
                         [
                             f"  %def.{variant_index}.{pos} = call ptr @mule_function_default(ptr %callable, i32 {-2 - idx})",
                             f"  %def.available.{variant_index}.{pos} = icmp ne ptr %def.{variant_index}.{pos}, null",
@@ -1963,9 +2025,9 @@ class ModuleGenerator:
                 ready = available[0]
                 for offset, present in enumerate(available[1:]):
                     combined = f"%defaults.available.{variant_index}.{offset}"
-                    lines.append(f"  {combined} = and i1 {ready}, {present}")
+                    builder.line(f"  {combined} = and i1 {ready}, {present}")
                     ready = combined
-                lines.extend(
+                builder.lines.extend(
                     [
                         f"  br i1 {ready}, label %defaults.ready.{variant_index}, label %fallback",
                         f"defaults.ready.{variant_index}:",
@@ -1980,13 +2042,18 @@ class ModuleGenerator:
                     0,
                 )
             ):
-                lines.extend(
+                builder.lines.extend(
                     [
                         f"  %append.res.{variant_index} = call ptr @mule_storage_append(ptr %receiver, ptr %arg.0)",
                         "  call void @mule.fast.release(ptr %receiver)",
                         "  call void @mule.fast.release(ptr %arg.0)",
-                        f"  ret ptr %append.res.{variant_index}",
                     ]
+                )
+                emit_return(
+                    f"%append.res.{variant_index}",
+                    None,
+                    function,
+                    f"{variant_index}.append",
                 )
                 return
             if (
@@ -1994,101 +2061,168 @@ class ModuleGenerator:
                 and function.name == "mule_sequences_mule_fn_ListStorage.pop"
                 and order == (-1, -2)
             ):
-                lines.extend(
+                builder.lines.extend(
                     [
                         f"  %pop.res.{variant_index} = call ptr @mule_storage_pop(ptr %receiver)",
                         "  call void @mule.fast.release(ptr %receiver)",
-                        f"  ret ptr %pop.res.{variant_index}",
                     ]
+                )
+                emit_return(
+                    f"%pop.res.{variant_index}",
+                    None,
+                    function,
+                    f"{variant_index}.pop",
                 )
                 return
             need_failed_block = True
-            entered_label = f"entered.{variant_index}"
-            lines.extend(
-                [
-                    f"  %frame.{variant_index} = call i32 @mule_enter_frame()",
-                    f"  %rejected.{variant_index} = icmp slt i32 %frame.{variant_index}, 0",
-                    f"  br i1 %rejected.{variant_index}, label %failed, label %{entered_label}",
-                    f"{entered_label}:",
-                    f"  %globals.{variant_index} = load ptr, ptr %fn.globals.slot",
-                ]
-            )
-            owned = []
-            for pos, idx in enumerate(order):
-                if idx == -1:
-                    owned.append("%receiver")
-                elif idx >= 0:
-                    owned.append(f"%arg.{idx}")
-                else:
-                    lines.append(
-                        f"  %own.{variant_index}.{pos} = call ptr @mule.fast.retain(ptr %def.{variant_index}.{pos})"
-                    )
-                    owned.append(f"%own.{variant_index}.{pos}")
-            closure_ops = []
-            if self.closure_of(function):
-                lines.append(
-                    f"  %closure.{variant_index} = call ptr @mule_function_closure_of(ptr %callable)"
+
+            def emit_step_invoke(context: EntryContext | None, step_idx: int) -> None:
+                tag = f"{variant_index}.{step_idx}"
+                entered_label = f"entered.{tag}"
+                builder.lines.extend(
+                    [
+                        f"  %frame.{tag} = call i32 @mule_enter_frame()",
+                        f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0",
+                        f"  br i1 %rejected.{tag}, label %failed, label %{entered_label}",
+                        f"{entered_label}:",
+                        f"  %globals.{tag} = load ptr, ptr %fn.globals.slot",
+                    ]
                 )
-                closure_ops.append(f"ptr %closure.{variant_index}")
-            body_args = ", ".join(
-                [
-                    f"ptr %globals.{variant_index}",
-                    *closure_ops,
-                    *(f"ptr {v}" for v in owned),
+                owned = []
+                for pos, idx in enumerate(order):
+                    if idx == -1:
+                        owned.append("%receiver")
+                    elif idx >= 0:
+                        owned.append(f"%arg.{idx}")
+                    else:
+                        builder.line(
+                            f"  %own.{tag}.{pos} = call ptr @mule.fast.retain(ptr %def.{variant_index}.{pos})"
+                        )
+                        owned.append(f"%own.{tag}.{pos}")
+                closure_ops = []
+                if self.closure_of(function):
+                    builder.line(
+                        f"  %closure.{tag} = call ptr @mule_function_closure_of(ptr %callable)"
+                    )
+                    closure_ops.append(f"ptr %closure.{tag}")
+                body_sym = (
+                    self.specialized[function, context.id]
+                    if context is not None
+                    else self.bodies[function]
+                )
+                body_args = ", ".join(
+                    [
+                        f"ptr %globals.{tag}",
+                        *closure_ops,
+                        *(f"ptr {v}" for v in owned),
+                    ]
+                )
+                builder.lines.extend(
+                    [
+                        f"  %direct.res.{tag} = call ptr {body_sym}({body_args})",
+                        "  call void @mule_leave_frame()",
+                    ]
+                )
+                emit_return(f"%direct.res.{tag}", context, function, tag)
+
+            for step_idx, (context, needed) in enumerate(steps):
+                guards = [
+                    expected.accept(
+                        _ArgumentGuard(
+                            builder,
+                            "%receiver"
+                            if order[param_idx] == -1
+                            else f"%arg.{order[param_idx]}",
+                        )
+                    )
+                    for param_idx, expected in enumerate(needed)
+                    if expected is not None
                 ]
-            )
-            lines.extend(
-                [
-                    f"  %direct.res.{variant_index} = call ptr {self.bodies[function]}({body_args})",
-                    "  call void @mule_leave_frame()",
-                    f"  ret ptr %direct.res.{variant_index}",
-                ]
-            )
+                if not guards:
+                    emit_step_invoke(context, step_idx)
+                    break
+                valid = guards[0]
+                for guard in guards[1:]:
+                    valid = builder.operation(f"and i1 {valid}, {guard}")
+                typed = f"typed.{variant_index}.{step_idx}"
+                next_label = f"next.{variant_index}.{step_idx}"
+                builder.line(f"  br i1 {valid}, label %{typed}, label %{next_label}")
+                builder.lines.append(f"{typed}:")
+                emit_step_invoke(context, step_idx)
+                builder.lines.append(f"{next_label}:")
 
         for chain_index, (bound, shape, candidates) in enumerate(chains):
             if not candidates:
                 continue
-            lines.extend(
+            builder.lines.extend(
                 [
                     f"resolve.{shape}:",
                     f"  %entry.{shape} = call ptr @mule_method_entry(ptr %callable, ptr %fn.globals.slot)",
                     f"  br label %check.{shape}.0",
                 ]
             )
-            for candidate_index, (function, order) in enumerate(candidates):
+            for candidate_index, (function, order, steps) in enumerate(candidates):
                 variant_index = 2 * candidate_index + chain_index
                 next_label = (
                     f"check.{shape}.{candidate_index + 1}"
                     if candidate_index + 1 < len(candidates)
                     else "fallback"
                 )
-                lines.extend(
+                builder.lines.extend(
                     [
                         f"check.{shape}.{candidate_index}:",
                         f"  %match.{shape}.{candidate_index} = icmp eq ptr %entry.{shape}, {self.functions[function]}",
                         f"  br i1 %match.{shape}.{candidate_index}, label %direct.{variant_index}, label %{next_label}",
                     ]
                 )
-                emit_invoke(function, order, variant_index, bound)
+                emit_invoke(function, order, steps, variant_index, bound)
         if need_failed_block:
-            lines.extend(
+            builder.lines.extend(
                 [
                     "failed:",
                     "  call void @mule.fast.release(ptr %receiver)",
                 ]
             )
             for i in range(arity):
-                lines.append(f"  call void @mule.fast.release(ptr %arg.{i})")
-            lines.append("  ret ptr null")
-        lines.extend(
+                builder.line(f"  call void @mule.fast.release(ptr %arg.{i})")
+            builder.line("  ret ptr null")
+        builder.lines.extend(
             [
                 "fallback:",
                 f"  %fallback.res = call ptr {fallback_helper}({fallback_args})",
+            ]
+        )
+        if result_contract is not None:
+            checker = self.return_contract_helper(result_contract)
+            builder.lines.extend(
+                [
+                    "  %fallback.null = icmp eq ptr %fallback.res, null",
+                    "  br i1 %fallback.null, label %fallback.err, label %fallback.check",
+                    "fallback.err:",
+                    "  ret ptr null",
+                    "fallback.check:",
+                ]
+            )
+            checked = builder.operation(f"call i32 {checker}(ptr %fallback.res)")
+            rejected = builder.operation(f"icmp slt i32 {checked}, 0")
+            builder.line(
+                f"  br i1 {rejected}, label %fallback.incompatible, label %fallback.ok"
+            )
+            builder.lines.extend(
+                [
+                    "fallback.incompatible:",
+                    "  call void @mule.fast.release(ptr %fallback.res)",
+                    "  ret ptr null",
+                    "fallback.ok:",
+                ]
+            )
+        builder.lines.extend(
+            [
                 "  ret ptr %fallback.res",
                 "}",
             ]
         )
-        self.auxiliary.append("\n".join(lines))
+        self.auxiliary.append("\n".join(builder.lines))
         return symbol
 
     def direct_call_helper(
@@ -3462,7 +3596,7 @@ class ModuleGenerator:
         # Every unit importing a native module generates the same initializer;
         # the linker keeps one, so the module stays a singleton. A compiled
         # module's initializer is defined only by the unit owning its body.
-        linkage = "linkonce_odr " if info.native else ""
+        linkage = "weak_odr " if info.native else ""
         cache = self.import_cache(info)
         self.auxiliary.append(f"{cache} = {linkage or 'internal '}global ptr null")
         legacy = [
@@ -4625,18 +4759,46 @@ class FunctionGenerator:
                 assertion_vop = vops_list[idx + 1]
                 if (
                     call_vop in self.unpacked_calls
-                    or call_vop.info not in (vops.FULL_CALL, vops.LOCAL_EXTENT_CALL)
+                    or call_vop.info
+                    not in (
+                        vops.FULL_CALL,
+                        vops.LOCAL_EXTENT_CALL,
+                        vops.CALL_RESOLVED,
+                    )
                     or assertion_vop.info is not vops.TYPE_CHECK
                     or assertion_vop in self.unpacked_call_assertions.values()
                 ):
                     continue
-                site = call_vop.codegen_info
-                target = site.target
-                if (
-                    target is None
-                    or target.call_order(site.keywords, len(call_vop.args) - 1) is None
-                ):
-                    continue
+                if call_vop.info is vops.CALL_RESOLVED:
+                    info = call_vop.codegen_info
+                    if info.is_exact:
+                        continue
+                    method_arity = len(call_vop.args) - 2
+                    target = info.target
+                    has_direct = (
+                        target is not None
+                        and not info.keywords
+                        and target.call_order((), method_arity + 1) is not None
+                    )
+                    if not has_direct:
+                        candidates = self.module.method_targets.get(info.name, ())
+                        has_direct = any(
+                            cand.call_order(info.keywords, method_arity, receiver=bound)
+                            is not None
+                            for cand in candidates
+                            for bound in (True, False)
+                        )
+                    if not has_direct:
+                        continue
+                else:
+                    site = call_vop.codegen_info
+                    target = site.target
+                    if (
+                        target is None
+                        or target.call_order(site.keywords, len(call_vop.args) - 1)
+                        is None
+                    ):
+                        continue
                 delivered = call_vop.results[0].tn
                 if (
                     assertion_vop.args[0].tn is not delivered
@@ -5499,6 +5661,7 @@ class FunctionGenerator:
         arguments,
         unpack_arity: int | None = None,
         argument_refs=(),
+        result_contract=None,
     ) -> str:
         """Consume receiver/arguments on direct, fallback, and rejected arms."""
         if info.exact_list_append:
@@ -5606,7 +5769,12 @@ class FunctionGenerator:
             and info.target.call_order((), len(arguments) + 1) is not None
         ):
             return self.call_resolved_target(
-                info, callable_value, receiver, arguments, argument_refs
+                info,
+                callable_value,
+                receiver,
+                arguments,
+                argument_refs,
+                result_contract=result_contract,
             )
         candidates = module.method_targets.get(info.name, ())
         functions = tuple(
@@ -5634,7 +5802,17 @@ class FunctionGenerator:
                 ]
             )
             return self.operation(f"call ptr {helper}({operands})")
-        helper = module.method_call_helper(functions, info.keywords, len(arguments))
+        supplied = (
+            info.receiver_type,
+            *((ref.tn.type or UNKNOWN) for ref in argument_refs),
+        )
+        helper = module.method_call_helper(
+            functions,
+            info.keywords,
+            len(arguments),
+            supplied,
+            result_contract=result_contract,
+        )
         operands = ", ".join(
             [
                 f"ptr {callable_value}",
@@ -5649,7 +5827,14 @@ class FunctionGenerator:
         return expected.accept(_ArgumentGuard(self, value))
 
     def call_resolved_target(
-        self, info, callable_value, receiver, arguments, argument_refs
+        self,
+        info,
+        callable_value,
+        receiver,
+        arguments,
+        argument_refs,
+        *,
+        result_contract=None,
     ) -> str:
         """Call a method analysis resolved from the receiver's class: guard
         that resolution produced that very function, then enter its body
@@ -5671,7 +5856,12 @@ class FunctionGenerator:
         else:
             steps = _entry_steps(module, target, (supplied[index] for index in order))
         helper = module.direct_call_helper(
-            target, (), len(values), steps, receiver_call=True
+            target,
+            (),
+            len(values),
+            steps,
+            receiver_call=True,
+            result_contract=result_contract,
         )
         operands = ", ".join(
             [
