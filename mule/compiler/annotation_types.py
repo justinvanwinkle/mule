@@ -470,6 +470,10 @@ class ListContract(Contract):
         return LIST_TYPE
 
     def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        if self.element is not None:
+            spec_elem = self.element.speculative_parameter_type(fixnum_int)
+            if spec_elem != self.element.fact and spec_elem.has_float_specialization():
+                return ListType(spec_elem)
         return LIST_TYPE
 
     def accept(self, visitor):

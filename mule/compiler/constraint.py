@@ -1863,6 +1863,44 @@ def _propagate_has_binding(visitor: _Propagation, node: Combination):
     return BOOLEAN_FACT
 
 
+@defpropagate("%min2")
+def _propagate_min2(visitor: _Propagation, node: Combination):
+    if len(node.args) != 2:
+        return UNKNOWN_FACT
+    left = visitor.type_of(node.args[0])
+    right = visitor.type_of(node.args[1])
+    if left is BOTTOM or right is BOTTOM:
+        return NO_FACT
+    if not (left.fits(REAL) and right.fits(REAL)):
+        visitor.invalidate()
+    return _fact(fndb.derive_min2_types(left, right))
+
+
+@defpropagate("%max2")
+def _propagate_max2(visitor: _Propagation, node: Combination):
+    if len(node.args) != 2:
+        return UNKNOWN_FACT
+    left = visitor.type_of(node.args[0])
+    right = visitor.type_of(node.args[1])
+    if left is BOTTOM or right is BOTTOM:
+        return NO_FACT
+    if not (left.fits(REAL) and right.fits(REAL)):
+        visitor.invalidate()
+    return _fact(fndb.derive_max2_types(left, right))
+
+
+@defpropagate("%math_sqrt")
+def _propagate_math_sqrt(visitor: _Propagation, node: Combination):
+    if len(node.args) != 1:
+        return UNKNOWN_FACT
+    arg = visitor.type_of(node.args[0])
+    if arg is BOTTOM:
+        return NO_FACT
+    if arg.may_run_user_code:
+        visitor.invalidate()
+    return FLOAT_FACT
+
+
 @defpropagate("%sequence_available")
 def _propagate_sequence_available(visitor: _Propagation, node: Combination):
     if len(node.args) == 1 and visitor.type_of(node.args[0]).is_empty_iterator():
@@ -3349,11 +3387,42 @@ BOOTSTRAP_CLASS_TARGETS: dict[str, ClassConstructorTarget] = {
     ),
 }
 
+
+def _derive_builtin_min(
+    arg_types: tuple[ValueType, ...],
+    keywords: tuple[str | None, ...] = (),
+    *,
+    receiver_type: ValueType | None = None,
+) -> ValueType:
+    if len(arg_types) == 2 and not keywords:
+        return fndb.derive_min2_types(arg_types[0], arg_types[1])
+    return UNKNOWN
+
+
+def _derive_builtin_max(
+    arg_types: tuple[ValueType, ...],
+    keywords: tuple[str | None, ...] = (),
+    *,
+    receiver_type: ValueType | None = None,
+) -> ValueType:
+    if len(arg_types) == 2 and not keywords:
+        return fndb.derive_max2_types(arg_types[0], arg_types[1])
+    return UNKNOWN
+
+
 BOOTSTRAP_BUILTIN_TARGETS: dict[str, ClassConstructorTarget | ForeignCallTarget] = {
     **BOOTSTRAP_CLASS_TARGETS,
     "len": ForeignCallTarget(
         return_type=IntegerType(0, (1 << 60) - 1),
         derive_fn=_derive_builtin_len,
+    ),
+    "min": ForeignCallTarget(
+        return_type=UNKNOWN,
+        derive_fn=_derive_builtin_min,
+    ),
+    "max": ForeignCallTarget(
+        return_type=UNKNOWN,
+        derive_fn=_derive_builtin_max,
     ),
     "range": ForeignCallTarget(return_type=IteratorType(INTEGER)),
     "ord": ForeignCallTarget(return_type=IntegerType(0, 0x10FFFF)),

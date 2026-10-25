@@ -150,6 +150,58 @@ def _representation_move(vop) -> bool:
     return False
 
 
+def _is_non_identity_list_setitem(
+    component, reader, ref, has_identity_compare: bool
+) -> bool:
+    if (
+        has_identity_compare
+        or reader.info.name != "protocol-setitem"
+        or len(reader.args) != 3
+        or ref is not reader.args[2]
+    ):
+        return False
+    seq_tn = reader.args[0].tn
+    if not (seq_tn.type or UNKNOWN).is_exact_list:
+        return False
+    seq_writes = component.writes.get(seq_tn, ())
+    if len(seq_writes) != 1 or seq_writes[0][0].info is not vops.LOAD_LOCAL:
+        return False
+    seq_local = seq_writes[0][0].args[0].tn
+    if (
+        seq_local.leaf is None
+        or seq_local.leaf.indirect
+        or seq_local.leaf in component.lambda_.vars
+    ):
+        return False
+    for load_vop, _ in component.reads.get(seq_local, ()):
+        if load_vop.info is not vops.LOAD_LOCAL:
+            return False
+        loaded_tn = load_vop.results[0].tn
+        for use_vop, use_ref in component.reads.get(loaded_tn, ()):
+            u_name = use_vop.info.name
+            if (
+                u_name
+                in (
+                    "protocol-getitem",
+                    "fast-len",
+                    "primitive-_storage_length",
+                    "protocol-iterate",
+                )
+                and use_ref is use_vop.args[0]
+            ):
+                continue
+            if u_name == "protocol-setitem" and use_ref is use_vop.args[0]:
+                continue
+            if (
+                u_name == "resolve-method"
+                and use_vop.codegen_info is not None
+                and use_vop.codegen_info.exact_list_append
+            ):
+                continue
+            return False
+    return True
+
+
 def _select_float_representations(component):
     """Keep original objects on identity paths, not on numeric-only branches.
 
@@ -159,14 +211,39 @@ def _select_float_representations(component):
     before their other operands have selected representations.
     """
     convention = component.context.convention
+    has_identity_compare = any(
+        vop.info.name in ("compare-is", "compare-is_not")
+        for block in component.blocks
+        for vop in block.vops
+    )
+    unboxed_locals = {
+        tn
+        for tn in component.tns
+        if tn.leaf is not None
+        and (contract := component.lambda_.local_annotations.get(tn.leaf.name))
+        is not None
+        and primitive_type_of(contract.fact) is BOXED_FLOAT
+    }
     demanded = set()
     for tn in component.tns:
         if tn.primitive_type is not BOXED_FLOAT:
             if not tn.primitive_type.admits(DOUBLE):
                 demanded.add(tn)
             continue
+        if tn in unboxed_locals:
+            continue
         for reader, ref in component.reads.get(tn, ()):
             if _representation_move(reader):
+                continue
+            if (
+                reader.info.name == "protocol-setitem"
+                and len(reader.args) == 3
+                and ref is reader.args[2]
+            ):
+                if not _is_non_identity_list_setitem(
+                    component, reader, ref, has_identity_compare
+                ):
+                    demanded.add(tn)
                 continue
             restriction = _operand_restriction(reader, ref, convention=convention)
             if restriction is not None and DOUBLE not in restriction:
@@ -184,7 +261,7 @@ def _select_float_representations(component):
                 continue
             for operand in writer.args:
                 source = operand.tn
-                if source not in demanded:
+                if source not in demanded and source not in unboxed_locals:
                     demanded.add(source)
                     pending.append(source)
     selected = {
@@ -1018,6 +1095,14 @@ class _Select(NodeVisitor, LeafVisitor):
             return method
         if name == "%call_resolved":
             return self.call_method(node)
+        if name in ("%min2", "%max2"):
+            left, right = self.numeric_operands(args)
+            if left != right:
+                raise NotNative
+            return left
+        if name == "%math_sqrt":
+            self.value(args[0]).numeric()
+            return FLOAT
         raise NotNative
 
     def numeric_operands(self, args):
@@ -1280,6 +1365,8 @@ class _ResultAliases(NodeVisitor, LeafVisitor):
             return name == "%unary_positive" and any(
                 self.lvar(argument) for argument in node.args
             )
+        if name in ("%min2", "%max2", "%math_sqrt"):
+            return False
         if name == "%call_resolved":
             target = self.plan.method_target(node.args[0])
             callee = self.plans.get(target)

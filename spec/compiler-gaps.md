@@ -212,7 +212,7 @@ departures from SBCL's compiler and runtime architecture:
      elide redundant return checks when the specialized entry's return type
      already satisfies the contract.
 
-### 0D. Borrowed / unboxed container element reads and loop reference-count elimination (`ir2tran.py`, `vops.py`) (implemented)
+### 0D. Borrowed / unboxed container element reads and loop reference-count elimination (`represent.py`, `ir2tran.py`, `vops.py`) (implemented)
 
 - **SBCL reference**: `src/compiler/array-tran.lisp` (`aref` ->
   `data-vector-ref` / `hairy-data-vector-ref/check-bounds`) and
@@ -224,9 +224,9 @@ departures from SBCL's compiler and runtime architecture:
     reference-counted heap ownership with tagged 64-bit immediates (fixnums,
     booleans, `None`, immortal singletons).
   - `_specialize_list_getitems` (`mule/compiler/ir2tran.py`) and
-    `protocol_getitem` / `_storage_helpers` / `unpack_ref`
+    `protocol_getitem` / `protocol_setitem` / `_storage_helpers` / `unpack_ref`
     (`mule/compiler/vops.py`) adapt SBCL's direct vector access to Mule's
-    ownership model in three complementary ways:
+    ownership model in four complementary ways:
     1. **Fixnum and immortal element elision**: When the loaded element's
        derived `ValueType` is a proven fixnum or immortal (`is_fixnum` /
        `is_immortal`), `protocol-getitem` (`list_owned`, `tuple_owned`),
@@ -253,6 +253,13 @@ departures from SBCL's compiler and runtime architecture:
        elements do not act as false barriers), both the container read and the
        local variable borrow their reference from the container root without
        `@mule.fast.retain` or `@mule.fast.release`.
+    4. **Unboxed float element reads and in-place list stores**: Exact-list
+       indexing (`protocol-getitem`) with a `FIXNUM` index borrows the element
+       (`list_borrow`) when feeding float coercions (`@mule.box.f64.load`) or
+       pure float arithmetic, and `protocol-setitem` on exact lists accepts
+       unboxed `DOUBLE` values directly (`represent.py`, `vops.py`) and updates
+       an exclusively owned (`refs == 1`) `FloatStorage` slot in place before
+       falling back to allocating a fresh box.
 
 ---
 
@@ -387,43 +394,19 @@ suite failure or performance measurement.
        and `data-vector-set-with-offset/simple-array-unsigned-byte-8` in
        `src/compiler/x86-64/array.lisp`).
      - **Implemented**:
-       - `BytesType` (`ctype.py`) implements `dispatch_domain()` returning
-         `BYTES_TYPE` (unless `may_be_unbound`), and `locall.py` includes
-         `BYTES_TYPE` alongside `LIST_TYPE` and `TEXT_TYPE` when seeding
-         `observed` entry contexts. Consequently, `BYTES_TYPE` parameters
-         preserve their `IntegerType(0, 255)` `getitem_type` and `iterate_type`
-         across both `fixnum` and `observed` entry contexts.
-     - **Remaining Mule defects (observed in `perf/suite/bytes_codec.py`)**:
-       - `bytearray` in `stdlib/_sequences.py` is a compiled Python class
-         (`InstanceType`), whose exported class type in `modules.py` is widened
-         to `UNKNOWN` (`STORAGE_CLASS_TYPES.get(class_name, UNKNOWN)`), and
-         `fndb.py` has no `KNOWN` entry for `bytes(...)` or `bytearray(...)`.
-         Consequently, `decoded = bytearray()` in `bytes_codec.py` calls the
-         global `bytearray` dynamically and derives `UNKNOWN`.
-       - Because `decoded` has `derived_type = UNKNOWN`, `decoded.append(b)` in
-         the inner packet-decoding loop resolves `.append` via inline cache and
-         speculatively dispatches to `ListStorage.append` (which always misses
-         on `ByteArrayStorage` and falls back to dynamic call on every byte),
-         and indexing/iterating `decoded` (`decoded[k]`, `for b in decoded:`)
-         derives `UNKNOWN` rather than `IntegerType(0, 255)`.
-       - `vops.py` (`protocol-getitem` / `protocol-setitem`) has no inline
-         physical byte-vector load/store fast path for proven `BYTES_TYPE` or
-         `bytearray` with `FIXNUM` index, calling `@mule.fast.getitem` /
-         `@mule.fast.setitem.move` out of line instead of inline bounds check +
-         `load i8` / `store i8`.
-     - **Required implementation**:
-       1. Export `bytearray`'s exact `InstanceType` / storage type in
-          `modules.py`, map `bytearray` in `annotation_types.py` and
-          `ir1tran.py`, and register `bytes` and `bytearray` in `fndb.py`.
-       2. Derive `IntegerType(0, 255)` for `getitem(bytearray, INTEGER)` and
-          `iterate` / `next_item` on `bytearray` in `ctype.py`, `fndb.py`, and
-          `constraint.py`.
-       3. Emit inline byte-buffer load/store VOPs in `vops.py` for
-          `getitem(BYTES_TYPE | bytearray, FIXNUM)` (`u8` zero-extended to
-          tagged fixnum `(zext i8 << 1) | 1`) and
-          `setitem(bytearray, FIXNUM, FIXNUM)` (bounds check + `[0, 255]`
-          range check + `store i8`), and specialize `bytearray.append` on
-          `bytearray` receivers with proven `[0, 255]` or `FIXNUM` operands.
+       - `BytesType` and `ByteArrayType` (`ctype.py`) implement
+         `dispatch_domain()` returning `BYTES_TYPE` and `BYTEARRAY_TYPE`
+         (unless `may_be_unbound`), and `locall.py` includes `BYTES_TYPE` and
+         `BYTEARRAY_TYPE` when seeding `observed` entry contexts. Consequently,
+         `BYTES_TYPE` and `BYTEARRAY_TYPE` parameters and locals preserve their
+         `IntegerType(0, 255)` `getitem_type` and `iterate_type` across
+         `general`, `fixnum`, and `observed` entry contexts.
+       - `seqtran.py` lowers `len(bytearray)` to `_storage_length` (`visit_ByteArrayType`),
+         and `vops.py` / `buffers.rs` / `sequences.rs` specialize
+         `getitem(BYTES_TYPE | BYTEARRAY_TYPE, FIXNUM)` (`@mule_bytes_getitem`,
+         `@mule_bytearray_getitem_fast`), `setitem(BYTEARRAY_TYPE, FIXNUM, FIXNUM)`
+         (`@mule_bytearray_setitem_fast`), and `bytearray.append`
+         (`@mule_bytearray_append_fast`).
   6. **Direct `for`-loop lowering over proven sequences (`seqtran.lisp`
      `dolist` / vector loop transforms)**:
      - **SBCL reference**: `src/compiler/seqtran.lisp` (`define-source-transform dolist`,
@@ -480,21 +463,34 @@ suite failure or performance measurement.
        operation's operand narrows from non-fixnum (`PythonIntegerType` /
        `INTEGER`) to `is_fixnum` (or `FLOAT`), even when the operation's result
        type (`BOOLEAN` or bounded `IntegerType`) is already proven in `general`.
+  2. **Bitwise shift interval derivation, 2-argument `min`/`max`, and `math.sqrt`
+     (`ctype.py`, `fndb.py`, `srctran.py`, `constraint.py`, `represent.py`, `vops.py`)**:
+     - `IntegerType.binary` (`ctype.py`) derives exact interval bounds for
+       `<<` (with shift count in `[0, 61]`) and `>>` (with non-negative shift
+       count), keeping `(lo + hi) >> 1` and `(x << k)` within `FIXNUM` bounds.
+     - `srctran.py` lowers 2-argument `min(a, b)` and `max(a, b)` to `%min2` /
+       `%max2` (`fndb.MIN2`, `fndb.MAX2`), with interval bound derivation in
+       `fndb.py`/`constraint.py` and inline `icmp`/`fcmp` + `select` VOPs
+       (`raw-min2`, `raw-max2`, `raw-float-min2`, `raw-float-max2`, `min2`,
+       `max2` in `vops.py`) preserving Python's first-operand tie-breaking rule.
+     - `srctran.py` lowers 1-argument `math.sqrt(x)` to `%math_sqrt`
+       (`fndb.MATH_SQRT`), which lowers to inline `fcmp olt double %x, 0.0`
+       domain guard + `call double @llvm.sqrt.f64(double %x)` (`raw-math-sqrt`,
+       `boxed-float-math-sqrt`, `math-sqrt` in `vops.py`).
 - **Remaining gaps and proposed transforms**:
   1. **Commutative canonicalization and reassociation**: Normalize
      `const + x -> x + const` and `const & x -> x & const` on proven commutative
      domains (`INTEGER`, `BOOLEAN`) so associative transforms in `modarith.py`
      match regardless of operand order.
-  3. **Modular arithmetic cutting (`modarith.lisp`)**: Propagate modular width
+  2. **Modular arithmetic cutting (`modarith.lisp`)**: Propagate modular width
      demand backward through `(a + b) & mask`, `(a - b) & mask`, and
      `(a * b) & mask` when `mask = (1 << k) - 1` fits in `int64`, allowing
      intermediate operations to use wrapping 64-bit arithmetic without bigint
      overflow allocation.
-  4. **Float and math transforms (`float-tran.lisp`)**: Add `fndb.py` and
-     `srctran.py` transforms for builtin `abs(x)`, `min(a, b)`, `max(a, b)`,
-     and `float(x)` on proven `INTEGER` and `FLOAT` operands, plus `math`
-     module intrinsics (`math.sqrt`, `math.floor`, `math.ceil`, `math.fabs`,
-     `math.isinf`, `math.isnan`) lowered to LLVM intrinsics.
+  3. **Additional float and math transforms (`float-tran.lisp`)**: Add `fndb.py`
+     and `srctran.py` transforms for builtin `abs(x)` and `float(x)` on proven
+     `INTEGER` and `FLOAT` operands, plus remaining `math` module intrinsics
+     (`math.floor`, `math.ceil`, `math.fabs`, `math.isinf`, `math.isnan`).
 
 ---
 

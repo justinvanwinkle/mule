@@ -17,6 +17,13 @@ pub fn release(owner: Value) {
     });
 }
 
+#[inline]
+pub fn has_exports(owner: Value) -> bool {
+    EXPORTS.with_borrow(|exports| {
+        !exports.is_empty() && exports.get(&(owner as usize)).copied().unwrap_or(0) != 0
+    })
+}
+
 unsafe fn operand(args: Value) -> Option<Value> {
     unsafe {
         if object::has_error() { return None; }

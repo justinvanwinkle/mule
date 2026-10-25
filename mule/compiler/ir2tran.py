@@ -77,6 +77,7 @@ from .seqtran import (
 from .vmdef import templates_for
 from .vop import (
     BOOLEAN_T,
+    DOUBLE,
     FIXNUM,
     RANGE_T,
     REFERENCE_T,
@@ -1352,11 +1353,31 @@ class _BorrowedLifetime:
                     consumers.add(uses[0][0])
         return aliases, consumers
 
-    def protected(self, acquisition, consumers, source):
+    def protected(
+        self,
+        acquisition,
+        consumers,
+        source,
+        extra_boundaries=(),
+        *,
+        container_borrow: bool = False,
+    ):
         if not consumers:
             return False
         start, start_index = self.positions[acquisition]
         boundary = start, start_index + 1
+        boundaries = (
+            {
+                boundary,
+                *(
+                    (b, idx + 1)
+                    for step in extra_boundaries
+                    for b, idx in (self.positions[step],)
+                ),
+            }
+            if extra_boundaries
+            else {boundary}
+        )
         local_only = source is not None and (
             source.leaf is None
             or source.leaf.indirect
@@ -1371,7 +1392,7 @@ class _BorrowedLifetime:
         visited = set()
         while pending:
             point = pending.pop()
-            if point == boundary or point in visited:
+            if point in boundaries or point in visited:
                 continue
             visited.add(point)
             block, index = point
@@ -1386,7 +1407,10 @@ class _BorrowedLifetime:
             step = block.vops[index - 1]
             if step not in consumers or step.info is not vops.MOVE:
                 if not self.safe_step(
-                    step, source, consumer=step in consumers
+                    step,
+                    source,
+                    consumer=step in consumers,
+                    container_borrow=container_borrow,
                 ) and not (self.transfers_to_consumer(step, source, consumers)):
                     return False
                 if (
@@ -1521,7 +1545,7 @@ class _BorrowedLifetime:
         return True
 
     @staticmethod
-    def safe_step(step, source, *, consumer=False):
+    def safe_step(step, source, *, consumer=False, container_borrow=False):
         name = step.info.name
         if name == "yield":
             return False
@@ -1536,12 +1560,25 @@ class _BorrowedLifetime:
             return True
         # These can mutate an object selected through another alias. Borrowed
         # temporaries must not make a uniqueness test observe fewer aliases.
-        if name.startswith(("inplace-", "boxed-float-")) or name in (
-            "binary-add",
-            "binary-subtract",
-            "binary-multiply",
+        if (
+            name.startswith("inplace-")
+            or (
+                name.startswith("boxed-float-")
+                and step.codegen_info is not None
+                and step.codegen_info.reuse_local is not None
+            )
+            or name
+            in (
+                "binary-add",
+                "binary-subtract",
+                "binary-multiply",
+            )
         ):
-            return False
+            return bool(
+                container_borrow
+                and len(step.args) == 2
+                and all((arg.tn.type or UNKNOWN).fits(REAL) for arg in step.args)
+            )
         if name in vops.TERMINATORS:
             return True
         return _safe_borrow_step(step, source)
@@ -1555,6 +1592,42 @@ _BORROWED_LIST_GETITEM_READERS = _CODEPOINT_COMPARISON_VOPS | frozenset(
         "fast-len",
         "primitive-_storage_length",
         "primitive-_text_length",
+        "boxed-float-compare-equal",
+        "boxed-float-compare-not_equal",
+        "boxed-float-compare-less",
+        "boxed-float-compare-less_equal",
+        "boxed-float-compare-greater",
+        "boxed-float-compare-greater_equal",
+        "boxed-float-add",
+        "boxed-float-subtract",
+        "boxed-float-multiply",
+        "mixed-float-add-left",
+        "mixed-float-add-right",
+        "mixed-float-subtract-left",
+        "mixed-float-subtract-right",
+        "mixed-float-multiply-left",
+        "mixed-float-multiply-right",
+    }
+)
+
+_PURE_FLOAT_STEP_VOPS = frozenset(
+    {
+        "boxed-float-negative",
+        "boxed-float-add",
+        "boxed-float-subtract",
+        "boxed-float-multiply",
+        "mixed-float-add-left",
+        "mixed-float-add-right",
+        "mixed-float-subtract-left",
+        "mixed-float-subtract-right",
+        "mixed-float-multiply-left",
+        "mixed-float-multiply-right",
+        "boxed-float-compare-equal",
+        "boxed-float-compare-not_equal",
+        "boxed-float-compare-less",
+        "boxed-float-compare-less_equal",
+        "boxed-float-compare-greater",
+        "boxed-float-compare-greater_equal",
     }
 )
 
@@ -1587,6 +1660,12 @@ _PURE_BINARY_ARITH_VOPS = frozenset(
 def _can_borrow_list_getitem(reader: VOP, reader_ref: TNRef | None = None) -> bool:
     name = reader.info.name
     if name in _BORROWED_LIST_GETITEM_READERS:
+        if name.startswith("boxed-float-"):
+            return (
+                reader.codegen_info is None or reader.codegen_info.reuse_local is None
+            )
+        return True
+    if name == "coerce" and reader.results and reader.results[0].tn.sc is DOUBLE:
         return True
     if name in _PURE_BINARY_ARITH_VOPS and len(reader.args) == 2:
         return all(
@@ -1614,13 +1693,19 @@ def _safe_list_borrow_step(step: VOP, seq_local, root_local=None) -> bool:
     if any(ref.tn in (seq_local, root_local) for ref in step.results):
         return False
     name = step.info.name
-    if name == "constant":
+    if name in ("constant", "coerce", "move"):
         return True
+    if name == "type-check":
+        check: TypeCheck = linked(step.codegen_info, step, "type-check info")
+        actual = step.args[0].tn.type or UNKNOWN
+        return not check.safety or actual.fits(check.contract.checked_type)
     if name == "load-local":
         access: LocalAccess = linked(step.codegen_info, step, "local access")
         return bool(access.bound) and not (
             step.args[0].tn in (seq_local, root_local) and access.move
         )
+    if name in _PURE_FLOAT_STEP_VOPS:
+        return step.codegen_info is None or step.codegen_info.reuse_local is None
     if name in _PURE_FIXNUM_VOPS and step.results:
         return (step.results[0].tn.type or UNKNOWN).is_fixnum and all(
             (arg.tn.type or UNKNOWN).is_fixnum for arg in step.args
@@ -1862,8 +1947,10 @@ def _safe_container_local_region_step(
         if ref.tn in (local_tn, seq_local, root_local):
             return False
     name = step.info.name
-    if name in ("constant", "jump", "insert-safepoint", "discard"):
+    if name in ("constant", "coerce", "jump", "insert-safepoint", "discard"):
         return True
+    if name in _PURE_FLOAT_STEP_VOPS:
+        return step.codegen_info is None or step.codegen_info.reuse_local is None
     if name == "unpack-ref":
         return step.codegen_info is not None and bool(step.codegen_info.proved)
     if name == "type-check":
@@ -2086,7 +2173,11 @@ def _specialize_list_getitems(component: IR2Component) -> None:
         positions: dict[VOP, int] | None = None
         for index, vop in enumerate(block.vops):
             name = vop.info.name
-            if vop.codegen_info is not None or len(vop.args) != 2 or not vop.results:
+            if (
+                vop.codegen_info not in (None, "list_owned", "tuple_owned")
+                or len(vop.args) != 2
+                or not vop.results
+            ):
                 continue
             seq_type = vop.args[0].tn.type or UNKNOWN
             idx_type = vop.args[1].tn.type or UNKNOWN

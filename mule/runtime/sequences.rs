@@ -8,6 +8,7 @@ thread_local! {
     static GLOBALS: Cell<Value> = const { Cell::new(null_mut()) };
     static STORAGE_ITERATOR: Cell<Value> = const { Cell::new(null_mut()) };
     static RANGE_ITERATOR: Cell<Value> = const { Cell::new(null_mut()) };
+    static BYTEARRAY_CLASS: Cell<Value> = const { Cell::new(null_mut()) };
     static PENDING: Cell<Value> = const { Cell::new(null_mut()) };
     static ACTIVE: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
 }
@@ -120,6 +121,7 @@ pub unsafe fn finish() {
         crate::classes::mule_set_attribute_lookup(null_mut());
         STORAGE_ITERATOR.with(|value| value.set(null_mut()));
         RANGE_ITERATOR.with(|value| value.set(null_mut()));
+        BYTEARRAY_CLASS.with(|value| value.set(null_mut()));
         GLOBALS.with(|value| object::release(value.replace(null_mut())));
     }
 }
@@ -290,6 +292,18 @@ pub unsafe extern "C" fn mule_storage_length(value: Value) -> Value {
                 Data::List(values, ..) | Data::Args(values, ..) => values.len(),
                 Data::Bytes(values, ..) => values.len(),
                 Data::Text(..) => return object::mule_text_length(value),
+                Data::Instance { ty, fields, .. }
+                    if !fields.is_empty() && *ty == cached_bytearray_class() =>
+                {
+                    let inner = fields[0];
+                    if !inner.is_null() && !object::is_fixnum(inner) {
+                        if let Data::List(values, ..) = &(*inner).data {
+                            return numeric::integer_from_usize(values.len());
+                        }
+                    }
+                    object::error("TypeError", "sequence storage is required");
+                    return null_mut();
+                }
                 _ => {
                     object::error("TypeError", "sequence storage is required");
                     return null_mut();
@@ -395,6 +409,173 @@ pub unsafe extern "C" fn mule_list_getitem(sequence: Value, index: Value) -> Val
             return elem;
         }
         list_index_error()
+    }
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn sequence_index_error() -> Value {
+    object::error("IndexError", "sequence index out of range");
+    null_mut()
+}
+
+/// Direct `bytes[index]` when `sequence` is a proven exact builtin `bytes` and
+/// `index` is a proven tagged fixnum.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_bytes_getitem(sequence: Value, index: Value) -> Value {
+    unsafe {
+        if !object::is_fixnum(index) || sequence.is_null() || object::is_fixnum(sequence) {
+            return sequence_index_error();
+        }
+        let Data::Bytes(values, ty, ..) = &(*sequence).data else {
+            return sequence_index_error();
+        };
+        if !ty.is_null() {
+            return sequence_index_error();
+        }
+        let raw = object::fixnum(index);
+        let len = values.len() as i64;
+        let pos = if raw < 0 { raw + len } else { raw };
+        if (pos as u64) < (len as u64) {
+            return object::small(i64::from(*values.get_unchecked(pos as usize)));
+        }
+        sequence_index_error()
+    }
+}
+
+/// Direct `bytearray[index]` when `array` is a proven exact builtin `bytearray`
+/// and `index` is a proven tagged fixnum.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_bytearray_getitem_fast(array: Value, index: Value) -> Value {
+    unsafe {
+        if !object::is_fixnum(index) || array.is_null() || object::is_fixnum(array) {
+            return sequence_index_error();
+        }
+        let Data::Instance { ty, fields, .. } = &(*array).data else {
+            return sequence_index_error();
+        };
+        if fields.is_empty() || *ty != cached_bytearray_class() {
+            return sequence_index_error();
+        }
+        let inner = *fields.get_unchecked(0);
+        if inner.is_null() || object::is_fixnum(inner) {
+            return sequence_index_error();
+        }
+        let Data::List(values, list_ty, ..) = &(*inner).data else {
+            return sequence_index_error();
+        };
+        if !list_ty.is_null() {
+            return sequence_index_error();
+        }
+        let raw = object::fixnum(index);
+        let len = values.len() as i64;
+        let pos = if raw < 0 { raw + len } else { raw };
+        if (pos as u64) < (len as u64) {
+            let elem = *values.get_unchecked(pos as usize);
+            if !object::is_fixnum(elem) {
+                object::retain(elem);
+            }
+            return elem;
+        }
+        sequence_index_error()
+    }
+}
+
+/// Fast path for `bytearray[index] = item` when `array` is an exact `bytearray`,
+/// `index` is an in-bounds fixnum, and `item` is a fixnum in `0..=255`.
+/// Returns 1 when handled or 0 when the general `setitem` protocol is required.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_bytearray_setitem_fast(
+    array: Value,
+    index: Value,
+    item: Value,
+) -> i32 {
+    unsafe {
+        if !object::is_fixnum(index)
+            || !object::is_fixnum(item)
+            || array.is_null()
+            || object::is_fixnum(array)
+        {
+            return 0;
+        }
+        let byte_val = object::fixnum(item);
+        if !(0..=255).contains(&byte_val) {
+            return 0;
+        }
+        let Data::Instance { ty, fields, .. } = &(*array).data else {
+            return 0;
+        };
+        if fields.is_empty() || *ty != cached_bytearray_class() {
+            return 0;
+        }
+        let inner = *fields.get_unchecked(0);
+        if inner.is_null() || object::is_fixnum(inner) {
+            return 0;
+        }
+        if let Data::List(values, list_ty, ..) = &mut (*inner).data {
+            if list_ty.is_null() {
+                let raw = object::fixnum(index);
+                let len = values.len() as i64;
+                let pos = if raw < 0 { raw + len } else { raw };
+                if (pos as u64) < (len as u64) {
+                    let slot = values.get_unchecked_mut(pos as usize);
+                    let old = *slot;
+                    *slot = item;
+                    if !object::is_fixnum(old) {
+                        object::release(old);
+                    }
+                    return 1;
+                }
+            }
+        }
+        0
+    }
+}
+
+/// Fast path for `bytearray.append(item)` on a proven `bytearray` receiver.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_bytearray_append_fast(array: Value, item: Value) -> Value {
+    unsafe {
+        if !array.is_null() && !object::is_fixnum(array) && object::is_fixnum(item) {
+            let byte_val = object::fixnum(item);
+            if let Data::Instance { ty, fields, .. } = &(*array).data
+                && !fields.is_empty()
+                && *ty == cached_bytearray_class()
+            {
+                if !(0..=255).contains(&byte_val) {
+                    object::error("ValueError", "byte must be in range(0, 256)");
+                    return null_mut();
+                }
+                if crate::buffers::has_exports(array) {
+                    object::error("BufferError", "Existing exports of data: object cannot be re-sized");
+                    return null_mut();
+                }
+                let inner = *fields.get_unchecked(0);
+                if !inner.is_null()
+                    && !object::is_fixnum(inner)
+                    && let Data::List(values, list_ty, ..) = &mut (*inner).data
+                    && list_ty.is_null()
+                {
+                    if values.try_reserve(1).is_err() {
+                        object::error("MemoryError", "list allocation failed");
+                        return null_mut();
+                    }
+                    values.push(item);
+                    return object::none_value();
+                }
+            }
+        }
+        let mut bound = null_mut();
+        let method =
+            crate::classes::mule_resolve_method(array, c"append".as_ptr(), null_mut(), &mut bound);
+        if method.is_null() {
+            return null_mut();
+        }
+        let args = [item];
+        let result = crate::classes::mule_call_resolved(method, bound, 1, args.as_ptr());
+        object::release(bound);
+        object::release(method);
+        result
     }
 }
 
@@ -1822,6 +2003,25 @@ pub unsafe extern "C" fn mule_range_storage(iterator: Value, state: *mut i64) ->
 
 #[cold]
 #[inline(never)]
+unsafe fn resolve_bytearray_class() -> Value {
+    unsafe {
+        let resolved = object::lookup(mule_protocol_globals(), "bytearray");
+        BYTEARRAY_CLASS.with(|slot| slot.set(resolved));
+        resolved
+    }
+}
+
+#[inline(always)]
+unsafe fn cached_bytearray_class() -> Value {
+    let cached = BYTEARRAY_CLASS.with(Cell::get);
+    if !cached.is_null() {
+        return cached;
+    }
+    unsafe { resolve_bytearray_class() }
+}
+
+#[cold]
+#[inline(never)]
 unsafe fn resolve_storage_iterator() -> Value {
     unsafe {
         let resolved = object::lookup(mule_protocol_globals(), "StorageIterator");
@@ -1856,17 +2056,27 @@ pub unsafe extern "C" fn mule_fast_next_item(iterator: Value, out: *mut Value) -
                 if seq.is_null() || object::is_fixnum(seq) {
                     return -1;
                 }
-                let values = match &(*seq).data {
-                    Data::List(values, ..) | Data::Args(values, ..) => values,
-                    _ => return -1,
-                };
-                let pos = *index;
-                if pos >= values.len() {
-                    return 0;
+                match &(*seq).data {
+                    Data::List(values, ..) | Data::Args(values, ..) => {
+                        let pos = *index;
+                        if pos >= values.len() {
+                            return 0;
+                        }
+                        *index = pos + 1;
+                        *out = object::retain(*values.get_unchecked(pos));
+                        1
+                    }
+                    Data::Bytes(bytes, ..) => {
+                        let pos = *index;
+                        if pos >= bytes.len() {
+                            return 0;
+                        }
+                        *index = pos + 1;
+                        *out = object::small(i64::from(*bytes.get_unchecked(pos)));
+                        1
+                    }
+                    _ => -1,
                 }
-                *index = pos + 1;
-                *out = object::retain(*values.get_unchecked(pos));
-                1
             }
             Data::Instance { ty, fields, .. } => {
                 let storage_iterator = cached_storage_iterator();
@@ -1913,28 +2123,44 @@ pub unsafe extern "C" fn mule_fast_next_item(iterator: Value, out: *mut Value) -
     }
 }
 
-/// Fast path for `iterate(value)` on exact builtin `list` and `tuple` objects.
+/// Fast path for `iterate(value)` on exact builtin `list`, `tuple`, `bytes`, and `bytearray` objects.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_fast_iterate(value: Value) -> Value {
     unsafe {
         if value.is_null() || object::is_fixnum(value) {
             return null_mut();
         }
-        match &(*value).data {
+        let target = match &(*value).data {
             Data::SeqIter { .. } => return object::retain(value),
-            Data::List(_, ty, ..) | Data::Args(_, ty, ..) if ty.is_null() => (),
+            Data::List(_, ty, ..) | Data::Args(_, ty, ..) | Data::Bytes(_, ty, ..)
+                if ty.is_null() =>
+            {
+                value
+            }
+            Data::Instance { ty, fields, .. }
+                if !fields.is_empty() && *ty == cached_bytearray_class() =>
+            {
+                let inner = fields[0];
+                if inner.is_null()
+                    || object::is_fixnum(inner)
+                    || !matches!(&(*inner).data, Data::List(_, lty, ..) if lty.is_null())
+                {
+                    return null_mut();
+                }
+                inner
+            }
             _ => return null_mut(),
-        }
+        };
         object::new_untracked_value(Data::SeqIter {
-            sequence: object::retain(value),
+            sequence: object::retain(target),
             index: 0,
         })
     }
 }
 
 /// Fast path for `iterate(value)` that consumes the caller's owned `value` reference
-/// when `value` is an exact builtin `list`, `tuple`, or `SeqIter`. Leaves `value`
-/// unconsumed when returning NULL.
+/// when `value` is an exact builtin `list`, `tuple`, `bytes`, `bytearray`, or `SeqIter`.
+/// Leaves `value` unconsumed when returning NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_fast_iterate_move(value: Value) -> Value {
     unsafe {
@@ -1943,7 +2169,25 @@ pub unsafe extern "C" fn mule_fast_iterate_move(value: Value) -> Value {
         }
         match &(*value).data {
             Data::SeqIter { .. } => return value,
-            Data::List(_, ty, ..) | Data::Args(_, ty, ..) if ty.is_null() => (),
+            Data::List(_, ty, ..) | Data::Args(_, ty, ..) | Data::Bytes(_, ty, ..)
+                if ty.is_null() => {}
+            Data::Instance { ty, fields, .. }
+                if !fields.is_empty() && *ty == cached_bytearray_class() =>
+            {
+                let inner = fields[0];
+                if inner.is_null()
+                    || object::is_fixnum(inner)
+                    || !matches!(&(*inner).data, Data::List(_, lty, ..) if lty.is_null())
+                {
+                    return null_mut();
+                }
+                let seq = object::retain(inner);
+                object::release(value);
+                return object::new_untracked_value(Data::SeqIter {
+                    sequence: seq,
+                    index: 0,
+                });
+            }
             _ => return null_mut(),
         }
         object::new_untracked_value(Data::SeqIter {

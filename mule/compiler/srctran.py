@@ -45,6 +45,7 @@ from .ctype import (
     BYTES_TYPE,
     INTEGER,
     PYTHON_INTEGER,
+    REAL,
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
@@ -52,11 +53,13 @@ from .ctype import (
 )
 from .ir1opt import (
     constant_lvar_value,
+    is_imported_module_global,
     lvar_type,
     replace_combination_with_constant,
 )
 from .ir1util import (
     _flush_operand,
+    delete_ref,
     flush_combination,
     is_flushable_ref,
     is_pure_bound_ref,
@@ -69,6 +72,7 @@ from .node import (
     CallKind,
     Combination,
     Constant,
+    GlobalVar,
     LambdaVar,
     LeafVisitor,
     Lvar,
@@ -694,6 +698,118 @@ def _transform_compare_is_not(node: Combination) -> bool:
     if _same_bound_local(left, right) is not None:
         return _replace_with_constant_and_clean_locals(node, ast.BooleanLiteral(False))
     return False
+
+
+@deftransform("min")
+def _transform_min(node: Combination) -> bool:
+    if len(node.args) != 2:
+        return False
+    left, right = node.args
+    retarget_known_combination(node, fndb.MIN2, [left, right])
+    return True
+
+
+@deftransform("max")
+def _transform_max(node: Combination) -> bool:
+    if len(node.args) != 2:
+        return False
+    left, right = node.args
+    retarget_known_combination(node, fndb.MAX2, [left, right])
+    return True
+
+
+@deftransform("math.sqrt")
+def _transform_math_sqrt(node: Combination) -> bool:
+    if len(node.args) != 1 or not lvar_type(node.args[0]).fits(REAL):
+        return False
+    retarget_known_combination(node, fndb.MATH_SQRT, [node.args[0]])
+    return True
+
+
+class _MathModuleGlobalRef(NodeVisitor, LeafVisitor):
+    """Match a single-use ``Ref`` to a module-level ``import math`` global."""
+
+    def __init__(self, block):
+        self.block = block
+        self._ref: Ref | None = None
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        if (
+            node.prev is None
+            or node.block is not self.block
+            or node.lexenv.policy.safety >= 3
+        ):
+            return None
+        self._ref = node
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        if is_imported_module_global(leaf, "math"):
+            return self._ref
+        return None
+
+
+class _ResolveMathSqrtProducer(NodeVisitor):
+    """Match a ``%resolve_method`` for ``math.sqrt`` in ``block``."""
+
+    def __init__(self, block):
+        self.block = block
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is not CallKind.KNOWN
+            or node.fun_info is not fndb.RESOLVE_METHOD
+            or node.info is None
+            or node.info.name != "sqrt"
+            or len(node.args) != 1
+            or len(node.args[0].uses) != 1
+            or node.prev is None
+            or node.block is not self.block
+            or node.lexenv.policy.safety >= 3
+        ):
+            return None
+        recv_ref = node.args[0].uses[0].accept(_MathModuleGlobalRef(self.block))
+        if recv_ref is None:
+            return None
+        return node, recv_ref
+
+
+@deftransform("%call_resolved")
+def _transform_call_resolved_math_sqrt(node: Combination) -> bool:
+    if (
+        len(node.args) != 2
+        or (node.info is not None and node.info.keywords)
+        or node.lexenv.policy.safety >= 3
+        or (node.home_lambda is not None and node.home_lambda.policy.safety >= 3)
+    ):
+        return False
+    resolved, arg = node.args
+    if len(resolved.uses) != 1 or not lvar_type(arg).fits(REAL):
+        return False
+    matched = resolved.uses[0].accept(_ResolveMathSqrtProducer(node.block))
+    if matched is None:
+        return False
+    resolve_node, recv_ref = matched
+    recv_lvar = resolve_node.args[0]
+    delete_ref(recv_ref)
+    unlink_node(recv_ref)
+    recv_lvar.dest = None
+    resolve_node.args = []
+    _flush_operand(resolve_node.fun)
+    unlink_node(resolve_node)
+    resolved.dest = None
+    node.args = [arg]
+    retarget_known_combination(node, fndb.MATH_SQRT, [arg])
+    return True
 
 
 __all__ = [

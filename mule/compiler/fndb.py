@@ -23,10 +23,13 @@ from .ctype import (
     EMPTY_LIST_TYPE,
     FLOAT,
     FUNCTION_TYPE,
+    INTEGER,
     NONE_TYPE,
+    PYTHON_INTEGER,
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
+    PythonIntegerType,
     TextType,
     TupleType,
     ValueType,
@@ -435,6 +438,96 @@ LEN = defknown(
     non_integer_first_arg=True,
 )
 
+
+def derive_min2_types(left: ValueType, right: ValueType) -> ValueType:
+    if left is BOTTOM or right is BOTTOM:
+        return BOTTOM
+    if left.fits(PYTHON_INTEGER) and right.fits(PYTHON_INTEGER):
+        lo = (
+            min(left.minimum, right.minimum)
+            if None not in (left.minimum, right.minimum)
+            else None
+        )
+        hi = (
+            min(v for v in (left.maximum, right.maximum) if v is not None)
+            if (left.maximum is not None or right.maximum is not None)
+            else None
+        )
+        left_can_be_bool = not left.fits(INTEGER) and (
+            right.maximum is None or right.maximum >= 0
+        )
+        right_can_be_bool = not right.fits(INTEGER) and (
+            left.maximum is None or left.maximum > 0
+        )
+        if not left_can_be_bool and not right_can_be_bool:
+            return IntegerType(lo, hi)
+        return PythonIntegerType(lo, hi)
+    return left.join(right)
+
+
+def derive_max2_types(left: ValueType, right: ValueType) -> ValueType:
+    if left is BOTTOM or right is BOTTOM:
+        return BOTTOM
+    if left.fits(PYTHON_INTEGER) and right.fits(PYTHON_INTEGER):
+        lo = (
+            max(v for v in (left.minimum, right.minimum) if v is not None)
+            if (left.minimum is not None or right.minimum is not None)
+            else None
+        )
+        hi = (
+            max(left.maximum, right.maximum)
+            if None not in (left.maximum, right.maximum)
+            else None
+        )
+        left_can_be_bool = not left.fits(INTEGER) and (
+            right.minimum is None or right.minimum <= 1
+        )
+        right_can_be_bool = not right.fits(INTEGER) and (
+            left.minimum is None or left.minimum < 1
+        )
+        if not left_can_be_bool and not right_can_be_bool:
+            return IntegerType(lo, hi)
+        return PythonIntegerType(lo, hi)
+    return left.join(right)
+
+
+MIN2 = defknown(
+    "%min2",
+    "foldable",
+    "flushable",
+    derive_type=lambda node: (
+        None
+        if _DERIVATION_MODE.active or len(node.args) != 2
+        else derive_min2_types(_arg_type(node.args[0]), _arg_type(node.args[1]))
+    ),
+    numeric=True,
+)
+MAX2 = defknown(
+    "%max2",
+    "foldable",
+    "flushable",
+    derive_type=lambda node: (
+        None
+        if _DERIVATION_MODE.active or len(node.args) != 2
+        else derive_max2_types(_arg_type(node.args[0]), _arg_type(node.args[1]))
+    ),
+    numeric=True,
+)
+MIN_BUILTIN = defknown("min", "call", "unsafe")
+MAX_BUILTIN = defknown("max", "call", "unsafe")
+MATH_SQRT = defknown(
+    "%math_sqrt",
+    derive_type=lambda node: FLOAT,
+    numeric=True,
+)
+MATH_SQRT_IMPORT = defknown(
+    "math.sqrt",
+    "call",
+    "unsafe",
+    derive_type=lambda node: FLOAT,
+    numeric=True,
+)
+
 _PROTOCOL_DERIVE_TYPES = {
     "getitem": lambda node: (
         None
@@ -564,6 +657,12 @@ __all__ = [
     "LEN",
     "MAKE_CLASS",
     "MAKE_FUNCTION",
+    "MATH_SQRT",
+    "MATH_SQRT_IMPORT",
+    "MAX2",
+    "MAX_BUILTIN",
+    "MIN2",
+    "MIN_BUILTIN",
     "PROTOCOLS",
     "RAISE",
     "RANGE_ADVANCE",
