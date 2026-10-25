@@ -51,7 +51,7 @@ from .ctype import (
 )
 from .escape import analyze_escapes, find_local_environments
 from .ir1util import block_exception_target, made_function
-from .ir2tran import ir2_convert
+from .ir2tran import _specialize_list_getitems, ir2_convert
 from .locall import specialized_ir1_context
 from .ltn import EntryContext, FixnumGuard, ltn_analyze, primitive_type_of
 from .node import (
@@ -92,6 +92,7 @@ from .vop import (
     SIGNED,
     TN,
     BoxLayout,
+    TNRef,
 )
 
 if TYPE_CHECKING:
@@ -252,6 +253,12 @@ declare ptr @mule_storage_write(ptr, ptr, ptr)
 declare ptr @mule_fast_getitem(ptr, ptr)
 declare ptr @mule_list_getitem(ptr, ptr)
 declare ptr @mule_list_getitem_borrow(ptr, ptr)
+declare ptr @mule_bytes_getitem(ptr, ptr)
+declare ptr @mule_bytearray_getitem_fast(ptr, ptr)
+declare i32 @mule_bytearray_setitem_fast(ptr, ptr, ptr)
+declare ptr @mule_bytearray_append_fast(ptr, ptr)
+declare i32 @mule_math_domain_error()
+declare i32 @mule_unbox_real(ptr, ptr)
 declare ptr @mule_fast_getslice(ptr, ptr, ptr, ptr)
 declare ptr @mule_text_slice_eq(ptr, ptr, ptr, ptr, i32)
 declare ptr @mule_text_slice2_eq(ptr, ptr, ptr, ptr, ptr, ptr, i32)
@@ -704,6 +711,7 @@ def compile_component(lambda_: Lambda, context, *, select_calls=None):
             if select_calls is not None and select_calls(component):
                 select_representations(component)
             emit_moves_and_coercions(component)
+            _specialize_list_getitems(component)
         return component
 
 
@@ -832,6 +840,8 @@ class NumericEntry:
     function: Lambda
     context: EntryContext
     symbol: str
+    proven: bool = True
+    result_contract: object = None
 
 
 def _numeric_argument_fits(actual, expected) -> bool:
@@ -2658,11 +2668,126 @@ class ModuleGenerator:
         self.numeric_entries[key] = entry
         return entry
 
+    def guarded_numeric_call_helper(self, entry: NumericEntry) -> str:
+        convention = linked(entry.context.convention, entry, "convention")
+        key = (
+            "$call.numeric",
+            entry.function,
+            entry.context.id,
+            convention.parameters,
+            convention.returned,
+            entry.result_contract,
+        )
+        existing = self.protocol_helpers.get(key)
+        if existing is not None:
+            return existing
+        index = len(self.protocol_helpers)
+        arity = len(convention.parameters)
+        symbol = _symbol(f"mule.numeric.{entry.function.name}.{arity}.{index}")
+        self.protocol_helpers[key] = symbol
+        params = [
+            "ptr %callee",
+            "ptr %numeric.error",
+            *(f"{sc.llvm_type} %arg.{i}" for i, sc in enumerate(convention.parameters)),
+        ]
+        ret_type = convention.returned.llvm_type
+        zero = "0.0" if convention.returned is DOUBLE else "0"
+        fallback_helper = self.positional_call_helper(arity)
+        builder = _HelperBuilder(self)
+        builder.lines = [
+            f"define internal {ret_type} {symbol}({', '.join(params)}) {{",
+            "entry:",
+            "  %fn.globals.slot = alloca ptr",
+            "  %callee.entry = call ptr @mule_method_entry(ptr %callee, ptr %fn.globals.slot)",
+            f"  %matching = icmp eq ptr %callee.entry, {self.functions[entry.function]}",
+            "  br i1 %matching, label %direct, label %fallback",
+            "direct:",
+            "  %frame = call i32 @mule_enter_frame()",
+            "  %frame.bad = icmp slt i32 %frame, 0",
+            "  br i1 %frame.bad, label %failed, label %entered",
+            "entered:",
+            "  %callee.globals = load ptr, ptr %fn.globals.slot",
+        ]
+        direct_args = [
+            "ptr %callee.globals",
+            "ptr %numeric.error",
+            *(f"{sc.llvm_type} %arg.{i}" for i, sc in enumerate(convention.parameters)),
+        ]
+        builder.lines.extend(
+            [
+                f"  %direct.res = call {ret_type} {entry.symbol}({', '.join(direct_args)})",
+                "  call void @mule_leave_frame()",
+                f"  ret {ret_type} %direct.res",
+                "fallback:",
+            ]
+        )
+        boxed_args = []
+        for i, sc in enumerate(convention.parameters):
+            if sc is DOUBLE:
+                builder.line(
+                    f"  %box.{i} = call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double %arg.{i})"
+                )
+                boxed_args.append(f"ptr %box.{i}")
+            else:
+                builder.line(f"  %shl.{i} = shl i64 %arg.{i}, 1")
+                builder.line(f"  %tag.{i} = or disjoint i64 %shl.{i}, 1")
+                builder.line(f"  %box.{i} = inttoptr i64 %tag.{i} to ptr")
+                boxed_args.append(f"ptr %box.{i}")
+        fallback_call_args = ", ".join(["ptr %callee", *boxed_args])
+        builder.lines.extend(
+            [
+                f"  %fallback.res = call ptr {fallback_helper}({fallback_call_args})",
+                "  %fallback.null = icmp eq ptr %fallback.res, null",
+                "  br i1 %fallback.null, label %failed, label %fallback.check",
+                "fallback.check:",
+            ]
+        )
+        if entry.result_contract is not None:
+            checker = self.return_contract_helper(entry.result_contract)
+            checked = builder.operation(f"call i32 {checker}(ptr %fallback.res)")
+            rejected = builder.operation(f"icmp slt i32 {checked}, 0")
+            builder.lines.extend(
+                [
+                    f"  br i1 {rejected}, label %fallback.incompatible, label %fallback.ok",
+                    "fallback.incompatible:",
+                    "  call void @mule.fast.release(ptr %fallback.res)",
+                    "  br label %failed",
+                    "fallback.ok:",
+                ]
+            )
+        if convention.returned is DOUBLE:
+            builder.lines.extend(
+                [
+                    f"  %unboxed = call double @{FLOAT_BOX_LAYOUT.symbol('load')}(ptr %fallback.res)",
+                    "  call void @mule.fast.release(ptr %fallback.res)",
+                    "  ret double %unboxed",
+                ]
+            )
+        else:
+            builder.lines.extend(
+                [
+                    "  %bits = ptrtoint ptr %fallback.res to i64",
+                    "  %unboxed = ashr i64 %bits, 1",
+                    "  ret i64 %unboxed",
+                ]
+            )
+        builder.lines.extend(
+            [
+                "failed:",
+                "  store i1 true, ptr %numeric.error",
+                f"  ret {ret_type} {zero}",
+                "}",
+            ]
+        )
+        self.auxiliary.append("\n".join(builder.lines))
+        return symbol
+
     def select_numeric_calls(self, component) -> bool:
-        """Use scalar locations only for proven calls and compatible consumers."""
+        """Use scalar locations for proven or guarded calls and compatible consumers."""
         if component.context.plan is not None or component.context.borrowed_parameters:
             return False
         changed = False
+        block_by_vop = {vop: block for block in component.blocks for vop in block.vops}
         pending = [
             vop
             for block in component.blocks
@@ -2683,22 +2808,53 @@ class ModuleGenerator:
                     continue
                 target = site.target
                 if (
-                    not site.proven
-                    or site.keywords
+                    site.keywords
                     or target not in self.owned
-                    or target in self.native_plans
+                    or (
+                        target in self.native_plans
+                        and (site.proven or self.native_plans[target].dependencies)
+                    )
                     or target is component.lambda_
                     or target.call_order((), len(vop.args) - 1)
                     != tuple(range(len(target.vars)))
                 ):
                     continue
-                result = vop.results[0].tn
+                assertion_vop = None
+                result_contract = None
+                if site.proven:
+                    result = vop.results[0].tn
+                else:
+                    if self.closure_of(target):
+                        continue
+                    block = block_by_vop.get(vop)
+                    if block is None or vop not in block.vops:
+                        continue
+                    idx = block.vops.index(vop)
+                    if (
+                        idx + 1 >= len(block.vops)
+                        or block.vops[idx + 1].info is not vops.TYPE_CHECK
+                    ):
+                        continue
+                    assertion_vop = block.vops[idx + 1]
+                    delivered = vop.results[0].tn
+                    if (
+                        assertion_vop.args[0].tn is not delivered
+                        or len(component.writes.get(delivered, ())) != 1
+                        or len(component.reads.get(delivered, ())) != 1
+                    ):
+                        continue
+                    result = assertion_vop.results[0].tn
+                    if assertion_vop.codegen_info.safety:
+                        result_contract = assertion_vop.codegen_info.contract
                 fact = result.type or UNKNOWN
+                ignore_vops = (
+                    (vop, assertion_vop) if assertion_vop is not None else (vop,)
+                )
                 if primitive_type_of(fact) is BOXED_FLOAT:
-                    if not can_use_double(component, result, ignore=(vop,)):
+                    if not can_use_double(component, result, ignore=ignore_vops):
                         remaining.append(vop)
                         continue
-                elif not fact.is_fixnum:
+                elif not fact.is_fixnum or not site.proven:
                     continue
                 arguments = tuple(arg.tn.type or UNKNOWN for arg in vop.args[1:])
                 general, variants = self.contexts(target)
@@ -2725,6 +2881,18 @@ class ModuleGenerator:
                     continue
                 entry = self.numeric_entry(target, context)
                 convention = linked(entry.context.convention, entry, "convention")
+                if not site.proven and any(
+                    sc not in (DOUBLE, SIGNED) for sc in convention.parameters
+                ):
+                    continue
+                if assertion_vop is not None:
+                    delivered = vop.results[0].tn
+                    block = block_by_vop[vop]
+                    block.vops.remove(assertion_vop)
+                    component.reads.pop(delivered, None)
+                    component.writes.pop(delivered, None)
+                    vop.results[0] = TNRef(result, True)
+                    component.writes[result] = [(vop, vop.results[0])]
                 restrictions = tuple(
                     (DESCRIPTOR, DOUBLE)
                     if sc is DOUBLE
@@ -2749,7 +2917,15 @@ class ModuleGenerator:
                         else (IMMEDIATE, SIGNED),
                     ),
                 )
-                vop.codegen_info = entry
+                vop.codegen_info = (
+                    entry
+                    if site.proven
+                    else replace(
+                        entry,
+                        proven=False,
+                        result_contract=result_contract,
+                    )
+                )
                 progress = changed = True
             if not progress:
                 break
@@ -3786,10 +3962,48 @@ class _ArgumentGuard(ValueTypeVisitor):
         return self.gen.operation(f"and i1 {known}, {same}")
 
     def visit_ListType(self, fact: ListType) -> str:
-        if fact.element != UNKNOWN or fact.may_be_unbound:
+        if fact.may_be_unbound:
             return self.visit_ValueType(fact)
         matched = self.gen.operation(f"call i32 @mule_exact_list(ptr {self.value})")
-        return self.gen.operation(f"icmp ne i32 {matched}, 0")
+        valid = self.gen.operation(f"icmp ne i32 {matched}, 0")
+        if fact.element is UNKNOWN:
+            return valid
+        start = self.gen.fresh("guard.list.start")[1:]
+        header = self.gen.fresh("guard.list.header")[1:]
+        loop = self.gen.fresh("guard.list.loop")[1:]
+        body = self.gen.fresh("guard.list.body")[1:]
+        step = self.gen.fresh("guard.list.step")[1:]
+        done = self.gen.fresh("guard.list.done")[1:]
+        self.gen.line(f"br label %{start}")
+        self.gen.lines.append(start + ":")
+        self.gen.line(f"br i1 {valid}, label %{header}, label %{done}")
+        self.gen.lines.append(header + ":")
+        len_addr = self.gen.operation(
+            f"getelementptr i64, ptr {self.value}, i64 {vops.VALUE_BUFFER_LENGTH_OFFSET // 8}"
+        )
+        length = self.gen.operation(f"load i64, ptr {len_addr}")
+        data_addr = self.gen.operation(
+            f"getelementptr ptr, ptr {self.value}, i64 {vops.VALUE_BUFFER_DATA_OFFSET // 8}"
+        )
+        data = self.gen.operation(f"load ptr, ptr {data_addr}")
+        self.gen.line(f"br label %{loop}")
+        self.gen.lines.append(loop + ":")
+        idx = self.gen.operation(f"phi i64 [0, %{header}], [%next.{step}, %{step}]")
+        at_end = self.gen.operation(f"icmp eq i64 {idx}, {length}")
+        self.gen.line(f"br i1 {at_end}, label %{done}, label %{body}")
+        self.gen.lines.append(body + ":")
+        slot = self.gen.operation(f"getelementptr ptr, ptr {data}, i64 {idx}")
+        item = self.gen.operation(f"load ptr, ptr {slot}")
+        elem_valid = fact.element.accept(_ArgumentGuard(self.gen, item))
+        elem_end = self.gen.current_block()
+        self.gen.line(f"br i1 {elem_valid}, label %{step}, label %{done}")
+        self.gen.lines.append(step + ":")
+        self.gen.lines.append(f"  %next.{step} = add i64 {idx}, 1")
+        self.gen.line(f"br label %{loop}")
+        self.gen.lines.append(done + ":")
+        return self.gen.operation(
+            f"phi i1 [false, %{start}], [true, %{loop}], [false, %{elem_end}]"
+        )
 
     def visit_DictType(self, fact) -> str:
         if (
@@ -5000,10 +5214,48 @@ class FunctionGenerator:
             else:
                 converted.append(self.load(ref))
         callee = self.load(callable_ref)
+        if not entry.proven:
+            self.uses_numeric_error = True
+            self.line("store i1 false, ptr %numeric.error")
+            self.take(callable_ref)
+            raw_owned = []
+            for ref, sc in zip(arguments, convention.parameters, strict=True):
+                taken = self.take(ref)
+                if sc is not DESCRIPTOR and ref.tn.sc in OBJECT:
+                    raw_owned.append(taken)
+            operands = [
+                f"ptr {callee}",
+                "ptr %numeric.error",
+                *(
+                    f"{sc.llvm_type} {value}"
+                    for sc, value in zip(convention.parameters, converted, strict=True)
+                ),
+            ]
+            helper = self.module.guarded_numeric_call_helper(entry)
+            value = self.operation(
+                f"call {convention.returned.llvm_type} {helper}({', '.join(operands)})"
+            )
+            for owned in raw_owned:
+                self.release(owned)
+            self.release(callee)
+            failed = self.operation("load i1, ptr %numeric.error")
+            self.guard(failed)
+            result = vop.results[0]
+            if convention.returned is SIGNED and result.tn.sc in OBJECT:
+                self.native_result(result, self.encode(value))
+            else:
+                self.store(result, value)
+            return
         local_environment = self.module.local_environments.is_local(entry.function)
+        same_namespace = runtime_namespace(
+            entry.function.namespace
+        ) == runtime_namespace(self.lambda_.namespace)
         if local_environment:
             callee_globals = "%globals"
             closure = callee if self.module.closure_of(entry.function) else None
+        elif same_namespace and not self.module.closure_of(entry.function):
+            callee_globals = "%globals"
+            closure = None
         else:
             self.operation(
                 f"call ptr @mule_method_entry(ptr {callee}, ptr %callee.globals.slot)"
@@ -5145,6 +5397,20 @@ class FunctionGenerator:
             self.lines.append(continuation + ":")
         return self.operation(f"{opcode} double {left}, {right}")
 
+    def float_sqrt(self, value: str, *, check_domain=True) -> str:
+        if check_domain:
+            neg = self.operation(f"fcmp olt double {value}, 0.0")
+            failed, continuation = (
+                self.fresh("domain_err")[1:],
+                self.fresh("sqrt_ok")[1:],
+            )
+            self.line(f"br i1 {neg}, label %{failed}, label %{continuation}")
+            self.lines.append(failed + ":")
+            self.line("call i32 @mule_math_domain_error()")
+            self.line(f"br label %{self.failure_target()}")
+            self.lines.append(continuation + ":")
+        return self.operation(f"call double @llvm.sqrt.f64(double {value})")
+
     def field_address(self, tn, owner: str, name: str) -> str:
         layout = tn.primitive_type.layout
         index = layout.info.fields.index(name)
@@ -5265,7 +5531,9 @@ class FunctionGenerator:
             return result
         if info.exact_bytearray_append:
             arg = arguments[0]
-            result = self.sequence_call("bytearray_append", [receiver, arg])
+            result = self.operation(
+                f"call ptr @mule_bytearray_append_fast(ptr {receiver}, ptr {arg})"
+            )
             self.release(receiver)
             self.release(arg)
             self.immortal_values.add(result)
@@ -5538,7 +5806,13 @@ class FunctionGenerator:
             and self.context.rejected_fixnum_guard is None
             else "internal "
         )
-        plan = self.module.native_plans.get(self.lambda_)
+        plan = (
+            self.module.native_plans.get(self.lambda_)
+            if self.convention is None
+            and not self.unpacked
+            and self.context.rejected_fixnum_guard is None
+            else None
+        )
         if plan is not None:
             adapt_return = linked(
                 plan.returned, plan, "returned representation"

@@ -310,6 +310,9 @@ class ValueType:
     def limit_container_depth(self, max_depth: int = 3):
         return self
 
+    def has_float_specialization(self) -> bool:
+        return False
+
     def runtime_class_type(self):
         return UNKNOWN
 
@@ -667,6 +670,9 @@ class ValueType:
     def fits_list(self, expected=None):
         return False
 
+    def fits_list_dispatch(self, expected):
+        return False
+
     def fits_possible_list(self, expected=None):
         return False
 
@@ -761,9 +767,7 @@ class UnknownType(ValueType):
         return not self.may_be_unbound
 
     def fits_possible_list(self, expected=None):
-        return not self.may_be_unbound and (
-            expected is None or expected.element is UNKNOWN
-        )
+        return not self.may_be_unbound
 
     def fits_possible_dict(self, expected=None):
         return not self.may_be_unbound and (
@@ -1429,6 +1433,9 @@ class FloatType(PrimitiveType):
         return actual.fits_possible_float(self)
 
     def fits_float(self, expected):
+        return not self.may_be_unbound
+
+    def has_float_specialization(self) -> bool:
         return not self.may_be_unbound
 
 
@@ -2445,6 +2452,13 @@ class TupleType(ValueType):
             return self
         return TupleType(self.arity, limited, self.may_be_unbound)
 
+    def has_float_specialization(self) -> bool:
+        return (
+            not self.may_be_unbound
+            and self.elements is not None
+            and any(el.has_float_specialization() for el in self.elements)
+        )
+
     def update_nested_lists(self, elem_type):
         if self.elements is None:
             return self
@@ -2835,7 +2849,7 @@ class ListType(ValueType):
         return actual.fits_list(self)
 
     def accepts_dispatch(self, actual):
-        return actual.fits_list(self)
+        return actual.fits_list_dispatch(self)
 
     def accepts_possible_dispatch(self, actual):
         return actual.fits_possible_list(self)
@@ -2849,6 +2863,13 @@ class ListType(ValueType):
             return True
         return self.element.fits(expected.element)
 
+    def fits_list_dispatch(self, expected):
+        if self.may_be_unbound and not expected.may_be_unbound:
+            return False
+        if expected.element is UNKNOWN or self.element is BOTTOM:
+            return True
+        return self.element.dispatch_fits(expected.element)
+
     def fits_possible_list(self, expected=None):
         if expected is None:
             return not self.may_be_unbound
@@ -2860,7 +2881,7 @@ class ListType(ValueType):
             or self.element is BOTTOM
         ):
             return True
-        return self.element.fits(expected.element)
+        return self.element.may_dispatch_fit(expected.element)
 
     def getitem_type(self, index):
         if self.may_be_unbound or index.may_be_unbound:
@@ -4774,6 +4795,10 @@ def _integer_binary(operator, left, right, factory=IntegerType):
             else:
                 values = [lo >> rlo, lo >> rhi, hi >> rlo, hi >> rhi]
             minimum, maximum = min(values), max(values)
+        elif lo >= 0 and 0 <= rlo <= 256:
+            if operator == ast.BinaryOperator.LEFT_SHIFT:
+                return IntegerType(lo << rlo, None)
+            return IntegerType(0, hi >> rlo)
     elif operator == ast.BinaryOperator.FLOOR_DIVIDE:
         if rlo > 0 or rhi < 0:
             values = [lo // rlo, lo // rhi, hi // rlo, hi // rhi]

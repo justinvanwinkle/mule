@@ -23,7 +23,7 @@ from mule import ast
 
 from . import fndb
 from .annotation_types import ContractVisitor
-from .ctype import INTEGER, PYTHON_INTEGER, REAL, UNKNOWN, ValueTypeVisitor
+from .ctype import FLOAT, INTEGER, PYTHON_INTEGER, REAL, UNKNOWN, ValueTypeVisitor
 from .vmdef import define_vop
 from .vop import (
     BOOLEAN,
@@ -34,6 +34,7 @@ from .vop import (
     CLASS,
     DESCRIPTOR,
     DOUBLE,
+    FIXNUM,
     FLOAT_BOX_LAYOUT,
     IMMEDIATE,
     INSTANCE,
@@ -1218,6 +1219,211 @@ def _boxed_float_binary(operator, opcode):
 
 for _operator, _opcode in _RAW_FLOAT_BINARY.items():
     _boxed_float_binary(_operator, _opcode)
+
+
+def _mixed_float_binary(operator, opcode, left_float: bool):
+    arg_scs = (
+        ((DESCRIPTOR, DOUBLE), (IMMEDIATE,))
+        if left_float
+        else ((IMMEDIATE,), (DESCRIPTOR, DOUBLE))
+    )
+    arg_ptypes = (
+        ((BOXED_FLOAT,), (FIXNUM, BOOLEAN_T))
+        if left_float
+        else ((FIXNUM, BOOLEAN_T), (BOXED_FLOAT,))
+    )
+    side = "left" if left_float else "right"
+
+    @define_vop(
+        f"mixed-float-{operator.name.lower()}-{side}",
+        translate=fndb.BINARY[operator],
+        also_translate=(fndb.INPLACE_BINARY[operator],),
+        args=arg_scs,
+        results=((DESCRIPTOR, DOUBLE),),
+        arg_types=arg_ptypes,
+        result_types=((BOXED_FLOAT,),),
+        cost=-1,
+        fresh_result=True,
+        arg_escapes=(False, False),
+    )
+    def generator(gen, vop):
+        if left_float:
+            left_f64 = unbox_float_operand(gen, vop.args[0])
+            right_i64 = _decode_fixnum_operand(gen, vop.args[1])
+            right_f64 = gen.operation(f"sitofp i64 {right_i64} to double")
+        else:
+            left_i64 = _decode_fixnum_operand(gen, vop.args[0])
+            left_f64 = gen.operation(f"sitofp i64 {left_i64} to double")
+            right_f64 = unbox_float_operand(gen, vop.args[1])
+        value = gen.float_arithmetic(opcode, left_f64, right_f64, check_zero=True)
+        float_op = vop.args[0] if left_float else vop.args[1]
+        taken = gen.take(float_op)
+        consumed = [taken] if float_op.tn.sc is DESCRIPTOR else []
+        if vop.results[0].tn.sc is DOUBLE:
+            gen.store(vop.results[0], value)
+            for operand in consumed:
+                gen.release(operand)
+            return
+        operation = f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {value})"
+        gen.pointer_result(vop.results[0], operation, consumed)
+
+
+for _operator, _opcode in _RAW_FLOAT_BINARY.items():
+    _mixed_float_binary(_operator, _opcode, True)
+    _mixed_float_binary(_operator, _opcode, False)
+
+
+@define_vop(
+    "boxed-float-math-sqrt",
+    translate=fndb.MATH_SQRT,
+    args=((DESCRIPTOR, DOUBLE),),
+    results=((DESCRIPTOR, DOUBLE),),
+    arg_types=((BOXED_FLOAT,),),
+    result_types=((BOXED_FLOAT,),),
+    cost=-1,
+    fresh_result=True,
+    arg_escapes=(False,),
+)
+def boxed_float_math_sqrt(gen, vop):
+    operand = vop.args[0]
+    raw = unbox_float_operand(gen, operand)
+    value = gen.float_sqrt(raw)
+    taken = gen.take(operand)
+    consumed = [taken] if operand.tn.sc is DESCRIPTOR else []
+    if vop.results[0].tn.sc is DOUBLE:
+        gen.store(vop.results[0], value)
+        for item in consumed:
+            gen.release(item)
+        return
+    gen.pointer_result(
+        vop.results[0],
+        f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {value})",
+        consumed,
+    )
+
+
+@define_vop(
+    "math-sqrt",
+    translate=fndb.MATH_SQRT,
+    args=(OBJECT,),
+    results=(OBJECT,),
+)
+def math_sqrt(gen, vop):
+    operand = vop.args[0]
+    op_type = operand.tn.type or UNKNOWN
+    if op_type.is_fixnum:
+        raw = gen.decode(gen.take(operand))
+        fval = gen.operation(f"sitofp i64 {raw} to double")
+        check_domain = op_type.minimum is None or op_type.minimum < 0
+        res = gen.float_sqrt(fval, check_domain=check_domain)
+        gen.pointer_result(
+            vop.results[0],
+            f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {res})",
+        )
+        return
+    val = gen.take(operand)
+    slot = gen.operation("alloca double")
+    status = gen.operation(f"call i32 @mule_unbox_real(ptr {val}, ptr {slot})")
+    gen.release(val)
+    gen.check_status(status)
+    fval = gen.operation(f"load double, ptr {slot}")
+    res = gen.float_sqrt(fval)
+    gen.pointer_result(
+        vop.results[0],
+        f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {res})",
+    )
+
+
+def _define_minmax2(name, info, is_max: bool):
+    int_pred = "slt" if is_max else "sgt"
+    cmp_opcode = (
+        COMPARE_OPCODES[ast.ComparisonOperator.GREATER]
+        if is_max
+        else COMPARE_OPCODES[ast.ComparisonOperator.LESS]
+    )
+
+    @define_vop(
+        name,
+        translate=info,
+        args=(OBJECT, OBJECT),
+        results=(OBJECT,),
+    )
+    def generator(gen, vop):
+        result = vop.results[0]
+        left, right = vop.args
+        lhs, rhs = gen.take(left), gen.take(right)
+        left_type = left.tn.type or UNKNOWN
+        right_type = right.tn.type or UNKNOWN
+        if left_type.is_fixnum and right_type.is_fixnum:
+            a, b = gen.decode(lhs), gen.decode(rhs)
+            pick_right = gen.operation(f"icmp {int_pred} i64 {a}, {b}")
+            chosen = gen.operation(f"select i1 {pick_right}, ptr {rhs}, ptr {lhs}")
+            gen.native_result(result, chosen, (lhs, rhs))
+            return
+        left_bits = gen.operation(f"ptrtoint ptr {lhs} to i64")
+        right_bits = gen.operation(f"ptrtoint ptr {rhs} to i64")
+        tags = gen.operation(f"and i64 {left_bits}, {right_bits}")
+        tag = gen.operation(f"and i64 {tags}, 1")
+        both_fix = gen.operation(f"icmp ne i64 {tag}, 0")
+        fast_lbl, slow_lbl, done_lbl = (
+            gen.fresh("minmax.fast")[1:],
+            gen.fresh("minmax.slow")[1:],
+            gen.fresh("minmax.done")[1:],
+        )
+        gen.line(f"br i1 {both_fix}, label %{fast_lbl}, label %{slow_lbl}")
+        gen.lines.append(fast_lbl + ":")
+        fast_pick_right = gen.operation(
+            f"icmp {int_pred} i64 {left_bits}, {right_bits}"
+        )
+        fast_chosen = gen.operation(
+            f"select i1 {fast_pick_right}, ptr {rhs}, ptr {lhs}"
+        )
+        gen.line(f"br label %{done_lbl}")
+        gen.lines.append(slow_lbl + ":")
+        cmp_obj = gen.operation(
+            f"call ptr @mule.fast.compare.{cmp_opcode}(ptr {rhs}, ptr {lhs})"
+        )
+        if not cmp_obj.startswith("@"):
+            bad = gen.operation(f"icmp eq ptr {cmp_obj}, null")
+            fail_lbl, ok_lbl = (
+                gen.fresh("minmax.fail")[1:],
+                gen.fresh("minmax.ok")[1:],
+            )
+            gen.line(f"br i1 {bad}, label %{fail_lbl}, label %{ok_lbl}")
+            gen.lines.append(fail_lbl + ":")
+            gen.release(lhs)
+            gen.release(rhs)
+            gen.line(f"br label %{gen.failure_target('error')}")
+            gen.lines.append(ok_lbl + ":")
+        truth = gen.operation(f"call i32 @mule.fast.truth(ptr {cmp_obj})")
+        gen.release(cmp_obj)
+        bad_truth = gen.operation(f"icmp slt i32 {truth}, 0")
+        tfail_lbl, tok_lbl = (
+            gen.fresh("minmax.tfail")[1:],
+            gen.fresh("minmax.tok")[1:],
+        )
+        gen.line(f"br i1 {bad_truth}, label %{tfail_lbl}, label %{tok_lbl}")
+        gen.lines.append(tfail_lbl + ":")
+        gen.release(lhs)
+        gen.release(rhs)
+        gen.line(f"br label %{gen.failure_target('error')}")
+        gen.lines.append(tok_lbl + ":")
+        pick_right = gen.operation(f"icmp ne i32 {truth}, 0")
+        slow_chosen = gen.operation(f"select i1 {pick_right}, ptr {rhs}, ptr {lhs}")
+        discarded = gen.operation(f"select i1 {pick_right}, ptr {lhs}, ptr {rhs}")
+        gen.release(discarded)
+        slow_end = gen.current_block()
+        gen.line(f"br label %{done_lbl}")
+        gen.lines.append(done_lbl + ":")
+        merged = gen.operation(
+            f"phi ptr [{fast_chosen}, %{fast_lbl}], [{slow_chosen}, %{slow_end}]"
+        )
+        gen.publish(result, merged)
+        gen.refine(result.tn, merged)
+
+
+_define_minmax2("min2", fndb.MIN2, False)
+_define_minmax2("max2", fndb.MAX2, True)
 
 
 def _boxed_float_unary(operator, negate: bool):
@@ -2493,13 +2699,39 @@ def _exact_dict_call(gen, vop, name):
 
 @define_vop("protocol-getitem", translate=fndb.PROTOCOLS["getitem"], results=(OBJECT,))
 def protocol_getitem(gen, vop):
-    if (vop.args[0].tn.type or UNKNOWN).fits_dict():
+    seq_type = vop.args[0].tn.type or UNKNOWN
+    idx_type = vop.args[1].tn.type or UNKNOWN
+    if seq_type.fits_dict():
         _exact_dict_call(gen, vop, "dict_getitem")
         return
-    if (vop.args[0].tn.type or UNKNOWN).fits_bytearray() and (
-        vop.args[1].tn.type or UNKNOWN
-    ).fits(PYTHON_INTEGER):
+    if seq_type.fits_bytearray() and idx_type.fits(PYTHON_INTEGER):
+        if idx_type.is_fixnum:
+            sequence = gen.take(vop.args[0])
+            index = gen.take(vop.args[1])
+            result = gen.operation(
+                f"call ptr @mule_bytearray_getitem_fast(ptr {sequence}, ptr {index})"
+            )
+            gen.immortal_values.add(result)
+            gen.release(sequence)
+            gen.release(index)
+            gen.publish(vop.results[0], result)
+            gen.check_pointer(result)
+            gen.refine(vop.results[0].tn, result)
+            return
         _exact_dict_call(gen, vop, "bytearray_getitem")
+        return
+    if seq_type.fits_bytes(seq_type) and idx_type.is_fixnum:
+        sequence = gen.take(vop.args[0])
+        index = gen.take(vop.args[1])
+        result = gen.operation(
+            f"call ptr @mule_bytes_getitem(ptr {sequence}, ptr {index})"
+        )
+        gen.immortal_values.add(result)
+        gen.release(sequence)
+        gen.release(index)
+        gen.publish(vop.results[0], result)
+        gen.check_pointer(result)
+        gen.refine(vop.results[0].tn, result)
         return
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])
@@ -2621,14 +2853,142 @@ def text_slice2_compare(gen, vop):
     )
 
 
-@define_vop("protocol-setitem", translate=fndb.PROTOCOLS["setitem"], results=(OBJECT,))
+@define_vop(
+    "protocol-setitem",
+    translate=fndb.PROTOCOLS["setitem"],
+    args=(OBJECT, OBJECT, (*OBJECT, DOUBLE)),
+    results=(OBJECT,),
+)
 def protocol_setitem(gen, vop):
-    if (vop.args[0].tn.type or UNKNOWN).fits_dict():
+    seq_type = vop.args[0].tn.type or UNKNOWN
+    idx_type = vop.args[1].tn.type or UNKNOWN
+    if vop.args[2].tn.sc is DOUBLE:
+        sequence = gen.take(vop.args[0])
+        index = gen.take(vop.args[1])
+        raw_item = gen.take(vop.args[2])
+        if (
+            seq_type.is_exact_list
+            and idx_type.is_fixnum
+            and seq_type.iterate_type().next_item_type() == FLOAT
+        ):
+            non_negative = idx_type.minimum is not None and idx_type.minimum >= 0
+            bits = gen.operation(f"ptrtoint ptr {index} to i64")
+            raw_idx = gen.operation(f"ashr i64 {bits}, 1")
+            len_addr = gen.operation(
+                f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
+            )
+            length = gen.operation(f"load i64, ptr {len_addr}")
+            if non_negative:
+                pos = raw_idx
+            else:
+                neg = gen.operation(f"icmp slt i64 {raw_idx}, 0")
+                wrapped = gen.operation(f"add i64 {raw_idx}, {length}")
+                pos = gen.operation(f"select i1 {neg}, i64 {wrapped}, i64 {raw_idx}")
+            inside = gen.operation(f"icmp ult i64 {pos}, {length}")
+            set_lbl = gen.fresh("list.fset")[1:]
+            reuse_lbl = gen.fresh("list.freuse")[1:]
+            alloc_lbl = gen.fresh("list.falloc")[1:]
+            slow_lbl = gen.fresh("list.fslow")[1:]
+            done_lbl = gen.fresh("list.fdone")[1:]
+            gen.line(
+                f"br i1 {inside}, label %{set_lbl}, label %{slow_lbl}, "
+                f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+            )
+            gen.lines.append(set_lbl + ":")
+            data_addr = gen.operation(
+                f"getelementptr ptr, ptr {sequence}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
+            )
+            data = gen.operation(f"load ptr, ptr {data_addr}")
+            slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {pos}")
+            old_box = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
+            refs = gen.operation(f"load i64, ptr {old_box}")
+            exclusive = gen.operation(f"icmp eq i64 {refs}, 1")
+            gen.line(
+                f"br i1 {exclusive}, label %{reuse_lbl}, label %{alloc_lbl}, "
+                f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+            )
+            gen.lines.append(reuse_lbl + ":")
+            payload = gen.operation(
+                f"getelementptr i8, ptr {old_box}, i64 {FLOAT_BOX_LAYOUT.payload_offset}"
+            )
+            gen.line(f"store double {raw_item}, ptr {payload}")
+            gen.line(f"br label %{done_lbl}")
+            gen.lines.append(alloc_lbl + ":")
+            new_box = gen.operation(
+                f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {raw_item})"
+            )
+            gen.line(f"store ptr {new_box}, ptr {slot}")
+            gen.line(f"call void @mule.fast.release(ptr {old_box})")
+            gen.line(f"br label %{done_lbl}")
+            gen.lines.append(slow_lbl + ":")
+            slow_box = gen.operation(
+                f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {raw_item})"
+            )
+            helper = gen.module.setitem_helper(move=True)
+            slow_res = gen.operation(
+                f"call ptr {helper}(ptr {sequence}, ptr {index}, ptr {slow_box})"
+            )
+            slow_end = gen.current_block()
+            gen.line(f"br label %{done_lbl}")
+            gen.lines.append(done_lbl + ":")
+            result = gen.operation(
+                f"phi ptr [@mule.none, %{reuse_lbl}], [@mule.none, %{alloc_lbl}], [{slow_res}, %{slow_end}]"
+            )
+            gen.immortal_values.add(result)
+            gen.release(sequence)
+            gen.release(index)
+            gen.publish(vop.results[0], result)
+            gen.check_pointer(result)
+            gen.refine(vop.results[0].tn, result)
+            return
+        boxed_item = gen.operation(
+            f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {raw_item})"
+        )
+        helper = gen.module.setitem_helper(move=True)
+        result = gen.operation(
+            f"call ptr {helper}(ptr {sequence}, ptr {index}, ptr {boxed_item})"
+        )
+        gen.immortal_values.add(result)
+        gen.release(sequence)
+        gen.release(index)
+        gen.publish(vop.results[0], result)
+        gen.check_pointer(result)
+        gen.refine(vop.results[0].tn, result)
+        return
+    if seq_type.fits_dict():
         _exact_dict_call(gen, vop, "dict_setitem")
         return
-    if (vop.args[0].tn.type or UNKNOWN).fits_bytearray() and (
-        vop.args[1].tn.type or UNKNOWN
-    ).fits(PYTHON_INTEGER):
+    if seq_type.fits_bytearray() and idx_type.fits(PYTHON_INTEGER):
+        if idx_type.is_fixnum:
+            sequence = gen.take(vop.args[0])
+            index = gen.take(vop.args[1])
+            item = gen.take(vop.args[2])
+            status = gen.operation(
+                f"call i32 @mule_bytearray_setitem_fast(ptr {sequence}, ptr {index}, ptr {item})"
+            )
+            hit = gen.operation(f"icmp ne i32 {status}, 0")
+            done_lbl, slow_lbl = (
+                gen.fresh("bytearray.set.done")[1:],
+                gen.fresh("bytearray.set.slow")[1:],
+            )
+            fast_end = gen.current_block()
+            gen.line(f"br i1 {hit}, label %{done_lbl}, label %{slow_lbl}")
+            gen.lines.append(slow_lbl + ":")
+            slow = gen.sequence_call("bytearray_setitem", [sequence, index, item])
+            slow_end = gen.current_block()
+            gen.line(f"br label %{done_lbl}")
+            gen.lines.append(done_lbl + ":")
+            result = gen.operation(
+                f"phi ptr [@mule.none, %{fast_end}], [{slow}, %{slow_end}]"
+            )
+            gen.immortal_values.add(result)
+            gen.release(sequence)
+            gen.release(index)
+            gen.release(item)
+            gen.publish(vop.results[0], result)
+            gen.check_pointer(result)
+            gen.refine(vop.results[0].tn, result)
+            return
         _exact_dict_call(gen, vop, "bytearray_setitem")
         return
     sequence = gen.take(vop.args[0])
@@ -2677,9 +3037,12 @@ def unpack_ref(gen, vop):
     parent = gen.load(vop.args[0]) if access.borrow_parent else gen.take(vop.args[0])
     position = gen.take(vop.args[1])
     if access.proved:
-        result = gen.operation(
-            f"call ptr @mule.fast.tuple.slot(ptr {parent}, i64 {access.index})"
+        helper = (
+            "@mule.fast.tuple.borrow"
+            if access.borrow_element
+            else "@mule.fast.tuple.slot"
         )
+        result = gen.operation(f"call ptr {helper}(ptr {parent}, i64 {access.index})")
     else:
         result = gen.operation(
             f"call ptr @mule_storage_read(ptr {parent}, ptr {position})"
@@ -3203,11 +3566,87 @@ def raw_construct(gen, vop):
     gen.store(vop.results[0], instance)
 
 
+@define_vop(
+    "raw-min2",
+    translate=fndb.MIN2,
+    args=((SIGNED,), (SIGNED,)),
+    results=((SIGNED,),),
+    ltn_policy=RAW,
+)
+def raw_min2(gen, vop):
+    left, right = gen.take(vop.args[0]), gen.take(vop.args[1])
+    cmp = gen.operation(f"icmp sgt i64 {left}, {right}")
+    gen.store(
+        vop.results[0], gen.operation(f"select i1 {cmp}, i64 {right}, i64 {left}")
+    )
+
+
+@define_vop(
+    "raw-max2",
+    translate=fndb.MAX2,
+    args=((SIGNED,), (SIGNED,)),
+    results=((SIGNED,),),
+    ltn_policy=RAW,
+)
+def raw_max2(gen, vop):
+    left, right = gen.take(vop.args[0]), gen.take(vop.args[1])
+    cmp = gen.operation(f"icmp slt i64 {left}, {right}")
+    gen.store(
+        vop.results[0], gen.operation(f"select i1 {cmp}, i64 {right}, i64 {left}")
+    )
+
+
+@define_vop(
+    "raw-float-min2",
+    translate=fndb.MIN2,
+    args=((DOUBLE,), (DOUBLE,)),
+    results=((DOUBLE,),),
+    cost=1,
+    ltn_policy=RAW,
+)
+def raw_float_min2(gen, vop):
+    left, right = gen.take(vop.args[0]), gen.take(vop.args[1])
+    cmp = gen.operation(f"fcmp ogt double {left}, {right}")
+    gen.store(
+        vop.results[0], gen.operation(f"select i1 {cmp}, double {right}, double {left}")
+    )
+
+
+@define_vop(
+    "raw-float-max2",
+    translate=fndb.MAX2,
+    args=((DOUBLE,), (DOUBLE,)),
+    results=((DOUBLE,),),
+    cost=1,
+    ltn_policy=RAW,
+)
+def raw_float_max2(gen, vop):
+    left, right = gen.take(vop.args[0]), gen.take(vop.args[1])
+    cmp = gen.operation(f"fcmp olt double {left}, {right}")
+    gen.store(
+        vop.results[0], gen.operation(f"select i1 {cmp}, double {right}, double {left}")
+    )
+
+
+@define_vop(
+    "raw-math-sqrt",
+    translate=fndb.MATH_SQRT,
+    args=((DOUBLE, SIGNED),),
+    results=((DOUBLE,),),
+    cost=1,
+    ltn_policy=RAW,
+)
+def raw_math_sqrt(gen, vop):
+    value = gen.double(vop.args[0])
+    gen.store(vop.results[0], gen.float_sqrt(value))
+
+
 # Runtime helper templates shared by the object templates.
 
 INTRINSICS = """declare {i64, i1} @llvm.sadd.with.overflow.i64(i64, i64)
 declare {i64, i1} @llvm.ssub.with.overflow.i64(i64, i64)
 declare {i64, i1} @llvm.smul.with.overflow.i64(i64, i64)
+declare double @llvm.sqrt.f64(double)
 @mule.true = external global i8, align 8
 @mule.false = external global i8, align 8
 @mule.none = external global i8, align 8

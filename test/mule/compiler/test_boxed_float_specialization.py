@@ -267,3 +267,112 @@ def captured():
 captured()
 """,
     )
+
+
+def test_list_float_indexing_setitem_and_math_sqrt_lower_to_unboxed_doubles(tmp_path):
+    source = """
+import math
+
+def step(body_a: list[float], body_b: list[float], dt: float) -> float:
+    dx = body_a[0] - body_b[0]
+    dy = body_a[1] - body_b[1]
+    dist = math.sqrt(dx * dx + dy * dy)
+    mag = dt / (dist * dist * dist)
+    body_a[3] -= dx * body_b[6] * mag
+    body_b[3] += dx * body_a[6] * mag
+    return body_a[3] + body_b[3]
+
+a = [1.0, 2.0, 0.0, 0.5, 0.0, 0.0, 2.0]
+b = [4.0, 6.0, 0.0, -0.25, 0.0, 0.0, 3.0]
+print(round(step(a, b, 0.01), 12))
+print(round(a[3], 12), round(b[3], 12))
+try:
+    math.sqrt(-1.0)
+except ValueError as exc:
+    print("sqrt error:", type(exc).__name__)
+"""
+    llvm = emit_llvm(source)
+    assert "call double @llvm.sqrt.f64(double" in llvm
+    assert "@mule_list_getitem_borrow(" in llvm
+    assert "call double @mule.box.f64.load(" in llvm
+    compare(tmp_path, source)
+
+
+def test_min2_and_max2_specialize_inline_and_preserve_first_operand_on_ties(tmp_path):
+    source = """
+def clamp_int(x: int, lo: int, hi: int) -> int:
+    return min(max(x, lo), hi)
+
+def clamp_float(x: float, lo: float, hi: float) -> float:
+    return min(max(x, lo), hi)
+
+print(clamp_int(-5, 0, 10), clamp_int(5, 0, 10), clamp_int(15, 0, 10))
+print(clamp_float(-5.5, 0.0, 10.0), clamp_float(5.5, 0.0, 10.0), clamp_float(15.5, 0.0, 10.0))
+a = [1, 2]
+b = [1, 2]
+print(min(a, b) is a, max(a, b) is a)
+"""
+    llvm = emit_llvm(source)
+    assert "select i1" in llvm
+    compare(tmp_path, source)
+
+
+def test_bytes_and_bytearray_fast_indexing_length_and_append(tmp_path):
+    source = """
+def transform(packet: bytes) -> int:
+    buf = bytearray()
+    n = len(packet)
+    i = 0
+    while i < n:
+        buf.append((packet[i] ^ (i & 255)) & 255)
+        i += 1
+    if len(buf) > 1:
+        buf[0] = (buf[0] + buf[-1]) & 255
+    total = 0
+    for b in buf:
+        total = (total + b) & 0xFFFFFFFF
+    return total
+
+print(transform(b"hello world"))
+print(transform(b"\\x00\\xff\\x7f\\x80"))
+"""
+    llvm = emit_llvm(source)
+    assert "@mule_bytes_getitem(" in llvm
+    assert "@mule_bytearray_append_fast(" in llvm
+    assert "@mule_bytearray_getitem_fast(" in llvm
+    assert "@mule_bytearray_setitem_fast(" in llvm
+    compare(tmp_path, source)
+
+
+def test_exact_list_getitem_tuple_unpack_borrows_container_and_elements(tmp_path):
+    source = """
+def binary_search_intervals(n: int) -> int:
+    merged: list[tuple[int, int, int]] = [(0, 2, 1), (4, 6, 2), (8, 10, 3), (12, 14, 4)]
+    checksum = 0
+    for q in range(n):
+        lo = 0
+        hi = len(merged) - 1
+        matched_weight = 0
+        while lo <= hi:
+            mid = (lo + hi) >> 1
+            m_start, m_end, m_weight = merged[mid]
+            if m_end < q:
+                lo = mid + 1
+            elif q < m_start:
+                hi = mid - 1
+            else:
+                matched_weight = m_weight
+                break
+        checksum += matched_weight
+    return checksum
+
+print(binary_search_intervals(16))
+"""
+    llvm = emit_llvm(source)
+    body = llvm.split('define internal ptr @"mule_fn_binary_search_intervals.spec.1"')[
+        1
+    ].split("\n}")[0]
+    assert "call ptr @mule_list_getitem_borrow(" in body
+    assert "call ptr @mule.fast.tuple.borrow(" in body
+    assert "call ptr @mule.fast.tuple.slot(" not in body
+    compare(tmp_path, source)

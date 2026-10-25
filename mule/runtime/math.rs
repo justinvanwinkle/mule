@@ -364,6 +364,33 @@ unsafe extern "C" fn integer_decimal(_: Value, args: Value) -> Value {
     }
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_math_domain_error() -> i32 {
+    object::error("ValueError", "math domain error");
+    -1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_unbox_real(value: Value, out: *mut f64) -> i32 {
+    unsafe {
+        if object::is_fixnum(value) {
+            *out = object::fixnum(value) as f64;
+            return 0;
+        }
+        if !value.is_null() {
+            if let Data::Float(number, ..) = &(*value).data {
+                *out = *number;
+                return 0;
+            }
+        }
+        let Some(number) = numeric::number_double(value) else {
+            return -1;
+        };
+        *out = number;
+        0
+    }
+}
+
 /// Bind physical operations into the existing compiler-owned native namespace.
 pub unsafe fn populate(globals: Value) -> bool {
     unsafe {

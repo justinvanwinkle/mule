@@ -56,6 +56,7 @@ from .node import (
     Constant,
     CtranKind,
     Exit,
+    FunctionalKind,
     GlobalVar,
     If,
     LambdaVar,
@@ -286,8 +287,105 @@ _PROTOCOL_PREFIXES = (
 )
 
 
+class _ImportedModuleOrigin(NodeVisitor, LeafVisitor):
+    """Resolve the module name an imported module object lvar originates from."""
+
+    def __init__(self):
+        self._active_aliases: set[LambdaVar] = set()
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is fndb.IMPORT
+            and node.info is not None
+        ):
+            return node.info.module_name
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if leaf.home is not None and leaf in leaf.home.vars:
+            return None
+        if leaf in self._active_aliases or len(leaf.sets) != 1:
+            return None
+        val = leaf.sets[0].value
+        if val is None or len(val.uses) != 1:
+            return None
+        self._active_aliases.add(leaf)
+        try:
+            return val.uses[0].accept(self)
+        finally:
+            self._active_aliases.remove(leaf)
+
+
+class _ImportedAttrOrigin(NodeVisitor, LeafVisitor):
+    """Resolve ``(module_name, attr_name)`` for a ``from mod import attr`` store."""
+
+    def __init__(self):
+        self._active_aliases: set[LambdaVar] = set()
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is fndb.GETATTR
+            and node.info is not None
+            and len(node.args) == 1
+            and len(node.args[0].uses) == 1
+        ):
+            mod_name = node.args[0].uses[0].accept(_ImportedModuleOrigin())
+            if mod_name is not None:
+                return mod_name, node.info.name
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if leaf.home is not None and leaf in leaf.home.vars:
+            return None
+        if leaf in self._active_aliases or len(leaf.sets) != 1:
+            return None
+        val = leaf.sets[0].value
+        if val is None or len(val.uses) != 1:
+            return None
+        self._active_aliases.add(leaf)
+        try:
+            return val.uses[0].accept(self)
+        finally:
+            self._active_aliases.remove(leaf)
+
+
+def is_imported_module_global(leaf: GlobalVar, module_name: str) -> bool:
+    """Whether ``leaf`` is bound once at module top level to ``import <module_name>``."""
+    if len(leaf.sets) != 1:
+        return False
+    store = leaf.sets[0]
+    if (
+        store.home_lambda is None
+        or store.home_lambda.kind is not FunctionalKind.TOPLEVEL
+        or store.value is None
+        or len(store.value.uses) != 1
+    ):
+        return False
+    return store.value.uses[0].accept(_ImportedModuleOrigin()) == module_name
+
+
 class _PredictableGlobalFunInfo(NodeVisitor, LeafVisitor):
-    """Return the ``FunInfo`` of an unmutated builtin global reference, or None."""
+    """Return the ``FunInfo`` of an unmutated builtin or imported global reference."""
 
     def visit_Node(self, node):
         return None
@@ -306,9 +404,20 @@ class _PredictableGlobalFunInfo(NodeVisitor, LeafVisitor):
         return None
 
     def visit_GlobalVar(self, leaf: GlobalVar):
-        if leaf.sets:
-            return None
-        return KNOWN.get(leaf.name)
+        if not leaf.sets:
+            return KNOWN.get(leaf.name)
+        if len(leaf.sets) == 1:
+            store = leaf.sets[0]
+            if (
+                store.home_lambda is not None
+                and store.home_lambda.kind is FunctionalKind.TOPLEVEL
+                and store.value is not None
+                and len(store.value.uses) == 1
+            ):
+                origin = store.value.uses[0].accept(_ImportedAttrOrigin())
+                if origin is not None:
+                    return KNOWN.get(f"{origin[0]}.{origin[1]}")
+        return None
 
 
 _PREDICTABLE_GLOBAL_FUN_INFO = _PredictableGlobalFunInfo()

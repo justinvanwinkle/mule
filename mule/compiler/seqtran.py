@@ -16,6 +16,7 @@ from .ctype import (
     BOOLEAN_TRUE,
     PYTHON_INTEGER,
     UNKNOWN,
+    ByteArrayType,
     BytesType,
     IntegerType,
     ListType,
@@ -639,6 +640,11 @@ class _KnownLengthPrimitive(ValueTypeVisitor):
             return None
         return KNOWN["_storage_length"]
 
+    def visit_ByteArrayType(self, fact: ByteArrayType) -> FunInfo | None:
+        if fact.may_be_unbound:
+            return None
+        return KNOWN["_storage_length"]
+
     def visit_ListType(self, fact: ListType) -> FunInfo | None:
         if fact.may_be_unbound:
             return None
@@ -665,6 +671,11 @@ class _ConcatLengthKind(ValueTypeVisitor):
         return KNOWN["_text_length"]
 
     def visit_BytesType(self, fact: BytesType) -> FunInfo | None:
+        if fact.may_be_unbound:
+            return None
+        return KNOWN["_storage_length"]
+
+    def visit_ByteArrayType(self, fact: ByteArrayType) -> FunInfo | None:
         if fact.may_be_unbound:
             return None
         return KNOWN["_storage_length"]

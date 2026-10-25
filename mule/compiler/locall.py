@@ -94,7 +94,6 @@ from .fndb import (
     flow_propagation,
 )
 from .ir1util import clone_lambda_component, join_blocks_if_possible, made_function
-from .knownfun import KNOWN
 from .node import (
     CallKind,
     ClassConstructorTarget,
@@ -333,9 +332,7 @@ class _PredictableGlobalFunInfo(NodeVisitor, LeafVisitor):
         return None
 
     def visit_GlobalVar(self, leaf: GlobalVar):
-        if leaf.sets:
-            return None
-        return KNOWN.get(leaf.name)
+        return ir1opt._PREDICTABLE_GLOBAL_FUN_INFO.visit_GlobalVar(leaf)
 
 
 _PREDICTABLE_GLOBAL_FUN_INFO = _PredictableGlobalFunInfo()
