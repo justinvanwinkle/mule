@@ -43,7 +43,13 @@ from .ir1opt import constant_literal
 from .ir1tran_lambda import lambda_blocks
 from .ir1util import class_method_definitions, known_calls
 from .main import compile_source
-from .modules import STDLIB, CompiledModule, ModuleCompiler, search_path
+from .modules import (
+    STDLIB,
+    CompiledModule,
+    ModuleCompiler,
+    is_library_path,
+    search_path,
+)
 from .node import (
     CallKind,
     Combination,
@@ -421,7 +427,7 @@ def compile_unit(
         and any(node.accept(compile_attr) for node in nodes)
     ):
         compiler.resolve("ast", None, None)
-    return program, linked_imports(compilation, compiler)
+    return program, linked_imports(compilation, compiler, module)
 
 
 class _ImportedModule(NodeVisitor):
@@ -441,14 +447,22 @@ class _ImportedModule(NodeVisitor):
 _IMPORTED_MODULE = _ImportedModule()
 
 
-def linked_imports(compilation, compiler: ModuleCompiler) -> list[CompiledModule]:
+def linked_imports(
+    compilation, compiler: ModuleCompiler, module: CompiledModule | None = None
+) -> list[CompiledModule]:
     """The modules a unit links: those whose import statements survive IR1
     optimization, which deletes imports in branches proven dead, such as an
     imported module's ``if __name__ == "__main__":``, plus the names scans
-    and builtin requirements resolved without a statement. The recorded
-    request order is kept."""
+    and builtin requirements resolved without a statement. For stdlib modules,
+    only module-toplevel imports are linked ahead of time; function-local
+    stdlib imports are compiled on demand if reached at runtime."""
+    if module is None:
+        return [compiler.modules[name] for name in compiler.requested]
+    is_library = module.path is not None and is_library_path(module.path)
     imported = set(compiler.scanned)
     for lambda_ in compilation.lambdas:
+        if is_library and lambda_.kind is not FunctionalKind.TOPLEVEL:
+            continue
         for block in lambda_blocks(lambda_):
             for node in block.nodes():
                 module_name = node.accept(_IMPORTED_MODULE)
@@ -586,6 +600,8 @@ class Toolchain:
         flags = [f"-O{self.optimize}"]
         if self.lto:
             flags.append("-flto=full")
+        else:
+            flags.append("-fPIC")
         return flags
 
     def link_flags(self) -> list[str]:
@@ -612,9 +628,16 @@ def _run(command: list[str], failure: str) -> None:
 class Build:
     """The step graph of one executable."""
 
-    def __init__(self, graph: Graph, toolchain: Toolchain):
+    def __init__(
+        self,
+        graph: Graph,
+        toolchain: Toolchain,
+        *,
+        image_modules: frozenset[str] = frozenset(),
+    ):
         self.graph = graph
         self.toolchain = toolchain
+        self.image_modules = image_modules
         self.link: Step | None = None
         # The object steps the link combines, by step name.
         self.objects: dict[str, Step] = {}
@@ -843,6 +866,8 @@ class Build:
         if not resolver.requested:
             resolve_recorded(resolver, step.path("imports.json"))
         for descriptor in resolver.pending:
+            if descriptor.name in self.image_modules:
+                continue
             self.link.add_input(self.object(self.module(descriptor, roots, package)))
 
     def main(
@@ -857,6 +882,13 @@ class Build:
             program, imported = compile_unit(
                 source, filename, self.interface(), roots=roots, package=package
             )
+            if not self.toolchain.lto:
+                program.toolchain_info = (
+                    sys.executable,
+                    self.toolchain.clang,
+                    self.toolchain.rustc,
+                    self.toolchain.optimize,
+                )
             (directory / "unit.ll").write_text(generate(program))
             write_imports(directory / "imports.json", imported)
 
@@ -884,22 +916,26 @@ class Build:
 
         def action(inputs, directory):
             objects = [str(step.path("unit.o")) for step in self.objects.values()]
-            _run(
-                [
-                    toolchain.clang,
-                    *toolchain.link_flags(),
-                    f"--ld-path={lto_linker(toolchain.rustc)}",
-                    "-Wno-override-module",
-                    "-Wl,--gc-sections",
-                    "-Wl,--strip-debug",
-                    *objects,
-                    str(runtime.path("libmule_runtime.a")),
-                    *LINK_LIBRARIES,
-                    "-o",
-                    str(directory / "program"),
-                ],
-                "LLVM compilation/linking failed",
-            )
+            runtime_lib = str(runtime.path("libmule_runtime.a"))
+            link_cmd = [
+                toolchain.clang,
+                *toolchain.link_flags(),
+                f"--ld-path={lto_linker(toolchain.rustc)}",
+                "-Wno-override-module",
+                "-Wl,--gc-sections",
+                "-Wl,--strip-debug",
+            ]
+            if not toolchain.lto:
+                link_cmd.append("-Wl,--export-dynamic")
+            link_cmd.extend(objects)
+            if not toolchain.lto:
+                link_cmd.extend(
+                    ["-Wl,--whole-archive", runtime_lib, "-Wl,--no-whole-archive"]
+                )
+            else:
+                link_cmd.append(runtime_lib)
+            link_cmd.extend([*LINK_LIBRARIES, "-o", str(directory / "program")])
+            _run(link_cmd, "LLVM compilation/linking failed")
 
         objects = [self.object(unit) for unit in units]
         self.link = self.graph.step(
@@ -917,6 +953,47 @@ class Build:
         # not import sys explicitly. Protocol imports use this same image unit.
         system = ModuleCompiler("<system>", roots=(STDLIB,)).resolve("sys", None, None)
         self.link.add_input(self.object(self.module(system, (STDLIB,), None)))
+        return self.link
+
+    def shared_library(self, units: list[Step], module_name: str) -> Step:
+        toolchain = self.toolchain
+
+        def action(inputs, directory):
+            objects = [str(step.path("unit.o")) for step in self.objects.values()]
+            _run(
+                [
+                    toolchain.clang,
+                    "-shared",
+                    *toolchain.link_flags(),
+                    f"--ld-path={lto_linker(toolchain.rustc)}",
+                    "-Wno-override-module",
+                    "-Wl,--gc-sections",
+                    "-Wl,--strip-debug",
+                    *objects,
+                    "-o",
+                    str(directory / "module.so"),
+                ],
+                "LLVM compilation/linking failed",
+            )
+
+        objects = [self.object(unit) for unit in units]
+        name = f"shared {module_name} optimize={toolchain.optimize}"
+        self.link = self.graph.step(
+            name,
+            lambda: Step(
+                self.graph,
+                name,
+                inputs=list(objects),
+                settings={
+                    "step": "shared",
+                    "module": module_name,
+                    "image_modules": sorted(self.image_modules),
+                    **toolchain.clang_settings(),
+                },
+                outputs=("module.so",),
+                action=action,
+            ),
+        )
         return self.link
 
 
@@ -1083,6 +1160,46 @@ def build_executable(
         link = build.executable([build.builtins(), main])
         graph.run(link)
     return link.path("program")
+
+
+def build_dynamic_module(
+    module_name: str,
+    *,
+    roots: tuple[Path, ...],
+    package_paths: dict[str, tuple[str, ...]] | None = None,
+    image_modules: frozenset[str] = frozenset(),
+    toolchain: Toolchain | None = None,
+    workers: int | None = None,
+) -> Path | None:
+    """Compile ``module_name`` and its transitive linked imports into a cached
+    shared library suitable for ``dlopen``."""
+    toolchain = toolchain or Toolchain()
+    toolchain.require_target()
+    interface = cached_builtins_interface()
+    if module_name in interface.modules or module_name in image_modules:
+        return None
+    compiler = import_resolver(f"<{module_name}>", interface, None, roots, None)
+    if package_paths:
+        for pkg_name, pkg_dirs in package_paths.items():
+            if pkg_name not in compiler.modules:
+                compiler.modules[pkg_name] = CompiledModule(
+                    pkg_name, None, "", namespace_paths=pkg_dirs
+                )
+    parts = module_name.split(".")
+    descriptor = None
+    for end in range(1, len(parts) + 1):
+        descriptor = compiler.resolve(".".join(parts[:end]), None, None)
+    if descriptor is None or descriptor.missing or descriptor.native:
+        return None
+    pending = [desc for desc in compiler.pending if desc.name not in image_modules]
+    if not pending:
+        return None
+    with Graph(workers) as graph:
+        build = Build(graph, toolchain, image_modules=image_modules)
+        units = [build.module(desc, compiler.roots, None) for desc in pending]
+        link = build.shared_library(units, module_name)
+        graph.run(link)
+    return link.path("module.so")
 
 
 def build(

@@ -294,10 +294,12 @@ declare ptr @mule_posix_module_init(ptr)
 declare ptr @mule_time_module_init(ptr)
 declare ptr @mule_builtins_module()
 declare ptr @mule_import_missing(ptr)
+declare ptr @mule_import_loaded(ptr)
 declare void @mule_module_loaded(ptr, ptr)
 declare void @mule_module_failed(ptr)
 declare void @mule_register_compiled_module(ptr, ptr, ptr, ptr, ptr, ptr, i64)
 declare void @mule_set_image_search_path(ptr, i64)
+declare void @mule_set_image_toolchain(ptr, ptr, ptr, i64)
 declare void @mule_set_attribute_lookup(ptr)
 declare ptr @mule_attribute_lookup_once(ptr, ptr)
 declare ptr @mule_attribute_lookup_or(ptr, ptr, ptr)
@@ -420,6 +422,7 @@ class Program:
     # initializes the unit before running the module body.
     module_import: ImportInfo | None = None
     search_paths: tuple[str, ...] = ()
+    toolchain_info: tuple[str, str, str, int] | None = None
     exported_types: dict[tuple[str, str], ValueType] = field(default_factory=dict)
     exported_targets: dict[tuple[str, str], object] = field(default_factory=dict)
     storage_methods: dict[tuple[str, str], ValueType] = field(default_factory=dict)
@@ -1000,9 +1003,10 @@ class ModuleGenerator:
         return [f"ptr {closure}"]
 
     def import_symbol(self, info) -> str:
-        """The function returning the imported module. A missing module's is
-        private to the unit; a compiled module's belongs to its own unit."""
-        if info.missing:
+        """The function returning the imported module. A missing or unowned
+        module's is private to the unit; an owned compiled module's belongs
+        to its own unit."""
+        if info.missing or not self.owns_import(info):
             return _symbol(f"mule.import.missing:{info.module_name}")
         return _symbol(f"mule.import:{info.module_name}")
 
@@ -3032,12 +3036,11 @@ class ModuleGenerator:
             info for info in self.imports.values() if self.owns_import(info)
         ]
         functions.extend(self.import_initializer(info) for info in owned_imports)
-        if program.bootstrap:
-            functions.extend(
-                self.missing_import_initializer(info, linkage="weak")
-                for info in self.imports.values()
-                if not self.owns_import(info)
-            )
+        functions.extend(
+            self.missing_import_initializer(info)
+            for info in self.imports.values()
+            if not self.owns_import(info)
+        )
         attribute_lookup = self.attribute_lookup_adapter()
         if attribute_lookup is not None:
             functions.append(attribute_lookup)
@@ -3116,10 +3119,6 @@ class ModuleGenerator:
                 + ["ptr"] * len(lambda_.parameters)
             )
             lines.append(f"declare ptr {_symbol(name)}({parameters})")
-        if not self.program.bootstrap:
-            for info in self.imports.values():
-                if not self.owns_import(info):
-                    lines.append(f"declare ptr {self.import_symbol(info)}()")
         return "\n".join(lines)
 
     def import_registration(self, imports) -> list[str]:
@@ -3325,11 +3324,19 @@ class ModuleGenerator:
             f"call i32 @mule_run_protocols(ptr {self.functions[linked(program.entry, program, 'entry')]}, "
             "ptr @mule.initialize.protocols)"
         )
+        toolchain_call = ""
+        if program.toolchain_info is not None:
+            py_host, clang_cmd, rustc_cmd, opt_lvl = program.toolchain_info
+            toolchain_call = (
+                f"  call void @mule_set_image_toolchain(ptr {self.text(py_host)}, "
+                f"ptr {self.text(clang_cmd)}, ptr {self.text(rustc_cmd)}, i64 {opt_lvl})\n"
+            )
         definitions.append(
             "define i32 @main(i32 %argc, ptr %argv) {\n"
             "entry:\n"
             "  call void @mule_set_process_arguments(i32 %argc, ptr %argv)\n"
             + f"  call void @mule_set_image_search_path(ptr {paths}, i64 {len(program.search_paths)})\n"
+            + toolchain_call
             + (
                 "  call void @mule_set_argument_constructor(ptr @mule.arguments.construct)\n"
                 if program.argument_constructor is not None
@@ -3430,7 +3437,7 @@ class ModuleGenerator:
             "  %ready = icmp ne ptr %cached, null",
             "  br i1 %ready, label %existing, label %initialize",
             "existing:",
-            f"  %owned = call ptr @mule_import_missing(ptr {self.text(info.module_name)})",
+            f"  %owned = call ptr @mule_import_loaded(ptr {self.text(info.module_name)})",
             "  ret ptr %owned",
             "initialize:",
             f"  %globals = call ptr {self.import_create_symbol(info)}()",
@@ -3444,7 +3451,7 @@ class ModuleGenerator:
             "  call void @mule_release(ptr %result)",
             "  br i1 %bad.result, label %failed, label %finished",
             "finished:",
-            f"  %module = call ptr @mule_import_missing(ptr {self.text(info.module_name)})",
+            f"  %module = call ptr @mule_import_loaded(ptr {self.text(info.module_name)})",
             "  ret ptr %module",
             "failed:",
             f"  call void @mule_module_failed(ptr {self.text(info.module_name)})",

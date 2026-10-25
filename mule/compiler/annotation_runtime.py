@@ -107,12 +107,13 @@ class AnnotationThunk:
             ]
         else:
             values = [ast.Raise(ast.Name("NotImplementedError", span=span), span=span)]
+        value_formats = (1, 2, 3) if self.converter.future_annotations else (1, 2)
         return ast.FunctionDefinition(
             "__annotate__",
             [ast.Parameter(parameter, ast.ParameterKind.POSITIONAL_ONLY, span=span)],
             [
                 ast.If(matches((4,)), [ast.Return(strings, span=span)], span=span),
-                ast.If(matches((1, 2)), values, span=span),
+                ast.If(matches(value_formats), values, span=span),
                 ast.Raise(ast.Name("NotImplementedError", span=span), span=span),
             ],
             span=span,

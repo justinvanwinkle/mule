@@ -373,7 +373,12 @@ def compile_toplevel(
     with phase("parse %s", filename, level=logging.DEBUG):
         tree = parse(source, filename).accept(_ParsedModule(filename))
     if imports is not None:
-        imports.include_patterns(import_dependencies(tree))
+        from pathlib import Path
+
+        from .modules import is_library_path
+
+        if not is_library_path(Path(filename)):
+            imports.include_patterns(import_dependencies(tree))
     with phase("IR1 conversion %s", filename, level=logging.DEBUG):
         initial = Component("initial")
         converter = Converter(

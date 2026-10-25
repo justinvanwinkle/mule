@@ -4,6 +4,7 @@ from _mule_native import compiled_module_info
 from _mule_native import load_compiled_module
 from _mule_native import create_compiled_module
 from _mule_native import exec_compiled_module
+from _mule_native import invalidate_compiled_caches
 from importlib._bootstrap import ModuleSpec
 
 
@@ -41,4 +42,4 @@ class CompiledFinder:
 
     @staticmethod
     def invalidate_caches():
-        pass
+        invalidate_compiled_caches()

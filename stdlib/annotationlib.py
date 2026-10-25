@@ -227,10 +227,10 @@ class ForwardRef:
             )
             try:
                 result = eval(code, globals=globals, locals=new_locals)
+                new_locals.transmogrify(self.__cell__)
             except Exception:
                 return self
             else:
-                new_locals.transmogrify(self.__cell__)
                 return result
 
     def _evaluate(self, globalns, localns, type_params=_sentinel, *, recursive_guard):

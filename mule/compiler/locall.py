@@ -1439,9 +1439,10 @@ class _ImportedModuleOrigin(NodeVisitor, LeafVisitor):
             return None
         if leaf in self._active_aliases:
             return None
-        if len(leaf.sets) != 1:
+        value_sets = [s for s in leaf.sets if s.value is not None]
+        if len(value_sets) != 1:
             return None
-        val = leaf.sets[0].value
+        val = value_sets[0].value
         if val is None or len(val.uses) != 1:
             return None
         self._active_aliases.add(leaf)
@@ -1512,10 +1513,11 @@ class _ImportBindingStores(NodeVisitor, LeafVisitor):
         self._active_aliases.add(leaf)
         try:
             if store is not None:
+                value_sets = [s for s in leaf.sets if s.value is not None]
                 if (
                     store.value is None
-                    or len(leaf.sets) != 1
-                    or leaf.sets[0] is not store
+                    or len(value_sets) != 1
+                    or value_sets[0] is not store
                 ):
                     return None
                 if len(store.value.uses) != 1:
@@ -1524,9 +1526,10 @@ class _ImportBindingStores(NodeVisitor, LeafVisitor):
                 if origin is not None:
                     self.imports[leaf.name] = origin
                 return None
-            if len(leaf.sets) != 1:
+            value_sets = [s for s in leaf.sets if s.value is not None]
+            if len(value_sets) != 1:
                 return None
-            val = leaf.sets[0].value
+            val = value_sets[0].value
             if val is None or len(val.uses) != 1:
                 return None
             return val.uses[0].accept(self)
@@ -1792,6 +1795,9 @@ def analyze(
             ns, {}
         ).items():
             if ns_counts.get(local_name, 0) > 1:
+                continue
+            if (mod_name, orig_name) == ("typing", "TYPE_CHECKING"):
+                ns_consts[local_name] = BOOLEAN_FALSE
                 continue
             if (
                 imported_targets is not None

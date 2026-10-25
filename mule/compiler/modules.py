@@ -47,6 +47,12 @@ from .node import (
 from .protocols import NATIVE_MODULE_EXPORTS, NATIVE_MODULE_TARGETS
 
 STDLIB = Path(__file__).resolve().parents[2] / "stdlib"
+
+
+def is_library_path(path: Path) -> bool:
+    return path.is_relative_to(STDLIB) or "site-packages" in path.parts
+
+
 NATIVE_MODULES = {
     "_mule_native": "mule_native_module_init",
     "_posix": "mule_posix_module_init",
@@ -265,10 +271,10 @@ class ModuleCompiler:
                     "tool.mule.include_modules must contain module names or package.* patterns"
                 ) from error
             self.project_modules = tuple(patterns)
-            if self.project_modules:
-                pytest_paths = (
-                    tool.get("pytest", {}).get("ini_options", {}).get("pythonpath", [])
-                )
+            pytest_paths = (
+                tool.get("pytest", {}).get("ini_options", {}).get("pythonpath", [])
+            )
+            if self.project_modules or pytest_paths:
                 project_roots = tuple(
                     (directory / entry).resolve() for entry in (".", *pytest_paths)
                 )
@@ -376,6 +382,14 @@ class ModuleCompiler:
             self.pending.append(descriptor)
         if name == "sysconfig":
             self.resolve("_sysconfigdata__linux_x86_64-linux-gnu", None, None)
+        elif name == "encodings":
+            for codec in (
+                "encodings.aliases",
+                "encodings.utf_8",
+                "encodings.latin_1",
+                "encodings.ascii",
+            ):
+                self.resolve(codec, None, None)
         return descriptor
 
     def include_patterns(self, patterns):
@@ -390,6 +404,8 @@ class ModuleCompiler:
                 continue
             for location in descriptor.package_paths:
                 directory = Path(location)
+                if is_library_path(directory):
+                    continue
                 for entry in directory_entries(directory):
                     path = directory / entry
                     child = path.stem if path.suffix == ".py" else path.name

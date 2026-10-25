@@ -6,6 +6,7 @@ from pathlib import Path
 
 from mule.cli_help import DefaultsHelpFormatter
 from mule.compiler import ToolchainError, build
+from mule.compiler.driver import Toolchain, build_dynamic_module
 from mule.diagnostics import configure
 
 
@@ -15,7 +16,23 @@ def main() -> int:
         description="Compile Python to a native executable using LLVM.",
         formatter_class=DefaultsHelpFormatter,
     )
-    parser.add_argument("source", type=Path)
+    parser.add_argument("source", type=Path, nargs="?")
+    parser.add_argument(
+        "--dynamic-module",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--root",
+        action="append",
+        default=[],
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--package-path",
+        action="append",
+        default=[],
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "-o",
         "--output",
@@ -50,6 +67,35 @@ def main() -> int:
     )
     args = parser.parse_args()
     configure(args.verbose)
+    if args.dynamic_module is not None:
+        import os
+
+        roots = tuple(Path(r) for r in args.root)
+        pkg_paths: dict[str, list[str]] = {}
+        for entry in args.package_path:
+            if "=" in entry:
+                pkg_name, pkg_dir = entry.split("=", 1)
+                pkg_paths.setdefault(pkg_name, []).append(pkg_dir)
+        image_mods = frozenset(
+            m for m in os.environ.get("MULE_IMAGE_MODULES", "").split(":") if m
+        )
+        try:
+            shared = build_dynamic_module(
+                args.dynamic_module,
+                roots=roots,
+                package_paths={k: tuple(v) for k, v in pkg_paths.items()},
+                image_modules=image_mods,
+                toolchain=Toolchain(args.clang, args.rustc, args.level, False),
+            )
+        except (OSError, ValueError, SyntaxError, ToolchainError) as error:
+            print(f"mule: {error}", file=sys.stderr)
+            return 1
+        if shared is None:
+            return 1
+        print(shared)
+        return 0
+    if args.source is None:
+        parser.error("the following arguments are required: source")
     output = args.output or args.source.with_suffix("")
     try:
         build(
