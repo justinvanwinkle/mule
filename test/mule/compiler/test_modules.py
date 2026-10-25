@@ -22,11 +22,30 @@ def execute(tmp_path, sources, main):
     )
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def read():\n import mule\n return mule.answer\nprint(read())\n",
+        "from mule import int32\nprint(int32)\n",
+        "import mule\nvalue = mule.answer\nmule = value\nprint(mule)\n",
+    ],
+)
+def test_mule_imports_use_ordinary_runtime_bindings(tmp_path, source):
+    result = execute(
+        tmp_path,
+        {"mule/__init__.py": "answer = 42\nint32 = 42\n"},
+        source,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "42\n"
+
+
 def test_mule_package_runtime_members_coexist_with_numeric_directives(tmp_path):
     result = execute(
         tmp_path,
         {"mule/__init__.py": "", "mule/ast.py": "answer = 42\n"},
-        "from mule import int32, ast as trees\n"
+        "from mule_types import int32\n"
+        "from mule import ast as trees\n"
         "value: int32 = trees.answer\nprint(value)\n",
     )
     assert result.returncode == 0, result.stderr

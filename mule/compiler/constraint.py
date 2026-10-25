@@ -275,6 +275,8 @@ def _combine(a: Fact, b: Fact) -> Fact:
 def join_states(left: dict, right: dict) -> tuple[dict, bool]:
     """Join two variable states over the same keys. The flag reports whether
     the result differs from ``left``."""
+    if left is right:
+        return left, False
     joined = None
     for key, fact in left.items():
         other = right[key]
@@ -548,8 +550,11 @@ class _Propagation(NodeVisitor, LeafVisitor):
         self.type_of_origins: dict[object, object] = {}
         self.tuple_list_origins: dict[object, TupleType] = {}
         self.handler_state: dict[object, Fact] | None = None
+        self.has_handler = False
         # Keys assigned since the handler state last absorbed the state.
         self.changed = set()
+        self.state_mutated = False
+        self.globals_invalidated = False
         self._current_ref: Ref | None = None
 
     def reset(
@@ -566,11 +571,23 @@ class _Propagation(NodeVisitor, LeafVisitor):
         self.type_of_origins.clear()
         self.tuple_list_origins.clear()
         self.changed.clear()
-        self.handler_state = state.copy() if has_handler else None
+        self.state_mutated = False
+        self.globals_invalidated = False
+        self.has_handler = has_handler
+        self.handler_state = None
 
     def assign(self, key, fact):
-        self.state[key] = fact
-        self.changed.add(key)
+        if self.state.get(key) is not fact:
+            if not self.state_mutated:
+                if self.has_handler:
+                    self.handler_state = self.state.copy()
+                self.state = self.state.copy()
+                self.state_mutated = True
+            self.state[key] = fact
+            if self.has_handler:
+                self.changed.add(key)
+            if key in self.walk.invalidated:
+                self.globals_invalidated = False
 
     def fact_of(self, lvar) -> Fact:
         return self.walk.facts.get(lvar.use(), NO_FACT)
@@ -698,8 +715,21 @@ class _Propagation(NodeVisitor, LeafVisitor):
         return self.walk.builtin_target(node.fun)
 
     def invalidate(self):
-        self.walk.invalidate_globals(self.state)
-        self.changed.update(self.walk.volatile_keys)
+        if not self.globals_invalidated and self.walk.invalidated:
+            state = self.state
+            has_handler = self.has_handler
+            mutated = self.state_mutated
+            for key, val in self.walk.invalidated.items():
+                if state.get(key) is not val:
+                    if not mutated:
+                        if has_handler:
+                            self.handler_state = state.copy()
+                        state = self.state = state.copy()
+                        mutated = self.state_mutated = True
+                    state[key] = val
+                    if has_handler:
+                        self.changed.add(key)
+            self.globals_invalidated = True
 
     def forget_origin(self, var):
         if self.origins:
@@ -812,7 +842,10 @@ class _Propagation(NodeVisitor, LeafVisitor):
         return None
 
     def visit_Constant(self, leaf):
-        return _fact(constant_type(leaf.value))
+        fact = leaf.cached_fact
+        if fact is None:
+            fact = leaf.cached_fact = _fact(constant_type(leaf.value))
+        return fact
 
     def visit_GlobalVar(self, leaf):
         fact = self.state[(_GLOBAL, leaf.name)]
@@ -1682,9 +1715,9 @@ def _make_comparison_constrainer(operator: ast.ComparisonOperator):
                 return True
             visitor.edge_relations = edge_rels
         changed = False
-        for operand, other, op, term in (
-            (left, right, operator, left_term),
-            (right, left, swapped, right_term),
+        for operand, other_eq_type, other, op, term in (
+            (left, right_type, right, operator, left_term),
+            (right, left_type, left, swapped, right_term),
         ):
             if op is None:
                 continue
@@ -1702,7 +1735,7 @@ def _make_comparison_constrainer(operator: ast.ComparisonOperator):
             other_type = visitor.type_of(other)
             bound = _comparison_bound(op, other_type, truth)
             eq_target = (
-                _equality_target_type(visitor, other)
+                other_eq_type
                 if offset == 0
                 and op
                 in (
@@ -2806,6 +2839,10 @@ class _Walk:
         facts = self.facts
         visitor = _Propagation(self, {}, {})
 
+        edge_constrainer = _ConstrainEdge(None, visitor, {}, edge_states)
+        cmp_constrainer = _ConstrainComparison(visitor, {}, False)
+        edge_constrainer.cmp_constrainer = cmp_constrainer
+
         while pending:
             block = pending.popleft()
             queued.remove(block)
@@ -2904,7 +2941,7 @@ class _Walk:
                     incoming[block] = state
                 elif not operand_changed:
                     continue
-            elif state != previous or (
+            elif (state is not previous and state != previous) or (
                 rels != in_relations.get(block) and visits[block] < 3
             ):
                 if visits[block] < 3:
@@ -2915,10 +2952,12 @@ class _Walk:
                     continue
                 else:
                     state = previous
-            elif not operand_changed:
-                continue
-            # The visitor updates its state in place.
-            state = state.copy()
+            else:
+                if previous is not None:
+                    state = previous
+                if not operand_changed:
+                    continue
+            # The visitor copies its state on first mutation.
             handler = handlers[block]
             has_handler = handler is not None
             visitor.reset(state, has_handler, in_relations.get(block))
@@ -2944,22 +2983,33 @@ class _Walk:
                                 queued.add(consumer)
                 if has_handler:
                     visitor.note_handler_state()
+            state = visitor.state
             out_states[block] = state
             if block in return_blocks:
                 return_block_origins[block] = (
                     visitor.origins.copy(),
                     visitor.type_of_origins.copy(),
                 )
+            last = block.last
             for target in successors[block]:
                 if target is handler:
-                    edge = linked(visitor.handler_state, visitor, "handler state")
-                    self.invalidate_globals(edge)
+                    if visitor.handler_state is not None:
+                        edge = visitor.handler_state
+                        self.invalidate_globals(edge)
+                    elif visitor.globals_invalidated or not self.invalidated:
+                        edge = state
+                    else:
+                        edge = state.copy()
+                        self.invalidate_globals(edge)
                     edge_rel = {}
+                elif last is None:
+                    edge = state
+                    edge_rel = visitor.relations.copy()
                 else:
                     visitor.edge_relations = None
-                    edge = self.constrain_edge(
-                        block, target, visitor, state, edge_states
-                    )
+                    edge_constrainer.target = target
+                    edge_constrainer.state = state
+                    edge = last.accept(edge_constrainer)
                     if edge is None:
                         continue
                     edge_rel = (
@@ -3053,6 +3103,7 @@ class _ConstrainEdge(NodeVisitor):
         self.visitor = visitor
         self.state = state
         self.edge_states = edge_states
+        self.cmp_constrainer: _ConstrainComparison | None = None
 
     def visit_Node(self, node):
         return self.state
@@ -3072,9 +3123,13 @@ class _ConstrainEdge(NodeVisitor):
             and self.visitor.origins.get(node.test) in self.visitor.walk.volatile_keys
         ):
             return None
-        narrowed_edge = node.test.use().accept(
-            _ConstrainComparison(self.visitor, self.state, truth)
-        )
+        cmp_c = self.cmp_constrainer
+        if cmp_c is not None:
+            cmp_c.state = self.state
+            cmp_c.truth = truth
+        else:
+            cmp_c = _ConstrainComparison(self.visitor, self.state, truth)
+        narrowed_edge = node.test.use().accept(cmp_c)
         if narrowed_edge is _DEAD_EDGE:
             return None
         if narrowed_edge is not None:

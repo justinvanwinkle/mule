@@ -7,7 +7,7 @@ import pytest
 from mule.compiler import emit_llvm
 from test.mule.compiler.test_native import run_native
 
-PREFIX = "from mule import int64, optimize\n@optimize(speed=3, safety=3)\n"
+PREFIX = "from mule_types import int64, optimize\n@optimize(speed=3, safety=3)\n"
 
 
 def native_bodies(source):

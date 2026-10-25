@@ -16,7 +16,7 @@ from test.mule.parser.ast_query import expect
 def test_builtin_int_argument_and_return_preserve_arbitrary_precision(tmp_path, value):
     result = run_native(
         tmp_path,
-        "from mule import optimize\n"
+        "from mule_types import optimize\n"
         "@optimize(safety=3)\n"
         "def identity(value: int) -> int:\n return value\n"
         f"print(identity(int('{value}')))\n",
@@ -43,7 +43,7 @@ def test_builtin_int_arithmetic_grows_beyond_machine_integer(tmp_path):
     value = 2**63 - 1
     result = run_native(
         tmp_path,
-        "from mule import optimize\n"
+        "from mule_types import optimize\n"
         "@optimize(speed=3, safety=3)\n"
         "def square(value: int) -> int:\n result: int = value * value\n return result + 1\n"
         f"print(square(int('{value}')))\n",
@@ -65,7 +65,7 @@ def test_builtin_int_accepts_bool_without_replacing_the_object(
 ):
     result = run_native(
         tmp_path,
-        "from mule import optimize\n"
+        "from mule_types import optimize\n"
         "@optimize(safety=3)\n"
         "def identity(value: int) -> int:\n return value\n"
         f"original = {value}\n"
@@ -85,7 +85,7 @@ def test_builtin_int_accepts_bool_without_replacing_the_object(
     ),
 )
 def test_checked_builtin_int_rejects_unknown_non_integer(tmp_path, body):
-    result = run_native(tmp_path, "from mule import optimize\n" + body)
+    result = run_native(tmp_path, "from mule_types import optimize\n" + body)
     assert result.returncode != 0
     assert "TypeError" in result.stderr
 
@@ -110,7 +110,7 @@ def test_known_builtin_int_contradictions_warn_with_source_location(
 
 def test_trusted_builtin_int_does_not_emit_runtime_category_checks():
     llvm = emit_llvm(
-        "from mule import optimize\n"
+        "from mule_types import optimize\n"
         "@optimize(safety=0)\ndef identity(value: int) -> int:\n return value\n"
     )
     assert "call i32 @mule_assert_" not in llvm
@@ -214,7 +214,7 @@ def test_annotated_attribute_assignment_executes_value_but_not_annotation(
             marks=pytest.mark.integration,
         ),
         ("from __future__ import annotations\n", "UnknownClass | None"),
-        ("import mule\n", "mule.intp"),
+        ("import mule_types\n", "mule_types.intp"),
     ),
 )
 def test_annotation_imports_accept_lazy_expressions(tmp_path, imports, annotation):
@@ -230,7 +230,7 @@ def test_annotation_imports_accept_lazy_expressions(tmp_path, imports, annotatio
 def test_builtin_float_contract_uses_checked_float_category(tmp_path):
     result = run_native(
         tmp_path,
-        "from mule import optimize\n@optimize(safety=3)\n"
+        "from mule_types import optimize\n@optimize(safety=3)\n"
         "def twice(value: float) -> float:\n return value + value\n"
         "print(twice(float('1.25')))\n",
     )
@@ -246,9 +246,9 @@ def test_class_annotations_select_boxed_storage_when_not_native(
 ):
     result = run_native(
         tmp_path,
-        "import mule\n"
-        + (f"@mule.optimize({policy})\n" if policy else "")
-        + f"class Counter:\n value: mule.{marker}\n"
+        "import mule_types\n"
+        + (f"@mule_types.optimize({policy})\n" if policy else "")
+        + f"class Counter:\n value: mule_types.{marker}\n"
         " def __init__(self):\n  self.value = 42\nprint(Counter().value)\n",
     )
     assert result.returncode == 0, result.stderr
@@ -313,7 +313,7 @@ def test_ir_retains_annotation_expressions_separately_from_contracts():
 
 def test_builtin_int_annotation_specializes_arithmetic_and_elides_return_check():
     llvm = emit_llvm(
-        "from mule import optimize\n"
+        "from mule_types import optimize\n"
         "@optimize(safety=3)\n"
         "def compute(x: int, y: int) -> int:\n"
         " masked = (x & 255) + (y & 255)\n"
@@ -504,7 +504,7 @@ def test_container_element_contracts_guard_elements_against_bad_inputs_and_alias
 
 def test_safety_zero_retains_nested_element_types_without_contract_checks(tmp_path):
     source = """\
-from mule import int64, optimize
+from mule_types import int64, optimize
 
 @optimize(speed=3, safety=0, debug=0)
 def dot(data: tuple[list[list[int]], list[list[int]]]) -> int:

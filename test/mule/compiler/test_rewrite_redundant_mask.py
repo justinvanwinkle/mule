@@ -27,14 +27,14 @@ def test_codepoint_packing_inferred_interval_removes_mask(expression):
     "body",
     [
         """
-        def pack(value: mule.int64):
+        def pack(value: mule_types.int64):
             if value >= 0:
                 if value <= 255:
                     return (EXPRESSION) << 8
             return -1
         """,
         """
-        def pack(scale: mule.int64):
+        def pack(scale: mule_types.int64):
             total = 0
             for value in range(256):
                 total += (EXPRESSION) * scale
@@ -45,7 +45,7 @@ def test_codepoint_packing_inferred_interval_removes_mask(expression):
 )
 def test_byte_packing_flow_intervals_remove_mask(expression, body):
     compilation = compile_source(
-        "import mule\n" + dedent(body).replace("EXPRESSION", expression)
+        "import mule_types\n" + dedent(body).replace("EXPRESSION", expression)
     )
     function = next(fn for fn in compilation.lambdas if fn.source_name == "pack")
     check_ir1_consistency(compilation.components)
@@ -71,8 +71,8 @@ def test_byte_packing_flow_intervals_remove_mask(expression, body):
 )
 def test_packing_near_miss_intervals_keep_mask(lower, upper, mask):
     compilation = compile_source(
-        "import mule\n"
-        "def pack(value: mule.int64):\n"
+        "import mule_types\n"
+        "def pack(value: mule_types.int64):\n"
         f" if value >= {lower}:\n"
         f"  if value <= {upper}:\n"
         f"   return value & {mask}\n"
@@ -91,7 +91,7 @@ def test_unknown_packing_value_keeps_operator_dispatch():
 
 
 _PACKING_PROGRAM = dedent("""
-    import mule
+    import mule_types
 
     def pack_codepoint_right(character):
         value = ord(character)
@@ -101,25 +101,25 @@ _PACKING_PROGRAM = dedent("""
         value = ord(character)
         return (0x1fffff & value) << 8
 
-    def pack_byte_right(value: mule.int64):
+    def pack_byte_right(value: mule_types.int64):
         if value >= 0:
             if value <= 255:
                 return (value & 255) << 8
         return -1
 
-    def pack_byte_left(value: mule.int64):
+    def pack_byte_left(value: mule_types.int64):
         if value >= 0:
             if value <= 255:
                 return (255 & value) << 8
         return -1
 
-    def palette_checksum(scale: mule.int64):
+    def palette_checksum(scale: mule_types.int64):
         total = 0
         for value in range(256):
             total += (value & 255) * scale
         return total
 
-    def retain_required_bits(value: mule.int64):
+    def retain_required_bits(value: mule_types.int64):
         return value & 255, value & 240, value & 254
 
     def unknown_right(value):

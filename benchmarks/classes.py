@@ -61,16 +61,16 @@ def main():
         raise ValueError("class counter example must end with print(count(...))")
     source = prefix + "\nprint(count(int(input())))\n"
     source = re.sub(
-        r"(?m)^@mule\.optimize\([^\n]*\)\n(?=(?:class Counter|def count)\b)",
-        "@mule.optimize(speed=3, safety=0)\n",
+        r"(?m)^@mule_types\.optimize\([^\n]*\)\n(?=(?:class Counter|def count)\b)",
+        "@mule_types.optimize(speed=3, safety=0)\n",
         source,
     )
     nonlinear = source.replace(
         "self.value += amount", "self.value = (self.value ^ amount) + 3"
     )
     boxed = source.replace(
-        "@mule.optimize(speed=3, safety=0)\nclass Counter:", "class Counter:"
-    ).replace("    value: mule.int64\n", "")
+        "@mule_types.optimize(speed=3, safety=0)\nclass Counter:", "class Counter:"
+    ).replace("    value: mule_types.int64\n", "")
     sources = {"linear": source, "nonlinear": nonlinear, "boxed": boxed}
     for name, text in sources.items():
         path = OUTPUT / f"{name}.py"

@@ -499,8 +499,8 @@ def test_variadic_numeric_annotations_apply_to_elements(tmp_path):
         tmp_path,
         {},
         """
-import mule
-@mule.optimize(safety=3)
+import mule_types
+@mule_types.optimize(safety=3)
 def collect(*values: int):
     return values
 print(collect(), collect(1, 2))

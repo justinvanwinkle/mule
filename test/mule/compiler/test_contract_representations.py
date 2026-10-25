@@ -21,7 +21,7 @@ from mule.compiler import emit_llvm
 )
 @pytest.mark.parametrize("location", ["parameter", "local", "return"])
 def test_object_contracts_preserve_descriptor_codegen(annotation, value, location):
-    source = "from mule import int64, optimize\nclass Payload:\n    pass\n"
+    source = "from mule_types import int64, optimize\nclass Payload:\n    pass\n"
     source += "@optimize(speed=3, safety=0)\n"
     if location == "parameter":
         source += f"def probe(value: {annotation}):\n    return value\n"

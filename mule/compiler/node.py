@@ -547,11 +547,12 @@ class Leaf:
 
 
 class Constant(Leaf):
-    __slots__ = ("value",)
+    __slots__ = ("cached_fact", "value")
 
     def __init__(self, value: ast.Literal | ast.Tuple):
         super().__init__()
         self.value = value
+        self.cached_fact = None
 
     def accept(self, visitor: LeafVisitor):
         return visitor.visit_Constant(self)
@@ -879,6 +880,7 @@ class Lambda(Functional):
         "generator_body",
         "generator_outer",
         "home",
+        "ir1_revision",
         "is_protocol",
         "lets",
         "local_annotations",
@@ -953,6 +955,7 @@ class Lambda(Functional):
         self.branch_deriver: (
             Callable[[tuple[ValueType, ...], bool], tuple[ValueType, ...] | None] | None
         ) = None
+        self.ir1_revision: int = 0
 
     def as_lambda(self) -> Lambda | None:
         return self

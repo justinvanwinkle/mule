@@ -521,14 +521,18 @@ class _GlobalFunctionStores(NodeVisitor):
         namespace: dict[str, Lambda],
         counts: dict[str, int] | None = None,
         definitions: dict[str, set[Lambda]] | None = None,
+        leaves: dict[str, GlobalVar] | None = None,
     ):
         self.namespace = namespace
         self.counts = counts
         self.definitions = definitions
+        self.leaves = leaves
 
     def visit_Set(self, node):
         node.var.accept(
-            _GlobalFunctionStore(self.namespace, self.counts, node, self.definitions)
+            _GlobalFunctionStore(
+                self.namespace, self.counts, node, self.definitions, self.leaves
+            )
         )
 
 
@@ -542,11 +546,13 @@ class _GlobalFunctionStore(LeafVisitor):
         counts: dict[str, int] | None,
         store: Set,
         definitions: dict[str, set[Lambda]] | None = None,
+        leaves: dict[str, GlobalVar] | None = None,
     ):
         self.namespace = namespace
         self.counts = counts
         self.store = store
         self.definitions = definitions
+        self.leaves = leaves
 
     def visit_GlobalVar(self, leaf):
         if self.counts is not None:
@@ -558,6 +564,8 @@ class _GlobalFunctionStore(LeafVisitor):
         lambda_ = made_function(self.store.value.use())
         if lambda_ is not None:
             self.namespace[leaf.name] = lambda_
+            if self.leaves is not None:
+                self.leaves[leaf.name] = leaf
             if self.definitions is not None and lambda_.source_name == leaf.name:
                 self.definitions.setdefault(leaf.name, set()).add(lambda_)
 
@@ -1528,6 +1536,7 @@ def analyze(
     builtin_targets: (
         Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
     ) = None,
+    state_cache: dict | None = None,
 ) -> dict[Lambda, LambdaFacts]:
     """Solve local-call arguments and results, then publish entry contexts.
 
@@ -1568,9 +1577,29 @@ def analyze(
             imported_targets = NATIVE_MODULE_TARGETS
         if builtin_targets is None:
             builtin_targets = BOOTSTRAP_BUILTIN_TARGETS
-    graphs: dict[Lambda, LambdaGraph] = {
-        lambda_: build_lambda_graph(lambda_) for lambda_ in lambdas
-    }
+    prev_graphs: dict[Lambda, LambdaGraph] = (
+        state_cache.get("graphs", {}) if state_cache is not None else {}
+    )
+    prev_revisions: dict[Lambda, int] = (
+        state_cache.get("revisions", {}) if state_cache is not None else {}
+    )
+    graphs: dict[Lambda, LambdaGraph] = {}
+    unchanged_lambdas: set[Lambda] = set()
+    for lambda_ in lambdas:
+        comp = lambda_.component
+        current_blocks = tuple(comp.blocks()) if comp is not None else ()
+        current_nodes = {block: tuple(block.nodes()) for block in current_blocks}
+        prev_graph = prev_graphs.get(lambda_)
+        if (
+            prev_graph is not None
+            and prev_revisions.get(lambda_) == lambda_.ir1_revision
+            and prev_graph.blocks == current_blocks
+            and prev_graph.block_nodes == current_nodes
+        ):
+            graphs[lambda_] = prev_graph
+            unchanged_lambdas.add(lambda_)
+        else:
+            graphs[lambda_] = build_lambda_graph(lambda_)
     closed_lambdas = _collect_closed_lambdas(lambdas)
     class_targets_by_ns, class_facts = _collect_class_tables(lambdas)
     global_constants = collect_global_constants(lambdas, class_targets_by_ns)
@@ -1588,10 +1617,13 @@ def analyze(
                 ref.derived_type = vtype
     global_targets = defaultdict(dict)
     global_counts: dict[str, dict[str, int]] = defaultdict(dict)
+    global_leaves: dict[str, dict[str, GlobalVar]] = defaultdict(dict)
     import_bindings_by_ns: dict[str, dict[str, tuple[str, str]]] = defaultdict(dict)
     for lambda_ in lambdas:
         visitor = _GlobalFunctionStores(
-            global_targets[lambda_.namespace], global_counts[lambda_.namespace]
+            global_targets[lambda_.namespace],
+            global_counts[lambda_.namespace],
+            leaves=global_leaves[lambda_.namespace],
         )
         imp_visitor = _ImportBindingStores(import_bindings_by_ns[lambda_.namespace])
         graph = graphs[lambda_]
@@ -1599,6 +1631,53 @@ def analyze(
             for node in graph.block_nodes[block]:
                 node.accept(visitor)
                 node.accept(imp_visitor)
+    lambda_set = set(lambdas)
+    static_callees: dict[Lambda, list[Lambda]] = defaultdict(list)
+    for target in lambdas:
+        for ref in target.refs:
+            caller = ref.home_lambda
+            if caller is not None and caller is not target and caller in lambda_set:
+                static_callees[caller].append(target)
+    for target, call_refs in closed_lambdas.items():
+        for ref in call_refs:
+            caller = ref.home_lambda
+            if caller is not None and caller is not target and caller in lambda_set:
+                static_callees[caller].append(target)
+    for ns, ns_targets in global_targets.items():
+        ns_leaves = global_leaves[ns]
+        for name, target_obj in ns_targets.items():
+            target = target_obj.as_lambda()
+            gvar = ns_leaves.get(name)
+            if target is not None and gvar is not None and target in lambda_set:
+                for ref in gvar.refs:
+                    caller = ref.home_lambda
+                    if (
+                        caller is not None
+                        and caller is not target
+                        and caller in lambda_set
+                    ):
+                        static_callees[caller].append(target)
+    ordered_lambdas: list[Lambda] = [
+        lam for lam in lambdas if lam.kind is FunctionalKind.TOPLEVEL
+    ]
+    visited_order: set[Lambda] = set(ordered_lambdas)
+    for root in lambdas:
+        if root in visited_order:
+            continue
+        stack: list[tuple[Lambda, bool]] = [(root, False)]
+        while stack:
+            cur, done = stack.pop()
+            if done:
+                ordered_lambdas.append(cur)
+                continue
+            if cur in visited_order:
+                continue
+            visited_order.add(cur)
+            stack.append((cur, True))
+            for callee in reversed(static_callees.get(cur, ())):
+                if callee not in visited_order:
+                    stack.append((callee, False))
+    lambda_order = {lam: idx for idx, lam in enumerate(ordered_lambdas)}
     imported_returns_by_ns: dict[str, dict[str, ValueType]] = defaultdict(dict)
     imported_targets_by_ns: dict[
         str, dict[str, Lambda | ClassConstructorTarget | ForeignCallTarget]
@@ -1861,6 +1940,135 @@ def analyze(
     # whose inputs and resolved call return types are unchanged would propagate
     # identically.
     inputs: dict[tuple[Lambda, str], tuple] = {}
+    deriver_cache: dict[tuple[Lambda, tuple[ValueType, ...]], Body] = {}
+    setattr_sites: list[tuple[Lambda, Combination]] = []
+    setitem_sites: list[tuple[Lambda, Combination]] = []
+    if class_facts:
+        for lambda_ in lambdas:
+            graph = graphs[lambda_]
+            site_collector = _CollectSetattrSites([], [])
+            for block in graph.blocks:
+                for node in graph.block_nodes[block]:
+                    node.accept(site_collector)
+            for site in site_collector.sites:
+                setattr_sites.append((lambda_, site))
+            for site in site_collector.setitems:
+                setitem_sites.append((lambda_, site))
+    field_changes = 0
+    initial_pending_reset: set[tuple[Lambda, str]] = set()
+    must_recompute: set[Lambda] = set(lambdas)
+    if (
+        state_cache is not None
+        and "bodies" in state_cache
+        and state_cache.get("ignored") == set(annotations.ignored)
+    ):
+        prev_bodies = state_cache["bodies"]
+        prev_inputs = state_cache["inputs"]
+        prev_summaries = state_cache["summaries"]
+        prev_parameters = state_cache["parameters"]
+        prev_deriver_cache = state_cache["deriver_cache"]
+        prev_captured_types = state_cache.get("captured_types", {})
+        prev_class_fields = state_cache.get("class_fields", {})
+        directly_changed = set(lambdas) - unchanged_lambdas
+        while True:
+            added_direct: set[Lambda] = set()
+            for target, call_refs in closed_lambdas.items():
+                if target not in directly_changed and any(
+                    ref.home_lambda in directly_changed for ref in call_refs
+                ):
+                    added_direct.add(target)
+            for var in captured_vars:
+                if var not in prev_captured_types or any(
+                    store.home_lambda in directly_changed for store in var.sets
+                ):
+                    for lam in lambdas:
+                        if (
+                            lam not in directly_changed
+                            and lam.environment is not None
+                            and var in lam.environment.closure
+                        ):
+                            added_direct.add(lam)
+            if not added_direct:
+                break
+            directly_changed.update(added_direct)
+        affected = set(directly_changed)
+        while True:
+            added = {
+                key[0]
+                for key, recorded in prev_inputs.items()
+                if key[0] not in affected and affected.intersection(recorded[3])
+            }
+            for target, call_refs in closed_lambdas.items():
+                if target not in affected and any(
+                    ref.home_lambda in affected for ref in call_refs
+                ):
+                    added.add(target)
+            for var in captured_vars:
+                if var not in prev_captured_types or any(
+                    store.home_lambda in affected for store in var.sets
+                ):
+                    for lam in lambdas:
+                        if (
+                            lam not in affected
+                            and lam.environment is not None
+                            and var in lam.environment.closure
+                        ):
+                            added.add(lam)
+            if not added:
+                break
+            affected.update(added)
+        back_edge_affected = {
+            callee
+            for k, rec in prev_inputs.items()
+            if k[0] in affected
+            for callee in rec[3]
+            if callee in affected
+            and lambda_order.get(k[0], 0) <= lambda_order.get(callee, 0)
+        }
+        must_recompute = directly_changed | back_edge_affected
+        if prev_class_fields:
+            for cls_id, fields_map in prev_class_fields.items():
+                if cls_id in class_facts:
+                    class_facts[cls_id].fields = dict(fields_map)
+        for var in captured_vars:
+            if var in prev_captured_types and all(
+                store.home_lambda not in must_recompute for store in var.sets
+            ):
+                var.optimistic_type = prev_captured_types[var]
+        affected_observed_targets = {
+            target
+            for (caller, _), prev_body in prev_bodies.items()
+            if caller in must_recompute
+            for call in prev_body.calls
+            if call.target is not None
+            and (target := call.target.as_lambda()) is not None
+        }
+        for key, prev_body in prev_bodies.items():
+            lam, ctx_name = key
+            if lam not in must_recompute:
+                if ctx_name == "observed" and lam in affected_observed_targets:
+                    continue
+                if key not in parameters and key in prev_parameters:
+                    parameters[key] = prev_parameters[key]
+                elif (
+                    ctx_name == "general"
+                    and lam in closed_lambdas
+                    and key in prev_parameters
+                ):
+                    parameters[key] = prev_parameters[key]
+                    closed_seeded.add(lam)
+                if key in parameters and parameters[key] == prev_parameters.get(key):
+                    bodies[key] = prev_body
+                    inputs[key] = prev_inputs[key]
+                    summaries[key] = prev_summaries[key]
+                    if lam in affected:
+                        initial_pending_reset.add(key)
+        if not affected:
+            deriver_cache.update(prev_deriver_cache)
+        else:
+            for d_key, d_body in prev_deriver_cache.items():
+                if d_key[0] not in affected:
+                    deriver_cache[d_key] = d_body
 
     def lookup_return_type(
         target, arguments, context_parameters, context_summaries
@@ -1901,7 +2109,6 @@ def analyze(
             return ()
         return tuple(var.optimistic_type for var in lambda_.environment.closure)
 
-    deriver_cache: dict[tuple[Lambda, tuple[ValueType, ...]], Body] = {}
     post_graphs: dict[Lambda, LambdaGraph] = {}
     analysis_finished = False
 
@@ -1940,6 +2147,17 @@ def analyze(
         target_lam: Lambda, param_types: tuple[ValueType, ...], mode: str
     ) -> Body | None:
         graph = _current_graph(target_lam)
+        if graph is graphs.get(target_lam):
+            cur_clos = closure_inputs(target_lam)
+            for ctx_name in ("general", "fixnum", "observed"):
+                ctx_key = (target_lam, ctx_name)
+                if (
+                    param_types == parameters.get(ctx_key)
+                    and (ctx_body := bodies.get(ctx_key)) is not None
+                    and (rec := inputs.get(ctx_key)) is not None
+                    and rec[2] == cur_clos
+                ):
+                    return ctx_body
         cache_key = (target_lam, param_types)
         cached = deriver_cache.get(cache_key)
         if cached is not None:
@@ -1996,11 +2214,26 @@ def analyze(
 
     def _make_derivers(target_lam: Lambda):
         def _derive_ret(param_types: tuple[ValueType, ...]) -> ValueType:
+            gen_summary = summaries.get((target_lam, "general"), UNKNOWN)
+            if not any(
+                c is not None and c.contradicts(p)
+                for c, p in zip(target_lam.signature.annotations, param_types)
+            ) and (
+                gen_summary in (BYTES_TYPE, BYTEARRAY_TYPE, FLOAT, NONE_TYPE)
+                or gen_summary.instance_class() is not None
+                or (
+                    gen_summary == TEXT_TYPE
+                    and not any(
+                        p.fits_text(TEXT_TYPE) and p != TEXT_TYPE for p in param_types
+                    )
+                )
+            ):
+                rec = inputs.get((target_lam, "general"))
+                if rec is not None and rec[2] == closure_inputs(target_lam):
+                    return gen_summary
             body = _propagate_for_deriver(target_lam, param_types, "ret")
             if body is None:
-                return summaries.get(
-                    (target_lam, "general"), UNKNOWN
-                ).normalized_bottom()
+                return gen_summary.normalized_bottom()
             return body.return_type.normalized_bottom()
 
         def _derive_self(param_types: tuple[ValueType, ...]) -> ValueType | None:
@@ -2059,24 +2292,10 @@ def analyze(
             lambda_.self_type_deriver = self_d
             lambda_.branch_deriver = branch_d
 
-    setattr_sites: list[tuple[Lambda, Combination]] = []
-    setitem_sites: list[tuple[Lambda, Combination]] = []
-    if class_facts:
-        for lambda_ in lambdas:
-            graph = graphs[lambda_]
-            site_collector = _CollectSetattrSites([], [])
-            for block in graph.blocks:
-                for node in graph.block_nodes[block]:
-                    node.accept(site_collector)
-            for site in site_collector.sites:
-                setattr_sites.append((lambda_, site))
-            for site in site_collector.setitems:
-                setitem_sites.append((lambda_, site))
-    field_changes = 0
-
     # The canonical (callee, arguments) queries and return types consulted
     # during the current propagation.
     consulted: dict[tuple[Lambda, tuple], ValueType] = {}
+    pending_reset: set[tuple[Lambda, str]] = set(initial_pending_reset)
 
     while True:
         changed = False
@@ -2156,77 +2375,104 @@ def analyze(
             ):
                 derived = target.derive_return_type(arguments)
                 if derived is not UNKNOWN and derived is not BOTTOM:
-                    return derived
+                    result = derived
             consulted[target, arguments] = result
             return result
 
-        for key, expected in previous_parameters.items():
-            lambda_ = key[0]
-            recorded = inputs.get(key)
-            current_closure = closure_inputs(lambda_)
-            if (
-                recorded is not None
-                and recorded[0] == expected
-                and recorded[2] == current_closure
-                and all(
-                    lookup_return_type(target, args, previous_parameters, summaries)
-                    == result
-                    for (target, args), result in recorded[1].items()
-                )
-            ):
-                body = bodies[key]
-            else:
-                consulted.clear()
-                proven_globals = (
-                    proven_by_namespace.get(lambda_.namespace, frozenset())
-                    if lambda_.kind is not FunctionalKind.TOPLEVEL
-                    else frozenset()
-                )
-                with flow_propagation():
-                    body = propagate(
-                        lambda_,
-                        global_targets[lambda_.namespace],
-                        expected,
-                        resolve,
-                        annotations,
-                        graph=graphs[lambda_],
-                        proven_globals=proven_globals,
-                        rebound_globals=rebound_by_namespace.get(
-                            lambda_.namespace, frozenset()
-                        ),
-                        global_constants=global_constants_by_ns.get(lambda_.namespace),
-                        imported_returns=(
-                            imported_returns_by_ns.get(lambda_.namespace)
-                            if lambda_.kind is not FunctionalKind.TOPLEVEL
-                            and lambda_.policy.safety < 3
-                            else None
-                        ),
-                        imported_targets=(
-                            imported_targets_by_ns.get(lambda_.namespace)
-                            if lambda_.kind is not FunctionalKind.TOPLEVEL
-                            and lambda_.policy.safety < 3
-                            else None
-                        ),
-                        storage_methods=storage_methods,
-                        builtin_return_types=builtin_return_types,
-                        builtin_targets=builtin_targets,
-                        class_facts=class_facts,
+        for lambda_ in ordered_lambdas:
+            for ctx_name in ("observed", "fixnum", "general"):
+                key = lambda_, ctx_name
+                expected = previous_parameters.get(key)
+                if expected is None:
+                    continue
+                recorded = inputs.get(key)
+                current_closure = closure_inputs(lambda_)
+                if (
+                    recorded is not None
+                    and recorded[0] == expected
+                    and recorded[2] == current_closure
+                    and all(
+                        (
+                            new_res := lookup_return_type(
+                                target, args, previous_parameters, summaries
+                            )
+                        )
+                        == result
+                        or (
+                            new_res is UNKNOWN
+                            and args != previous_parameters.get((target, "general"))
+                            and result is not UNKNOWN
+                            and result is not BOTTOM
+                            and target.derive_return_type(args) == result
+                        )
+                        for (target, args), result in recorded[1].items()
                     )
-                bodies[key] = body
-                inputs[key] = (
-                    expected,
-                    dict(consulted),
-                    current_closure,
-                    frozenset(target for target, _ in consulted),
-                )
-            returned = summaries[key].join(body.return_type)
-            if returned != summaries[key]:
-                return_changes[key] += 1
-                if return_changes[key] > 3:
-                    returned = widen_fact(Fact(summaries[key]), Fact(returned)).type
+                ):
+                    body = bodies[key]
+                    pending_reset.discard(key)
+                    old_summary = summaries[key]
+                else:
+                    consulted.clear()
+                    proven_globals = (
+                        proven_by_namespace.get(lambda_.namespace, frozenset())
+                        if lambda_.kind is not FunctionalKind.TOPLEVEL
+                        else frozenset()
+                    )
+                    with flow_propagation():
+                        body = propagate(
+                            lambda_,
+                            global_targets[lambda_.namespace],
+                            expected,
+                            resolve,
+                            annotations,
+                            graph=graphs[lambda_],
+                            proven_globals=proven_globals,
+                            rebound_globals=rebound_by_namespace.get(
+                                lambda_.namespace, frozenset()
+                            ),
+                            global_constants=global_constants_by_ns.get(
+                                lambda_.namespace
+                            ),
+                            imported_returns=(
+                                imported_returns_by_ns.get(lambda_.namespace)
+                                if lambda_.kind is not FunctionalKind.TOPLEVEL
+                                and lambda_.policy.safety < 3
+                                else None
+                            ),
+                            imported_targets=(
+                                imported_targets_by_ns.get(lambda_.namespace)
+                                if lambda_.kind is not FunctionalKind.TOPLEVEL
+                                and lambda_.policy.safety < 3
+                                else None
+                            ),
+                            storage_methods=storage_methods,
+                            builtin_return_types=builtin_return_types,
+                            builtin_targets=builtin_targets,
+                            class_facts=class_facts,
+                        )
+                    bodies[key] = body
+                    inputs[key] = (
+                        expected,
+                        dict(consulted),
+                        current_closure,
+                        frozenset(target for target, _ in consulted),
+                    )
+                    old_summary = summaries[key]
+                    if key in pending_reset:
+                        pending_reset.discard(key)
+                        summaries[key] = BOTTOM
+                        return_changes.pop(key, None)
+                returned = summaries[key].join(body.return_type)
                 if returned != summaries[key]:
                     summaries[key] = returned
-                    changed = True
+                    if returned != old_summary:
+                        return_changes[key] += 1
+                        if return_changes[key] > 3:
+                            summaries[key] = widen_fact(
+                                Fact(old_summary), Fact(returned)
+                            ).type
+                        if summaries[key] != old_summary:
+                            changed = True
 
         for var in captured_vars:
             parameter = var in var.home.vars
@@ -2476,20 +2722,31 @@ def analyze(
                 if not added:
                     break
                 affected.update(added)
+            back_edge_targets = {
+                callee
+                for k, rec in inputs.items()
+                if k[0] in affected
+                for callee in rec[3]
+                if callee in affected and lambda_order[k[0]] <= lambda_order[callee]
+            }
             for key, expected in parameters.items():
                 if key == (key[0], "observed") and key[0] in narrowed_targets:
                     summaries[key] = BOTTOM
                     return_changes.pop(key, None)
+                    pending_reset.discard(key)
                 elif key[0] in affected:
                     recorded = inputs.get(key)
                     if (
                         recorded is None
                         or recorded[0] != expected
                         or recorded[2] != closure_inputs(key[0])
-                        or affected.intersection(recorded[3])
+                        or key[0] in back_edge_targets
                     ):
                         summaries[key] = BOTTOM
                         return_changes.pop(key, None)
+                        pending_reset.discard(key)
+                    elif affected.intersection(recorded[3]):
+                        pending_reset.add(key)
         if field_changes < 3 and _update_class_field_types(
             class_facts, setattr_sites, setitem_sites, bodies
         ):
@@ -2505,12 +2762,42 @@ def analyze(
             var.optimistic_type = UNKNOWN
         else:
             var.optimistic_type = var.optimistic_type.normalized_bottom()
+    if state_cache is not None:
+        state_cache["captured_types"] = {
+            var: var.optimistic_type for var in captured_vars
+        }
 
     for ref, old_type in old_constant_ref_types.items():
         ref.derived_type = old_type
 
+    prev_results: dict[Lambda, LambdaFacts] = (
+        state_cache.get("results", {}) if state_cache is not None else {}
+    )
+    prev_bodies_ref: dict[tuple[Lambda, str], Body] = (
+        state_cache.get("bodies", {}) if state_cache is not None else {}
+    )
+    prev_summaries_ref: dict[tuple[Lambda, str], ValueType] = (
+        state_cache.get("summaries", {}) if state_cache is not None else {}
+    )
+    prev_parameters_ref: dict[tuple[Lambda, str], tuple[ValueType, ...]] = (
+        state_cache.get("parameters", {}) if state_cache is not None else {}
+    )
     results: dict[Lambda, LambdaFacts] = {}
     for lambda_ in lambdas:
+        if (
+            lambda_ not in must_recompute
+            and lambda_ in prev_results
+            and all(
+                bodies.get((lambda_, ctx)) is prev_bodies_ref.get((lambda_, ctx))
+                and summaries.get((lambda_, ctx))
+                == prev_summaries_ref.get((lambda_, ctx))
+                and parameters.get((lambda_, ctx))
+                == prev_parameters_ref.get((lambda_, ctx))
+                for ctx in ("general", "fixnum", "observed")
+            )
+        ):
+            results[lambda_] = prev_results[lambda_]
+            continue
         graph = graphs[lambda_]
         general = bodies[lambda_, "general"]
         facts = LambdaFacts(
@@ -2598,6 +2885,19 @@ def analyze(
         _mark_guarded_calls(graph, general)
         _publish_derived_types(lambda_, graph, facts.types)
     analysis_finished = True
+    if state_cache is not None:
+        state_cache["graphs"] = graphs
+        state_cache["revisions"] = {lam: lam.ir1_revision for lam in lambdas}
+        state_cache["bodies"] = dict(bodies)
+        state_cache["inputs"] = dict(inputs)
+        state_cache["summaries"] = dict(summaries)
+        state_cache["parameters"] = dict(parameters)
+        state_cache["deriver_cache"] = dict(deriver_cache)
+        state_cache["ignored"] = set(annotations.ignored)
+        state_cache["results"] = dict(results)
+        state_cache["class_fields"] = {
+            cls_id: dict(cf.fields) for cls_id, cf in class_facts.items()
+        }
     return results
 
 

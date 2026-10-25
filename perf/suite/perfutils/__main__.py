@@ -441,7 +441,9 @@ def main():
     )
     args = parser.parse_args()
     available = {
-        path.stem: path for path in sorted(SUITE.glob("*.py")) if path.name != "mule.py"
+        path.stem: path
+        for path in sorted(SUITE.glob("*.py"))
+        if path.name != "mule_types.py"
     }
     if args.action == "list":
         print("\n".join(available))

@@ -10,7 +10,7 @@ from mule.compiler.vops import _ownership
 
 def test_rejected_integer_contract_releases_owned_heap_argument(tmp_path):
     llvm = emit_llvm(
-        "from mule import int32\n"
+        "from mule_types import int32\n"
         "def checked(left: int32, right: int32): return left + right\n"
         "def checked_return(value) -> int32: return value\n"
     )

@@ -46,6 +46,14 @@ Without LTO, each unit produces a native object. With LTO, each unit produces
 bitcode for optimization at the final link. Neither mode partitions a unit,
 so Clang can optimize across all functions in that unit.
 
+An originating build-step failure reports its exception immediately, including
+source coordinates for syntax errors, even without `-v`. Dependent steps retain
+the original exception without reporting it again. The graph still waits for
+remaining work before raising the target failure to its caller. SBCL
+`src/compiler/ir1report.lisp`, `compiler-error-handler`, likewise reports the
+condition when observed while retaining compilation failure state. Mule uses
+the same separation for cached build steps without changing their scheduling.
+
 The build-step thread pool defaults to one worker per physical core available
 in the calling thread's Linux CPU affinity mask. Linux sysfs
 `thread_siblings_list` groups logical CPUs belonging to the same core, so SMT
@@ -359,9 +367,9 @@ CPython's `PyObject` layout. No runtime evaluates program source or bytecode.
   and assignment or augmented assignment to declared instance fields. Class bodies
   contain an optional leading string-literal docstring, method definitions,
   bare annotated declarations and `pass`;
-  explicitly selected native classes may use `mule.int64` fields as described below.
+  explicitly selected native classes may use `mule_types.int64` fields as described below.
 - Unconditional module-level imports of numeric annotation markers and
-  `optimize` from `mule`, including aliases. Parameter, return, and identifier
+  `optimize` from `mule_types`, including aliases. Parameter, return, and identifier
   variable annotations support arbitrary expressions; recognized builtin and
   imported numeric contracts additionally guide compiler analysis.
   `from __future__ import annotations` is accepted as a compiler directive.
@@ -602,7 +610,7 @@ Builtin `float` annotations accept Python integers, including booleans, as
 required by the [typing specification's numeric rule](https://typing.python.org/en/latest/spec/special-types.html#special-cases-for-float-and-complex).
 They preserve the actual object and integer precision; they do not coerce the
 value to binary64. Their compiler fact represents the real-number union, while
-explicit `mule.float32`/`mule.float64` contracts retain their floating category.
+explicit `mule_types.float32`/`mule_types.float64` contracts retain their floating category.
 SBCL `src/code/type.lisp`, `%type-union2` and `type-union2`, represents union
 membership independently of machine storage; `src/compiler/checkgen.lisp`,
 `cast-check-types`, compares inferred and asserted sets before generating checks.
@@ -730,7 +738,7 @@ Bare class annotations use boxed instance storage unless their declared fields
 and policy support the native representation. Unsupported representation widths
 do not make an otherwise valid class annotation illegal.
 
-`stdlib/mule.py` exposes these annotation-only types, without a NumPy dependency:
+`stdlib/mule_types.py` exposes these annotation-only types, without a NumPy dependency:
 
 | Category | Names |
 | --- | --- |
@@ -741,10 +749,12 @@ do not make an otherwise valid class annotation illegal.
 There are no native-size or 256-bit public types. Ordinary Python integer values
 remain arbitrary precision. These markers are declarations, not constructors.
 Mule resolves them through its own compiler bindings rather than importing the
-host compiler package or executing library source. For example:
+host compiler package or executing library source. `mule_types` is the compiler
+directive API; `mule` is the ordinary compiler package. The compiler package
+does not re-export annotation markers or provide a compatibility alias. For example:
 
 ```python
-import mule as m
+import mule_types as m
 
 @m.optimize(speed=3, safety=3, debug=0)
 def increment(value: m.int32) -> m.int32:
@@ -754,7 +764,7 @@ def increment(value: m.int32) -> m.int32:
 print(increment(41))
 ```
 
-`from mule import int32, optimize` and renamed imported symbols also work.
+`from mule_types import int32, optimize` and renamed imported symbols also work.
 Imports must be unconditional module-level statements. Compiler-only bindings
 cannot be rebound, shadowed by parameters/locals, or used as runtime values.
 Wildcard compiler imports remain unsupported. Raw class-field declarations use
@@ -980,13 +990,13 @@ behavioral native tests; no performance comparison is established by these tests
 
 ## Native int64 classes
 
-An explicit `@mule.optimize(speed=3)` class may declare bare `mule.int64` fields.
+An explicit `@mule_types.optimize(speed=3)` class may declare bare `mule_types.int64` fields.
 Every field must be declared; defaults, bases, attribute interception, and
 undeclared field writes are rejected. Each instance has a contiguous signed
 64-bit payload. Constructor CFG analysis requires initialization of every field
 before a field read, receiver exposure, or successful return. Missing proofs
 are compilation errors. Method annotations are unrestricted. Proven signed
-`mule.int64` arguments permit raw entries; other methods use their compiled
+`mule_types.int64` arguments permit raw entries; other methods use their compiled
 general entries and field adapters.
 
 Representation selection creates `@mule.native.N` internal entries for eligible

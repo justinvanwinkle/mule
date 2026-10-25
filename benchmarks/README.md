@@ -106,9 +106,9 @@ not directly compare total deployment size.
 ## Class counter
 
 [`examples/class_counter.py`](../examples/class_counter.py) expresses 200 million
-method calls updating a native `mule.int64` field. The class explicitly selects
+method calls updating a native `mule_types.int64` field. The class explicitly selects
 `speed=3, safety=0`; method arguments, loop state and return values also use
-`mule.int64`. The compiler generates raw field access and native method entries,
+`mule_types.int64`. The compiler generates raw field access and native method entries,
 and, when `count` also selects `speed=3`, LLVM eliminates this linear loop into
 a multiply and field update. Lower caller policies retain the loop. Build and
 run it with:
@@ -119,8 +119,8 @@ time build/class_counter
 time uv run python examples/class_counter.py
 ```
 
-The expected output is `600000000`. `examples/mule.py` is a relative symlink to
-`stdlib/mule.py`; its host annotation markers and identity decorator do not
+The expected output is `600000000`. `examples/mule_types.py` is a relative symlink to
+`stdlib/mule_types.py`; its host annotation markers and identity decorator do not
 change Python's execution.
 
 Run the reproducible native comparison with:

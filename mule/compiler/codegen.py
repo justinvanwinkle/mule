@@ -4561,18 +4561,20 @@ class FunctionGenerator:
             # Landings release owned temporaries; only new failures and explicit
             # raises add source entries. Resuming a caught transfer preserves them.
             sites = self.landing_sites.setdefault(label, {})
-            source = (
-                None
-                if self.vop is None or self.vop.node is None
-                else self.vop.node.source
-            )
-            marker = self.module.source_highlights.marker(
-                self.module.code(self.lambda_).filename, source
-            )
-            sites.setdefault(
-                self.current_block(),
-                (self.current_line(), self.module.text(marker) if marker else "null"),
-            )
+            block_label = self.current_block()
+            if block_label not in sites:
+                source = (
+                    None
+                    if self.vop is None or self.vop.node is None
+                    else self.vop.node.source
+                )
+                marker = self.module.source_highlights.marker(
+                    self.module.code(self.lambda_).filename, source
+                )
+                sites[block_label] = (
+                    self.current_line(),
+                    self.module.text(marker) if marker else "null",
+                )
         return label
 
     def current_block(self) -> str:

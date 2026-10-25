@@ -582,7 +582,7 @@ suite failure or performance measurement.
 - **SBCL reference**: `src/compiler/represent.lisp` (`select-tn-representation`,
   automatic coercion VOPs at block boundaries).
 - **Current Mule state**: `mule/compiler/represent.py` and `vops.py` keep raw
-  `i64` / `double` values for `mule.int64` / `mule.float64` annotated locals and
+  `i64` / `double` values for `mule_types.int64` / `mule_types.float64` annotated locals and
   range-loop counters, and unbox fixnum arithmetic inside basic blocks.
   Ordinary float locals can also remain raw across blocks. Identity-aware
   selection and explicit float coercions separate numeric-only copies from

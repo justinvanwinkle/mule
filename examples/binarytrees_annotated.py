@@ -12,7 +12,7 @@
 
 import sys
 
-from mule import int64
+from mule_types import int64
 
 
 def make_tree(depth: int64):

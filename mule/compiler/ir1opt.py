@@ -441,7 +441,11 @@ def _optimize_block(block) -> bool:
         was_reoptimize = node.reoptimize
         old_type = node.accept(_PREPARE_NODE_OPTIMIZE)
         node.reoptimize = False
-        changed |= node.accept(_OPTIMIZE_NODE)
+        node_changed = node.accept(_OPTIMIZE_NODE)
+        if node_changed:
+            changed = True
+            if (home := node.home_lambda) is not None:
+                home.ir1_revision += 1
         if node.prev is None:
             continue
         if was_reoptimize or node.reoptimize or old_type is None:

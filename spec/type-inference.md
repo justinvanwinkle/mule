@@ -31,7 +31,7 @@ Mule's type system is an **internal compiler analysis**, not a user-facing stati
 ### 1.3 Ergonomics for programmers and AI agents
 
 - Unannotated Python code must be inferred as aggressively as the available program text permits from literals, operators, control-flow predicates, container construction, and call graphs.
-- Standard Python type annotations (`x: int`, `s: str`, `items: list[int]`) and Mule numeric markers (`from mule import int64`) must remain idiomatic, low-friction Python. Using or omitting annotations must never make writing Python cumbersome for human programmers or AI coding agents.
+- Standard Python type annotations (`x: int`, `s: str`, `items: list[int]`) and Mule numeric markers (`from mule_types import int64`) must remain idiomatic, low-friction Python. Using or omitting annotations must never make writing Python cumbersome for human programmers or AI coding agents.
 
 ---
 
@@ -240,7 +240,7 @@ until narrowing proves a representation already supported by the backend.
 
 Mule distinguishes between two kinds of source annotations:
 
-1. **Checked machine-width contracts** (`from mule import int8, int16, int32, int64, uint8, uint16, uint32, uint64, float64`):
+1. **Checked machine-width contracts** (`from mule_types import int8, int16, int32, int64, uint8, uint16, uint32, uint64, float64`):
    - Lower to explicit IR1 `Cast` nodes at parameter entry, annotated local stores, and `return` statements (`mule/compiler/ir1tran.py`, `mule/compiler/ir1tran_lambda.py`).
    - On `*args: T` and `**kwargs: T`, preserve the outer `TupleType()` / `DICT_TYPE` container fact while checking individual elements/values.
    - Statically contradictory values fail compilation (`AnnotationLedger.check`); unproven values emit borrowed runtime checks (`mule/compiler/checkgen.py`) unless `safety == 0`.

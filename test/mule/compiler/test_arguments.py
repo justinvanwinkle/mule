@@ -198,13 +198,13 @@ def test_native_class_defaults_keyword_binding_and_inheritance(tmp_path):
         tmp_path,
         {},
         """
-import mule
-@mule.optimize(speed=3, safety=3)
+import mule_types
+@mule_types.optimize(speed=3, safety=3)
 class Counter:
-    value: mule.int64
-    def __init__(self, value: mule.int64=10, *, offset: mule.int64=2):
+    value: mule_types.int64
+    def __init__(self, value: mule_types.int64=10, *, offset: mule_types.int64=2):
         self.value = value + offset
-    def add(self, amount: mule.int64=3) -> mule.int64:
+    def add(self, amount: mule_types.int64=3) -> mule_types.int64:
         self.value += amount
         return self.value
 print(Counter().add(), Counter(offset=5, value=20).add(amount=7))
@@ -308,9 +308,9 @@ def test_keyword_values_obey_annotation_safety_after_binding(tmp_path):
         tmp_path,
         {},
         """
-import mule
-@mule.optimize(safety=3)
-def require(value: mule.int64=4, *, other: mule.int64=5):
+import mule_types
+@mule_types.optimize(safety=3)
+def require(value: mule_types.int64=4, *, other: mule_types.int64=5):
     return value + other
 def unknown():
     return 'bad'
@@ -346,8 +346,8 @@ print(combine(), combine(right=8, left=7))
 @pytest.mark.parametrize(
     "source",
     [
-        "import mule\ndef f(x: mule.int64='bad'):\n    return x\n",
-        "import mule\ndef f(x: mule.int64):\n    return x\nf(x='bad')\n",
+        "import mule_types\ndef f(x: mule_types.int64='bad'):\n    return x\n",
+        "import mule_types\ndef f(x: mule_types.int64):\n    return x\nf(x='bad')\n",
     ],
 )
 def test_proven_annotation_contradictions_in_defaults_and_keywords_warn(caplog, source):
@@ -377,15 +377,15 @@ def test_native_call_selection_preserves_keyword_only_restrictions(tmp_path):
         tmp_path,
         {},
         """
-import mule
-@mule.optimize(speed=3, safety=3)
+import mule_types
+@mule_types.optimize(speed=3, safety=3)
 class Counter:
-    value: mule.int64
-    def __init__(self, value: mule.int64):
+    value: mule_types.int64
+    def __init__(self, value: mule_types.int64):
         self.value = value
-    def add(self, *, amount: mule.int64) -> mule.int64:
+    def add(self, *, amount: mule_types.int64) -> mule_types.int64:
         return self.value + amount
-def wrong(value: mule.int64) -> mule.int64:
+def wrong(value: mule_types.int64) -> mule_types.int64:
     instance = Counter(value)
     return instance.add(2)
 try:

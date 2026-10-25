@@ -783,7 +783,7 @@ Safety-zero contract arithmetic uses LLVM
 before a field write.
 The boxed path remains available for unsupported signatures and operations.
 
-`mule.float64` contracts and concrete inferred float facts can select `double`,
+`mule_types.float64` contracts and concrete inferred float facts can select `double`,
 as SBCL's
 `double-float` declarations select `double-reg`. Float parameters are unboxed
 once at the adapter (`mule_unbox_f64`, which rejects integers the way the

@@ -912,7 +912,10 @@ class _ClassMethodDefinitions(NodeVisitor):
 
 def made_lambda(node: Combination) -> Lambda:
     """The lambda a ``%make_function`` call makes a function object from."""
-    return node.args[0].use().accept(_MadeLambda(node))
+    result = node.args[0].use().accept(_MADE_LAMBDA)
+    if result is None:
+        raise ValueError(f"{node!r} does not make a function from a lambda")
+    return result
 
 
 def made_function(node: Node) -> Lambda | None:
@@ -922,7 +925,7 @@ def made_function(node: Node) -> Lambda | None:
 
 class _MadeFunction(NodeVisitor, LeafVisitor):
     def __init__(self):
-        self.visited = set()
+        self.visited: set | None = None
 
     def visit_Node(self, node):
         return None
@@ -934,9 +937,14 @@ class _MadeFunction(NodeVisitor, LeafVisitor):
         return node.leaf.accept(self)
 
     def visit_LambdaVar(self, leaf):
-        if leaf in self.visited or len(leaf.sets) != 1:
+        if len(leaf.sets) != 1:
             return None
-        self.visited.add(leaf)
+        if self.visited is None:
+            self.visited = {leaf}
+        elif leaf in self.visited:
+            return None
+        else:
+            self.visited.add(leaf)
         value = leaf.sets[0].value
         return value.uses[0].accept(self) if len(value.uses) == 1 else None
 
@@ -949,20 +957,20 @@ class _MadeFunction(NodeVisitor, LeafVisitor):
 class _MadeLambda(NodeVisitor, LeafVisitor):
     """A function-making call's first operand must reference a lambda."""
 
-    def __init__(self, call: Combination):
-        self.call = call
-
     def visit_Node(self, node):
-        raise ValueError(f"{self.call!r} does not make a function from a lambda")
+        return None
 
     def visit_Ref(self, node):
         return node.leaf.accept(self)
 
     def visit_Leaf(self, leaf):
-        raise ValueError(f"{self.call!r} does not make a function from a lambda")
+        return None
 
     def visit_Lambda(self, leaf):
         return leaf
+
+
+_MADE_LAMBDA = _MadeLambda()
 
 
 class _Combinations(NodeVisitor):

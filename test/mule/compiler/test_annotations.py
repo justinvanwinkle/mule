@@ -43,7 +43,7 @@ def test_integer_annotation_boundaries_preserve_values(tmp_path, marker, bits):
     maximum = 2 ** (bits if unsigned else bits - 1) - 1
     result = run_native(
         tmp_path,
-        f"from mule import {marker}\n"
+        f"from mule_types import {marker}\n"
         f"def identity(value: {marker}) -> {marker}:\n return value\n"
         f"first: {marker} = {minimum}\n"
         f"last: {marker} = {maximum}\n"
@@ -57,7 +57,7 @@ def test_integer_annotation_boundaries_preserve_values(tmp_path, marker, bits):
 def test_float_annotation_accepts_float_values(tmp_path, marker):
     result = run_native(
         tmp_path,
-        f"import mule\ndef twice(value: mule.{marker}) -> mule.{marker}:\n"
+        f"import mule_types\ndef twice(value: mule_types.{marker}) -> mule_types.{marker}:\n"
         " return value + value\nprint(twice(1.25))\n",
     )
     assert result.returncode == 0, result.stderr
@@ -67,12 +67,12 @@ def test_float_annotation_accepts_float_values(tmp_path, marker):
 @pytest.mark.parametrize(
     "source",
     [
-        "import mule as m\ndef add(x: m.int32) -> m.int32:\n return x + 1\nprint(add(41))\n",
-        "from mule import int32 as Number\ndef add(x: Number) -> Number:\n return x + 1\nprint(add(41))\n",
-        "from mule import int32\ndef add(x: int32) -> int32:\n y: int32\n y = x + 1\n return y\nprint(add(41))\n",
-        "from mule import int32\nx: int32\nx = 42\nprint(x)\n",
-        "from mule import int32, optimize as policy\n@policy(speed=3, safety=3, debug=0)\ndef add(x: int32) -> int32:\n return x + 1\nprint(add(41))\n",
-        "import mule as m\n@m.optimize(safety=0)\ndef add(x: m.int32) -> m.int32:\n return x + 1\nprint(add(41))\n",
+        "import mule_types as m\ndef add(x: m.int32) -> m.int32:\n return x + 1\nprint(add(41))\n",
+        "from mule_types import int32 as Number\ndef add(x: Number) -> Number:\n return x + 1\nprint(add(41))\n",
+        "from mule_types import int32\ndef add(x: int32) -> int32:\n y: int32\n y = x + 1\n return y\nprint(add(41))\n",
+        "from mule_types import int32\nx: int32\nx = 42\nprint(x)\n",
+        "from mule_types import int32, optimize as policy\n@policy(speed=3, safety=3, debug=0)\ndef add(x: int32) -> int32:\n return x + 1\nprint(add(41))\n",
+        "import mule_types as m\n@m.optimize(safety=0)\ndef add(x: m.int32) -> m.int32:\n return x + 1\nprint(add(41))\n",
     ],
 )
 def test_imported_aliases_and_declarations_compile(tmp_path, source):
@@ -90,7 +90,7 @@ def test_integer_annotation_warns_about_statically_out_of_range_values(
     minimum = 0 if unsigned else -(2 ** (bits - 1))
     maximum = 2 ** (bits if unsigned else bits - 1) - 1
     wrong = minimum - 1 if boundary == "below" else maximum + 1
-    source = f"from mule import {marker}\nvalue: {marker} = {wrong}\n"
+    source = f"from mule_types import {marker}\nvalue: {marker} = {wrong}\n"
     warnings = contradiction_warnings(caplog, source, "range_error.py")
     assert any(warning.startswith("range_error.py:2:") for warning in warnings)
 
@@ -108,7 +108,7 @@ def test_integer_annotation_warns_about_statically_out_of_range_values(
     ],
 )
 def test_statically_wrong_annotations_warn(caplog, body):
-    assert contradiction_warnings(caplog, "from mule import int32\n" + body)
+    assert contradiction_warnings(caplog, "from mule_types import int32\n" + body)
 
 
 @pytest.mark.parametrize(
@@ -129,7 +129,7 @@ def test_statically_wrong_annotations_warn(caplog, body):
     ],
 )
 def test_contradicted_annotation_is_ignored_at_run_time(tmp_path, body, expected):
-    result = run_native(tmp_path, "from mule import int8, int32\n" + body)
+    result = run_native(tmp_path, "from mule_types import int8, int32\n" + body)
     assert result.returncode == 0, result.stderr
     assert result.stdout == expected
 
@@ -160,7 +160,7 @@ def test_module_annotation_warns_about_wrong_global_write_in_either_definition_o
 ):
     declaration = "value: int32 = 1\n"
     writer = "def bad():\n global value\n value = 'wrong'\n"
-    source = "from mule import int32\n"
+    source = "from mule_types import int32\n"
     source += (
         declaration + writer if declaration_before_writer else writer + declaration
     )
@@ -177,7 +177,7 @@ def test_module_annotation_checks_unknown_global_write_in_either_definition_orde
 ):
     declaration = "value: int32 = 1\n"
     writer = "@optimize(safety=3)\ndef bad():\n global value\n value = str(42)\n"
-    source = "from mule import int32, optimize\n"
+    source = "from mule_types import int32, optimize\n"
     source += (
         declaration + writer if declaration_before_writer else writer + declaration
     )
@@ -190,7 +190,7 @@ def test_module_annotation_checks_unknown_global_write_in_either_definition_orde
 def test_every_compilation_reports_its_own_contradictions(caplog):
     # Each compilation owns its record of ignored declarations; a declaration
     # one program ignored is still checked in the next.
-    source = "from mule import int32\nvalue: int32 = 'wrong'\n"
+    source = "from mule_types import int32\nvalue: int32 = 'wrong'\n"
     assert contradiction_warnings(caplog, source, "first.py")
     caplog.clear()
     assert contradiction_warnings(caplog, source, "second.py")
@@ -199,7 +199,7 @@ def test_every_compilation_reports_its_own_contradictions(caplog):
 @pytest.mark.parametrize("marker", FLOATS)
 def test_float_annotation_warns_about_statically_wrong_object(caplog, marker):
     assert contradiction_warnings(
-        caplog, f"from mule import {marker}\nvalue: {marker} = 'wrong'\n"
+        caplog, f"from mule_types import {marker}\nvalue: {marker} = 'wrong'\n"
     )
 
 
@@ -207,7 +207,7 @@ def test_float_annotation_warns_about_statically_wrong_object(caplog, marker):
 def test_known_wrong_annotation_is_ignored_at_every_safety(tmp_path, safety):
     result = run_native(
         tmp_path,
-        "from mule import int32, optimize\n"
+        "from mule_types import int32, optimize\n"
         f"@optimize(safety={safety})\ndef bad() -> int32:\n return 'wrong'\n"
         "print(bad())\n",
     )
@@ -219,14 +219,14 @@ def test_known_wrong_annotation_is_ignored_at_every_safety(tmp_path, safety):
 @pytest.mark.parametrize("value", ("True", "False"))
 def test_fixed_integer_annotation_warns_about_known_boolean(caplog, marker, value):
     assert contradiction_warnings(
-        caplog, f"from mule import {marker}\nvalue: {marker} = {value}\n"
+        caplog, f"from mule_types import {marker}\nvalue: {marker} = {value}\n"
     )
 
 
 def test_uninitialized_annotated_local_still_raises_unbound_local_error(tmp_path):
     result = run_native(
         tmp_path,
-        "from mule import int32\ndef read():\n value: int32\n return value\nread()\n",
+        "from mule_types import int32\ndef read():\n value: int32\n return value\nread()\n",
     )
     assert result.returncode != 0
     assert "UnboundLocalError" in result.stderr
@@ -234,7 +234,7 @@ def test_uninitialized_annotated_local_still_raises_unbound_local_error(tmp_path
 
 def test_trusted_annotations_do_not_emit_runtime_annotation_checks():
     llvm = emit_llvm(
-        "from mule import int32, optimize\n"
+        "from mule_types import int32, optimize\n"
         "@optimize(safety=0)\ndef identity(value: int32) -> int32:\n return value\n"
     )
     assert "call i32 @mule_assert_integer(" not in llvm
@@ -242,7 +242,7 @@ def test_trusted_annotations_do_not_emit_runtime_annotation_checks():
 
 def test_checked_annotation_emits_check_for_unknown_parameter():
     llvm = emit_llvm(
-        "from mule import int32, optimize\n"
+        "from mule_types import int32, optimize\n"
         "@optimize(safety=3)\ndef identity(value: int32) -> int32:\n return value\n"
     )
     assert "call i32 @mule_assert_integer(" in llvm
@@ -252,7 +252,7 @@ def test_checked_annotation_emits_check_for_unknown_parameter():
 def test_intermediate_safety_levels_check_unknown_annotation_values(tmp_path, safety):
     result = run_native(
         tmp_path,
-        "from mule import int32, optimize\n"
+        "from mule_types import int32, optimize\n"
         f"@optimize(safety={safety})\ndef consume(value: int32):\n print(value)\n"
         "consume(str(42))\n",
     )
@@ -263,9 +263,9 @@ def test_intermediate_safety_levels_check_unknown_annotation_values(tmp_path, sa
 @pytest.mark.parametrize(
     "source",
     [
-        "from mule import int32, optimize\n@optimize(safety=3)\ndef consume(value: int32):\n print(value)\nconsume(str(42))\n",
-        "from mule import int32, optimize\n@optimize(safety=3)\ndef consume() -> int32:\n return str(42)\nprint(consume())\n",
-        "from mule import int32, optimize\n@optimize(safety=3)\ndef consume():\n value: int32 = str(42)\n print(value)\nconsume()\n",
+        "from mule_types import int32, optimize\n@optimize(safety=3)\ndef consume(value: int32):\n print(value)\nconsume(str(42))\n",
+        "from mule_types import int32, optimize\n@optimize(safety=3)\ndef consume() -> int32:\n return str(42)\nprint(consume())\n",
+        "from mule_types import int32, optimize\n@optimize(safety=3)\ndef consume():\n value: int32 = str(42)\n print(value)\nconsume()\n",
     ],
 )
 def test_safety_three_checks_unknown_annotation_values(tmp_path, source):
@@ -287,7 +287,7 @@ def test_class_policy_and_method_override_check_annotations(
 ):
     result = run_native(
         tmp_path,
-        "from mule import int32, optimize\n"
+        "from mule_types import int32, optimize\n"
         f"{class_policy}\nclass Consumer:\n"
         f"{method_policy}"
         " def consume(self, value: int32):\n  print(value)\n"
@@ -310,7 +310,7 @@ def test_class_policy_and_method_override_check_annotations(
 def test_safety_three_accepts_unknown_integer_within_range(tmp_path, marker, value):
     result = run_native(
         tmp_path,
-        f"from mule import {marker}, optimize\n"
+        f"from mule_types import {marker}, optimize\n"
         f"@optimize(safety=3)\ndef consume(value: {marker}) -> {marker}:\n"
         " return value\n"
         f"print(consume(int('{value}')))\n",
@@ -334,7 +334,7 @@ def test_safety_three_accepts_unknown_integer_within_range(tmp_path, marker, val
 def test_safety_three_rejects_unknown_integer_outside_range(tmp_path, marker, value):
     result = run_native(
         tmp_path,
-        f"from mule import {marker}, optimize\n"
+        f"from mule_types import {marker}, optimize\n"
         f"@optimize(safety=3)\ndef consume(value: {marker}):\n print(value)\n"
         f"consume(int('{value}'))\n",
     )
@@ -345,26 +345,26 @@ def test_safety_three_rejects_unknown_integer_outside_range(tmp_path, marker, va
 @pytest.mark.parametrize(
     "source",
     [
-        "from mule import intp\n",
-        "from mule import uintp\n",
-        "from mule import isize\n",
-        "from mule import usize\n",
-        "from mule import int256\n",
-        "from mule import *\n",
-        "from mule import int32\nint32 = 42\n",
-        "from mule import int32\ndef f(int32):\n pass\n",
-        "import mule\nmule = 42\n",
-        "import mule\nprint(mule.int32)\n",
-        "from mule import int32\nprint(int32)\n",
-        "from mule import int32\nprint(int32(42))\n",
-        "if True:\n from mule import int32\n",
-        "from mule import optimize\n@optimize(3)\ndef f():\n pass\n",
-        "from mule import optimize\n@optimize(safety=4)\ndef f():\n pass\n",
-        "from mule import optimize\n@optimize(safety=-1)\ndef f():\n pass\n",
-        "from mule import optimize\n@optimize(safety=1.0)\ndef f():\n pass\n",
-        "from mule import optimize\n@optimize(safety=3, safety=0)\ndef f():\n pass\n",
-        "from mule import optimize\n@optimize(unknown=3)\ndef f():\n pass\n",
-        "from mule import optimize\nlevel = 3\n@optimize(safety=level)\ndef f():\n pass\n",
+        "from mule_types import intp\n",
+        "from mule_types import uintp\n",
+        "from mule_types import isize\n",
+        "from mule_types import usize\n",
+        "from mule_types import int256\n",
+        "from mule_types import *\n",
+        "from mule_types import int32\nint32 = 42\n",
+        "from mule_types import int32\ndef f(int32):\n pass\n",
+        "import mule_types\nmule_types = 42\n",
+        "import mule_types\nprint(mule_types.int32)\n",
+        "from mule_types import int32\nprint(int32)\n",
+        "from mule_types import int32\nprint(int32(42))\n",
+        "if True:\n from mule_types import int32\n",
+        "from mule_types import optimize\n@optimize(3)\ndef f():\n pass\n",
+        "from mule_types import optimize\n@optimize(safety=4)\ndef f():\n pass\n",
+        "from mule_types import optimize\n@optimize(safety=-1)\ndef f():\n pass\n",
+        "from mule_types import optimize\n@optimize(safety=1.0)\ndef f():\n pass\n",
+        "from mule_types import optimize\n@optimize(safety=3, safety=0)\ndef f():\n pass\n",
+        "from mule_types import optimize\n@optimize(unknown=3)\ndef f():\n pass\n",
+        "from mule_types import optimize\nlevel = 3\n@optimize(safety=level)\ndef f():\n pass\n",
     ],
 )
 def test_invalid_compiler_imports_and_directives_are_rejected(source):
@@ -373,7 +373,7 @@ def test_invalid_compiler_imports_and_directives_are_rejected(source):
 
 
 def host_library_check(program):
-    path = Path(__file__).parents[3] / "stdlib/mule.py"
+    path = Path(__file__).parents[3] / "stdlib/mule_types.py"
     source = "import runpy\nlibrary = runpy.run_path(" + repr(str(path)) + ")\n"
     result = subprocess.run(
         [python_host(), "-c", source + program],

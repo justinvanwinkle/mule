@@ -11,7 +11,7 @@ from test.mule.compiler.test_native import run_native
 from test.python_host import python_host
 
 NODE = """
-from mule import int64, optimize
+from mule_types import int64, optimize
 @optimize(speed=3, safety=3)
 class Node:
     value: int64
@@ -54,7 +54,9 @@ def compare_reference_program(tmp_path, tail):
     oracle_directory = tmp_path / "oracle"
     oracle_directory.mkdir()
     # Use the real host-compatible annotation library, not replacement markers.
-    (oracle_directory / "mule.py").write_bytes((STDLIB / "mule.py").read_bytes())
+    (oracle_directory / "mule_types.py").write_bytes(
+        (STDLIB / "mule_types.py").read_bytes()
+    )
     oracle_source = oracle_directory / "program.py"
     oracle_source.write_text(source)
     oracle = subprocess.run(

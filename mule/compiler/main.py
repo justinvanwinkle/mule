@@ -68,6 +68,7 @@ class Compilation:
     components: list[Component]
     converter: Converter
     facts: dict[Lambda, locall.LambdaFacts] | None = None
+    locall_state: dict | None = None
     annotations: AnnotationLedger = field(default_factory=AnnotationLedger)
     imported_function_types: Mapping[tuple[str, str], ValueType] | None = None
     imported_targets: (
@@ -98,11 +99,15 @@ def ir1_phases(compilation: Compilation) -> None:
     until no cast changes state.
     """
     with phase("IR1 phases %s", compilation.converter.filename, level=logging.DEBUG):
+        facts_stale = True
         while True:
-            _ir1_optimize_phase_1(compilation)
+            _ir1_optimize_phase_1(compilation, facts_stale=facts_stale)
+            facts_stale = False
             if ignore_contradicted_annotations(compilation):
+                facts_stale = True
                 continue
             if assert_inferred_results(compilation):
+                facts_stale = True
                 continue
             facts = linked(compilation.facts, compilation, "facts")
             with phase("IR1 check generation", level=logging.DEBUG):
@@ -126,7 +131,7 @@ def ignore_contradicted_annotations(compilation: Compilation) -> bool:
     them is removed. Returns whether anything changed, so analysis reruns.
 
     Python never enforces annotations, so a provably wrong one is reported
-    rather than rejected. A typed native field's ``mule.int64`` declaration
+    rather than rejected. A typed native field's ``mule_types.int64`` declaration
     defines its raw storage, so a contradiction there remains an error."""
     ledger = compilation.annotations
     pending = ledger.contradictions
@@ -151,6 +156,7 @@ def ignore_contradicted_annotations(compilation: Compilation) -> bool:
         kind, owner, *key = source
         if kind == "return":
             owner.signature.return_annotation = None
+            owner.ir1_revision += 1
         elif kind == "local":
             owner.local_annotations.pop(key[0], None)
             names = [var.name for var in owner.vars]
@@ -158,6 +164,7 @@ def ignore_contradicted_annotations(compilation: Compilation) -> bool:
                 annotations = list(owner.signature.annotations)
                 annotations[names.index(key[0])] = None
                 owner.signature.annotations = tuple(annotations)
+            owner.ir1_revision += 1
     if not changed:
         return False
     remover = _RemoveIgnoredCast(ledger)
@@ -245,6 +252,8 @@ class _ReplaceGlobalConstantRefs(NodeVisitor, LeafVisitor):
             leaf.refs.remove(ref)
         ref.leaf = constant
         constant.refs.append(ref)
+        if (home := ref.home_lambda) is not None:
+            home.ir1_revision += 1
         self.changed = True
 
 
@@ -282,8 +291,11 @@ def _fold_protocol_constants(compilation: Compilation) -> bool:
     return changed
 
 
-def _ir1_optimize_phase_1(compilation: Compilation) -> None:
-    facts_stale = True
+def _ir1_optimize_phase_1(
+    compilation: Compilation, *, facts_stale: bool = True
+) -> None:
+    if compilation.locall_state is None:
+        compilation.locall_state = {}
     for iteration in range(REOPTIMIZE_LIMIT):
         ir1_changed = False
         with phase("IR1 optimization round %d", iteration + 1, level=logging.DEBUG):
@@ -299,26 +311,27 @@ def _ir1_optimize_phase_1(compilation: Compilation) -> None:
             continue
         if any(component.reoptimize for component in compilation.components):
             continue
-        if compilation.facts is not None and not facts_stale:
+        if compilation.facts is None or facts_stale:
+            with phase("IR1 local-call and flow analysis", level=logging.DEBUG):
+                compilation.facts = locall.analyze(
+                    compilation.lambdas,
+                    compilation.annotations,
+                    imported_function_types=compilation.imported_function_types,
+                    imported_targets=compilation.imported_targets,
+                    storage_methods=compilation.storage_methods,
+                    builtin_return_types=compilation.builtin_return_types,
+                    builtin_targets=compilation.builtin_targets,
+                    state_cache=compilation.locall_state,
+                )
+                facts_stale = False
+            if any(component.reoptimize for component in compilation.components):
+                continue
+        hoisted = False
+        for component in compilation.components:
+            hoisted |= loop.hoist_loop_invariants(component)
+        if not hoisted:
             return
-        with phase("IR1 local-call and flow analysis", level=logging.DEBUG):
-            compilation.facts = locall.analyze(
-                compilation.lambdas,
-                compilation.annotations,
-                imported_function_types=compilation.imported_function_types,
-                imported_targets=compilation.imported_targets,
-                storage_methods=compilation.storage_methods,
-                builtin_return_types=compilation.builtin_return_types,
-                builtin_targets=compilation.builtin_targets,
-            )
-            facts_stale = False
-        if not any(component.reoptimize for component in compilation.components):
-            hoisted = False
-            for component in compilation.components:
-                hoisted |= loop.hoist_loop_invariants(component)
-            if not hoisted:
-                return
-            facts_stale = True
+        facts_stale = True
     if facts_stale:
         with phase("IR1 local-call and flow analysis", level=logging.DEBUG):
             compilation.facts = locall.analyze(
@@ -329,6 +342,7 @@ def _ir1_optimize_phase_1(compilation: Compilation) -> None:
                 storage_methods=compilation.storage_methods,
                 builtin_return_types=compilation.builtin_return_types,
                 builtin_targets=compilation.builtin_targets,
+                state_cache=compilation.locall_state,
             )
     logger.debug("IR1 reoptimization reached its %d-round limit", REOPTIMIZE_LIMIT)
 

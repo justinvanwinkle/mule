@@ -254,7 +254,7 @@ outer()
 
 def test_local_calls_preserve_native_scalar_and_unpacked_return_entries(tmp_path):
     source = """\
-from mule import int64, optimize
+from mule_types import int64, optimize
 
 @optimize(speed=3, safety=0)
 def outer(value):

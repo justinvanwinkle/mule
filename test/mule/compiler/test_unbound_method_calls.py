@@ -138,13 +138,13 @@ def test_unbound_native_method_retains_receiver_layout_guard(tmp_path):
         tmp_path,
         {},
         """
-import mule
-@mule.optimize(speed=3, safety=3)
+import mule_types
+@mule_types.optimize(speed=3, safety=3)
 class Native:
-    value: mule.int64
-    def __init__(self, value: mule.int64):
+    value: mule_types.int64
+    def __init__(self, value: mule_types.int64):
         self.value = value
-    def method(self, amount: mule.int64=1) -> mule.int64:
+    def method(self, amount: mule_types.int64=1) -> mule_types.int64:
         return self.value + amount
 instance = Native(5)
 print(Native.method(instance, 3))

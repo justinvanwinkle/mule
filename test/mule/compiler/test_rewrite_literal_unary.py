@@ -193,7 +193,7 @@ def test_runtime_calibration_uses_folded_coefficients_without_unary_work(tmp_pat
     case = build_case(
         tmp_path,
         """
-from mule import float64, int64
+from mule_types import float64, int64
 
 def calibrate(sample: float64) -> float64:
     return sample * (-2.5) + (+0.25)

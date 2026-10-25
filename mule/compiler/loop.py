@@ -941,4 +941,6 @@ def hoist_loop_invariants(component: Component) -> bool:
 
     if changed:
         component.reoptimize = True
+        for lam in component.lambdas:
+            lam.ir1_revision += 1
     return changed

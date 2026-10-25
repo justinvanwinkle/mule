@@ -171,12 +171,12 @@ the compiler needs four systems-programming capabilities (analogous to SBCL's
 `sb-vm`, `sb-sys:system-area-pointer`, and `sb-alien`):
 
 1. **Full unboxed machine types and raw pointer primitives:**
-   Extend `stdlib/mule.py` and `mule/compiler/vops.py` beyond `int64`/`float64`
+   Extend `stdlib/mule_types.py` and `mule/compiler/vops.py` beyond `int64`/`float64`
    to lower `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `uint64`, and
    typed/untyped raw pointers (`ptr[T]`, `sizeof(T)`, `offsetof(T, field)`),
    with VOPs for raw `load`, `store`, pointer offset (`getelementptr`), and
    atomics (`atomic_load`, `atomic_store`, `atomic_fetch_add`, `atomic_cmpxchg`).
-2. **Unboxed, zero-overhead systems functions (`@mule.c_abi` or `safety=0, speed=3`):**
+2. **Unboxed, zero-overhead systems functions (`@mule_types.c_abi` or `safety=0, speed=3`):**
    Allow runtime modules to define functions whose parameters, locals, and
    results are raw machine types (`i64`, `i32`, `ptr`, `void`) with no
    reference-counting prologue/epilogue and no Python error-edge checks,
@@ -188,7 +188,7 @@ the compiler needs four systems-programming capabilities (analogous to SBCL's
    `__errno_location`, `__gmpz_add`, etc.) and emit direct LLVM `call`
    instructions without a foreign wrapper function.
 4. **Unified physical object layouts in LLVM:**
-   Replace Rust's `enum Data` with `@mule.optimize(speed=3)` physical object
+   Replace Rust's `enum Data` with `@mule_types.optimize(speed=3)` physical object
    layouts (`ObjectHeader`, `VarObjectHeader`, `AsciiStr`, `ListObject`,
    `DictObject`, `BigIntObject`). Once `str`, `list`, `tuple`, `dict`, and `int`
    have compiler-known physical layouts, both `stdlib/_*.py` and user code with
