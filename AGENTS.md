@@ -112,6 +112,7 @@ Start with the [SBCL source reference](spec/sbcl-compiler.md),
 | Benchmarks and recorded runs | [Performance suite](perf/README.md) · [History](perf/history.jsonl) |
 | Design and implementation contracts | [Specification index](spec/index.md) |
 | Initial GitHub Pages site | [Site files and publishing instructions](docs/README.md) |
+| License | [GNU Affero General Public License v3.0 or later](LICENSE) |
 
 ```sh
 uv run pytest
