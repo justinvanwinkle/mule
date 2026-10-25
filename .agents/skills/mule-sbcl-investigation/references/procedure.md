@@ -91,6 +91,7 @@ Start with `spec/sbcl-compiler.md`, `spec/native-lowering.md`, and
 | Sequence transforms | `seqtran.lisp` | `seqtran.py`, `ir2tran.py` |
 | Environment and ownership adaptation | `envanal.lisp`, IR2 lowering | `envanal.py`, representation and cleanup consumers |
 | Representations and coercions | `represent.lisp`, `ir2tran.lisp` | `represent.py`, `ir2tran.py`, `vops.py` |
+| File compilation and FASL/module loading | `main.lisp` (`compile-file`), `../code/module.lisp`, `../code/load.lisp`, `../code/target-load.lisp` | `driver.py`, `modules.py`, `mule/runtime/imports.rs` |
 
 SBCL entries above are under `src/compiler/`; Mule entries under `mule/compiler/`.
 Follow the exact operation beyond this starting table.

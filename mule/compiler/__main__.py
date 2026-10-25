@@ -68,23 +68,17 @@ def main() -> int:
     args = parser.parse_args()
     configure(args.verbose)
     if args.dynamic_module is not None:
-        import os
-
         roots = tuple(Path(r) for r in args.root)
         pkg_paths: dict[str, list[str]] = {}
         for entry in args.package_path:
             if "=" in entry:
                 pkg_name, pkg_dir = entry.split("=", 1)
                 pkg_paths.setdefault(pkg_name, []).append(pkg_dir)
-        image_mods = frozenset(
-            m for m in os.environ.get("MULE_IMAGE_MODULES", "").split(":") if m
-        )
         try:
             shared = build_dynamic_module(
                 args.dynamic_module,
                 roots=roots,
                 package_paths={k: tuple(v) for k, v in pkg_paths.items()},
-                image_modules=image_mods,
                 toolchain=Toolchain(args.clang, args.rustc, args.level, False),
             )
         except (OSError, ValueError, SyntaxError, ToolchainError) as error:

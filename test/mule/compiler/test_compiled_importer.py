@@ -134,9 +134,11 @@ print(parent.__spec__.origin, parent.__file__, len(parent.__path__))
 
 @pytest.mark.integration
 def test_unlinked_module_compiles_and_loads_dynamically_at_runtime(tmp_path):
-    (tmp_path / "dynamic_plugin.py").write_text(
-        "def compute(x: int) -> int:\n    return x * 6 + 6\n"
-    )
+    from mule.compiler.artifacts import mule_hash
+    from mule.compiler.driver import fasl_cache_path
+
+    plugin_path = tmp_path / "dynamic_plugin.py"
+    plugin_path.write_text("def compute(x: int) -> int:\n    return x * 6 + 6\n")
     main_source = tmp_path / "main.py"
     main_source.write_text(
         "import importlib\n"
@@ -150,3 +152,5 @@ def test_unlinked_module_compiles_and_loads_dynamically_at_runtime(tmp_path):
     )
     assert native.returncode == 0, native.stderr
     assert native.stdout == "42\n"
+    fasl = fasl_cache_path(mule_hash(), 0, "dynamic_plugin", plugin_path)
+    assert fasl is not None and fasl.is_file()

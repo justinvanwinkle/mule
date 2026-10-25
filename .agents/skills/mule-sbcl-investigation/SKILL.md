@@ -29,8 +29,13 @@ Paths beginning `mule/`, `spec/`, `test/`, or `perf/` refer to the repository ro
 ## Use references to answer concrete questions
 
 1. Mule's actual source, artifacts, and execution establish the problem.
-2. Inspect the corresponding source in `~/checkout/sbcl` and its generated code.
-   Follow its producer, consumer, stage boundaries, and optimization policies.
+2. **STOP and inspect the corresponding source in `~/checkout/sbcl` BEFORE
+   proposing or implementing any compiler, loader, build, or runtime design.**
+   Follow its producer, consumer, stage boundaries, FASL compilation/loading
+   model (`src/compiler/main.lisp`, `src/code/module.lisp`, `src/code/load.lisp`,
+   `src/code/target-load.lisp`), and optimization policies. Never invent bespoke
+   IPC servers, multi-module dynamic bundles, or CLI self-spawning on cache hits
+   instead of following SBCL's architecture.
 3. Load the `llvm` skill for lowering, optimizer, ABI, lifetime, and verification
    questions. Check its advice against the LLVM version used by this build.
 4. Inspect other language implementations under `~/checkout/` when their

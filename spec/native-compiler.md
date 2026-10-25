@@ -42,9 +42,29 @@ cached executable directly.
 
 Each LLVM unit, including builtins, compiles whole in one Clang invocation.
 Independent units can compile in parallel within the build worker limit.
-Without LTO, each unit produces a native object. With LTO, each unit produces
-bitcode for optimization at the final link. Neither mode partitions a unit,
-so Clang can optimize across all functions in that unit.
+Without LTO, each unit produces a native object (`-fPIC`); the `builtins` unit is
+partitioned across `llvm-split` shards compiled in parallel and combined with
+`ld.lld -r`. With LTO, each unit produces bitcode for optimization at the final
+link.
+
+Dynamic imports and modules not statically linked into the initial executable
+follow SBCL's file-compilation and FASL-loading architecture (`src/compiler/main.lisp`,
+`compile-file`; `src/code/module.lisp`, `require` and `module-provide-contrib`;
+`src/code/load.lisp`, `load`):
+
+- One source module compiles to one standalone single-module shared object
+  (`module.so` FASL) in `$XDG_CACHE_HOME/mule/fasl/`, independent of which
+  modules are currently loaded in the running image. Cross-module imports inside
+  a unit resolve through `@mule_import_missing` at module execution time.
+- When the runtime loader (`ensure_artifact` in `mule/runtime/imports.rs`)
+  resolves a source module on `sys.path`, it computes the deterministic FASL
+  cache path from the compiler digest, optimization level, module name, and
+  canonical source file metadata (`st_dev`, `st_ino`, `st_size`, `st_mtime_ns`,
+  `st_ctime_ns`). On a cache hit, the runtime `dlopen`s the cached `.so`
+  directly in-process without invoking the compiler.
+- Only on a FASL cache miss does the runtime invoke `--dynamic-module`
+  (`compile-file`), which compiles the requested module and any uncached static
+  dependencies in parallel into their individual `.so` FASLs in the cache.
 
 An originating build-step failure reports its exception immediately, including
 source coordinates for syntax errors, even without `-v`. Dependent steps retain

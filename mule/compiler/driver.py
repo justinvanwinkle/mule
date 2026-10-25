@@ -13,6 +13,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from functools import cache
@@ -33,6 +34,8 @@ from .artifacts import (
     Node,
     Step,
     ToolchainError,
+    cache_directory,
+    mule_hash,
     physical_core_count,
     tool_identity,
 )
@@ -625,19 +628,62 @@ def _run(command: list[str], failure: str) -> None:
         raise ToolchainError(f"{failure}:\n{result.stderr.strip()}")
 
 
+def fasl_cache_path(
+    compiler_hash: str,
+    optimize: int,
+    module_name: str,
+    source_path: Path,
+) -> Path | None:
+    """The deterministic cache path of a single-module FASL shared object."""
+    try:
+        resolved = source_path.resolve()
+        st = resolved.stat()
+    except OSError:
+        return None
+    payload = (
+        f"{compiler_hash}\0{optimize}\0{module_name}\0{resolved}\0"
+        f"{st.st_dev}:{st.st_ino}:{st.st_size}:{st.st_mtime_ns}:{st.st_ctime_ns}"
+    ).encode()
+    h = 0x6C62272E07BB014262B821756295C58D
+    prime = 0x0000000001000000000000000000013B
+    mask = (1 << 128) - 1
+    for b in payload:
+        h = ((h ^ b) * prime) & mask
+    return cache_directory() / "fasl" / f"{h:032x}.so"
+
+
+def _install_fasl_symlink(
+    step: Step, descriptor: CompiledModule, optimize: int
+) -> None:
+    if descriptor.path is None:
+        return
+    dest = fasl_cache_path(mule_hash(), optimize, descriptor.name, descriptor.path)
+    if dest is None:
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        if tmp.exists() or tmp.is_symlink():
+            tmp.unlink()
+        os.symlink(step.path("module.so"), tmp)
+        os.replace(tmp, dest)
+    except OSError:
+        pass
+
+
 class Build:
-    """The step graph of one executable."""
+    """The step graph of one executable or FASL build."""
 
     def __init__(
         self,
         graph: Graph,
         toolchain: Toolchain,
         *,
-        image_modules: frozenset[str] = frozenset(),
+        fasl_mode: bool = False,
     ):
         self.graph = graph
         self.toolchain = toolchain
-        self.image_modules = image_modules
+        self.fasl_mode = fasl_mode
         self.link: Step | None = None
         # The object steps the link combines, by step name.
         self.objects: dict[str, Step] = {}
@@ -861,13 +907,26 @@ class Build:
     def discover(self, step: Step, resolver: ModuleCompiler, roots, package) -> None:
         """Add the units of the source modules ``step`` imports to the link,
         as they resolve on this build's search path."""
-        if self.link is None:
-            raise RuntimeError("module discovery requires the link step")
         if not resolver.requested:
             resolve_recorded(resolver, step.path("imports.json"))
+        if self.fasl_mode:
+            current_hash = mule_hash()
+            for descriptor in resolver.pending:
+                if descriptor.missing or descriptor.native or descriptor.path is None:
+                    continue
+                dest = fasl_cache_path(
+                    current_hash,
+                    self.toolchain.optimize,
+                    descriptor.name,
+                    descriptor.path,
+                )
+                if dest is not None and dest.is_file():
+                    continue
+                self.fasl(self.module(descriptor, roots, package), descriptor)
+            return
+        if self.link is None:
+            raise RuntimeError("module discovery requires the link step")
         for descriptor in resolver.pending:
-            if descriptor.name in self.image_modules:
-                continue
             self.link.add_input(self.object(self.module(descriptor, roots, package)))
 
     def main(
@@ -886,7 +945,7 @@ class Build:
                 program.toolchain_info = (
                     sys.executable,
                     self.toolchain.clang,
-                    self.toolchain.rustc,
+                    f"{self.toolchain.rustc}\n{mule_hash()}",
                     self.toolchain.optimize,
                 )
             (directory / "unit.ll").write_text(generate(program))
@@ -955,11 +1014,13 @@ class Build:
         self.link.add_input(self.object(self.module(system, (STDLIB,), None)))
         return self.link
 
-    def shared_library(self, units: list[Step], module_name: str) -> Step:
+    def fasl(self, unit: Step, descriptor: CompiledModule) -> Step:
+        """Link one module's object into its standalone FASL shared object."""
         toolchain = self.toolchain
+        obj = self.object(unit)
+        name = f"{unit.name} fasl optimize={toolchain.optimize}"
 
         def action(inputs, directory):
-            objects = [str(step.path("unit.o")) for step in self.objects.values()]
             _run(
                 [
                     toolchain.clang,
@@ -969,32 +1030,31 @@ class Build:
                     "-Wno-override-module",
                     "-Wl,--gc-sections",
                     "-Wl,--strip-debug",
-                    *objects,
+                    str(obj.path("unit.o")),
                     "-o",
                     str(directory / "module.so"),
                 ],
                 "LLVM compilation/linking failed",
             )
 
-        objects = [self.object(unit) for unit in units]
-        name = f"shared {module_name} optimize={toolchain.optimize}"
-        self.link = self.graph.step(
+        return self.graph.step(
             name,
             lambda: Step(
                 self.graph,
                 name,
-                inputs=list(objects),
+                inputs=[obj],
                 settings={
-                    "step": "shared",
-                    "module": module_name,
-                    "image_modules": sorted(self.image_modules),
+                    "step": "fasl",
+                    "module": descriptor.name,
                     **toolchain.clang_settings(),
                 },
                 outputs=("module.so",),
                 action=action,
+                discover=lambda step: _install_fasl_symlink(
+                    step, descriptor, toolchain.optimize
+                ),
             ),
         )
-        return self.link
 
 
 @cache
@@ -1167,16 +1227,15 @@ def build_dynamic_module(
     *,
     roots: tuple[Path, ...],
     package_paths: dict[str, tuple[str, ...]] | None = None,
-    image_modules: frozenset[str] = frozenset(),
     toolchain: Toolchain | None = None,
     workers: int | None = None,
 ) -> Path | None:
-    """Compile ``module_name`` and its transitive linked imports into a cached
-    shared library suitable for ``dlopen``."""
+    """Compile ``module_name`` (and any uncached static dependencies) into
+    individual single-module FASL shared objects in the FASL cache."""
     toolchain = toolchain or Toolchain()
     toolchain.require_target()
     interface = cached_builtins_interface()
-    if module_name in interface.modules or module_name in image_modules:
+    if module_name in interface.modules:
         return None
     compiler = import_resolver(f"<{module_name}>", interface, None, roots, None)
     if package_paths:
@@ -1189,17 +1248,39 @@ def build_dynamic_module(
     descriptor = None
     for end in range(1, len(parts) + 1):
         descriptor = compiler.resolve(".".join(parts[:end]), None, None)
-    if descriptor is None or descriptor.missing or descriptor.native:
+    if (
+        descriptor is None
+        or descriptor.missing
+        or descriptor.native
+        or descriptor.path is None
+    ):
         return None
-    pending = [desc for desc in compiler.pending if desc.name not in image_modules]
-    if not pending:
-        return None
+    target_dest = fasl_cache_path(
+        mule_hash(), toolchain.optimize, descriptor.name, descriptor.path
+    )
+    if target_dest is not None and target_dest.is_file():
+        return target_dest
     with Graph(workers) as graph:
-        build = Build(graph, toolchain, image_modules=image_modules)
-        units = [build.module(desc, compiler.roots, None) for desc in pending]
-        link = build.shared_library(units, module_name)
-        graph.run(link)
-    return link.path("module.so")
+        build = Build(graph, toolchain, fasl_mode=True)
+        target = build.fasl(build.module(descriptor, compiler.roots, None), descriptor)
+        for desc in compiler.pending:
+            if (
+                desc.name == descriptor.name
+                or desc.missing
+                or desc.native
+                or desc.path is None
+            ):
+                continue
+            dest = fasl_cache_path(
+                mule_hash(), toolchain.optimize, desc.name, desc.path
+            )
+            if dest is not None and dest.is_file():
+                continue
+            build.fasl(build.module(desc, compiler.roots, None), desc)
+        graph.run(target)
+    if target_dest is not None and target_dest.is_file():
+        return target_dest
+    return target.path("module.so")
 
 
 def build(

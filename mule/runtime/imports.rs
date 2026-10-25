@@ -129,7 +129,40 @@ pub unsafe extern "C" fn mule_register_compiled_module(
 enum Candidate {
     Missing,
     NamespacePackage(Vec<String>),
-    SourceFile( Option<(String, Vec<String>)>),
+    SourceFile(PathBuf, Option<(String, Vec<String>)>),
+}
+
+fn fasl_cache_path(
+    compiler_hash: &str,
+    optimize: i64,
+    module_name: &str,
+    source_path: &Path,
+) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    if compiler_hash.is_empty() {
+        return None;
+    }
+    let resolved = source_path.canonicalize().ok()?;
+    let meta = std::fs::metadata(&resolved).ok()?;
+    let mtime_ns = (meta.mtime() as i128) * 1_000_000_000 + (meta.mtime_nsec() as i128);
+    let ctime_ns = (meta.ctime() as i128) * 1_000_000_000 + (meta.ctime_nsec() as i128);
+    let payload = format!(
+        "{compiler_hash}\0{optimize}\0{module_name}\0{}\0{}:{}:{}:{mtime_ns}:{ctime_ns}",
+        resolved.to_string_lossy(),
+        meta.dev(),
+        meta.ino(),
+        meta.size(),
+    );
+    let mut h: u128 = 0x6c62272e07bb014262b821756295c58d;
+    const PRIME: u128 = 0x0000000001000000000000000000013b;
+    for &b in payload.as_bytes() {
+        h = (h ^ (b as u128)).wrapping_mul(PRIME);
+    }
+    let cache_base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|val| !val.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?;
+    Some(cache_base.join("mule").join("fasl").join(format!("{h:032x}.so")))
 }
 
 fn valid_module_name(name: &str) -> bool {
@@ -182,8 +215,13 @@ unsafe fn resolve_candidate(name: &str, search_roots: &[String]) -> Candidate {
     let mut namespace_paths = Vec::new();
     for dir in &dirs {
         let base = Path::new(dir).join(&relative);
-        if base.join("__init__.py").is_file() || base.with_extension("py").is_file() {
-            return Candidate::SourceFile(custom_parent);
+        let init_py = base.join("__init__.py");
+        if init_py.is_file() {
+            return Candidate::SourceFile(init_py, custom_parent);
+        }
+        let mod_py = base.with_extension("py");
+        if mod_py.is_file() {
+            return Candidate::SourceFile(mod_py, custom_parent);
         }
         if base.is_dir() {
             namespace_paths.push(base.to_string_lossy().into_owned());
@@ -236,18 +274,24 @@ unsafe fn ensure_artifact(name: &str) -> Option<Artifact> {
             img.entries.entry(name.to_owned()).or_insert_with(|| art.clone());
             img.entries.get(name).cloned()
         }
-        Candidate::SourceFile(custom_parent) => {
-            let (py_host, clang, rustc, optimize) = toolchain;
-            let loaded_mods: Vec<String> = image()
-                .lock()
-                .expect("compiled image registry poisoned")
-                .entries
-                .iter()
-                .filter(|(_, art)| art.entry.is_some())
-                .map(|(k, _)| k.clone())
-                .collect();
+        Candidate::SourceFile(src_path, custom_parent) => {
+            let (py_host, clang, rustc_and_hash, optimize) = toolchain;
+            let (rustc, compiler_hash) = rustc_and_hash
+                .split_once('\n')
+                .unwrap_or((&rustc_and_hash, ""));
+            if let Some(cached_fasl) = fasl_cache_path(compiler_hash, optimize, name, &src_path) {
+                if cached_fasl.is_file() {
+                    if let Ok(c_path) = CString::new(cached_fasl.to_string_lossy().as_bytes()) {
+                        unsafe {
+                            let _ = dlopen(c_path.as_ptr(), RTLD_NOW);
+                        }
+                        if let Some(found) = registered_artifact(name) {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
             let mut cmd = Command::new(&py_host);
-            cmd.env("MULE_IMAGE_MODULES", loaded_mods.join(":"));
             cmd.args([
                 "-m",
                 "mule.compiler",
@@ -256,7 +300,7 @@ unsafe fn ensure_artifact(name: &str) -> Option<Artifact> {
                 "--clang",
                 &clang,
                 "--rustc",
-                &rustc,
+                rustc,
                 "-O",
                 &optimize.to_string(),
             ]);

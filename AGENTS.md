@@ -170,11 +170,30 @@ remainder justifies them.
 
 ## Mandatory SBCL architecture
 
-ALWAYS refer to how SBCL does it. Before designing or implementing any compiler
-or runtime feature, inspect the corresponding source in `~/checkout/sbcl`.
-Follow its compiler stages, data structures, analyses, invariants, representation
-selection, optimization and safety policies, and runtime boundaries. This is a
-beat-by-beat compiler clone in the Python context, not loose inspiration.
+ALWAYS refer to how SBCL does it. Before designing or implementing any compiler,
+module-compilation, FASL/object-loading, build, or runtime feature, STOP and
+inspect the corresponding source in `~/checkout/sbcl` FIRST (before writing or
+proposing any design). Follow its compiler stages, data structures, analyses,
+invariants, representation selection, optimization and safety policies, FASL
+compilation and loading model (`src/compiler/main.lisp` `compile-file`,
+`src/code/module.lisp` `require`/`module-provide-contrib`,
+`src/code/load.lisp` and `src/code/target-load.lisp` `load`), and runtime
+boundaries. This is a beat-by-beat compiler clone in the Python context, not
+loose inspiration.
+
+Never invent bespoke mechanisms (such as ad-hoc IPC pipe servers, environment
+variables passing live-image module lists into compilation, bundling transitive
+dependencies into dynamic shared objects, or spawning the compiler CLI on a
+cache hit) when SBCL already has an established architecture:
+
+- **One source file compiles to one standalone FASL (`module.so`):** Dynamic
+  module compilation (`compile-file`) produces a single-module FASL independent
+  of what happens to be loaded in the running image. Cross-module imports inside
+  a FASL resolve at load/execution time through the runtime module loader.
+- **Runtime loading checks the FASL cache directly before invoking the
+  compiler:** `load` / `require` looks up the deterministic compiled FASL on
+  disk and loads it directly (`dlopen`) on a cache hit without spawning or
+  consulting the compiler. Only a cache miss invokes `compile-file`.
 
 Doing anything differently from SBCL requires CLEAR REASONS AND JUSTIFICATION.
 Before implementing a departure, document the relevant SBCL files and functions,
