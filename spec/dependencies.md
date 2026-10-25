@@ -2,6 +2,9 @@
 
 Status: user requirements and approved dependencies.
 
+Mule is licensed under the GNU Affero General Public License v3.0 or later
+(`AGPL-3.0-or-later`; see `LICENSE`).
+
 Mule implementation languages are Python and Rust. The compiler is written in
 Python with eventual self hosting required; the native runtime is written in Rust.
 LLVM IR remains the code generation target. Historical archived code and the
