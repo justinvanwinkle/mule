@@ -838,36 +838,162 @@ pub(crate) unsafe extern "C" fn register_modules(_: Value, args: Value) -> Value
     }
 }
 
-/// Importing a module with no compiled source returns the module the program
-/// installed under that name in sys.modules, or raises ModuleNotFoundError.
+pub(crate) unsafe fn find_loaded_module(name: &str) -> Result<Option<Value>, ()> {
+    unsafe {
+        let modules = MODULES.with(Cell::get);
+        if modules.is_null() {
+            let found = EARLY_MODULES.with_borrow(|early| {
+                early
+                    .iter()
+                    .find(|(entry, _)| entry == name)
+                    .map(|(_, module)| object::retain(*module))
+            });
+            return Ok(found);
+        }
+        let key = object::new_value(Data::Text(
+            Text::from_rust_str(name),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ));
+        let found = object::special(modules, "get", &[key, object::none_value()]);
+        object::release(key);
+        if found.is_null() {
+            return Err(());
+        }
+        if found != object::none_value() {
+            return Ok(Some(found));
+        }
+        object::release(found);
+        Ok(None)
+    }
+}
+
+unsafe fn string_list_attr(module: Value, attr: &str) -> Option<Vec<String>> {
+    unsafe {
+        if module.is_null() || object::is_fixnum(module) {
+            return None;
+        }
+        let list = match &(*module).data {
+            Data::Namespace(bindings) => bindings.get(attr),
+            Data::Instance { attributes, .. } if !attributes.is_null() => {
+                if let Data::Namespace(bindings) = &(**attributes).data {
+                    bindings.get(attr)
+                } else {
+                    std::ptr::null_mut()
+                }
+            }
+            _ => std::ptr::null_mut(),
+        };
+        if list.is_null() || object::is_fixnum(list) {
+            return None;
+        }
+        let (Data::List(values, ..) | Data::Args(values, ..)) = &(*list).data else {
+            return None;
+        };
+        let mut out = Vec::with_capacity(values.len());
+        for &item in values.iter() {
+            if !item.is_null() && !object::is_fixnum(item) {
+                if let Data::Text(text, ..) = &(*item).data {
+                    if let Some(s) = text.to_rust_string() {
+                        out.push(s);
+                    }
+                }
+            }
+        }
+        Some(out)
+    }
+}
+
+pub(crate) unsafe fn current_sys_path() -> Option<Vec<String>> {
+    unsafe {
+        let saved = object::save_error();
+        let res = match find_loaded_module("sys") {
+            Ok(Some(sys_mod)) => {
+                let paths = string_list_attr(sys_mod, "path");
+                object::release(sys_mod);
+                paths
+            }
+            _ => {
+                object::clear_error();
+                None
+            }
+        };
+        object::restore_error(saved);
+        res
+    }
+}
+
+pub(crate) unsafe fn loaded_module_paths(name: &str) -> Option<Option<Vec<String>>> {
+    unsafe {
+        let saved = object::save_error();
+        let res = match find_loaded_module(name) {
+            Ok(Some(mod_val)) => {
+                let paths = string_list_attr(mod_val, "__path__");
+                object::release(mod_val);
+                Some(paths)
+            }
+            _ => {
+                object::clear_error();
+                None
+            }
+        };
+        object::restore_error(saved);
+        res
+    }
+}
+
+pub(crate) unsafe fn record_loaded_module(name: &str, module: Value) {
+    unsafe {
+        let modules = MODULES.with(Cell::get);
+        if modules.is_null() {
+            EARLY_MODULES.with_borrow_mut(|early| early.push((name.into(), object::retain(module))));
+            return;
+        }
+        let saved = object::save_error();
+        if !record_module(modules, name, module) {
+            object::clear_error();
+        }
+        object::restore_error(saved);
+    }
+}
+
+/// Return a module already recorded in sys.modules, or raise ModuleNotFoundError.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_import_loaded(name: *const std::ffi::c_char) -> Value {
+    unsafe {
+        let Some(name) = object::name_from_c(name) else {
+            return std::ptr::null_mut();
+        };
+        match find_loaded_module(name) {
+            Ok(Some(module)) => return module,
+            Err(()) => return std::ptr::null_mut(),
+            Ok(None) => {}
+        }
+        object::error("ModuleNotFoundError", &format!("No module named '{name}'"));
+        std::ptr::null_mut()
+    }
+}
+
+/// Importing a module not owned by the current unit returns the module from
+/// sys.modules, initializes its compiled artifact (compiling and loading it at
+/// runtime if needed), or raises ModuleNotFoundError.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_import_missing(name: *const std::ffi::c_char) -> Value {
     unsafe {
         let Some(name) = object::name_from_c(name) else {
             return std::ptr::null_mut();
         };
-        let modules = MODULES.with(Cell::get);
-        if modules.is_null() {
-            let found = EARLY_MODULES.with_borrow(|early| {
-                early.iter().find(|(entry, _)| entry == name)
-                    .map(|(_, module)| object::retain(*module))
-            });
-            if let Some(module) = found {
-                return module;
-            }
-        } else {
-            let key = object::new_value(Data::Text(Text::from_rust_str(name), std::ptr::null_mut(), std::ptr::null_mut()));
-            let found = object::special(modules, "get", &[key, object::none_value()]);
-            object::release(key);
-            if found.is_null() {
-                return found;
-            }
-            if found != object::none_value() {
-                return found;
-            }
-            object::release(found);
+        match find_loaded_module(name) {
+            Ok(Some(module)) => return module,
+            Err(()) => return std::ptr::null_mut(),
+            Ok(None) => {}
         }
-        object::error("ModuleNotFoundError", &format!("No module named '{name}'"));
+        if let Some(module) = crate::imports::import_or_compile_module(name) {
+            return module;
+        }
+        if !object::has_error() {
+            object::error("ModuleNotFoundError", &format!("No module named '{name}'"));
+        }
         std::ptr::null_mut()
     }
 }

@@ -221,3 +221,20 @@ def test_module_name_folds_to_the_unit_name(tmp_path):
     )
     assert "imported" not in llvm
     assert "mule_compare" not in llvm.split('define ptr @"mule_module"')[-1]
+
+
+def test_type_checking_guard_and_library_function_imports_are_pruned(tmp_path):
+    site_pkg = tmp_path / "site-packages"
+    site_pkg.mkdir()
+    for name in ("top_dep", "type_only_dep", "lazy_dep"):
+        (site_pkg / f"{name}.py").write_text("value = 1\n")
+    lib_source = (
+        "from typing import TYPE_CHECKING\n"
+        "import top_dep\n"
+        "if TYPE_CHECKING:\n"
+        "    import type_only_dep\n"
+        "def load_lazy():\n"
+        "    import lazy_dep\n"
+        "    return lazy_dep.value\n"
+    )
+    assert _unit_imports(site_pkg, "lib_mod", lib_source) == {"typing", "top_dep"}

@@ -28,6 +28,7 @@ from .node import (
     Enclose,
     Entry,
     Exit,
+    GlobalVar,
     If,
     KnownFunction,
     Lambda,
@@ -722,6 +723,18 @@ class _IsFlushableRef(NodeVisitor, LeafVisitor):
     def visit_LambdaVar(self, leaf: LambdaVar) -> bool:
         ref = self._ref
         return ref is not None and flushable_lambda_var_ref_p(leaf, ref)
+
+    def visit_GlobalVar(self, leaf: GlobalVar) -> bool:
+        ref = self._ref
+        return (
+            ref is not None
+            and ref.lexenv.policy.safety < 3
+            and (ref.home_lambda is None or ref.home_lambda.policy.safety < 3)
+            and not any(store.value is None for store in leaf.sets)
+            and ref.derived_type is not None
+            and ref.derived_type is not UNKNOWN
+            and not ref.derived_type.may_be_unbound
+        )
 
 
 _IS_FLUSHABLE_REF = _IsFlushableRef()

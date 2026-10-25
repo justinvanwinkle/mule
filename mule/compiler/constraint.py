@@ -911,6 +911,12 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 self._drop_relations_for(key)
         else:
             fact = self.fact_of(node.value)
+            if (
+                fact.type is UNKNOWN
+                and key in self.walk.invalidated
+                and self.walk.invalidated[key].type is not UNKNOWN
+            ):
+                fact = self.walk.invalidated[key]
             if key in self.walk.local_vars_set:
                 fact = self._update_relations_on_set(key, node.value, fact)
             contract = self.walk.local_contracts.get(key)

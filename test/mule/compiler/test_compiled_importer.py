@@ -4,6 +4,7 @@ import subprocess
 
 import pytest
 
+from mule.compiler import build
 from test.mule.compiler.test_modules import execute
 from test.python_host import python_host
 
@@ -129,3 +130,23 @@ print(parent.__spec__.origin, parent.__file__, len(parent.__path__))
     native = execute(tmp_path, sources, source)
     assert native.returncode == 0, native.stderr
     assert native.stdout == oracle.stdout
+
+
+@pytest.mark.integration
+def test_unlinked_module_compiles_and_loads_dynamically_at_runtime(tmp_path):
+    (tmp_path / "dynamic_plugin.py").write_text(
+        "def compute(x: int) -> int:\n    return x * 6 + 6\n"
+    )
+    main_source = tmp_path / "main.py"
+    main_source.write_text(
+        "import importlib\n"
+        "name = '_'.join(['dynamic', 'plugin'])\n"
+        "mod = importlib.import_module(name)\n"
+        "print(mod.compute(6))\n"
+    )
+    executable = build(main_source, tmp_path / "program", optimize=False, workers=1)
+    native = subprocess.run(
+        [executable], capture_output=True, text=True, check=False, timeout=60
+    )
+    assert native.returncode == 0, native.stderr
+    assert native.stdout == "42\n"
