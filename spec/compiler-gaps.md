@@ -507,6 +507,12 @@ suite failure or performance measurement.
        domain guard + `call double @llvm.sqrt.f64(double %x)` (`raw-math-sqrt`,
        `boxed-float-math-sqrt`, `math-sqrt` in `vops.py`).
 - **Remaining gaps and proposed transforms**:
+  - **Large integer constant folding**: `ir1opt.py` rejects folded integer
+    results larger than 128 bits, including unary negation. This is a fixed
+    literal-size limit, not a measured workload regression. SBCL's folding
+    dispatch in `src/compiler/ir1opt.lisp` uses function attributes and constant
+    arguments. Revisit Mule's limit with an explicit compile-time resource policy
+    and verify the generated code and compilation cost.
   1. **Commutative canonicalization and reassociation**: Normalize
      `const + x -> x + const` and `const & x -> x & const` on proven commutative
      domains (`INTEGER`, `BOOLEAN`) so associative transforms in `modarith.py`
@@ -729,6 +735,22 @@ force independent numeric-only copies to remain boxed. Generic object entries
 returning their float accumulator still conservatively use boxed accumulator
 storage; the numeric internal conventions below remove that boundary for numeric
 callers. Splitting one mutable local's live ranges is not implemented.
+
+`select_tn_representation` charges one unit for each operand restriction
+mismatch, and copy refinement charges one unit for differing endpoint LLVM
+types. SBCL's `add-representation-costs` uses storage-class-specific operand
+and move costs. Mule's uniform costs can select more expensive conversions, but
+a resulting performance regression has not been measured.
+
+The list-setitem identity exemption in `represent.py` permits indexing and
+iteration of a local exact list without examining later uses of retrieved values.
+Its identity-comparison scan covers only the current component. A raw float
+stored through that path can require a new box at the descriptor boundary, so
+identity observed through a retrieved value needs investigation. Probes so far
+returned the expected result and did not establish that the exemption was
+reached; this is an unverified correctness risk, not a confirmed miscompile.
+Trace generated IR and test the actual exemption before changing the legality
+rule. The general identity guarantee above remains the required contract.
 
 Generalizing explicit coercion insertion beyond fixnums and floats, extending
 identity-safe materialization, and using target-specific conversion costs remain

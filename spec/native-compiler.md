@@ -48,9 +48,10 @@ partitioned across `llvm-split` shards compiled in parallel and combined with
 link.
 
 Dynamic imports and modules not statically linked into the initial executable
-follow SBCL's file-compilation and FASL-loading architecture (`src/compiler/main.lisp`,
-`compile-file`; `src/code/module.lisp`, `require` and `module-provide-contrib`;
-`src/code/load.lisp`, `load`):
+aim to follow SBCL's file-compilation and FASL-loading architecture
+(`src/compiler/main.lisp`, `compile-file`; `src/code/module.lisp`, `require`
+and `module-provide-contrib`; `src/code/load.lisp`, `load`). The implementation
+currently has the limitations described below:
 
 - One source module compiles to one standalone single-module shared object
   (`module.so` FASL) in `$XDG_CACHE_HOME/mule/fasl/`, independent of which
@@ -74,6 +75,49 @@ follow SBCL's file-compilation and FASL-loading architecture (`src/compiler/main
 - Only on a FASL cache miss does the runtime invoke `--dynamic-module`
   (`compile-file`), which compiles the requested module and any uncached static
   dependencies bottom-up into their individual `.so` FASLs in the cache.
+
+### Dynamic FASL gaps
+
+The current implementation departs from the required single-file compilation
+boundary. `mule/compiler/driver.py` schedules uncached dependency FASLs while
+compiling the requested dynamic module. Although each output contains one module,
+the compilation request also initiates dependency compilation. SBCL's
+`compile-file` in `src/compiler/main.lisp` compiles its input file, while
+`require` in `src/code/module.lisp` loads requested modules. Mule must instead
+compile one source module independently and resolve imports at load or execution
+time, without consulting the running image.
+
+`mule/runtime/imports.rs` currently suppresses failures at the dynamic loading
+boundary:
+
+- `dlopen_fasl` records a path as loaded before calling `dlopen` and ignores
+  its result. A failed load is skipped on subsequent attempts at the same path,
+  including a newly compiled artifact at that path.
+- `ensure_artifact` discards compiler stderr when compilation fails and caches
+  the result as missing. The caller can therefore see an import failure instead
+  of the compiler error, and later attempts encounter the negative cache.
+- `read_elf_dependencies` returns an empty dependency list for unreadable or
+  malformed ELF or interface metadata. Its handwritten JSON string scan does
+  not handle escapes. Invalid metadata can therefore appear to contain no
+  dependencies instead of reporting the artifact error.
+
+These failure paths follow from source inspection; corrupt-artifact and failed
+compiler executions have not been reproduced. SBCL's `load` dispatches FASLs
+through `load-as-fasl` and propagates load errors in
+`src/code/target-load.lisp`. Mule must report loading and compilation failures
+with their causes and must not record a failed load or compilation as success
+or absence.
+
+The FASL cache key includes the requested source metadata and compiler digest,
+but not dependency interfaces. Compilation consumes those interfaces for
+cross-module specialization, and a runtime cache hit does not validate them.
+A dependency interface change therefore does not itself invalidate the parent
+FASL. Whether guards protect every affected assumption, or a stale interface
+can produce incorrect execution, remains unverified. Investigate this boundary
+and preserve correctness without requiring standalone FASLs to depend on the
+running image.
+
+### Build graph
 
 An originating build-step failure reports its exception immediately, including
 source coordinates for syntax errors, even without `-v`. Dependent steps retain
