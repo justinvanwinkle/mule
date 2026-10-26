@@ -199,8 +199,8 @@ _BORROWED_PRIMITIVE_ARGS = {
     "_type_of": frozenset({0}),
     "_index_method": frozenset({0}),
     "_storage_read": frozenset({0, 1}),
-    "_storage_write": frozenset({0, 1}),
-    "_storage_append": frozenset({0}),
+    "_storage_write": frozenset({0, 1, 2}),
+    "_storage_append": frozenset({0, 1}),
     "_storage_delete": frozenset({0, 1}),
 }
 

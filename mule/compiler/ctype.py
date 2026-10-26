@@ -3739,7 +3739,9 @@ class UnionType(ValueType):
 
     @property
     def is_immortal(self):
-        return not self.may_be_unbound and all(m.is_immortal for m in self.members)
+        return not self.may_be_unbound and all(
+            m.is_immortal or m.is_fixnum for m in self.members
+        )
 
     @property
     def is_heap_object(self):

@@ -1917,10 +1917,16 @@ _TABLE_SLOTS = {
 def getattr_(gen, vop):
     receiver = gen.take(vop.args[0])
     result = vop.results[0]
-    value = _read_attribute(gen, receiver, vop.codegen_info.name, result.tn)
+    name = vop.codegen_info.name
+    value = _read_attribute(gen, receiver, name, result.tn)
     gen.publish(result, value)
     gen.release(receiver)
-    gen.check_pointer(value)
+    if not (
+        gen.lambda_.is_protocol
+        and name in _TABLE_SLOTS
+        and result.tn.borrowed_from is not None
+    ):
+        gen.check_pointer(value)
     gen.refine(result.tn, value)
 
 
@@ -1938,6 +1944,8 @@ def _read_attribute(gen, receiver, name, result_tn=None):
             else gen.operation(f"getelementptr ptr, ptr {fields}, i64 {slot_index}")
         )
         field = gen.operation(f"load ptr, ptr {slot}")
+        if result_tn is not None and result_tn.borrowed_from is not None:
+            return field
         unset = gen.operation(f"icmp eq ptr {field}, null")
         loaded = gen.fresh("attr.loaded")[1:]
         slow_label = gen.fresh("attr.slow")[1:]

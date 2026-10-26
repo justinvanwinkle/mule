@@ -141,18 +141,15 @@ def _table_find(self, key, code):
     """The index-table slot for ``key`` and its entry, or -1 for none."""
     if code < _FIXNUM_MIN or code > _FIXNUM_MAX:
         code = (code ^ (code >> 62)) & _PERTURB_MASK
-    indices = self._indices
-    hashes = self._hashes
-    keys = self._keys
-    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
+    mask = (_storage_length(self._indices) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(indices, slot)
+        entry = _storage_read(self._indices, slot)
         if entry is _EMPTY:
             return slot, -1
-        if entry is not _DUMMY and _storage_read(hashes, entry) == code:
-            existing = _storage_read(keys, entry)
+        if entry is not _DUMMY and _storage_read(self._hashes, entry) == code:
+            existing = _storage_read(self._keys, entry)
             if existing is key or existing == key:
                 return slot, entry
         perturb >>= 5
@@ -163,18 +160,15 @@ def _table_lookup(self, key):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    indices = self._indices
-    hashes = self._hashes
-    keys = self._keys
-    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
+    mask = (_storage_length(self._indices) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(indices, slot)
+        entry = _storage_read(self._indices, slot)
         if entry is _EMPTY:
             return _EMPTY
-        if entry is not _DUMMY and _storage_read(hashes, entry) == code:
-            existing = _storage_read(keys, entry)
+        if entry is not _DUMMY and _storage_read(self._hashes, entry) == code:
+            existing = _storage_read(self._keys, entry)
             if existing is key or existing == key:
                 return entry
         perturb >>= 5
@@ -225,18 +219,15 @@ def _table_insert(self, key, value):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    indices = self._indices
-    hashes = self._hashes
-    keys = self._keys
-    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
+    mask = (_storage_length(self._indices) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(indices, slot)
+        entry = _storage_read(self._indices, slot)
         if entry is _EMPTY:
             break
-        if entry is not _DUMMY and _storage_read(hashes, entry) == code:
-            existing = _storage_read(keys, entry)
+        if entry is not _DUMMY and _storage_read(self._hashes, entry) == code:
+            existing = _storage_read(self._keys, entry)
             if existing is key or existing == key:
                 _storage_write(self._values, entry, value)
                 return
@@ -244,11 +235,10 @@ def _table_insert(self, key, value):
         slot = (slot * 5 + perturb + 1) & mask
     if (_storage_length(self._keys) + 1) * 3 > _storage_length(self._indices) * 2:
         _table_resize(self, self._used + 1)
-        indices = self._indices
-        mask = (_storage_length(indices) - 1) & _MASK_LIMIT
+        mask = (_storage_length(self._indices) - 1) & _MASK_LIMIT
         perturb = code & _PERTURB_MASK
         slot = perturb & mask
-        while _storage_read(indices, slot) is not _EMPTY:
+        while _storage_read(self._indices, slot) is not _EMPTY:
             perturb >>= 5
             slot = (slot * 5 + perturb + 1) & mask
     _storage_write(self._indices, slot, _storage_length(self._keys))
@@ -263,18 +253,15 @@ def _table_remove(self, key):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    indices = self._indices
-    hashes = self._hashes
-    keys = self._keys
-    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
+    mask = (_storage_length(self._indices) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(indices, slot)
+        entry = _storage_read(self._indices, slot)
         if entry is _EMPTY:
             return _MISSING
-        if entry is not _DUMMY and _storage_read(hashes, entry) == code:
-            existing = _storage_read(keys, entry)
+        if entry is not _DUMMY and _storage_read(self._hashes, entry) == code:
+            existing = _storage_read(self._keys, entry)
             if existing is key or existing == key:
                 value = _storage_read(self._values, entry)
                 _storage_write(self._indices, slot, _DUMMY)

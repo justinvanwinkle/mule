@@ -405,7 +405,6 @@ class _SpecializesBody(NodeVisitor):
             node.kind is CallKind.KNOWN
             and (
                 node.fun_info in _SPECIALIZABLE_CONTAINER_OPS
-                or node.fun_info in _GET_SET_DEL_ATTR
                 or node.fun_info is PROTOCOLS["unpack"]
                 or node.fun_info is UNPACK_REF
             )

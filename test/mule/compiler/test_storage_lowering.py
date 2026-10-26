@@ -359,20 +359,28 @@ def test_table_storage_fields_and_fixnum_hash_invariants():
     for probe_fn in (
         "mule_sequences_mule_import__dict:mule_fn__table_lookup.body",
         "mule_sequences_mule_import__dict:mule_fn__table_insert.body",
+        "mule_sequences_mule_fn_dict_get.body",
+        "mule_sequences_mule_fn_dict_getitem.body",
+        "mule_sequences_mule_fn_dict_setitem.body",
     ):
         body = llvm_fns[probe_fn]
         assert "@mule.fast.storage.read.borrow(" in body
+        assert "@mule.attr.layout(" not in body, (
+            f"{probe_fn} emitted layout guard instead of direct _Table slot offset"
+        )
         assert "icmp eq i64 " in body, (
             f"{probe_fn} missing unboxed fixnum hash comparison"
         )
 
-    for dict_fn in (
+    for borrowed_probe_fn in (
+        "mule_sequences_mule_import__dict:mule_fn__table_lookup.body",
         "mule_sequences_mule_fn_dict_get.body",
         "mule_sequences_mule_fn_dict_getitem.body",
+        "mule_sequences_mule_fn_dict_setitem.body",
     ):
-        body = llvm_fns[dict_fn]
-        assert "icmp sge i64 " in body, (
-            f"{dict_fn} missing unboxed entry >= 0 comparison"
+        body = llvm_fns[borrowed_probe_fn]
+        assert "@mule.heap.retain(" not in body, (
+            f"{borrowed_probe_fn} retained internal _Table slot lists on probe path"
         )
 
 

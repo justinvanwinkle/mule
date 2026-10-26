@@ -1721,6 +1721,8 @@ def _can_borrow_list_getitem(reader: VOP, reader_ref: TNRef | None = None) -> bo
         return True
     if name == "primitive-_storage_write" and len(reader.args) == 3:
         return reader_ref in reader.args[:2]
+    if name == "primitive-_storage_append" and len(reader.args) == 2:
+        return reader_ref is reader.args[0]
     if name == "protocol-setitem" and len(reader.args) == 3:
         return (
             reader_ref in reader.args[:2]
@@ -1760,7 +1762,13 @@ def _safe_list_borrow_step(step: VOP, seq_local, root_local=None) -> bool:
         ).is_fixnum
     if name == "primitive-_storage_read" and len(step.args) == 2:
         return (step.args[1].tn.type or UNKNOWN).is_fixnum
-    return False
+    if name == "primitive-_storage_length" and len(step.args) == 1:
+        return True
+    return (
+        name == "getattr"
+        and step.codegen_info is not None
+        and step.codegen_info.name in vops._TABLE_SLOTS
+    )
 
 
 def _local_may_run_user_code(tn, component: IR2Component) -> bool:
@@ -2219,28 +2227,38 @@ def _specialize_list_getitems(component: IR2Component) -> None:
         for index, vop in enumerate(block.vops):
             name = vop.info.name
             if (
-                vop.codegen_info not in (None, "list_owned", "tuple_owned")
-                or len(vop.args) != 2
-                or not vop.results
+                name == "getattr"
+                and component.lambda_.is_protocol
+                and len(vop.args) == 1
+                and vop.results
+                and vop.codegen_info is not None
+                and vop.codegen_info.name in vops._TABLE_SLOTS
             ):
-                continue
-            seq_type = vop.args[0].tn.type or UNKNOWN
-            idx_type = vop.args[1].tn.type or UNKNOWN
-            if not idx_type.is_fixnum:
-                continue
-            if name == "protocol-getitem":
-                if seq_type.is_exact_list:
-                    vop.codegen_info = "list_owned"
-                    borrow_info = "list_borrow"
-                elif seq_type.is_exact_tuple:
-                    vop.codegen_info = "tuple_owned"
-                    borrow_info = "tuple_borrow"
+                borrow_info = vop.codegen_info
+            else:
+                if (
+                    vop.codegen_info not in (None, "list_owned", "tuple_owned")
+                    or len(vop.args) != 2
+                    or not vop.results
+                ):
+                    continue
+                seq_type = vop.args[0].tn.type or UNKNOWN
+                idx_type = vop.args[1].tn.type or UNKNOWN
+                if not idx_type.is_fixnum:
+                    continue
+                if name == "protocol-getitem":
+                    if seq_type.is_exact_list:
+                        vop.codegen_info = "list_owned"
+                        borrow_info = "list_borrow"
+                    elif seq_type.is_exact_tuple:
+                        vop.codegen_info = "tuple_owned"
+                        borrow_info = "tuple_borrow"
+                    else:
+                        continue
+                elif name == "primitive-_storage_read":
+                    borrow_info = "storage_borrow"
                 else:
                     continue
-            elif name == "primitive-_storage_read":
-                borrow_info = "storage_borrow"
-            else:
-                continue
             res_tn = vop.results[0].tn
             if res_tn.leaf is not None or (
                 res_tn.name is not None and res_tn.name.startswith("$")
@@ -2261,20 +2279,28 @@ def _specialize_list_getitems(component: IR2Component) -> None:
                 continue
             seq_writer, _ = seq_writes[0]
             if (
-                seq_writer.info is not vops.LOAD_LOCAL
-                or seq_writer.codegen_info is None
-                or not seq_writer.codegen_info.bound
-                or seq_writer.codegen_info.move
+                seq_writer.info is vops.LOAD_LOCAL
+                and seq_writer.codegen_info is not None
+                and seq_writer.codegen_info.bound
+                and not seq_writer.codegen_info.move
             ):
+                seq_local = seq_writer.args[0].tn
+                if not _plain_local(seq_local):
+                    continue
+                root_local = (
+                    seq_local.borrowed_from
+                    if seq_local.borrowed_from is not None
+                    else seq_local
+                )
+            elif (
+                seq_writer.info.name == "getattr"
+                and seq_tn.borrowed_from is not None
+                and _plain_local(seq_tn.borrowed_from)
+            ):
+                seq_local = seq_tn.borrowed_from
+                root_local = seq_local
+            else:
                 continue
-            seq_local = seq_writer.args[0].tn
-            if not _plain_local(seq_local):
-                continue
-            root_local = (
-                seq_local.borrowed_from
-                if seq_local.borrowed_from is not None
-                else seq_local
-            )
             if positions is None:
                 positions = {step: pos for pos, step in enumerate(block.vops)}
             writer_index = positions.get(seq_writer)

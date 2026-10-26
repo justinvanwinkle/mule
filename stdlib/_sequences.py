@@ -39,10 +39,16 @@ from _dict import build_dict as _build_dict
 from _dict import build_set as _build_set
 from _dict import _MISSING as _DICT_MISSING
 from _dict import (
+    _DUMMY as _TABLE_DUMMY,
+    _EMPTY as _TABLE_EMPTY,
+    _MASK_LIMIT as _TABLE_MASK_LIMIT,
+    _PERTURB_MASK as _TABLE_PERTURB_MASK,
     _set_lookup,
+    _table_hash_fallback,
     _table_insert,
     _table_lookup,
     _table_remove,
+    _table_resize,
     _tuple_hash,
     dict,
     frozenset,
@@ -708,29 +714,112 @@ def getitem(value, index):
 # binding arguments, or testing the receiver's class. An exact dict has no
 # ``__missing__``, ``__getitem__`` override, or other hook.
 def dict_get(table, key, default):
-    entry = _table_lookup(table, key)
-    if entry >= 0:
-        return _storage_read(table._values, entry)
-    return default
+    code = _storage_hash(key)
+    if code is None:
+        code = _table_hash_fallback(key)
+    mask = (_storage_length(table._indices) - 1) & _TABLE_MASK_LIMIT
+    perturb = code & _TABLE_PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(table._indices, slot)
+        if entry is _TABLE_EMPTY:
+            return default
+        if entry is not _TABLE_DUMMY and _storage_read(table._hashes, entry) == code:
+            existing = _storage_read(table._keys, entry)
+            if existing is key or existing == key:
+                return _storage_read(table._values, entry)
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
 
 
 def dict_getitem(table, key):
-    entry = _table_lookup(table, key)
-    if entry >= 0:
-        return _storage_read(table._values, entry)
-    raise KeyError(key)
+    code = _storage_hash(key)
+    if code is None:
+        code = _table_hash_fallback(key)
+    mask = (_storage_length(table._indices) - 1) & _TABLE_MASK_LIMIT
+    perturb = code & _TABLE_PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(table._indices, slot)
+        if entry is _TABLE_EMPTY:
+            raise KeyError(key)
+        if entry is not _TABLE_DUMMY and _storage_read(table._hashes, entry) == code:
+            existing = _storage_read(table._keys, entry)
+            if existing is key or existing == key:
+                return _storage_read(table._values, entry)
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
 
 
 def dict_setitem(table, key, value):
-    _table_insert(table, key, value)
+    code = _storage_hash(key)
+    if code is None:
+        code = _table_hash_fallback(key)
+    mask = (_storage_length(table._indices) - 1) & _TABLE_MASK_LIMIT
+    perturb = code & _TABLE_PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(table._indices, slot)
+        if entry is _TABLE_EMPTY:
+            break
+        if entry is not _TABLE_DUMMY and _storage_read(table._hashes, entry) == code:
+            existing = _storage_read(table._keys, entry)
+            if existing is key or existing == key:
+                _storage_write(table._values, entry, value)
+                return
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
+    if (_storage_length(table._keys) + 1) * 3 > _storage_length(table._indices) * 2:
+        _table_resize(table, table._used + 1)
+        mask = (_storage_length(table._indices) - 1) & _TABLE_MASK_LIMIT
+        perturb = code & _TABLE_PERTURB_MASK
+        slot = perturb & mask
+        while _storage_read(table._indices, slot) is not _TABLE_EMPTY:
+            perturb >>= 5
+            slot = (slot * 5 + perturb + 1) & mask
+    _storage_write(table._indices, slot, _storage_length(table._keys))
+    _storage_append(table._hashes, code)
+    _storage_append(table._keys, key)
+    _storage_append(table._values, value)
+    table._used = (table._used + 1) & _TABLE_MASK_LIMIT
 
 
 def dict_contains(table, key):
-    return _table_lookup(table, key) >= 0
+    code = _storage_hash(key)
+    if code is None:
+        code = _table_hash_fallback(key)
+    mask = (_storage_length(table._indices) - 1) & _TABLE_MASK_LIMIT
+    perturb = code & _TABLE_PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(table._indices, slot)
+        if entry is _TABLE_EMPTY:
+            return False
+        if entry is not _TABLE_DUMMY and _storage_read(table._hashes, entry) == code:
+            existing = _storage_read(table._keys, entry)
+            if existing is key or existing == key:
+                return True
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
 
 
 def dict_not_contains(table, key):
-    return _table_lookup(table, key) < 0
+    code = _storage_hash(key)
+    if code is None:
+        code = _table_hash_fallback(key)
+    mask = (_storage_length(table._indices) - 1) & _TABLE_MASK_LIMIT
+    perturb = code & _TABLE_PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(table._indices, slot)
+        if entry is _TABLE_EMPTY:
+            return True
+        if entry is not _TABLE_DUMMY and _storage_read(table._hashes, entry) == code:
+            existing = _storage_read(table._keys, entry)
+            if existing is key or existing == key:
+                return False
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
 
 
 def bytearray_getitem(array, index):
