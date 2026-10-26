@@ -1593,9 +1593,8 @@ class Build:
                 (directory / "unit.ll").write_text(generate(program))
                 write_imports(directory / "imports.json", imported)
 
-        # The unit depends on its search path only through how its imports
-        # resolve, so the key omits the path and a cached unit is reused
-        # wherever each import resolves the same way.
+        # Import resolution is validated separately, but the source filename
+        # is embedded in traceback metadata and must be part of the key.
         step = self.graph.step(
             name,
             lambda: Step(
@@ -1610,6 +1609,7 @@ class Build:
                 settings={
                     "step": "module",
                     "name": descriptor.name,
+                    "filename": str(path),
                     "namespace_paths": descriptor.namespace_paths,
                 },
                 outputs=("unit.ll", "imports.json"),
@@ -1721,6 +1721,7 @@ class Build:
                 inputs=[source_node, builtins],
                 settings={
                     "step": "main",
+                    "filename": filename,
                     "package": package,
                 },
                 outputs=("unit.ll", "imports.json"),
