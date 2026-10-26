@@ -223,7 +223,7 @@ def test_module_name_folds_to_the_unit_name(tmp_path):
     assert "mule_compare" not in llvm.split('define ptr @"mule_module"')[-1]
 
 
-def test_type_checking_guard_and_library_function_imports_are_pruned(tmp_path):
+def test_type_checking_guard_keeps_potential_dependency(tmp_path):
     site_pkg = tmp_path / "site-packages"
     site_pkg.mkdir()
     for name in ("top_dep", "type_only_dep", "lazy_dep"):
@@ -237,4 +237,35 @@ def test_type_checking_guard_and_library_function_imports_are_pruned(tmp_path):
         "    import lazy_dep\n"
         "    return lazy_dep.value\n"
     )
-    assert _unit_imports(site_pkg, "lib_mod", lib_source) == {"typing", "top_dep"}
+    assert _unit_imports(site_pkg, "lib_mod", lib_source) == {
+        "typing",
+        "top_dep",
+        "type_only_dep",
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "source",
+    [
+        "print(TYPE_CHECKING)\nfrom typing import TYPE_CHECKING\n",
+        (
+            "import typing\ntyping.TYPE_CHECKING = True\n"
+            "from typing import TYPE_CHECKING as flag\nprint(flag)\n"
+        ),
+    ],
+)
+def test_type_checking_import_preserves_runtime_binding(tmp_path, source):
+    path = tmp_path / "main.py"
+    path.write_text(source)
+    oracle = subprocess.run(
+        [python_host(), path], capture_output=True, text=True, check=False, timeout=10
+    )
+    executable = build(path, tmp_path / "program", optimize=False, workers=1)
+    native = subprocess.run(
+        [executable], capture_output=True, text=True, check=False, timeout=10
+    )
+    assert native.returncode == oracle.returncode
+    assert native.stdout == oracle.stdout
+    if oracle.returncode:
+        assert "NameError" in native.stderr

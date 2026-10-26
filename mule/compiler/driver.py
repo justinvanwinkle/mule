@@ -50,7 +50,6 @@ from .ir1util import class_method_definitions, known_calls
 from .main import (
     Compilation,
     compile_toplevel,
-    fold_type_checking_constants,
     ir1_phases,
 )
 from .modules import (
@@ -702,7 +701,6 @@ def _prepare_unit(
                 namespace=module.name,
             )
             unit_name = module.name
-        fold_type_checking_constants(compilation)
         for component in compilation.components:
             ir1_optimize_until_done(component)
             if component.reanalyze:

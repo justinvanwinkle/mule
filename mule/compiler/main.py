@@ -284,50 +284,6 @@ def _fold_protocol_constants(compilation: Compilation) -> bool:
     return changed
 
 
-def fold_type_checking_constants(compilation: Compilation) -> bool:
-    import_bindings: dict[str, tuple[str, str]] = {}
-    imp_visitor = locall._ImportBindingStores(import_bindings)
-    for block in lambda_blocks(compilation.entry):
-        for node in block.nodes():
-            node.accept(imp_visitor)
-    type_checking_names = {
-        local_name
-        for local_name, target in import_bindings.items()
-        if target == ("typing", "TYPE_CHECKING")
-    }
-    if not type_checking_names:
-        return False
-    counts: dict[str, int] = {}
-    for lambda_ in compilation.lambdas:
-        if lambda_.component is None:
-            continue
-        scan = _GlobalConstantScan(False)
-        for block in lambda_.component.blocks():
-            for node in block.nodes():
-                node.accept(scan)
-        for name, count in scan.counts.items():
-            counts[name] = counts.get(name, 0) + count
-    constants = {
-        name: Constant(ast.BooleanLiteral(False))
-        for name in type_checking_names
-        if counts.get(name, 0) == 1
-    }
-    if not constants:
-        return False
-    changed = False
-    for lambda_ in compilation.lambdas:
-        if lambda_.component is None:
-            continue
-        replacer = _ReplaceGlobalConstantRefs(constants)
-        for block in lambda_.component.blocks():
-            for node in block.nodes():
-                node.accept(replacer)
-        if replacer.changed:
-            lambda_.component.reoptimize = True
-            changed = True
-    return changed
-
-
 def _ir1_optimize_phase_1(
     compilation: Compilation, *, facts_stale: bool = True
 ) -> None:

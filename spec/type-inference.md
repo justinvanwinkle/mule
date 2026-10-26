@@ -42,6 +42,11 @@ Type inference must operate across two different visibility regimes:
 1. **Closed-world knowledge**: The compiler sees all call sites of a function or all assignments to a binding (for example, non-escaping nested functions, private module globals, intra-module helpers, or a full-program build from source).
 2. **Open-world / separate-compilation boundaries**: The compiler is building a library (such as a precompiled standard-library unit or a third-party Mule `.whl`) whose public functions and classes may be called by unknown external modules, or via dynamic `importlib.import_module()` at runtime.
 
+An imported `typing.TYPE_CHECKING` binding is not an unconditional constant.
+The import may not have executed yet, and the module attribute may have changed
+before the import. A guarded import therefore remains a possible dependency
+unless other analysis proves the guard unreachable.
+
 ### 2.1 Multi-entry contexts bridge open and closed worlds
 
 Following SBCL's entry-point splitting in `src/compiler/locall.lisp`, Mule never sacrifices soundness at public boundaries to specialize internal calls, and never sacrifices internal specialization to preserve external generality. Every compiled function (`Lambda`) can publish multiple **entry contexts** (`EntryContext` in `mule/compiler/locall.py`):

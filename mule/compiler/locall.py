@@ -2047,9 +2047,6 @@ def analyze(
         ).items():
             if ns_counts.get(local_name, 0) > 1:
                 continue
-            if (mod_name, orig_name) == ("typing", "TYPE_CHECKING"):
-                ns_consts[local_name] = BOOLEAN_FALSE
-                continue
             if (
                 imported_targets is not None
                 and (mod_name, orig_name) in imported_targets
