@@ -690,23 +690,11 @@ def flushable_lambda_var_ref_p(leaf: LambdaVar, ref: Ref) -> bool:
     return lambda_var_bound_at(leaf, ref)
 
 
-class _IsFlushableRef(NodeVisitor, LeafVisitor):
-    """Whether a node is a ``Ref`` whose evaluation has no side effects and
-    cannot raise ``UnboundLocalError`` or ``NameError`` (``flushable-reference-p``)."""
+class _IsFlushableLeaf(LeafVisitor):
+    """Whether a ``Ref`` to a leaf is proven bound and side-effect-free."""
 
-    def __init__(self):
-        self._ref: Ref | None = None
-
-    def visit_Node(self, node) -> bool:
-        return False
-
-    def visit_Ref(self, node: Ref) -> bool:
-        if node.final or node.allow_unbound:
-            return False
-        self._ref = node
-        ok = node.leaf.accept(self)
-        self._ref = None
-        return ok
+    def __init__(self, ref: Ref):
+        self.ref = ref
 
     def visit_Leaf(self, leaf) -> bool:
         return False
@@ -721,20 +709,31 @@ class _IsFlushableRef(NodeVisitor, LeafVisitor):
         return True
 
     def visit_LambdaVar(self, leaf: LambdaVar) -> bool:
-        ref = self._ref
-        return ref is not None and flushable_lambda_var_ref_p(leaf, ref)
+        return flushable_lambda_var_ref_p(leaf, self.ref)
 
     def visit_GlobalVar(self, leaf: GlobalVar) -> bool:
-        ref = self._ref
+        ref = self.ref
         return (
-            ref is not None
-            and ref.lexenv.policy.safety < 3
+            ref.lexenv.policy.safety < 3
             and (ref.home_lambda is None or ref.home_lambda.policy.safety < 3)
             and not any(store.value is None for store in leaf.sets)
             and ref.derived_type is not None
             and ref.derived_type is not UNKNOWN
             and not ref.derived_type.may_be_unbound
         )
+
+
+class _IsFlushableRef(NodeVisitor):
+    """Whether a node is a ``Ref`` whose evaluation has no side effects and
+    cannot raise ``UnboundLocalError`` or ``NameError`` (``flushable-reference-p``)."""
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Ref(self, node: Ref) -> bool:
+        if node.final or node.allow_unbound:
+            return False
+        return node.leaf.accept(_IsFlushableLeaf(node))
 
 
 _IS_FLUSHABLE_REF = _IsFlushableRef()

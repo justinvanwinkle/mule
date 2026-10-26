@@ -681,13 +681,10 @@ class _BoundConstantValue(_ConstantValue):
             self._seen.discard(leaf)
 
 
-_BOUND_CONSTANT_VALUE = _BoundConstantValue()
-
-
 def bound_constant_literal(lvar):
     """The literal a proven-bound ``lvar`` delivers through a ``Constant`` or
     constant-assigned local ``LambdaVar``, or None (``lvar-constant``)."""
-    return _BOUND_CONSTANT_VALUE.resolve_lvar(lvar)
+    return _BoundConstantValue().resolve_lvar(lvar)
 
 
 class _SingletonLiteral(ValueTypeVisitor):
