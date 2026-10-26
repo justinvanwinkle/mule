@@ -161,6 +161,9 @@ class Node:
     def output_hash(self) -> str | None:
         raise NotImplementedError
 
+    def dependencies(self) -> tuple[Node, ...]:
+        return ()
+
     def start(self) -> None:
         """Begin producing this node's outputs; a source has them already."""
         self.resolved()
@@ -229,6 +232,7 @@ class Step(Node):
     ):
         super().__init__(graph, name)
         self.inputs: list[Node] = []
+        self._dependencies: list[Node] = []
         self.settings = settings
         self.outputs = outputs
         self.action = action
@@ -242,9 +246,20 @@ class Step(Node):
         for node in inputs:
             self.add_input(node)
 
+    def dependencies(self) -> tuple[Node, ...]:
+        return tuple(self._dependencies)
+
     def start(self) -> None:
         """Run once every input has resolved, which may already be so."""
         self.notify(None)
+
+    def _unstart_if_backlogged(self) -> None:
+        if self._started:
+            if self.graph._backlog is not None and self in self.graph._backlog:
+                self.graph._backlog.remove(self)
+                self._started = False
+            else:
+                raise RuntimeError(f"{self.name} already started")
 
     def add_input(self, node: Node) -> None:
         """Make ``node`` an input. A step adds inputs to a consumer before it
@@ -252,12 +267,49 @@ class Step(Node):
         with self.graph.lock:
             if node in self.inputs:
                 return
-            if self._started:
+            if not node.done:
+                self._unstart_if_backlogged()
+            elif self._started and (
+                self.graph._backlog is None or self not in self.graph._backlog
+            ):
                 raise RuntimeError(f"{self.name} already started")
             self.inputs.append(node)
+            if node not in self._dependencies:
+                node.dependents.append(self)
+            if not node.done:
+                self._waiting.add(node)
+
+    def add_dependency(self, node: Node) -> None:
+        """Wait for ``node`` to resolve before starting, without adding ``node``
+        to this step's cache-key inputs."""
+        with self.graph.lock:
+            if node in self.inputs or node in self._dependencies:
+                return
+            if not node.done:
+                self._unstart_if_backlogged()
+            elif self._started and (
+                self.graph._backlog is None or self not in self.graph._backlog
+            ):
+                raise RuntimeError(f"{self.name} already started")
+            self._dependencies.append(node)
             node.dependents.append(self)
             if not node.done:
                 self._waiting.add(node)
+
+    def try_reuse_cache(self) -> bool:
+        """Populate ``directory`` and ``output_digests`` immediately when a
+        valid cache entry already exists for this step's key."""
+        if self.output_digests is not None:
+            return True
+        if any(node.error is not None for node in self.inputs):
+            return False
+        entry = cache_directory() / "steps" / self.key
+        outputs = self._verified(entry)
+        if outputs is None:
+            return False
+        self.directory = entry
+        self.output_digests = outputs
+        return True
 
     def notify(self, node: Node | None) -> None:
         """``node`` resolved; None only starts a step whose inputs resolved
@@ -292,19 +344,27 @@ class Step(Node):
 
     def execute(self) -> None:
         """Reuse the cache entry for this step's key or build it."""
-        failed = next((node for node in self.inputs if node.error is not None), None)
+        failed = next(
+            (
+                node
+                for node in (*self.inputs, *self._dependencies)
+                if node.error is not None
+            ),
+            None,
+        )
         if failed is not None:
             self.error = failed.error
             return
-        entry = cache_directory() / "steps" / self.key
-        outputs = self._verified(entry)
-        if outputs is None:
-            with _locked(entry):
-                outputs = self._verified(entry)
-                if outputs is None:
-                    outputs = self._build(entry)
-        self.directory = entry
-        self.output_digests = outputs
+        if self.output_digests is None:
+            entry = cache_directory() / "steps" / self.key
+            outputs = self._verified(entry)
+            if outputs is None:
+                with _locked(entry):
+                    outputs = self._verified(entry)
+                    if outputs is None:
+                        outputs = self._build(entry)
+            self.directory = entry
+            self.output_digests = outputs
         if self.discover is not None:
             self.discover(self)
 
@@ -549,7 +609,7 @@ class Graph:
             if node.error is not None:
                 raise node.error
             return node
-        for inp in list(node.inputs):
+        for inp in (*node.inputs, *node.dependencies()):
             if not inp.done:
                 self.resolve_now(inp)
         if not node.done:

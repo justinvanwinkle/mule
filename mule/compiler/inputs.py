@@ -137,5 +137,13 @@ def recording():
         _recording.reset(token)
 
 
+def replay_recorded(recorded: dict[str, str | None]) -> None:
+    """Copy previously recorded file states into the active recording context."""
+    inputs = _recording.get()
+    if inputs is not None:
+        for path, state in recorded.items():
+            inputs.setdefault(path, state)
+
+
 def unchanged(inputs):
     return all(file_state(path) == state for path, state in inputs.items())
